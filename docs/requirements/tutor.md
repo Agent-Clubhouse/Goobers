@@ -22,24 +22,31 @@ pool of coding agents."
   instructions, tools) **and workflows and gates** — all of which live in the `config`
   repo. Containment is **structural, not just policy**: the Tutor's identity has write
   access to `config` only, so it *cannot* touch the `infra` repo / Bicep / platform code.
-- **Approval (decided):** whether a Tutor PR requires human approval is **configurable per
-  instance** (no default stance); when required it is a human gate.
+- **Approval (decided):** the Tutor authors freely within `config`; humans control what
+  merges via standard **`config`-repo governance** (branch protection / required review /
+  CODEOWNERS, optionally path-scoped). No bespoke in-product gate or authoring restriction.
 
 ## Requirements
 
 - **TUT-001 (MUST):** The Tutor MUST be modeled as a workflow within the gaggle.
 - **TUT-002 (MUST):** The Tutor MUST be triggerable on a schedule/signal for continuous or
   periodic analysis.
-- **TUT-003 (MUST):** The Tutor MUST consume goober-run telemetry to detect recurring
-  patterns/errors across runs.
+- **TUT-003 (MUST):** The Tutor MUST detect issues via a **hybrid** approach: deterministic
+  metric/threshold queries over ADX/OTel telemetry (failure rates, repeated gate failures,
+  retry counts) surface candidate problem areas, then an agentic step reads the relevant
+  traces to diagnose and draft the change.
 - **TUT-004 (MUST):** The Tutor MUST express improvements as a PR against the `config`
   repo.
 - **TUT-005 (MUST):** The Tutor's identity MUST have write access to the `config` repo
-  only — never the `infra` repo — so its inability to change platform/infra is enforced
-  by permissions, not policy. Within `config` it MAY modify goober definitions, workflows,
-  and gates.
-- **TUT-006 (MUST):** Whether a Tutor PR requires human approval MUST be configurable per
-  instance; when required, approval is a human **Gate** (`GT-012`).
+  only — never the `infra` repo — so it structurally cannot change platform/infra.
+- **TUT-006 (MUST):** Within `config` the Tutor is **unrestricted in what it authors**
+  (it may add, change, strengthen, or weaken goober definitions, workflows, and gates).
+  Human control over the quality bar is exercised entirely through standard **`config`-repo
+  governance** — branch protection, required reviews, and CODEOWNERS — not via in-product
+  restrictions on the Tutor.
+- **TUT-009 (SHOULD):** Setup SHOULD support **path-scoped governance** so teams can
+  require stricter human review for sensitive changes (e.g. gate definitions) while
+  allowing lower-risk changes (e.g. instruction tweaks) to flow more freely.
 - **TUT-007 (MUST):** Tutor findings + rationale MUST be recorded to telemetry, and each
   proposed change SHOULD link to the evidence (traces/patterns) that motivated it.
 - **TUT-008 (SHOULD):** The Tutor SHOULD assess whether prior changes helped (closing the
@@ -54,9 +61,11 @@ pool of coding agents."
 
 ## Open questions
 
-- **TUT-Q1:** Detection method — metric thresholds/heuristics, LLM analysis of traces, or
-  both?
-- **TUT-Q2:** **Safety guardrail:** can the Tutor *weaken/remove* a required gate? Likely
-  needs a hard constraint so self-modification can't erode quality enforcement.
+- **TUT-Q1:** ~~Detection method~~ **Resolved:** hybrid — metrics surface candidates,
+  agentic step diagnoses & drafts (`TUT-003`).
+- **TUT-Q2:** ~~Can the Tutor weaken/remove a required gate?~~ **Resolved:** yes — the
+  Tutor authors freely; humans hold the quality bar through `config`-repo PR governance
+  (branch protection / required review / CODEOWNERS), not via in-product restrictions
+  (`TUT-006`, `TUT-009`).
 - **TUT-Q3:** PR granularity — one PR per finding vs. consolidated training PRs.
 - **TUT-Q4:** Preventing oscillation (repeatedly flipping a definition back and forth).

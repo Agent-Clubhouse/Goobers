@@ -50,6 +50,12 @@ everything a goober does happens inside a workflow.
 - **WF-014 (SHOULD):** A workflow's outputs (e.g. a filed backlog item, an emitted
   signal) SHOULD be able to trigger another workflow — always routed through the
   scheduler, never via direct invocation.
+- **WF-015 (MUST):** Emergent chains MUST be bounded to prevent runaway loops — the
+  scheduler MUST enforce per-workflow run budgets/rate limits plus chain-depth / loop
+  detection.
+- **WF-016 (MUST):** Workflow definition changes MUST use Temporal-style versioning: each
+  run is pinned to its definition version at start; in-progress runs complete on that
+  version, new runs use the updated definition (no mid-flight mutation).
 
 ### Execution semantics
 - **WF-020 (MUST):** The workflow engine MUST be a deterministic state machine
@@ -82,10 +88,11 @@ everything a goober does happens inside a workflow.
 
 ## Open questions
 
-- **WF-Q1:** Routing model — labels/tags on backlog items, per-workflow predicates, or a
-  routing table? (Scheduler.)
-- **WF-Q2:** How are workflow chains expressed and bounded (avoiding runaway loops)?
-- **WF-Q3:** Versioning — when a workflow definition changes mid-flight, what happens to
-  in-progress runs?
+- **WF-Q1:** ~~Routing model~~ **Resolved:** labels + selectors, priority → single winner
+  (`SCH-010`/`SCH-011`).
+- **WF-Q2:** ~~Chain expression/bounding~~ **Resolved:** emergent via scheduler triggers
+  (`WF-014`); bounded by run budgets + chain-depth/loop detection (`WF-015`).
+- **WF-Q3:** ~~Mid-flight definition changes~~ **Resolved:** Temporal-style version pinning
+  (`WF-016`).
 - **WF-Q4:** ~~Confirm Temporal vs. alternatives~~ **Resolved:** Temporal, self-hosted
   in-cluster (OSS/MIT). See `VISION §8` / `deployment.md DEP-011`.

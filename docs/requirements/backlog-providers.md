@@ -25,7 +25,12 @@ enters the system and how goobers act on code.
 - **BL-001 (MUST):** The platform MUST support a backlog via a provider abstraction over
   GitHub and ADO.
 - **BL-002 (MUST):** A **common work-item model** MUST map across providers (id, title,
-  body, labels, state, assignee/claim, links).
+  body, labels, state, assignee, links, optional parent-ref). The model is **flat for
+  scheduling** — routing/claiming operate on individual items.
+- **BL-012 (MUST):** Existing provider **hierarchy MUST be preserved as pass-through**
+  (parent/child links carried untouched), so teams using epic→feature→PBI→task or flat
+  issues both work. Hierarchy-**aware** behavior (rollup state, parent gating, auto-close)
+  is **deferred** to a future iteration, not v1.
 - **BL-003 (MUST):** Work items MUST be addable by both humans and goobers, into the same
   backlog.
 - **BL-004 (MUST):** Work items MUST carry labels that the scheduler matches against
@@ -58,6 +63,7 @@ enters the system and how goobers act on code.
 - **BL-Q1:** ~~Where claims/leases live~~ **Resolved:** instance-side via Temporal
   identity; backlog item mirrors status only (`SCH-Q5`).
 - **BL-Q2:** Provider rate limits / API quotas under heavy gaggle load.
-- **BL-Q3:** How rich the common item model needs to be (custom fields, hierarchy
-  epics→stories→tasks?).
-- **BL-Q4:** Webhook vs. polling per provider, and auth for each.
+- **BL-Q3:** ~~Item model richness~~ **Resolved:** flat for scheduling; hierarchy
+  preserved as pass-through; hierarchy-aware behavior deferred (`BL-002`, `BL-012`).
+- **BL-Q4:** ~~Webhook vs. polling~~ **Resolved:** webhook-preferred with poll fallback,
+  per provider (`BL-020`). *(Remaining: per-provider auth specifics.)*

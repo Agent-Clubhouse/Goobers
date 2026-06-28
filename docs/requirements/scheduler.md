@@ -38,10 +38,12 @@ referenced throughout §7 — goobers and workflows never self-start outside it.
 ### Routing
 - **SCH-010 (MUST):** The scheduler MUST route a unit of work to workflow(s) by matching
   item **labels** against workflow **selectors**.
-- **SCH-011 (MUST):** Behavior for an item matching **multiple** workflows MUST be defined
-  (fan-out vs. priority vs. first-match). *(Open.)*
-- **SCH-012 (MUST):** Behavior for an item matching **no** workflow MUST be defined
-  (dead-letter / unrouted queue / default workflow). *(Open.)*
+- **SCH-011 (MUST):** When an item matches **multiple** workflows, the scheduler MUST
+  resolve to a **single** winner by declared **priority** (deterministic tiebreak) —
+  preserving one-item-one-workflow for Temporal-id claiming.
+- **SCH-012 (MUST):** When an item matches **no** workflow, it MUST go to a visible
+  **dead-letter / unrouted** state for human attention. A catch-all **default workflow**
+  MAY be configured per gaggle to handle unmatched items instead.
 
 ### Claiming & exactly-once
 - **SCH-020 (MUST):** Exactly-once processing MUST be enforced **instance-side via Temporal
@@ -73,8 +75,10 @@ referenced throughout §7 — goobers and workflows never self-start outside it.
 
 ## Open questions
 
-- **SCH-Q1:** Multi-match routing policy (`SCH-011`) — fan-out, priority, or first-match?
-- **SCH-Q2:** Unrouted-item handling (`SCH-012`) — dead-letter vs. default workflow?
+- **SCH-Q1:** ~~Multi-match routing policy~~ **Resolved:** priority → single winner
+  (`SCH-011`).
+- **SCH-Q2:** ~~Unrouted-item handling~~ **Resolved:** dead-letter + visible; optional
+  catch-all default workflow (`SCH-012`).
 - **SCH-Q3:** Prioritization policy — FIFO, explicit priority field, aging, or pluggable?
 - **SCH-Q4:** **Build vs. buy boundary** (engine = Temporal, decided). We *buy* the
   durable engine and *build* the scheduler logic on top — admission, label/selector

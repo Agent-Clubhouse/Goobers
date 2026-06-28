@@ -32,6 +32,9 @@ required is **configurable per workflow/instance**.
   fix, escalate, abort) — never a silent pass.
 - **GT-003 (MUST):** A Gate MUST support all three evaluator kinds: automated, agentic,
   human.
+- **GT-016 (MUST):** A Gate MUST have **exactly one** evaluator. Combined conditions are
+  expressed by **chaining** gates in sequence (e.g. automated check → human approval),
+  not by bundling evaluators into one gate.
 - **GT-004 (SHOULD):** A Gate SHOULD support more than two branches (not just pass/fail).
 
 ### Evaluators
@@ -60,11 +63,12 @@ required is **configurable per workflow/instance**.
 
 ## Open questions
 
-- **GT-Q1:** Structured **verdict schema** for agentic reviewer gates (pass/fail +
-  findings + severity?).
+- **GT-Q1:** ~~Verdict schema for agentic reviewer gates~~ **Resolved (shape):** mirrors
+  the task result envelope — `decision (pass|fail|needs-changes), findings:[{severity,
+  message, location}], summary`. *(Remaining: finalize fields.)*
 - **GT-Q2:** **Delivery channel for human gates.** This tensions with "portal is
   observability, config is code, no UI." A human approval needs *some* interactive
   surface (portal action? PR review? chat/notification?). Resolve in the Portal spec.
 - **GT-Q3:** Branch expression syntax for multi-branch gates.
-- **GT-Q4:** Can a single gate combine evaluators (e.g. automated check AND human
-  approval), or is one evaluator per gate (chain gates instead)?
+- **GT-Q4:** ~~Combine evaluators per gate?~~ **Resolved:** no — one evaluator per gate;
+  chain to compose (`GT-016`).

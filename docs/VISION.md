@@ -180,7 +180,7 @@ routes through the system scheduler**; a goober never calls a workflow itself.
 |---|---|---|
 | v1 harness | **GitHub Copilot agent harness only** | Claude Code deferred; no harness abstraction required for v1. |
 | v1 providers | **Both GitHub + ADO, via a provider abstraction** | Abstract repo + backlog from the start. |
-| Tutor self-modification gate | **Configurable, no default stance** | Instance decides whether Tutor PRs need human approval. |
+| Tutor self-modification gate | **Governed by `config`-repo PR controls** | Tutor authors freely within `config`; humans hold the quality bar via branch protection / required review / CODEOWNERS (optionally path-scoped). No bespoke in-product restriction. See `requirements/tutor.md`. |
 | Goober-run telemetry store | **Separate store, ADX likely** | Provisioned/owned by the instance; **never** the project's ADX. Store tech flexible. |
 | Execution model | **System scheduler invokes workflows; workflows invoke goobers** | §7 confirmed. Goobers may *indirectly* trigger workflows via outputs, routed through the scheduler. |
 | Gate model | **One Gate primitive, pluggable evaluator** | Evaluator kind = automated / agentic / human. See `requirements/gate.md`. |
