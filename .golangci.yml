@@ -1,0 +1,39 @@
+# golangci-lint configuration for the Goobers control plane (schema v2).
+# Install: brew install golangci-lint   (or see https://golangci-lint.run/welcome/install)
+# Run:     make lint   (or: golangci-lint run)
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck      # unchecked errors
+    - govet         # suspicious constructs
+    - ineffassign   # ineffective assignments
+    - staticcheck   # static analysis suite (incl. simple + stylecheck)
+    - unused        # unused code
+    - misspell      # common misspellings
+    - revive        # golint successor (style)
+    - unconvert     # redundant conversions
+    - errorlint     # error-wrapping correctness
+  settings:
+    revive:
+      rules:
+        - name: exported
+  exclusions:
+    rules:
+      # Test files may relax some style rules.
+      - path: _test\.go
+        linters:
+          - revive
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/goobers/goobers

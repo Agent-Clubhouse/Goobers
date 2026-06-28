@@ -5,3 +5,19 @@
 .clubhouse/settings.local.json
 
 .clubhouse/agents.json.bak
+
+# Go build artifacts
+/bin/
+coverage.out
+coverage.html
+*.test
+*.out
+
+# Editor / OS cruft
+.DS_Store
+.idea/
+*.swp
+
+# Agent-local (do not commit)
+.mcp.json
+CLAUDE.md
