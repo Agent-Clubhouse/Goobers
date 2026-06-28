@@ -1,0 +1,59 @@
+# Spec: Tutor & Learning Loop
+
+> Status: **Draft** · Derives from `../VISION.md` §4 (step 8), §8 · Area prefix: `TUT`
+
+## Purpose
+
+The **Tutor** closes the learning loop. It continuously analyzes the gaggle's own
+telemetry, detects recurring patterns and failures, and **trains the workforce** by
+opening PRs that improve definitions. This is the platform's core differentiator over "a
+pool of coding agents."
+
+## Model
+
+- The Tutor is **itself a workflow** within the gaggle (same taxonomy), typically
+  **schedule/signal-triggered** for continuous/periodic analysis.
+- **Input:** the goober-run telemetry store — traces, prompts, gate outcomes, tool/script
+  outputs across many runs.
+- **Detection:** recurring signals — the same tests failing, a reviewer repeating itself,
+  a policy gate (e.g. coverage) repeatedly missed.
+- **Output:** a **PR against the goober-infra repo** proposing improvements.
+- **Change scope (decided):** Tutor PRs may modify **goober definitions** (skills,
+  instructions, tools) **and workflows and gates** — but **not** arbitrary platform code
+  (Bicep, connections, the goober codebase). Bounded blast radius.
+- **Approval (decided):** whether a Tutor PR requires human approval is **configurable per
+  instance** (no default stance); when required it is a human gate.
+
+## Requirements
+
+- **TUT-001 (MUST):** The Tutor MUST be modeled as a workflow within the gaggle.
+- **TUT-002 (MUST):** The Tutor MUST be triggerable on a schedule/signal for continuous or
+  periodic analysis.
+- **TUT-003 (MUST):** The Tutor MUST consume goober-run telemetry to detect recurring
+  patterns/errors across runs.
+- **TUT-004 (MUST):** The Tutor MUST express improvements as a PR against the goober-infra
+  repo.
+- **TUT-005 (MUST):** Tutor PRs MAY modify goober definitions, workflows, and gates; they
+  MUST NOT modify other infra-repo content (Bicep/platform code/connections).
+- **TUT-006 (MUST):** Whether a Tutor PR requires human approval MUST be configurable per
+  instance; when required, approval is a human **Gate** (`GT-012`).
+- **TUT-007 (MUST):** Tutor findings + rationale MUST be recorded to telemetry, and each
+  proposed change SHOULD link to the evidence (traces/patterns) that motivated it.
+- **TUT-008 (SHOULD):** The Tutor SHOULD assess whether prior changes helped (closing the
+  loop on its own edits) to avoid churn/regressions.
+
+## Relationships
+
+- Is a → **Workflow** (special-purpose).
+- Reads → the **Telemetry** store.
+- Writes → PRs via the repo provider against **Goober/Workflow/Gate** definitions.
+- Gated by → a configurable human **Gate** (approval).
+
+## Open questions
+
+- **TUT-Q1:** Detection method — metric thresholds/heuristics, LLM analysis of traces, or
+  both?
+- **TUT-Q2:** **Safety guardrail:** can the Tutor *weaken/remove* a required gate? Likely
+  needs a hard constraint so self-modification can't erode quality enforcement.
+- **TUT-Q3:** PR granularity — one PR per finding vs. consolidated training PRs.
+- **TUT-Q4:** Preventing oscillation (repeatedly flipping a definition back and forth).
