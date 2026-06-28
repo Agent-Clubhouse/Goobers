@@ -1,0 +1,276 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: workflows.goobers.dev
+spec:
+  group: goobers.dev
+  names:
+    kind: Workflow
+    listKind: WorkflowList
+    plural: workflows
+    shortNames:
+    - wf
+    singular: workflow
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Workflow is a defined process modeled as a deterministic state
+          machine.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              WorkflowSpec defines a process as a deterministic state machine of Tasks and
+              Gates, started by the scheduler on trigger + readiness (WF-001..016).
+            properties:
+              displayName:
+                description: DisplayName is the human-facing name shown on the portal.
+                type: string
+              gaggle:
+                description: Gaggle is the name of the Gaggle this workflow belongs
+                  to (WF-003).
+                type: string
+              gates:
+                description: Gates are the validation/branching states of the machine.
+                items:
+                  description: |-
+                    Gate is a validation state that evaluates a condition and branches the flow. A
+                    failing/negative outcome MUST follow a defined branch — never a silent pass
+                    (GT-002).
+                  properties:
+                    agentic:
+                      description: Agentic configures an agentic reviewer evaluator.
+                        Set iff evaluator=agentic.
+                      properties:
+                        goober:
+                          description: Goober names the reviewer goober that returns
+                            a Verdict.
+                          type: string
+                      required:
+                      - goober
+                      type: object
+                    automated:
+                      description: Automated configures an automated evaluator. Set
+                        iff evaluator=automated.
+                      properties:
+                        check:
+                          description: Check names the coded check to run (e.g. "tests-pass",
+                            "coverage-gte").
+                          type: string
+                        params:
+                          additionalProperties:
+                            type: string
+                          description: 'Params parameterize the check (e.g. {"threshold":
+                            "80"}).'
+                          type: object
+                      required:
+                      - check
+                      type: object
+                    branches:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Branches maps an outcome to the next state name. Supports more than two
+                        branches (GT-004). The "pass" key is the success branch.
+                      type: object
+                    evaluator:
+                      description: Evaluator selects the pluggable evaluator kind.
+                      enum:
+                      - automated
+                      - agentic
+                      - human
+                      type: string
+                    human:
+                      description: Human configures a human evaluator. Set iff evaluator=human.
+                      properties:
+                        approvers:
+                          description: Approvers optionally restricts who may approve
+                            (Entra principals/groups).
+                          items:
+                            type: string
+                          type: array
+                        onTimeout:
+                          description: OnTimeout is the behavior when the timeout
+                            elapses (GT-013).
+                          enum:
+                          - remind
+                          - escalate
+                          - reject
+                          type: string
+                        timeoutSeconds:
+                          description: TimeoutSeconds optionally bounds how long the
+                            gate waits before escalating.
+                          format: int32
+                          type: integer
+                      type: object
+                    name:
+                      description: Name uniquely identifies this state within the
+                        workflow.
+                      type: string
+                  required:
+                  - branches
+                  - evaluator
+                  - name
+                  type: object
+                type: array
+              readiness:
+                description: Readiness bounds when a run may start (WF-011).
+                properties:
+                  maxChainDepth:
+                    description: MaxChainDepth bounds how deep signal-triggered chains
+                      may go (WF-015).
+                    format: int32
+                    type: integer
+                  maxConcurrentRuns:
+                    default: 1
+                    description: MaxConcurrentRuns caps simultaneous runs of this
+                      workflow.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  maxRunsPerHour:
+                    description: MaxRunsPerHour is a run budget that bounds emergent
+                      chains (WF-015).
+                    format: int32
+                    type: integer
+                type: object
+              start:
+                description: Start is the name of the first state (task or gate) of
+                  the machine.
+                type: string
+              tasks:
+                description: Tasks are the work states of the machine.
+                items:
+                  description: |-
+                    Task is a state in the workflow's state machine — the smallest unit of work the
+                    engine tracks. It is exactly one of deterministic or agentic (TSK-002).
+                  properties:
+                    expectedOutputs:
+                      description: ExpectedOutputs are postconditions downstream gates
+                        can validate (TSK-003).
+                      items:
+                        type: string
+                      type: array
+                    goal:
+                      description: Goal is the intended outcome of the task (TSK-001).
+                      type: string
+                    goober:
+                      description: |-
+                        Goober names the goober invoked for an agentic task. Required when
+                        type=agentic; must be empty when type=deterministic (TSK-010).
+                      type: string
+                    inputs:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Inputs are static, task-specific inputs merged into the invocation
+                        envelope's inputs blob at runtime.
+                      type: object
+                    name:
+                      description: Name uniquely identifies this state within the
+                        workflow.
+                      type: string
+                    next:
+                      description: Next is the name of the next state (task or gate).
+                        Empty means terminal.
+                      type: string
+                    run:
+                      description: |-
+                        Run defines the code to execute for a deterministic task. Required when
+                        type=deterministic; must be empty when type=agentic.
+                      properties:
+                        command:
+                          description: Command is the command + args to execute.
+                          items:
+                            type: string
+                          type: array
+                        image:
+                          description: Image optionally overrides the container image
+                            the command runs in.
+                          type: string
+                      required:
+                      - command
+                      type: object
+                    type:
+                      description: 'TaskType is the execution kind of a task: code-driven
+                        or goober-executed.'
+                      enum:
+                      - deterministic
+                      - agentic
+                      type: string
+                  required:
+                  - goal
+                  - name
+                  - type
+                  type: object
+                type: array
+              triggers:
+                description: Triggers declare when the scheduler may start a run (WF-010).
+                items:
+                  description: |-
+                    Trigger declares one condition under which the scheduler may start a run. A run
+                    starts only when a trigger fires AND readiness is satisfied (WF-011).
+                  properties:
+                    schedule:
+                      description: |-
+                        Schedule is a cron expression or interval (e.g. "@every 1h") for
+                        type=schedule.
+                      type: string
+                    selector:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Selector routes backlog items to this workflow via k8s-style label matching
+                        (WF-040, SCH-010). Used with type=backlog-item.
+                      type: object
+                    signal:
+                      description: Signal is the named external signal for type=signal.
+                      type: string
+                    type:
+                      description: |-
+                        TriggerType differentiates workflow archetypes without splitting the taxonomy:
+                        consumer workflows trigger on backlog items; producer workflows trigger on a
+                        schedule or external signal (WF-010, WF-013).
+                      enum:
+                      - backlog-item
+                      - schedule
+                      - signal
+                      type: string
+                  required:
+                  - type
+                  type: object
+                minItems: 1
+                type: array
+            required:
+            - gaggle
+            - start
+            - triggers
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

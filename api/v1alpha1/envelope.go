@@ -14,6 +14,11 @@ package v1alpha1
 // InvocationEnvelope is the standard context/data block delivered to a task at
 // invocation (GBO-012, TSK-011). Shape: taskId, workflowId, runId, gaggle, item,
 // goal, repoRef, upstreamOutputs, limits, inputs.
+//
+// This is a runtime wire envelope, not a Kubernetes object, so it is excluded
+// from controller-gen DeepCopy generation (its free-form Inputs map cannot be
+// deep-copied generically).
+// +kubebuilder:object:generate=false
 type InvocationEnvelope struct {
 	// TaskID identifies this task instance within the run.
 	TaskID string `json:"taskId"`
@@ -87,6 +92,10 @@ const (
 // ResultEnvelope is the standard task result the engine acts on, and that gates
 // and telemetry consume (TSK-Q2). Shape: status, outputs, artifacts, summary,
 // metrics, error?.
+//
+// Runtime wire envelope, not a Kubernetes object — excluded from controller-gen
+// DeepCopy generation (its free-form Outputs map cannot be deep-copied).
+// +kubebuilder:object:generate=false
 type ResultEnvelope struct {
 	// Status is the terminal status of the task.
 	Status ResultStatus `json:"status"`

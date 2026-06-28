@@ -18,6 +18,13 @@ BIN  := bin
 GO            ?= go
 GOLANGCI_LINT ?= golangci-lint
 
+# Pinned codegen + test tooling (run via `go run`, no global installs).
+CONTROLLER_GEN_VERSION ?= v0.16.5
+SETUP_ENVTEST_VERSION  ?= release-0.19
+ENVTEST_K8S_VERSION    ?= 1.31.0
+CONTROLLER_GEN := $(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+SETUP_ENVTEST  := $(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
+
 ## help: Show this help.
 .PHONY: help
 help:
@@ -28,6 +35,22 @@ help:
 .PHONY: tidy
 tidy:
 	$(GO) mod tidy
+
+## generate: Regenerate DeepCopy methods (controller-gen object) for the CRD types.
+.PHONY: generate
+generate:
+	$(CONTROLLER_GEN) object paths=./api/v1alpha1/...
+
+## manifests: Regenerate CRD YAML manifests from the CRD types.
+.PHONY: manifests
+manifests:
+	$(CONTROLLER_GEN) crd paths=./api/v1alpha1/... output:crd:dir=config/crd/bases
+
+## test-envtest: Run tests with envtest binaries provisioned (operator integration).
+.PHONY: test-envtest
+test-envtest:
+	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
+		$(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
 
 ## fmt: Format all Go source.
 .PHONY: fmt

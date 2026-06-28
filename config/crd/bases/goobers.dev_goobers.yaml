@@ -1,0 +1,111 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: goobers.goobers.dev
+spec:
+  group: goobers.dev
+  names:
+    kind: Goober
+    listKind: GooberList
+    plural: goobers
+    shortNames:
+    - gbo
+    singular: goober
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Goober is a role-specialized AI worker defined as code.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              GooberSpec is the definition of a role-specialized AI worker. It declares
+              everything needed to materialize the goober as ephemeral pods when a workflow
+              invokes it (GBO-001, GBO-002).
+            properties:
+              displayName:
+                description: DisplayName is the human-facing name shown on the portal
+                  dashboard.
+                type: string
+              gaggle:
+                description: Gaggle is the name of the Gaggle this goober belongs
+                  to.
+                type: string
+              harness:
+                default: copilot
+                description: Harness is the agent harness this goober runs on.
+                enum:
+                - copilot
+                type: string
+              instructions:
+                description: |-
+                  Instructions points at the markdown file defining this goober's
+                  behavior/persona/scope, relative to the goober definition directory. The
+                  file is markdown with optional YAML frontmatter (see config-as-code docs).
+                type: string
+              role:
+                description: Role is the goober's role, e.g. "coder", "perf-hunter",
+                  "reviewer".
+                type: string
+              scaleFactor:
+                default: 1
+                description: |-
+                  ScaleFactor is the desired replica count for concurrent work. Increasing it
+                  and redeploying yields more concurrent replicas, which claim work so no two
+                  process the same item (GBO-030/GBO-031).
+                format: int32
+                minimum: 1
+                type: integer
+              skills:
+                description: Skills are the named skills available to this goober.
+                items:
+                  type: string
+                type: array
+              tools:
+                description: |-
+                  Tools is the per-goober tool allowlist (default-deny). Only listed MCP
+                  servers/tools are reachable from a run (GBO-Q2/SEC-Q4).
+                items:
+                  type: string
+                type: array
+              workflows:
+                description: |-
+                  Workflows are the names of the workflow(s) that invoke this goober. A
+                  goober may be referenced by multiple workflows (GBO-Q4); the per-task
+                  invocation envelope differentiates behavior.
+                items:
+                  type: string
+                type: array
+            required:
+            - gaggle
+            - instructions
+            - role
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

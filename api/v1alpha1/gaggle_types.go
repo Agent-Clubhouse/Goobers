@@ -38,9 +38,45 @@ type GaggleIsolation struct {
 	IdentityRef string `json:"identityRef,omitempty" yaml:"identityRef,omitempty"`
 }
 
+// GagglePhase is a coarse lifecycle summary of a Gaggle.
+type GagglePhase string
+
+const (
+	// GagglePhasePending means the gaggle has not yet been fully reconciled.
+	GagglePhasePending GagglePhase = "Pending"
+	// GagglePhaseReady means the namespace and all worker deployments are present.
+	GagglePhaseReady GagglePhase = "Ready"
+	// GagglePhaseDegraded means reconciliation ran but some workers are not ready.
+	GagglePhaseDegraded GagglePhase = "Degraded"
+)
+
+// GaggleStatus reports the observed state of a Gaggle. The operator (M9) writes
+// it via the status subresource.
+type GaggleStatus struct {
+	// ObservedGeneration is the .metadata.generation last reconciled.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty" yaml:"observedGeneration,omitempty"`
+	// Phase is a coarse lifecycle summary: Pending, Ready, or Degraded.
+	// +optional
+	Phase GagglePhase `json:"phase,omitempty" yaml:"phase,omitempty"`
+	// GooberCount is the number of Goobers currently bound to this gaggle.
+	// +optional
+	GooberCount int32 `json:"gooberCount,omitempty" yaml:"gooberCount,omitempty"`
+	// ReadyWorkers is the number of worker Deployments fully available.
+	// +optional
+	ReadyWorkers int32 `json:"readyWorkers,omitempty" yaml:"readyWorkers,omitempty"`
+	// Conditions follow standard k8s conventions; "Ready" summarizes reconcile.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" yaml:"conditions,omitempty"`
+}
+
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=gag
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Goobers",type=integer,JSONPath=`.status.gooberCount`
 
 // Gaggle is a siloed workforce of goobers within an instance.
 type Gaggle struct {
@@ -49,6 +85,8 @@ type Gaggle struct {
 
 	// +kubebuilder:validation:Required
 	Spec GaggleSpec `json:"spec" yaml:"spec"`
+	// +optional
+	Status GaggleStatus `json:"status,omitempty" yaml:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -1,0 +1,140 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: manifests.goobers.dev
+spec:
+  group: goobers.dev
+  names:
+    kind: Manifest
+    listKind: ManifestList
+    plural: manifests
+    shortNames:
+    - mf
+    singular: manifest
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Manifest is the top-level config-as-code object declaring an instance's desired
+          state. Exactly one Manifest is expected per config repo.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ManifestSpec is the Helm-like, top-level desired state for an instance: which
+              environment, the named connections available to its gaggles, and which gaggles
+              are active. It is the entrypoint a deploy/reconcile applies (CFG-002, CFG-004).
+            properties:
+              connections:
+                description: |-
+                  Connections are the named, reusable links (with Key Vault-backed creds)
+                  that gaggles/goobers reference. Declared once here.
+                items:
+                  description: |-
+                    Connection declares a named, reusable link to an external system. Manifests
+                    declare connections once; gaggles/goobers reference them by name. Credentials
+                    are always SecretRefs.
+                  properties:
+                    endpoint:
+                      description: Endpoint optionally overrides the default service
+                        endpoint/host.
+                      type: string
+                    name:
+                      type: string
+                    provider:
+                      description: Provider is the backing vendor/service (e.g. github,
+                        ado, azure-adx, entra).
+                      type: string
+                    secretRef:
+                      description: SecretRef holds the credentials for this connection
+                        (Key Vault reference).
+                      properties:
+                        key:
+                          description: Key optionally selects a single field within
+                            the referenced secret.
+                          type: string
+                        keyVault:
+                          description: |-
+                            KeyVault optionally names the Key Vault holding the secret; when empty the
+                            gaggle's default vault is used.
+                          type: string
+                        name:
+                          description: |-
+                            Name of the connection/secret this reference resolves through. For Key
+                            Vault-backed secrets this is the Key Vault secret name.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type:
+                      description: Type categorizes what the connection links to.
+                      enum:
+                      - repo
+                      - backlog
+                      - telemetry
+                      - identity
+                      - harness
+                      type: string
+                  required:
+                  - name
+                  - provider
+                  - secretRef
+                  - type
+                  type: object
+                type: array
+              gaggles:
+                description: |-
+                  Gaggles lists the gaggle definitions (by metadata.name) included in this
+                  instance's desired state. Each named gaggle MUST have a Gaggle object.
+                items:
+                  type: string
+                type: array
+              instance:
+                description: Instance identifies the deployment this manifest configures.
+                properties:
+                  environment:
+                    description: |-
+                      Environment is the deployment environment an instance represents. dev/prod are
+                      separate Goobers instances (separate infra+config) — see instance.md.
+                    enum:
+                    - dev
+                    - staging
+                    - prod
+                    type: string
+                  name:
+                    type: string
+                required:
+                - environment
+                - name
+                type: object
+            required:
+            - instance
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
