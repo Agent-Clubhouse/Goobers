@@ -50,7 +50,8 @@ owns, and operates.
 
 ## Open questions
 
-- **INST-Q1:** Multi-instance / multi-environment story (dev vs. prod instances)?
-- **INST-Q2:** What exactly is shared at the instance level vs. isolated per gaggle
-  (telemetry store shared with per-gaggle scoping? networking?) — coordinate with
-  Security.
+- **INST-Q1:** **Resolved:** dev/prod are **separate instances** (separate infra+config),
+  not envs-within-one-instance. See `VISION §8`.
+- **INST-Q2:** **Resolved (default):** shared at instance level = AKS, telemetry store
+  (partitioned per gaggle), logging; isolated per gaggle = namespace + identity + secrets
+  (`SEC-001/002/003`).

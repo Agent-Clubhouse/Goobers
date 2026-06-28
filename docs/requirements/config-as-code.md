@@ -58,10 +58,12 @@ for that code.
 
 ## Open questions
 
-- **CFG-Q1:** Concrete manifest schema for each primitive (the actual YAML shape).
-- **CFG-Q2:** Reference folder layout for the `infra` and `config` repos.
-- **CFG-Q5:** Version compatibility between the upstream platform release and the
-  `config` repo's definitions.
-- **CFG-Q3:** Definition composition/reuse mechanism (shared instruction/skill/stage
+- **CFG-Q1:** *(build-time design)* Concrete manifest schema for each primitive (the
+  actual YAML/CRD shape).
+- **CFG-Q2:** *(build-time design)* Reference folder layout for the `infra`/`config` repos.
+- **CFG-Q3:** *(build-time design)* Definition composition/reuse mechanism (shared
   fragments — `GBO-004`, `WF-005`).
-- **CFG-Q4:** Secret reference mechanism (Key Vault refs?) — Security spec.
+- **CFG-Q4:** **Resolved:** secrets are **Key Vault references** (never stored in repo) —
+  `SEC-010`, `CFG-009`.
+- **CFG-Q5:** *(build-time design)* Version compatibility between the upstream platform
+  release and the `config` repo's definitions (operator checks compatibility).

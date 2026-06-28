@@ -67,5 +67,7 @@ pool of coding agents."
   Tutor authors freely; humans hold the quality bar through `config`-repo PR governance
   (branch protection / required review / CODEOWNERS), not via in-product restrictions
   (`TUT-006`, `TUT-009`).
-- **TUT-Q3:** PR granularity — one PR per finding vs. consolidated training PRs.
-- **TUT-Q4:** Preventing oscillation (repeatedly flipping a definition back and forth).
+- **TUT-Q3:** **Resolved (default):** one PR per finding (batchable). *(Build-time:
+  batching heuristics.)*
+- **TUT-Q4:** **Resolved (default):** track prior-change history + assess whether they
+  helped (`TUT-008`) to avoid flip-flopping a definition. *(Build-time: detection.)*

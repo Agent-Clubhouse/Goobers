@@ -194,17 +194,32 @@ routes through the system scheduler**; a goober never calls a workflow itself.
 | GitOps / reconcile | **ArgoCD + a Goobers operator (CRDs)** | Argo syncs `config`-repo definitions into the cluster as CRDs; the Goobers operator reconciles them into goober replicas + Temporal workflow registrations. OSS. See `requirements/deployment.md`. |
 | Work-claim location | **Instance-side via Temporal workflow identity** | One Temporal workflow per item id = exactly-once; native crash recovery. Backlog item mirrors status for humans only — not the claim source of truth. See `requirements/scheduler.md`. |
 | Common schemas | **JSON envelopes + OpenTelemetry traces** | Standard invocation-context and task-result envelopes; run=trace / task·gate·scheduler=span in OTel, exported to ADX. See `requirements/telemetry.md`, `requirements/task.md`. |
+| Identity / auth | **Microsoft Entra ID** | SSO + RBAC for the portal and system auth. See `requirements/security.md`, `requirements/portal.md`. |
+| Telemetry data policy | **Redact at ingest + configurable retention** | Secrets/PII redacted as collected; instance sets retention window. See `requirements/telemetry.md`. |
+| Environments | **Separate instances per env** | dev/prod are separate Goobers instances (separate infra+config). See `requirements/instance.md`. |
+
+### Asserted Tier-3 defaults (Azure-native; revisit at build if needed)
+- **Gaggle identity:** AKS **workload identity** (managed-identity federation) per gaggle.
+- **Secret/auth injection:** Key Vault via CSI driver; harness + git tokens short-lived,
+  injected per run, never in images/repo.
+- **Tool/egress containment:** per-goober tool **allowlist** in its definition; restricted
+  pod egress via network policy (allowlist provider/telemetry endpoints).
+- **Pod latency:** sparse-checkout/cache for fresh repo copies + optional warm pod pool.
+- **AKS scaling:** cluster autoscaler + HPA sized to gaggle load.
+- **Telemetry partitioning:** goober-run store partitioned per gaggle (aligns isolation).
+- **Goober↔workflow:** a goober definition MAY be referenced by multiple workflows; the
+  per-task invocation envelope differentiates behavior.
+- **Parallelism:** expressed at the **workflow** level (a task = one goober run), not
+  within a single task.
+- Pure schema/layout/syntax items (manifest fields, folder layout, gate branch syntax,
+  provider rate-limit handling) are **build-time design**, intentionally left to build.
 
 ### Still open
-All 14 area specs are drafted (`requirements/`). Remaining open items are now **within
-each spec** as `*-Qn` questions rather than vision-level gaps. The highest-leverage
-cross-cutting ones to resolve next:
-- **Build-vs-buy boundary** — what Temporal/GitOps tooling provides vs. what we build
-  (`SCH-Q4`, `DEP-Q2`, `DEP-Q5`).
-- **Tutor safety guardrail** — can it weaken/remove a required gate? (`TUT-Q2`.)
-- **Common schemas** — context/data block, task result, trace/span shape (`TSK-Q1/Q2`,
-  `TEL-Q3`).
-- **Claim/lease location** given an external backlog (`SCH-Q5`, `BL-Q1`).
+All decision-grade product/architecture questions are **resolved** (Tiers 1–3 above).
+What remains in the specs as `*-Qn` items is **build-time design** — exact manifest
+field schemas, repo folder layouts, gate branch-expression syntax, per-provider auth and
+rate-limit handling, definition composition mechanics. These are intentionally deferred
+to implementation, not open product decisions.
 
 ## 9. Strawman phasing (not committed)
 

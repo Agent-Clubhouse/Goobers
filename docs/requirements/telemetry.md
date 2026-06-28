@@ -36,6 +36,8 @@ learning loop.
   ADX.
 - **TEL-011 (MUST):** Capture MUST be automatic via injected management tools/hooks +
   machine log collection (`GBO-021`).
+- **TEL-013 (MUST):** Secrets/PII MUST be **redacted at ingest** by the collection hooks;
+  raw secrets MUST NOT land at rest. Retention MUST be a configurable window per instance.
 - **TEL-012 (MUST):** Captured data MUST include: start/stop timing, per-step logs, agent
   actions, tool/script outputs, gate outcomes (+rationale where available), and scheduler
   decisions/claims/releases.
@@ -55,10 +57,12 @@ learning loop.
 
 ## Open questions
 
-- **TEL-Q1:** Retention policy and storage cost controls.
-- **TEL-Q2:** PII / secret redaction in logs and captured outputs.
+- **TEL-Q1:** **Resolved:** retention is a **configurable window per instance**.
+  *(Build-time: defaults + cost controls.)*
+- **TEL-Q2:** **Resolved:** secrets/PII are **redacted at ingest** (via the management
+  collection hooks). *(Build-time: redaction ruleset.)*
 - **TEL-Q3:** ~~Common trace/span schema~~ **Resolved:** OpenTelemetry-aligned (run=trace,
   task·gate·scheduler=span) exported to ADX. See `TEL-010`. *(Remaining: finalize the exact
   attribute set.)*
-- **TEL-Q4:** Per-gaggle scoping/partitioning within the shared store (coordinate with
-  Security + Gaggle isolation).
+- **TEL-Q4:** **Resolved (default):** the goober-run store is **partitioned per gaggle**,
+  aligning with gaggle isolation (`SEC-003`).

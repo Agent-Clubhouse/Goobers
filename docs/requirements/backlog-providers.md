@@ -62,7 +62,8 @@ enters the system and how goobers act on code.
 
 - **BL-Q1:** ~~Where claims/leases live~~ **Resolved:** instance-side via Temporal
   identity; backlog item mirrors status only (`SCH-Q5`).
-- **BL-Q2:** Provider rate limits / API quotas under heavy gaggle load.
+- **BL-Q2:** *(build-time design)* Provider rate limits / API quotas under heavy gaggle
+  load (client backoff + caching; respect quotas).
 - **BL-Q3:** ~~Item model richness~~ **Resolved:** flat for scheduling; hierarchy
   preserved as pass-through; hierarchy-aware behavior deferred (`BL-002`, `BL-012`).
 - **BL-Q4:** ~~Webhook vs. polling~~ **Resolved:** webhook-preferred with poll fallback,

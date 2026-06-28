@@ -41,7 +41,7 @@ identity work, and how interactive actions are authorized.
 
 ### Authorization & audit
 - **SEC-020 (MUST):** Portal interactive actions (gate approvals, run intervention) MUST
-  be access-controlled (authN + authZ).
+  be access-controlled via **Microsoft Entra ID** (SSO + RBAC).
 - **SEC-021 (MUST):** The Tutor's identity MUST be granted write access to the `config`
   repo only (never the `infra` repo), making its change scope a permission boundary, not
   just policy (`TUT-005`, `CFG-010`). Self-modification MUST also respect the configured
@@ -62,11 +62,13 @@ identity work, and how interactive actions are authorized.
 
 ## Open questions
 
-- **SEC-Q1:** Identity mechanism specifics — AKS workload identity / managed identity
-  federation per gaggle.
-- **SEC-Q2:** Secure injection flow for Copilot harness auth + git provider auth into
-  ephemeral pods.
-- **SEC-Q3:** Portal identity provider (Entra ID?) and role model (who may approve/
-  intervene).
-- **SEC-Q4:** Tool allowlisting model to bound goober capability/exfiltration risk.
-- **SEC-Q5:** Network egress policy for run pods.
+- **SEC-Q1:** **Resolved (default):** AKS **workload identity** (managed-identity
+  federation) per gaggle. *(Build-time: federation/role specifics.)*
+- **SEC-Q2:** **Resolved (default):** Key Vault via CSI driver; harness + git tokens
+  short-lived, injected per run, never in images/repo. *(Build-time: exact flow.)*
+- **SEC-Q3:** **Resolved:** **Microsoft Entra ID** for portal + system auth (SSO + RBAC
+  for who may approve/intervene). See `VISION §8`.
+- **SEC-Q4:** **Resolved (default):** per-goober **tool allowlist** in the definition
+  (default-deny beyond declared tools).
+- **SEC-Q5:** **Resolved (default):** restricted pod **egress** via network policy
+  (allowlist provider/telemetry endpoints).

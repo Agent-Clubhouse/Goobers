@@ -66,5 +66,5 @@ defined inputs, work to be done, and a goal.
   envelope** — `status (success|failed|needs-escalation), outputs, artifacts (e.g. PR
   links), summary, metrics, error?`. Gates and telemetry depend on this shape.
   *(Remaining: finalize fields.)*
-- **TSK-Q3:** Can a single task fan out to multiple goober runs (parallelism within a
-  task) or is parallelism only expressed at the workflow level?
+- **TSK-Q3:** **Resolved:** parallelism is expressed at the **workflow** level (a task =
+  one goober run), not by fanning out within a single task.

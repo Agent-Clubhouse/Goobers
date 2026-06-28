@@ -79,11 +79,11 @@ referenced throughout §7 — goobers and workflows never self-start outside it.
   (`SCH-011`).
 - **SCH-Q2:** ~~Unrouted-item handling~~ **Resolved:** dead-letter + visible; optional
   catch-all default workflow (`SCH-012`).
-- **SCH-Q3:** Prioritization policy — FIFO, explicit priority field, aging, or pluggable?
-- **SCH-Q4:** **Build vs. buy boundary** (engine = Temporal, decided). We *buy* the
-  durable engine and *build* the scheduler logic on top — admission, label/selector
-  routing, and claiming/leases over external backlog items. Open: exactly which leasing
-  primitives we lean on Temporal for vs. implement ourselves (relates to `SCH-Q5`).
+- **SCH-Q3:** **Resolved (default):** explicit **priority field** on workflows, FIFO
+  within a priority. Aging/pluggable policies are a future extension.
+- **SCH-Q4:** **Resolved:** engine = Temporal. We *buy* the durable engine and *build*
+  the scheduler logic on top — admission, label/selector routing, claiming via Temporal
+  workflow identity (`SCH-020`). *(Build-time: which Temporal primitives we lean on.)*
 - **SCH-Q5:** ~~Where leases/claims are stored~~ **Resolved:** instance-side via Temporal
   workflow identity (one workflow per item id); backlog item mirrors status only. See
   `SCH-020`/`SCH-021`.

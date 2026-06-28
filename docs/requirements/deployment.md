@@ -65,12 +65,13 @@ goal is **simple infra** the team owns, driven entirely from the `infra` + `conf
 
 ## Open questions
 
-- **DEP-Q1:** Cold-start cost of a fresh repo copy per run — caching / sparse-checkout
-  strategy?
+- **DEP-Q1:** *(build-time design)* Cold-start cost of a fresh repo copy per run —
+  caching / sparse-checkout strategy.
 - **DEP-Q2:** ~~Hosting the workflow engine~~ **Resolved:** Temporal self-hosted
   in-cluster (OSS/MIT, no license cost); persistence on **Azure managed PostgreSQL**;
   **Elasticsearch deferred** (basic visibility only for now). See `DEP-011`.
-- **DEP-Q3:** Warm-pool / pre-warmed pods to reduce run latency.
-- **DEP-Q4:** AKS resource sizing and autoscaling under load.
+- **DEP-Q3:** *(build-time design)* Warm-pool / pre-warmed pods to reduce run latency.
+- **DEP-Q4:** *(build-time design)* AKS resource sizing and autoscaling (cluster
+  autoscaler + HPA) under load.
 - **DEP-Q5:** ~~Build-vs-buy reconciliation tooling~~ **Resolved:** ArgoCD + Goobers
   operator (CRDs). See `DEP-012`.

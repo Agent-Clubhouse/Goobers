@@ -39,7 +39,7 @@ target.
 
 ## Open questions
 
-- **GAG-Q1:** Exact isolation guarantees and mechanism (namespace per gaggle? separate
-  identities/secrets?) — Security spec.
-- **GAG-Q2:** Can goobers/workflows be shared/templated across gaggles, or are they always
-  gaggle-local definitions?
+- **GAG-Q1:** **Resolved:** namespace + identity + secrets per gaggle (`SEC-001/002`,
+  `VISION §8`).
+- **GAG-Q2:** **Resolved (default):** definitions are gaggle-local but MAY be shared via
+  `config`-repo fragments/templates (`CFG-Q3`). *(Build-time: composition mechanics.)*

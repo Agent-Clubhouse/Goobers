@@ -51,8 +51,9 @@ unit of work.
 
 ## Open questions
 
-- **PORT-Q1:** Are human-gate approvals portal-only, or also deliverable via PR review /
-  chat / notification? (Multiple channels?)
-- **PORT-Q2:** Exact set of runtime operational actions in v1 (just approvals + retry, or
-  more?).
-- **PORT-Q3:** AuthN/AuthZ model for the portal and its actions (Security spec).
+- **PORT-Q1:** **Resolved (default):** approvals live in the **portal**, with
+  notifications (e.g. Teams/email) linking back; code-merge gates may also ride the git
+  PR. *(Build-time: which notification channels.)*
+- **PORT-Q2:** **Resolved (default):** v1 runtime actions = **gate approvals + run
+  retry/abort/cancel**. Nothing more.
+- **PORT-Q3:** **Resolved:** **Microsoft Entra ID** (SSO + RBAC) — see `SEC-020`.

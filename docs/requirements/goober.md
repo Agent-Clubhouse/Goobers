@@ -97,10 +97,11 @@ to perform agentic tasks. It is the labor unit of the platform.
 
 ## Open questions
 
-- **GBO-Q1:** Exact work-claiming mechanism for scaled replicas (defer to Scheduler).
-- **GBO-Q2:** How a goober's tool/permission scope is bounded (defer to Security).
+- **GBO-Q1:** **Resolved:** exactly-once via Temporal workflow identity (`SCH-020`).
+- **GBO-Q2:** **Resolved (default):** per-goober tool **allowlist** (default-deny),
+  see `SEC-Q4`.
 - **GBO-Q3:** ~~Standard shape of the context/data block~~ **Resolved (shape):** the
   standard JSON invocation envelope + task-specific `inputs` (see `TSK-Q1`). *(Remaining:
   finalize fields.)*
-- **GBO-Q4:** Can a single goober definition be associated with multiple distinct
-  workflows, and if so how are per-workflow behavior differences expressed?
+- **GBO-Q4:** **Resolved:** a goober definition MAY be referenced by **multiple
+  workflows**; per-task invocation envelope differentiates behavior.

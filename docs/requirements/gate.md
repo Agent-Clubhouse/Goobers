@@ -66,9 +66,8 @@ required is **configurable per workflow/instance**.
 - **GT-Q1:** ~~Verdict schema for agentic reviewer gates~~ **Resolved (shape):** mirrors
   the task result envelope — `decision (pass|fail|needs-changes), findings:[{severity,
   message, location}], summary`. *(Remaining: finalize fields.)*
-- **GT-Q2:** **Delivery channel for human gates.** This tensions with "portal is
-  observability, config is code, no UI." A human approval needs *some* interactive
-  surface (portal action? PR review? chat/notification?). Resolve in the Portal spec.
-- **GT-Q3:** Branch expression syntax for multi-branch gates.
+- **GT-Q2:** **Resolved:** human gates are approved in the **portal** (`PORT-011`), with
+  notifications linking back; code-merge gates may also ride the git PR.
+- **GT-Q3:** *(build-time design)* Branch expression syntax for multi-branch gates.
 - **GT-Q4:** ~~Combine evaluators per gate?~~ **Resolved:** no — one evaluator per gate;
   chain to compose (`GT-016`).
