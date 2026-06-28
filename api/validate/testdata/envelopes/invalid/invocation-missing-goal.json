@@ -1,0 +1,12 @@
+{
+  "taskId": "implement-001",
+  "workflowId": "default-implement",
+  "runId": "0af7651916cd43dd8448eb211c80319c",
+  "gaggle": "acme-web",
+  "repoRef": {
+    "provider": "gitlab",
+    "owner": "acme",
+    "name": "web"
+  },
+  "limits": {}
+}

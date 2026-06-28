@@ -1,0 +1,15 @@
+{
+  "decision": "needs-changes",
+  "findings": [
+    {
+      "severity": "error",
+      "message": "Rate limiter is not concurrency-safe; the counter map needs a mutex.",
+      "location": "internal/ratelimit/bucket.go:54"
+    },
+    {
+      "severity": "warning",
+      "message": "Missing test for the 429 response path."
+    }
+  ],
+  "summary": "Solid approach; one correctness bug and a coverage gap before this can pass."
+}

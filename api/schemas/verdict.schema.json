@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/verdict.schema.json",
+  "title": "Verdict",
+  "description": "Structured result an agentic reviewer gate produces (GT-Q1). Mirrors the result envelope.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision"],
+  "properties": {
+    "decision": { "type": "string", "enum": ["pass", "fail", "needs-changes"] },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "summary": { "type": "string" }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "message"],
+      "properties": {
+        "severity": { "type": "string", "enum": ["info", "warning", "error", "critical"] },
+        "message": { "type": "string", "minLength": 1 },
+        "location": { "type": "string" }
+      }
+    }
+  }
+}

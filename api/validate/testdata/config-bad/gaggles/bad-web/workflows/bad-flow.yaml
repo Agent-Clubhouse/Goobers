@@ -1,0 +1,22 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: bad-flow
+spec:
+  gaggle: bad-web
+  triggers:
+    - type: backlog-item
+  start: ghost-state          # dangling: no such task or gate
+  tasks:
+    - name: implement
+      type: agentic
+      goober: ghost-coder      # dangling: no such goober
+      goal: Implement the item.
+      next: review
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: ghost-reviewer # dangling: no such goober
+      branches:
+        pass: implement

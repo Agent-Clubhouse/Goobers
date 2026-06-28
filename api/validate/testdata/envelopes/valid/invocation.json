@@ -1,0 +1,31 @@
+{
+  "taskId": "implement-001",
+  "workflowId": "default-implement",
+  "runId": "0af7651916cd43dd8448eb211c80319c",
+  "gaggle": "acme-web",
+  "goal": "Implement the backlog item and open a PR.",
+  "item": {
+    "id": "1421",
+    "provider": "github",
+    "title": "Add rate limiting to the public API",
+    "body": "Requests should be capped at 100/min per token.",
+    "url": "https://github.com/acme/web/issues/1421",
+    "labels": ["goobers", "api"]
+  },
+  "repoRef": {
+    "provider": "github",
+    "owner": "acme",
+    "name": "web",
+    "branch": "main",
+    "connectionRef": "github-main"
+  },
+  "upstreamOutputs": {},
+  "limits": {
+    "maxDurationSeconds": 1800,
+    "maxTokens": 2000000,
+    "maxCostUSD": 5
+  },
+  "inputs": {
+    "draftPr": true
+  }
+}

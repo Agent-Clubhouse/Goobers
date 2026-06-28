@@ -1,0 +1,14 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: bad-web
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: web
+  backlog:
+    provider: github
+    project: acme/web
+  isolation:
+    namespace: gaggle-bad-web

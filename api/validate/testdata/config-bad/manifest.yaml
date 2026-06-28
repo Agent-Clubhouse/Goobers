@@ -1,0 +1,11 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: bad-instance
+spec:
+  instance:
+    name: bad
+    environment: dev
+  gaggles:
+    - bad-web
+    - ghost-gaggle   # dangling: no Gaggle object with this name

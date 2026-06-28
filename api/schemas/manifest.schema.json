@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/manifest.schema.json",
+  "title": "Manifest",
+  "description": "Top-level config-as-code desired state for an instance (CFG-002).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "goobers.dev/v1alpha1" },
+    "kind": { "const": "Manifest" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instance"],
+      "properties": {
+        "instance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "environment"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "environment": { "type": "string", "enum": ["dev", "staging", "prod"] }
+          }
+        },
+        "connections": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/connection" }
+        },
+        "gaggles": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "provider", "secretRef"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "enum": ["repo", "backlog", "telemetry", "identity", "harness"] },
+        "provider": { "type": "string", "minLength": 1 },
+        "secretRef": { "$ref": "#/$defs/secretRef" },
+        "endpoint": { "type": "string" }
+      }
+    },
+    "secretRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "key": { "type": "string" },
+        "keyVault": { "type": "string" }
+      }
+    }
+  }
+}

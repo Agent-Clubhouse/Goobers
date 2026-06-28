@@ -1,0 +1,24 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: acme-web
+spec:
+  displayName: Acme Web
+  # The project codebase this gaggle works on.
+  project:
+    provider: github
+    owner: acme
+    name: web
+    branch: main
+    connectionRef: github-main
+  # The singleton backlog this gaggle draws work from (GAG-004).
+  backlog:
+    provider: github
+    project: acme/web
+    labels:
+      - goobers
+    connectionRef: github-backlog
+  # Per-gaggle isolation boundary: namespace + workload identity (SEC-001/002).
+  isolation:
+    namespace: gaggle-acme-web
+    identityRef: acme-web-identity

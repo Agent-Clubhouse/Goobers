@@ -1,0 +1,10 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: bad-web
+  role: coder
+  instructions: missing.md   # dangling: file does not exist
+  workflows:
+    - bad-flow

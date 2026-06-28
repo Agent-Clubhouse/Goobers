@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "outputs": {
+    "prNumber": 1487
+  },
+  "artifacts": [
+    {
+      "type": "pull-request",
+      "uri": "https://github.com/acme/web/pull/1487",
+      "label": "Add rate limiting to the public API"
+    }
+  ],
+  "summary": "Implemented token-bucket rate limiting at 100/min and added tests.",
+  "metrics": {
+    "durationSeconds": 742.5,
+    "tokens": 813204,
+    "costUSD": 2.11
+  }
+}

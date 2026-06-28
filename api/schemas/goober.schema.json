@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/goober.schema.json",
+  "title": "Goober",
+  "description": "A role-specialized AI worker defined as code (GBO-001/GBO-002).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "goobers.dev/v1alpha1" },
+    "kind": { "const": "Goober" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gaggle", "role", "instructions"],
+      "properties": {
+        "gaggle": { "type": "string", "minLength": 1 },
+        "role": { "type": "string", "minLength": 1 },
+        "displayName": { "type": "string" },
+        "instructions": { "type": "string", "minLength": 1 },
+        "harness": { "type": "string", "enum": ["copilot"] },
+        "skills": { "type": "array", "items": { "type": "string" } },
+        "tools": { "type": "array", "items": { "type": "string" } },
+        "scaleFactor": { "type": "integer", "minimum": 1 },
+        "workflows": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    }
+  }
+}

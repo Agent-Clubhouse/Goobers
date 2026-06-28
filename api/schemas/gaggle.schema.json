@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/gaggle.schema.json",
+  "title": "Gaggle",
+  "description": "A siloed workforce within an instance (GAG-001..007).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "goobers.dev/v1alpha1" },
+    "kind": { "const": "Gaggle" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "backlog", "isolation"],
+      "properties": {
+        "displayName": { "type": "string" },
+        "project": { "$ref": "#/$defs/repoRef" },
+        "backlog": { "$ref": "#/$defs/backlogRef" },
+        "isolation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["namespace"],
+          "properties": {
+            "namespace": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            },
+            "identityRef": { "type": "string" }
+          }
+        },
+        "additionalRepos": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/repoRef" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "repoRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "owner", "name"],
+      "properties": {
+        "provider": { "type": "string", "enum": ["github", "ado"] },
+        "owner": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string" },
+        "connectionRef": { "type": "string" }
+      }
+    },
+    "backlogRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "project"],
+      "properties": {
+        "provider": { "type": "string", "enum": ["github", "ado"] },
+        "project": { "type": "string", "minLength": 1 },
+        "labels": { "type": "array", "items": { "type": "string" } },
+        "query": { "type": "string" },
+        "connectionRef": { "type": "string" }
+      }
+    }
+  }
+}

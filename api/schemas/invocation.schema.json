@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/invocation.schema.json",
+  "title": "InvocationEnvelope",
+  "description": "Standard context/data block delivered to a task at invocation (GBO-012, TSK-011, TSK-Q1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["taskId", "workflowId", "runId", "gaggle", "goal", "repoRef", "limits"],
+  "properties": {
+    "taskId": { "type": "string", "minLength": 1 },
+    "workflowId": { "type": "string", "minLength": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "gaggle": { "type": "string", "minLength": 1 },
+    "goal": { "type": "string", "minLength": 1 },
+    "item": { "$ref": "#/$defs/backlogItem" },
+    "repoRef": { "$ref": "#/$defs/repoRef" },
+    "upstreamOutputs": {
+      "type": "object",
+      "additionalProperties": { "$ref": "result.schema.json" }
+    },
+    "limits": { "$ref": "#/$defs/limits" },
+    "inputs": { "type": "object" }
+  },
+  "$defs": {
+    "backlogItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provider"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "enum": ["github", "ado"] },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "url": { "type": "string" },
+        "labels": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "repoRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "owner", "name"],
+      "properties": {
+        "provider": { "type": "string", "enum": ["github", "ado"] },
+        "owner": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string" },
+        "connectionRef": { "type": "string" }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxDurationSeconds": { "type": "integer", "minimum": 0 },
+        "maxTokens": { "type": "integer", "minimum": 0 },
+        "maxCostUSD": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

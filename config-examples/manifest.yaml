@@ -1,0 +1,27 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: acme-instance
+spec:
+  instance:
+    name: acme
+    environment: dev
+  # Named, reusable connections. Credentials are Key Vault references — never
+  # inline tokens (CFG-009, SEC-010).
+  connections:
+    - name: github-main
+      type: repo
+      provider: github
+      secretRef:
+        name: github-pat
+        keyVault: acme-kv
+    - name: github-backlog
+      type: backlog
+      provider: github
+      secretRef:
+        name: github-pat
+        keyVault: acme-kv
+  # Gaggles included in this instance's desired state. Each must have a Gaggle
+  # object under gaggles/<name>/.
+  gaggles:
+    - acme-web

@@ -1,0 +1,8 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: broken
+spec:
+  instance:
+    # name is required and missing
+    environment: production   # invalid: must be dev|staging|prod

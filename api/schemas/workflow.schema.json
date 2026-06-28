@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/workflow.schema.json",
+  "title": "Workflow",
+  "description": "A process modeled as a deterministic state machine of Tasks and Gates (WF-001..024).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "goobers.dev/v1alpha1" },
+    "kind": { "const": "Workflow" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gaggle", "triggers", "start"],
+      "properties": {
+        "gaggle": { "type": "string", "minLength": 1 },
+        "displayName": { "type": "string" },
+        "triggers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/trigger" }
+        },
+        "readiness": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxConcurrentRuns": { "type": "integer", "minimum": 1 },
+            "maxRunsPerHour": { "type": "integer", "minimum": 0 },
+            "maxChainDepth": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "start": { "type": "string", "minLength": 1 },
+        "tasks": { "type": "array", "items": { "$ref": "#/$defs/task" } },
+        "gates": { "type": "array", "items": { "$ref": "#/$defs/gate" } }
+      }
+    }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string", "enum": ["backlog-item", "schedule", "signal"] },
+        "selector": { "type": "object", "additionalProperties": { "type": "string" } },
+        "schedule": { "type": "string" },
+        "signal": { "type": "string" }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "goal"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "enum": ["deterministic", "agentic"] },
+        "goal": { "type": "string", "minLength": 1 },
+        "goober": { "type": "string" },
+        "run": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["command"],
+          "properties": {
+            "command": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "image": { "type": "string" }
+          }
+        },
+        "inputs": { "type": "object", "additionalProperties": { "type": "string" } },
+        "expectedOutputs": { "type": "array", "items": { "type": "string" } },
+        "next": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "agentic" } } },
+          "then": { "required": ["goober"], "not": { "required": ["run"] } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "deterministic" } } },
+          "then": { "required": ["run"], "not": { "required": ["goober"] } }
+        }
+      ]
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "evaluator", "branches"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "evaluator": { "type": "string", "enum": ["automated", "agentic", "human"] },
+        "automated": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["check"],
+          "properties": {
+            "check": { "type": "string", "minLength": 1 },
+            "params": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "agentic": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["goober"],
+          "properties": { "goober": { "type": "string", "minLength": 1 } }
+        },
+        "human": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "approvers": { "type": "array", "items": { "type": "string" } },
+            "timeoutSeconds": { "type": "integer", "minimum": 0 },
+            "onTimeout": { "type": "string", "enum": ["remind", "escalate", "reject"] }
+          }
+        },
+        "branches": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "evaluator": { "const": "automated" } } },
+          "then": { "required": ["automated"], "not": { "anyOf": [{ "required": ["agentic"] }, { "required": ["human"] }] } }
+        },
+        {
+          "if": { "properties": { "evaluator": { "const": "agentic" } } },
+          "then": { "required": ["agentic"], "not": { "anyOf": [{ "required": ["automated"] }, { "required": ["human"] }] } }
+        },
+        {
+          "if": { "properties": { "evaluator": { "const": "human" } } },
+          "then": { "required": ["human"], "not": { "anyOf": [{ "required": ["automated"] }, { "required": ["agentic"] }] } }
+        }
+      ]
+    }
+  }
+}
