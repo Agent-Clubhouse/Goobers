@@ -87,5 +87,5 @@ everything a goober does happens inside a workflow.
 - **WF-Q2:** How are workflow chains expressed and bounded (avoiding runaway loops)?
 - **WF-Q3:** Versioning — when a workflow definition changes mid-flight, what happens to
   in-progress runs?
-- **WF-Q4:** Confirm Temporal vs. alternatives against our hosting (AKS) and harness
-  constraints.
+- **WF-Q4:** ~~Confirm Temporal vs. alternatives~~ **Resolved:** Temporal, self-hosted
+  in-cluster (OSS/MIT). See `VISION §8` / `deployment.md DEP-011`.

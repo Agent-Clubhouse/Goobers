@@ -190,6 +190,10 @@ routes through the system scheduler**; a goober never calls a workflow itself.
 | Tutor change scope | **Goobers + workflows/gates (not platform code)** | Bounded blast radius; approval configurable per instance. See `requirements/tutor.md`. |
 | Gaggle isolation | **Namespace + identity per gaggle** | k8s namespace + per-gaggle Azure identity; Key Vault secret refs. See `requirements/security.md`. |
 | Repo topology | **Split `infra` repo from `config` repo** | GitOps cadence split; makes Tutor containment a *permission boundary* (write to `config` only). Platform code is upstream. See §5. |
+| Workflow engine | **Temporal, self-hosted in-cluster (OSS/MIT)** | No license cost; Postgres persistence via **Azure managed DB** to cut ops; **Elasticsearch deferred**. Buy the engine, build the scheduler on top. See `requirements/deployment.md`, `requirements/scheduler.md`. |
+| GitOps / reconcile | **ArgoCD + a Goobers operator (CRDs)** | Argo syncs `config`-repo definitions into the cluster as CRDs; the Goobers operator reconciles them into goober replicas + Temporal workflow registrations. OSS. See `requirements/deployment.md`. |
+| Work-claim location | **Instance-side via Temporal workflow identity** | One Temporal workflow per item id = exactly-once; native crash recovery. Backlog item mirrors status for humans only — not the claim source of truth. See `requirements/scheduler.md`. |
+| Common schemas | **JSON envelopes + OpenTelemetry traces** | Standard invocation-context and task-result envelopes; run=trace / task·gate·scheduler=span in OTel, exported to ADX. See `requirements/telemetry.md`, `requirements/task.md`. |
 
 ### Still open
 All 14 area specs are drafted (`requirements/`). Remaining open items are now **within

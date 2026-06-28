@@ -44,10 +44,16 @@ referenced throughout §7 — goobers and workflows never self-start outside it.
   (dead-letter / unrouted queue / default workflow). *(Open.)*
 
 ### Claiming & exactly-once
-- **SCH-020 (MUST):** Before a run, a unit of work MUST be claimed via an atomic lease so
-  exactly one replica processes it (`WF-031`, `GBO-031`).
-- **SCH-021 (MUST):** A lease MUST carry a visibility timeout; on run failure, timeout, or
-  worker crash the claim MUST auto-release for retry.
+- **SCH-020 (MUST):** Exactly-once processing MUST be enforced **instance-side via Temporal
+  workflow identity** — the scheduler starts one workflow per unit of work using a
+  deterministic id derived from the item; Temporal rejects duplicate ids, so no two
+  replicas process the same item (`WF-031`, `GBO-031`).
+- **SCH-021 (MUST):** Crash/failure recovery MUST rely on Temporal's durable execution
+  (the workflow recovers and retries) rather than external lease release. On terminal
+  failure the scheduler MAY re-admit the item.
+- **SCH-022b (SHOULD):** The backlog item SHOULD be updated to mirror processing status
+  (claimed/in-progress/done) for human visibility — this is a reflection, not the source
+  of claim truth.
 - **SCH-022 (SHOULD):** Claiming SHOULD be visible/observable (which item is claimed by
   which run) for debugging and the portal.
 
@@ -70,8 +76,10 @@ referenced throughout §7 — goobers and workflows never self-start outside it.
 - **SCH-Q1:** Multi-match routing policy (`SCH-011`) — fan-out, priority, or first-match?
 - **SCH-Q2:** Unrouted-item handling (`SCH-012`) — dead-letter vs. default workflow?
 - **SCH-Q3:** Prioritization policy — FIFO, explicit priority field, aging, or pluggable?
-- **SCH-Q4:** **Build vs. buy boundary** — how much claiming/leasing/distribution does
-  Temporal provide out of the box vs. what we build (esp. backlog admission + leases on
-  external backlog items)?
-- **SCH-Q5:** Where leases/claims are stored (engine state vs. backlog item field vs.
-  instance store) given the backlog is an *external* system of record.
+- **SCH-Q4:** **Build vs. buy boundary** (engine = Temporal, decided). We *buy* the
+  durable engine and *build* the scheduler logic on top — admission, label/selector
+  routing, and claiming/leases over external backlog items. Open: exactly which leasing
+  primitives we lean on Temporal for vs. implement ourselves (relates to `SCH-Q5`).
+- **SCH-Q5:** ~~Where leases/claims are stored~~ **Resolved:** instance-side via Temporal
+  workflow identity (one workflow per item id); backlog item mirrors status only. See
+  `SCH-020`/`SCH-021`.

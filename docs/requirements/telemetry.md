@@ -30,8 +30,10 @@ learning loop.
 - **TEL-002 (MUST):** The store MUST be queryable at scale (the Tutor mines it).
 
 ### Capture
-- **TEL-010 (MUST):** Every workflow run MUST be recorded as a trace; tasks, gates, and
-  scheduler decisions MUST appear as spans/events within it.
+- **TEL-010 (MUST):** Every workflow run MUST be recorded as an **OpenTelemetry trace**;
+  tasks, gates, and scheduler decisions MUST appear as spans (with standard OTel
+  attributes: gaggle, workflow, goober, task type, item id, outcome) and be exported to
+  ADX.
 - **TEL-011 (MUST):** Capture MUST be automatic via injected management tools/hooks +
   machine log collection (`GBO-021`).
 - **TEL-012 (MUST):** Captured data MUST include: start/stop timing, per-step logs, agent
@@ -55,6 +57,8 @@ learning loop.
 
 - **TEL-Q1:** Retention policy and storage cost controls.
 - **TEL-Q2:** PII / secret redaction in logs and captured outputs.
-- **TEL-Q3:** Common trace/span schema so the Tutor and portal can rely on a stable shape.
+- **TEL-Q3:** ~~Common trace/span schema~~ **Resolved:** OpenTelemetry-aligned (run=trace,
+  task·gate·scheduler=span) exported to ADX. See `TEL-010`. *(Remaining: finalize the exact
+  attribute set.)*
 - **TEL-Q4:** Per-gaggle scoping/partitioning within the shared store (coordinate with
   Security + Gaggle isolation).

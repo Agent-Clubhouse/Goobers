@@ -35,6 +35,13 @@ goal is **simple infra** the team owns, driven entirely from the `infra` + `conf
   independently (supports Tutor write-scoping — `SEC-021`).
 - **DEP-009 (SHOULD):** Redeploy and rollback SHOULD be supported via the versioned infra
   repo.
+- **DEP-011 (MUST):** The instance MUST run **Temporal self-hosted in-cluster** (OSS/MIT)
+  as the workflow engine, backed by **Azure managed PostgreSQL** for persistence.
+  Elasticsearch (advanced visibility) is deferred; basic visibility is sufficient for v1.
+- **DEP-012 (MUST):** Reconciliation MUST use **ArgoCD** to sync `config`-repo definitions
+  into the cluster as **CRDs**, plus a **Goobers operator** that reconciles those CRDs into
+  running goober replicas and Temporal workflow registrations. The operator owns the
+  domain reconcile; Argo owns git→cluster sync, drift detection, and rollback.
 
 ### Run execution
 - **DEP-004 (MUST):** A run MUST execute as an ephemeral pod prepared with auth, the
@@ -60,7 +67,10 @@ goal is **simple infra** the team owns, driven entirely from the `infra` + `conf
 
 - **DEP-Q1:** Cold-start cost of a fresh repo copy per run — caching / sparse-checkout
   strategy?
-- **DEP-Q2:** Hosting the workflow engine (Temporal) — in-cluster vs. managed.
+- **DEP-Q2:** ~~Hosting the workflow engine~~ **Resolved:** Temporal self-hosted
+  in-cluster (OSS/MIT, no license cost); persistence on **Azure managed PostgreSQL**;
+  **Elasticsearch deferred** (basic visibility only for now). See `DEP-011`.
 - **DEP-Q3:** Warm-pool / pre-warmed pods to reduce run latency.
 - **DEP-Q4:** AKS resource sizing and autoscaling under load.
-- **DEP-Q5:** Build-vs-buy reconciliation tooling (Helm/GitOps like Flux/Argo vs. custom).
+- **DEP-Q5:** ~~Build-vs-buy reconciliation tooling~~ **Resolved:** ArgoCD + Goobers
+  operator (CRDs). See `DEP-012`.

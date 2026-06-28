@@ -99,7 +99,8 @@ to perform agentic tasks. It is the labor unit of the platform.
 
 - **GBO-Q1:** Exact work-claiming mechanism for scaled replicas (defer to Scheduler).
 - **GBO-Q2:** How a goober's tool/permission scope is bounded (defer to Security).
-- **GBO-Q3:** Standard shape of the "context/data block" handed at invocation — is there
-  a common schema across goober types?
+- **GBO-Q3:** ~~Standard shape of the context/data block~~ **Resolved (shape):** the
+  standard JSON invocation envelope + task-specific `inputs` (see `TSK-Q1`). *(Remaining:
+  finalize fields.)*
 - **GBO-Q4:** Can a single goober definition be associated with multiple distinct
   workflows, and if so how are per-workflow behavior differences expressed?

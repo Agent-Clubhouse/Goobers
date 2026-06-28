@@ -30,9 +30,9 @@ enters the system and how goobers act on code.
   backlog.
 - **BL-004 (MUST):** Work items MUST carry labels that the scheduler matches against
   workflow selectors (`SCH-010`).
-- **BL-005 (MUST):** The backlog MUST support claiming an item for exactly-once
-  processing (`SCH-020`); where the claim/lease physically lives is an open question
-  (`SCH-Q5`).
+- **BL-005 (MUST):** Exactly-once processing is enforced instance-side via Temporal
+  workflow identity (`SCH-020`), not in the backlog. The provider MUST, however, let us
+  **write status back** to an item (claimed/in-progress/done) for human visibility.
 - **BL-006 (MUST):** The backlog MUST be treated as an external system of record — durable
   truth lives there, not in the instance.
 
@@ -55,8 +55,8 @@ enters the system and how goobers act on code.
 
 ## Open questions
 
-- **BL-Q1:** Where claims/leases live given an external backlog — provider field vs.
-  instance-side lease store (mirrors `SCH-Q5`).
+- **BL-Q1:** ~~Where claims/leases live~~ **Resolved:** instance-side via Temporal
+  identity; backlog item mirrors status only (`SCH-Q5`).
 - **BL-Q2:** Provider rate limits / API quotas under heavy gaggle load.
 - **BL-Q3:** How rich the common item model needs to be (custom fields, hierarchy
   epics→stories→tasks?).

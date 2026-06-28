@@ -59,9 +59,12 @@ defined inputs, work to be done, and a goal.
 
 ## Open questions
 
-- **TSK-Q1:** Common schema for the context/data block handed to a goober (mirrors
-  `GBO-Q3`).
-- **TSK-Q2:** Standard result/output contract a task returns to the engine (so gates and
-  telemetry can rely on a shape).
+- **TSK-Q1:** ~~Common context schema~~ **Resolved (shape):** a standard JSON **invocation
+  envelope** — `taskId, workflowId, runId, gaggle, item/trigger payload, goal, repoRef,
+  upstreamOutputs, limits` + a task-specific `inputs` blob. *(Remaining: finalize fields.)*
+- **TSK-Q2:** ~~Standard result contract~~ **Resolved (shape):** a standard **result
+  envelope** — `status (success|failed|needs-escalation), outputs, artifacts (e.g. PR
+  links), summary, metrics, error?`. Gates and telemetry depend on this shape.
+  *(Remaining: finalize fields.)*
 - **TSK-Q3:** Can a single task fan out to multiple goober runs (parallelism within a
   task) or is parallelism only expressed at the workflow level?
