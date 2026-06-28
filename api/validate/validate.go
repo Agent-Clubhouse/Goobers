@@ -216,8 +216,16 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			for _, line := range flattenSchemaError(err) {
 				r.add(Error, doc.file, doc.kind, doc.name, "%s", line)
 			}
-			continue
 		}
+		// Index the object even when it failed schema validation. Most schema
+		// violations (bad enum, missing field, an extra evaluator block) still
+		// decode cleanly, and keeping the object in the index lets the semantic
+		// cross-ref checks run anyway. That (a) surfaces the clearer field-level
+		// messages (e.g. the GT-016 "exactly one evaluator block" message, which a
+		// raw JSON-Schema `not` failure renders only as "not failed"), and (b)
+		// avoids dropping the object — which would dangle every reference to it and
+		// blame the wrong object with a misleading cascade. If the object cannot be
+		// decoded into its typed form, idx.add reports that and skips it.
 		idx.add(r, doc)
 	}
 
@@ -249,7 +257,7 @@ func flattenSchemaError(err error) []string {
 			if loc == "" {
 				loc = "(root)"
 			}
-			lines = append(lines, fmt.Sprintf("%s: %s", loc, e.Message))
+			lines = append(lines, fmt.Sprintf("%s: %s", loc, friendlySchemaMessage(e.Message)))
 			return
 		}
 		for _, c := range e.Causes {
@@ -261,6 +269,22 @@ func flattenSchemaError(err error) []string {
 		lines = append(lines, ve.Message)
 	}
 	return lines
+}
+
+// friendlySchemaMessage rewrites a few terse JSON-Schema keyword messages into
+// text that points at the actual problem. The raw library renders a failed
+// `not`/`oneOf` as just "not failed"/"oneOf failed", which is opaque; for these
+// the accompanying semantic cross-ref message (when one exists) carries the real
+// explanation, and this makes the schema line itself less cryptic.
+func friendlySchemaMessage(msg string) string {
+	switch {
+	case msg == "not failed":
+		return "value violates an exclusivity constraint (a mutually-exclusive or forbidden field combination is present)"
+	case strings.HasPrefix(msg, "oneOf failed"):
+		return "value must match exactly one of the allowed shapes (" + msg + ")"
+	default:
+		return msg
+	}
 }
 
 // index holds the typed objects keyed by name for cross-reference checks.

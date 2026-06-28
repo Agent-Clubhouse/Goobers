@@ -119,6 +119,34 @@ func TestBrokenManifestFailsClearly(t *testing.T) {
 	}
 }
 
+// TestGateExclusivityGivesClearMessageNoCascade reproduces QA-1's finding: a
+// gate that violates GT-016 (two evaluator blocks) is schema-invalid, but it
+// must still produce the clear "exactly one evaluator block" message AND must not
+// trigger a misleading cascade (the goober's workflow reference must still
+// resolve because the schema-invalid workflow stays in the cross-ref index).
+func TestGateExclusivityGivesClearMessageNoCascade(t *testing.T) {
+	v := newV(t)
+	report, err := v.ValidateDir("testdata/config-bad-gate")
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if !report.HasErrors() {
+		t.Fatal("expected the GT-016 violation to be rejected, got no errors")
+	}
+	all := joinIssues(report)
+	if !strings.Contains(all, "exactly one evaluator block") {
+		t.Errorf("expected the clear GT-016 message; got:\n%s", all)
+	}
+	// The cascade bug blamed the goober: "associated workflow \"flow\" is not defined".
+	if strings.Contains(all, `workflow "flow" is not defined`) {
+		t.Errorf("misleading cascade present: workflow reference dangled even though flow is defined; got:\n%s", all)
+	}
+	// And the cryptic raw schema message should be humanized.
+	if strings.Contains(all, ": not failed") {
+		t.Errorf("expected the cryptic \"not failed\" schema message to be humanized; got:\n%s", all)
+	}
+}
+
 func joinIssues(r *Report) string {
 	var b strings.Builder
 	for _, i := range r.Issues {

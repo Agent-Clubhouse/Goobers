@@ -1,0 +1,10 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: web
+  role: coder
+  instructions: instructions.md
+  workflows:
+    - flow

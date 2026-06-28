@@ -1,0 +1,23 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: flow
+spec:
+  gaggle: web
+  triggers:
+    - type: backlog-item
+  start: review
+  gates:
+    # GT-016 violation: evaluator=agentic but BOTH agentic and automated blocks
+    # are set. Schema rejects it (raw "not failed"); the Go cross-ref check should
+    # additionally surface the clear "exactly one evaluator block" message, and
+    # because the workflow is still indexed, the goober's `workflows: [flow]`
+    # reference must NOT dangle (no misleading cascade).
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: coder
+      automated:
+        check: tests-pass
+      branches:
+        pass: review

@@ -1,0 +1,10 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: gate-instance
+spec:
+  instance:
+    name: gate
+    environment: dev
+  gaggles:
+    - web
