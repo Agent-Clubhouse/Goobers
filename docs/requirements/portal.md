@@ -12,8 +12,9 @@ with a deliberately **minimal interactive surface** for *runtime operations only
 
 The dividing line is **config-time vs. runtime**:
 
-- **Config-time → code only.** Creating/changing instances, gaggles, goobers, workflows,
-  gates, connections happens in the goober-infra repo. The portal never configures these.
+- **Config-time → code only.** Creating/changing gaggles, goobers, workflows, and gates
+  happens in the `config` repo; infra/connections in the `infra` repo. The portal never
+  configures these.
 - **Runtime ops → minimal portal interactivity.** A small set of operational actions that
   can't be (or are awkward to) express declaratively: **human-gate approvals** and
   **run-level intervention** (e.g. retry/abort). Kept minimal by design.

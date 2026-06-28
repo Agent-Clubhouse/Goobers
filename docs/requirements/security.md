@@ -33,7 +33,7 @@ identity work, and how interactive actions are authorized.
 
 ### Secrets & identity
 - **SEC-010 (MUST):** Secrets MUST be referenced from a secret store (Key Vault), never
-  stored in the goober-infra repo.
+  stored in the `infra` or `config` repo.
 - **SEC-011 (MUST):** Goober run credentials MUST follow least privilege — scoped to the
   gaggle's target repo + backlog + telemetry write only.
 - **SEC-012 (MUST):** Harness auth and git/provider auth MUST be injected into run pods
@@ -42,8 +42,10 @@ identity work, and how interactive actions are authorized.
 ### Authorization & audit
 - **SEC-020 (MUST):** Portal interactive actions (gate approvals, run intervention) MUST
   be access-controlled (authN + authZ).
-- **SEC-021 (MUST):** Tutor self-modification MUST respect the configured approval gate
-  and stay within its bounded change scope (`TUT-005`).
+- **SEC-021 (MUST):** The Tutor's identity MUST be granted write access to the `config`
+  repo only (never the `infra` repo), making its change scope a permission boundary, not
+  just policy (`TUT-005`, `CFG-010`). Self-modification MUST also respect the configured
+  approval gate.
 - **SEC-022 (SHOULD):** Security-relevant actions (approvals, credential use, definition
   changes) SHOULD be auditable via telemetry.
 

@@ -26,9 +26,9 @@ target.
   MUST be a singleton for that gaggle.
 - **GAG-005 (MUST):** Gaggles MUST be isolated from one another — secrets, credentials,
   work, and telemetry scoping MUST NOT leak across gaggles (details in Security spec).
-- **GAG-006 (MUST):** A Gaggle MUST be defined as code in the goober-infra repo.
+- **GAG-006 (MUST):** A Gaggle MUST be defined as code in the `config` repo.
 - **GAG-007 (COULD):** A Gaggle COULD target multiple repos / telemetry sources (less
-  standard setup), while the backlog and goober-infra remain singletons.
+  standard setup), while the backlog, `infra` repo, and `config` repo remain singletons.
 
 ## Relationships
 

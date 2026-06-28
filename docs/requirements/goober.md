@@ -9,7 +9,7 @@ to perform agentic tasks. It is the labor unit of the platform.
 
 ## Model
 
-- A Goober is fundamentally a **definition** living in the goober-infra repo (config-as-
+- A Goober is fundamentally a **definition** living in the `config` repo (config-as-
   code). The dashboard "team member" is this definition.
 - At runtime a Goober **materializes as ephemeral pod(s)** when a workflow invokes it for
   an agentic task. Pods are transient; durable state lives outside (project repo,
@@ -46,7 +46,7 @@ to perform agentic tasks. It is the labor unit of the platform.
 ## Requirements
 
 ### Definition & config-as-code
-- **GBO-001 (MUST):** A Goober MUST be fully defined as code in the goober-infra repo
+- **GBO-001 (MUST):** A Goober MUST be fully defined as code in the `config` repo
   (markdown + folders + YAML manifest); no UI is required to create or modify one.
 - **GBO-002 (MUST):** A Goober definition MUST declare: identity/role, instructions,
   skills, tools, harness binding, scale factor, and workflow association.

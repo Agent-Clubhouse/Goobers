@@ -10,19 +10,21 @@ owns, and operates.
 
 ## Model
 
-- An instance is **deployed from the goober-infra repo via a release pipeline** the team
+- An instance is **bootstrapped from the `infra` repo via a release pipeline** the team
   configures with their connection info — it is self-hosted, not a managed service.
 - It provisions **simple infra**: an AKS cluster, storage + logging, the goober-run
   telemetry store, and disk.
 - It is **bring-your-own**: the team supplies Azure, the agent harness (Copilot), project
   repo(s), and a backlog.
 - It hosts **many gaggles** (siloed workforces).
-- The **goober-infra repo is a singleton per instance** — one source of truth controls the
-  whole deployment (Helm-like).
+- The Goobers side of an instance is **two singleton repos** (see Config-as-code spec):
+  an **`infra` repo** (Bicep/bootstrap, rarely changes) and a **`config` repo** (the
+  workforce as code, changes constantly, Tutor-writable). The platform/engine code is
+  upstream (consumed as images/charts), not a per-instance repo.
 
 ## Requirements
 
-- **INST-001 (MUST):** An instance MUST be deployable from the goober-infra repo via a
+- **INST-001 (MUST):** An instance MUST be deployable from the `infra` repo via a
   release pipeline configured with the team's connection info (no managed service).
 - **INST-002 (MUST):** On first boot the instance MUST serve the portal showing an
   "I'm alive" / ready state with no gaggles/goobers configured yet.
@@ -33,13 +35,15 @@ owns, and operates.
   Azure, the agent harness, project repo(s), and a backlog.
 - **INST-006 (MUST):** All instance configuration MUST be code (no UI configuration);
   see Config-as-code spec.
-- **INST-007 (MUST):** The goober-infra repo MUST be a singleton per instance.
+- **INST-007 (MUST):** The `infra` repo and the `config` repo MUST each be a singleton
+  per instance.
 - **INST-008 (SHOULD):** An instance SHOULD be reproducible/redeployable from the infra
   repo alone (idempotent apply of desired state).
 
 ## Relationships
 
-- Deployed from → the **goober-infra repo** via release pipeline (Deployment spec).
+- Deployed from → the **`infra` repo** (bootstrap) + **`config` repo** (reconciled
+  desired state) via release pipeline / controller (Deployment spec).
 - Hosts → many **Gaggles**.
 - Owns → shared infra and the **Telemetry** store.
 - Surfaced by → the **Portal**.

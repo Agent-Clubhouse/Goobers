@@ -27,7 +27,7 @@ everything a goober does happens inside a workflow.
 ## Requirements
 
 ### Definition & structure
-- **WF-001 (MUST):** A Workflow MUST be fully defined as code in the goober-infra repo
+- **WF-001 (MUST):** A Workflow MUST be fully defined as code in the `config` repo
   (config-as-code); no UI is required to create or modify one.
 - **WF-002 (MUST):** A Workflow MUST be modeled as a state machine composed of Tasks and
   Gates.

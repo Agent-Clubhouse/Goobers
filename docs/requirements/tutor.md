@@ -17,10 +17,11 @@ pool of coding agents."
   outputs across many runs.
 - **Detection:** recurring signals — the same tests failing, a reviewer repeating itself,
   a policy gate (e.g. coverage) repeatedly missed.
-- **Output:** a **PR against the goober-infra repo** proposing improvements.
+- **Output:** a **PR against the `config` repo** proposing improvements.
 - **Change scope (decided):** Tutor PRs may modify **goober definitions** (skills,
-  instructions, tools) **and workflows and gates** — but **not** arbitrary platform code
-  (Bicep, connections, the goober codebase). Bounded blast radius.
+  instructions, tools) **and workflows and gates** — all of which live in the `config`
+  repo. Containment is **structural, not just policy**: the Tutor's identity has write
+  access to `config` only, so it *cannot* touch the `infra` repo / Bicep / platform code.
 - **Approval (decided):** whether a Tutor PR requires human approval is **configurable per
   instance** (no default stance); when required it is a human gate.
 
@@ -31,10 +32,12 @@ pool of coding agents."
   periodic analysis.
 - **TUT-003 (MUST):** The Tutor MUST consume goober-run telemetry to detect recurring
   patterns/errors across runs.
-- **TUT-004 (MUST):** The Tutor MUST express improvements as a PR against the goober-infra
+- **TUT-004 (MUST):** The Tutor MUST express improvements as a PR against the `config`
   repo.
-- **TUT-005 (MUST):** Tutor PRs MAY modify goober definitions, workflows, and gates; they
-  MUST NOT modify other infra-repo content (Bicep/platform code/connections).
+- **TUT-005 (MUST):** The Tutor's identity MUST have write access to the `config` repo
+  only — never the `infra` repo — so its inability to change platform/infra is enforced
+  by permissions, not policy. Within `config` it MAY modify goober definitions, workflows,
+  and gates.
 - **TUT-006 (MUST):** Whether a Tutor PR requires human approval MUST be configurable per
   instance; when required, approval is a human **Gate** (`GT-012`).
 - **TUT-007 (MUST):** Tutor findings + rationale MUST be recorded to telemetry, and each

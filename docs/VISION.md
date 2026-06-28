@@ -86,15 +86,29 @@ and subscriptions they already own.
   these definitions.
 
 ### Standard setup (repos/sources)
-1. **Goober infra codebase** — Bicep + the goober codebase + agent definitions;
-   controls the actual goober deployment. *(Singleton.)*
-2. **Project codebase** — the work being targeted.
-3. **The backlog.** *(Singleton.)*
-4. **Optional:** project/product telemetry in Azure Data Explorer (the *project's*
+The Goobers side of an instance is **two repos**, split by change cadence and blast
+radius (GitOps / ArgoCD-style):
+1. **`infra` repo** — Bicep, cluster bootstrap, connection wiring. *(Singleton.)* Rarely
+   changes after setup; strict review.
+2. **`config` repo** — the workforce as code: manifests + goober/workflow/gate
+   definitions + agent markdown. *(Singleton.)* The living repo; changes constantly and
+   is **the only repo the Tutor writes to** (see §7 / `requirements/tutor.md`).
+
+Plus the user's existing sources:
+3. **Project codebase** — the work being targeted.
+4. **The backlog.** *(Singleton.)*
+5. **Optional:** project/product telemetry in Azure Data Explorer (the *project's*
    observability — see telemetry note below).
 
-Less standard setups may have multiple repos or telemetry sources, but **the backlog
-and goober infra are always singletons.**
+The **platform/engine code itself is upstream** — consumed as released images/charts,
+not a per-instance repo (forkable, since Goobers is open). Less standard setups may add
+repos or telemetry sources, but the **`infra` repo, `config` repo, and backlog are
+always singletons.**
+
+> **Why split infra from config:** it turns Tutor containment from a *policy* into a
+> *permission boundary* — the Tutor's identity gets write access to `config` only, so it
+> *cannot* touch Bicep/platform. It also matches GitOps cadence: `infra` bootstraps once;
+> a reconcile controller watches `config` and continuously drives desired state.
 
 ### Two separate telemetry stores (do not conflate)
 The same separation that keeps **goober infra ≠ project repo** applies to telemetry —
@@ -175,6 +189,7 @@ routes through the system scheduler**; a goober never calls a workflow itself.
 | Portal scope | **Observability-first; minimal runtime ops only** | Config-time = code only; runtime ops (gate approvals, retry/intervene) = minimal portal. See `requirements/portal.md`. |
 | Tutor change scope | **Goobers + workflows/gates (not platform code)** | Bounded blast radius; approval configurable per instance. See `requirements/tutor.md`. |
 | Gaggle isolation | **Namespace + identity per gaggle** | k8s namespace + per-gaggle Azure identity; Key Vault secret refs. See `requirements/security.md`. |
+| Repo topology | **Split `infra` repo from `config` repo** | GitOps cadence split; makes Tutor containment a *permission boundary* (write to `config` only). Platform code is upstream. See §5. |
 
 ### Still open
 All 14 area specs are drafted (`requirements/`). Remaining open items are now **within

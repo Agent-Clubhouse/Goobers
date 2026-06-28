@@ -5,14 +5,17 @@
 ## Purpose
 
 Defines how an instance is provisioned and deployed, and how runs physically execute. The
-goal is **simple infra** the team owns, driven entirely from the goober-infra repo.
+goal is **simple infra** the team owns, driven entirely from the `infra` + `config` repos.
 
 ## Model
 
 - **Infra:** an AKS cluster, storage + logging, the goober-run telemetry store, and disk —
   provisioned via **Bicep**.
-- **Deploy:** a **release pipeline** the team configures with connection info applies the
-  goober-infra repo's desired state (Helm-like reconcile of counts + characteristics).
+- **Deploy (two-stage, GitOps):** a **release pipeline** applies the **`infra` repo**
+  (Bicep) to bootstrap the cluster + a reconcile controller; that controller then watches
+  the **`config` repo** and continuously reconciles the workforce's desired state
+  (Helm-like counts + characteristics). `infra` runs rarely; `config` drives ongoing
+  state.
 - **A run = an ephemeral pod:** prepared with auth, the harness (signed in), and a fresh
   copy of the target repo; handed context + task via the invocation hook; signals
   completion via the completion tool; emits telemetry via management tools/hooks + log
@@ -24,10 +27,12 @@ goal is **simple infra** the team owns, driven entirely from the goober-infra re
 ### Provisioning & deploy
 - **DEP-001 (MUST):** Instance infra MUST be provisioned via Bicep: AKS, storage, logging,
   goober-run telemetry store, and disk.
-- **DEP-002 (MUST):** Deployment MUST run via a release pipeline configured with the
-  team's connection info (self-hosted; no managed service).
-- **DEP-003 (MUST):** A deploy MUST reconcile the manifest's desired state into the running
-  deployment idempotently (Helm-like).
+- **DEP-002 (MUST):** Bootstrap MUST run via a release pipeline applying the `infra` repo,
+  configured with the team's connection info (self-hosted; no managed service).
+- **DEP-003 (MUST):** A reconcile controller MUST continuously drive the `config` repo's
+  manifest desired state into the running deployment idempotently (Helm-like / GitOps).
+- **DEP-010 (MUST):** The `infra` and `config` repos MUST be deployable/permissioned
+  independently (supports Tutor write-scoping — `SEC-021`).
 - **DEP-009 (SHOULD):** Redeploy and rollback SHOULD be supported via the versioned infra
   repo.
 
