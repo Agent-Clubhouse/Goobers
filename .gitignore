@@ -13,6 +13,12 @@ coverage.html
 *.test
 *.out
 
+# Portal build artifacts
+/portal/node_modules/
+/portal/dist/
+/portal/coverage/
+/portal/*.tsbuildinfo
+
 # Editor / OS cruft
 .DS_Store
 .idea/
