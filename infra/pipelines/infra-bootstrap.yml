@@ -1,0 +1,176 @@
+# Goobers instance bootstrap pipeline (DEP-002, INST-001).
+# Stage 1 of the two-stage GitOps deploy: provisions shared infra via Bicep, then
+# installs ArgoCD and applies the app-of-apps root. ArgoCD thereafter reconciles the
+# config repo continuously (stage 2). Runs rarely (infra changes only).
+#
+# This project is Azure DevOps *Server* — there are no Microsoft-hosted agents, so the
+# agent pool is a required parameter pointing at a self-hosted pool (no `vmImage`).
+#
+# Prereqs (team-supplied, INST-005): an ARM service connection scoped to the target
+# subscription whose identity can (a) deploy the template and (b) read the bootstrap
+# Key Vault holding the PostgreSQL admin password.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infra/bicep/**
+      - infra/argocd/**
+      - infra/temporal/**
+      - infra/pipelines/**
+
+parameters:
+  - name: agentPool
+    type: string
+    default: goobers-selfhosted
+    # Self-hosted ADO Server pool. There is no hosted-agent fallback on this server.
+  - name: azureServiceConnection
+    type: string
+    default: goobers-azure
+  - name: location
+    type: string
+    default: eastus
+  - name: bootstrapKeyVault
+    type: string
+    default: goobers-bootstrap-kv
+    # Pre-existing vault holding the DB admin password (also referenced by main.bicepparam).
+  - name: dbPasswordSecretName
+    type: string
+    default: temporal-postgres-admin-password
+  - name: argocdVersion
+    type: string
+    default: v2.13.2
+
+variables:
+  templateFile: infra/bicep/main.bicep
+  paramFile: infra/bicep/main.bicepparam
+
+stages:
+  - stage: Validate
+    displayName: Validate Bicep
+    jobs:
+      - job: build
+        pool:
+          name: ${{ parameters.agentPool }}
+        steps:
+          - checkout: self
+          - script: az bicep build --file $(templateFile) --stdout > /dev/null
+            displayName: 'bicep build'
+          - task: AzureCLI@2
+            displayName: 'what-if (preview changes)'
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az deployment sub what-if \
+                  --location ${{ parameters.location }} \
+                  --template-file $(templateFile) \
+                  --parameters $(paramFile)
+
+  - stage: Provision
+    displayName: Provision infra
+    dependsOn: Validate
+    jobs:
+      - deployment: provision
+        environment: goobers-infra
+        pool:
+          name: ${{ parameters.agentPool }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: AzureCLI@2
+                  name: setOutputs
+                  displayName: 'az deployment sub create + export outputs'
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      out=$(az deployment sub create \
+                        --name goobers-$(Build.BuildId) \
+                        --location ${{ parameters.location }} \
+                        --template-file $(templateFile) \
+                        --parameters $(paramFile) \
+                        --query properties.outputs -o json)
+                      echo "$out"
+                      # Surface Bicep outputs as stage output variables for BootstrapGitOps.
+                      rg=$(echo "$out"      | jq -r '.resourceGroupName.value')
+                      cluster=$(echo "$out" | jq -r '.aksClusterName.value')
+                      fqdn=$(echo "$out"    | jq -r '.postgresFqdn.value')
+                      echo "##vso[task.setvariable variable=resourceGroupName;isOutput=true]$rg"
+                      echo "##vso[task.setvariable variable=aksClusterName;isOutput=true]$cluster"
+                      echo "##vso[task.setvariable variable=postgresFqdn;isOutput=true]$fqdn"
+
+  - stage: BootstrapGitOps
+    displayName: Install ArgoCD + wire Temporal + root app
+    dependsOn: Provision
+    variables:
+      # Real names from Bicep outputs — never hard-coded (handles any namePrefix/environment).
+      # Deployment-job output keys are prefixed with the deployment job name ('provision'):
+      #   stageDependencies.<stage>.<deploymentJob>.outputs['<deploymentJob>.<step>.<var>']
+      rg: $[ stageDependencies.Provision.provision.outputs['provision.setOutputs.resourceGroupName'] ]
+      cluster: $[ stageDependencies.Provision.provision.outputs['provision.setOutputs.aksClusterName'] ]
+      postgresFqdn: $[ stageDependencies.Provision.provision.outputs['provision.setOutputs.postgresFqdn'] ]
+    jobs:
+      - deployment: argocd
+        environment: goobers-infra
+        pool:
+          name: ${{ parameters.agentPool }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: AzureCLI@2
+                  displayName: 'kubeconfig + secret + ArgoCD + Temporal wiring'
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+
+                      # --- kubeconfig for the ACTUAL provisioned cluster (issue #3) ---
+                      az aks get-credentials --resource-group "$(rg)" --name "$(cluster)" --overwrite-existing
+
+                      # --- Temporal DB credential: pull from Key Vault, create k8s secret ---
+                      # Secret stays out of git (SEC-010); chart consumes it via existingSecret.
+                      kubectl create namespace temporal --dry-run=client -o yaml | kubectl apply -f -
+                      dbpass=$(az keyvault secret show \
+                        --vault-name ${{ parameters.bootstrapKeyVault }} \
+                        --name ${{ parameters.dbPasswordSecretName }} \
+                        --query value -o tsv)
+                      kubectl -n temporal create secret generic temporal-postgres-credentials \
+                        --from-literal=password="$dbpass" \
+                        --dry-run=client -o yaml | kubectl apply -f -
+
+                      # --- Install ArgoCD ---
+                      kubectl apply -f infra/argocd/bootstrap/namespace.yaml
+                      kubectl apply -n argocd \
+                        -f https://raw.githubusercontent.com/argoproj/argo-cd/${{ parameters.argocdVersion }}/manifests/install.yaml
+                      kubectl -n argocd rollout status deploy/argocd-repo-server --timeout=300s
+                      kubectl -n argocd rollout status deploy/argocd-server --timeout=300s
+
+                      # --- Hand control to GitOps ---
+                      kubectl apply -f infra/argocd/bootstrap/root-app.yaml
+
+                      # --- Inject the instance-specific PostgreSQL host into Temporal (issue #1) ---
+                      # The FQDN is a per-instance infra output, not knowable at git-authoring
+                      # time, so it is set as an Argo Helm parameter rather than committed.
+                      curl -sSL -o /usr/local/bin/argocd \
+                        https://github.com/argoproj/argo-cd/releases/download/${{ parameters.argocdVersion }}/argocd-linux-amd64
+                      chmod +x /usr/local/bin/argocd
+                      # Core mode talks to the cluster via kubeconfig — no server login needed.
+                      export ARGOCD_OPTS='--core'
+                      # Wait for the root app to create the temporal Application.
+                      until argocd app get temporal >/dev/null 2>&1; do sleep 5; done
+                      argocd app set temporal \
+                        --helm-set server.config.persistence.default.sql.host="$(postgresFqdn)" \
+                        --helm-set server.config.persistence.visibility.sql.host="$(postgresFqdn)"
+                      argocd app sync temporal

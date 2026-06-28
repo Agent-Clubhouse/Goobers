@@ -1,0 +1,34 @@
+# Temporal workflow engine, self-hosted in-cluster (DEP-011). Helm chart + our values
+# (external Azure PostgreSQL, basic visibility). The PostgreSQL host + DB credential are
+# instance-specific and supplied by the bootstrap pipeline (Helm parameter + k8s secret),
+# not committed — so this app is manual-sync until the pipeline wires them (see README).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: temporal
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://go.temporal.io/helm-charts
+      chart: temporal
+      targetRevision: 0.62.0
+      helm:
+        valueFiles:
+          - $infra/infra/temporal/values.yaml
+    - repoURL: https://github.com/goobers/infra.git
+      targetRevision: main
+      ref: infra
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: temporal
+  # Manual sync on purpose: the bootstrap pipeline must inject the PostgreSQL `host`
+  # Helm parameter (instance-specific infra output) and create the DB-credential secret
+  # BEFORE the first sync. The pipeline runs `argocd app set ... --helm-set host=...`
+  # then `argocd app sync temporal`. After bootstrap, ops can enable automated sync.
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

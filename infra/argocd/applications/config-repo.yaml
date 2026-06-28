@@ -1,0 +1,32 @@
+# The workforce-as-code sync (DEP-012, CFG-002/004, DEP-010). This points at the
+# SEPARATE `config` repo — not the infra repo — so the two are independently
+# permissioned: the Tutor's identity may write `config` only, never `infra`
+# (SEC-021, CFG-010). ArgoCD syncs the config repo's rendered CRDs into the cluster;
+# the Goobers operator reconciles them into replicas + Temporal registrations.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: goobers-config
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # Distinct repo + credentials from infra (DEP-010). Access is scoped separately.
+    repoURL: https://github.com/goobers/config.git
+    targetRevision: main
+    # Rendered CRD manifests (gaggles, goobers, workflows, gates, connections).
+    path: rendered
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    # CRDs land here; the operator fans them out into per-gaggle namespaces.
+    namespace: goobers-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

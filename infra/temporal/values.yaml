@@ -1,0 +1,74 @@
+# Helm values for self-hosted Temporal (DEP-011), chart: temporalio/temporal.
+# Persistence is the Azure managed PostgreSQL flexible server provisioned by Bicep;
+# the bundled Cassandra/Postgres/Elasticsearch are all disabled. Visibility uses the
+# SQL store (basic visibility) — advanced (Elasticsearch) visibility is deferred.
+#
+# The PostgreSQL `host` is NOT set here — it is a per-instance infra output (the Bicep
+# `postgresFqdn`), injected by the bootstrap pipeline as an Argo Helm parameter
+# (`server.config.persistence.{default,visibility}.sql.host`) before the Temporal
+# Application is synced. The DB password is never stored here either: it is supplied via
+# the `temporal-postgres-credentials` secret the pipeline creates from Key Vault (SEC-010).
+
+# Do not deploy the chart's bundled datastores.
+cassandra:
+  enabled: false
+mysql:
+  enabled: false
+postgresql:
+  enabled: false
+elasticsearch:
+  enabled: false
+prometheus:
+  enabled: false
+grafana:
+  enabled: false
+
+server:
+  replicaCount: 1
+  config:
+    persistence:
+      defaultStore: default
+      visibilityStore: visibility
+      # Basic (SQL) visibility only — Elasticsearch deferred (DEP-011).
+      additionalStores: {}
+      default:
+        driver: sql
+        sql:
+          driver: postgres12
+          # host: injected by the bootstrap pipeline as a Helm parameter (see header).
+          port: 5432
+          database: temporal
+          user: gooberadmin
+          # Password injected via a CSI-synced k8s secret (Key Vault, SEC-010).
+          existingSecret: temporal-postgres-credentials
+          tls:
+            enabled: true
+            enableHostVerification: true
+          maxConns: 20
+          maxIdleConns: 20
+      visibility:
+        driver: sql
+        sql:
+          driver: postgres12
+          # host: injected by the bootstrap pipeline as a Helm parameter (see header).
+          port: 5432
+          database: temporal_visibility
+          user: gooberadmin
+          existingSecret: temporal-postgres-credentials
+          tls:
+            enabled: true
+            enableHostVerification: true
+          maxConns: 10
+          maxIdleConns: 10
+
+# Run the schema setup/update jobs (temporal-sql-tool) against the external DB.
+schema:
+  setup:
+    enabled: true
+  update:
+    enabled: true
+
+# Web UI; access is fronted by the portal / Entra SSO at the ingress layer (SEC-020).
+web:
+  enabled: true
+  replicaCount: 1

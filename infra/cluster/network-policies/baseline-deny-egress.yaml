@@ -1,0 +1,39 @@
+# Baseline egress containment (SEC-Q5, SEC-030): default-deny all egress, then allow
+# only DNS. Run pods need provider/telemetry endpoints opened explicitly on top of this
+# (per-gaggle allowlist policies layered by the operator from the config repo).
+#
+# This pair is the template applied to every gaggle namespace; here it guards the
+# system namespace. Cilium (the cluster dataplane) enforces standard NetworkPolicy.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: goobers-system
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  # No egress rules => deny all egress by default.
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: goobers-system
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

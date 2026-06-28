@@ -1,0 +1,13 @@
+# Instance-level system namespace. Hosts the Goobers operator, scheduler, and other
+# shared control-plane components. Gaggles get their OWN namespaces (SEC-001), created
+# per-gaggle from the config repo by the operator — never here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: goobers-system
+  labels:
+    app.kubernetes.io/part-of: goobers
+    goobers.dev/tier: system
+    # Enforce a restricted Pod Security Standard on the control plane.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

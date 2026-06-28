@@ -1,0 +1,36 @@
+# Goobers operator (DEP-012). Installed from the upstream platform chart (built from
+# this monorepo's cmd/operator image). The operator reconciles Goobers CRDs into running
+# goober replicas + Temporal workflow registrations. Argo owns sync/drift/rollback; the
+# operator owns the domain reconcile.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: goobers-operator
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # Upstream platform OCI chart published by the Goobers release pipeline.
+    repoURL: ghcr.io/goobers/charts
+    chart: goobers-operator
+    targetRevision: 0.1.0
+    helm:
+      values: |
+        image:
+          repository: ghcr.io/goobers/operator
+          tag: latest
+        # Operator watches all gaggle namespaces; it creates per-gaggle
+        # namespaces + workload identities from the config repo (SEC-001/002).
+        watchNamespaces: ""
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: goobers-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

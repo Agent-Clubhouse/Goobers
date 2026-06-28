@@ -1,0 +1,30 @@
+# App-of-apps root (DEP-012). After ArgoCD is installed in the `argocd` namespace, this
+# single Application is applied once; it syncs every child Application under
+# infra/argocd/applications, which in turn manage Temporal, the operator, the cluster
+# baseline, and the separate config repo. Argo owns git->cluster sync, drift detection,
+# and rollback; the Goobers operator owns the domain reconcile.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: goobers-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # The infra repo (this repo). Pin to a tag/branch per environment.
+    repoURL: https://github.com/goobers/infra.git
+    targetRevision: main
+    path: infra/argocd/applications
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
