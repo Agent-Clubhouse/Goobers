@@ -24,9 +24,16 @@ stays thin and the gate is runnable locally (`make ci`).
 
 ### Coverage gate
 `make test`/`make cover` writes `coverage.out`; **`test/coverage_gate.sh [threshold]`**
-(default 70, or `$COVERAGE_THRESHOLD`) fails with exit 1 if total line coverage is below
-the threshold, printing per-function coverage + the total. Validated: a 50%-covered
-module passes at threshold 40 and fails (exit 1) at threshold 70.
+(default 70, or `$COVERAGE_THRESHOLD`) fails with exit 1 if coverage is below the
+threshold, printing the excluded file set + per-function coverage + the total.
+
+It measures coverage over the module's **testable logic**: non-logic code is excluded
+from the denominator so the number stays a precise signal (and won't be diluted, or
+mask a real per-package regression, as the codebase grows). Excluded by default
+(override via `$COVERAGE_EXCLUDE`): `cmd/*` main entrypoints, generated code
+(`zz_generated*`, `*.deepcopy.go`), and embed-only packages (`api/schemas`). The set of
+excluded files is printed every run — never a silent cap. Tip: `go clean -testcache`
+before trusting a number on a freshly-mutated tree (stale cached coverage reads low).
 
 Wiring: once the skeleton is merged, this backs a `make cover-check` target on the shared
 workflow (coordinated with Dev-3, not a second workflow). In the interim gate QA runs it
