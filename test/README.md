@@ -56,6 +56,15 @@ it is never lowered to pass a specific PR (see QA checklist §5).
 - Table of provider-agnostic expectations; each provider plugged into the same asserts.
 - *Blocked on:* Dev-2 landing the provider interface + a way to inject a mock transport.
 
+### M6 — walking-skeleton E2E (`e2e/`)
+- Validates the Phase-1 fixture: one coder goober, one backlog item, a single-stage
+  workflow, and one emitted run trace.
+- Runs today against in-process seams for the landed components (config validate,
+  provider model, workflow engine, telemetry) and keeps explicit boundaries for M8
+  runtime, M11 scheduler, M12 config-sync, and M14 integration wiring.
+- Local gate: `make test-e2e` (also covered by `make test`/`make ci` because it is a Go
+  package under `./test/e2e`).
+
 ## Layout
 ```
 test/
@@ -64,8 +73,10 @@ test/
   fixtures/
     config/{good,bad}/  # config manifests for the validate CLI  (pending Dev-1 schema)
     envelopes/{valid,invalid}/  # invocation/result/verdict JSON  (pending Dev-1 schema)
+    e2e/walking-skeleton/ # minimal Phase-1 config repo fixture
   config/              # M1 acceptance suite  (Go; pending skeleton + validate CLI)
   providers/           # M2 contract suite    (Go; pending provider interface)
+  e2e/                 # M6 walking-skeleton harness scaffold
 ```
 
 ## Status
@@ -74,3 +85,4 @@ test/
 - [ ] CI coverage gate — coordinating with Dev-3; lands as a job on the shared workflow
 - [ ] M1 fixtures + acceptance suite — pending Dev-1's validate CLI + schemas
 - [ ] M2 contract suite — pending Dev-2's provider interface
+- [x] M6 walking-skeleton fixture + runnable E2E scaffold

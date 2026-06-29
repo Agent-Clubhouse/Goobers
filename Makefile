@@ -56,6 +56,11 @@ test-envtest:
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
 		$(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
 
+## test-e2e: Run the walking-skeleton E2E harness scaffold.
+.PHONY: test-e2e
+test-e2e:
+	$(GO) test ./test/e2e -count=1
+
 ## fmt: Format all Go source.
 .PHONY: fmt
 fmt:

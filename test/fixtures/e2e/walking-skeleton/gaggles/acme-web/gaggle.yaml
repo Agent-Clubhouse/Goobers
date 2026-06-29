@@ -1,0 +1,21 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: acme-web
+spec:
+  displayName: ACME Web
+  project:
+    provider: github
+    owner: acme
+    name: web
+    branch: main
+    connectionRef: github-main
+  backlog:
+    provider: github
+    project: acme/web
+    labels:
+      - goober:ready
+    connectionRef: github-backlog
+  isolation:
+    namespace: gaggle-acme-web
+    identityRef: acme-web-workload

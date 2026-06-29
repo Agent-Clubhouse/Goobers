@@ -1,0 +1,21 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: default-implement
+spec:
+  gaggle: acme-web
+  displayName: Default implement
+  triggers:
+    - type: backlog-item
+      selector:
+        goober:ready: "true"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 10
+    maxChainDepth: 1
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement the backlog item and return a result envelope.

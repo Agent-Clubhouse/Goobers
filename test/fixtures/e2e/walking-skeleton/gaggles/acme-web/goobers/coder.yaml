@@ -1,0 +1,13 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: acme-web
+  role: coder
+  displayName: Coder
+  instructions: coder.md
+  harness: copilot
+  scaleFactor: 1
+  workflows:
+    - default-implement

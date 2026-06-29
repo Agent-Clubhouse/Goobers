@@ -1,0 +1,28 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: walking-skeleton
+spec:
+  instance:
+    name: walking-skeleton
+    environment: dev
+  connections:
+    - name: github-main
+      type: repo
+      provider: github
+      secretRef:
+        name: github-pat
+        keyVault: walking-skeleton-kv
+    - name: github-backlog
+      type: backlog
+      provider: github
+      secretRef:
+        name: github-pat
+        keyVault: walking-skeleton-kv
+    - name: goober-run-telemetry
+      type: telemetry
+      provider: adx
+      secretRef:
+        name: adx-managed-identity
+  gaggles:
+    - acme-web
