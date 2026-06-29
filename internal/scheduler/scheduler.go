@@ -15,6 +15,7 @@ import (
 	"strconv"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/backlog"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
@@ -152,7 +153,7 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 		RepoRef:      s.cfg.Repo,
 	}
 	if ev.Item != nil {
-		bi := toBacklogItem(*ev.Item)
+		bi := backlog.FromWorkItem(*ev.Item)
 		in.Item = &bi
 	}
 	return in, nil
@@ -182,16 +183,4 @@ func (s *Scheduler) startSpan(ctx context.Context, in engine.RunInput, ev Event)
 		return ctx, telemetry.Span{}
 	}
 	return ctx, span
-}
-
-// toBacklogItem maps a provider work item onto the canonical api envelope item.
-func toBacklogItem(w providers.WorkItem) apiv1.BacklogItem {
-	return apiv1.BacklogItem{
-		ID:       w.ID,
-		Provider: apiv1.Provider(w.Provider),
-		Title:    w.Title,
-		Body:     w.Body,
-		URL:      w.URL,
-		Labels:   w.Labels,
-	}
 }
