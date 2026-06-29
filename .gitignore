@@ -27,3 +27,8 @@ coverage.html
 # Agent-local (do not commit)
 .mcp.json
 CLAUDE.md
+/config-sync
+/operator
+/scheduler
+/goober-runtime
+/validate
