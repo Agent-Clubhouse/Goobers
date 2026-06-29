@@ -18,6 +18,10 @@ BIN  := bin
 GO            ?= go
 GOLANGCI_LINT ?= golangci-lint
 
+# Minimum testable-logic coverage enforced by `make cover-check` (ratchet up over
+# time). Overridable: `make cover-check COVERAGE_THRESHOLD=75`.
+COVERAGE_THRESHOLD ?= 70
+
 # Pinned codegen + test tooling (run via `go run`, no global installs).
 CONTROLLER_GEN_VERSION ?= v0.16.5
 SETUP_ENVTEST_VERSION  ?= release-0.19
@@ -91,6 +95,14 @@ test:
 .PHONY: cover
 cover: test
 	$(GO) tool cover -func=coverage.out | tail -1
+
+## cover-check: Fail if testable-logic coverage is below COVERAGE_THRESHOLD.
+# Standalone gate (intentionally NOT part of `ci`): a coverage dip should surface
+# as its own visible job, not break every `make ci` reproduction mid-development.
+# Excludes generated/cmd-mains/embed from the denominator (see test/coverage_gate.sh).
+.PHONY: cover-check
+cover-check: test
+	COVERAGE_PROFILE=coverage.out bash test/coverage_gate.sh $(COVERAGE_THRESHOLD)
 
 ## ci: Full gate run locally (matches the pipeline).
 .PHONY: ci
