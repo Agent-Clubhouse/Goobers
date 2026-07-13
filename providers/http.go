@@ -71,11 +71,18 @@ func doJSON(client HTTPClient, req *http.Request, out interface{}) error {
 	if err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}
+	return readJSONResponse(resp, req.Method, req.URL.String(), out)
+}
+
+// readJSONResponse consumes and closes resp: it surfaces a non-2xx status as an
+// error and otherwise decodes the body into out (when non-nil). It is shared by the
+// single-shot doJSON path and the retry-aware provider request loops.
+func readJSONResponse(resp *http.Response, method, endpoint string, out interface{}) error {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("%s %s failed: status %d: %s", req.Method, req.URL.String(), resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("%s %s failed: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	if out == nil || resp.StatusCode == http.StatusNoContent {
 		return nil
@@ -84,6 +91,21 @@ func doJSON(client HTTPClient, req *http.Request, out interface{}) error {
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
+}
+
+// contextSleep waits for d or until ctx is cancelled, whichever comes first.
+func contextSleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func joinURL(base string, elems ...string) (string, error) {

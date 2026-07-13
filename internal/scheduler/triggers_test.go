@@ -34,6 +34,18 @@ func (f *fakeBacklog) UpdateWorkItemStatus(_ context.Context, req providers.Upda
 	return providers.WorkItem{ID: req.ID, Status: req.Status}, f.err
 }
 
+func (f *fakeBacklog) ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
+	return nil, f.err
+}
+
+func (f *fakeBacklog) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	return providers.WorkItem{ID: req.ID}, f.err
+}
+
+func (f *fakeBacklog) ClaimWorkItem(_ context.Context, req providers.ClaimWorkItemRequest) (providers.ClaimResult, error) {
+	return providers.ClaimResult{Claimed: true, ClaimedBy: req.RunID, Item: providers.WorkItem{ID: req.ID}}, f.err
+}
+
 func TestScheduleTriggerEmitsOnTick(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -19,12 +19,17 @@ type RepoProvider interface {
 	RequestReview(context.Context, ReviewRequest) error
 }
 
-// BacklogProvider abstracts backlog work item operations.
+// BacklogProvider abstracts backlog work item operations: query/read, create,
+// general edit (title/body/label/close/comment), status mirroring, and claiming.
+// The GitHub implementation is the V0 workload; ADO reaches parity in V1 (BL-033).
 type BacklogProvider interface {
 	ListWorkItems(context.Context, ListWorkItemsRequest) ([]WorkItem, error)
 	GetWorkItem(context.Context, RepositoryRef, string) (WorkItem, error)
+	ListComments(context.Context, RepositoryRef, string) ([]Comment, error)
 	CreateWorkItem(context.Context, CreateWorkItemRequest) (WorkItem, error)
+	UpdateWorkItem(context.Context, UpdateWorkItemRequest) (WorkItem, error)
 	UpdateWorkItemStatus(context.Context, UpdateWorkItemStatusRequest) (WorkItem, error)
+	ClaimWorkItem(context.Context, ClaimWorkItemRequest) (ClaimResult, error)
 }
 
 // TriggerProvider abstracts backlog item availability triggers.
