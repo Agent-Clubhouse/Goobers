@@ -4,6 +4,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -34,6 +35,20 @@ func runUp(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return 2
 	}
+
+	// Single-instance lock (#23 AC3): a second `up` on the same instance root
+	// must fail fast with a clear message, not silently race the first.
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	defer release()
+
 	if _, _, err := instance.LoadConfigDir(l.ConfigDir()); err != nil {
 		pf(stderr, "error: config directory invalid: %v\n", err)
 		return 1
