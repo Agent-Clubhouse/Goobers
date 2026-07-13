@@ -175,7 +175,11 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 				return nil, fmt.Errorf("test double %T does not implement journal.Scrubber", reg)
 			}
 			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
-			return harness.NewExecutor(adapter, injector, recorder, scrubber, "you are the "+gooberName+" fixture goober")
+			// rec is this run's own *journal.Run, which also satisfies
+			// harness.ArtifactRecorder structurally (same RecordArtifact
+			// method as runner.ArtifactRecorder) — passed straight through,
+			// same as recorder above.
+			return harness.NewExecutor(adapter, injector, recorder, rec, scrubber, "you are the "+gooberName+" fixture goober")
 		},
 		Automated: gate.NewAutomatedEvaluator(),
 		Worktrees: wtMgr,
