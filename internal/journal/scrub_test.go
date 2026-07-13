@@ -37,10 +37,29 @@ func filesContaining(t *testing.T, dir string, needle []byte) []string {
 	return hits
 }
 
+// TestCanaryIsMechanismIsolating is the negative control TestCanaryNeverLands
+// AtRest depends on: it proves the pattern net alone does NOT catch `canary`,
+// so a pass below actually certifies the registry-backed scrubber (the
+// mechanism under test), not the pattern net catching a coincidentally
+// recognizable secret shape. A canary shaped like a real provider token
+// (ghp_..., AKIA..., etc.) would pass TestCanaryNeverLandsAtRest even if the
+// registry wiring were entirely broken — false assurance on exactly the path
+// that test exists to certify.
+func TestCanaryIsMechanismIsolating(t *testing.T) {
+	out := NewPatternScrubber().Scrub([]byte(canary))
+	if string(out) != canary {
+		t.Fatalf("pattern net alone redacts the canary (%q -> %q); it no longer isolates the "+
+			"registry-backed scrubber TestCanaryNeverLandsAtRest is meant to certify — pick a canary "+
+			"with no recognizable secret shape", canary, out)
+	}
+}
+
 // TestCanaryNeverLandsAtRest feeds a known token into an event, an input
 // snapshot, AND an artifact, then asserts the raw canary appears in no journal
 // file and that artifact digests verify post-scrub (they commit to the scrubbed
-// bytes).
+// bytes). Mechanism-isolation for this canary is asserted separately by
+// TestCanaryIsMechanismIsolating — a pass here certifies the registry path,
+// not the pattern net.
 func TestCanaryNeverLandsAtRest(t *testing.T) {
 	reg, scrub := DefaultScrubber()
 	reg.Register([]byte(canary)) // as the resolver would, for an issued credential
