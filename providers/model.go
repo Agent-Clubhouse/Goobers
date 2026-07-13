@@ -162,6 +162,9 @@ type PullRequestRequest struct {
 	Head       string        `json:"head"`
 	Base       string        `json:"base"`
 	Draft      bool          `json:"draft,omitempty"`
+	// RunID, if set, is stamped as a breadcrumb footer on the PR body so the run
+	// journal (once #8 lands) can link the PR URL back to the run (bidirectional trace).
+	RunID string `json:"runId,omitempty"`
 }
 
 // PullRequestResult describes an opened pull request.
@@ -176,6 +179,81 @@ type ReviewRequest struct {
 	Repository RepositoryRef `json:"repository"`
 	PullID     string        `json:"pullId"`
 	Reviewers  []string      `json:"reviewers"`
+}
+
+// ReviewDecision normalizes provider-native review verdicts (BL-031).
+type ReviewDecision string
+
+// Review decisions a PR poll can report.
+const (
+	ReviewDecisionPending          ReviewDecision = "pending"
+	ReviewDecisionApproved         ReviewDecision = "approved"
+	ReviewDecisionChangesRequested ReviewDecision = "changes_requested"
+)
+
+// CheckState normalizes combined CI/check status across providers (BL-031).
+type CheckState string
+
+// Check states a PR poll can report, driving the CI-poll/repass loop.
+const (
+	CheckStatePending CheckState = "pending"
+	CheckStatePassing CheckState = "passing"
+	CheckStateFailing CheckState = "failing"
+)
+
+// CheckDetail references a single check/status run for repass-gate drill-down.
+type CheckDetail struct {
+	Name    string     `json:"name"`
+	State   CheckState `json:"state"`
+	URL     string     `json:"url,omitempty"`
+	Summary string     `json:"summary,omitempty"`
+}
+
+// PullRequestComment is a normalized issue-thread comment on a pull request.
+type PullRequestComment struct {
+	ID        int64     `json:"id"`
+	Author    string    `json:"author,omitempty"`
+	Body      string    `json:"body,omitempty"`
+	URL       string    `json:"url,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// PullRequestPollRequest describes a PR poll operation.
+type PullRequestPollRequest struct {
+	Repository    RepositoryRef `json:"repository"`
+	PullID        string        `json:"pullId"`
+	CommentsSince *time.Time    `json:"commentsSince,omitempty"`
+}
+
+// PullRequestPollResult is the deterministic stage-output envelope a repass gate
+// branches on: mergeability, review decision, combined check state + failure
+// detail refs, and comments since the last poll (BL-031).
+type PullRequestPollResult struct {
+	Number           int                  `json:"number"`
+	State            string               `json:"state"`
+	Merged           bool                 `json:"merged"`
+	Mergeable        *bool                `json:"mergeable,omitempty"`
+	ReviewDecision   ReviewDecision       `json:"reviewDecision"`
+	RequestedChanges int                  `json:"requestedChanges"`
+	CheckState       CheckState           `json:"checkState"`
+	Checks           []CheckDetail        `json:"checks,omitempty"`
+	CommentsSince    []PullRequestComment `json:"commentsSince,omitempty"`
+	URL              string               `json:"url,omitempty"`
+}
+
+// ClosePullRequestRequest describes closing a pull request, optionally leaving a comment.
+type ClosePullRequestRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	PullID     string        `json:"pullId"`
+	Comment    string        `json:"comment,omitempty"`
+}
+
+// ClosePullRequestResult reports whether the PR was merged or closed unmerged
+// (merged-vs-closed detection, BL-031).
+type ClosePullRequestResult struct {
+	Number int    `json:"number"`
+	Merged bool   `json:"merged"`
+	State  string `json:"state"`
 }
 
 // ListWorkItemsRequest filters backlog items for scheduler admission.

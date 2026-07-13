@@ -177,7 +177,7 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 		"sourceRefName": "refs/heads/" + strings.TrimPrefix(req.Head, "refs/heads/"),
 		"targetRefName": "refs/heads/" + strings.TrimPrefix(req.Base, "refs/heads/"),
 		"title":         req.Title,
-		"description":   req.Body,
+		"description":   withRunIDFooter(req.Body, req.RunID),
 		"isDraft":       req.Draft,
 	}
 	var out adoPullRequest
@@ -205,6 +205,17 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 		}
 	}
 	return nil
+}
+
+// PollPullRequest is not yet implemented for Azure DevOps: PR poll/repass parity
+// is scoped to V1 (BL-033); the GitHub provider is the V0 workload (#13).
+func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRequest) (PullRequestPollResult, error) {
+	return PullRequestPollResult{}, fmt.Errorf("ado: pull request polling lands in V1 parity (BL-033)")
+}
+
+// ClosePullRequest is not yet implemented for Azure DevOps: see PollPullRequest.
+func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
+	return ClosePullRequestResult{}, fmt.Errorf("ado: pull request close lands in V1 parity (BL-033)")
 }
 
 // ListWorkItems lists Azure Boards work items as unified work items.
