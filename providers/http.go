@@ -208,6 +208,20 @@ func basicAuth(username, token string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+token))
 }
 
+// withRunIDFooter appends a run-id breadcrumb footer to a PR body so the run
+// journal (once #8 lands) can link the PR URL back to the run bidirectionally.
+// A no-op when runID is empty.
+func withRunIDFooter(body, runID string) string {
+	if runID == "" {
+		return body
+	}
+	footer := "goobers run-id: " + runID
+	if body == "" {
+		return "---\n" + footer
+	}
+	return body + "\n\n---\n" + footer
+}
+
 func shouldEmitWorkItem(seen map[string]time.Time, item WorkItem) bool {
 	updated := time.Time{}
 	if item.UpdatedAt != nil {

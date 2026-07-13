@@ -310,3 +310,13 @@ func (m *mockRepoProvider) RequestReview(_ context.Context, req providers.Review
 	m.review = req
 	return m.err
 }
+
+func (m *mockRepoProvider) PollPullRequest(_ context.Context, req providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
+	m.calls++
+	return providers.PullRequestPollResult{}, m.err
+}
+
+func (m *mockRepoProvider) ClosePullRequest(_ context.Context, req providers.ClosePullRequestRequest) (providers.ClosePullRequestResult, error) {
+	m.calls++
+	return providers.ClosePullRequestResult{}, m.err
+}

@@ -268,6 +268,14 @@ func (f *fakeRepoProvider) RequestReview(context.Context, providers.ReviewReques
 	return nil
 }
 
+func (f *fakeRepoProvider) PollPullRequest(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
+	return providers.PullRequestPollResult{}, nil
+}
+
+func (f *fakeRepoProvider) ClosePullRequest(context.Context, providers.ClosePullRequestRequest) (providers.ClosePullRequestResult, error) {
+	return providers.ClosePullRequestResult{}, nil
+}
+
 func TestInProcessPreparerClonesRepoAndBuildsEnv(t *testing.T) {
 	repo := &fakeRepoProvider{}
 	preparer := InProcessPreparer{

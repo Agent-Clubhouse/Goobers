@@ -205,9 +205,10 @@ func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestReq
 	if err != nil {
 		return PullRequestResult{}, err
 	}
+	prBody := withRunIDFooter(req.Body, req.RunID)
 	body := map[string]interface{}{
 		"title": req.Title,
-		"body":  req.Body,
+		"body":  prBody,
 		"head":  req.Head,
 		"base":  req.Base,
 		"draft": req.Draft,
@@ -216,7 +217,261 @@ func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestReq
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
 		return PullRequestResult{}, err
 	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, strconv.Itoa(out.Number)),
+		URL:       out.HTMLURL,
+		Operation: "open",
+		RunID:     req.RunID,
+		Fields: map[string]FieldDigest{
+			"title": {After: digestString(req.Title)},
+			"body":  {After: digestString(prBody)},
+		},
+	})
 	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
+}
+
+// PollPullRequest reports mergeability, review decision, combined check state,
+// and comments-since for a GitHub pull request (BL-031). A read, so it does not
+// emit a mutation event.
+func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPollRequest) (PullRequestPollResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return PullRequestPollResult{}, err
+	}
+	if req.PullID == "" {
+		return PullRequestPollResult{}, fmt.Errorf("pull id is required")
+	}
+	prEndpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
+	if err != nil {
+		return PullRequestPollResult{}, err
+	}
+	var pr githubPullRequestDetail
+	if err := p.do(ctx, http.MethodGet, prEndpoint, nil, &pr); err != nil {
+		return PullRequestPollResult{}, err
+	}
+
+	decision, requestedChanges, err := p.reviewDecision(ctx, req.Repository, req.PullID)
+	if err != nil {
+		return PullRequestPollResult{}, err
+	}
+
+	checkState, checks, err := p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
+	if err != nil {
+		return PullRequestPollResult{}, err
+	}
+
+	comments, err := p.pullRequestComments(ctx, req.Repository, req.PullID, req.CommentsSince)
+	if err != nil {
+		return PullRequestPollResult{}, err
+	}
+
+	return PullRequestPollResult{
+		Number:           pr.Number,
+		State:            pr.State,
+		Merged:           pr.Merged,
+		Mergeable:        pr.Mergeable,
+		ReviewDecision:   decision,
+		RequestedChanges: requestedChanges,
+		CheckState:       checkState,
+		Checks:           checks,
+		CommentsSince:    comments,
+		URL:              pr.HTMLURL,
+	}, nil
+}
+
+// ClosePullRequest closes a GitHub pull request, detecting merged-vs-closed, and
+// optionally leaves a comment.
+func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return ClosePullRequestResult{}, err
+	}
+	if req.PullID == "" {
+		return ClosePullRequestResult{}, fmt.Errorf("pull id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
+	if err != nil {
+		return ClosePullRequestResult{}, err
+	}
+	var out githubPullRequestDetail
+	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]string{"state": "closed"}, &out); err != nil {
+		return ClosePullRequestResult{}, err
+	}
+	if req.Comment != "" {
+		comments, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.PullID, "comments")
+		if err != nil {
+			return ClosePullRequestResult{}, err
+		}
+		if err := p.do(ctx, http.MethodPost, comments, map[string]string{"body": req.Comment}, nil); err != nil {
+			return ClosePullRequestResult{}, err
+		}
+	}
+	state := "closed"
+	operation := "close"
+	if out.Merged {
+		state = "merged"
+		operation = "merge"
+	}
+	fields := map[string]FieldDigest{"state": {After: digestString(state)}}
+	if req.Comment != "" {
+		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, req.PullID),
+		URL:       out.HTMLURL,
+		Operation: operation,
+		Fields:    fields,
+	})
+	return ClosePullRequestResult{Number: out.Number, Merged: out.Merged, State: state}, nil
+}
+
+// reviewDecision aggregates a PR's review list into a single decision: the
+// latest review per author wins, and any outstanding CHANGES_REQUESTED beats
+// any APPROVED (BL-031 review-decision normalization).
+func (p *GitHubProvider) reviewDecision(ctx context.Context, repo RepositoryRef, pullID string) (ReviewDecision, int, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "reviews")
+	if err != nil {
+		return "", 0, err
+	}
+	var reviews []githubReview
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &reviews); err != nil {
+		return "", 0, err
+	}
+	latest := map[string]string{}
+	order := map[string]int{}
+	for i, review := range reviews {
+		login := review.User.Login
+		state := strings.ToUpper(review.State)
+		if state == "COMMENTED" {
+			continue // comment-only reviews carry no verdict
+		}
+		if prev, ok := order[login]; !ok || i > prev {
+			latest[login] = state
+			order[login] = i
+		}
+	}
+	requestedChanges := 0
+	approved := false
+	for _, state := range latest {
+		switch state {
+		case "CHANGES_REQUESTED":
+			requestedChanges++
+		case "APPROVED":
+			approved = true
+		}
+	}
+	switch {
+	case requestedChanges > 0:
+		return ReviewDecisionChangesRequested, requestedChanges, nil
+	case approved:
+		return ReviewDecisionApproved, 0, nil
+	default:
+		return ReviewDecisionPending, 0, nil
+	}
+}
+
+// combinedCheckState normalizes GitHub's legacy combined status plus check-runs
+// into a single CheckState + per-check detail refs (BL-031).
+func (p *GitHubProvider) combinedCheckState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, []CheckDetail, error) {
+	if ref == "" {
+		return CheckStatePending, nil, nil
+	}
+	var details []CheckDetail
+	failing, pending := false, false
+
+	statusEndpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "status")
+	if err != nil {
+		return "", nil, err
+	}
+	var combined githubCombinedStatus
+	if err := p.do(ctx, http.MethodGet, statusEndpoint, nil, &combined); err != nil {
+		return "", nil, err
+	}
+	for _, status := range combined.Statuses {
+		state := normalizeCombinedStatusState(status.State)
+		details = append(details, CheckDetail{Name: status.Context, State: state, URL: status.TargetURL, Summary: status.Description})
+		switch state {
+		case CheckStateFailing:
+			failing = true
+		case CheckStatePending:
+			pending = true
+		}
+	}
+
+	runsEndpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "commits", ref, "check-runs")
+	if err != nil {
+		return "", nil, err
+	}
+	var runsOut githubCheckRunsResponse
+	if err := p.do(ctx, http.MethodGet, runsEndpoint, nil, &runsOut); err != nil {
+		return "", nil, err
+	}
+	for _, run := range runsOut.CheckRuns {
+		state := normalizeCheckRunState(run.Status, run.Conclusion)
+		details = append(details, CheckDetail{Name: run.Name, State: state, URL: run.HTMLURL, Summary: run.Output.Summary})
+		switch state {
+		case CheckStateFailing:
+			failing = true
+		case CheckStatePending:
+			pending = true
+		}
+	}
+
+	switch {
+	case failing:
+		return CheckStateFailing, details, nil
+	case pending || len(details) == 0:
+		return CheckStatePending, details, nil
+	default:
+		return CheckStatePassing, details, nil
+	}
+}
+
+func (p *GitHubProvider) pullRequestComments(ctx context.Context, repo RepositoryRef, pullID string, since *time.Time) ([]PullRequestComment, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", pullID, "comments")
+	if err != nil {
+		return nil, err
+	}
+	if since != nil {
+		endpoint, err = addQuery(endpoint, url.Values{"since": []string{since.UTC().Format(time.RFC3339)}})
+		if err != nil {
+			return nil, err
+		}
+	}
+	var raw []githubIssueComment
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &raw); err != nil {
+		return nil, err
+	}
+	comments := make([]PullRequestComment, 0, len(raw))
+	for _, c := range raw {
+		comments = append(comments, PullRequestComment{ID: c.ID, Author: c.User.Login, Body: c.Body, URL: c.HTMLURL, CreatedAt: c.CreatedAt})
+	}
+	return comments, nil
+}
+
+func normalizeCombinedStatusState(state string) CheckState {
+	switch strings.ToLower(state) {
+	case "success":
+		return CheckStatePassing
+	case "failure", "error":
+		return CheckStateFailing
+	default:
+		return CheckStatePending
+	}
+}
+
+func normalizeCheckRunState(status, conclusion string) CheckState {
+	if strings.ToLower(status) != "completed" {
+		return CheckStatePending
+	}
+	switch strings.ToLower(conclusion) {
+	case "success", "neutral", "skipped":
+		return CheckStatePassing
+	case "failure", "timed_out", "cancelled", "action_required", "stale":
+		return CheckStateFailing
+	default:
+		return CheckStatePending
+	}
 }
 
 // RequestReview requests GitHub reviewers for a pull request.
@@ -564,6 +819,56 @@ type githubPullRequest struct {
 	ID      int    `json:"id"`
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
+}
+
+type githubPullRequestDetail struct {
+	Number    int    `json:"number"`
+	State     string `json:"state"`
+	Merged    bool   `json:"merged"`
+	Mergeable *bool  `json:"mergeable"`
+	HTMLURL   string `json:"html_url"`
+	Head      struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
+}
+
+type githubReview struct {
+	State string     `json:"state"`
+	User  githubUser `json:"user"`
+}
+
+type githubCombinedStatus struct {
+	State    string         `json:"state"`
+	Statuses []githubStatus `json:"statuses"`
+}
+
+type githubStatus struct {
+	Context     string `json:"context"`
+	State       string `json:"state"`
+	TargetURL   string `json:"target_url"`
+	Description string `json:"description"`
+}
+
+type githubCheckRunsResponse struct {
+	CheckRuns []githubCheckRun `json:"check_runs"`
+}
+
+type githubCheckRun struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
+	Output     struct {
+		Summary string `json:"summary"`
+	} `json:"output"`
+}
+
+type githubIssueComment struct {
+	ID        int64      `json:"id"`
+	Body      string     `json:"body"`
+	HTMLURL   string     `json:"html_url"`
+	User      githubUser `json:"user"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 func mapGitHubIssue(issue githubIssue) WorkItem {
