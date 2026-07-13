@@ -1,0 +1,177 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: implementation
+spec:
+  gaggle: acme-web
+  displayName: Implementation (issue -> PR, reviewer gate, CI-poll repass)
+  # The flagship V0 workflow (ARCHITECTURE.md §12, issue #27): claim a
+  # goobers:ready issue, implement it in a worktree, pass it through a
+  # reviewer gate and a local `make ci`-style gate, open a PR, then poll CI
+  # with a bounded repass loop back to implementation on failure. When this
+  # closes, the core loop exists: feed issues in, PRs come out.
+  triggers:
+    - type: schedule
+      schedule: "3,18,33,48 * * * *"
+  readiness:
+    # maxParallel 1 initially — claiming (SEC-047 + claim ledger, WF-031)
+    # already guarantees two runs never double-process the same issue, so
+    # this is a conservative starting concurrency, not a safety requirement;
+    # raise once the loop is proven out.
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 8
+  start: query-backlog
+  tasks:
+    # Built-in backlog-query stage kind (WF-055/SCH-041): claims exactly one
+    # item carrying both the trust label (SEC-047) and the curator's
+    # goobers:ready output marker (#25). Narrowed to a single item (unlike
+    # curation's batch) because each run of this workflow produces one PR.
+    - name: query-backlog
+      type: deterministic
+      goal: Claim one ready, trust-approved issue to implement.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers:approved"
+        requireLabels: "goobers:ready"
+        maxItems: "1"
+      capabilities:
+        - github:issues:write
+      expectedOutputs:
+        - claimed-item
+      next: implement
+
+    # Agentic implementation in a fresh, isolated worktree (§16/#19). Scoped
+    # to repo:push only — this stage never talks to the issues or PR API.
+    # Every repass (from the review or ci-gate below) re-enters here, so the
+    # instructions cover reading prior-attempt context, not just a cold
+    # start.
+    - name: implement
+      type: agentic
+      goober: implementer
+      goal: >-
+        Implement the claimed issue end to end: read the issue and its
+        acceptance criteria, plan, implement, run the project's tests
+        locally, and commit + push to the run's branch. On a repass, first
+        read the reviewer rationale or CI failure evidence attached as
+        context and address it before making further changes.
+      capabilities:
+        - repo:push
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 15
+      expectedOutputs:
+        - changed-files
+      next: review
+
+    # `make ci`-equivalent, run in the same worktree the implementer used.
+    - name: local-ci
+      type: deterministic
+      goal: Run the project's local CI-equivalent (build, lint, tests) in the worktree.
+      run:
+        command: ["make", "ci"]
+      retry:
+        maxAttempts: 1
+      next: local-gate
+
+    - name: open-pr
+      type: deterministic
+      goal: Open (or update, on repass) the PR for the run's branch.
+      run:
+        command: ["goobers", "open-pr"]
+      inputs:
+        # BranchName() = goobers/<workflow>/<run-id> (providers.BranchName,
+        # #13) is stable across repasses, so a second call here updates the
+        # existing PR rather than opening a duplicate.
+        runIdFooter: "true"
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        - pull-request-url
+        # Well-known handoff key for ci-poll's inputs.prNumber below — the
+        # runner threads this task's output into the next task's Inputs (the
+        # exact mechanism is the runner's concern, internal/executor's
+        # CIPollConfigFromEnvelope only documents the key it reads).
+        - prNumber
+      next: ci-poll
+
+    - name: ci-poll
+      type: deterministic
+      goal: Poll the PR's CI checks and review state until they conclude.
+      run:
+        # internal/executor.TaskExecutor (#18, merged) dispatches this
+        # built-in stage kind via inputs.kind — it never shells out `command`
+        # for kind=ci-poll (CIPollExecutor calls the PR provider directly).
+        # `command` stays a placeholder because DeterministicRun.Command is a
+        # required field in schema v0.
+        command: ["goobers", "ci-poll"]
+      inputs:
+        kind: "ci-poll"
+        # prOwner/prRepo default from RepoRef when unset (they match here);
+        # prNumber is required and is expected to arrive via the open-pr ->
+        # ci-poll output/input threading noted above, not a static value.
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        - ciStatus
+      next: ci-gate
+
+    - name: close-out
+      type: deterministic
+      goal: Comment on the originating issue linking the merged/open PR and mark it complete.
+      run:
+        command: ["goobers", "issue-close-out"]
+      capabilities:
+        - github:issues:write
+      # Terminal: no `next`. The core loop's product — issue in, PR out — is
+      # complete once the issue carries the closing breadcrumb.
+
+  gates:
+    # Agentic gate: the reviewer invocation IS the evaluator (gate.md's
+    # "Agentic" evaluator kind) — there is no separate preceding review task.
+    # The runner attaches the preceding task's ("implement") artifacts as
+    # evidence context pointers before invoking the reviewer
+    # (internal/gate.ReviewerInvocation, #20). Verdict decisions map directly
+    # to branches (GT-002: never a silent pass): "needs-changes" repasses to
+    # implement with the rationale as evidence; "fail" aborts outright
+    # rather than spending repass budget on a fundamentally rejected
+    # approach. Bounded repass + auto-escalation on budget exhaustion is
+    # enforced by the gate evaluator at runtime (internal/gate,
+    # DefaultMaxRepasses=3), not by this definition — past budget the
+    # runtime overrides straight to @escalate regardless of these branches.
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: reviewer
+      branches:
+        pass: local-ci
+        needs-changes: implement
+        fail: "@abort"
+
+    # local-ci's ResultEnvelope.Status is flattened into this gate's
+    # Inputs[status] by the runner (internal/gate's documented
+    # runner-contract convention); "success" is status-equals' default
+    # expected value, so no params are needed.
+    - name: local-gate
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: open-pr
+        fail: implement
+
+    # ci-poll sets Outputs[ciStatus] to the normalized providers.CheckState
+    # value ("passing"/"failing"/"pending" — providers/model.go); the
+    # ci-status check reads that well-known key.
+    - name: ci-gate
+      evaluator: automated
+      automated:
+        check: ci-status
+        params:
+          equals: "passing"
+      branches:
+        pass: close-out
+        # A CI failure repasses to implement with the failure evidence
+        # (checks/failure detail) attached as context by the runner, the
+        # same evidence-pointer mechanism the reviewer gate uses.
+        fail: implement

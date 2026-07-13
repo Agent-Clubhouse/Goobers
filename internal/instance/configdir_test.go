@@ -21,21 +21,34 @@ func TestLoadConfigDirValid(t *testing.T) {
 	if len(set.Gaggles) != 1 || set.Gaggles[0].Name != "acme-web" {
 		t.Fatalf("unexpected gaggles: %+v", set.Gaggles)
 	}
-	// config-examples ships two goobers/workflows (coder/default-implement,
-	// curator/backlog-curation — issue #25); check membership, not order.
+	// config-examples ships four goobers (coder, curator, implementer,
+	// reviewer) and three workflows (default-implement, backlog-curation —
+	// #25, implementation — #27); check membership, not order.
 	gotGoobers := map[string]bool{}
 	for _, g := range set.Goobers {
 		gotGoobers[g.Name] = true
 	}
-	if len(set.Goobers) != 2 || !gotGoobers["coder"] || !gotGoobers["curator"] {
+	wantGoobers := []string{"coder", "curator", "implementer", "reviewer"}
+	if len(set.Goobers) != len(wantGoobers) {
 		t.Fatalf("unexpected goobers: %+v", set.Goobers)
+	}
+	for _, name := range wantGoobers {
+		if !gotGoobers[name] {
+			t.Fatalf("missing goober %q; got: %+v", name, set.Goobers)
+		}
 	}
 	gotWorkflows := map[string]bool{}
 	for _, w := range set.Workflows {
 		gotWorkflows[w.Name] = true
 	}
-	if len(set.Workflows) != 2 || !gotWorkflows["default-implement"] || !gotWorkflows["backlog-curation"] {
+	wantWorkflows := []string{"default-implement", "backlog-curation", "implementation"}
+	if len(set.Workflows) != len(wantWorkflows) {
 		t.Fatalf("unexpected workflows: %+v", set.Workflows)
+	}
+	for _, name := range wantWorkflows {
+		if !gotWorkflows[name] {
+			t.Fatalf("missing workflow %q; got: %+v", name, set.Workflows)
+		}
 	}
 }
 
