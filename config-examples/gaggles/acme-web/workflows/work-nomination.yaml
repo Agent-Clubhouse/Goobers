@@ -1,0 +1,68 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: work-nomination
+spec:
+  gaggle: acme-web
+  displayName: Work nomination
+  # Producer workflow (ARCHITECTURE.md §7, §8, §12; WF-055): a cron trigger
+  # wakes this workflow. It materializes the telemetry query surface (#24) as
+  # an artifact, then a nominator goober analyzes that artifact plus a
+  # read-only checkout for coverage gaps, perf smells, and recurring errors,
+  # and files evidence-backed issues. Composes with backlog-curation (#25):
+  # nominated issues land unclaimed and unapproved, so a maintainer applies
+  # goobers:approved before curation's query-backlog stage will ever claim
+  # them (SEC-047) — nomination proposes, it never fast-tracks its own work
+  # past the trust gate.
+  triggers:
+    - type: schedule
+      schedule: "43 7 * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+  start: gather-signals
+  tasks:
+    # Deterministic: materializes telemetry stats/error-signature aggregates
+    # (#24's rollup.Stats/TopErrorSignatures) as an artifact the nominator
+    # reads, rather than granting the agentic stage live rollup access —
+    # narrows what the LLM-driven stage can reach to exactly the evidence it
+    # needs (ARCHITECTURE.md §2.4 pointer-passing).
+    - name: gather-signals
+      type: deterministic
+      goal: Materialize telemetry stats and recent-error signals as an artifact for the nominator to analyze.
+      run:
+        command: ["goobers", "telemetry", "stats"]
+      capabilities:
+        - telemetry:read
+      expectedOutputs:
+        - telemetry-signals
+      next: nominate
+    # Agentic: reads the telemetry-signals artifact plus a read-only checkout,
+    # dedupes against already-open goobers:nominated issues (query first —
+    # issue #26 scope), and files well-formed issues up to the configured
+    # per-run cap. Issues-only — no push/PR capability granted: this workflow
+    # proposes work, it never touches code (issue #26: "writes issues only —
+    # never code").
+    - name: nominate
+      type: agentic
+      goober: nominator
+      goal: >-
+        Analyze the telemetry-signals artifact and a read-only checkout for
+        genuine coverage gaps, performance smells, and recurring error
+        patterns. Query existing goobers:nominated issues first and skip
+        anything already covered within the dedupe window. File a
+        well-formed issue for each remaining gap: evidence pointers or a
+        repro, a proposed scope, and an acceptance sketch. Stop at the
+        configured per-run cap.
+      capabilities:
+        - repo:read
+        - telemetry:read
+        - github:issues:write
+      inputs:
+        # Noise controls (issue #26 scope): bound how many issues one run may
+        # file, and how far back "already covered" looks when deduping.
+        maxNominationsPerRun: "5"
+        dedupeWindowDays: "14"
+      expectedOutputs:
+        - nomination-summary
+      # Terminal: no `next`.

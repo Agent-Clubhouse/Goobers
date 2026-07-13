@@ -42,10 +42,11 @@ func TestLoad_ValidExampleRepo(t *testing.T) {
 		t.Errorf("namespace = %q, want %q", set.Namespace, DefaultNamespace)
 	}
 
-	// config-examples ships one Manifest/Gaggle, four Goobers (coder,
-	// curator, implementer, reviewer), and three Workflows
-	// (default-implement, backlog-curation — #25, implementation — #27).
-	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 1, "Goober": 4, "Workflow": 3}
+	// config-examples ships one Manifest/Gaggle, five Goobers (coder,
+	// curator, implementer, nominator — #26, reviewer), and four Workflows
+	// (default-implement, backlog-curation — #25, implementation — #27,
+	// work-nomination — #26).
+	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 1, "Goober": 5, "Workflow": 4}
 	by := objectsByKind(set.Objects)
 	for kind, want := range wantByKind {
 		if len(by[kind]) != want {

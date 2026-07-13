@@ -1,0 +1,26 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: nominator
+spec:
+  gaggle: acme-web
+  role: nominator
+  displayName: Nominator
+  instructions: instructions.md
+  harness: copilot
+  # Read-only repo + telemetry, issues-write — never repo:push/github:pr:write
+  # (issue #26 scope: "writes issues only — never code"). Enforced by
+  # capability non-injection (SEC-042/SEC-045): push/PR credentials are simply
+  # never materialized into this goober's run environment.
+  capabilities:
+    - repo:read
+    - telemetry:read
+    - github:issues:write
+  skills:
+    - analysis
+  tools:
+    - github
+    - telemetry
+  scaleFactor: 1
+  workflows:
+    - work-nomination
