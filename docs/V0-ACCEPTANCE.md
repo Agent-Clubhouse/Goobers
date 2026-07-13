@@ -3,16 +3,18 @@
 > Status: **Scaffolded, not yet executed.** This is the verification artifact for
 > issue #30, the V0 milestone gate. It is structured against the expected
 > definition of done now, ahead of its remaining dependencies landing. The
-> self-hosting dogfood config (#28) and CLI surface (#23, partially — see
-> below) are on `main`; what's left is **#17 Deliverable B** (durability/
-> resume/retries, PR #87 in QA re-verify) — which unblocks `up`'s real daemon
-> loop and `run`'s real execution (both currently honest stubs) plus #29's
-> crash-resume variant — and **#26** (work nomination, not started). Commands
-> marked **[pending]** below don't behave end-to-end on `main` yet even though
-> the CLI surface exists. The milestone closes only once someone other than
-> the runner's primary implementer executes this runbook clean, end to end,
-> and the [Execution record](#execution-record) appendix is filled in with
-> real journal excerpts and PR links (issue #30's acceptance criteria) — not
+> self-hosting dogfood config (#28), capability registry (#74), and the local
+> runner core (#17 — durability/resume/retries merged as `2d75e2e`, issue
+> closed) are all on `main`. What's left: **#23**'s daemon loop (`goobers up`
+> wired to `Runner.Resume` + graceful drain) and **#29**'s crash-resume variant
+> (un-skipping `TestWalkingSkeletonCrashResume` against real `Resume`) — both
+> just given the GO now that #17 unblocks them — plus **#26** (work
+> nomination, not started). Commands marked **[pending]** below don't behave
+> end-to-end on `main` yet even though the CLI surface exists. The milestone
+> closes only once someone other than the runner's primary implementer
+> executes this runbook clean, end to end, and the
+> [Execution record](#execution-record) appendix is filled in with real
+> journal excerpts and PR links (issue #30's acceptance criteria) — not
 > before. Owner: Goobers-Dev-5.
 
 ## Purpose
@@ -64,15 +66,17 @@ cd my-instance
 ../bin/goobers validate .
 ```
 
-### 2. Run **[pending #17 Deliverable B]**
+### 2. Run **[pending #23 daemon loop]**
 
 ```sh
-# goobers up / goobers run exist on main (#23, PR #67) but are honest stubs
-# today: `up` validates + takes the single-instance lock, then reports the
-# daemon (scheduler #21 + runner #17) isn't wired in yet; `run` reports an
-# "escalated: local runner not yet wired — no stages executed" result rather
-# than silently doing nothing. Both become real once #17 Deliverable B
-# (durability/resume/retries, PR #87) lands. Once it does:
+# goobers up / goobers run exist on main (#23, PR #67) but are still honest
+# stubs as of this writing: `up` validates + takes the single-instance lock,
+# then reports the daemon isn't wired in yet; `run` reports an "escalated:
+# local runner not yet wired — no stages executed" result rather than
+# silently doing nothing. The local runner itself (#17) is now complete on
+# main (`2d75e2e`) — what's left is wiring `up`'s daemon loop to it
+# (scheduler + Runner.Resume + graceful SIGTERM drain), in progress. Once it
+# lands:
 ../bin/goobers up          # long-lived: embedded scheduler + local runner
 # or, for a single manual pass:
 ../bin/goobers run <workflow-name>
@@ -154,18 +158,18 @@ reflects `main` as of this writing, not the eventual acceptance run.
 | Telemetry query surface | #24 | ✅ shipped | Verify (telemetry) |
 | Gate execution: automated + agentic, bounded repass | #20 | ✅ shipped | Observe (implementation) |
 | Local credential handling, capability scoping | #14 | ✅ shipped | Setup (implicit) |
-| Runner core: lifecycle, durability, resume, retries | #17 | 🔶 partial — Deliverable A shipped (`27805e7`), Deliverable B in QA re-verify (PR #87) | Run |
-| CLI surface: `up`/`run`/`status`/`trace` | #23 | 🔶 partial — init/validate/status/trace/telemetry + quickstart shipped (PR #67); `up`'s daemon loop and `run`'s real execution are honest stubs, blocked on #17 Deliverable B | Run, Observe, Verify |
+| Runner core: lifecycle, durability, resume, retries | #17 | ✅ shipped (PR #87, `2d75e2e`) | Run |
+| CLI surface: `up`/`run`/`status`/`trace` | #23 | 🔶 partial — init/validate/status/trace/telemetry + quickstart shipped (PR #67); `up`'s daemon loop and `run`'s real execution are honest stubs, wiring to #17's now-complete runner in progress | Run, Observe, Verify |
 | Workflow: backlog curation | #25 | ✅ shipped | Observe (1) |
 | Workflow: work nomination | #26 | ⬜ not started | Observe (2) |
 | Workflow: implementation, reviewer + CI-poll repass | #27 | ✅ shipped | Observe (3) |
 | Self-hosting dogfood config | #28 | ✅ shipped (PR #77, `12feace`) | Setup |
-| E2E walking skeleton (conformance seed) | #29 | 🔶 partial — walking skeleton on real runner Deliverable A shipped (PR #83, `6cb6f05`); crash-resume variant explicitly `t.Skip`'d, blocked on #17 Deliverable B | (validates the whole chain on fixtures, ahead of this live run) |
+| E2E walking skeleton (conformance seed) | #29 | 🔶 partial — walking skeleton on real runner Deliverable A shipped (PR #83, `6cb6f05`); crash-resume variant explicitly `t.Skip`'d, un-skip against #17's now-complete `Runner.Resume` in progress | (validates the whole chain on fixtures, ahead of this live run) |
 
-**4 of 20 bullets are not fully demonstrable yet** (#17 Deliverable B in QA
-re-verify — this is the pacing item, it also unblocks #23's daemon loop/real
-`run` and #29's crash-resume variant; #26 not started) — this runbook cannot
-be executed for real until they land. Re-run the checklist after each merge;
+**3 of 20 bullets are not fully demonstrable yet** (#23's daemon loop/real
+`run` and #29's crash-resume variant, both now unblocked and in progress
+following #17's completion; #26 not started) — this runbook cannot be
+executed for real until they land. Re-run the checklist after each merge;
 strike "not yet demonstrable" once its issue closes.
 
 ## Known limitations (V0 → later)
