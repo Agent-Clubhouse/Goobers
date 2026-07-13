@@ -1,7 +1,11 @@
 # Goobers — Requirements & Specs
 
 This directory turns the product vision (`../VISION.md`) into structured, traceable
-requirements that the PM can decompose into build work.
+requirements that the PM can decompose into build work. The **architecture of record**
+is [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — one system across three deployment
+tiers, two runners behind one seam — and specs carry tier annotations aligned to it
+(`ARCHITECTURE.md §13`). Where an older spec passage contradicts it, the architecture
+doc wins and the spec is updated to match.
 
 ## How these specs are organized
 
@@ -17,6 +21,9 @@ self-contained: purpose, model, requirements, and open questions.
 - **Status** per spec: `Draft` → `Reviewed` (PO red-lined) → `Approved` (locked for
   build).
 - **Traceability:** each spec links back to the vision section(s) it derives from.
+- **Tier applicability** is annotated inline where useful — *(All tiers)*,
+  *(Tiers 1–2)*, *(Tier 3, V2)*. Tier-3-only requirements (Azure/cluster substrate)
+  are marked, never deleted: they are the drop-in specs for V2.
 - **Open questions** live in each spec and are mirrored in `../VISION.md §8` until
   resolved.
 
@@ -32,14 +39,15 @@ self-contained: purpose, model, requirements, and open questions.
 | Primitive | [Gate](gate.md) | Draft | Unified gate, pluggable evaluator |
 | System | [Scheduler & work distribution](scheduler.md) | Draft | Routing + work-claiming |
 | System | [Backlog & providers (GitHub/ADO)](backlog-providers.md) | Draft | Provider abstraction |
-| System | [Telemetry & tracing](telemetry.md) | Draft | Two separate stores |
-| System | [Tutor & learning loop](tutor.md) | Draft | Modifies goobers + workflows/gates; approval configurable |
-| System | [Portal](portal.md) | Draft | Observability-first; minimal runtime ops |
-| System | [Deployment & infra](deployment.md) | Draft | AKS, Bicep, release pipeline |
-| System | [Security & isolation](security.md) | Draft | Namespace + identity per gaggle; Key Vault refs |
+| System | [Telemetry & tracing](telemetry.md) | Draft | Two separate stores; journal+rollup → ADX at tier 3 |
+| System | [Tutor & learning loop](tutor.md) | Draft | Writes only to `config`; reads journals; V1 scope |
+| System | [Portal](portal.md) | Draft | Observability-first; reads run journals; minimal runtime ops |
+| System | [Deployment & infra](deployment.md) | Draft | Tiered: local install → AKS/Bicep drop-in (V2) |
+| System | [Security & isolation](security.md) | Draft | Auth/isolation ladder; Key Vault refs at tier 3 |
 | System | [Config-as-code model](config-as-code.md) | Draft | Manifest + markdown + folder layout |
 
 ## Source decisions
 
-Foundational decisions are recorded in `../VISION.md §8`. Specs must not contradict
-them; if a spec surfaces a reason to revisit one, flag it rather than diverging.
+Foundational decisions are recorded in `../VISION.md §8`; the architectural ones are
+elaborated in `../ARCHITECTURE.md`. Specs must not contradict them; if a spec surfaces
+a reason to revisit one, flag it rather than diverging.
