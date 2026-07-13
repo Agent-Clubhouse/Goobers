@@ -1,0 +1,93 @@
+package localscheduler
+
+import "time"
+
+// TriggerState tracks one workflow's cron evaluation state: the schedule and
+// the last instant it was evaluated, so a tick can decide whether it's due.
+type TriggerState struct {
+	Workflow string
+	Schedule Schedule
+	// LastEval is the last instant this trigger was evaluated (fired or not).
+	// It must be initialized explicitly — by the daemon's start time for a
+	// trigger never seen before, or by the timestamp of its most recent
+	// trigger.fired instance-journal event on restart (see ReconstructLastEval)
+	// — so missed-tick catch-up is well-defined rather than an epoch backfill.
+	LastEval time.Time
+}
+
+// TickResult is the outcome of evaluating one TriggerState at now.
+type TickResult struct {
+	Fire     bool
+	LastEval time.Time // the LastEval to record for the next tick
+	// CatchUp is true when Fire is true because the daemon was down across one
+	// or more scheduled fires — the missed-tick policy collapses any number of
+	// missed fires into exactly one catch-up run (no backfill queue).
+	CatchUp bool
+	// MissedTicks estimates how many scheduled fires were skipped by the
+	// catch-up collapse (informational; 0 when CatchUp is false). Capped at
+	// maxMissedTickCount to bound the counting loop.
+	MissedTicks int
+}
+
+// maxMissedTickCount bounds how many Next() calls Tick will make while
+// estimating a catch-up's missed-tick count, so a pathological schedule (or a
+// very long daemon outage against a fine-grained schedule) can't spin.
+const maxMissedTickCount = 10_000
+
+// Tick evaluates whether t is due at now and returns the decision plus the
+// LastEval to record afterward. The missed-tick policy is "fire at most one
+// catch-up": however many scheduled fires fell inside [LastEval, now), Tick
+// fires the workflow once and advances LastEval to now — never to the next
+// unfired tick — so no backlog of stale fires replays.
+func Tick(t TriggerState, now time.Time) TickResult {
+	next := t.Schedule.Next(t.LastEval)
+	if next.After(now) {
+		return TickResult{Fire: false, LastEval: t.LastEval}
+	}
+
+	// Due. Count how many fires this collapses (bounded) purely for the
+	// observability of the catch-up reason; the decision itself is already made.
+	missed := 1
+	cursor := next
+	for missed < maxMissedTickCount {
+		n := t.Schedule.Next(cursor)
+		if n.After(now) {
+			break
+		}
+		cursor = n
+		missed++
+	}
+
+	return TickResult{
+		Fire:        true,
+		LastEval:    now,
+		CatchUp:     missed > 1,
+		MissedTicks: missed,
+	}
+}
+
+// ReconstructLastEval derives the LastEval baseline for each workflow's trigger
+// after a restart, from the instance journal's trigger.fired history: the most
+// recent fire time for a workflow, or startedAt for a workflow never observed
+// (no epoch backfill — a trigger the daemon has never evaluated starts counting
+// from daemon start, not from year zero).
+func ReconstructLastEval(fired []TriggerFiredRecord, workflows []string, startedAt time.Time) map[string]time.Time {
+	last := make(map[string]time.Time, len(workflows))
+	for _, wf := range workflows {
+		last[wf] = startedAt
+	}
+	for _, f := range fired {
+		if cur, ok := last[f.Workflow]; !ok || f.Time.After(cur) {
+			last[f.Workflow] = f.Time
+		}
+	}
+	return last
+}
+
+// TriggerFiredRecord is the minimal shape ReconstructLastEval needs from a
+// trigger.fired instance-journal event, kept independent of the journal
+// package's Event type so this file has no import-time coupling to it.
+type TriggerFiredRecord struct {
+	Workflow string
+	Time     time.Time
+}

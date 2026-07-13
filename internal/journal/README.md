@@ -126,6 +126,22 @@ version, so a reader can decide whether to trust type-specific fields. Minimal
 policy for V0: **read leniently, write strictly** (writers always emit the
 current version; the schema validates that exact shape).
 
+## The instance journal (`scheduler/events.jsonl`)
+
+Alongside per-run journals, the instance root has its own long-lived log at
+`<instance-root>/scheduler/events.jsonl` (§4/§6): scheduler decisions
+(`trigger.fired`, `tick.skipped`, an instance-level `run.started`/`run.finished`
+echo) and claim-ledger transitions (`claim.acquired`, `claim.released`). It uses
+the **same envelope, same append+fsync durability, and the same torn-tail
+crash-recovery** as a run's `events.jsonl` — `InstanceLog` shares its core with
+`Run` (`appendEvent`, `truncateTornTail`) rather than duplicating it. Unlike a
+`Run`, it is opened once for the daemon's lifetime (`OpenInstanceLog`), not once
+per run, and carries no `run.yaml`/`state.json`/artifacts. The four
+instance-only event types add two informational fields not used in a run's own
+log: `workflow` (which workflow the decision concerns) and `runId` (which run a
+claim/dispatch pertains to) — a run's own events don't need either since both
+are implicit from the run directory.
+
 ## Go API
 
 ```go

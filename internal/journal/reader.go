@@ -125,14 +125,8 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 
 	// Truncate a torn partial final record so the next append starts on a clean
 	// record boundary.
-	if tornBytes > 0 {
-		fi, statErr := os.Stat(eventsPath)
-		if statErr != nil {
-			return nil, RecoverReport{}, statErr
-		}
-		if err := os.Truncate(eventsPath, fi.Size()-int64(tornBytes)); err != nil {
-			return nil, RecoverReport{}, fmt.Errorf("journal: truncate torn record: %w", err)
-		}
+	if err := truncateTornTail(eventsPath, tornBytes); err != nil {
+		return nil, RecoverReport{}, err
 	}
 
 	f, err := os.OpenFile(eventsPath, os.O_WRONLY|os.O_APPEND, 0o644)

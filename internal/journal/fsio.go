@@ -67,6 +67,16 @@ func writeStateAtomic(dir string, st State) error {
 	return fsyncDir(dir)
 }
 
+// WriteFileAtomic writes data to path via a sibling temp file, fsync, and
+// rename, so a reader never observes a half-written file and the write
+// survives a crash immediately after — the same durability primitive
+// state.json and run.yaml use, exported for other instance-state durable files
+// (e.g. the scheduler's claim ledger) that want the identical guarantee without
+// duplicating it.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	return writeFileAtomic(path, data, perm)
+}
+
 // writeFileAtomic writes data to path via a sibling temp file, fsync, and rename.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	tmp := path + ".tmp"
