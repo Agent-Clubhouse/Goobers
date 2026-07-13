@@ -131,7 +131,7 @@ func newTestRunner(t *testing.T, byTask map[string]stubTaskResult, automated inv
 	fixtureRepo := newFixtureRepo(t)
 
 	r, err := New(Config{
-		NewDeterministic: func(rec ArtifactRecorder) (invoke.Deterministic, error) {
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
 			return &stubDeterministic{rec: rec, byTask: byTask}, nil
 		},
 		Automated: automated,
