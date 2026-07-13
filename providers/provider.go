@@ -1,6 +1,9 @@
 package providers
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Provider combines repo, backlog, and trigger operations for a backend.
 type Provider interface {
@@ -17,6 +20,17 @@ type RepoProvider interface {
 	Commit(context.Context, CommitRequest) (CommitResult, error)
 	OpenPullRequest(context.Context, PullRequestRequest) (PullRequestResult, error)
 	RequestReview(context.Context, ReviewRequest) error
+	// PollPullRequest reports review/CI state as a deterministic stage output so a
+	// gate can drive the CI-poll/repass loop (BL-031, ARCHITECTURE.md §12).
+	PollPullRequest(context.Context, PullRequestPollRequest) (PullRequestPollResult, error)
+	// ClosePullRequest closes a pull request, detecting merged-vs-closed (BL-031).
+	ClosePullRequest(context.Context, ClosePullRequestRequest) (ClosePullRequestResult, error)
+}
+
+// BranchName returns the run-scoped branch-name convention the repo provider
+// owns (BL-010/#13): the worktree manager pushes to it, the provider never does.
+func BranchName(workflow, runID string) string {
+	return fmt.Sprintf("goobers/%s/%s", workflow, runID)
 }
 
 // BacklogProvider abstracts backlog work item operations: query/read, create,

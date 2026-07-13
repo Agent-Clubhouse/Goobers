@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGitHubProviderMapsWorkItemsAndStatus(t *testing.T) {
@@ -280,6 +281,221 @@ func TestGitHubProviderPollingSubscriptionContinues(t *testing.T) {
 	second := <-events
 	if first.Item.ID == second.Item.ID {
 		t.Fatalf("expected polling subscription to continue and emit changed items, got %q twice", first.Item.ID)
+	}
+}
+
+func TestGitHubProviderOpenPullRequestStampsRunIDFooter(t *testing.T) {
+	var gotBody map[string]interface{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		decodeJSON(t, r, &gotBody)
+		writeJSON(t, w, map[string]interface{}{"number": 9, "html_url": "https://github.com/acme/app/pull/9"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	_, err := provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+		Title:      "Implement #13", Body: "Adds PR polling.", Head: "goobers/impl/run-1", Base: "main",
+		RunID: "run-1",
+	})
+	if err != nil {
+		t.Fatalf("OpenPullRequest returned error: %v", err)
+	}
+	body, _ := gotBody["body"].(string)
+	if !strings.Contains(body, "Adds PR polling.") || !strings.Contains(body, "goobers run-id: run-1") {
+		t.Fatalf("body missing run-id footer: %q", body)
+	}
+}
+
+func TestGitHubProviderOpenPullRequestFooterNoOpWithoutRunID(t *testing.T) {
+	var gotBody map[string]interface{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		decodeJSON(t, r, &gotBody)
+		writeJSON(t, w, map[string]interface{}{"number": 9, "html_url": "https://github.com/acme/app/pull/9"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	_, err := provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+		Title:      "Implement #13", Body: "Adds PR polling.", Head: "goobers/impl/run-1", Base: "main",
+	})
+	if err != nil {
+		t.Fatalf("OpenPullRequest returned error: %v", err)
+	}
+	if body, _ := gotBody["body"].(string); body != "Adds PR polling." {
+		t.Fatalf("body = %q, want unchanged (no run-id)", body)
+	}
+}
+
+func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
+	mux := http.NewServeMux()
+	mergeable := true
+	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{
+			"number": 9, "state": "open", "merged": false, "mergeable": mergeable,
+			"html_url": "https://github.com/acme/app/pull/9",
+			"head":     map[string]interface{}{"sha": "deadbeef"},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/pulls/9/reviews", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{
+			{"state": "CHANGES_REQUESTED", "user": map[string]string{"login": "alice"}},
+			{"state": "COMMENTED", "user": map[string]string{"login": "bob"}},
+			{"state": "APPROVED", "user": map[string]string{"login": "alice"}},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"state": "failure",
+			"statuses": []map[string]interface{}{
+				{"context": "legacy-ci", "state": "failure", "target_url": "https://ci/legacy", "description": "boom"},
+			},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"check_runs": []map[string]interface{}{
+				{"name": "unit-tests", "status": "completed", "conclusion": "success", "html_url": "https://ci/unit"},
+				{"name": "e2e", "status": "in_progress", "html_url": "https://ci/e2e"},
+			},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/issues/9/comments", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("since"); got == "" {
+			t.Fatalf("expected since query param")
+		}
+		writeJSON(t, w, []map[string]interface{}{
+			{"id": 1, "body": "fix this", "html_url": "https://github.com/acme/app/pull/9#comment-1", "user": map[string]string{"login": "carol"}, "created_at": "2026-07-13T00:00:00Z"},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	since := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	result, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9", CommentsSince: &since,
+	})
+	if err != nil {
+		t.Fatalf("PollPullRequest returned error: %v", err)
+	}
+	if result.ReviewDecision != ReviewDecisionApproved {
+		t.Fatalf("ReviewDecision = %q, want approved (alice's later APPROVED supersedes her own CHANGES_REQUESTED)", result.ReviewDecision)
+	}
+	if result.RequestedChanges != 0 {
+		t.Fatalf("RequestedChanges = %d, want 0", result.RequestedChanges)
+	}
+	if result.CheckState != CheckStateFailing {
+		t.Fatalf("CheckState = %q, want failing (legacy status reports failure)", result.CheckState)
+	}
+	if len(result.Checks) != 3 {
+		t.Fatalf("len(Checks) = %d, want 3 (1 status + 2 check-runs)", len(result.Checks))
+	}
+	if result.Mergeable == nil || !*result.Mergeable {
+		t.Fatalf("Mergeable = %v, want true", result.Mergeable)
+	}
+	if len(result.CommentsSince) != 1 || result.CommentsSince[0].Author != "carol" {
+		t.Fatalf("CommentsSince = %#v", result.CommentsSince)
+	}
+}
+
+func TestGitHubProviderPollPullRequestChangesRequestedWins(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"number": 9, "state": "open", "html_url": "https://github.com/acme/app/pull/9"})
+	})
+	mux.HandleFunc("/repos/acme/app/pulls/9/reviews", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{
+			{"state": "APPROVED", "user": map[string]string{"login": "alice"}},
+			{"state": "CHANGES_REQUESTED", "user": map[string]string{"login": "bob"}},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/issues/9/comments", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("since"); got != "" {
+			t.Fatalf("since query param = %q, want none (CommentsSince not set)", got)
+		}
+		writeJSON(t, w, []map[string]interface{}{})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
+	})
+	if err != nil {
+		t.Fatalf("PollPullRequest returned error: %v", err)
+	}
+	if result.ReviewDecision != ReviewDecisionChangesRequested {
+		t.Fatalf("ReviewDecision = %q, want changes_requested (outstanding request beats another reviewer's approval)", result.ReviewDecision)
+	}
+	if result.RequestedChanges != 1 {
+		t.Fatalf("RequestedChanges = %d, want 1", result.RequestedChanges)
+	}
+	if result.CheckState != CheckStatePending {
+		t.Fatalf("CheckState = %q, want pending (no head sha, no checks polled)", result.CheckState)
+	}
+}
+
+func TestGitHubProviderClosePullRequestDetectsMergedVsClosed(t *testing.T) {
+	mux := http.NewServeMux()
+	var gotComment map[string]string
+	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		var body map[string]string
+		decodeJSON(t, r, &body)
+		if body["state"] != "closed" {
+			t.Fatalf("state = %q, want closed", body["state"])
+		}
+		writeJSON(t, w, map[string]interface{}{"number": 9, "state": "closed", "merged": true})
+	})
+	mux.HandleFunc("/repos/acme/app/issues/9/comments", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		decodeJSON(t, r, &gotComment)
+		writeJSON(t, w, map[string]interface{}{})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.ClosePullRequest(context.Background(), ClosePullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9", Comment: "landed, thanks!",
+	})
+	if err != nil {
+		t.Fatalf("ClosePullRequest returned error: %v", err)
+	}
+	if !result.Merged || result.State != "merged" {
+		t.Fatalf("result = %#v, want merged=true state=merged", result)
+	}
+	if gotComment["body"] != "landed, thanks!" {
+		t.Fatalf("comment body = %q", gotComment["body"])
+	}
+}
+
+func TestGitHubProviderClosePullRequestUnmerged(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"number": 9, "state": "closed", "merged": false})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.ClosePullRequest(context.Background(), ClosePullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
+	})
+	if err != nil {
+		t.Fatalf("ClosePullRequest returned error: %v", err)
+	}
+	if result.Merged || result.State != "closed" {
+		t.Fatalf("result = %#v, want merged=false state=closed", result)
 	}
 }
 
