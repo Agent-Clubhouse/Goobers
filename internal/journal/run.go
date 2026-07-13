@@ -182,6 +182,21 @@ func (r *Run) SetMachineState(state string) {
 	r.mu.Unlock()
 }
 
+// Checkpoint writes state.json immediately, reflecting the current
+// MachineState. Most transitions checkpoint implicitly as part of Append or
+// RecordArtifact; call Checkpoint directly when a transition pauses without
+// either — e.g. a human gate (ARCHITECTURE.md §5: "a human gate executes
+// nothing"), which appends no event but still must leave state.json pointing
+// at the correct resume state.
+func (r *Run) Checkpoint() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return ErrClosed
+	}
+	return r.checkpoint()
+}
+
 // RecordArtifact scrubs data, stores it by content digest under artifacts/, and
 // appends an artifact.recorded event. Identical content deduplicates to one
 // blob. The returned Ref's Digest commits to the scrubbed bytes.
