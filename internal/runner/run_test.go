@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
@@ -57,6 +58,42 @@ func (s *stubDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope,
 		}}
 	}
 	return result, nil
+}
+
+// flakyDeterministic fails its first failUntil calls with a dispatch-level Go
+// error (not a business ResultStatus), then succeeds — for exercising
+// Task.Retry's policy-attempt loop. Safe for the single-goroutine dispatch
+// runTask does (no locking needed).
+type flakyDeterministic struct {
+	failUntil int
+	calls     int
+}
+
+func (f *flakyDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	f.calls++
+	if f.calls <= f.failUntil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("transient failure (call %d)", f.calls)
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "eventually succeeded"}, nil
+}
+
+// blockingDeterministic signals started once dispatch actually reaches it,
+// then blocks until released and signals finished — for proving a
+// SIGTERM-style cancellation lets an in-flight attempt finish rather than
+// aborting it. started lets the test synchronize "cancel only once the
+// attempt is truly in flight" instead of racing the walk loop's own
+// between-stages cancellation check.
+type blockingDeterministic struct {
+	started  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
+}
+
+func (b *blockingDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	close(b.started)
+	<-b.release
+	close(b.finished)
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
 // --- fixture repo: a local bare repo, so the test needs no network access ---
@@ -122,6 +159,16 @@ func fixtureMachine(t *testing.T) *workflow.Machine {
 
 func newTestRunner(t *testing.T, byTask map[string]stubTaskResult, automated invoke.Automated) (*Runner, string) {
 	t.Helper()
+	return newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return &stubDeterministic{rec: rec, byTask: byTask}, nil
+	}, automated)
+}
+
+// newTestRunnerWithDeterministic builds a Runner over a fixed deterministic
+// executor factory, for tests (retries, drain) that need a stub richer than
+// stubTaskResult's canned per-TaskID map.
+func newTestRunnerWithDeterministic(t *testing.T, newDet NewDeterministicFunc, automated invoke.Automated) (*Runner, string) {
+	t.Helper()
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
 	if err != nil {
@@ -131,12 +178,10 @@ func newTestRunner(t *testing.T, byTask map[string]stubTaskResult, automated inv
 	fixtureRepo := newFixtureRepo(t)
 
 	r, err := New(Config{
-		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
-			return &stubDeterministic{rec: rec, byTask: byTask}, nil
-		},
-		Automated: automated,
-		Worktrees: wtMgr,
-		RunsDir:   runsDir,
+		NewDeterministic: newDet,
+		Automated:        automated,
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
 			return fixtureRepo, nil
 		},
@@ -145,6 +190,39 @@ func newTestRunner(t *testing.T, byTask map[string]stubTaskResult, automated inv
 		t.Fatalf("New: %v", err)
 	}
 	return r, runsDir
+}
+
+// retryFixtureMachine is fixtureMachine's single task, but with a declared
+// retry policy — a separate spec so the existing single-attempt tests stay
+// exactly as they were.
+func retryFixtureMachine(t *testing.T, maxAttempts int32) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff",
+				Run:   &apiv1.DeterministicRun{Command: []string{"true"}},
+				Next:  "review",
+				Retry: &apiv1.RetryPolicy{MaxAttempts: maxAttempts},
+			},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "review",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+				Branches:  map[string]string{"pass": workflow.TerminalComplete, "fail": workflow.TargetAbort},
+			},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "retry-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile retry fixture machine: %v", err)
+	}
+	return m
 }
 
 func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
@@ -176,7 +254,7 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	}
 
 	// Journal is complete and consistent: verify via the Reader, not just the
-	// in-memory Result — this is what a resume (deliverable B) will replay.
+	// in-memory Result — this is what a resume replays.
 	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-1"))
 	if err != nil {
 		t.Fatalf("OpenRead: %v", err)
@@ -316,6 +394,398 @@ func TestRunnerPausesAtHumanGate(t *testing.T) {
 		if e.Type == journal.EventGateEvaluated {
 			t.Fatalf("human gate must not be dispatched through the evaluator seam, got gate.evaluated event")
 		}
+	}
+}
+
+// TestRunnerRetriesTaskPerPolicy proves Task.Retry's declared policy governs
+// dispatch-level (executor Go-error) failures: the task fails twice then
+// succeeds on its 3rd attempt, the run still completes, and every attempt is
+// journaled distinctly with the first carrying no AttemptClass and the
+// retries carrying "policy".
+func TestRunnerRetriesTaskPerPolicy(t *testing.T) {
+	machine := retryFixtureMachine(t, 3)
+	flaky := &flakyDeterministic{failUntil: 2}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return flaky, nil
+	}, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-retry",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if flaky.calls != 3 {
+		t.Fatalf("executor called %d times, want 3 (2 failures + 1 success)", flaky.calls)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-retry"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var starts []journal.Event
+	for _, e := range events {
+		if e.Type == journal.EventStageStarted {
+			starts = append(starts, e)
+		}
+	}
+	if len(starts) != 3 {
+		t.Fatalf("stage.started events = %d, want 3, got %+v", len(starts), starts)
+	}
+	wantClasses := []journal.AttemptClass{"", journal.AttemptPolicy, journal.AttemptPolicy}
+	for i, e := range starts {
+		if e.Attempt != i+1 {
+			t.Errorf("start[%d].Attempt = %d, want %d", i, e.Attempt, i+1)
+		}
+		if e.AttemptClass != wantClasses[i] {
+			t.Errorf("start[%d].AttemptClass = %q, want %q", i, e.AttemptClass, wantClasses[i])
+		}
+	}
+}
+
+// TestRunnerExhaustsRetriesAndFails proves a stage that never succeeds within
+// its declared MaxAttempts fails the run (Start returns an error) rather than
+// retrying forever, and every attempt up to the budget is journaled.
+func TestRunnerExhaustsRetriesAndFails(t *testing.T) {
+	machine := retryFixtureMachine(t, 2)
+	flaky := &flakyDeterministic{failUntil: 1000} // always fails within budget
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return flaky, nil
+	}, gate.NewAutomatedEvaluator())
+
+	_, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-exhaust",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil {
+		t.Fatal("Start: want an error after exhausting the retry budget, got nil")
+	}
+	if flaky.calls != 2 {
+		t.Fatalf("executor called %d times, want exactly 2 (the declared budget)", flaky.calls)
+	}
+
+	rd, rerr := journal.OpenRead(filepath.Join(runsDir, "run-exhaust"))
+	if rerr != nil {
+		t.Fatalf("OpenRead: %v", rerr)
+	}
+	events, eerr := rd.Events()
+	if eerr != nil {
+		t.Fatalf("Events: %v", eerr)
+	}
+	var starts, errs int
+	for _, e := range events {
+		if e.Type == journal.EventStageStarted {
+			starts++
+		}
+		if e.Type == journal.EventError {
+			errs++
+		}
+	}
+	if starts != 2 || errs != 2 {
+		t.Fatalf("stage.started=%d error=%d, want 2 and 2", starts, errs)
+	}
+}
+
+// TestRunnerDrainsInFlightAttemptOnCancellation proves a SIGTERM-style
+// cancellation of the run-level context (internal/signals cancels this exact
+// context) lets an in-flight stage attempt finish and journal normally,
+// pausing only before the NEXT stage — never aborting mid-attempt.
+func TestRunnerDrainsInFlightAttemptOnCancellation(t *testing.T) {
+	machine := fixtureMachine(t)
+	blocker := &blockingDeterministic{started: make(chan struct{}), release: make(chan struct{}), finished: make(chan struct{})}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return blocker, nil
+	}, gate.NewAutomatedEvaluator())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type startResult struct {
+		res Result
+		err error
+	}
+	done := make(chan startResult, 1)
+	go func() {
+		res, err := r.Start(ctx, StartInput{
+			RunID:   "run-drain",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		done <- startResult{res, err}
+	}()
+
+	// Wait until dispatch has actually reached the blocking call before
+	// cancelling — otherwise cancel() races the walk loop's own between-
+	// stages check and could fire before "implement" is ever dispatched.
+	select {
+	case <-blocker.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocking executor was never dispatched")
+	}
+
+	// Cancel WHILE the (only) task's attempt is blocked mid-dispatch, then
+	// release it — proving the cancellation didn't abort the in-flight call.
+	cancel()
+	select {
+	case <-blocker.finished:
+		t.Fatal("blocking executor finished before being released — it should still be blocked here")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(blocker.release)
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("Start: %v", r.err)
+		}
+		if r.res.Phase != journal.PhaseRunning {
+			t.Fatalf("phase = %q, want running (paused, not aborted)", r.res.Phase)
+		}
+		if r.res.FinalState != "review" {
+			t.Fatalf("finalState = %q, want review (paused before the NEXT stage)", r.res.FinalState)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after the blocking call was released")
+	}
+
+	select {
+	case <-blocker.finished:
+	default:
+		t.Fatal("expected the in-flight attempt to have finished, not been abandoned")
+	}
+
+	// The completed attempt is fully journaled despite the cancellation.
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-drain"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var sawFinished bool
+	for _, e := range events {
+		if e.Type == journal.EventStageFinished && e.Stage == "implement" {
+			sawFinished = true
+		}
+		if e.Type == journal.EventGateEvaluated {
+			t.Fatalf("gate should not have been dispatched — the run must pause BEFORE it, got %+v", e)
+		}
+	}
+	if !sawFinished {
+		t.Fatal("expected implement's stage.finished to be journaled despite the cancellation")
+	}
+	st, err := rd.State()
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.MachineState != "review" {
+		t.Fatalf("state.json machineState = %q, want review (resume point)", st.MachineState)
+	}
+}
+
+// simulateCrashMidAttempt hand-builds a run journal exactly to the point a
+// real Start would have reached had the process died right after dispatching
+// stageName's attempt N: run.started, then stage.started(stageName, attempt),
+// with NO matching stage.finished — the crash signature Resume must detect.
+// A clean journal.Create/Close (no torn write) is sufficient here since
+// torn-write repair is internal/journal's own, already-tested concern
+// (TestKill9MidAppendRecovers); this test is about the runner's
+// interpretation of "started with no finished", not journal-write durability.
+func simulateCrashMidAttempt(t *testing.T, runsDir string, machine *workflow.Machine, runID, stageName string, attempt int) {
+	t.Helper()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("simulateCrashMidAttempt: journal.Create: %v", err)
+	}
+	jr.SetMachineState(stageName)
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: stageName, Attempt: attempt}); err != nil {
+		t.Fatalf("simulateCrashMidAttempt: append stage.started: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("simulateCrashMidAttempt: close: %v", err)
+	}
+}
+
+// TestRunnerResumeRetriesInterruptedAttempt is #17's crash/resume acceptance
+// scenario: a run interrupted mid-attempt resumes, journals the interrupted
+// attempt as a terminal infra-tagged failure (never silently re-run), and
+// continues the SAME attempt count against the task's own retry budget.
+func TestRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
+	machine := retryFixtureMachine(t, 3)
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	runsDir := filepath.Join(instanceRoot, "runs")
+	fixtureRepo := newFixtureRepo(t)
+
+	simulateCrashMidAttempt(t, runsDir, machine, "run-crash", "implement", 1)
+
+	det := &flakyDeterministic{failUntil: 0} // succeeds immediately once dispatched
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-crash",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if det.calls != 1 {
+		t.Fatalf("executor called %d times after resume, want exactly 1 (resume continues at attempt 2, which succeeds immediately)", det.calls)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-crash"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var stageEvents []journal.Event
+	for _, e := range events {
+		if e.Stage == "implement" {
+			stageEvents = append(stageEvents, e)
+		}
+	}
+	wantTypes := []journal.EventType{
+		journal.EventStageStarted,  // attempt 1, pre-crash
+		journal.EventStageFinished, // attempt 1, infra, journaled by Resume
+		journal.EventStageStarted,  // attempt 2, policy
+		journal.EventStageFinished, // attempt 2, policy, success
+	}
+	if len(stageEvents) != len(wantTypes) {
+		t.Fatalf("implement-stage events = %d, want %d: %+v", len(stageEvents), len(wantTypes), stageEvents)
+	}
+	for i, e := range stageEvents {
+		if e.Type != wantTypes[i] {
+			t.Errorf("event[%d].Type = %q, want %q", i, e.Type, wantTypes[i])
+		}
+	}
+	if stageEvents[1].Attempt != 1 || stageEvents[1].AttemptClass != journal.AttemptInfra || stageEvents[1].Status != string(apiv1.ResultFailure) {
+		t.Errorf("interrupted-attempt event = %+v, want attempt=1 class=infra status=failure", stageEvents[1])
+	}
+	if stageEvents[2].Attempt != 2 || stageEvents[2].AttemptClass != journal.AttemptPolicy {
+		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=policy", stageEvents[2])
+	}
+	if stageEvents[3].Attempt != 2 || stageEvents[3].Status != string(apiv1.ResultSuccess) {
+		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 status=success", stageEvents[3])
+	}
+
+	// interruptedAttempt is excluded from the conformance set (§3.3) via its
+	// infra class — confirm IsConformanceNormative agrees.
+	if stageEvents[1].IsConformanceNormative() {
+		t.Error("the infra-tagged interrupted attempt must be excluded from conformance (§3.3)")
+	}
+}
+
+// TestRunnerResumeFailsWhenInterruptedAttemptExhaustsBudget proves a crash
+// during a task's LAST allowed attempt does not grant it a bonus attempt —
+// Resume must fail closed, not silently extend the retry budget.
+func TestRunnerResumeFailsWhenInterruptedAttemptExhaustsBudget(t *testing.T) {
+	machine := retryFixtureMachine(t, 1) // MaxAttempts=1: no retries allowed at all
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	runsDir := filepath.Join(instanceRoot, "runs")
+	fixtureRepo := newFixtureRepo(t)
+
+	simulateCrashMidAttempt(t, runsDir, machine, "run-crash-exhausted", "implement", 1)
+
+	det := &flakyDeterministic{}
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-crash-exhausted",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil {
+		t.Fatal("Resume: want an error — the interrupted attempt already consumed the entire 1-attempt budget")
+	}
+	if det.calls != 0 {
+		t.Fatalf("executor called %d times, want 0 — must not dispatch beyond the exhausted budget", det.calls)
+	}
+}
+
+// TestRunnerResumeAlreadyTerminalIsIdempotent proves Resume on an
+// already-finished run just reports its phase, without re-dispatching
+// anything.
+func TestRunnerResumeAlreadyTerminalIsIdempotent(t *testing.T) {
+	machine := fixtureMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-done:implement": {status: apiv1.ResultSuccess},
+	}
+	r, _ := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-done",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+
+	res2, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-done",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res2.Phase != journal.PhaseCompleted {
+		t.Fatalf("Resume phase = %q, want completed (idempotent, no re-dispatch)", res2.Phase)
 	}
 }
 
