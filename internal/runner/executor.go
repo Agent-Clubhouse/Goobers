@@ -1,8 +1,12 @@
 // Package runner is the substrate-neutral local runner core (ARCHITECTURE.md
 // §3.1): it advances a compiled workflow.Machine (#9) stage-by-stage, durably
-// records every transition to the run journal (#8), and dispatches each stage
-// through the executor seam defined in this file — the interface #18
-// (deterministic/shell), #19 (agentic), and #20 (gates) implement against.
+// records every transition to the run journal (#8), and dispatches each task
+// through the StageExecutor seam defined in this file — the interface #18
+// (deterministic) and #19 (agentic) implement against. Gate dispatch (#20) is
+// NOT a seam defined here: it goes through internal/gate.Evaluator directly
+// (built independently against the pre-existing internal/invoke interfaces),
+// which already owns bounded-repass, escalation, and gate.evaluated
+// journaling — see run.go's use of it.
 package runner
 
 import (
@@ -74,22 +78,7 @@ type StageExecutor interface {
 	Execute(ctx context.Context, req StageRequest) (StageOutput, error)
 }
 
-// GateEvaluator evaluates one automated or agentic gate attempt and returns a
-// verdict. The runner selects an evaluator by apiv1.Gate.Evaluator kind — #20
-// registers for both EvaluatorAutomated and EvaluatorAgentic. A human gate has
-// no executor at all: ARCHITECTURE §5 is explicit that "a human gate executes
-// nothing" — the runner waits on an external decision directly and never
-// dispatches through this seam for EvaluatorHuman.
-type GateEvaluator interface {
-	Evaluate(ctx context.Context, req StageRequest) (apiv1.Verdict, error)
-}
-
 // Executors selects a StageExecutor by task type. The runner's dispatch step
 // looks up m[task.Type]; an unregistered type is a configuration error, not a
 // silent no-op.
 type Executors map[apiv1.TaskType]StageExecutor
-
-// GateEvaluators selects a GateEvaluator by evaluator kind. Only
-// EvaluatorAutomated and EvaluatorAgentic are ever looked up here —
-// EvaluatorHuman is handled by the runner directly (see GateEvaluator doc).
-type GateEvaluators map[apiv1.EvaluatorKind]GateEvaluator

@@ -7,6 +7,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -25,9 +27,19 @@ type Config struct {
 	Machine *workflow.Machine
 	// Executors dispatches deterministic/agentic stage attempts.
 	Executors Executors
-	// Gates dispatches automated/agentic gate attempts. Human gates are never
-	// looked up here (see GateEvaluator doc in executor.go).
-	Gates GateEvaluators
+	// Automated evaluates automated gates (internal/gate, #20). Required if the
+	// machine has any evaluator=automated gate. gate.NewAutomatedEvaluator()
+	// (the default check registry) is a ready-made implementation.
+	Automated invoke.Automated
+	// Reviewer evaluates agentic gates (internal/gate, #20). Required if the
+	// machine has any evaluator=agentic gate.
+	Reviewer *gate.ReviewerEvaluator
+	// MaxRepasses bounds gate repass loops before escalating
+	// (gate.DefaultMaxRepasses if 0). See internal/gate.Evaluator.
+	MaxRepasses int
+	// Escalation notifies the driving backlog item's provider when a run
+	// escalates (internal/gate.EscalationNotifier). Optional — nil is a no-op.
+	Escalation *gate.EscalationNotifier
 	// Worktrees provisions the fresh, isolated, disposable working copy each
 	// stage attempt runs in (§5).
 	Worktrees *worktree.Manager
@@ -60,9 +72,6 @@ func New(cfg Config) (*Runner, error) {
 	}
 	if cfg.Executors == nil {
 		return nil, fmt.Errorf("runner: Executors is required")
-	}
-	if cfg.Gates == nil {
-		return nil, fmt.Errorf("runner: Gates is required")
 	}
 	if cfg.Worktrees == nil {
 		return nil, fmt.Errorf("runner: Worktrees is required")
@@ -143,10 +152,22 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 
 // walk advances the machine from its start state to a terminal state (or a
 // human-gate pause), journaling every stage/gate attempt and every artifact
-// produced along the way.
+// produced along the way. Gate dispatch (bounded repass, escalation,
+// gate.evaluated journaling) is entirely owned by the gate.Evaluator
+// constructed once here — it MUST NOT be shared across runs (its repass
+// counters are run-scoped state), so a fresh one is built per walk.
 func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput) (Result, error) {
+	gateEval := &gate.Evaluator{
+		Automated:   r.cfg.Automated,
+		Reviewer:    r.cfg.Reviewer,
+		Journal:     jr,
+		MaxRepasses: r.cfg.MaxRepasses,
+	}
+
 	state := r.cfg.Machine.Def.Spec.Start
 	var pointers []apiv1.ContextPointer
+	var lastStage string
+	var lastResult apiv1.ResultEnvelope
 	steps := 0
 
 	for {
@@ -157,11 +178,12 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput) (Resu
 		jr.SetMachineState(state)
 
 		if t, ok := r.cfg.Machine.Task(state); ok {
-			_, produced, err := r.runTask(ctx, jr, in, t, pointers)
+			result, produced, err := r.runTask(ctx, jr, in, t, pointers)
 			if err != nil {
 				return Result{}, err
 			}
 			pointers = append(pointers, produced...)
+			lastStage, lastResult = t.Name, result
 			if t.Next == "" {
 				return r.finish(jr, journal.PhaseCompleted, t.Name, steps)
 			}
@@ -182,15 +204,16 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput) (Resu
 				return Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: steps}, nil
 			}
 
-			outcome, err := r.evaluateGate(ctx, jr, in, g, pointers)
+			gr, err := r.evaluateGate(ctx, gateEval, in, g, lastStage, lastResult, pointers)
 			if err != nil {
 				return Result{}, err
 			}
-			target, ok := workflow.BranchTarget(g, outcome)
-			if !ok {
-				return Result{}, fmt.Errorf("runner: gate %q produced outcome %q with no defined branch (never a silent pass)", g.Name, outcome)
+			if gr.Escalated && r.cfg.Escalation != nil && in.Item != nil {
+				if err := r.cfg.Escalation.NotifyEscalated(ctx, in.Item.ID, gr, "repass budget exhausted"); err != nil {
+					return Result{}, fmt.Errorf("runner: notify escalation for gate %q: %w", g.Name, err)
+				}
 			}
-			switch target {
+			switch gr.Target {
 			case workflow.TargetAbort:
 				return r.finish(jr, journal.PhaseAborted, g.Name, steps)
 			case workflow.TargetEscalate:
@@ -198,7 +221,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput) (Resu
 			case workflow.TerminalComplete:
 				return r.finish(jr, journal.PhaseCompleted, g.Name, steps)
 			}
-			state = target
+			state = gr.Target
 			continue
 		}
 
@@ -255,30 +278,41 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, t 
 	return result, produced, nil
 }
 
-// evaluateGate dispatches one automated or agentic gate attempt and returns
-// the outcome string the machine branches on.
-func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, in StartInput, g apiv1.Gate, upstream []apiv1.ContextPointer) (string, error) {
-	evaluator, ok := r.cfg.Gates[g.Evaluator]
-	if !ok {
-		return "", fmt.Errorf("runner: no gate evaluator registered for evaluator kind %q (gate %q)", g.Evaluator, g.Name)
-	}
-
+// evaluateGate dispatches one gate attempt through gateEval (internal/gate,
+// #20), which owns branch resolution, bounded repass, escalation override, and
+// gate.evaluated journaling — this method does none of that itself.
+//
+// Per the runner-contract convention internal/gate documents (automated.go):
+// a gate never receives the subject stage's ResultEnvelope over the wire
+// envelope (§2.4) — so before dispatch, the subject's Status and small
+// Outputs are flattened into the gate's own env.Inputs. subjectResult itself
+// is still passed to gateEval.Evaluate as a plain in-process value (not
+// serialized, not journaled as such) purely so an agentic reviewer gate can
+// attach its artifacts as evidence ContextPointers (internal/gate/reviewer.go)
+// — that is a same-process function argument, not a stage-boundary crossing.
+func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer) (gate.Result, error) {
 	req, wt, err := r.prepareStage(ctx, in, g.Name, "gate: "+g.Name, nil, nil, upstream)
 	if err != nil {
-		return "", fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
+		return gate.Result{}, fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
 	}
 	defer func() { _ = wt.Remove(ctx, worktree.RemoveOptions{}) }()
 
-	verdict, err := evaluator.Evaluate(ctx, req)
+	env := req.Envelope
+	if g.Evaluator == apiv1.EvaluatorAutomated {
+		if env.Inputs == nil {
+			env.Inputs = make(map[string]interface{}, 1+len(subjectResult.Outputs))
+		}
+		env.Inputs[gate.InputKeyStatus] = string(subjectResult.Status)
+		for k, v := range subjectResult.Outputs {
+			env.Inputs[k] = v
+		}
+	}
+
+	result, err := gateEval.Evaluate(ctx, g, env, subjectStage, subjectResult)
 	if err != nil {
-		_ = jr.Append(journal.Event{Type: journal.EventError, Gate: g.Name, Error: &journal.ErrorDetail{Code: "gate_evaluator_error", Message: err.Error()}})
-		return "", fmt.Errorf("runner: evaluate gate %q: %w", g.Name, err)
+		return gate.Result{}, fmt.Errorf("runner: evaluate gate %q: %w", g.Name, err)
 	}
-	outcome := string(verdict.Decision)
-	if err := jr.Append(journal.Event{Type: journal.EventGateEvaluated, Gate: g.Name, Verdict: outcome}); err != nil {
-		return "", fmt.Errorf("runner: journal gate.evaluated for %q: %w", g.Name, err)
-	}
-	return outcome, nil
+	return result, nil
 }
 
 // prepareStage provisions the isolated worktree, materializes capability-

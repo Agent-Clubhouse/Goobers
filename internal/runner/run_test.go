@@ -11,6 +11,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -31,15 +33,6 @@ func (s stubExecutor) Execute(_ context.Context, req StageRequest) (StageOutput,
 		return out, nil
 	}
 	return StageOutput{}, fmt.Errorf("stub executor: no canned output for %q", name)
-}
-
-// stubGateEvaluator always returns the same verdict.
-type stubGateEvaluator struct {
-	verdict apiv1.Verdict
-}
-
-func (s stubGateEvaluator) Evaluate(context.Context, StageRequest) (apiv1.Verdict, error) {
-	return s.verdict, nil
 }
 
 type nopRegistrar struct{}
@@ -92,7 +85,7 @@ func fixtureMachine(t *testing.T) *workflow.Machine {
 			{
 				Name:      "review",
 				Evaluator: apiv1.EvaluatorAutomated,
-				Automated: &apiv1.AutomatedGate{Check: "tests-pass"},
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
 				Branches: map[string]string{
 					"pass": workflow.TerminalComplete,
 					"fail": workflow.TargetAbort,
@@ -107,7 +100,7 @@ func fixtureMachine(t *testing.T) *workflow.Machine {
 	return m
 }
 
-func newTestRunner(t *testing.T, machine *workflow.Machine, executors Executors, gates GateEvaluators) (*Runner, string) {
+func newTestRunner(t *testing.T, machine *workflow.Machine, executors Executors, automated invoke.Automated) (*Runner, string) {
 	t.Helper()
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -129,7 +122,7 @@ func newTestRunner(t *testing.T, machine *workflow.Machine, executors Executors,
 	r, err := New(Config{
 		Machine:     machine,
 		Executors:   executors,
-		Gates:       gates,
+		Automated:   automated,
 		Worktrees:   wtMgr,
 		Credentials: injector,
 		RunsDir:     runsDir,
@@ -153,10 +146,7 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 			},
 		}},
 	}
-	gates := GateEvaluators{
-		apiv1.EvaluatorAutomated: stubGateEvaluator{verdict: apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "tests pass"}},
-	}
-	r, runsDir := newTestRunner(t, machine, executors, gates)
+	r, runsDir := newTestRunner(t, machine, executors, gate.NewAutomatedEvaluator())
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-1",
@@ -246,10 +236,7 @@ func TestRunnerBranchesToAbortOnGateFail(t *testing.T) {
 			"run-2:implement": {Result: apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Error: &apiv1.ErrorInfo{Code: "build_failed", Message: "nope"}}},
 		}},
 	}
-	gates := GateEvaluators{
-		apiv1.EvaluatorAutomated: stubGateEvaluator{verdict: apiv1.Verdict{Decision: apiv1.VerdictFail, Summary: "tests fail"}},
-	}
-	r, _ := newTestRunner(t, machine, executors, gates)
+	r, _ := newTestRunner(t, machine, executors, gate.NewAutomatedEvaluator())
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-2",
@@ -283,7 +270,7 @@ func TestRunnerPausesAtHumanGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	r, runsDir := newTestRunner(t, machine, Executors{}, GateEvaluators{})
+	r, runsDir := newTestRunner(t, machine, Executors{}, nil)
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-3",
