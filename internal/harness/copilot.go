@@ -149,14 +149,39 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	return out, nil
 }
 
-// credentialEnv builds the subprocess environment: this process's own
-// environment (PATH, HOME, etc. — never a secret store) plus exactly the
-// capability tokens this adapter is configured to inject and that were
+// passthroughVars are the only ambient daemon-process env vars carried into
+// the harness subprocess — never the full os.Environ(). PATH/HOME/TMPDIR let
+// the CLI (and its own signed-in session storage, which lives under HOME)
+// and anything it shells out to find their toolchain; none carries secret
+// material. Mirrors internal/executor's identical SEC-045 allowlist so both
+// executors give the same guarantee: no ambient credential a stage didn't
+// declare ever reaches a stage's process, even if the daemon's own
+// environment happens to hold one (e.g. a resolver-sourced token env var
+// from instance.yaml). Verified against the real Copilot CLI: it functions
+// correctly under exactly this allowlist plus its own auth env var.
+var passthroughVars = []string{"PATH", "HOME", "TMPDIR"}
+
+// baseEnv returns the minimal, explicit env every harness process starts
+// with: the passthrough allowlist carried forward from the daemon process,
+// and nothing else.
+func baseEnv() []string {
+	env := make([]string, 0, len(passthroughVars))
+	for _, name := range passthroughVars {
+		if v, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
+}
+
+// credentialEnv builds the subprocess environment: baseEnv() (PATH/HOME/
+// TMPDIR — never a secret store, never the full os.Environ()) plus exactly
+// the capability tokens this adapter is configured to inject and that were
 // actually declared for this invocation. A capability this adapter is
 // configured to inject but that fails to resolve is a hard stop — the
 // harness never runs half-credentialed.
 func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]string, error) {
-	env := os.Environ()
+	env := baseEnv()
 	for _, capability := range req.Envelope.Capabilities {
 		envVar, ok := c.EnvCapabilities[capability]
 		if !ok {

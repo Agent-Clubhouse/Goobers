@@ -176,6 +176,54 @@ func TestCopilotAdapterUndeclaredCapabilityNeverResolved(t *testing.T) {
 	}
 }
 
+// TestCopilotAdapterDoesNotPassthroughAmbientDaemonEnv is the regression test
+// for the QA finding on PR #70: the subprocess must not inherit the daemon
+// process's own environment wholesale (os.Environ()), since that would leak
+// any resolver-sourced credential env var (e.g. instance.yaml's
+// token.env — GOOBERS_GITHUB_TOKEN) into every stage regardless of whether it
+// declared the corresponding capability (SEC-045, GBO-052).
+func TestCopilotAdapterDoesNotPassthroughAmbientDaemonEnv(t *testing.T) {
+	const ambientSecretVar = "GOOBERS_GITHUB_TOKEN"
+	t.Setenv(ambientSecretVar, "ambient-daemon-secret-never-declared")
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+
+	// No capabilities declared at all — the stage asked for nothing.
+	env := testEnvelope(workspace)
+	req := RunRequest{
+		Envelope:       env,
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    pushCredentials(t, "unused", "unused"),
+	}
+	if _, err := adapter.Run(context.Background(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, kv := range runner.lastReq.Env {
+		if strings.HasPrefix(kv, ambientSecretVar+"=") {
+			t.Fatalf("ambient daemon env var leaked into subprocess env: %v", runner.lastReq.Env)
+		}
+	}
+	// The allowlist itself (PATH at minimum) should still be present, so the
+	// fix isn't accidentally starving the CLI of what it needs to run.
+	foundPath := false
+	for _, kv := range runner.lastReq.Env {
+		if strings.HasPrefix(kv, "PATH=") {
+			foundPath = true
+		}
+	}
+	if !foundPath {
+		t.Fatalf("expected PATH to still be passed through via the allowlist, got %v", runner.lastReq.Env)
+	}
+}
+
 func TestCopilotAdapterFailsClosedOnMissingCommand(t *testing.T) {
 	adapter := &CopilotAdapter{}
 	if err := adapter.Preflight(context.Background()); err == nil {
