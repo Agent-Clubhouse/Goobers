@@ -222,6 +222,16 @@ func TestExecutorMaterializesDeclaredCapability(t *testing.T) {
 func TestExecutorRecordsRedactedTranscript(t *testing.T) {
 	reg, scrub := journal.DefaultScrubber()
 	secret := "s3cr3t-token-value"
+
+	// Negative control: this canary must be invisible to the pattern-net
+	// alone, so redaction below can only be the registry scrubber's doing —
+	// without this, a canary the pattern-net also happens to catch would
+	// pass whether or not the registry path works at all (the false-assurance
+	// failure mode flagged on #66/#81).
+	if scrubbed := journal.NewPatternScrubber().Scrub([]byte(secret)); string(scrubbed) != secret {
+		t.Fatalf("test canary %q is pattern-net-visible (%q) — pick an opaque value only the registry scrubber can redact", secret, scrubbed)
+	}
+
 	adapter := &FakeAdapter{
 		Transcript: []byte("logging in with token=" + secret + " now"),
 		Act: func(ctx context.Context, req RunRequest) error {
