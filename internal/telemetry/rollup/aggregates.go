@@ -1,0 +1,390 @@
+package rollup
+
+import (
+	"database/sql"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// Run status values, mirroring internal/journal.RunPhase's on-disk strings
+// (not imported — same decoupling rationale as mirror.go). The full taxonomy
+// is completed/failed/aborted/escalated/running; only the two terminal
+// success/failure values are named below because they drive rate math —
+// everything else (aborted, escalated, still running) falls out of
+// RunStats.OtherRuns by subtraction, so an in-flight or non-terminal run is
+// visible in TotalRuns without needing its own named branch here.
+const (
+	runStatusCompleted = "completed"
+	runStatusFailed    = "failed"
+)
+
+// Stage attempt status values, mirroring api/v1alpha1.ResultStatus's wire
+// strings (a stable, long-merged contract package — safe to reference by
+// value here without importing it, keeping this package free of the api/
+// module's own dependency graph). "blocked" is the third value; like a
+// non-terminal run status it falls out of StageStats by subtraction rather
+// than a named branch.
+const (
+	stageStatusSuccess = "success"
+	stageStatusFailure = "failure"
+)
+
+// StatsRequest filters the aggregate views Stats returns. Zero-value fields
+// are unfiltered: empty Workflow matches every workflow, zero Since/Until
+// leaves that bound open.
+type StatsRequest struct {
+	Workflow string
+	Since    time.Time
+	Until    time.Time
+}
+
+// RunStats is the success/failure/duration aggregate for one workflow.
+type RunStats struct {
+	Workflow      string
+	TotalRuns     int
+	CompletedRuns int
+	FailedRuns    int
+	OtherRuns     int // aborted, escalated, or still running
+	// SuccessRate is CompletedRuns / (CompletedRuns + FailedRuns), the rate
+	// over runs that have reached a success/failure verdict. 0 when neither
+	// has occurred yet (avoids a divide-by-zero, not a claim of 0% success).
+	SuccessRate   float64
+	AvgDurationMs float64
+	MinDurationMs int64
+	MaxDurationMs int64
+}
+
+// StageStats is the success/failure/duration aggregate for one stage name,
+// across every run matching the request's filters.
+type StageStats struct {
+	Stage             string
+	TotalAttempts     int
+	SucceededAttempts int
+	FailedAttempts    int
+	// SuccessRate is SucceededAttempts / (SucceededAttempts + FailedAttempts);
+	// blocked attempts count toward TotalAttempts but not the rate (neither a
+	// success nor a failure verdict).
+	SuccessRate   float64
+	AvgDurationMs float64
+	MinDurationMs int64
+	MaxDurationMs int64
+}
+
+// StatsResult bundles the run-level and stage-level views a single Stats call
+// returns — one query round-trip covers both the "by workflow" and "by stage"
+// shapes #24 asks for.
+type StatsResult struct {
+	Runs   []RunStats
+	Stages []StageStats
+}
+
+// Stats computes success/failure rates and durations by workflow and by
+// stage, optionally filtered by workflow and/or a [Since, Until] time window
+// on the run's start time (TEL-020/#24).
+func (db *DB) Stats(req StatsRequest) (StatsResult, error) {
+	runs, err := db.runStats(req)
+	if err != nil {
+		return StatsResult{}, err
+	}
+	stages, err := db.stageStats(req)
+	if err != nil {
+		return StatsResult{}, err
+	}
+	return StatsResult{Runs: runs, Stages: stages}, nil
+}
+
+func (db *DB) runStats(req StatsRequest) ([]RunStats, error) {
+	where, args := statsWhere("workflow", "started_at", req)
+	query := fmt.Sprintf(`
+		SELECT workflow,
+			COUNT(*) AS total,
+			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS completed,
+			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS failed,
+			AVG(duration_ms), MIN(duration_ms), MAX(duration_ms)
+		FROM runs
+		%s
+		GROUP BY workflow ORDER BY workflow`, where)
+	args = append([]any{runStatusCompleted, runStatusFailed}, args...)
+
+	rows, err := db.sql.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query run stats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []RunStats
+	for rows.Next() {
+		var s RunStats
+		var avg sql.NullFloat64
+		var min, max sql.NullInt64
+		if err := rows.Scan(&s.Workflow, &s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max); err != nil {
+			return nil, fmt.Errorf("rollup: scan run stats: %w", err)
+		}
+		s.OtherRuns = s.TotalRuns - s.CompletedRuns - s.FailedRuns
+		if terminal := s.CompletedRuns + s.FailedRuns; terminal > 0 {
+			s.SuccessRate = float64(s.CompletedRuns) / float64(terminal)
+		}
+		s.AvgDurationMs, s.MinDurationMs, s.MaxDurationMs = avg.Float64, min.Int64, max.Int64
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
+	// Stage attempts don't carry the workflow name directly; join to runs for
+	// the workflow filter (and to keep the time window anchored on run start,
+	// consistent with runStats — a stage's own started_at can be null for an
+	// attempt that never started).
+	joinWhere, args := statsWhere("r.workflow", "r.started_at", req)
+	query := fmt.Sprintf(`
+		SELECT sa.stage,
+			COUNT(*) AS total,
+			SUM(CASE WHEN sa.status = ? THEN 1 ELSE 0 END) AS succeeded,
+			SUM(CASE WHEN sa.status = ? THEN 1 ELSE 0 END) AS failed,
+			AVG(sa.duration_ms), MIN(sa.duration_ms), MAX(sa.duration_ms)
+		FROM stage_attempts sa
+		JOIN runs r ON r.run_id = sa.run_id
+		%s
+		GROUP BY sa.stage ORDER BY sa.stage`, joinWhere)
+	args = append([]any{stageStatusSuccess, stageStatusFailure}, args...)
+
+	rows, err := db.sql.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query stage stats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []StageStats
+	for rows.Next() {
+		var s StageStats
+		var avg sql.NullFloat64
+		var min, max sql.NullInt64
+		if err := rows.Scan(&s.Stage, &s.TotalAttempts, &s.SucceededAttempts, &s.FailedAttempts, &avg, &min, &max); err != nil {
+			return nil, fmt.Errorf("rollup: scan stage stats: %w", err)
+		}
+		if terminal := s.SucceededAttempts + s.FailedAttempts; terminal > 0 {
+			s.SuccessRate = float64(s.SucceededAttempts) / float64(terminal)
+		}
+		s.AvgDurationMs, s.MinDurationMs, s.MaxDurationMs = avg.Float64, min.Int64, max.Int64
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// statsWhere builds a "WHERE ..." clause (or "" if unfiltered) plus its bind
+// args for the given workflow/time columns and request filters.
+func statsWhere(workflowCol, timeCol string, req StatsRequest) (string, []any) {
+	var clauses []string
+	var args []any
+	if req.Workflow != "" {
+		clauses = append(clauses, workflowCol+" = ?")
+		args = append(args, req.Workflow)
+	}
+	if !req.Since.IsZero() {
+		clauses = append(clauses, timeCol+" >= ?")
+		args = append(args, formatTime(req.Since).String)
+	}
+	if !req.Until.IsZero() {
+		clauses = append(clauses, timeCol+" <= ?")
+		args = append(args, formatTime(req.Until).String)
+	}
+	if len(clauses) == 0 {
+		return "", nil
+	}
+	return "WHERE " + strings.Join(clauses, " AND "), args
+}
+
+// ErrorEvent is one run_errors row joined with its run's workflow, for the
+// cross-run "recent errors" query.
+type ErrorEvent struct {
+	RunID      string
+	Workflow   string
+	Stage      string
+	Attempt    int
+	Code       string
+	ErrorClass string
+	Message    string
+	OccurredAt time.Time
+}
+
+// ErrorsRequest filters the cross-run recent-errors query. Zero-value fields
+// are unfiltered. Limit <= 0 defaults to 50.
+type ErrorsRequest struct {
+	Workflow   string
+	ErrorClass string
+	Since      time.Time
+	Limit      int
+}
+
+// Errors returns recent errors across every run, newest first, each carrying
+// its run/stage reference (#24's "recent errors by class with run/stage
+// refs"). Filtering by ErrorClass also serves the mission brief's
+// "rate-limit events" surface: Errors(ErrorsRequest{ErrorClass:
+// string(telemetry.ErrorClassProviderRateLimit)}).
+func (db *DB) Errors(req ErrorsRequest) ([]ErrorEvent, error) {
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	var clauses []string
+	args := []any{}
+	if req.Workflow != "" {
+		clauses = append(clauses, "r.workflow = ?")
+		args = append(args, req.Workflow)
+	}
+	if req.ErrorClass != "" {
+		clauses = append(clauses, "e.error_class = ?")
+		args = append(args, req.ErrorClass)
+	}
+	if !req.Since.IsZero() {
+		clauses = append(clauses, "e.occurred_at >= ?")
+		args = append(args, formatTime(req.Since).String)
+	}
+	where := ""
+	if len(clauses) > 0 {
+		where = "WHERE " + strings.Join(clauses, " AND ")
+	}
+	args = append(args, limit)
+
+	query := fmt.Sprintf(`
+		SELECT e.run_id, r.workflow, e.stage, e.attempt, e.code, e.error_class, e.message, e.occurred_at
+		FROM run_errors e
+		JOIN runs r ON r.run_id = e.run_id
+		%s
+		ORDER BY e.occurred_at DESC, e.seq DESC
+		LIMIT ?`, where)
+
+	rows, err := db.sql.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query errors: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []ErrorEvent
+	for rows.Next() {
+		var e ErrorEvent
+		var stage, class, message, occurredAt sql.NullString
+		var attempt sql.NullInt64
+		if err := rows.Scan(&e.RunID, &e.Workflow, &stage, &attempt, &e.Code, &class, &message, &occurredAt); err != nil {
+			return nil, fmt.Errorf("rollup: scan error event: %w", err)
+		}
+		e.Stage, e.ErrorClass, e.Message = stage.String, class.String, message.String
+		e.Attempt = int(attempt.Int64)
+		if e.OccurredAt, err = parseTime(occurredAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ErrorSignature is one recurring (code, error_class) pattern across every
+// run, with its occurrence count and a representative example — #24's "top
+// recurring error signatures" the nomination workflow mines for evidence.
+type ErrorSignature struct {
+	Code           string
+	ErrorClass     string
+	Count          int
+	LastSeen       time.Time
+	ExampleRunID   string
+	ExampleStage   string
+	ExampleAttempt int
+}
+
+// TopErrorSignatures groups errors by (code, error_class) across every run,
+// most frequent first, optionally filtered by workflow/time window. limit<=0
+// defaults to 20.
+func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	where, args := statsWhere("r.workflow", "e.occurred_at", req)
+	query := fmt.Sprintf(`
+		SELECT e.code, e.error_class, COUNT(*) AS cnt, MAX(e.occurred_at) AS last_seen
+		FROM run_errors e
+		JOIN runs r ON r.run_id = e.run_id
+		%s
+		GROUP BY e.code, e.error_class
+		ORDER BY cnt DESC, e.code
+		LIMIT ?`, where)
+	args = append(args, limit)
+
+	rows, err := db.sql.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query error signatures: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var sigs []ErrorSignature
+	for rows.Next() {
+		var sig ErrorSignature
+		var class, lastSeen sql.NullString
+		var count int
+		if err := rows.Scan(&sig.Code, &class, &count, &lastSeen); err != nil {
+			return nil, fmt.Errorf("rollup: scan error signature: %w", err)
+		}
+		sig.ErrorClass, sig.Count = class.String, count
+		if sig.LastSeen, err = parseTime(lastSeen); err != nil {
+			return nil, err
+		}
+		sigs = append(sigs, sig)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for i := range sigs {
+		var runID, stage sql.NullString
+		var attempt sql.NullInt64
+		err := db.sql.QueryRow(`
+			SELECT run_id, stage, attempt FROM run_errors
+			WHERE code = ? AND error_class = ?
+			ORDER BY occurred_at DESC, seq DESC LIMIT 1`, sigs[i].Code, sigs[i].ErrorClass).
+			Scan(&runID, &stage, &attempt)
+		if err != nil {
+			return nil, fmt.Errorf("rollup: find example for signature %q: %w", sigs[i].Code, err)
+		}
+		sigs[i].ExampleRunID, sigs[i].ExampleStage, sigs[i].ExampleAttempt = runID.String, stage.String, int(attempt.Int64)
+	}
+	return sigs, nil
+}
+
+// ProviderMutationCount is the occurrence count of one (provider, kind,
+// operation) mutation shape across every run.
+type ProviderMutationCount struct {
+	Provider  string
+	Kind      string
+	Operation string
+	Count     int
+}
+
+// ProviderMutationCounts aggregates provider mutations across every run,
+// optionally filtered by workflow/time window (#24's "provider-mutation
+// counts").
+func (db *DB) ProviderMutationCounts(req StatsRequest) ([]ProviderMutationCount, error) {
+	where, args := statsWhere("r.workflow", "m.occurred_at", req)
+	query := fmt.Sprintf(`
+		SELECT m.provider, m.kind, COALESCE(m.operation, ''), COUNT(*) AS cnt
+		FROM provider_mutations m
+		JOIN runs r ON r.run_id = m.run_id
+		%s
+		GROUP BY m.provider, m.kind, m.operation
+		ORDER BY cnt DESC, m.provider, m.kind`, where)
+
+	rows, err := db.sql.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query provider mutation counts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []ProviderMutationCount
+	for rows.Next() {
+		var c ProviderMutationCount
+		if err := rows.Scan(&c.Provider, &c.Kind, &c.Operation, &c.Count); err != nil {
+			return nil, fmt.Errorf("rollup: scan provider mutation count: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
