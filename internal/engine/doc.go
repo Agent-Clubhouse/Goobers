@@ -1,8 +1,10 @@
-// Package engine is the Goobers workflow execution engine. It translates a
-// Workflow definition (api/v1alpha1.WorkflowSpec — an ordered set of Task and
-// Gate states) into a deterministic Temporal workflow that walks the state
-// machine, driving the canonical invocation → result → verdict envelopes
-// between nodes.
+// Package engine is the Goobers Temporal runner: the tier-3 adapter around the
+// substrate-neutral workflow core in internal/workflow (see docs/ARCHITECTURE.md
+// §3, §11). The core owns definition compilation and the compiled state machine;
+// this package hosts that machine as a deterministic Temporal workflow (Run),
+// walking the states and driving the canonical invocation → result → verdict
+// envelopes between nodes. The same compiled machine backs the local runner (V0)
+// without Temporal, which is what makes "one system, three tiers" enforceable.
 //
 // Design rules (Temporal determinism):
 //   - The workflow function (Run) contains no wall-clock reads, randomness, or

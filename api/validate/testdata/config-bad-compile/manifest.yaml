@@ -1,0 +1,10 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: compile-bad-instance
+spec:
+  instance:
+    name: compile-bad
+    environment: dev
+  gaggles:
+    - web

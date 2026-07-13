@@ -35,6 +35,13 @@ type GooberSpec struct {
 	// +kubebuilder:default=copilot
 	// +optional
 	Harness Harness `json:"harness,omitempty" yaml:"harness,omitempty"`
+	// Capabilities are the capability grants this goober holds (e.g.
+	// "github:issues:write", "repo:push", "telemetry:read"). A stage invoking
+	// this goober may only use capabilities in this set; undeclared use fails
+	// closed at compile time, and locally the credentials for an ungranted
+	// capability are simply never materialized (ARCHITECTURE.md §5, SEC-042).
+	// +optional
+	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 	// Skills are the named skills available to this goober.
 	// +optional
 	Skills []string `json:"skills,omitempty" yaml:"skills,omitempty"`

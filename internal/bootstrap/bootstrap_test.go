@@ -7,6 +7,7 @@ import (
 
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/scheduler"
+	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -52,7 +53,7 @@ func TestLoadAndRegisterFixture(t *testing.T) {
 			t.Errorf("workflow %q was not registered", w.Name)
 			continue
 		}
-		if _, err := engine.Compile(def); err != nil {
+		if _, err := wf.Compile(def); err != nil {
 			t.Errorf("registered workflow %q does not compile: %v", w.Name, err)
 		}
 	}

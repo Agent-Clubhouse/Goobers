@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 // Registry holds workflow definitions by name, each as an append-only list of
@@ -27,7 +28,7 @@ func NewRegistry() *Registry {
 // accepting it, so a broken definition can never be started.
 func (r *Registry) Register(name string, spec apiv1.WorkflowSpec) (int, error) {
 	version := len(r.peek(name)) + 1
-	if _, err := Compile(Definition{Name: name, Version: version, Spec: spec}); err != nil {
+	if _, err := wf.Compile(wf.Definition{Name: name, Version: version, Spec: spec}); err != nil {
 		return 0, err
 	}
 	r.mu.Lock()
@@ -43,25 +44,25 @@ func (r *Registry) peek(name string) []apiv1.WorkflowSpec {
 }
 
 // Get returns a specific pinned version of a workflow (1-based).
-func (r *Registry) Get(name string, version int) (Definition, bool) {
+func (r *Registry) Get(name string, version int) (wf.Definition, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	versions := r.defs[name]
 	if version < 1 || version > len(versions) {
-		return Definition{}, false
+		return wf.Definition{}, false
 	}
-	return Definition{Name: name, Version: version, Spec: versions[version-1]}, true
+	return wf.Definition{Name: name, Version: version, Spec: versions[version-1]}, true
 }
 
 // Latest returns the most recently registered version of a workflow.
-func (r *Registry) Latest(name string) (Definition, bool) {
+func (r *Registry) Latest(name string) (wf.Definition, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	versions := r.defs[name]
 	if len(versions) == 0 {
-		return Definition{}, false
+		return wf.Definition{}, false
 	}
-	return Definition{Name: name, Version: len(versions), Spec: versions[len(versions)-1]}, true
+	return wf.Definition{Name: name, Version: len(versions), Spec: versions[len(versions)-1]}, true
 }
 
 // StartSpec describes a run to start; it is the non-pinned part of a RunInput.

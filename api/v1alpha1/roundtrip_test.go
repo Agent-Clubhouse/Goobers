@@ -75,6 +75,7 @@ func TestGooberRoundTrip(t *testing.T) {
 			DisplayName:  "Coder",
 			Instructions: "instructions.md",
 			Harness:      HarnessCopilot,
+			Capabilities: []string{"repo:push", "github:pr:write"},
 			Skills:       []string{"implement", "run-tests"},
 			Tools:        []string{"github", "shell"},
 			ScaleFactor:  1,
@@ -100,7 +101,9 @@ func TestWorkflowRoundTrip(t *testing.T) {
 			Tasks: []Task{
 				{
 					Name: "implement", Type: TaskAgentic, Goober: "coder",
-					Goal: "Implement the item.", ExpectedOutputs: []string{"pull-request"}, Next: "tests",
+					Goal: "Implement the item.", Capabilities: []string{"repo:push", "github:pr:write"},
+					Retry:           &RetryPolicy{MaxAttempts: 2, BackoffSeconds: 30},
+					ExpectedOutputs: []string{"pull-request"}, Next: "tests",
 				},
 				{
 					Name: "tests", Type: TaskDeterministic,

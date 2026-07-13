@@ -103,6 +103,31 @@ func TestConfigBadReportsCrossRefErrors(t *testing.T) {
 	}
 }
 
+// TestCompilerChecksSurfaceInValidate proves `goobers validate` inherits the
+// workflow compiler's deeper analysis (issue #9): a bad schedule expression, an
+// unreachable state, and a stage using a capability its goober does not grant
+// are all reported, with actionable messages.
+func TestCompilerChecksSurfaceInValidate(t *testing.T) {
+	v := newV(t)
+	report, err := v.ValidateDir("testdata/config-bad-compile")
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if !report.HasErrors() {
+		t.Fatal("expected config-bad-compile to have errors, got none")
+	}
+	all := joinIssues(report)
+	for _, want := range []string{
+		"invalid schedule",                   // bad cron expression
+		`state "orphan" is unreachable`,      // reachability
+		`capability "repo:push" not granted`, // capability admission
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("expected an error mentioning %q; full report:\n%s", want, all)
+		}
+	}
+}
+
 func TestBrokenManifestFailsClearly(t *testing.T) {
 	v := newV(t)
 	report, err := v.ValidateDir("testdata/broken-manifest")

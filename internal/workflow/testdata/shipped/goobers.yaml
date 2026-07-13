@@ -1,0 +1,57 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: acme-web
+  role: coder
+  instructions: instructions.md
+  harness: copilot
+  capabilities:
+    - repo:push
+    - github:pr:write
+  workflows:
+    - implementation
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: reviewer
+spec:
+  gaggle: acme-web
+  role: reviewer
+  instructions: instructions.md
+  harness: copilot
+  capabilities:
+    - github:pr:write
+  workflows:
+    - implementation
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: curator
+spec:
+  gaggle: acme-web
+  role: curator
+  instructions: instructions.md
+  harness: copilot
+  capabilities:
+    - github:issues:write
+  workflows:
+    - backlog-curation
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: nominator
+spec:
+  gaggle: acme-web
+  role: nominator
+  instructions: instructions.md
+  harness: copilot
+  capabilities:
+    - github:issues:write
+    - telemetry:read
+  workflows:
+    - work-nomination

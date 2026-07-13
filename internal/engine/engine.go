@@ -7,6 +7,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 // Run statuses.
@@ -58,7 +59,7 @@ func HumanGateSignal(gateName string) string {
 // effects are in activities.
 func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	logger := workflow.GetLogger(ctx)
-	m, err := Compile(Definition{Name: in.WorkflowName, Version: in.Version, Spec: in.Spec})
+	m, err := wf.Compile(wf.Definition{Name: in.WorkflowName, Version: in.Version, Spec: in.Spec})
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -73,11 +74,11 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 
 	for {
 		switch state {
-		case TerminalComplete:
+		case wf.TerminalComplete:
 			return RunResult{Status: StatusCompleted, Outputs: upstream, Steps: steps}, nil
-		case TargetAbort:
+		case wf.TargetAbort:
 			return RunResult{Status: StatusBlocked, Outputs: upstream, Steps: steps}, nil
-		case TargetEscalate:
+		case wf.TargetEscalate:
 			return RunResult{Status: StatusEscalated, Outputs: upstream, Steps: steps}, nil
 		}
 
@@ -102,15 +103,15 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 			if gerr != nil {
 				return RunResult{}, gerr
 			}
-			target, ok := BranchTarget(g, outcome)
+			target, ok := wf.BranchTarget(g, outcome)
 			if !ok {
 				return RunResult{}, fmt.Errorf("gate %q produced outcome %q with no defined branch (never a silent pass)", g.Name, outcome)
 			}
 			logger.Info("gate evaluated", "gate", g.Name, "outcome", outcome, "next", target)
 			switch target {
-			case TargetAbort:
+			case wf.TargetAbort:
 				return RunResult{Status: StatusBlocked, FinalState: g.Name, Outputs: upstream, Steps: steps}, nil
-			case TargetEscalate:
+			case wf.TargetEscalate:
 				return RunResult{Status: StatusEscalated, FinalState: g.Name, Outputs: upstream, Steps: steps}, nil
 			}
 			state = target
