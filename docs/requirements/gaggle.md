@@ -22,8 +22,8 @@ a monorepo.
   at tiers 1–2; Kubernetes namespaces + identities + network policy at tier 3
   (details owned by the Security spec).
 - A gaggle definition is **tier-portable**: the same definition runs unchanged on the
-  local runner (tiers 1–2) and the Temporal runner (tier 3), producing semantically
-  identical run journals (`ARCHITECTURE.md §3.3`).
+  local runner (tiers 1–2) and the Temporal runner (tier 3), producing equivalent
+  run journals under the conformance relation (`ARCHITECTURE.md §3.3`).
 
 ## Requirements
 
@@ -43,14 +43,17 @@ a monorepo.
   1–2 / `infra` repo at tier 3), and `config` repo/directory remain singletons.
 - **GAG-010 (MUST):** A Gaggle definition MUST be tier-portable — the same definition,
   unmodified, MUST run on both the local runner and the Temporal runner; scaling a
-  gaggle to tier 3 MUST NOT require rewriting any part of the workforce. *(All tiers)*
+  gaggle to tier 3 MUST NOT require rewriting any part of the workforce. *(All tiers;
+  applies to the cross-tier DSL surface — tier-3 schema extensions such as parallel
+  branches are the explicit, declared exception, `CFG-022`.)*
 - **GAG-011 (MUST):** At tiers 1–2 gaggle isolation MUST be enforced by per-gaggle
   scoping inside the instance root: separate managed working copies/worktrees, run
   journals attributed per gaggle, telemetry rows partitioned per gaggle, and gaggle-
   scoped credential resolution. *(Tiers 1–2)*
-- **GAG-012 (SHOULD):** **Tier 3 (V2):** at cloud scale each gaggle SHOULD map to its
+- **GAG-012 (MUST):** **Tier 3 (V2):** at cloud scale each gaggle MUST map to its
   own Kubernetes namespace, workload identity, and telemetry partition — the cloud
-  drop-in for the same isolation seam `GAG-011` implements locally. *(Tier 3, V2)*
+  drop-in for the same isolation seam `GAG-011` implements locally. Owning
+  requirements: `SEC-001`/`SEC-002`; this ID defers to them. *(Tier 3, V2)*
 
 ## Relationships
 

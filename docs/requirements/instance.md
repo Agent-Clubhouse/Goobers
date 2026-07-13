@@ -23,6 +23,7 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
       config/           # the config repo/directory: gaggles, goobers, workflows,
                         # gates, instruction markdown (the ONLY Tutor-writable path)
       runs/             # run journals (append-only events, snapshots, artifacts)
+      scheduler/        # instance journal: scheduler decisions + claim ledger
       telemetry.db      # local telemetry rollup store
       workcopies/       # managed working copies of target repos; per-run
                         # worktrees branch off these
@@ -69,22 +70,27 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
   *(All tiers)*
 - **INST-010 (MUST):** At tiers 1–2, `goobers init` MUST scaffold the instance root:
   `instance.yaml` (connections: target repos, provider, token refs, telemetry
-  settings), `config/`, `runs/`, the local telemetry rollup store, and `workcopies/`.
-  *(Tiers 1–2)*
+  settings), `config/`, `runs/`, `scheduler/` (the instance journal), the local
+  telemetry rollup store, and `workcopies/`. This is the owning statement of the
+  local scaffold (`DEP-021` defers here). *(Tiers 1–2)*
 - **INST-011 (MUST):** At tiers 1–2 an instance MUST run as a single binary with no
   database, message-bus, or service-cluster dependency; all durable state MUST be
   plain files a human can inspect with standard tools. *(Tiers 1–2)*
 - **INST-012 (MUST):** The instance MUST provide lifecycle and inspection commands:
   `goobers validate` (check definitions + instance config, failing closed on invalid
-  input), `goobers up` (long-lived daemon: scheduler + runner), `goobers status`, and
-  `goobers trace <run-id>`. *(Tiers 1–2)*
+  input), `goobers up` (long-lived daemon: scheduler + runner), `goobers run
+  <workflow>` (manual trigger, still honoring run conditions), `goobers status`, and
+  `goobers trace <run-id>`. This is the owning statement of the CLI lifecycle surface
+  (`DEP-022`/`DEP-023` defer here). *(Tiers 1–2)*
 - **INST-013 (MUST):** After a crash or restart, the local runner MUST recover by
   replaying each run's `state.json` + journal and resuming in-flight runs from the
-  last completed stage; recovery MUST never rewrite journal history. *(Tiers 1–2)*
-- **INST-014 (MUST):** The Tutor write-boundary MUST hold at every tier: the Tutor's
-  identity can write only the `config` repo/directory — enforced by filesystem/repo
-  permissions locally and repo + identity permissions in the cloud (`SEC-021`).
-  *(All tiers)*
+  last completed stage; recovery MUST never rewrite journal history. Owning
+  requirement: `WF-054`; this ID defers to it. *(Tiers 1–2)*
+- **INST-014 (MUST):** The Tutor write-boundary MUST hold at every tier: the Tutor
+  can write only the `config` repo/directory — enforced by capability-scoped write
+  grants locally (hardened to a true permission boundary when `config` is backed by
+  its own reviewed git remote) and repo + identity permissions in the cloud
+  (`SEC-021`). *(All tiers)*
 
 ## Relationships
 

@@ -7,7 +7,8 @@
 The **Scheduler** is the deterministic system component that decides *when* workflow runs
 start, *which* workflow a unit of work goes to (**routing**), and ensures each unit is
 processed *exactly once* across scaled replicas (**claiming**). It is the orchestrator
-referenced throughout §7 — goobers and workflows never self-start outside it. Its
+referenced throughout `VISION.md §7` — goobers and workflows never self-start outside
+it. Its
 **declared semantics are identical at every tier**; only the substrate underneath
 changes (`ARCHITECTURE.md §7`).
 
@@ -81,8 +82,9 @@ changes (`ARCHITECTURE.md §7`).
 - **SCH-030 (SHOULD):** The scheduler SHOULD support backlog prioritization (which item
   next) — explicit priority field, FIFO within a priority (see `SCH-Q3`).
 - **SCH-031 (MUST):** The scheduler MUST emit telemetry for its decisions, claims, and
-  releases to the goober-run telemetry store (journal events/spans + local rollup at
-  tiers 1–2; ADX at tier 3).
+  releases to the goober-run telemetry store — at tiers 1–2 as events in the
+  **instance journal** (`scheduler/events.jsonl`, `ARCHITECTURE.md §4/§6`) rolled up
+  locally; ADX at tier 3.
 
 ### Embedding & triggers by tier
 - **SCH-040 (MUST):** At tiers 1–2 the scheduler MUST be embedded in the local runner
@@ -90,9 +92,13 @@ changes (`ARCHITECTURE.md §7`).
   scheduler service. *(Tiers 1–2)*
 - **SCH-041 (MUST):** Cron-expression triggers MUST ship first (V0): the embedded
   scheduler evaluates them and enforces run conditions (max-parallel, run budgets).
-  Backlog-item and external-signal triggers layer onto the same scheduler later; at
-  V0 backlog consumption rides cron-triggered workflows that query + claim eligible
-  items (`WF-010`, `WF-055`). *(Tiers 1–2 first)*
+  At V0 backlog consumption rides cron-triggered workflows whose first stage — the
+  built-in **`backlog-query`** deterministic stage kind — queries + claims eligible
+  items, honoring the untrusted-input eligibility gate (`SEC-047`). This is the
+  owning statement of the V0 cron-claim pattern (`WF-055` defers here; `WF-010`).
+  Direct backlog-item and external-signal triggers layer onto the same scheduler
+  post-V0 (deferred; no committed milestone yet). *(All tiers; ships tiers 1–2
+  first)*
 - **SCH-042 (MUST):** **Tier 3 (V2):** declared schedule triggers MUST map onto
   **Temporal Schedules**, and claiming MUST use workflow-id-based exactly-once
   identity (`SCH-020`) — the cloud drop-in for the scheduling seam

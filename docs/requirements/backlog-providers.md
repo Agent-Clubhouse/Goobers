@@ -55,9 +55,11 @@ same abstraction, whose shape is unchanged.
 ### Repo provider
 
 - **BL-010 (MUST):** A repo provider abstraction MUST support fresh copy/clone, branching,
-  and PR open/poll/close across GitHub and ADO (used by runs and the Tutor). At tiers
-  1–2 "fresh copy" is realized as a managed working copy + per-run worktrees
-  (`DEP-026`); the provider contract is the same at every tier.
+  PR open/poll/close, and PR **review request/submit** (request a review; post a
+  review verdict) across GitHub and ADO (used by runs and the Tutor). Review
+  request/submit lands **V1** alongside ADO parity (`BL-033`); V0 ships open/poll/
+  close (`BL-031`). At tiers 1–2 "fresh copy" is realized as a managed working copy +
+  per-run worktrees (`DEP-026`); the provider contract is the same at every tier.
 - **BL-011 (MUST):** Provider-native item types/states MUST be mapped to the common model
   (`BL-002`).
 
@@ -66,10 +68,11 @@ same abstraction, whose shape is unchanged.
 - **BL-030 (MUST):** *(V0)* The GitHub backlog provider MUST support: **read/query**
   issues (by label, state, assignee), **create**, **update**, **label/unlabel**, and
   **close** issues — the full surface the backlog-curation and work-nomination workflows
-  need.
+  need. Queries MUST support filtering on the eligibility/trust label so the
+  untrusted-input gate (`SEC-047`) is enforceable at query time.
 - **BL-031 (MUST):** *(V0)* The GitHub repo provider MUST support: **open** PRs, **poll**
   PRs for review verdicts and CI status (driving the implementation workflow's
-  CI-poll/repass loop), and **close** PRs.
+  CI-poll/repass loop), and **close** PRs. (Review request/submit is V1 — `BL-010`.)
 - **BL-032 (MUST):** *(V0)* The GitHub provider MUST apply and remove **claiming markers**
   (label and/or assignee) on items so concurrent runs observing the backlog never
   double-process (`WF-031`); the runner's claim ledger remains the claim source of truth

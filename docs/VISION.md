@@ -1,6 +1,6 @@
 # Goobers — Product Vision (Draft v0.3)
 
-> Status: **Working draft for red-lining.** Authored by Lead from the PO's vision.
+> Status: **Working draft for red-lining.**
 > Supersedes v0.2. v0.3 re-anchors the architecture on **one system that scales
 > across three deployment tiers** — local-first, cloud as a drop-in — per
 > [`ARCHITECTURE.md`](ARCHITECTURE.md), which is the architecture of record.
@@ -116,8 +116,8 @@ nothing more than the machine in front of them.
 - **Ephemeral runs.** A run executes in a disposable, isolated environment prepped
   with auth and a fresh working copy of the target repo — a **git worktree + local
   process** at tiers 1–2, an **ephemeral pod** at tier 3. An **invocation envelope**
-  hands the agent context + task; the agent finishes via a **completion/result
-  envelope** so the workflow can track completion.
+  hands the agent context + task; the agent finishes via a **result envelope** so
+  the workflow can track completion.
 - **Automatic data collection.** Management tools injected via MCP or hooks collect
   what the agent did; per-stage spans and machine logs land in the run journal and
   the run-telemetry store.
@@ -134,7 +134,7 @@ The Goobers side of an instance is split by change cadence and blast radius:
    **`infra` repo** (Bicep, cluster bootstrap, connection wiring) with strict review.
 2. **`config` repo/directory** — the workforce as code: manifests + goober /
    workflow / gate definitions + agent markdown. *(Singleton.)* The living config;
-   changes constantly and is **the only place the Tutor writes** (see §7 /
+   changes constantly and is **the only place the Tutor writes** (see §8 /
    `requirements/tutor.md`).
 
 Plus the user's existing sources:
@@ -148,10 +148,12 @@ The **platform/engine code itself is upstream** — consumed as a released binar
 images / charts, not a per-instance repo (forkable, since Goobers is open).
 
 > **Why split provisioning from config:** it turns Tutor containment from a *policy*
-> into a *permission boundary* — the Tutor's identity gets write access to `config`
-> only. It also matches change cadence: provisioning happens once; config drives
-> continuous desired state. The boundary holds at every tier — filesystem permissions
-> locally, repo + identity permissions in the cloud.
+> into a *permission boundary* — the Tutor gets write access to `config` only. It
+> also matches change cadence: provisioning happens once; config drives continuous
+> desired state. The boundary holds at every tier: capability-scoped write grants
+> locally — hardened to a true permission boundary when `config` is backed by its
+> own reviewed git remote (recommended at tiers 1–2, required at tier 3) — and repo
+> + identity permissions in the cloud.
 
 ### Two separate telemetry stores (do not conflate)
 
@@ -171,7 +173,7 @@ run journals plus a local rollup store; at tier 3 it drops into **ADX**. What is
 | 1 | **Instance / Tenant** | A deployed Goobers installation (any tier). |
 | 2 | **Gaggle** | A siloed workforce of goobers. A tenant has many. |
 | 3 | **Goober** | An agent instance within a gaggle. |
-| 4 | **Workflow** | A defined process modeled as a deterministic state machine, within a gaggle. |
+| 4 | **Workflow** | A defined process modeled as a deterministic step-machine, within a gaggle. |
 | 5 | **Task** | A state in a workflow. Deterministic/code-driven or agentic. Has defined input states, work to do, and a goal. |
 | 6 | **Gate** | A validation state in a workflow. Used for conditional branching — a check: did the task complete? have conditions been met? |
 | 7 | **Run** | One execution of a workflow: pinned inputs, a run journal, a trace. |

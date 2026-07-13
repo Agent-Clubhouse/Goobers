@@ -1,7 +1,7 @@
 # Goobers — Requirements & Specs
 
 This directory turns the product vision (`../VISION.md`) into structured, traceable
-requirements that the PM can decompose into build work. The **architecture of record**
+requirements that decompose into build work. The **architecture of record**
 is [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — one system across three deployment
 tiers, two runners behind one seam — and specs carry tier annotations aligned to it
 (`ARCHITECTURE.md §13`). Where an older spec passage contradicts it, the architecture
@@ -17,15 +17,21 @@ self-contained: purpose, model, requirements, and open questions.
 - **Requirement IDs** are stable and area-prefixed: `<AREA>-NNN` (e.g. `GBO-001` for a
   Goober requirement). IDs never get reused or renumbered — they're referenceable from
   build items, tests, and other specs.
-- **Priority** uses MoSCoW for **v1**: **MUST**, **SHOULD**, **COULD**, **WON'T (v1)**.
-- **Status** per spec: `Draft` → `Reviewed` (PO red-lined) → `Approved` (locked for
-  build).
+- **One owning ID per contract:** where the same contract appears in more than one
+  spec, exactly one requirement owns it and the others say so explicitly ("Owning
+  requirement: `X-NNN`; this ID defers to it"). Deferring IDs stay stable and citable;
+  only the owner's text is normative.
+- **Priority** uses MoSCoW: **MUST**, **SHOULD**, **COULD**, **WON'T (v1)** — where
+  "(v1)" means explicitly out of scope for the V0/V1 milestones.
+- **Status** per spec: `Draft` → `Reviewed` (maintainer-reviewed) → `Approved`
+  (locked for build).
 - **Traceability:** each spec links back to the vision section(s) it derives from.
-- **Tier applicability** is annotated inline where useful — *(All tiers)*,
-  *(Tiers 1–2)*, *(Tier 3, V2)*. Tier-3-only requirements (Azure/cluster substrate)
-  are marked, never deleted: they are the drop-in specs for V2.
-- **Open questions** live in each spec and are mirrored in `../VISION.md §8` until
-  resolved.
+- **Tier applicability** is annotated inline where useful — italic applicability
+  suffixes (*(All tiers)*, *(Tiers 1–2)*) and the bold prefix **Tier 3 (V2):** for
+  tier-3-only requirements. Tier-3-only requirements (Azure/cluster substrate) are
+  marked, never deleted: they are the drop-in specs for V2.
+- **Open questions** live in each spec; their overall disposition is summarized in
+  `../VISION.md §8`.
 
 ## Spec index (also our spec backlog)
 

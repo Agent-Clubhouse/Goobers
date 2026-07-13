@@ -19,9 +19,9 @@ everything a goober does happens inside a workflow, at every deployment tier.
   **Temporal runner** (tier 3, V2). Same definition + pinned inputs ⇒ semantically
   identical **run journals** on either runner.
 - Every run produces an **append-only run journal** (`ARCHITECTURE.md §4`) — pinned
-  identity, state checkpoint, event log, immutable input snapshots, content-digested
-  artifacts, per-stage spans. The journal — not any runner's internals — is the
-  product's history.
+  identity, state checkpoint, event journal, immutable input snapshots,
+  content-digested artifacts, per-stage spans. The journal — not any runner's
+  internals — is the product's history.
 - The **system scheduler** decides when to start a run. A workflow is eligible for a
   new run **IFF** its **trigger** fires *and* its **readiness conditions** are met.
 - **Triggers** differentiate workflow archetypes but not the taxonomy: a schedule
@@ -52,10 +52,10 @@ everything a goober does happens inside a workflow, at every deployment tier.
 ### Triggers, readiness & scheduling
 - **WF-010 (MUST):** A Workflow MUST declare its trigger(s): schedule/cron/
   time-since-last-run (**ships first, V0**), backlog-item-available, and/or external
-  signal. Backlog-item and signal triggers remain in the model and layer onto the
-  same scheduler; at V0 backlog consumption is expressed as a **cron-triggered
-  workflow whose first stage queries and claims eligible items** (see `WF-055`,
-  `SCH-041`).
+  signal. Direct backlog-item and signal triggers remain in the model and layer onto
+  the same scheduler **post-V0 (deferred; no committed milestone yet)**; at V0
+  backlog consumption is expressed as a **cron-triggered workflow whose first stage
+  queries and claims eligible items** (see `WF-055`, `SCH-041`).
 - **WF-011 (MUST):** A Workflow MUST declare readiness conditions (e.g. max parallel
   runs, run budgets, worker/resource capacity). A run MUST start only when the
   trigger has fired AND readiness conditions are satisfied. *(All tiers)*
@@ -107,29 +107,38 @@ everything a goober does happens inside a workflow, at every deployment tier.
 ### Run journal & runner-seam contract
 - **WF-050 (MUST):** Every run MUST produce an append-only, content-digested **run
   journal** (`ARCHITECTURE.md §4`): pinned identity (`run.yaml`), atomically
-  replaced state checkpoint, append-only event log, immutable input snapshots,
+  replaced state checkpoint, append-only event journal, immutable input snapshots,
   digest-addressed artifacts, and per-stage spans. Nothing in a journal is edited
-  after the fact; repairs append corrective events. *(All tiers)*
-- **WF-051 (MUST):** Both runners MUST implement the same runner-seam contract:
-  the same workflow definition + pinned inputs MUST produce semantically identical
-  run journals on either runner (timing and runner-specific annotations aside).
-  **Tier 3 (V2):** a conformance harness runs shared fixtures through both runners
-  and diffs the journals (`ARCHITECTURE.md §3.3`).
+  after the fact; repairs append corrective events (secret remediation per
+  `SEC-041` is the one sanctioned exception). *(All tiers)*
+- **WF-051 (MUST):** Both runners MUST implement the same runner-seam contract: the
+  same workflow definition with **fixed stage effects** MUST produce **equivalent
+  run journals** on either runner, where equivalence is the defined conformance
+  relation of `ARCHITECTURE.md §3.3` — the ordered orchestration-event set compared
+  after canonicalization; timestamps/durations, infrastructure-retry attempts, and
+  namespaced `runner.*` annotations are excluded. For live agentic runs the
+  guarantee is structural (same machine, same branching for the same verdicts),
+  never payload equality. **Tier 3 (V2):** a conformance harness runs shared
+  fixtures through both runners and diffs the conformance set.
 - **WF-052 (MUST):** Stages MUST exchange **invocation/result envelopes** and
   **artifact pointers** (path + digest inside the journal) — never implicit shared
-  state; no stage reaches into another stage's state. *(All tiers)*
-- **WF-053 (MUST):** Each stage MUST execute in an **isolated git worktree** of the
-  target repo's working copy; worktrees are disposable and cleaned up after the run.
-  *(Tiers 1–2: local process in the worktree; Tier 3 (V2): ephemeral Kubernetes
-  agent pods.)*
+  state; no stage reaches into another stage's state. Owning contract: `TSK-041`
+  (`ARCHITECTURE.md §5`); this ID defers to it. *(All tiers)*
+- **WF-053 (MUST):** Each stage MUST execute in a **fresh, isolated, disposable
+  working copy** of the target repo, torn down after the run. Owning contract:
+  `TSK-040` (`ARCHITECTURE.md §5`); this ID defers to it. *(Tiers 1–2: a git
+  worktree off the managed working copy, run as a local process; Tier 3 (V2): the
+  workspace of an ephemeral Kubernetes agent pod.)*
 - **WF-054 (MUST):** The local runner MUST recover from a crash by replaying the
   state checkpoint + event journal on restart and resuming from the last completed
   stage — durability is append + fsync, with no database or service dependency.
   *(Tiers 1–2)*
 - **WF-055 (MUST):** V0 MUST support expressing backlog consumption as a
-  cron-triggered workflow whose first stage queries the provider for eligible items
-  and **claims** them (see `SCH-020`) so concurrent runs never double-process.
-  *(Tiers 1–2 first; same declared semantics at tier 3.)*
+  cron-triggered workflow whose first stage — the built-in **`backlog-query`** stage
+  kind — queries the provider for eligible items and **claims** them so concurrent
+  runs never double-process. Owning requirement: `SCH-041` (claiming semantics
+  `SCH-020`; eligibility gate `SEC-047`); this ID defers to it. *(All tiers; ships
+  tiers 1–2 first.)*
 
 ## Relationships
 

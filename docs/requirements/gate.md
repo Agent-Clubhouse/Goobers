@@ -1,6 +1,6 @@
 # Spec: Gate
 
-> Status: **Draft** · Aligned to ../ARCHITECTURE.md (2026-07-12) · Derives from ../VISION.md §6, §7 + early gate discussion · Area prefix: GT
+> Status: **Draft** · Aligned to ../ARCHITECTURE.md (2026-07-12) · Derives from ../VISION.md §6, §7 · Area prefix: GT
 
 ## Purpose
 
@@ -19,15 +19,18 @@ what differs is the evaluator kind:
 | **Agentic** | Invokes a scoped **reviewer goober** that returns a structured verdict | code review sign-off, design review |
 | **Human** | Pauses the run for an explicit human decision | pre-merge approval, deploy approval, Tutor-PR approval |
 
-This unifies automated checks, reviewer goobers, and the **configurable human gates** from
-our earliest discussion under a single model. Which gates exist and whether they're
-required is **configurable per workflow/instance**.
+This unifies automated checks, reviewer goobers, and **configurable human gates** under
+a single model. Which gates exist and whether they're required is **configurable per
+workflow/instance**. A gate is a **machine state, not a stage**: its automated and
+agentic evaluators run with stage-execution semantics, but the gate itself carries no
+stage contract (`ARCHITECTURE.md §5`).
 
 The taxonomy is tier-independent; what changes by tier is **how long a gate can wait**.
-At tiers 1–2 human gates are short-lived approvals resolved via the CLI or portal while
-the local runner daemon holds the run. At tier 3 the Temporal runner adds **durable
-multi-day waits** — a human gate can pause a run across days without holding a process
-open (`ARCHITECTURE.md §3.2`). Gate verdicts are journal events either way.
+At tiers 1–2 human gates are approvals resolved via the CLI or portal while the local
+runner daemon holds the run (or parked and resumed per `GT-022`). At tier 3 the
+Temporal runner adds **durable multi-day waits** — a human gate can pause a run across
+days without holding a process open (`ARCHITECTURE.md §3.2`). Gate verdicts are
+journal events either way.
 
 ## Requirements
 
@@ -38,7 +41,8 @@ open (`ARCHITECTURE.md §3.2`). Gate verdicts are journal events either way.
   conditionally; a failing/negative outcome MUST follow a defined branch (retry, route to
   fix, escalate, abort) — never a silent pass.
 - **GT-003 (MUST):** A Gate MUST support all three evaluator kinds: automated, agentic,
-  human. *(All tiers)*
+  human. *(All tiers; the human evaluator's implementation lands V1 — automated and
+  agentic ship at V0.)*
 - **GT-016 (MUST):** A Gate MUST have **exactly one** evaluator. Combined conditions are
   expressed by **chaining** gates in sequence (e.g. automated check → human approval),
   not by bundling evaluators into one gate.
@@ -46,9 +50,10 @@ open (`ARCHITECTURE.md §3.2`). Gate verdicts are journal events either way.
 
 ### Evaluators
 - **GT-010 (MUST):** An **automated** gate MUST run a coded check over task
-  outputs/declared conditions and yield a deterministic outcome. It executes as a
-  deterministic stage: declared env, timeout, and retry policy, run in the stage
-  worktree.
+  outputs/declared conditions and yield a deterministic outcome. Its evaluator runs
+  **with stage-execution semantics** — declared env, timeout, retry policy, in the
+  stage working copy — while the gate itself remains a machine state, not a stage
+  (`ARCHITECTURE.md §5`).
 - **GT-011 (MUST):** An **agentic** gate MUST invoke a scoped reviewer goober and consume
   a structured verdict; it is invoked and telemetered like an agentic task
   (`GBO-012`/`GBO-013`/`GBO-020`) — invocation/result envelopes and artifact pointers,
@@ -78,14 +83,16 @@ open (`ARCHITECTURE.md §3.2`). Gate verdicts are journal events either way.
   restarts while awaiting a decision, with no daemon process held open. This is the
   cloud drop-in for the gate-wait seam; the gate definition is unchanged from tiers
   1–2 (`ARCHITECTURE.md §3.2`).
-- **GT-022 (SHOULD):** *(Tiers 1–2)*: a human gate pending past a configurable
-  bound SHOULD park the run safely (checkpointed in the journal) rather than fail it,
-  so an approval arriving after a daemon restart still resumes the run.
+- **GT-022 (MUST):** *(Tiers 1–2)*: a human gate pending past a configurable
+  bound MUST park the run safely (checkpointed in the journal) rather than fail it,
+  so an approval arriving after a daemon restart still resumes the run — a pending
+  approval is never lost to a restart.
 
 ## Relationships
 
 - Part of → a **Workflow** (a state in the machine).
-- Executed as → a stage by the **Runner** (local at tiers 1–2; Temporal at tier 3).
+- Evaluated by → the **Runner**, with stage-execution semantics for automated/agentic
+  evaluators (local at tiers 1–2; Temporal at tier 3).
 - Agentic gates invoke → a reviewer **Goober**.
 - Human gates surface to → the **CLI/Portal** / notification channel.
 - Automated gates may poll → remote **CI** (`GT-020`).

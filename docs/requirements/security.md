@@ -38,33 +38,62 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
 
 - **SEC-040 (MUST):** *(Tier 1)* Tier 1 MUST require no identity provider or auth service
   to function: the daemon and portal operate under local user trust (bind local by
-  default). Security floor = filesystem permissions + the requirements below.
-- **SEC-041 (MUST):** *(All tiers)* Credentials and known secret material MUST be
-  **redacted before events/spans are written** to the run journal or rollup store; raw
-  secrets MUST NOT land at rest in `runs/` or `telemetry.db` (`TEL-013`,
+  default). The V0-effective security floor is: filesystem permissions + definition
+  validation and capability admission via credential non-injection (`SEC-042`,
+  `SEC-045`) + token-ref hygiene (`SEC-046`) + redaction (`SEC-041`) + the
+  untrusted-input gate (`SEC-047`). `SEC-043` (OIDC) and `SEC-044` (sandboxing)
+  arrive at V1 and are not part of the V0 floor.
+- **SEC-041 (MUST):** *(All tiers)* Raw secrets MUST NOT land at rest anywhere under
+  `runs/` — events, spans, snapshots, **and artifacts** — or in `telemetry.db`. The
+  journal package MUST scrub every write path: registry-based for all
+  resolver-issued credentials plus pattern-based scanning for secret-shaped
+  material, applied **before digesting** so digests commit to the scrubbed bytes.
+  Because scanning cannot be perfect, a sanctioned remediation MUST exist:
+  `goobers journal redact` replaces a leaked blob and appends a redaction event
+  recording old→new digests — the one append-only exception (`TEL-013`,
   `ARCHITECTURE.md §4`).
 - **SEC-042 (MUST):** *(All tiers)* **Capability admission, fail closed:** a stage may
   only exercise capabilities its definition declares (e.g. `github:issues:write`,
-  `repo:push`, `telemetry:read`). Undeclared use MUST stop the stage, not degrade it
-  (`ARCHITECTURE.md §5`).
+  `repo:push`, `telemetry:read`). The enforcing components are named per tier: at
+  tiers 1–2, the DSL compiler rejects undeclared capability references at validation
+  time, and the credential resolver + stage executors **materialize only declared
+  capabilities' credentials** into the run environment — undeclared use fails closed
+  because nothing is injected. V1 adds runtime containment via sandboxing
+  (`SEC-044`); tier 3 adds namespace/identity/network policy. **Stated residual risk
+  at tiers 1–2 until V1:** an agentic harness runs as the local user and can reach
+  ambient credentials (shell config, keychain, its own signed-in session); Goobers
+  does not claim to stop that pre-sandbox. The accepted V0 posture is local trust
+  (`SEC-040`) + non-injection + the untrusted-input gate (`SEC-047`) + reviewer and
+  human-merge gates (`ARCHITECTURE.md §5`).
 - **SEC-043 (MUST):** *(Tier 2, V1)* The portal and daemon MUST support **optional OIDC**
   when exposed beyond the local machine (shared box / small VM). Same `Authenticator`
   seam as tier 3; only the issuer changes.
 - **SEC-044 (MUST):** *(Tiers 1–2, V1)* Agentic stage execution MUST be sandboxable —
   constraining filesystem and network reach of the harness process beyond bare worktree +
   process isolation.
-- **SEC-045 (MUST):** *(Tiers 1–2, V1)* Credentials MUST be resolved and injected
-  **per goober, per run** into the run environment — never ambient to the whole daemon —
-  so per-gaggle credential scoping (`SEC-002`) holds locally too.
+- **SEC-045 (MUST):** *(Tiers 1–2)* Credentials MUST be resolved and injected **per
+  run, scoped to the stage's declared capabilities** — never ambient to the whole
+  daemon. This ships at V0 (it is the enforcement mechanism behind `SEC-042`); V1
+  deepens it with per-goober sandbox integration (`SEC-044`) so per-gaggle
+  credential scoping (`SEC-002`) holds locally too.
 - **SEC-046 (MUST):** *(Tiers 1–2)* Secrets MUST be referenced via `instance.yaml` token
   refs resolving to env vars or a token file (or a team secret store at tier 2) — never
   committed to `config/` or the instance directory. This is the same secret-resolver
   seam Key Vault implements at tier 3 (`SEC-010`).
+- **SEC-047 (MUST):** *(All tiers)* **Backlog content is untrusted input.** Backlog
+  items can be authored by anyone — on public repos, literally anyone — and their
+  text MUST be treated as data, never as instructions carrying authority. Claim
+  eligibility MUST be gated: the default for public repos is a trust label applied
+  by a user with triage/write permission (e.g. `goobers:approved`), which the
+  provider's own permission model makes enforceable — workflows MUST NOT claim
+  unapproved items. Instances on private/trusted backlogs MAY relax the gate
+  explicitly in config.
 
 ### Isolation
 
 - **SEC-001 (MUST):** **Tier 3 (V2):** Each gaggle MUST run in its own k8s namespace.
-  Tiers 1–2 counterpart: worktree + process isolation per run (`SEC-004`).
+  Tiers 1–2 counterpart: per-gaggle scoping (`GAG-011`) plus worktree + process
+  isolation per run (`SEC-004`).
 - **SEC-002 (MUST):** **Tier 3 (V2):** Each gaggle MUST have its own Azure identity/
   credential scope; cross-gaggle access MUST be prevented. Tiers 1–2 approximate this
   via per-goober credential injection (`SEC-045`).
@@ -93,12 +122,15 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   intervention) MUST be access-controlled via **Microsoft Entra ID** (SSO + RBAC).
   Ladder below tier 3: local trust at tier 1 (`SEC-040`), optional OIDC at tier 2
   (`SEC-043`) — one `Authenticator` seam throughout.
-- **SEC-021 (MUST):** *(All tiers)* The Tutor's identity MUST be granted write access to
-  the `config` repo/directory only — never the provisioning surface (`instance.yaml`
-  locally; the `infra` repo at tier 3) — making its change scope a **permission
-  boundary**, not just policy (`TUT-005`, `CFG-010`, `ARCHITECTURE.md §6`). Enforced via
-  filesystem/repo permissions at tiers 1–2 and repo + identity permissions in the cloud.
-  Self-modification MUST also respect the configured approval gate.
+- **SEC-021 (MUST):** *(All tiers)* The Tutor MUST be granted write access to the
+  `config` repo/directory only — never the provisioning surface (`instance.yaml`
+  locally; the `infra` repo at tier 3) (`TUT-005`, `CFG-010`, `ARCHITECTURE.md §6`).
+  Enforcement: at tiers 1–2 the Tutor's stages receive a write grant scoped to
+  `config/` (capability admission — a same-user local directory gives runtime
+  enforcement, not an OS boundary); backing `config` with its own git remote +
+  required review upgrades this to a **hard permission boundary** and is
+  recommended at tiers 1–2, required at tier 3, where repo + identity permissions
+  enforce it. Self-modification MUST also respect the configured approval gate.
 - **SEC-022 (SHOULD):** *(All tiers)* Security-relevant actions (approvals, credential
   use, definition changes) SHOULD be auditable — via the append-only run journal and the
   telemetry store.

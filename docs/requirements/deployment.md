@@ -40,20 +40,25 @@ choice, never a product fork: the same definitions run everywhere.
   cluster. Installation is placing the binary on the machine.
 - **DEP-021 (MUST):** *(Tiers 1–2)* `goobers init` MUST scaffold the instance layout per
   `ARCHITECTURE.md §6`: `instance.yaml` (connections: target repo(s), provider, token
-  refs, telemetry settings), `config/`, `runs/`, `telemetry.db`, and `workcopies/`.
+  refs, telemetry settings), `config/`, `runs/`, `scheduler/`, `telemetry.db`, and
+  `workcopies/`. Owning statement: `INST-010`; this ID defers to it.
 - **DEP-022 (MUST):** *(Tiers 1–2)* `goobers validate` MUST check the instance and all
   definitions before anything runs; unvalidated or invalid definitions fail closed.
+  Owning statement: `INST-012`; this ID defers to it.
 - **DEP-023 (MUST):** *(Tiers 1–2)* `goobers up` MUST run the daemon (embedded scheduler +
   local runner); `goobers status` and `goobers trace <run-id>` MUST inspect the instance
-  and its run journals without stopping it.
+  and its run journals without stopping it. Owning statement: `INST-012`; this ID defers
+  to it.
 - **DEP-024 (MUST):** *(Tiers 1–2)* Durability MUST be file-based: append + fsync on the
   event journal and atomically-replaced `state.json` checkpoints. After a crash, restart
   MUST recover by replaying `state.json` + the journal and resuming each run from its
-  last completed stage (`ARCHITECTURE.md §4`).
+  last completed stage (`ARCHITECTURE.md §3.1`). Owning requirement: `WF-054`; this ID
+  defers to it.
 - **DEP-025 (MUST):** *(Tiers 1–2)* The daemon MUST watch the local `config/` directory
   and apply validated definition changes as the tier 1–2 config-delivery mechanism
   (tier-3 counterpart: `DEP-012`). Version pinning holds: in-flight runs complete on the
-  definition version they started with (`WF-016`).
+  definition version they started with (`WF-016`). Owning statement: `CFG-020`; this ID
+  defers to it.
 - **DEP-026 (MUST):** *(Tiers 1–2)* Target repos MUST be materialized as **managed working
   copies** under `workcopies/`, separate from any working copy the user edits; per-run
   stage worktrees branch off these (`DEP-004`).

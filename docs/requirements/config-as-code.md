@@ -45,9 +45,10 @@ is delivered to a running instance at each deployment tier.
   `instance.yaml` (tiers 1–2) or the `infra` repo (**Tier 3 (V2)**); gaggle/goober/
   workflow/gate definitions + manifest in the `config` repo/directory. *(All tiers)*
 - **CFG-010 (MUST):** Provisioning and `config` MUST be separable by access control,
-  so the Tutor's identity can be granted write to `config` only (structural
-  containment — see `TUT-005`, `SEC-021`). The boundary holds at every tier:
-  filesystem/repo permissions locally, repo + identity permissions in the cloud.
+  so the Tutor can be granted write to `config` only (structural containment — see
+  `TUT-005`, `SEC-021`). The boundary holds at every tier: capability-scoped write
+  grants locally, hardened to a true permission boundary when `config` is backed by
+  its own reviewed git remote; repo + identity permissions in the cloud.
 - **CFG-002 (MUST):** A YAML manifest MUST declare desired state — gaggles, goobers
   (with scale factors), workflows (triggers, tasks, gates, selectors), and
   connections. *(All tiers — same schema.)*
@@ -60,9 +61,9 @@ is delivered to a running instance at each deployment tier.
   (or offer) UI-based configuration.
 - **CFG-006 (MUST):** Changes MUST be versioned via git; PRs are the change mechanism,
   including Tutor-authored `config` changes.
-- **CFG-007 (SHOULD):** The config directory SHOULD follow a documented reference
-  folder layout so definitions are discoverable and composable (scaffolded by
-  `goobers init`).
+- **CFG-007 (SHOULD):** The config directory (and the tier-3 `infra` repo) SHOULD
+  follow a documented reference folder layout so definitions are discoverable and
+  composable (scaffolded by `goobers init` locally; layout details `CFG-Q2`).
 - **CFG-008 (SHOULD):** Manifests SHOULD be validatable/lintable before apply (catch
   bad definitions early) — surfaced locally as `goobers validate`.
 - **CFG-009 (MUST):** Secrets MUST be referenced (not stored) in config: env vars /
@@ -73,14 +74,19 @@ is delivered to a running instance at each deployment tier.
 - **CFG-020 (MUST):** *(Tiers 1–2)*: config delivery MUST be a **local config
   directory** that the local runner daemon loads, validates, and watches — no
   database, cluster, or sync service required. Valid changes take effect on reload;
-  in-flight runs stay pinned to their started definition version (`WF-016`).
+  in-flight runs stay pinned to their started definition version (`WF-016`). This is
+  the owning statement of tiers-1–2 config delivery (`DEP-025` defers here).
 - **CFG-021 (MUST):** **Tier 3 (V2):** config delivery MUST be **ArgoCD sync → CRDs →
   the Goobers operator** — the cloud drop-in for the same config-delivery seam
-  (`ARCHITECTURE.md §10`, `deployment.md DEP-012`). No definition changes shape when
-  an instance moves tiers.
+  (`ARCHITECTURE.md §10`). No definition changes shape when an instance moves tiers.
+  Owning requirement: `DEP-012`; this ID defers to it.
 - **CFG-022 (MUST):** Definition schemas MUST be identical at every tier: a config
   directory valid at tier 1 MUST be valid, unchanged, as tier-3 config content. Tier
-  only selects the delivery mechanism, never the schema. *(All tiers)*
+  only selects the delivery mechanism, never the schema. DSL features implemented
+  only by the Temporal runner (parallel branches, child workflows —
+  `ARCHITECTURE.md §3.2`) are **tier-3 (V2) schema extensions**: a definition using
+  them is valid only at tier 3 and sits outside the cross-runner conformance surface
+  until the local runner gains them. *(All tiers)*
 - **CFG-023 (MUST):** Validation MUST fail closed: definitions that do not validate
   MUST NOT be loaded or trigger runs — the instance keeps the last-known-good config
   and surfaces the error (CLI/portal), rather than degrading. *(All tiers)*

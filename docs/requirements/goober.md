@@ -45,8 +45,8 @@ cloud cluster without change.
 ## Invocation contract (runtime)
 
 1. A workflow task targets a goober. The runner prepares an ephemeral run environment
-   — auth, harness signed in, a **fresh isolated git worktree** of the target repo
-   (a local process at tiers 1–2; a pod at tier 3).
+   — auth, harness signed in, a **fresh, isolated working copy** of the target repo
+   (a git worktree + local process at tiers 1–2; an ephemeral pod at tier 3).
 2. An **invocation envelope** hands the goober the goal, context pointers, capability
    grants, and the task definition (inputs, work to do, goal).
 3. The goober performs the work.
@@ -110,26 +110,34 @@ cloud cluster without change.
 ### Harness
 - **GBO-040 (MUST):** The first harness adapter MUST be the **GitHub Copilot CLI**;
   V0/V1 ship with it as the supported harness. *(All tiers)*
-- **GBO-041 (WON'T v1):** Additional harness adapters (e.g. Claude Code) are out of
+- **GBO-041 (WON'T (v1)):** Additional harness adapters (e.g. Claude Code) are out of
   scope for v1. The invocation/result envelope contract (`GBO-051`) already *is* the
   harness seam — adding a harness later means writing an adapter behind it, not
-  building a new abstraction.
+  building a new abstraction. *(Supersedes this ID's earlier, broader exclusion of
+  any multi-harness abstraction: the seam is now core architecture (`GBO-051`); only
+  additional adapters are deferred. Until sandboxing lands (`SEC-044`, V1), each
+  adapter carries the capability-enforcement burden — it materializes only granted
+  credentials/tools into the harness session — so new adapters are security-critical
+  code, not plug-ins to accept casually.)*
 
 ### Run environment & journal
 - **GBO-050 (MUST):** At tiers 1–2 a Goober run environment MUST be a local process
   executing in an isolated git worktree branched from the instance's managed working
   copy of the target repo; worktrees are disposable and MUST be cleaned up after the
-  run. *(Tiers 1–2)*
+  run. Owning contract: `TSK-040`; this ID defers to it. *(Tiers 1–2)*
 - **GBO-051 (MUST):** A harness MUST be driven exclusively through the standard
   invocation envelope and MUST terminate by producing the standard result envelope;
   the harness binding is a per-goober adapter detail and MUST NOT leak into workflow,
   gate, or journal contracts. *(All tiers)*
 - **GBO-052 (MUST):** A Goober MUST only exercise capabilities declared in its
   definition and granted by the invoking task's envelope (e.g. `github:issues:write`,
-  `repo:push`); undeclared capability use MUST fail closed. *(All tiers)*
+  `repo:push`); undeclared capability use MUST fail closed. Owning requirement:
+  `SEC-042`, which names the per-tier enforcing components; this ID defers to it.
+  *(All tiers)*
 - **GBO-053 (MUST):** Credentials and secrets available to a Goober run MUST be
   scrubbed before any event, span, or artifact is written to the run journal
-  (redaction at the boundary). *(All tiers)*
+  (redaction at the boundary). Owning requirement: `SEC-041`; this ID defers to it.
+  *(All tiers)*
 
 ## Relationships
 

@@ -8,7 +8,7 @@
 A **Task** is a single state in a workflow — the smallest unit of work the runner tracks.
 It can be **deterministic** (code-driven) or **agentic** (executed by a goober). It has
 defined inputs, work to be done, and a goal. `ARCHITECTURE.md` refers to tasks as
-**stages**; the terms are interchangeable in this spec.
+**stages**; the terms are equivalent across the whole doc set (`ARCHITECTURE.md §5`).
 
 ## Model
 
@@ -19,9 +19,10 @@ defined inputs, work to be done, and a goal. `ARCHITECTURE.md` refers to tasks a
 - **Deterministic tasks** run arbitrary commands (tests, linters, builders, CI pollers)
   in the task's run environment. **Agentic tasks** invoke a goober's harness with an
   **invocation envelope** (goal, context pointers, capability grants).
-- Every Task executes in an **ephemeral, isolated run environment**: an isolated git
-  worktree of the target repo's working copy, run as a local process at tiers 1–2 and
-  as an ephemeral pod at tier 3 (V2). Environments are disposable.
+- Every Task executes in an **ephemeral, isolated run environment** over a fresh,
+  disposable working copy of the target repo: a git worktree off the managed working
+  copy, run as a local process, at tiers 1–2; the workspace of an ephemeral pod at
+  tier 3 (V2).
 - A Task reports completion + result back to the runner so the machine can advance:
   agentic tasks via the goober's **result envelope** (`GBO-013`); deterministic tasks
   via their structured return. Either way the outcome is appended to the **run
@@ -68,22 +69,26 @@ defined inputs, work to be done, and a goal. `ARCHITECTURE.md` refers to tasks a
 
 ### Stage contract (run environment, artifacts, capabilities)
 - **TSK-040 (MUST):** Every Task MUST execute in an ephemeral, isolated run environment
-  — an isolated git worktree of the target repo's working copy run as a local process
-  at tiers 1–2; an ephemeral pod at tier 3 (V2). Environments are disposable and MUST
-  be cleaned up after the run. *(All tiers)*
+  over a **fresh, disposable working copy** of the target repo — at tiers 1–2 a git
+  worktree off the managed working copy, run as a local process; at tier 3 (V2) the
+  workspace of an ephemeral pod. Environments MUST be cleaned up after the run. This
+  is the **owning statement** of the stage run-environment contract
+  (`ARCHITECTURE.md §5`; `WF-053` and `GBO-050` defer here). *(All tiers)*
 - **TSK-041 (MUST):** Tasks MUST exchange data only via envelopes and **artifact
   pointers** (path + content digest inside the run journal); a Task MUST NOT reach
   into another Task's state or rely on implicit shared state. *(All tiers)*
 - **TSK-042 (MUST):** A Task MUST only exercise capabilities its definition declares
   (e.g. `github:issues:write`, `repo:push`, `telemetry:read`); undeclared use MUST
-  fail closed (capability admission). *(All tiers)*
+  fail closed (capability admission). Owning requirement: `SEC-042`, which names the
+  per-tier enforcing components; this ID defers to it. *(All tiers)*
 - **TSK-043 (MUST):** A Task MUST declare its execution policy — timeout and retry
   policy for all tasks; command and environment additionally for deterministic tasks.
   Retries are driven by this declared policy, and a retried Task MUST appear in the
   run journal as a new attempt, never as overwritten history. *(All tiers)*
-- **TSK-044 (MUST):** The task runner MUST scrub known secret material before any
-  event, span, or artifact from a Task is written to the run journal (redaction at
-  the boundary). *(All tiers)*
+- **TSK-044 (MUST):** The task runner MUST scrub secret material before any event,
+  span, or artifact from a Task is written to the run journal (redaction at the
+  boundary). Owning requirement: `SEC-041` (registry + pattern scanning,
+  scrub-before-digest, sanctioned remediation); this ID defers to it. *(All tiers)*
 
 ## Relationships
 
