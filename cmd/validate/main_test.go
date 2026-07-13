@@ -7,10 +7,11 @@ import (
 )
 
 const (
-	exampleDir = "../../config-examples"
-	badDir     = "../../api/validate/testdata/config-bad"
-	validEnv   = "../../api/validate/testdata/envelopes/valid/result.json"
-	invalidEnv = "../../api/validate/testdata/envelopes/invalid/result-bad-status.json"
+	exampleDir  = "../../config-examples"
+	selfhostDir = "../../selfhost"
+	badDir      = "../../api/validate/testdata/config-bad"
+	validEnv    = "../../api/validate/testdata/envelopes/valid/result.json"
+	invalidEnv  = "../../api/validate/testdata/envelopes/invalid/result-bad-status.json"
 )
 
 func runArgs(t *testing.T, args ...string) (int, string, string) {
@@ -24,6 +25,19 @@ func TestRunExampleDirExitsZero(t *testing.T) {
 	code, out, _ := runArgs(t, exampleDir)
 	if code != 0 {
 		t.Fatalf("expected exit 0 for valid example dir, got %d\n%s", code, out)
+	}
+}
+
+// TestRunSelfhostDirExitsZero guards the self-hosting dogfood config (#28)
+// against drift: a future schema/compiler change that breaks it should fail
+// CI here, not go unnoticed until someone runs `goobers init` by hand.
+func TestRunSelfhostDirExitsZero(t *testing.T) {
+	code, out, _ := runArgs(t, selfhostDir)
+	if code != 0 {
+		t.Fatalf("expected exit 0 for the selfhost config, got %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "checked 9 object(s) across 9 file(s): 0 error(s), 0 issue(s) total") {
+		t.Errorf("expected the full self-hosting object count, got:\n%s", out)
 	}
 }
 

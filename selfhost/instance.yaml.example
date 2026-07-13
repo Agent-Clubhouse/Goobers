@@ -1,0 +1,28 @@
+# Template instance.yaml for the Goobers self-hosting instance.
+#
+# This file has no secrets in it — `token.env` names an environment variable,
+# it does not hold a value — so it's safe to check in and copy verbatim. See
+# selfhost/README.md for the full setup walkthrough.
+#
+# At `goobers init <path>`, the tool writes its own default instance.yaml into
+# <path>/instance.yaml. Replace that file's contents with this one (or copy
+# this file over it) before running `goobers validate`.
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: Agent-Clubhouse
+    name: Goobers
+    # Never an inline token (CFG-009, SEC-010) — set the GOOBERS_GITHUB_TOKEN
+    # environment variable before starting the instance. See README.md for
+    # the required scopes.
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+telemetry:
+  enabled: true
+# Optional, reserved instance-level ceilings on top of each workflow's own
+# `readiness` block (which is what the embedded scheduler actually enforces
+# today — see the three workflow definitions under gaggles/goobers/workflows/
+# for the real per-workflow maxConcurrentRuns/maxRunsPerHour guardrails).
+runConditions:
+  maxParallelRuns: 2
