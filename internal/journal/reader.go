@@ -1,0 +1,226 @@
+package journal
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"sigs.k8s.io/yaml"
+)
+
+// Reader is a read-only view over a run journal. `cat`/`jq`/`grep` remain the
+// first-class debugging tools (§4); Reader is the typed path for the portal,
+// telemetry rollup, and Tutor.
+type Reader struct {
+	dir string
+}
+
+// OpenRead opens an existing run directory for reading.
+func OpenRead(dir string) (*Reader, error) {
+	if _, err := os.Stat(filepath.Join(dir, fileRunYAML)); err != nil {
+		return nil, fmt.Errorf("journal: not a run directory %q: %w", dir, err)
+	}
+	return &Reader{dir: dir}, nil
+}
+
+// Dir returns the run directory.
+func (r *Reader) Dir() string { return r.dir }
+
+// Identity parses run.yaml.
+func (r *Reader) Identity() (RunIdentity, error) {
+	b, err := os.ReadFile(filepath.Join(r.dir, fileRunYAML))
+	if err != nil {
+		return RunIdentity{}, fmt.Errorf("journal: read run.yaml: %w", err)
+	}
+	var id RunIdentity
+	if err := yaml.Unmarshal(b, &id); err != nil {
+		return RunIdentity{}, fmt.Errorf("journal: parse run.yaml: %w", err)
+	}
+	return id, nil
+}
+
+// State parses the state.json checkpoint. A missing or unparseable checkpoint is
+// not fatal — it is derived and always reconstructable from the event log
+// (Recover) — so callers that only need it as a hint can tolerate the error.
+func (r *Reader) State() (State, error) {
+	b, err := os.ReadFile(filepath.Join(r.dir, fileState))
+	if err != nil {
+		return State{}, fmt.Errorf("journal: read state.json: %w", err)
+	}
+	var st State
+	if err := json.Unmarshal(b, &st); err != nil {
+		return State{}, fmt.Errorf("journal: parse state.json: %w", err)
+	}
+	return st, nil
+}
+
+// Events returns every durably-committed event in seq order. A torn final record
+// from an interrupted append is skipped, not returned — the same rule Recover
+// applies — so a reader never trips over a partial write. Use Recover to detect
+// and repair the torn tail on the writer side.
+func (r *Reader) Events() ([]Event, error) {
+	events, _, err := readEvents(filepath.Join(r.dir, fileEvents))
+	return events, err
+}
+
+// KnownSchema reports whether an event uses the schema version this build owns.
+// Events written by an unknown future schema version still parse into the shared
+// envelope (unknown fields are ignored by encoding/json); readers use this to
+// decide whether to trust type-specific fields — the V0 forward-compat policy.
+func (e Event) KnownSchema() bool { return e.Schema == EventSchema }
+
+// ArtifactBytes reads and verifies a stored blob against its Ref.Digest,
+// returning an error on any tamper/mismatch.
+func (r *Reader) ArtifactBytes(ref Ref) ([]byte, error) {
+	b, err := os.ReadFile(filepath.Join(r.dir, ref.Path))
+	if err != nil {
+		return nil, fmt.Errorf("journal: read blob %q: %w", ref.Path, err)
+	}
+	if got := Digest(b); got != ref.Digest {
+		return nil, fmt.Errorf("journal: digest mismatch for %q: have %s want %s", ref.Path, got, ref.Digest)
+	}
+	return b, nil
+}
+
+// RecoverReport describes what Recover found and did.
+type RecoverReport struct {
+	// LastSeq is the highest seq of a durably-committed event.
+	LastSeq uint64
+	// TornBytes is the size of a discarded partial final record (0 if clean).
+	TornBytes int
+	// Repaired is true when a torn tail was truncated and a corrective
+	// repaired event was appended.
+	Repaired bool
+}
+
+// Recover reopens a run directory for appending after a crash. It replays the
+// event log, discards a torn final record if present, reconstructs seq and
+// phase, and — when it repaired a torn tail — appends a corrective `repaired`
+// event so even the repair leaves a trace (§4, append-only). The returned Run is
+// ready to continue the run from where it left off.
+func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
+	cfg := newConfig(opts...)
+	rd, err := OpenRead(dir)
+	if err != nil {
+		return nil, RecoverReport{}, err
+	}
+	id, err := rd.Identity()
+	if err != nil {
+		return nil, RecoverReport{}, err
+	}
+
+	eventsPath := filepath.Join(dir, fileEvents)
+	events, tornBytes, err := readEvents(eventsPath)
+	if err != nil {
+		return nil, RecoverReport{}, err
+	}
+	report := RecoverReport{TornBytes: tornBytes}
+	if len(events) > 0 {
+		report.LastSeq = events[len(events)-1].Seq
+	}
+
+	// Truncate a torn partial final record so the next append starts on a clean
+	// record boundary.
+	if tornBytes > 0 {
+		fi, statErr := os.Stat(eventsPath)
+		if statErr != nil {
+			return nil, RecoverReport{}, statErr
+		}
+		if err := os.Truncate(eventsPath, fi.Size()-int64(tornBytes)); err != nil {
+			return nil, RecoverReport{}, fmt.Errorf("journal: truncate torn record: %w", err)
+		}
+	}
+
+	f, err := os.OpenFile(eventsPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, RecoverReport{}, fmt.Errorf("journal: reopen events log: %w", err)
+	}
+	r := &Run{
+		dir:      dir,
+		id:       id,
+		scrubber: cfg.scrubber,
+		now:      cfg.now,
+		events:   f,
+		seq:      report.LastSeq,
+		phase:    reconstructPhase(events),
+	}
+	if st, err := rd.State(); err == nil {
+		r.machineState = st.MachineState
+	}
+
+	if tornBytes > 0 {
+		if err := r.append(Event{
+			Type:   EventRepaired,
+			Runner: map[string]any{"discardedBytes": tornBytes},
+		}); err != nil {
+			_ = f.Close()
+			return nil, RecoverReport{}, err
+		}
+		if err := r.checkpoint(); err != nil {
+			_ = f.Close()
+			return nil, RecoverReport{}, err
+		}
+		report.Repaired = true
+	}
+	return r, report, nil
+}
+
+// reconstructPhase derives the run phase from the event log — the source of
+// truth — rather than trusting the derived state.json checkpoint.
+func reconstructPhase(events []Event) RunPhase {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == EventRunFinished {
+			return phaseFromStatus(events[i].Status)
+		}
+	}
+	return PhaseRunning
+}
+
+// readEvents parses events.jsonl, returning the durably-committed events and the
+// byte length of any torn partial final record. Every line up to the last
+// newline is a completed, fsynced append and MUST parse; bytes after the last
+// newline are an interrupted write and are reported as tornBytes, never returned
+// as an event.
+func readEvents(path string) ([]Event, int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, 0, nil
+		}
+		return nil, 0, fmt.Errorf("journal: read events log: %w", err)
+	}
+	var complete, tail []byte
+	if nl := bytes.LastIndexByte(data, '\n'); nl >= 0 {
+		complete, tail = data[:nl+1], data[nl+1:]
+	} else {
+		tail = data // no complete record yet
+	}
+
+	var events []Event
+	sc := bufio.NewScanner(bytes.NewReader(complete))
+	sc.Buffer(make([]byte, 0, 64*1024), maxEventBytes)
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var ev Event
+		if err := json.Unmarshal(line, &ev); err != nil {
+			// A completed (newline-terminated, fsynced) line failing to parse is
+			// corruption beyond a torn tail — surface it rather than hide it.
+			return nil, 0, fmt.Errorf("journal: corrupt event at seq boundary: %w", err)
+		}
+		events = append(events, ev)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, 0, fmt.Errorf("journal: scan events log: %w", err)
+	}
+	return events, len(bytes.TrimRight(tail, "\x00")), nil
+}
+
+// maxEventBytes bounds a single event line during recovery scanning.
+const maxEventBytes = 8 * 1024 * 1024

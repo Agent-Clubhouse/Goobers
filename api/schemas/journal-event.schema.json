@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/journal-event.schema.json",
+  "title": "JournalEvent",
+  "description": "One line of a run journal's events.jsonl — the append-only provenance record (ARCHITECTURE.md §4). Each property carries an x-conformance marker: 'normative' fields form the cross-runner conformance set (§3.3), 'excluded' fields (timestamps, durations, the runner.* namespace) are never compared. This classification drives #29's determinism assertion and the V2 conformance harness (#40).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "seq", "type", "branch", "time"],
+  "properties": {
+    "schema": {
+      "description": "Versioned envelope id. A reader branches on this; a newer version is read leniently (unknown fields/types tolerated).",
+      "const": "goobers.dev/journal/event/v1",
+      "x-conformance": "normative"
+    },
+    "seq": {
+      "description": "Monotonic per-run sequence number from 1. The primary ordering key; at tier 3 events order by (branch, seq).",
+      "type": "integer",
+      "minimum": 1,
+      "x-conformance": "normative"
+    },
+    "type": {
+      "description": "Event kind.",
+      "type": "string",
+      "enum": [
+        "run.started",
+        "run.finished",
+        "stage.started",
+        "stage.finished",
+        "gate.evaluated",
+        "artifact.recorded",
+        "input.snapshot",
+        "ref.touched",
+        "error",
+        "redaction",
+        "repaired"
+      ],
+      "x-conformance": "normative"
+    },
+    "branch": {
+      "description": "Parallel-branch id. 0 at tiers 1-2; reserved for tier-3 parallel branches. Secondary ordering key.",
+      "type": "integer",
+      "minimum": 0,
+      "x-conformance": "normative"
+    },
+    "time": {
+      "description": "When the event was recorded. Excluded from conformance.",
+      "type": "string",
+      "format": "date-time",
+      "x-conformance": "excluded"
+    },
+    "stage": {
+      "description": "Stage name for stage.* events.",
+      "type": "string",
+      "x-conformance": "normative"
+    },
+    "attempt": {
+      "description": "1-based attempt number for stage.* events.",
+      "type": "integer",
+      "minimum": 1,
+      "x-conformance": "normative"
+    },
+    "attemptClass": {
+      "description": "Why a retry attempt exists. Only 'policy' attempts are normative; 'infra' attempts are excluded from the conformance set. The initial attempt carries no class and is always included.",
+      "type": "string",
+      "enum": ["policy", "infra"],
+      "x-conformance": "conditional: excluded when 'infra'"
+    },
+    "gate": {
+      "description": "Gate name for gate.evaluated.",
+      "type": "string",
+      "x-conformance": "normative"
+    },
+    "verdict": {
+      "description": "Gate decision for gate.evaluated.",
+      "type": "string",
+      "x-conformance": "normative"
+    },
+    "target": {
+      "description": "Branch/state the gate selected.",
+      "type": "string",
+      "x-conformance": "normative"
+    },
+    "status": {
+      "description": "Terminal status for run.finished / stage.finished.",
+      "type": "string",
+      "x-conformance": "normative"
+    },
+    "name": {
+      "description": "Label for a Ref (artifact/input name) or the redaction target.",
+      "type": "string",
+      "x-conformance": "normative"
+    },
+    "ref": {
+      "description": "Pointer to in-journal content (artifact.recorded, input.snapshot).",
+      "$ref": "#/$defs/ref"
+    },
+    "externalRef": {
+      "description": "External reference touched (issue/PR).",
+      "$ref": "#/$defs/externalRef"
+    },
+    "error": {
+      "description": "Failure detail for error events.",
+      "$ref": "#/$defs/errorDetail"
+    },
+    "redaction": {
+      "description": "Old->new digest remediation for redaction events.",
+      "$ref": "#/$defs/redactionInfo"
+    },
+    "runner": {
+      "description": "Runner-specific annotations. The ONLY sanctioned runner-specific divergence and ALWAYS excluded from conformance.",
+      "type": "object",
+      "x-conformance": "excluded"
+    }
+  },
+  "$defs": {
+    "ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "digest", "size"],
+      "properties": {
+        "path": {
+          "description": "Blob location relative to the run directory. Runner-arranged; not normative.",
+          "type": "string",
+          "minLength": 1,
+          "x-conformance": "excluded"
+        },
+        "digest": {
+          "description": "Content address. Normative — commits to the scrubbed bytes.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "x-conformance": "normative"
+        },
+        "size": {
+          "description": "Blob length in bytes. Derived; not normative.",
+          "type": "integer",
+          "minimum": 0,
+          "x-conformance": "excluded"
+        },
+        "mediaType": {
+          "description": "Optional media type (parity with the wire ArtifactPointer). Not normative.",
+          "type": "string",
+          "x-conformance": "excluded"
+        }
+      }
+    },
+    "externalRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "kind", "id"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1, "x-conformance": "normative" },
+        "kind": { "type": "string", "minLength": 1, "x-conformance": "normative" },
+        "id": { "type": "string", "minLength": 1, "x-conformance": "normative" },
+        "url": {
+          "description": "Convenience link. Not normative — identity is (provider, kind, id).",
+          "type": "string",
+          "x-conformance": "excluded"
+        }
+      }
+    },
+    "errorDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "description": "Stable, machine-readable classifier. Normative.",
+          "type": "string",
+          "minLength": 1,
+          "x-conformance": "normative"
+        },
+        "message": {
+          "description": "Human-facing detail. Excluded (varies run to run).",
+          "type": "string",
+          "x-conformance": "excluded"
+        }
+      }
+    },
+    "redactionInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "oldDigest", "newDigest"],
+      "properties": {
+        "target": { "type": "string", "minLength": 1, "x-conformance": "normative" },
+        "oldDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "x-conformance": "normative" },
+        "newDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "x-conformance": "normative" },
+        "reason": { "type": "string", "x-conformance": "excluded" }
+      }
+    }
+  }
+}
