@@ -60,6 +60,9 @@ go build -o bin/goobers ./cmd/goobers    # or: make build
 
 bin/goobers init ./my-instance           # scaffold an instance root
 bin/goobers validate ./my-instance       # check instance.yaml + config/
+bin/goobers run default-implement ./my-instance   # trigger a run manually
+bin/goobers status ./my-instance         # list runs + their phase
+bin/goobers trace <run-id> ./my-instance # inspect one run's journal
 ```
 
 `goobers init` scaffolds the instance root described in
@@ -68,7 +71,10 @@ gaggle/goober/workflow), `runs/`, `scheduler/`, `workcopies/`, and a
 `telemetry.db` placeholder — and is safe to re-run (existing pieces are left
 untouched). Edit `instance.yaml` to point at your own repo and set the
 referenced token env var or file; edit `config/` to shape your workforce.
-`goobers up` (the daemon: scheduler + runner) lands in a later V0 mission.
+`goobers up` (the daemon: scheduler + runner) validates the instance today —
+the scheduler (#21) and local runner (#17) it drives are still landing, so
+`run` is the way to trigger work meanwhile. Full walkthrough:
+[`docs/guides/quickstart.md`](docs/guides/quickstart.md).
 
 ## Developing
 

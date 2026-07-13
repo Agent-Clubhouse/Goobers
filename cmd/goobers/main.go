@@ -1,5 +1,7 @@
 // Command goobers is the tier 1-2 instance CLI (INST-012, DEP-021/022):
-// `goobers init` scaffolds an instance root, `goobers validate` checks it.
+// `goobers init` scaffolds an instance root, `goobers validate` checks it,
+// `goobers up`/`run` operate it, and `goobers status`/`trace` inspect it
+// (ARCHITECTURE.md §6).
 package main
 
 import (
@@ -28,6 +30,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runInit(args[1:], stdout, stderr)
 	case "validate":
 		return runValidate(args[1:], stdout, stderr)
+	case "up":
+		return runUp(args[1:], stdout, stderr)
+	case "run":
+		return runRun(args[1:], stdout, stderr)
+	case "status":
+		return runStatus(args[1:], stdout, stderr)
+	case "trace":
+		return runTrace(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0
@@ -42,10 +52,14 @@ func usage(w io.Writer) {
 	pf(w, `goobers — tier 1-2 local instance CLI
 
 Usage:
-  goobers init [path]       scaffold an instance root
-  goobers validate [path]   validate an instance's instance.yaml + config/
+  goobers init [path]           scaffold an instance root
+  goobers validate [path]       validate an instance's instance.yaml + config/
+  goobers up [path]             run the daemon (scheduler + runner)
+  goobers run <workflow> [path] trigger a run manually (still honors run conditions)
+  goobers status [path]         list runs and their current phase
+  goobers trace <run-id> [path] show a run's journal events (+ spans if rolled up)
 
-path defaults to the current directory. Exit codes: 0 = OK, 1 = validation
-errors, 2 = usage/IO error.
+path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
+business errors, 2 = usage/IO error.
 `)
 }

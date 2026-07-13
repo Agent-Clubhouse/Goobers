@@ -1,0 +1,100 @@
+# Quickstart (tier 1, local)
+
+Walks the full `goobers` CLI surface end to end: scaffold an instance, point it
+at your repo, and trigger a run. See `docs/ARCHITECTURE.md` §6 for the instance
+layout these commands operate on, and §11 for what's still landing (the local
+runner core, #17, and the embedded scheduler, #21 — see the note on `up`/`run`
+below).
+
+## 1. Build the binary
+
+```sh
+go build -o bin/goobers ./cmd/goobers    # or: make build
+```
+
+## 2. `init` — scaffold an instance root
+
+```sh
+bin/goobers init ./my-instance
+```
+
+Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one
+implement-only workflow), and the empty `runs/`, `scheduler/`, `workcopies/`,
+`telemetry.db` placeholders (ARCHITECTURE.md §6). Safe to re-run — existing
+pieces are left untouched.
+
+## 3. Configure
+
+Edit `my-instance/instance.yaml` to point at your own repo and set the
+referenced provider token (env var or file — never inline, CFG-009/SEC-010).
+Edit `my-instance/config/` to shape your workforce: the gaggle's `project`
+and `backlog` repo references, the goober's `harness`/`skills`/`tools`, and the
+workflow's `triggers`/`tasks`/`gates`.
+
+## 4. `validate` — check it
+
+```sh
+bin/goobers validate ./my-instance
+```
+
+Checks `instance.yaml` and every document under `config/` against the
+canonical schemas. Exit codes: `0` valid, `1` validation errors, `2` usage/IO
+error (e.g. not an instance root yet).
+
+## 5. `up` — run the daemon
+
+```sh
+bin/goobers up ./my-instance
+```
+
+Runs the daemon: the embedded scheduler (cron triggers + run conditions, #21)
+driving the local runner (#17). **Not yet wired end to end** — both land as
+separate V0 missions — so today this validates the instance and tells you to
+use `run` in the meantime (exit code `1`, a business condition, not a usage
+error).
+
+## 6. `run` — trigger one manually
+
+```sh
+bin/goobers run default-implement ./my-instance
+```
+
+Triggers a run of the named `config/` workflow manually, still honoring run
+conditions (max-parallel, budgets). Pins the workflow's compiled digest,
+creates its run journal (ARCHITECTURE.md §4), and prints the run id.
+
+**Current limitation:** until the local runner (#17) lands, `run` cannot
+actually advance the compiled machine — it creates the run, records an honest
+`escalated` outcome (not a silent no-op), and points you at `trace` to inspect
+it. Once #17 lands, the same command advances the machine for real; nothing
+about the CLI surface changes.
+
+## 7. `status` — list runs
+
+```sh
+bin/goobers status ./my-instance
+```
+
+```
+RUN ID                              WORKFLOW                  GAGGLE      PHASE       STARTED
+a671b69fe766595e550677b91658726a    default-implement         example     escalated   2026-07-12T23:37:36-07:00
+```
+
+## 8. `trace` — inspect one run
+
+```sh
+bin/goobers trace a671b69fe766595e550677b91658726a ./my-instance
+```
+
+Prints the run's pinned identity, current phase/checkpoint, and every journal
+event in order (`run.started`, `stage.*`, `gate.evaluated`, `ref.touched`,
+`error`, `run.finished`, …) — the same fields the `cat`/`jq` debugging recipes
+in `internal/journal/README.md` use, just pre-formatted. If the telemetry
+rollup (`telemetry.db`, #22) has ingested the run, its trace spans print too;
+this is best-effort — an empty or not-yet-rebuilt rollup is not an error.
+
+## Exit codes
+
+Every subcommand follows the same convention: `0` = OK, `1` = validation/
+business error (invalid config, unknown workflow), `2` = usage/IO error (bad
+flags, not an instance root, missing run).
