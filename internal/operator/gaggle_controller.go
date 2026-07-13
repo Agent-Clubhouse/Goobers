@@ -2,6 +2,9 @@
 // reconciles Gaggle CRDs into running desired state — a per-gaggle namespace
 // (SEC-001) plus a worker Deployment per Goober bound to the gaggle — and
 // registers the gaggle's workflows with the engine via a WorkflowRegistrar.
+//
+// Tier-3 (V2) — quarantined, not on the V0 path. See docs/ARCHITECTURE.md §11.
+// Revived in V2.
 package operator
 
 import (

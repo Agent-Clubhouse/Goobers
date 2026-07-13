@@ -3,6 +3,10 @@
 // trigger→readiness→dispatch loop that starts workflow runs on Temporal via the
 // engine start API. The goober-runtime worker executes those runs.
 //
+// Tier-3 (V2) — quarantined, not on the V0 path (V0 scheduling is the embedded
+// cron evaluator in `goobers up`, ARCHITECTURE.md §7). See docs/ARCHITECTURE.md
+// §11. Revived in V2.
+//
 // Configuration is via environment (config-as-code; no UI):
 //
 //	GOOBERS_CONFIG_DIR         path to the config repo (required)

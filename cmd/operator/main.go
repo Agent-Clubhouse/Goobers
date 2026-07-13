@@ -1,6 +1,9 @@
 // Command operator is the Goobers Kubernetes operator. It reconciles Goobers
 // CRDs (from /api) into running goober replicas and Temporal workflow
 // registrations (DEP-012).
+//
+// Tier-3 (V2) — quarantined, not on the V0 path. See docs/ARCHITECTURE.md §11.
+// Revived in V2.
 package main
 
 import (
