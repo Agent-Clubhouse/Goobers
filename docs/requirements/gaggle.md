@@ -1,12 +1,14 @@
 # Spec: Gaggle
 
-> Status: **Draft** · Derives from `../VISION.md` §6 · Area prefix: `GAG`
+> Status: **Draft** · Aligned to `../ARCHITECTURE.md` (2026-07-12) · Derives from
+> `../VISION.md` §6 · Area prefix: `GAG`
 
 ## Purpose
 
 A **Gaggle** is a siloed workforce of goobers within an instance. It is the unit of
 isolation and the container for a coordinated set of goobers and workflows pointed at a
-target.
+target — the same unit whether the instance is one binary on a laptop or a cluster over
+a monorepo.
 
 ## Model
 
@@ -15,31 +17,57 @@ target.
 - A gaggle targets a **project codebase** and a **backlog**. The **backlog is a singleton
   per gaggle** (its single source of work-item truth).
 - "Siloed" implies an isolation boundary for credentials, secrets, work, and telemetry
-  scope (details owned by the Security spec).
+  scope. Isolation is a **ladder by tier** (`ARCHITECTURE.md §9`): per-gaggle scoping
+  within the instance (working copies, run journals, telemetry, credential resolution)
+  at tiers 1–2; Kubernetes namespaces + identities + network policy at tier 3
+  (details owned by the Security spec).
+- A gaggle definition is **tier-portable**: the same definition runs unchanged on the
+  local runner (tiers 1–2) and the Temporal runner (tier 3), producing equivalent
+  run journals under the conformance relation (`ARCHITECTURE.md §3.3`).
 
 ## Requirements
 
 - **GAG-001 (MUST):** A Gaggle MUST be a siloed workforce within an instance.
-- **GAG-002 (MUST):** An instance MUST support multiple gaggles.
-- **GAG-003 (MUST):** A Gaggle MUST contain its own goobers and workflows.
+  *(All tiers)*
+- **GAG-002 (MUST):** An instance MUST support multiple gaggles. *(All tiers)*
+- **GAG-003 (MUST):** A Gaggle MUST contain its own goobers and workflows. *(All tiers)*
 - **GAG-004 (MUST):** A Gaggle MUST target a project codebase and a backlog; the backlog
-  MUST be a singleton for that gaggle.
+  MUST be a singleton for that gaggle. *(All tiers)*
 - **GAG-005 (MUST):** Gaggles MUST be isolated from one another — secrets, credentials,
-  work, and telemetry scoping MUST NOT leak across gaggles (details in Security spec).
-- **GAG-006 (MUST):** A Gaggle MUST be defined as code in the `config` repo.
+  work, and telemetry scoping MUST NOT leak across gaggles. Enforcement follows the
+  tier isolation ladder (details in Security spec). *(All tiers)*
+- **GAG-006 (MUST):** A Gaggle MUST be defined as code in the `config` repo/directory.
+  *(All tiers)*
 - **GAG-007 (COULD):** A Gaggle COULD target multiple repos / telemetry sources (less
-  standard setup), while the backlog, `infra` repo, and `config` repo remain singletons.
+  standard setup), while the backlog, provisioning source (`instance.yaml` at tiers
+  1–2 / `infra` repo at tier 3), and `config` repo/directory remain singletons.
+- **GAG-010 (MUST):** A Gaggle definition MUST be tier-portable — the same definition,
+  unmodified, MUST run on both the local runner and the Temporal runner; scaling a
+  gaggle to tier 3 MUST NOT require rewriting any part of the workforce. *(All tiers;
+  applies to the cross-tier DSL surface — tier-3 schema extensions such as parallel
+  branches are the explicit, declared exception, `CFG-022`.)*
+- **GAG-011 (MUST):** At tiers 1–2 gaggle isolation MUST be enforced by per-gaggle
+  scoping inside the instance root: separate managed working copies/worktrees, run
+  journals attributed per gaggle, telemetry rows partitioned per gaggle, and gaggle-
+  scoped credential resolution. *(Tiers 1–2)*
+- **GAG-012 (MUST):** **Tier 3 (V2):** at cloud scale each gaggle MUST map to its
+  own Kubernetes namespace, workload identity, and telemetry partition — the cloud
+  drop-in for the same isolation seam `GAG-011` implements locally. Owning
+  requirements: `SEC-001`/`SEC-002`; this ID defers to them. *(Tier 3, V2)*
 
 ## Relationships
 
 - Belongs to → an **Instance**.
 - Contains → **Goobers** and **Workflows**.
 - Targets → a project **repo** + a **Backlog** (singleton).
-- Scopes → its slice of the **Telemetry** store.
+- Scopes → its slice of the run journals and the **Telemetry** store.
 
 ## Open questions
 
-- **GAG-Q1:** **Resolved:** namespace + identity + secrets per gaggle (`SEC-001/002`,
-  `VISION §8`).
+- **GAG-Q1:** **Resolved (updated 2026-07-12):** isolation is a **ladder by tier** —
+  per-gaggle scoping within the instance at tiers 1–2 (`GAG-011`); namespace +
+  identity + secrets per gaggle at tier 3 (`GAG-012`, `SEC-001/002`,
+  `ARCHITECTURE.md §9`). *(Previously resolved as namespace-only; the tier ladder
+  generalizes it.)*
 - **GAG-Q2:** **Resolved (default):** definitions are gaggle-local but MAY be shared via
   `config`-repo fragments/templates (`CFG-Q3`). *(Build-time: composition mechanics.)*

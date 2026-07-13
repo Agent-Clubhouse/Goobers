@@ -1,21 +1,32 @@
 # Goobers
 
-Upstream platform monorepo for **Goobers** — an agent workforce platform.
-Product vision and requirements live in [`docs/`](docs/) (start with
-[`docs/VISION.md`](docs/VISION.md) and [`docs/requirements/`](docs/requirements/)).
+Upstream platform monorepo for **Goobers** — an open, self-hosted agent-workforce
+platform. It starts as a single binary running a gaggle of AI agents against your
+repo and backlog on one machine, and scales — without changing a definition — to
+clustered orchestration over a large monorepo.
+
+- **Architecture of record:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — one
+  system across three deployment tiers; local runner first, cloud (Temporal/AKS) as
+  drop-ins behind named seams.
+- **Product vision:** [`docs/VISION.md`](docs/VISION.md)
+- **Requirements:** [`docs/requirements/`](docs/requirements/)
+- **Roadmap:** GitHub milestones — **V0** "works locally, begins to build itself",
+  **V1** arbitrary repos/teams/hardening, **V2** cloud scale.
 
 ## Repository layout
 
-| Path | Contents | Owner |
+| Path | Contents | Status |
 |---|---|---|
-| `api/` | CRD types, JSON invocation/result/verdict envelopes, YAML schema | Dev-1 |
-| `providers/` | Backlog + repo provider abstraction (GitHub / ADO) | Dev-2 |
-| `cmd/` | Control-plane binary entrypoints | Dev-3 |
-| `internal/` | Shared Go packages (version, signals, app bootstrap) | Dev-3 |
-| `infra/` | Bicep, ArgoCD, Temporal, ADX | Dev-3 |
-| `portal/` | TypeScript + React observability portal | Dev-4 |
-| `config-examples/` | Reference config-repo layout + examples | Dev-1 |
-| `test/` | CI + e2e harness | QA |
+| `api/` | Definition types, JSON invocation/result/verdict envelopes, YAML schema | Active — extended by DSL v0 |
+| `providers/` | Backlog + repo provider abstraction (GitHub / ADO) | Active — V0 workload |
+| `cmd/` | Binary entrypoints | Being consolidated into the `goobers` binary (V0) |
+| `internal/` | Shared Go packages (engine core, telemetry, app bootstrap) | Active |
+| `infra/` | Bicep, ArgoCD, Temporal, ADX | Quarantined — tier-3 drop-ins, revived in V2 |
+| `portal/` | TypeScript + React observability portal | Active — retargets to run journals in V1 |
+| `config-examples/` | Reference config layout + starter definitions | Active |
+| `test/` | CI + e2e harness | Active |
+
+See `docs/ARCHITECTURE.md §11` for the full disposition map.
 
 ## Go module
 
@@ -24,17 +35,15 @@ Product vision and requirements live in [`docs/`](docs/) (start with
 
 Import shared packages as e.g. `github.com/goobers/goobers/internal/version`.
 
-## Control-plane binaries (`cmd/`)
+## Binaries (`cmd/`)
 
-| Binary | Role |
-|---|---|
-| `operator` | Reconciles Goobers CRDs into replicas + Temporal registrations (DEP-012) |
-| `scheduler` | Routes backlog items to gaggles; drives work-claiming |
-| `goober-runtime` | Per-run agent runtime inside an ephemeral pod (DEP-004..007) |
+The product binary is **`goobers`** — the local runner: `init`, `validate`, `up`
+(daemon: scheduler + runner), `run`, `status`, `trace`. It is being built under the
+V0 milestone; see the V0 epic issue for the work breakdown.
 
-These are skeleton entrypoints today: they boot, log, and block until signalled.
-Domain logic is added by follow-on missions. Every binary shares
-`internal/app.Main`, which wires `--version`, structured logging
+Pre-existing entrypoints (`operator`, `scheduler`, `goober-runtime`) are tier-3 /
+superseded skeletons kept per the quarantine plan (`docs/ARCHITECTURE.md §11`).
+Every binary shares `internal/app.Main`, which wires `--version`, structured logging
 (`--log-level`, `--log-format`), and SIGINT/SIGTERM-aware shutdown.
 
 ## Developing
@@ -46,5 +55,4 @@ make test        # unit tests with race detector + coverage
 make ci          # full local gate: fmt-check, vet, build, test, lint
 ```
 
-CI runs the same gate via [`azure-pipelines.yml`](azure-pipelines.yml) on every
-PR to `main`.
+CI runs the same gate on every PR to `main`.
