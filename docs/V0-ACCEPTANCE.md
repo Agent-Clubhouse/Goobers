@@ -86,7 +86,7 @@ open PR:
    trust-label eligibility marker (`SEC-047`) applied manually to reach
    "ready" for the implementation workflow to claim them.
 3. **Implementation** (#27, shipped) — claims a ready issue, opens a worktree,
-   runs the agentic implement stage (#19, **in review**), passes local
+   runs the agentic implement stage (#19, shipped), passes local
    deterministic gates, opens a PR, polls CI to a repass loop (#18, shipped),
    and stops at a reviewer gate.
 
@@ -138,12 +138,12 @@ reflects `main` as of this writing, not the eventual acceptance run.
 | Read/modify GitHub issues | #12 | ✅ shipped | Observe (curation) |
 | Open/poll/close PRs | #13 | ✅ shipped | Observe (implementation) |
 | Deterministic stages (shell) + ci-poll | #18 | ✅ shipped | Observe (implementation) |
-| Agentic stages (Copilot CLI adapter) | #19 | 🔶 in review (PR #70) | Observe (implementation) |
+| Agentic stages (Copilot CLI adapter) | #19 | ✅ shipped | Observe (implementation) |
 | Stage contract: envelopes + artifact pointers | #10 | ✅ shipped | Verify (journal) |
 | Run journal: durability, redaction | #8 | ✅ shipped | Verify (journal) |
 | Cron triggers + max-parallel/budget conditions | #21 | ✅ shipped | Run |
 | Local telemetry: journal spans + SQLite rollup | #22 | ✅ shipped | Verify (telemetry) |
-| Telemetry query surface | #24 | 🔶 in review (PR #62) | Verify (telemetry) |
+| Telemetry query surface | #24 | ✅ shipped | Verify (telemetry) |
 | Gate execution: automated + agentic, bounded repass | #20 | ✅ shipped | Observe (implementation) |
 | Local credential handling, capability scoping | #14 | ✅ shipped | Setup (implicit) |
 | Runner core: lifecycle, durability, resume, retries | #17 | 🔶 in review (PR #64) | Run |
@@ -154,7 +154,7 @@ reflects `main` as of this writing, not the eventual acceptance run.
 | Self-hosting dogfood config | #28 | ⬜ in progress | Setup |
 | E2E walking skeleton (conformance seed) | #29 | ⬜ in progress | (validates the whole chain on fixtures, ahead of this live run) |
 
-**7 of 20 bullets are not yet demonstrable** (#17/#19/#24 in review; #23/#26/#28/#29
+**5 of 20 bullets are not yet demonstrable** (#17 in review; #23/#26/#28/#29
 not started or in progress) — this runbook cannot be executed for real until
 they land. Re-run the checklist after each merge; strike "not yet
 demonstrable" once its issue closes.
@@ -187,6 +187,10 @@ decision for a bug:
 - **No stricter capability-string canonicalization** — `github:pr:write` vs
   `github:prs:write`-style spelling drift is caught by tests today, not a
   registry — tracked as #74 (V1).
+- **Agentic subprocess env is a bare PATH/HOME/TMPDIR allowlist** (default-deny,
+  by design — safer than a denylist filter that could miss a credential var),
+  which may starve tools that expect `XDG_*`/`LANG`/`SSL_CERT_FILE`/proxy vars
+  in less common environments — tracked as #75 (V1).
 
 ## Execution record
 
