@@ -196,6 +196,38 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 	}
 }
 
+func TestCompileAdmissionUnknownCapabilityGranted(t *testing.T) {
+	spec := linearSpec()
+	goobers := map[string]apiv1.GooberSpec{
+		"coder": {Role: "coder", Harness: apiv1.HarnessCopilot, Capabilities: []string{"github:prs:write"}},
+	}
+	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}, WithGoobers(goobers))
+	if err == nil || !strings.Contains(err.Error(), `goober "coder" grants unknown capability "github:prs:write"`) {
+		t.Fatalf("expected unknown-capability-granted error, got %v", err)
+	}
+}
+
+func TestCompileAdmissionUnknownCapabilityDeclared(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "g",
+				Capabilities: []string{"github:pulls:write"}},
+		},
+	}
+	goobers := map[string]apiv1.GooberSpec{
+		"coder": {Role: "coder", Harness: apiv1.HarnessCopilot, Capabilities: []string{"github:pulls:write"}},
+	}
+	// The typo'd spelling is internally consistent (granted == declared), so
+	// only the canonical-registry check catches it — the grant-membership
+	// check alone would pass this.
+	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}, WithGoobers(goobers))
+	if err == nil || !strings.Contains(err.Error(), `task "implement" declares unknown capability "github:pulls:write"`) {
+		t.Fatalf("expected unknown-capability-declared error, got %v", err)
+	}
+}
+
 func TestCompileAdmissionUnknownHarness(t *testing.T) {
 	spec := linearSpec()
 	goobers := map[string]apiv1.GooberSpec{

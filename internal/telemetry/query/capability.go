@@ -11,14 +11,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/goobers/goobers/internal/capability"
 )
 
 // CapabilityRead is the capability grant an agentic stage's definition must
 // declare to receive telemetry query results (ARCHITECTURE.md §5: undeclared
-// capability use fails closed). It matches the dotted "resource:verb" shape
-// #12/#14 already use for provider/credential capabilities (e.g.
-// "github:issues:write").
-const CapabilityRead = "telemetry:read"
+// capability use fails closed). Backed by the canonical registry
+// (internal/capability, issue #74) rather than a local literal, so this
+// package's copy can never drift from what the DSL compiler admits — while
+// still not importing api/v1alpha1 or internal/journal (internal/capability
+// has no dependencies beyond the stdlib), matching #22's decoupling.
+const CapabilityRead = string(capability.TelemetryRead)
 
 // ErrCapabilityDenied is returned when the requesting stage's declared
 // capabilities (api/v1alpha1.InvocationEnvelope.Capabilities) do not include

@@ -5,9 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 )
 
 // knownHarnesses is the set of agent harnesses the compiler admits. v0 ships the
@@ -42,9 +44,11 @@ func WithGoobers(goobers map[string]apiv1.GooberSpec) Option {
 // It rejects: duplicate state names, a missing/undefined start, transitions to
 // undefined states, gates with no branches or branches to undefined states,
 // states unreachable from start, loops with no exit to a terminal, and — when
-// WithGoobers is supplied — stages using capabilities their goober does not
-// grant and goobers on an unknown harness. Errors are aggregated so one compile
-// reports every problem, each message actionable on its own.
+// WithGoobers is supplied — a goober granting or a stage declaring a
+// capability outside the canonical registry (internal/capability, issue #74),
+// stages using capabilities their goober does not grant, and goobers on an
+// unknown harness. Errors are aggregated so one compile reports every
+// problem, each message actionable on its own.
 func Compile(def Definition, opts ...Option) (*Machine, error) {
 	o := &options{}
 	for _, opt := range opts {
@@ -217,6 +221,22 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec) []st
 	}
 	var problems []string
 
+	// Every granted capability must be a canonical one (internal/capability,
+	// issue #74) — sorted for deterministic error ordering, since map
+	// iteration order is not.
+	names := make([]string, 0, len(goobers))
+	for name := range goobers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for _, c := range goobers[name].Capabilities {
+			if !capability.Known(c) {
+				problems = append(problems, fmt.Sprintf("goober %q grants unknown capability %q", name, c))
+			}
+		}
+	}
+
 	checkHarness := func(gooberName, ctx string) {
 		g, ok := goobers[gooberName]
 		if !ok {
@@ -242,6 +262,9 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec) []st
 		}
 		grants := toSet(g.Capabilities)
 		for _, cap := range t.Capabilities {
+			if !capability.Known(cap) {
+				problems = append(problems, fmt.Sprintf("task %q declares unknown capability %q", t.Name, cap))
+			}
 			if !grants[cap] {
 				problems = append(problems, fmt.Sprintf("task %q uses capability %q not granted to goober %q", t.Name, cap, t.Goober))
 			}

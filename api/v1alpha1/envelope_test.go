@@ -23,7 +23,7 @@ func TestInvocationEnvelopeRoundTrip(t *testing.T) {
 			{Name: "plan", Artifact: &ArtifactPointer{Path: "artifacts/plan/plan.md", Digest: Digest([]byte("plan"))}},
 			{Name: "issue", External: &ExternalRef{Kind: "issue", URI: "https://github.com/acme/web/issues/1421"}},
 		},
-		Capabilities: []string{"repo:push", "github:pulls:write"},
+		Capabilities: []string{"repo:push", "github:pr:write"},
 		Limits:       Limits{MaxDurationSeconds: 1800, MaxTokens: 2_000_000, MaxCostUSD: 5},
 		Inputs:       map[string]interface{}{"draftPr": true},
 	}
