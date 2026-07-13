@@ -119,22 +119,21 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 	if err != nil {
 		t.Fatalf("new resolver: %v", err)
 	}
-	_, chain := journal.DefaultScrubber()
 
 	r, err := runner.New(runner.Config{
-		NewDeterministic: func(rec runner.ArtifactRecorder) (invoke.Deterministic, error) {
-			injector, ierr := credentials.NewInjector(resolver, nil, mustRegistrar(t))
+		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
+			injector, ierr := credentials.NewInjector(resolver, nil, reg)
 			if ierr != nil {
 				return nil, ierr
 			}
 			return executor.NewShellExecutor(injector, rec)
 		},
-		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder) (invoke.Goober, error) {
+		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			act := coderAct
 			if gooberName == "reviewer" {
 				act = reviewerAct
 			}
-			injector, ierr := credentials.NewInjector(resolver, nil, mustRegistrar(t))
+			injector, ierr := credentials.NewInjector(resolver, nil, reg)
 			if ierr != nil {
 				return nil, ierr
 			}
@@ -154,7 +153,16 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 			if !ok {
 				return nil, fmt.Errorf("test double %T does not implement harness.SpanRecorder", rec)
 			}
-			return harness.NewExecutor(adapter, injector, recorder, chain, "you are the "+gooberName+" fixture goober")
+			// reg is this run's own *journal.RegistryScrubber (#66) — it also
+			// implements journal.Scrubber, so chaining it with the pattern
+			// net gives the harness executor the SAME per-run scrubbing the
+			// runner's own journal uses, rather than a disconnected one.
+			registryScrubber, ok := reg.(journal.Scrubber)
+			if !ok {
+				return nil, fmt.Errorf("test double %T does not implement journal.Scrubber", reg)
+			}
+			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
+			return harness.NewExecutor(adapter, injector, recorder, scrubber, "you are the "+gooberName+" fixture goober")
 		},
 		Automated: gate.NewAutomatedEvaluator(),
 		Worktrees: wtMgr,
@@ -167,18 +175,6 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 		t.Fatalf("runner.New: %v", err)
 	}
 	return r, runsDir
-}
-
-// mustRegistrar satisfies harness.NewExecutor/executor.NewShellExecutor's
-// non-nil registrar-adjacent dependency (credentials.Injector's registrar)
-// with a throwaway scrubber registrar — the run's own journal-tied registrar
-// wiring is issue #66's job (tracked separately, not yet landed on top of
-// #17's Deliverable A this test builds against); a fixture run with no real
-// secrets doesn't need it connected for correctness here.
-func mustRegistrar(t *testing.T) *journal.RegistryScrubber {
-	t.Helper()
-	reg, _ := journal.DefaultScrubber()
-	return reg
 }
 
 func resultPayload(status apiv1.ResultStatus, summary string) apiv1.ResultEnvelope {
