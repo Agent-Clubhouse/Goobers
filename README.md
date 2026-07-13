@@ -73,3 +73,13 @@ make ci          # full local gate: fmt-check, vet, build, test, lint
 ```
 
 CI runs the same gate on every PR to `main`.
+
+## Contributing
+
+Goobers is open source and contributions are welcome. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow, [`SECURITY.md`](SECURITY.md)
+for vulnerability disclosure, and the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+Licensed under the [MIT License](LICENSE).
