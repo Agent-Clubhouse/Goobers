@@ -1,0 +1,61 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: implementation
+spec:
+  gaggle: acme-web
+  displayName: Implementation (with reviewer gate + CI repass loop)
+  # Consumer workflow: a routed backlog item drives an implement → test → review
+  # → CI-poll pipeline, looping back to implement on review changes or a red CI.
+  triggers:
+    - type: backlog-item
+      selector:
+        goobers: "true"
+  readiness:
+    maxConcurrentRuns: 2
+    maxRunsPerHour: 20
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement the backlog item and open a PR.
+      capabilities:
+        - repo:push
+        - github:pr:write
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 30
+      expectedOutputs:
+        - pull-request
+      next: run-tests
+    - name: run-tests
+      type: deterministic
+      goal: Run the project test suite in the stage worktree.
+      run:
+        command: ["make", "test"]
+      retry:
+        maxAttempts: 3
+      next: review
+    - name: await-ci
+      type: deterministic
+      goal: Poll the PR's CI checks until they conclude.
+      run:
+        command: ["goobers", "ci-poll", "--wait"]
+      next: ci-gate
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: reviewer
+      branches:
+        pass: await-ci
+        needs-changes: implement
+        reject: "@abort"
+    - name: ci-gate
+      evaluator: automated
+      automated:
+        check: ci-green
+      branches:
+        pass: ""
+        fail: implement

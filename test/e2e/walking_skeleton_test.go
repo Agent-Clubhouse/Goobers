@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/telemetry"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 const fixtureRoot = "../fixtures/e2e/walking-skeleton"
@@ -43,7 +44,7 @@ func TestWalkingSkeletonFixtureValidatesAndCompiles(t *testing.T) {
 	if len(workflow.Spec.Tasks) != 1 || workflow.Spec.Tasks[0].Goober != goober.Name {
 		t.Fatalf("workflow tasks = %#v, want single coder task", workflow.Spec.Tasks)
 	}
-	if _, err := engine.Compile(engine.Definition{Name: workflow.Name, Version: 1, Spec: workflow.Spec}); err != nil {
+	if _, err := wf.Compile(wf.Definition{Name: workflow.Name, Version: 1, Spec: workflow.Spec}); err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}
 }

@@ -1,0 +1,21 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: flow
+spec:
+  gaggle: web
+  triggers:
+    - type: schedule
+      schedule: "every-so-often"     # bad: not a cron/interval expression
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement the item.
+      capabilities:
+        - repo:push                   # undeclared: coder grants no capabilities
+    - name: orphan                    # unreachable: nothing transitions here
+      type: agentic
+      goober: coder
+      goal: Never runs.

@@ -1,0 +1,12 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: web
+  role: coder
+  instructions: instructions.md
+  harness: copilot
+  # No capability grants — so a stage that uses one fails admission.
+  workflows:
+    - flow

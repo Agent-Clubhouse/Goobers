@@ -21,6 +21,7 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 // Severity ranks an issue.
@@ -442,6 +443,31 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow) {
 			}
 		}
 	}
+
+	// Delegate the deeper semantic analysis to the workflow compiler so the CLI
+	// and the compiler stay in lockstep: reachability + loop-without-exit,
+	// schedule-expression validity, and capability/harness admission. These are
+	// checks the inline field-by-field pass above deliberately does not duplicate.
+	def := wf.Definition{Name: w.Name, Version: 1, Spec: w.Spec}
+	for _, msg := range wf.CheckReachability(def) {
+		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+	}
+	for _, msg := range wf.CheckSchedules(def) {
+		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+	}
+	for _, msg := range wf.CheckAdmission(def, ix.gooberSpecs()) {
+		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+	}
+}
+
+// gooberSpecs projects the indexed goobers into the name->spec map the compiler's
+// capability/harness admission expects.
+func (ix *index) gooberSpecs() map[string]apiv1.GooberSpec {
+	out := make(map[string]apiv1.GooberSpec, len(ix.goobers))
+	for name, g := range ix.goobers {
+		out[name] = g.Spec
+	}
+	return out
 }
 
 // checkGateEvaluator enforces GT-016: exactly one evaluator block, matching the

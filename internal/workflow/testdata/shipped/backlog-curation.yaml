@@ -1,0 +1,30 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: backlog-curation
+spec:
+  gaggle: acme-web
+  displayName: Backlog curation
+  # Producer/consumer hybrid: a cron trigger wakes the workflow; its first stage
+  # queries + claims eligible backlog items (WF-055), then a curator triages,
+  # labels, and de-dupes them.
+  triggers:
+    - type: schedule
+      schedule: "@hourly"
+  readiness:
+    maxConcurrentRuns: 1
+  start: query-backlog
+  tasks:
+    - name: query-backlog
+      type: deterministic
+      goal: Query the provider for eligible items and claim them.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      next: curate
+    - name: curate
+      type: agentic
+      goober: curator
+      goal: Triage, label, and de-duplicate the claimed backlog items.
+      capabilities:
+        - github:issues:write
+      # Terminal: no `next`.

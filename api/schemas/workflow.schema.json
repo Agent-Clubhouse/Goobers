@@ -77,6 +77,16 @@
           }
         },
         "inputs": { "type": "object", "additionalProperties": { "type": "string" } },
+        "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "retry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxAttempts"],
+          "properties": {
+            "maxAttempts": { "type": "integer", "minimum": 1 },
+            "backoffSeconds": { "type": "integer", "minimum": 0 }
+          }
+        },
         "expectedOutputs": { "type": "array", "items": { "type": "string" } },
         "next": { "type": "string" }
       },

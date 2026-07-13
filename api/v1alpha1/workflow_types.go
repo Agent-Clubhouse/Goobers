@@ -86,12 +86,40 @@ type Task struct {
 	// envelope's inputs blob at runtime.
 	// +optional
 	Inputs map[string]string `json:"inputs,omitempty" yaml:"inputs,omitempty"`
+	// Capabilities are the capability grants this stage uses (e.g.
+	// "github:issues:write", "repo:push"). For an agentic stage they MUST be a
+	// subset of the invoked goober's granted capabilities; the compiler fails
+	// closed on an undeclared capability (ARCHITECTURE.md §5, SEC-042).
+	// +optional
+	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// Retry declares how the runner retries this stage on failure. Retries are a
+	// runner concern (WF-021): the policy is data, not behavior, so the compiled
+	// machine stays deterministic. A retried attempt appears in the journal as a
+	// new attempt, never overwritten history.
+	// +optional
+	Retry *RetryPolicy `json:"retry,omitempty" yaml:"retry,omitempty"`
 	// ExpectedOutputs are postconditions downstream gates can validate (TSK-003).
 	// +optional
 	ExpectedOutputs []string `json:"expectedOutputs,omitempty" yaml:"expectedOutputs,omitempty"`
 	// Next is the name of the next state (task or gate). Empty means terminal.
 	// +optional
 	Next string `json:"next,omitempty" yaml:"next,omitempty"`
+}
+
+// RetryPolicy declares how many times, and how far apart, the runner retries a
+// failed stage. Backoff is a constant (not exponential-with-jitter) so the
+// declared policy is fully deterministic; wall-clock waits happen in the runner,
+// never in the compiled machine.
+type RetryPolicy struct {
+	// MaxAttempts is the total number of attempts including the first (>=1). 1
+	// means no retry.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Required
+	MaxAttempts int32 `json:"maxAttempts" yaml:"maxAttempts"`
+	// BackoffSeconds is the constant delay between attempts, in seconds.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	BackoffSeconds int32 `json:"backoffSeconds,omitempty" yaml:"backoffSeconds,omitempty"`
 }
 
 // DeterministicRun describes the code a deterministic task runs.

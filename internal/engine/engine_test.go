@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 // fakeInvoker is a test double for the stubbed GooberInvoker boundary.
@@ -202,7 +203,7 @@ func TestHumanGateSignal(t *testing.T) {
 				Name:      "approve",
 				Evaluator: apiv1.EvaluatorHuman,
 				Human:     &apiv1.HumanGate{},
-				Branches:  map[string]string{"pass": TerminalComplete, "reject": TargetAbort},
+				Branches:  map[string]string{"pass": wf.TerminalComplete, "reject": wf.TargetAbort},
 			},
 		},
 	}
