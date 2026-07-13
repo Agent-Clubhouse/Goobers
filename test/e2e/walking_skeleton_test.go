@@ -15,6 +15,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -77,7 +78,19 @@ func skeletonMachine(t *testing.T) *workflow.Machine {
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
 		Start:    "implement",
 		Tasks: []apiv1.Task{
-			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "implement the backlog item", Next: "review"},
+			{
+				Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "implement the backlog item",
+				// Matches config-examples/gaggles/acme-web/workflows/implementation.yaml's
+				// real "implement" task (#27) — a modest retry budget beyond
+				// the crash boundary a mid-attempt kill consumes (see
+				// TestWalkingSkeletonCrashResume). MaxAttempts=1 (the
+				// no-Retry default) would make ANY mid-attempt crash
+				// unresumable by design (internal/runner/resume.go
+				// fail-closed contract) — a real agentic task budgets for
+				// this on purpose.
+				Retry: &apiv1.RetryPolicy{MaxAttempts: 2},
+				Next:  "review",
+			},
 			{Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "run the local CI-equivalent", Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
 		},
 		Gates: []apiv1.Gate{
@@ -395,13 +408,146 @@ func TestWalkingSkeletonLocalRunnerDeterministicJournal(t *testing.T) {
 	}
 }
 
-// TestWalkingSkeletonCrashResume is deliberately skipped: crash/resume
-// (replay state.json + the event journal, resume from the last completed
-// stage) is internal/runner Deliverable B, not yet landed on top of the
-// Deliverable A this file builds against (#17). Tracked to un-skip the
-// moment Deliverable B ships — see issue #17.
+// simulateSkeletonCrashMidImplement hand-builds a run journal exactly to the
+// point a real Start would have reached had the process died right after
+// dispatching "implement"'s first attempt: run.started, then
+// stage.started(implement, attempt 1), with NO matching stage.finished — the
+// crash signature Resume must detect (internal/runner/resume.go's
+// interruptedAttempt). Mirrors internal/runner's own
+// simulateCrashMidAttempt (run_test.go) exactly, but through this file's
+// real StartInput shape (including the item snapshot input a genuine Start
+// would have journaled) so Resume reconstructs the same run a real
+// crash-mid-attempt would have left on disk. A clean journal.Create/Close
+// (no torn write) is sufficient — torn-write repair is internal/journal's
+// own, already-tested concern; this is about the runner's interpretation of
+// "started with no finished".
+func simulateSkeletonCrashMidImplement(t *testing.T, runsDir string, machine *workflow.Machine, in runner.StartInput) {
+	t.Helper()
+	inputs := map[string][]byte{}
+	if in.Item != nil {
+		b, err := json.Marshal(in.Item)
+		if err != nil {
+			t.Fatalf("simulateSkeletonCrashMidImplement: marshal item snapshot: %v", err)
+		}
+		inputs["item"] = b
+	}
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: in.RunID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: in.Gaggle, Trigger: in.Trigger,
+	}, inputs)
+	if err != nil {
+		t.Fatalf("simulateSkeletonCrashMidImplement: journal.Create: %v", err)
+	}
+	jr.SetMachineState("implement")
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatalf("simulateSkeletonCrashMidImplement: append stage.started: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("simulateSkeletonCrashMidImplement: close: %v", err)
+	}
+}
+
+// TestWalkingSkeletonCrashResume is #29's crash/resume acceptance scenario,
+// now that internal/runner Deliverable B (#17) has landed: kill the runner
+// mid-attempt on "implement", restart against a fresh Runner (a real
+// process restart constructs a new one), and Resume from the journal's
+// checkpointed state. Per resume.go's contract the interrupted attempt is
+// journaled as a terminal infra-tagged failure — never silently re-run
+// (§17) — before the runner continues the SAME attempt count against
+// "implement"'s own retry budget, then the run rejoins the ordinary
+// walking-skeleton machine (review passes, local-ci runs, completes) exactly
+// as internal/runner's own TestRunnerResumeRetriesInterruptedAttempt proves
+// at the runner-unit level — this test proves the same contract holds
+// end-to-end through the real multi-stage/gate skeleton, asserting on the
+// journal per this file's convention.
 func TestWalkingSkeletonCrashResume(t *testing.T) {
-	t.Skip("blocked on internal/runner Deliverable B (crash-resume/retries) — issue #17; runner.Runner has no Resume yet")
+	machine := skeletonMachine(t)
+	coderAct := func(int) interface{} { return resultPayload(apiv1.ResultSuccess, "implemented") }
+	reviewerAct := func(int) interface{} { return verdictPayload(apiv1.VerdictPass, "looks good") }
+	r, runsDir := newSkeletonRunner(t, coderAct, reviewerAct)
+
+	in := skeletonStartInput("run-skeleton-crash", machine)
+	simulateSkeletonCrashMidImplement(t, runsDir, machine, in)
+
+	res, err := r.Resume(context.Background(), runner.ResumeInput{
+		RunID:   in.RunID,
+		Machine: machine,
+		RepoRef: in.RepoRef,
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, in.RunID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+
+	// "implement" saw exactly one failed attempt (the crash, journaled by
+	// Resume) and one success — the acceptance scenario's own words.
+	var implementEvents []journal.Event
+	var types []journal.EventType
+	for _, e := range events {
+		types = append(types, e.Type)
+		if e.Stage == "implement" {
+			implementEvents = append(implementEvents, e)
+		}
+	}
+	wantTypes := []journal.EventType{
+		journal.EventStageStarted,  // attempt 1, pre-crash (hand-built above)
+		journal.EventStageFinished, // attempt 1, infra, journaled by Resume
+		journal.EventStageStarted,  // attempt 2, policy
+		journal.EventStageFinished, // attempt 2, policy, success
+	}
+	if len(implementEvents) != len(wantTypes) {
+		t.Fatalf("implement-stage events = %d, want %d: %+v", len(implementEvents), len(wantTypes), implementEvents)
+	}
+	for i, e := range implementEvents {
+		if e.Type != wantTypes[i] {
+			t.Errorf("event[%d].Type = %q, want %q", i, e.Type, wantTypes[i])
+		}
+	}
+	if implementEvents[1].Attempt != 1 || implementEvents[1].AttemptClass != journal.AttemptInfra || implementEvents[1].Status != string(apiv1.ResultFailure) {
+		t.Errorf("interrupted-attempt event = %+v, want attempt=1 class=infra status=failure", implementEvents[1])
+	}
+	// The infra-tagged interrupted attempt is excluded from conformance
+	// (§3.3) — confirm IsConformanceNormative agrees, same as
+	// internal/runner's own crash-resume test.
+	if implementEvents[1].IsConformanceNormative() {
+		t.Error("the infra-tagged interrupted attempt must be excluded from conformance (§3.3)")
+	}
+	if implementEvents[2].Attempt != 2 || implementEvents[2].AttemptClass != journal.AttemptPolicy {
+		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=policy", implementEvents[2])
+	}
+	if implementEvents[3].Attempt != 2 || implementEvents[3].Status != string(apiv1.ResultSuccess) {
+		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 status=success", implementEvents[3])
+	}
+
+	// Resume doesn't just recover the interrupted stage in isolation — the
+	// run rejoins the SAME multi-stage/gate machine the rest of #29
+	// exercises: review evaluates once (pass, no repass in this scenario)
+	// and local-ci runs before the run finishes completed.
+	if gateEvals := countEventType(types, journal.EventGateEvaluated); gateEvals != 1 {
+		t.Errorf("gate.evaluated count = %d, want 1 (single pass)", gateEvals)
+	}
+	if n := countEventType(types, journal.EventStageStarted); n != 3 {
+		t.Errorf("stage.started count = %d, want 3 (implement x2 incl. crashed attempt, local-ci x1)", n)
+	}
+
+	st, err := rd.State()
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.Phase != journal.PhaseCompleted || st.MachineState != "" {
+		t.Fatalf("state.json = %+v, want completed with empty machineState", st)
+	}
 }
 
 // countEventType counts occurrences of typ in types.
