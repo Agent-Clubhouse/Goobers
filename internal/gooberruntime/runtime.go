@@ -104,15 +104,12 @@ func validateResult(result apiv1.ResultEnvelope) error {
 	if !result.Status.IsValid() {
 		return fmt.Errorf("invalid result status %q", result.Status)
 	}
-	if result.Status != apiv1.ResultSuccess && result.Error == nil {
+	if result.Status == apiv1.ResultFailure && result.Error == nil {
 		return fmt.Errorf("result status %q requires error detail", result.Status)
 	}
 	for i, artifact := range result.Artifacts {
-		if artifact.Type == "" {
-			return fmt.Errorf("artifact[%d].type is required", i)
-		}
-		if artifact.URI == "" {
-			return fmt.Errorf("artifact[%d].uri is required", i)
+		if err := artifact.Validate(); err != nil {
+			return fmt.Errorf("artifact[%d]: %w", i, err)
 		}
 	}
 	return nil

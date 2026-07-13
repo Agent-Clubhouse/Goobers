@@ -1,13 +1,19 @@
 {
   "status": "success",
   "outputs": {
-    "prNumber": 1487
+    "prNumber": 1487,
+    "branch": "goobers/rate-limit-1421"
   },
   "artifacts": [
     {
-      "type": "pull-request",
-      "uri": "https://github.com/acme/web/pull/1487",
-      "label": "Add rate limiting to the public API"
+      "path": "artifacts/implement/changes.patch",
+      "digest": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "mediaType": "text/x-patch",
+      "size": 4213
+    },
+    {
+      "path": "artifacts/implement/test-output.txt",
+      "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     }
   ],
   "summary": "Implemented token-bucket rate limiting at 100/min and added tests.",

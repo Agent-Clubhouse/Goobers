@@ -2,12 +2,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://goobers.dev/schemas/verdict.schema.json",
   "title": "Verdict",
-  "description": "Structured result an agentic reviewer gate produces (GT-Q1). Mirrors the result envelope.",
+  "description": "The structured result a gate evaluator produces (ARCHITECTURE.md §5). The gate maps decision to a branch; evidence points at journal artifacts, never inlined state.",
   "type": "object",
   "additionalProperties": false,
   "required": ["decision"],
   "properties": {
     "decision": { "type": "string", "enum": ["pass", "fail", "needs-changes"] },
+    "rationale": { "type": "string" },
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "artifact-pointer.schema.json" }
+    },
     "findings": {
       "type": "array",
       "items": { "$ref": "#/$defs/finding" }

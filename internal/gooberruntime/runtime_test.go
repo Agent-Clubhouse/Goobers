@@ -81,8 +81,8 @@ func validInvocation() apiv1.InvocationEnvelope {
 			"instructions": "You are a careful coder.",
 			"draftPr":      true,
 		},
-		UpstreamOutputs: map[string]apiv1.ResultEnvelope{
-			"plan": {Status: apiv1.ResultSuccess, Outputs: map[string]interface{}{"summary": "ready"}},
+		ContextPointers: []apiv1.ContextPointer{
+			{Name: "plan", Artifact: &apiv1.ArtifactPointer{Path: "artifacts/plan/plan.md", Digest: apiv1.Digest([]byte("ready"))}},
 		},
 		Limits: apiv1.Limits{MaxDurationSeconds: 1800, MaxTokens: 1000, MaxCostUSD: 1.25},
 	}
@@ -93,9 +93,10 @@ func TestInvokeBuildsContextAndReturnsResult(t *testing.T) {
 	harness := &fakeHarness{invokeResult: apiv1.ResultEnvelope{
 		Status:  apiv1.ResultSuccess,
 		Outputs: map[string]interface{}{"prNumber": float64(123)},
-		Artifacts: []apiv1.Artifact{{
-			Type: "pull-request",
-			URI:  "https://github.com/acme/web/pull/123",
+		Artifacts: []apiv1.ArtifactPointer{{
+			Path:      "artifacts/implement/pr.json",
+			Digest:    apiv1.Digest([]byte(`{"pr":123}`)),
+			MediaType: "application/json",
 		}},
 		Summary: "opened PR",
 	}}
@@ -114,8 +115,8 @@ func TestInvokeBuildsContextAndReturnsResult(t *testing.T) {
 	if harness.gotInvoke.Context.RepoRef.Name != "web" {
 		t.Errorf("repo name = %q, want web", harness.gotInvoke.Context.RepoRef.Name)
 	}
-	if _, ok := harness.gotInvoke.Context.UpstreamOutputs["plan"]; !ok {
-		t.Fatal("expected upstream output in harness context")
+	if len(harness.gotInvoke.Context.ContextPointers) == 0 || harness.gotInvoke.Context.ContextPointers[0].Name != "plan" {
+		t.Fatal("expected context pointer in harness context")
 	}
 	if harness.gotInvoke.Environment.RepoDir != "/workspace/repo" {
 		t.Errorf("repo dir = %q", harness.gotInvoke.Environment.RepoDir)
@@ -137,7 +138,7 @@ func TestInvokePropagatesHarnessError(t *testing.T) {
 func TestInvokeRejectsInvalidResult(t *testing.T) {
 	rt := New(Options{
 		Preparer: &fakePreparer{},
-		Harness:  &fakeHarness{invokeResult: apiv1.ResultEnvelope{Status: apiv1.ResultFailed}},
+		Harness:  &fakeHarness{invokeResult: apiv1.ResultEnvelope{Status: apiv1.ResultFailure}},
 	})
 
 	_, err := rt.Invoke(context.Background(), validInvocation())
@@ -205,8 +206,8 @@ func TestReviewUsesEvaluatorAndReturnsVerdict(t *testing.T) {
 	if verdict.Decision != apiv1.VerdictNeedsChanges {
 		t.Fatalf("decision = %q, want needs-changes", verdict.Decision)
 	}
-	if evaluator.got.Context.UpstreamOutputs["plan"].Status != apiv1.ResultSuccess {
-		t.Fatal("expected upstream result in evaluator context")
+	if len(evaluator.got.Context.ContextPointers) == 0 || evaluator.got.Context.ContextPointers[0].Name != "plan" {
+		t.Fatal("expected context pointer in evaluator context")
 	}
 }
 

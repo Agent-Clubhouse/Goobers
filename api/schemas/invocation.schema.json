@@ -2,24 +2,38 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://goobers.dev/schemas/invocation.schema.json",
   "title": "InvocationEnvelope",
-  "description": "Standard context/data block delivered to a task at invocation (GBO-012, TSK-011, TSK-Q1).",
+  "description": "The V0 stage invocation envelope: what the runner hands a stage when the workflow advances (ARCHITECTURE.md §5). Carries context POINTERS only — never upstream result bodies (§2.4).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["taskId", "workflowId", "runId", "gaggle", "goal", "repoRef", "limits"],
+  "required": ["taskId", "workflowId", "runId", "gaggle", "goal", "workspace", "repoRef", "limits"],
   "properties": {
     "taskId": { "type": "string", "minLength": 1 },
     "workflowId": { "type": "string", "minLength": 1 },
     "runId": { "type": "string", "minLength": 1 },
     "gaggle": { "type": "string", "minLength": 1 },
     "goal": { "type": "string", "minLength": 1 },
+    "workspace": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path to the fresh, isolated, disposable working copy the stage runs in (§5)."
+    },
     "item": { "$ref": "#/$defs/backlogItem" },
     "repoRef": { "$ref": "#/$defs/repoRef" },
-    "upstreamOutputs": {
-      "type": "object",
-      "additionalProperties": { "$ref": "result.schema.json" }
+    "contextPointers": {
+      "type": "array",
+      "description": "Read-only inputs: journal artifact pointers and external refs. Pointers only.",
+      "items": { "$ref": "#/$defs/contextPointer" }
+    },
+    "capabilities": {
+      "type": "array",
+      "description": "Declared capability grants (e.g. 'github:issues:write'). Undeclared use fails closed (§5).",
+      "items": { "type": "string", "minLength": 1 }
     },
     "limits": { "$ref": "#/$defs/limits" },
-    "inputs": { "type": "object" }
+    "inputs": {
+      "type": "object",
+      "description": "The stage's static config from its definition. The stage's own config — not another stage's state."
+    }
   },
   "$defs": {
     "backlogItem": {
@@ -54,6 +68,31 @@
         "maxDurationSeconds": { "type": "integer", "minimum": 0 },
         "maxTokens": { "type": "integer", "minimum": 0 },
         "maxCostUSD": { "type": "number", "minimum": 0 }
+      }
+    },
+    "contextPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "description": "Exactly one of artifact or external.",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "artifact": { "$ref": "artifact-pointer.schema.json" },
+        "external": { "$ref": "#/$defs/externalRef" }
+      },
+      "oneOf": [
+        { "required": ["artifact"], "not": { "required": ["external"] } },
+        { "required": ["external"], "not": { "required": ["artifact"] } }
+      ]
+    },
+    "externalRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "uri"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "uri": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" }
       }
     }
   }

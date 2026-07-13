@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "artifacts": [
+    {
+      "path": "artifacts/implement/changes.patch",
+      "digest": "md5:deadbeef"
+    }
+  ]
+}

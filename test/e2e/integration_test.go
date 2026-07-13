@@ -231,7 +231,7 @@ func (fakeHarness) Invoke(context.Context, gooberruntime.HarnessRequest) (apiv1.
 		Status:    apiv1.ResultSuccess,
 		Summary:   "walking skeleton goober completed one backlog item",
 		Outputs:   map[string]interface{}{"pullRequest": "https://github.com/acme/web/pull/1"},
-		Artifacts: []apiv1.Artifact{{Type: "pull-request", URI: "https://github.com/acme/web/pull/1", Label: "PR"}},
+		Artifacts: []apiv1.ArtifactPointer{{Path: "artifacts/implement/pr.txt", Digest: apiv1.Digest([]byte("https://github.com/acme/web/pull/1")), MediaType: "text/plain"}},
 	}, nil
 }
 

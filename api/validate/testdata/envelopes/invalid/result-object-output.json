@@ -1,0 +1,6 @@
+{
+  "status": "success",
+  "outputs": {
+    "smuggledState": { "files": ["a.go", "b.go"], "note": "state must not travel through outputs; use an artifact pointer" }
+  }
+}

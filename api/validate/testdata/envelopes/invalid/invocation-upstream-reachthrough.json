@@ -1,0 +1,13 @@
+{
+  "taskId": "implement-001",
+  "workflowId": "default-implement",
+  "runId": "0af7651916cd43dd8448eb211c80319c",
+  "gaggle": "acme-web",
+  "goal": "Implement the backlog item and open a PR.",
+  "workspace": "/var/goobers/runs/0af7651916cd43dd8448eb211c80319c/worktrees/implement-001",
+  "repoRef": { "provider": "github", "owner": "acme", "name": "web" },
+  "limits": {},
+  "upstreamOutputs": {
+    "plan": { "status": "success", "outputs": { "summary": "reaching into another stage's state" } }
+  }
+}
