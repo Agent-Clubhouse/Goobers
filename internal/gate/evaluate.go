@@ -60,7 +60,22 @@ type Evaluator struct {
 	// MaxRepasses overrides DefaultMaxRepasses when non-zero.
 	MaxRepasses int
 
-	attempts map[string]int
+	// Attempts holds each gate's current consecutive non-pass count, keyed by
+	// gate name — the same value Result.Attempt reports after Evaluate. Nil
+	// (equivalently, a zero count for every gate) is the correct zero value
+	// for a fresh run. A caller resuming an interrupted run seeds this on
+	// construction (Evaluator{Attempts: restored, ...}) so the repass budget
+	// continues rather than resetting to 0 — e.g. Runner.Resume (#89)
+	// reconstructing it from each gate's last gate.evaluated event
+	// (Runner["repassAttempt"], recordVerdict in journal.go), the same source
+	// state.json itself is always reconstructable from. Evaluate mutates this
+	// map in place, so it also serves as the live, inspectable checkpoint
+	// source for a caller that wants to persist it after each gate — read
+	// Attempts[gateName], not Result.Attempt, if a pass may have reset it
+	// since the last read. Nil-safe: Evaluate lazily allocates it on first
+	// use. Exported instead of a constructor because every other Evaluator
+	// field is already set via struct literal (see internal/runner/run.go).
+	Attempts map[string]int
 }
 
 // Evaluate runs gate g's evaluator against env (already built by the caller,
@@ -129,15 +144,15 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 // count and whether that count exceeds the repass budget (in which case the
 // caller must escalate instead of following the gate's own branch).
 func (e *Evaluator) trackRepass(gateName, outcome string) (attempt int, exceeded bool) {
-	if e.attempts == nil {
-		e.attempts = make(map[string]int)
+	if e.Attempts == nil {
+		e.Attempts = make(map[string]int)
 	}
 	if outcome == OutcomePass {
-		e.attempts[gateName] = 0
+		e.Attempts[gateName] = 0
 		return 0, false
 	}
-	e.attempts[gateName]++
-	attempt = e.attempts[gateName]
+	e.Attempts[gateName]++
+	attempt = e.Attempts[gateName]
 	budget := e.MaxRepasses
 	if budget <= 0 {
 		budget = DefaultMaxRepasses

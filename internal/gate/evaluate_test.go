@@ -222,6 +222,59 @@ func TestEvaluatorEscalatesOnRepassBudgetExhaustion(t *testing.T) {
 	}
 }
 
+// TestEvaluatorHonorsSeededRepassCount is #89's gate-side acceptance test: a
+// caller resuming an interrupted run (internal/runner.Resume) constructs a
+// fresh Evaluator with Attempts pre-seeded from the run's last-known
+// gate.evaluated event, rather than the zero value trackRepass would
+// otherwise start from — so a crash mid-repass-loop can't grant a gate a
+// fresh budget it hadn't earned pre-crash.
+func TestEvaluatorHonorsSeededRepassCount(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "autogate",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches:  map[string]string{OutcomePass: "", OutcomeFail: "implement"},
+	}
+	auto := &fakeAutomated{outcomes: []string{OutcomeFail}}
+	run := newTestJournal(t)
+	// Simulates a resumed Evaluator: pre-crash, "autogate" had already failed
+	// twice (budget 2) — seeded exactly as internal/runner.Resume would,
+	// reconstructing from the run's last gate.evaluated event rather than
+	// starting fresh.
+	ev := &Evaluator{Automated: auto, MaxRepasses: 2, Journal: run, Attempts: map[string]int{"autogate": 2}}
+
+	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}
+	subject := apiv1.ResultEnvelope{Status: apiv1.ResultFailure}
+
+	r, err := ev.Evaluate(context.Background(), g, env, "implement", subject)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	// The seeded count (2) plus this evaluation's own failure (1) is 3, which
+	// exceeds the budget of 2 on this very first post-resume call — proving
+	// the budget picked up where the pre-crash run left off instead of
+	// resetting to a fresh 0/2.
+	if r.Attempt != 3 || !r.Escalated || r.Target != wf.TargetEscalate {
+		t.Fatalf("Evaluate = %+v, want attempt=3 escalated=true target=%s (seeded count honored)", r, wf.TargetEscalate)
+	}
+	if got := ev.Attempts["autogate"]; got != 3 {
+		t.Fatalf("ev.Attempts[autogate] = %d, want 3 (live, inspectable for the next checkpoint)", got)
+	}
+
+	// A fresh, unseeded Evaluator against the identical sequence must NOT
+	// escalate on the first call — the control proving the seed above, not
+	// MaxRepasses or the fixture, is what drove the escalation.
+	freshAuto := &fakeAutomated{outcomes: []string{OutcomeFail}}
+	fresh := &Evaluator{Automated: freshAuto, MaxRepasses: 2, Journal: newTestJournal(t)}
+	fr, err := fresh.Evaluate(context.Background(), g, env, "implement", subject)
+	if err != nil {
+		t.Fatalf("Evaluate (fresh): %v", err)
+	}
+	if fr.Attempt != 1 || fr.Escalated {
+		t.Fatalf("Evaluate (fresh) = %+v, want attempt=1 escalated=false", fr)
+	}
+}
+
 func TestEvaluatorNeverSilentlyPasses(t *testing.T) {
 	g := apiv1.Gate{
 		Name:      "autogate",
