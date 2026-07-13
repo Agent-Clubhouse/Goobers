@@ -104,7 +104,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 		t.Errorf("reviewer capabilities = %v, want none", goobers["reviewer"].Capabilities)
 	}
 
-	const wantDigest = "sha256:a988e5c2fc27906aec91d2dd516bacb58f3e8385b7ef0ca1ad46f77a43d80149"
+	const wantDigest = "sha256:e301fa9a9f973732d2f9aa022144f0ac1878abc20265974a2191c547835db224"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

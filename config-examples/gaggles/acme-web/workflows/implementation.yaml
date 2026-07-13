@@ -88,13 +88,28 @@ spec:
         - github:pr:write
       expectedOutputs:
         - pull-request-url
+        # Well-known handoff key for ci-poll's inputs.prNumber below — the
+        # runner threads this task's output into the next task's Inputs (the
+        # exact mechanism is the runner's concern, internal/executor's
+        # CIPollConfigFromEnvelope only documents the key it reads).
+        - prNumber
       next: ci-poll
 
     - name: ci-poll
       type: deterministic
       goal: Poll the PR's CI checks and review state until they conclude.
       run:
-        command: ["goobers", "ci-poll", "--wait"]
+        # internal/executor.TaskExecutor (#18, merged) dispatches this
+        # built-in stage kind via inputs.kind — it never shells out `command`
+        # for kind=ci-poll (CIPollExecutor calls the PR provider directly).
+        # `command` stays a placeholder because DeterministicRun.Command is a
+        # required field in schema v0.
+        command: ["goobers", "ci-poll"]
+      inputs:
+        kind: "ci-poll"
+        # prOwner/prRepo default from RepoRef when unset (they match here);
+        # prNumber is required and is expected to arrive via the open-pr ->
+        # ci-poll output/input threading noted above, not a static value.
       capabilities:
         - github:pr:write
       expectedOutputs:
