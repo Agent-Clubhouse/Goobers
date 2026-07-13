@@ -1,0 +1,67 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: backlog-curation
+spec:
+  gaggle: goobers
+  displayName: Backlog curation
+  # Producer/consumer hybrid (ARCHITECTURE.md §7, §12; WF-055, SCH-041): a cron
+  # trigger wakes this workflow; its own first stage queries + claims eligible
+  # items rather than being routed to by the scheduler's backlog-item trigger.
+  # 3x/day, spread across the day (03:22/11:22/19:22 local) — readiness adds a
+  # hard per-hour ceiling as a runaway guard (WorkflowSpec has no native
+  # per-day budget field, so cadence + hourly cap together express it).
+  triggers:
+    - type: schedule
+      schedule: "22 3,11,19 * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+  start: query-backlog
+  tasks:
+    # Built-in backlog-query stage kind (ARCHITECTURE.md §7, WF-055): queries
+    # the issues provider and claims candidates, honoring the untrusted-input
+    # eligibility gate (SEC-047) — only items carrying the maintainer-applied
+    # trust label are claimable. This is a public repo: goobers:approved is a
+    # hard gate, not a default to relax. Re-running is a no-op because the
+    # query only ever returns items still missing both output markers
+    # (idempotency).
+    - name: query-backlog
+      type: deterministic
+      goal: Query the backlog for trust-labeled, uncurated items and claim them.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        # Eligibility: only items a maintainer has explicitly approved
+        # (SEC-047). Backlog item text is untrusted data, never instructions —
+        # this label is the provider-permission-enforced gate on that
+        # untrusted input.
+        trustLabel: "goobers:approved"
+        # Idempotency: items already bearing either output marker are
+        # excluded, so a re-run over an already-curated backlog claims
+        # nothing.
+        excludeLabels: "goobers:ready,goobers:needs-human"
+        maxItems: "20"
+      capabilities:
+        - github:issues:write
+      expectedOutputs:
+        - claimed-items
+      next: curate
+    # Agentic curation: dedupe, prune stale, tag, and split oversized items.
+    # Issues-only — the curator goober is granted no repo capability (issue
+    # #25 scope: "touching issues only, never code").
+    - name: curate
+      type: agentic
+      goober: curator
+      goal: >-
+        Curate the claimed backlog items: dedupe, handle staleness, tag, split
+        oversized items, and mark each item goobers:ready or
+        goobers:needs-human. Explain every action in a comment on the item.
+      capabilities:
+        - github:issues:write
+      expectedOutputs:
+        - curation-summary
+      # Terminal: no `next`. Curation touches issues only; there is no
+      # CI-poll or reviewer loop here, so a single agentic stage is the whole
+      # pipeline (ARCHITECTURE.md §12 lists reviewer gates as an
+      # *implementation*-workflow concern, not curation's).

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,6 +71,52 @@ func TestInitThenValidate(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "nothing to do") {
 		t.Fatalf("second init stdout = %q", stdout)
+	}
+}
+
+// TestInitThenSelfhostValidates is issue #28's own acceptance criterion,
+// literally: `goobers init` + the self-hosting dogfood config ->
+// `goobers validate` passes, with every gaggle/goober/workflow resolving.
+func TestInitThenSelfhostValidates(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "selfhost-instance")
+	if code, _, stderr := runArgs(t, "init", root); code != 0 {
+		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
+	}
+
+	// Replace the generic seeded config with the real self-hosting config.
+	configDir := filepath.Join(root, "config")
+	if err := os.RemoveAll(configDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.CopyFS(configDir, os.DirFS("../../selfhost")); err != nil {
+		t.Fatal(err)
+	}
+	// The blanket copy also pulls in files that aren't config-as-code
+	// objects (the operator guide and the instance.yaml template) — remove
+	// them from config/ so only Manifest/Gaggle/Goober/Workflow objects
+	// remain, matching what a maintainer following the README would end up
+	// with.
+	_ = os.Remove(filepath.Join(configDir, "README.md"))
+	instanceYAML, err := os.ReadFile(filepath.Join(configDir, "instance.yaml.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(configDir, "instance.yaml.example")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "instance.yaml"), instanceYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "1 gaggle(s), 4 goober(s), 3 workflow(s)") {
+		t.Fatalf("validate stdout = %q, want all self-hosting objects to resolve", stdout)
 	}
 }
 

@@ -1,0 +1,24 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: goobers
+spec:
+  displayName: Goobers (self-hosting)
+  # The instance targets the Goobers repo itself — "begins to build itself"
+  # (ARCHITECTURE.md §12, V0 definition of done).
+  project:
+    provider: github
+    owner: Agent-Clubhouse
+    name: Goobers
+    branch: main
+    connectionRef: goobers-repo-token
+  # The singleton backlog this gaggle draws work from (GAG-004): this repo's
+  # own GitHub issues.
+  backlog:
+    provider: github
+    project: Agent-Clubhouse/Goobers
+    labels:
+      - goobers
+    connectionRef: goobers-repo-token
+  isolation:
+    namespace: gaggle-goobers-selfhost

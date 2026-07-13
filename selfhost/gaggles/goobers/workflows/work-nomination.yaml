@@ -1,0 +1,35 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: work-nomination
+spec:
+  gaggle: goobers
+  displayName: Work nomination
+  # Producer workflow: on a schedule, gather telemetry/signals, then a
+  # nominator files new backlog items (which curation picks up next cycle —
+  # the two workflows compose). Once daily, off the hour to avoid clustering
+  # with other instances' schedule ticks.
+  triggers:
+    - type: schedule
+      schedule: "41 6 * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+  start: gather-signals
+  tasks:
+    - name: gather-signals
+      type: deterministic
+      goal: Collect telemetry and repo signals worth acting on.
+      run:
+        command: ["goobers", "telemetry-query", "--window", "24h"]
+      next: nominate
+    - name: nominate
+      type: agentic
+      goober: nominator
+      goal: Propose backlog items from the gathered signals and file them.
+      capabilities:
+        - telemetry:read
+        - github:issues:write
+      # Terminal: no `next`. Filed issues land unclaimed (no goobers:approved
+      # label) — a maintainer approves before curation can touch them
+      # (SEC-047: this is a public repo).

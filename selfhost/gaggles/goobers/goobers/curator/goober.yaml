@@ -1,0 +1,22 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: curator
+spec:
+  gaggle: goobers
+  role: curator
+  displayName: Curator
+  instructions: instructions.md
+  harness: copilot
+  # Issues-only, no repo access (issue #25 scope) — enforced by capability
+  # non-injection (SEC-042/SEC-045): credentials for github:pr/repo:* are
+  # simply never materialized into this goober's run environment.
+  capabilities:
+    - github:issues:write
+  skills:
+    - triage
+  tools:
+    - github
+  scaleFactor: 1
+  workflows:
+    - backlog-curation
