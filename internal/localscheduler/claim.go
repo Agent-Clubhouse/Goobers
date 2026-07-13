@@ -96,6 +96,7 @@ func (l *ClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.D
 		return false, existing.RunID, nil
 	}
 
+	prev, hadPrev := l.entries[itemID]
 	entry := ClaimEntry{
 		ItemID:    itemID,
 		RunID:     runID,
@@ -105,6 +106,16 @@ func (l *ClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.D
 	}
 	l.entries[itemID] = entry
 	if err := l.persist(); err != nil {
+		// Roll back the in-memory mutation so a failed persist leaves the item
+		// exactly as it was — claimable if it was unheld, or still held by its
+		// prior owner on an idempotent renewal. The ledger's in-memory and durable
+		// state must never diverge: without this, a persist blip would strand the
+		// item as un-claimable in memory while nothing durably holds it.
+		if hadPrev {
+			l.entries[itemID] = prev
+		} else {
+			delete(l.entries, itemID)
+		}
 		return false, "", err
 	}
 	l.journal(journal.EventClaimAcquired, entry)

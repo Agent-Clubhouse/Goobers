@@ -146,6 +146,76 @@ func TestClaimSurvivesReopen(t *testing.T) {
 	}
 }
 
+// TestClaimPersistFailureLeavesItemClaimable proves the ledger rolls back its
+// in-memory mutation when the durable write fails: a claim whose persist errors
+// must report ok=false, leave no phantom hold, and leave the item claimable by
+// another run — in-memory and durable state must never diverge.
+func TestClaimPersistFailureLeavesItemClaimable(t *testing.T) {
+	dir := t.TempDir()
+	goodPath := filepath.Join(dir, "claims.json")
+	l, err := OpenClaimLedger(goodPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Force persist to fail by pointing the ledger at a path whose parent dir
+	// does not exist, so the atomic write cannot land.
+	l.path = filepath.Join(dir, "missing-subdir", "claims.json")
+
+	ok, _, err := l.Claim("issue-42", "run-a", "curate", time.Minute)
+	if err == nil {
+		t.Fatal("expected a persist error, got nil")
+	}
+	if ok {
+		t.Fatal("Claim must report ok=false when the claim did not persist")
+	}
+
+	// Rollback: the failed claim must not leave a lingering in-memory hold.
+	if e, held := l.Lookup("issue-42"); held {
+		t.Fatalf("failed-persist claim must be rolled back, but item is held by %q", e.RunID)
+	}
+
+	// Claimable again: restore a writable path and let a DIFFERENT run claim it.
+	// It must win — not be refused by run-a's rolled-back ghost claim.
+	l.path = goodPath
+	ok, holder, err := l.Claim("issue-42", "run-b", "curate", time.Minute)
+	if err != nil || !ok || holder != "run-b" {
+		t.Fatalf("item must be claimable after a persist failure: ok=%v holder=%s err=%v", ok, holder, err)
+	}
+}
+
+// TestClaimPersistFailurePreservesPriorOwner proves rollback restores the prior
+// owner (not just "unheld"): when a run renews its own live lease and the renewal
+// persist fails, the run's existing claim must remain intact in memory.
+func TestClaimPersistFailurePreservesPriorOwner(t *testing.T) {
+	dir := t.TempDir()
+	goodPath := filepath.Join(dir, "claims.json")
+	l, err := OpenClaimLedger(goodPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := l.Claim("issue-7", "run-a", "curate", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	// A same-run renewal whose persist fails must not drop the existing claim.
+	l.path = filepath.Join(dir, "missing-subdir", "claims.json")
+	if _, _, err := l.Claim("issue-7", "run-a", "curate", time.Hour); err == nil {
+		t.Fatal("expected a persist error on the failed renewal")
+	}
+	e, held := l.Lookup("issue-7")
+	if !held || e.RunID != "run-a" {
+		t.Fatalf("a failed renewal must preserve the prior owner's claim: %+v held=%v", e, held)
+	}
+
+	// And a different run is still refused — the claim genuinely survived.
+	l.path = goodPath
+	ok, holder, err := l.Claim("issue-7", "run-b", "curate", time.Minute)
+	if err != nil || ok || holder != "run-a" {
+		t.Fatalf("prior owner should still hold the claim: ok=%v holder=%s err=%v", ok, holder, err)
+	}
+}
+
 // TestClaimConcurrentRace is the "two schedulers/runs don't double-start the
 // same work" property under real concurrency: N goroutines race to claim the
 // same item; exactly one must win.
