@@ -1,0 +1,267 @@
+package rollup
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// seedStatsRun writes a run with a "build" stage and an optional second stage
+// (failing with errCode when set), for stats/error aggregate tests. It reuses
+// the same hand-written-JSON approach as fixture_test.go (not the package's
+// own mirror types) for the same drift-catching reason.
+func seedStatsRun(t *testing.T, runsDir, runID, workflow, runStatus string, startedAt time.Time, secondStageFails bool, errCode string) {
+	t.Helper()
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), strings.ReplaceAll(minimalRunYAML(runID, startedAt), "workflow: wf", "workflow: "+workflow))
+
+	lines := []string{
+		eventLine(1, startedAt, `"type":"run.started"`),
+		eventLine(2, startedAt.Add(time.Second), `"type":"stage.started","stage":"build","attempt":1`),
+		eventLine(3, startedAt.Add(2*time.Second), `"type":"stage.finished","stage":"build","attempt":1,"status":"success"`),
+	}
+	seq := 4
+	offset := 3
+	if secondStageFails {
+		lines = append(lines,
+			eventLine(seq, startedAt.Add(time.Duration(offset)*time.Second), `"type":"stage.started","stage":"deploy","attempt":1`),
+			eventLine(seq+1, startedAt.Add(time.Duration(offset+1)*time.Second), `"type":"error","stage":"deploy","attempt":1,"error":{"code":"`+errCode+`","message":"seeded failure `+errCode+`"}`),
+			eventLine(seq+2, startedAt.Add(time.Duration(offset+2)*time.Second), `"type":"stage.finished","stage":"deploy","attempt":1,"status":"failure"`),
+		)
+		seq += 3
+		offset += 3
+	}
+	lines = append(lines, eventLine(seq, startedAt.Add(time.Duration(offset)*time.Second), `"type":"run.finished","status":"`+runStatus+`"`))
+	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
+}
+
+func seedRefTouched(t *testing.T, runsDir, runID string, seq int, ts time.Time, id, operation string) {
+	t.Helper()
+	path := filepath.Join(runsDir, runID, fileEvents)
+	line := eventLine(seq, ts, `"type":"ref.touched","externalRef":{"provider":"github","kind":"issue","id":"`+id+`"},"runner":{"operation":"`+operation+`"}`) + "\n"
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("append ref.touched: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString(line); err != nil {
+		t.Fatalf("append ref.touched: %v", err)
+	}
+}
+
+func seedAndIngest(t *testing.T, db *DB, runsDir string) {
+	t.Helper()
+	dirs, err := runDirs(runsDir)
+	if err != nil {
+		t.Fatalf("runDirs: %v", err)
+	}
+	for _, dir := range dirs {
+		if err := db.IngestRun(dir); err != nil {
+			t.Fatalf("IngestRun(%s): %v", dir, err)
+		}
+	}
+}
+
+func TestStatsAggregatesByWorkflowAndStage(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+
+	// implement: two completed runs (build only) + one failed run (build ok, deploy fails).
+	seedStatsRun(t, runsDir, "1111111111111111aaaaaaaaaaaaaaaa", "implement", "completed", base, false, "")
+	seedStatsRun(t, runsDir, "2222222222222222aaaaaaaaaaaaaaaa", "implement", "completed", base.Add(time.Hour), false, "")
+	seedStatsRun(t, runsDir, "3333333333333333aaaaaaaaaaaaaaaa", "implement", "failed", base.Add(2*time.Hour), true, "provider.rate_limit")
+	// nominate: one completed run, different stage name, outside the implement filter.
+	seedStatsRun(t, runsDir, "4444444444444444aaaaaaaaaaaaaaaa", "nominate", "completed", base.Add(3*time.Hour), false, "")
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	all, err := db.Stats(StatsRequest{})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if len(all.Runs) != 2 {
+		t.Fatalf("len(Runs) = %d, want 2 (implement, nominate)", len(all.Runs))
+	}
+	var implement RunStats
+	for _, r := range all.Runs {
+		if r.Workflow == "implement" {
+			implement = r
+		}
+	}
+	if implement.TotalRuns != 3 || implement.CompletedRuns != 2 || implement.FailedRuns != 1 {
+		t.Fatalf("implement run stats = %#v", implement)
+	}
+	if got, want := implement.SuccessRate, 2.0/3.0; got != want {
+		t.Fatalf("implement SuccessRate = %v, want %v", got, want)
+	}
+
+	var buildStage, deployStage StageStats
+	for _, s := range all.Stages {
+		switch s.Stage {
+		case "build":
+			buildStage = s
+		case "deploy":
+			deployStage = s
+		}
+	}
+	if buildStage.TotalAttempts != 4 || buildStage.SucceededAttempts != 4 { // 3 implement + 1 nominate, all succeed
+		t.Fatalf("build stage stats = %#v", buildStage)
+	}
+	if deployStage.TotalAttempts != 1 || deployStage.FailedAttempts != 1 || deployStage.SuccessRate != 0 {
+		t.Fatalf("deploy stage stats = %#v", deployStage)
+	}
+
+	// Filtered by workflow: only implement's 3 runs / build+deploy stages.
+	filtered, err := db.Stats(StatsRequest{Workflow: "implement"})
+	if err != nil {
+		t.Fatalf("Stats filtered: %v", err)
+	}
+	if len(filtered.Runs) != 1 || filtered.Runs[0].TotalRuns != 3 {
+		t.Fatalf("filtered runs = %#v", filtered.Runs)
+	}
+
+	// Time-window filtered: exclude everything after +30m -> only the first
+	// implement run (base) qualifies (the second starts at +1h).
+	windowed, err := db.Stats(StatsRequest{Workflow: "implement", Until: base.Add(30 * time.Minute)})
+	if err != nil {
+		t.Fatalf("Stats windowed: %v", err)
+	}
+	if len(windowed.Runs) != 1 || windowed.Runs[0].TotalRuns != 1 {
+		t.Fatalf("windowed runs = %#v", windowed.Runs)
+	}
+}
+
+func TestErrorsQueryFiltersAndOrders(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+	seedStatsRun(t, runsDir, "1111111111111111bbbbbbbbbbbbbbbb", "implement", "failed", base, true, "provider.rate_limit")
+	seedStatsRun(t, runsDir, "2222222222222222bbbbbbbbbbbbbbbb", "implement", "failed", base.Add(time.Hour), true, "harness.crash")
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	all, err := db.Errors(ErrorsRequest{})
+	if err != nil {
+		t.Fatalf("Errors: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("len(errors) = %d, want 2", len(all))
+	}
+	// Newest first.
+	if all[0].RunID != "2222222222222222bbbbbbbbbbbbbbbb" || all[1].RunID != "1111111111111111bbbbbbbbbbbbbbbb" {
+		t.Fatalf("errors not newest-first: %#v", all)
+	}
+	if all[0].Workflow != "implement" || all[0].Stage != "deploy" || all[0].Attempt != 1 {
+		t.Fatalf("unexpected error run/stage ref: %#v", all[0])
+	}
+
+	rateLimitOnly, err := db.Errors(ErrorsRequest{ErrorClass: "provider-rate-limit"})
+	if err != nil {
+		t.Fatalf("Errors filtered: %v", err)
+	}
+	if len(rateLimitOnly) != 1 || rateLimitOnly[0].Code != "provider.rate_limit" {
+		t.Fatalf("rate-limit-filtered errors = %#v", rateLimitOnly)
+	}
+}
+
+func TestTopErrorSignaturesAggregatesAcrossRuns(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+	seedStatsRun(t, runsDir, "1111111111111111cccccccccccccccc", "implement", "failed", base, true, "provider.rate_limit")
+	seedStatsRun(t, runsDir, "2222222222222222cccccccccccccccc", "implement", "failed", base.Add(time.Hour), true, "provider.rate_limit")
+	seedStatsRun(t, runsDir, "3333333333333333cccccccccccccccc", "implement", "failed", base.Add(2*time.Hour), true, "harness.crash")
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	sigs, err := db.TopErrorSignatures(StatsRequest{}, 10)
+	if err != nil {
+		t.Fatalf("TopErrorSignatures: %v", err)
+	}
+	if len(sigs) != 2 {
+		t.Fatalf("len(sigs) = %d, want 2", len(sigs))
+	}
+	// Most frequent first.
+	top := sigs[0]
+	if top.Code != "provider.rate_limit" || top.Count != 2 {
+		t.Fatalf("top signature = %#v", top)
+	}
+	if top.ExampleRunID == "" || top.ExampleStage != "deploy" {
+		t.Fatalf("top signature missing example ref: %#v", top)
+	}
+}
+
+func TestProviderMutationCountsGroupsByShape(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+	seedStatsRun(t, runsDir, "1111111111111111dddddddddddddddd", "implement", "completed", base, false, "")
+	seedStatsRun(t, runsDir, "2222222222222222dddddddddddddddd", "implement", "completed", base.Add(time.Hour), false, "")
+	seedStatsRun(t, runsDir, "3333333333333333dddddddddddddddd", "implement", "completed", base.Add(2*time.Hour), false, "")
+	seedRefTouched(t, runsDir, "1111111111111111dddddddddddddddd", 4, base.Add(3*time.Second), "42", "claim")
+	seedRefTouched(t, runsDir, "2222222222222222dddddddddddddddd", 4, base.Add(time.Hour+3*time.Second), "42", "claim")
+	seedRefTouched(t, runsDir, "3333333333333333dddddddddddddddd", 4, base.Add(2*time.Hour+3*time.Second), "43", "update")
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	counts, err := db.ProviderMutationCounts(StatsRequest{})
+	if err != nil {
+		t.Fatalf("ProviderMutationCounts: %v", err)
+	}
+	if len(counts) != 2 {
+		t.Fatalf("len(counts) = %d, want 2 (claim, update)", len(counts))
+	}
+	if counts[0].Operation != "claim" || counts[0].Count != 2 {
+		t.Fatalf("top mutation count = %#v", counts[0])
+	}
+}
+
+// TestAggregateQueriesRedactCanary verifies query results carry no
+// redacted-secret material — the plumbing already redacts at ingest (#22),
+// this proves the aggregate query layer doesn't reintroduce a leak by
+// surfacing a field that skipped that pass.
+func TestAggregateQueriesRedactCanary(t *testing.T) {
+	const canary = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	dir := filepath.Join(runsDir, fixtureRunID)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), minimalRunYAML(fixtureRunID, fixtureStart))
+	events := strings.Join([]string{
+		eventLine(1, fixtureStart, `"type":"run.started"`),
+		eventLine(2, fixtureStart.Add(time.Second), `"type":"stage.started","stage":"s","attempt":1`),
+		eventLine(3, fixtureStart.Add(2*time.Second), `"type":"error","stage":"s","attempt":1,"error":{"code":"harness.failure","message":"leaked `+canary+`"}`),
+		eventLine(4, fixtureStart.Add(3*time.Second), `"type":"stage.finished","stage":"s","attempt":1,"status":"failure"`),
+		eventLine(5, fixtureStart.Add(4*time.Second), `"type":"run.finished","status":"failed"`),
+	}, "\n") + "\n"
+	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(dir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+
+	errs, err := db.Errors(ErrorsRequest{})
+	if err != nil || len(errs) != 1 {
+		t.Fatalf("Errors: %v, %#v", err, errs)
+	}
+	if strings.Contains(errs[0].Message, canary) {
+		t.Fatalf("canary leaked into Errors() result: %q", errs[0].Message)
+	}
+
+	sigs, err := db.TopErrorSignatures(StatsRequest{}, 10)
+	if err != nil || len(sigs) != 1 {
+		t.Fatalf("TopErrorSignatures: %v, %#v", err, sigs)
+	}
+	if strings.Contains(sigs[0].Code, canary) || strings.Contains(sigs[0].ExampleRunID, canary) {
+		t.Fatalf("canary leaked into TopErrorSignatures() result: %#v", sigs[0])
+	}
+}
