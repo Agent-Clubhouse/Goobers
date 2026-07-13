@@ -1,0 +1,308 @@
+package executor
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/journal"
+)
+
+// DefaultTimeout bounds a shell stage's execution when neither the executor
+// nor the stage declares one.
+const DefaultTimeout = 10 * time.Minute
+
+// DefaultMaxOutputBytes caps captured stdout/stderr (each stream) when
+// neither the executor nor the stage declares a limit.
+const DefaultMaxOutputBytes int64 = 1 << 20 // 1 MiB
+
+// Well-known Task.Inputs keys a deterministic shell stage may declare. These
+// travel through InvocationEnvelope.Inputs rather than as DeterministicRun
+// fields — see doc.go.
+const (
+	// InputTimeout is a time.ParseDuration string, e.g. "5m".
+	InputTimeout = "timeout"
+	// InputResultFile is a path, relative to the workspace, whose bytes (once
+	// the command exits) become an artifact. If declared, the file's presence
+	// is also a success criterion: a zero exit with no such file is a failure.
+	InputResultFile = "resultFile"
+	// InputMaxOutputBytes is a decimal integer overriding the per-stream
+	// output cap.
+	InputMaxOutputBytes = "maxOutputBytes"
+)
+
+// ArtifactRecorder persists stage output bytes into the run journal and
+// returns a content-addressed pointer to them. *journal.Run satisfies this.
+type ArtifactRecorder interface {
+	RecordArtifact(name string, data []byte) (journal.Ref, error)
+}
+
+// ShellExecutor runs deterministic shell stages (invoke.Deterministic) in the
+// worktree the caller hands it via InvocationEnvelope.Workspace.
+type ShellExecutor struct {
+	// Injector resolves capability-scoped credentials for a stage's declared
+	// capabilities. Required.
+	Injector *credentials.Injector
+	// Journal records captured output and declared result files as
+	// content-addressed artifacts. Required.
+	Journal ArtifactRecorder
+	// DefaultTimeout overrides the package DefaultTimeout when positive.
+	DefaultTimeout time.Duration
+	// DefaultMaxOutputBytes overrides the package DefaultMaxOutputBytes when
+	// positive.
+	DefaultMaxOutputBytes int64
+}
+
+// NewShellExecutor builds a ShellExecutor. injector and journal must not be
+// nil: a nil injector could silently skip capability admission, and a nil
+// journal would leave captured output unrecorded — both fail closed here
+// rather than at first use.
+func NewShellExecutor(injector *credentials.Injector, rec ArtifactRecorder) (*ShellExecutor, error) {
+	if injector == nil {
+		return nil, errors.New("executor: injector must not be nil")
+	}
+	if rec == nil {
+		return nil, errors.New("executor: journal must not be nil")
+	}
+	return &ShellExecutor{Injector: injector, Journal: rec}, nil
+}
+
+// Run implements invoke.Deterministic. It executes run.Command in
+// env.Workspace with a capability-scoped, non-ambient environment, enforces a
+// timeout by killing the whole process group, captures size-bounded and
+// secret-scrubbed stdout/stderr as artifacts, and — if InputResultFile is
+// declared — lifts that file into an artifact and requires its presence for
+// success.
+//
+// A non-nil error means the executor itself could not produce a result
+// (misconfiguration, credential resolution failure, or a journal write
+// failure) — ARCHITECTURE.md invariant 6, fail closed rather than degrade.
+// Everything the *declared command* can go wrong in (nonzero exit, timeout,
+// a missing declared result file) is a normal ResultFailure envelope for the
+// runner's retry policy to act on.
+func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	if len(run.Command) == 0 {
+		return apiv1.ResultEnvelope{}, errors.New("executor: DeterministicRun declares no command")
+	}
+	timeout, err := e.timeoutFor(env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	maxOutput, err := e.maxOutputFor(env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	resultFile := stringInput(env, InputResultFile)
+
+	registry, scrubber := journal.DefaultScrubber()
+	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: resolve credentials: %w", err)
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.Command(run.Command[0], run.Command[1:]...)
+	cmd.Dir = env.Workspace
+	cmd.Env = stageEnv
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	stdout := &capturingWriter{limit: maxOutput}
+	stderr := &capturingWriter{limit: maxOutput}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	if err := cmd.Start(); err != nil {
+		return apiv1.ResultEnvelope{
+			Status:  apiv1.ResultFailure,
+			Error:   &apiv1.ErrorInfo{Code: "exec_start", Message: err.Error(), Retryable: false},
+			Summary: fmt.Sprintf("failed to start %q", run.Command[0]),
+		}, nil
+	}
+
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+
+	var timedOut bool
+	var waitErr error
+	select {
+	case waitErr = <-waitDone:
+	case <-runCtx.Done():
+		timedOut = true
+		// Kill the whole process group (negative pid), not just the direct
+		// child, so a runaway subprocess tree can't outlive the stage.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		waitErr = <-waitDone
+	}
+
+	outBytes := scrubber.Scrub(stdout.buf.Bytes())
+	errBytes := scrubber.Scrub(stderr.buf.Bytes())
+
+	result := apiv1.ResultEnvelope{Outputs: map[string]interface{}{}, Metrics: map[string]float64{}}
+
+	stdoutRef, err := e.Journal.RecordArtifact(env.TaskID+"/stdout.log", outBytes)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record stdout: %w", err)
+	}
+	result.Artifacts = append(result.Artifacts, refToPointer(stdoutRef, "text/plain"))
+	if stdout.truncated {
+		result.Outputs["stdoutTruncated"] = true
+	}
+
+	stderrRef, err := e.Journal.RecordArtifact(env.TaskID+"/stderr.log", errBytes)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record stderr: %w", err)
+	}
+	result.Artifacts = append(result.Artifacts, refToPointer(stderrRef, "text/plain"))
+	if stderr.truncated {
+		result.Outputs["stderrTruncated"] = true
+	}
+
+	if timedOut {
+		result.Status = apiv1.ResultFailure
+		result.Error = &apiv1.ErrorInfo{
+			Code:      "timeout",
+			Message:   fmt.Sprintf("stage exceeded timeout %s", timeout),
+			Retryable: true,
+		}
+		result.Summary = "stage timed out and was killed"
+		return result, nil
+	}
+
+	exitCode := exitCodeOf(waitErr)
+	result.Metrics["exitCode"] = float64(exitCode)
+
+	if resultFile != "" {
+		data, rerr := os.ReadFile(filepath.Join(env.Workspace, resultFile))
+		switch {
+		case rerr == nil:
+			ref, aerr := e.Journal.RecordArtifact(env.TaskID+"/result", scrubber.Scrub(data))
+			if aerr != nil {
+				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
+			}
+			result.Artifacts = append(result.Artifacts, refToPointer(ref, mediaTypeFor(resultFile)))
+		case os.IsNotExist(rerr):
+			result.Status = apiv1.ResultFailure
+			result.Error = &apiv1.ErrorInfo{
+				Code:      "missing_result_file",
+				Message:   fmt.Sprintf("declared result file %q was not produced", resultFile),
+				Retryable: false,
+			}
+			result.Summary = "declared result file missing"
+			return result, nil
+		default:
+			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: read result file %q: %w", resultFile, rerr)
+		}
+	}
+
+	if exitCode == 0 {
+		result.Status = apiv1.ResultSuccess
+		result.Summary = "stage completed"
+		return result, nil
+	}
+	result.Status = apiv1.ResultFailure
+	result.Error = &apiv1.ErrorInfo{
+		Code:      "nonzero_exit",
+		Message:   fmt.Sprintf("command exited %d", exitCode),
+		Retryable: false,
+	}
+	result.Summary = fmt.Sprintf("command exited %d", exitCode)
+	return result, nil
+}
+
+func (e *ShellExecutor) timeoutFor(env apiv1.InvocationEnvelope) (time.Duration, error) {
+	if s := stringInput(env, InputTimeout); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, fmt.Errorf("executor: invalid %s input %q: %w", InputTimeout, s, err)
+		}
+		return d, nil
+	}
+	if e.DefaultTimeout > 0 {
+		return e.DefaultTimeout, nil
+	}
+	return DefaultTimeout, nil
+}
+
+func (e *ShellExecutor) maxOutputFor(env apiv1.InvocationEnvelope) (int64, error) {
+	if s := stringInput(env, InputMaxOutputBytes); s != "" {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || n <= 0 {
+			return 0, fmt.Errorf("executor: invalid %s input %q", InputMaxOutputBytes, s)
+		}
+		return n, nil
+	}
+	if e.DefaultMaxOutputBytes > 0 {
+		return e.DefaultMaxOutputBytes, nil
+	}
+	return DefaultMaxOutputBytes, nil
+}
+
+func stringInput(env apiv1.InvocationEnvelope, key string) string {
+	v, ok := env.Inputs[key]
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
+func exitCodeOf(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
+}
+
+func refToPointer(ref journal.Ref, mediaType string) apiv1.ArtifactPointer {
+	return apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, MediaType: mediaType, Size: ref.Size}
+}
+
+func mediaTypeFor(path string) string {
+	if strings.HasSuffix(path, ".json") {
+		return "application/json"
+	}
+	return "application/octet-stream"
+}
+
+// capturingWriter caps total bytes retained from a stream at limit, silently
+// discarding (but still acknowledging, so the writer never blocks or errors
+// the producing process) anything beyond it.
+type capturingWriter struct {
+	buf       bytes.Buffer
+	limit     int64
+	truncated bool
+}
+
+func (w *capturingWriter) Write(p []byte) (int, error) {
+	if w.truncated {
+		return len(p), nil
+	}
+	remaining := w.limit - int64(w.buf.Len())
+	if remaining <= 0 {
+		w.truncated = true
+		return len(p), nil
+	}
+	if int64(len(p)) > remaining {
+		w.buf.Write(p[:remaining])
+		w.truncated = true
+		return len(p), nil
+	}
+	w.buf.Write(p)
+	return len(p), nil
+}
