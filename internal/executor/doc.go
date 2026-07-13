@@ -1,8 +1,26 @@
 // Package executor implements deterministic stage execution (ARCHITECTURE.md
 // §5, TSK-020): running a declared shell command inside a stage's worktree and
 // mapping the result to the stage contract's ResultEnvelope, plus the ci-poll
-// automated-gate primitive that drives the implementation workflow's
-// CI-poll/repass loop (GT-020).
+// built-in deterministic-stage kind that drives the implementation workflow's
+// CI-poll/repass loop.
+//
+// ci-poll is a TASK (TaskDeterministic), not a gate: CIPollExecutor polls to a
+// terminal check state and reports it via ResultEnvelope.Outputs["ciStatus"]
+// ("success"/"failure") — the contract internal/gate's "ci-status" check
+// (#20) already reads. A separate automated gate then branches on that
+// output; ci-poll itself never evaluates a gate (ARCHITECTURE.md §2.4: gates
+// read a task's flattened outputs, they don't poll anything). This resolves
+// in favor of the requirements doc's "deterministic stage that polls... emits
+// an envelope for gate branching" framing over GT-020's gate-flavored
+// wording — settled with Dev-6 (#20) in #mission-runner-core, since a poll's
+// retry/backoff/timeout is exactly what a task's declared retry policy
+// already gives for free, and internal/gate's CheckFunc is deliberately a
+// pure, context-less, synchronous lookup with nothing to poll.
+//
+// Because a caller (the runner, #17) constructs exactly one invoke.Deterministic
+// per run, TaskExecutor is the single dispatcher registered for
+// apiv1.TaskDeterministic: it routes to ShellExecutor or CIPollExecutor by
+// InvocationEnvelope.Inputs[InputKind].
 //
 // ShellExecutor implements invoke.Deterministic — the existing engine↔runtime
 // seam (internal/invoke) — so it plugs into the runner (#17) the same way any

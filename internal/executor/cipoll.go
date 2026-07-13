@@ -4,19 +4,33 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/providers"
 )
 
-// CICheckName is the AutomatedGate.Check value CIPollEvaluator handles: the
-// "ci-poll" built-in primitive that drives the implementation workflow's
-// CI-poll/repass loop (GT-020).
-const CICheckName = "ci-poll"
+// OutputCIStatus is the ResultEnvelope.Outputs key CIPollExecutor sets to the
+// polled PR's terminal check state, as a string matching apiv1.ResultStatus
+// ("success"/"failure") — the contract internal/gate's "ci-status" check
+// (#20) reads to branch the repass loop. ci-poll's own ResultEnvelope.Status
+// reflects whether it *successfully determined* an outcome, not the outcome
+// itself: a failing CI check is still a successful poll.
+const OutputCIStatus = "ciStatus"
 
-// Default poll cadence for CIPollEvaluator: capped exponential backoff and an
+// Well-known Task.Inputs keys a ci-poll stage may declare (see
+// ConfigFromEnvelope/CIPollConfigFromEnvelope and doc.go's note on how the PR
+// locator gets there).
+const (
+	InputPROwner            = "prOwner"
+	InputPRRepo             = "prRepo"
+	InputPRNumber           = "prNumber"
+	InputPollIntervalSec    = "pollIntervalSeconds"
+	InputPollMaxIntervalSec = "pollMaxIntervalSeconds"
+	InputPollTimeoutSec     = "pollTimeoutSeconds"
+)
+
+// Default poll cadence for CIPollExecutor: capped exponential backoff and an
 // overall timeout, mirroring the shape (not the exact constants, which are
 // GitHub-response-header-specific and unexported) of providers' own
 // rate-limit backoff.
@@ -26,21 +40,66 @@ const (
 	DefaultPollTimeout     = 30 * time.Minute
 )
 
-// PRPoller is the narrow slice of providers.RepoProvider CIPollEvaluator
+// PRPoller is the narrow slice of providers.RepoProvider CIPollExecutor
 // depends on, so it can be driven by a fake in tests instead of a real
 // GitHub/ADO client.
 type PRPoller interface {
 	PollPullRequest(ctx context.Context, req providers.PullRequestPollRequest) (providers.PullRequestPollResult, error)
 }
 
-// CIPollEvaluator implements invoke.Automated for AutomatedGate{Check:
-// "ci-poll"}: it polls a pull request's combined CI/check state to a
-// terminal outcome with capped exponential backoff and maps it to the gate's
-// "pass"/"fail" branch outcome.
-type CIPollEvaluator struct {
+// CIPollConfig configures one ci-poll stage invocation.
+type CIPollConfig struct {
+	Owner, Repo, PullID            string
+	Interval, MaxInterval, Timeout time.Duration
+}
+
+// CIPollConfigFromEnvelope builds a CIPollConfig from the well-known Input*
+// keys in env.Inputs, defaulting owner/repo from env.RepoRef when not
+// explicitly given (the PR under poll is almost always in the run's own
+// target repo). InputPRNumber is required — how it got into Inputs (e.g. an
+// earlier "open PR" task's output, threaded through by the workflow/runner)
+// is outside this package's concern.
+func CIPollConfigFromEnvelope(env apiv1.InvocationEnvelope) (CIPollConfig, error) {
+	cfg := CIPollConfig{
+		Owner:  stringInput(env, InputPROwner),
+		Repo:   stringInput(env, InputPRRepo),
+		PullID: stringInput(env, InputPRNumber),
+	}
+	if cfg.Owner == "" {
+		cfg.Owner = env.RepoRef.Owner
+	}
+	if cfg.Repo == "" {
+		cfg.Repo = env.RepoRef.Name
+	}
+	if cfg.Owner == "" || cfg.Repo == "" || cfg.PullID == "" {
+		return CIPollConfig{}, errors.New("executor: ci-poll requires owner/repo (or env.repoRef) and " + InputPRNumber)
+	}
+	cfg.Interval = durationInputSeconds(env, InputPollIntervalSec)
+	cfg.MaxInterval = durationInputSeconds(env, InputPollMaxIntervalSec)
+	cfg.Timeout = durationInputSeconds(env, InputPollTimeoutSec)
+	return cfg, nil
+}
+
+func durationInputSeconds(env apiv1.InvocationEnvelope, key string) time.Duration {
+	s := stringInput(env, key)
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s + "s")
+	if err != nil {
+		return 0
+	}
+	return d
+}
+
+// CIPollExecutor implements the ci-poll built-in deterministic-stage kind: it
+// polls a pull request's combined CI/check state to a terminal outcome with
+// capped exponential backoff and reports it via OutputCIStatus for a
+// downstream automated gate to branch on.
+type CIPollExecutor struct {
 	Poller PRPoller
-	// Interval/MaxInterval/Timeout override the package defaults when
-	// positive; the gate's own Params override both.
+	// Interval/MaxInterval/Timeout are this executor's defaults; a positive
+	// value on CIPollConfig overrides them per call.
 	Interval    time.Duration
 	MaxInterval time.Duration
 	Timeout     time.Duration
@@ -50,35 +109,47 @@ type CIPollEvaluator struct {
 	Sleep func(context.Context, time.Duration) error
 }
 
-// NewCIPollEvaluator builds a CIPollEvaluator with real-clock defaults.
-func NewCIPollEvaluator(poller PRPoller) (*CIPollEvaluator, error) {
+// NewCIPollExecutor builds a CIPollExecutor with real-clock defaults.
+func NewCIPollExecutor(poller PRPoller) (*CIPollExecutor, error) {
 	if poller == nil {
 		return nil, errors.New("executor: poller must not be nil")
 	}
-	return &CIPollEvaluator{Poller: poller}, nil
+	return &CIPollExecutor{Poller: poller}, nil
 }
 
-// Evaluate implements invoke.Automated. gate.Check must be CICheckName.
-// gate.Params.pullId is required; owner/repo default to env.RepoRef when not
-// given in Params. Optional Params "intervalSeconds"/"maxIntervalSeconds"/
-// "timeoutSeconds" override this evaluator's cadence for this one gate.
+// Run polls to a terminal check state or until cfg's timeout expires.
 //
-// Evaluate blocks, polling to a terminal state or until its timeout expires.
-// A terminal passing/failing check state returns "pass"/"fail" with a nil
-// error (GT-020's declared branch outcome). Running out of time while still
-// pending is NOT "fail" — it's inconclusive, so it comes back as an error
-// instead of conflating "CI hasn't finished" with "CI failed".
-func (e *CIPollEvaluator) Evaluate(ctx context.Context, gate apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
-	if gate.Check != CICheckName {
-		return "", fmt.Errorf("executor: CIPollEvaluator does not handle check %q", gate.Check)
+// A terminal passing/failing check state is a *successful* poll — Status is
+// always ResultSuccess and Outputs[OutputCIStatus] carries which terminal
+// state was reached ("success"/"failure"), for a downstream gate to branch
+// on. Exhausting the timeout while still pending is a genuine stage failure
+// (Retryable: true) — the poll itself did not complete, which is a different
+// outcome from "CI finished and failed".
+func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.ResultEnvelope, error) {
+	if cfg.Owner == "" || cfg.Repo == "" || cfg.PullID == "" {
+		return apiv1.ResultEnvelope{}, errors.New("executor: ci-poll requires owner, repo, and pullId")
 	}
-	owner, repo, pullID, err := prLocator(gate.Params, env)
-	if err != nil {
-		return "", err
+	interval := cfg.Interval
+	if interval <= 0 {
+		interval = e.Interval
 	}
-	interval := durationParam(gate.Params, "intervalSeconds", e.Interval, DefaultPollInterval)
-	maxInterval := durationParam(gate.Params, "maxIntervalSeconds", e.MaxInterval, DefaultMaxPollInterval)
-	timeout := durationParam(gate.Params, "timeoutSeconds", e.Timeout, DefaultPollTimeout)
+	if interval <= 0 {
+		interval = DefaultPollInterval
+	}
+	maxInterval := cfg.MaxInterval
+	if maxInterval <= 0 {
+		maxInterval = e.MaxInterval
+	}
+	if maxInterval <= 0 {
+		maxInterval = DefaultMaxPollInterval
+	}
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = e.Timeout
+	}
+	if timeout <= 0 {
+		timeout = DefaultPollTimeout
+	}
 
 	now := e.Now
 	if now == nil {
@@ -91,60 +162,47 @@ func (e *CIPollEvaluator) Evaluate(ctx context.Context, gate apiv1.AutomatedGate
 
 	deadline := now().Add(timeout)
 	req := providers.PullRequestPollRequest{
-		Repository: providers.RepositoryRef{Owner: owner, Name: repo},
-		PullID:     pullID,
+		Repository: providers.RepositoryRef{Owner: cfg.Owner, Name: cfg.Repo},
+		PullID:     cfg.PullID,
 	}
 
 	for attempt := 0; ; attempt++ {
 		result, err := e.Poller.PollPullRequest(ctx, req)
 		if err != nil {
-			return "", fmt.Errorf("executor: poll pull request: %w", err)
+			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", err)
 		}
 		switch result.CheckState {
 		case providers.CheckStatePassing:
-			return "pass", nil
+			return ciPollOutcome(apiv1.ResultSuccess, "ci-poll: checks passing"), nil
 		case providers.CheckStateFailing:
-			return "fail", nil
+			return ciPollOutcome(apiv1.ResultFailure, "ci-poll: checks failing"), nil
 		}
 		if now().After(deadline) {
-			return "", fmt.Errorf("executor: ci-poll timed out after %s waiting for a terminal check state", timeout)
+			return apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{
+					Code:      "poll_timeout",
+					Message:   fmt.Sprintf("ci-poll timed out after %s waiting for a terminal check state", timeout),
+					Retryable: true,
+				},
+				Summary: "ci-poll timed out while still pending",
+			}, nil
 		}
 		if err := sleep(ctx, backoff(interval, maxInterval, attempt)); err != nil {
-			return "", err
+			return apiv1.ResultEnvelope{}, err
 		}
 	}
 }
 
-func prLocator(params map[string]string, env apiv1.InvocationEnvelope) (owner, repo, pullID string, err error) {
-	owner = params["owner"]
-	if owner == "" {
-		owner = env.RepoRef.Owner
+// ciPollOutcome builds the ResultEnvelope for a poll that reached a terminal
+// state: the stage itself always succeeded (it determined an outcome); the
+// outcome is carried in Outputs[OutputCIStatus].
+func ciPollOutcome(ciStatus apiv1.ResultStatus, summary string) apiv1.ResultEnvelope {
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Outputs: map[string]interface{}{OutputCIStatus: string(ciStatus)},
+		Summary: summary,
 	}
-	repo = params["repo"]
-	if repo == "" {
-		repo = env.RepoRef.Name
-	}
-	pullID = params["pullId"]
-	if owner == "" || repo == "" || pullID == "" {
-		return "", "", "", errors.New("executor: ci-poll gate requires owner/repo (or env.repoRef) and params.pullId")
-	}
-	return owner, repo, pullID, nil
-}
-
-// durationParam reads key from params as whole seconds, falling back to
-// override (if positive) and then def. A malformed or non-positive value in
-// params is treated as absent rather than an error: these are advisory
-// cadence knobs, not correctness-critical.
-func durationParam(params map[string]string, key string, override, def time.Duration) time.Duration {
-	if s := params[key]; s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			return time.Duration(n) * time.Second
-		}
-	}
-	if override > 0 {
-		return override
-	}
-	return def
 }
 
 // backoff returns base<<attempt capped at max, matching the shape of the

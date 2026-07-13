@@ -24,139 +24,132 @@ func (f *fakePoller) PollPullRequest(ctx context.Context, req providers.PullRequ
 
 func noSleep(context.Context, time.Duration) error { return nil }
 
-func gateFor(owner, repo, pullID string) apiv1.AutomatedGate {
-	return apiv1.AutomatedGate{Check: CICheckName, Params: map[string]string{"owner": owner, "repo": repo, "pullId": pullID}}
+func cfgFor(owner, repo, pullID string) CIPollConfig {
+	return CIPollConfig{Owner: owner, Repo: repo, PullID: pullID}
 }
 
-func TestCIPollEvaluator_Pass(t *testing.T) {
+func TestCIPollExecutor_Pass(t *testing.T) {
 	poller := &fakePoller{results: []providers.CheckState{providers.CheckStatePassing}}
-	eval, err := NewCIPollEvaluator(poller)
+	exec, err := NewCIPollExecutor(poller)
 	if err != nil {
 		t.Fatal(err)
 	}
-	eval.Sleep = noSleep
+	exec.Sleep = noSleep
 
-	outcome, err := eval.Evaluate(context.Background(), gateFor("o", "r", "42"), apiv1.InvocationEnvelope{})
+	result, err := exec.Run(context.Background(), cfgFor("o", "r", "42"))
 	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
-	if outcome != "pass" {
-		t.Fatalf("outcome = %q, want pass", outcome)
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (the poll itself succeeded)", result.Status)
+	}
+	if result.Outputs[OutputCIStatus] != string(apiv1.ResultSuccess) {
+		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], apiv1.ResultSuccess)
 	}
 	if poller.calls != 0 {
 		t.Fatalf("expected exactly one poll call, got %d", poller.calls+1)
 	}
 }
 
-func TestCIPollEvaluator_Fail(t *testing.T) {
+func TestCIPollExecutor_Fail(t *testing.T) {
 	poller := &fakePoller{results: []providers.CheckState{providers.CheckStateFailing}}
-	eval, err := NewCIPollEvaluator(poller)
+	exec, err := NewCIPollExecutor(poller)
 	if err != nil {
 		t.Fatal(err)
 	}
-	eval.Sleep = noSleep
+	exec.Sleep = noSleep
 
-	outcome, err := eval.Evaluate(context.Background(), gateFor("o", "r", "42"), apiv1.InvocationEnvelope{})
+	result, err := exec.Run(context.Background(), cfgFor("o", "r", "42"))
 	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
-	if outcome != "fail" {
-		t.Fatalf("outcome = %q, want fail", outcome)
+	// The poll itself succeeded (it determined a terminal state) even though
+	// the state it determined is "CI failed" — that verdict rides in Outputs.
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if result.Outputs[OutputCIStatus] != string(apiv1.ResultFailure) {
+		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], apiv1.ResultFailure)
 	}
 }
 
-func TestCIPollEvaluator_PendingThenPass(t *testing.T) {
+func TestCIPollExecutor_PendingThenPass(t *testing.T) {
 	poller := &fakePoller{results: []providers.CheckState{
 		providers.CheckStatePending, providers.CheckStatePending, providers.CheckStatePassing,
 	}}
-	eval, err := NewCIPollEvaluator(poller)
+	exec, err := NewCIPollExecutor(poller)
 	if err != nil {
 		t.Fatal(err)
 	}
-	eval.Sleep = noSleep
-	eval.Timeout = time.Hour // won't be hit
+	exec.Sleep = noSleep
+	exec.Timeout = time.Hour // won't be hit
 
-	outcome, err := eval.Evaluate(context.Background(), gateFor("o", "r", "42"), apiv1.InvocationEnvelope{})
+	result, err := exec.Run(context.Background(), cfgFor("o", "r", "42"))
 	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
-	if outcome != "pass" {
-		t.Fatalf("outcome = %q, want pass", outcome)
+	if result.Outputs[OutputCIStatus] != string(apiv1.ResultSuccess) {
+		t.Fatalf("outputs[%s] = %v, want success", OutputCIStatus, result.Outputs[OutputCIStatus])
 	}
 	if poller.calls != 2 {
 		t.Fatalf("expected 3 poll calls (2 pending + 1 terminal), got %d", poller.calls+1)
 	}
 }
 
-func TestCIPollEvaluator_TimesOutWithoutClaimingFail(t *testing.T) {
+func TestCIPollExecutor_TimesOutIsAFailure(t *testing.T) {
 	poller := &fakePoller{results: []providers.CheckState{providers.CheckStatePending}}
-	eval, err := NewCIPollEvaluator(poller)
+	exec, err := NewCIPollExecutor(poller)
 	if err != nil {
 		t.Fatal(err)
 	}
-	eval.Sleep = noSleep
-	eval.Timeout = time.Minute
+	exec.Sleep = noSleep
+	exec.Timeout = time.Minute
 
 	base := time.Now()
 	tick := 0
-	eval.Now = func() time.Time {
-		t := base.Add(time.Duration(tick) * time.Minute)
+	exec.Now = func() time.Time {
+		tm := base.Add(time.Duration(tick) * time.Minute)
 		tick++
-		return t
+		return tm
 	}
 
-	outcome, err := eval.Evaluate(context.Background(), gateFor("o", "r", "42"), apiv1.InvocationEnvelope{})
-	if err == nil {
-		t.Fatalf("expected a timeout error, got outcome %q", outcome)
+	result, err := exec.Run(context.Background(), cfgFor("o", "r", "42"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	if outcome != "" {
-		t.Fatalf("outcome on timeout = %q, want empty (not a claimed fail/pass)", outcome)
+	if result.Status != apiv1.ResultFailure {
+		t.Fatalf("status = %v, want failure (the poll itself did not complete)", result.Status)
+	}
+	if result.Error == nil || result.Error.Code != "poll_timeout" || !result.Error.Retryable {
+		t.Fatalf("error = %+v, want poll_timeout, retryable", result.Error)
+	}
+	if _, ok := result.Outputs[OutputCIStatus]; ok {
+		t.Fatalf("outputs = %+v, want no ciStatus set on a timeout (not a claimed pass/fail)", result.Outputs)
 	}
 }
 
-func TestCIPollEvaluator_WrongCheckName(t *testing.T) {
-	eval, err := NewCIPollEvaluator(&fakePoller{results: []providers.CheckState{providers.CheckStatePassing}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = eval.Evaluate(context.Background(), apiv1.AutomatedGate{Check: "something-else"}, apiv1.InvocationEnvelope{})
-	if err == nil {
-		t.Fatal("expected an error for a non-ci-poll check name")
-	}
-}
-
-func TestCIPollEvaluator_MissingLocatorIsError(t *testing.T) {
-	eval, err := NewCIPollEvaluator(&fakePoller{results: []providers.CheckState{providers.CheckStatePassing}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	gate := apiv1.AutomatedGate{Check: CICheckName}
-	_, err = eval.Evaluate(context.Background(), gate, apiv1.InvocationEnvelope{})
-	if err == nil {
+func TestCIPollConfigFromEnvelope_MissingLocatorIsError(t *testing.T) {
+	if _, err := CIPollConfigFromEnvelope(apiv1.InvocationEnvelope{}); err == nil {
 		t.Fatal("expected an error when owner/repo/pullId cannot be determined")
 	}
 }
 
-func TestCIPollEvaluator_LocatorDefaultsFromRepoRef(t *testing.T) {
-	poller := &fakePoller{results: []providers.CheckState{providers.CheckStatePassing}}
-	eval, err := NewCIPollEvaluator(poller)
-	if err != nil {
-		t.Fatal(err)
+func TestCIPollConfigFromEnvelope_DefaultsFromRepoRef(t *testing.T) {
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Inputs:  map[string]interface{}{InputPRNumber: "7"},
 	}
-	gate := apiv1.AutomatedGate{Check: CICheckName, Params: map[string]string{"pullId": "7"}}
-	env := apiv1.InvocationEnvelope{RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"}}
-
-	outcome, err := eval.Evaluate(context.Background(), gate, env)
+	cfg, err := CIPollConfigFromEnvelope(env)
 	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
+		t.Fatalf("CIPollConfigFromEnvelope: %v", err)
 	}
-	if outcome != "pass" {
-		t.Fatalf("outcome = %q, want pass", outcome)
+	if cfg.Owner != "acme" || cfg.Repo != "widgets" || cfg.PullID != "7" {
+		t.Fatalf("cfg = %+v, unexpected", cfg)
 	}
 }
 
-func TestNewCIPollEvaluator_RequiresPoller(t *testing.T) {
-	if _, err := NewCIPollEvaluator(nil); err == nil {
+func TestNewCIPollExecutor_RequiresPoller(t *testing.T) {
+	if _, err := NewCIPollExecutor(nil); err == nil {
 		t.Fatal("expected error for nil poller")
 	}
 }
