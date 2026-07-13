@@ -175,11 +175,13 @@ Contract rules:
   checkout). The tier-neutral contract is isolation + disposal after the run; the
   worktree is the tiers-1–2 mechanism, not the contract.
 - **Capability admission:** a stage may only touch capabilities its definition
-  declares (e.g. `github:issues:write`, `repo:push`, `telemetry:read`). Undeclared
-  use fails closed — enforced at tiers 1–2 by declaration validation at compile time
-  plus **capability-scoped credential non-injection** (an undeclared capability's
-  credentials are simply never materialized), and by sandbox policy from V1
-  (`SEC-042`, `SEC-044`).
+  declares, from the canonical registry (`internal/capability`, issue #74) —
+  e.g. `github:issues:write`, `repo:push`, `telemetry:read`. Undeclared use, and
+  a capability string outside the registry, both fail closed — enforced at
+  tiers 1–2 by declaration validation at compile time plus **capability-scoped
+  credential non-injection** (an undeclared capability's credentials are
+  simply never materialized), and by sandbox policy from V1 (`SEC-042`,
+  `SEC-044`).
 - Retries are a runner concern, driven by the stage's declared policy; a retried
   stage appears in the journal as a new attempt, never as overwritten history.
 
