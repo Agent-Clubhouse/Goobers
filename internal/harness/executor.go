@@ -3,7 +3,11 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -12,6 +16,12 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
+
+// ErrDeclaredArtifactMissing is returned when a stage declares
+// InputArtifactFile but the harness session ends without producing it — the
+// stage fails closed rather than silently dropping the declared artifact,
+// mirroring internal/executor's InputResultFile contract.
+var ErrDeclaredArtifactMissing = errors.New("harness: declared artifact file not produced")
 
 // Executor is the engine-facing invoke.Goober implementation for agentic
 // stages (GBO-051) — checked at compile time so a signature drift is caught
@@ -25,6 +35,25 @@ type SpanRecorder interface {
 	RecordSpan(stage, name string, data []byte) (journal.Ref, error)
 }
 
+// ArtifactRecorder persists stage output bytes into the run journal by content
+// digest and returns a pointer to them (#73). It mirrors
+// internal/executor.ArtifactRecorder and internal/runner.ArtifactRecorder
+// exactly (same RecordArtifact method) so *journal.Run satisfies all three
+// structurally, with no adapter needed at any call site.
+type ArtifactRecorder interface {
+	RecordArtifact(name string, data []byte) (journal.Ref, error)
+}
+
+// InputArtifactFile is a workspace-relative path a stage may declare in
+// InvocationEnvelope.Inputs (#73). If present once the harness session
+// completes, that file's bytes are lifted into a content-addressed journal
+// artifact and attached to the stage's result/verdict — the agentic analog of
+// internal/executor's InputResultFile ("resultFile") convention, but additive:
+// the harness's own self-reported result/verdict JSON (via CompletionPath) is
+// unaffected either way. A declared-but-missing file fails the stage closed,
+// mirroring InputResultFile's contract.
+const InputArtifactFile = "artifactFile"
+
 // Executor adapts one Goober's harness Adapter into the engine-facing
 // invoke.Goober seam (GBO-051): the engine only ever sees Invoke/Review;
 // harness choice, credential materialization, transcript capture, and the
@@ -35,6 +64,7 @@ type Executor struct {
 	adapter      Adapter
 	injector     *credentials.Injector
 	recorder     SpanRecorder
+	artifacts    ArtifactRecorder
 	scrubber     journal.Scrubber
 	validator    *validate.Validator
 	instructions string
@@ -60,9 +90,11 @@ func WithTimeout(d time.Duration) Option { return func(e *Executor) { e.timeout 
 // NewExecutor builds an Executor for one goober: adapter is the harness to
 // drive, injector resolves credentials scoped per invocation's declared
 // capabilities, recorder captures the (scrubbed) transcript as a journal
-// span, scrubber redacts the transcript before it is recorded, and
-// instructions is the goober's resolved instructions.md body.
-func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanRecorder, scrubber journal.Scrubber, instructions string, opts ...Option) (*Executor, error) {
+// span, artifacts lifts a stage's declared InputArtifactFile (if any) into a
+// content-addressed journal artifact, scrubber redacts transcript/artifact
+// bytes before they are recorded, and instructions is the goober's resolved
+// instructions.md body.
+func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanRecorder, artifacts ArtifactRecorder, scrubber journal.Scrubber, instructions string, opts ...Option) (*Executor, error) {
 	if adapter == nil {
 		return nil, fmt.Errorf("harness: executor requires a non-nil adapter")
 	}
@@ -71,6 +103,9 @@ func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanR
 	}
 	if recorder == nil {
 		return nil, fmt.Errorf("harness: executor requires a non-nil recorder")
+	}
+	if artifacts == nil {
+		return nil, fmt.Errorf("harness: executor requires a non-nil artifact recorder")
 	}
 	if scrubber == nil {
 		return nil, fmt.Errorf("harness: executor requires a non-nil scrubber")
@@ -83,6 +118,7 @@ func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanR
 		adapter:      adapter,
 		injector:     injector,
 		recorder:     recorder,
+		artifacts:    artifacts,
 		scrubber:     scrubber,
 		validator:    v,
 		instructions: instructions,
@@ -110,6 +146,19 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	if err := json.Unmarshal(out.Payload, &result); err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("%w: decode result envelope: %w", ErrInvalidCompletion, err)
 	}
+	ptr, err := e.liftArtifactFile(env)
+	if err != nil {
+		if errors.Is(err, ErrDeclaredArtifactMissing) {
+			result.Status = apiv1.ResultFailure
+			result.Error = &apiv1.ErrorInfo{Code: "missing_declared_artifact", Message: err.Error(), Retryable: false}
+			result.Summary = "declared artifact file missing"
+			return result, nil
+		}
+		return apiv1.ResultEnvelope{}, err
+	}
+	if ptr != nil {
+		result.Artifacts = append(result.Artifacts, *ptr)
+	}
 	return result, nil
 }
 
@@ -127,6 +176,18 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	var verdict apiv1.Verdict
 	if err := json.Unmarshal(out.Payload, &verdict); err != nil {
 		return apiv1.Verdict{}, fmt.Errorf("%w: decode verdict: %w", ErrInvalidCompletion, err)
+	}
+	ptr, err := e.liftArtifactFile(env)
+	if err != nil {
+		if errors.Is(err, ErrDeclaredArtifactMissing) {
+			verdict.Decision = apiv1.VerdictFail
+			verdict.Summary = fmt.Sprintf("declared artifact file missing: %v", err)
+			return verdict, nil
+		}
+		return apiv1.Verdict{}, err
+	}
+	if ptr != nil {
+		verdict.Evidence = append(verdict.Evidence, *ptr)
 	}
 	return verdict, nil
 }
@@ -168,4 +229,47 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return Outcome{}, fmt.Errorf("%w: %s", ErrNoCompletion, completionPath)
 	}
 	return out, nil
+}
+
+// liftArtifactFile reads a stage's declared InputArtifactFile (if any) out of
+// the workspace and records it as a content-addressed journal artifact (#73).
+// It returns (nil, nil) when the stage declares no such file — a pure no-op,
+// so stages that never opt in are unaffected. A declared-but-missing file
+// returns ErrDeclaredArtifactMissing so Invoke/Review can fail the stage
+// closed rather than silently drop it.
+func (e *Executor) liftArtifactFile(env apiv1.InvocationEnvelope) (*apiv1.ArtifactPointer, error) {
+	path, _ := env.Inputs[InputArtifactFile].(string)
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(filepath.Join(env.Workspace, path))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %s", ErrDeclaredArtifactMissing, path)
+		}
+		return nil, fmt.Errorf("harness: read declared artifact file %q: %w", path, err)
+	}
+	scrubbed := e.scrubber.Scrub(data)
+	ref, err := e.artifacts.RecordArtifact(env.TaskID+"/"+filepath.Base(path), scrubbed)
+	if err != nil {
+		return nil, fmt.Errorf("harness: record declared artifact file %q: %w", path, err)
+	}
+	ptr := refToPointer(ref, mediaTypeFor(path))
+	return &ptr, nil
+}
+
+// refToPointer converts a journal content-address into its wire equivalent —
+// same shape, different package, mirroring internal/executor's refToPointer.
+func refToPointer(ref journal.Ref, mediaType string) apiv1.ArtifactPointer {
+	return apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, MediaType: mediaType, Size: ref.Size}
+}
+
+// mediaTypeFor advisorily categorizes a declared artifact file by extension —
+// mirrors internal/executor's mediaTypeFor; the digest, not this, is
+// authoritative.
+func mediaTypeFor(path string) string {
+	if strings.HasSuffix(path, ".json") {
+		return "application/json"
+	}
+	return "application/octet-stream"
 }

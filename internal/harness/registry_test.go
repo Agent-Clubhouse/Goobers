@@ -79,7 +79,8 @@ func TestRegistrySwapRequiresNoExecutorChange(t *testing.T) {
 				t.Fatalf("Get(%s): %v", name, err)
 			}
 			injector := testInjector(t, "", "", noopRegistrar{})
-			exec, err := NewExecutor(adapter, injector, &fakeRecorder{}, journal.NewPatternScrubber(), "")
+			rec := &fakeRecorder{}
+			exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
 			if err != nil {
 				t.Fatalf("NewExecutor: %v", err)
 			}
