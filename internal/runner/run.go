@@ -18,13 +18,14 @@ import (
 // from the Temporal engine core, ARCHITECTURE §3.1).
 const DefaultMaxSteps = 10000
 
-// Config wires a Runner's dependencies: the compiled machine to walk, the
-// executor/gate seam implementations (executor.go), and the substrate the
-// local runner drives directly — worktrees (#16), credentials (#14), and the
-// journal's runs directory (#8).
+// Config wires a Runner's dependencies: the executor/gate seam
+// implementations (executor.go), and the substrate the local runner drives
+// directly — worktrees (#16), credentials (#14), and the journal's runs
+// directory (#8). One Runner serves every workflow definition a daemon
+// knows about; the compiled Machine for a specific run is supplied per call
+// in StartInput, not fixed here (a daemon starts runs across many different
+// workflows from one long-lived Runner).
 type Config struct {
-	// Machine is the compiled workflow (#9) this Runner walks.
-	Machine *workflow.Machine
 	// Executors dispatches deterministic/agentic stage attempts.
 	Executors Executors
 	// Automated evaluates automated gates (internal/gate, #20). Required if the
@@ -67,9 +68,6 @@ type Runner struct {
 
 // New validates cfg and returns a ready Runner.
 func New(cfg Config) (*Runner, error) {
-	if cfg.Machine == nil {
-		return nil, fmt.Errorf("runner: Machine is required")
-	}
 	if cfg.Executors == nil {
 		return nil, fmt.Errorf("runner: Executors is required")
 	}
@@ -94,8 +92,15 @@ func New(cfg Config) (*Runner, error) {
 
 // StartInput is what triggers one run.
 type StartInput struct {
-	// RunID uniquely identifies this run (the OpenTelemetry trace id).
+	// RunID uniquely identifies this run (the OpenTelemetry trace id). Caller-
+	// supplied — typically the scheduler, which needs this same id for its
+	// claim ledger before dispatch, so claim identity and run identity are one
+	// value throughout with no reconciliation step.
 	RunID string
+	// Machine is the compiled workflow (#9) this run walks. Runs of the same
+	// workflow definition all pass the same *workflow.Machine; different
+	// workflows pass different ones — this Runner is not bound to one.
+	Machine *workflow.Machine
 	// Gaggle is the gaggle this run belongs to.
 	Gaggle string
 	// Trigger is what started the run (manual/schedule/signal/item).
@@ -119,10 +124,17 @@ type Result struct {
 
 // Start creates a new run journal pinned to the compiled machine's identity,
 // snapshots Item as an immutable input, and walks the machine to a terminal
-// state (or a human-gate pause).
+// state (or a human-gate pause). Start is synchronous — it returns once the
+// run reaches a terminal state or pauses at a human gate, which for a real
+// agentic stage may be minutes. A caller driving many runs (e.g. a scheduler)
+// should call Start in its own goroutine per run rather than block its own
+// dispatch loop on it.
 func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
+	}
+	if in.Machine == nil {
+		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
 
 	inputs := map[string][]byte{}
@@ -136,9 +148,9 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 
 	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{
 		RunID:           in.RunID,
-		Workflow:        r.cfg.Machine.Def.Name,
-		WorkflowVersion: r.cfg.Machine.Def.Version,
-		WorkflowDigest:  r.cfg.Machine.Digest(),
+		Workflow:        in.Machine.Def.Name,
+		WorkflowVersion: in.Machine.Def.Version,
+		WorkflowDigest:  in.Machine.Digest(),
 		Gaggle:          in.Gaggle,
 		Trigger:         in.Trigger,
 	}, inputs)
@@ -164,7 +176,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput) (Resu
 		MaxRepasses: r.cfg.MaxRepasses,
 	}
 
-	state := r.cfg.Machine.Def.Spec.Start
+	state := in.Machine.Def.Spec.Start
 	var pointers []apiv1.ContextPointer
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
@@ -177,7 +189,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput) (Resu
 		}
 		jr.SetMachineState(state)
 
-		if t, ok := r.cfg.Machine.Task(state); ok {
+		if t, ok := in.Machine.Task(state); ok {
 			result, produced, err := r.runTask(ctx, jr, in, t, pointers)
 			if err != nil {
 				return Result{}, err
@@ -191,7 +203,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput) (Resu
 			continue
 		}
 
-		if g, ok := r.cfg.Machine.Gate(state); ok {
+		if g, ok := in.Machine.Gate(state); ok {
 			if g.Evaluator == apiv1.EvaluatorHuman {
 				// A human gate executes nothing (§5): pause here. No stage
 				// attempt runs and no event is appended, so checkpoint
@@ -348,7 +360,7 @@ func (r *Runner) prepareStage(ctx context.Context, in StartInput, stageName, goa
 	}
 	env := apiv1.InvocationEnvelope{
 		TaskID:          in.RunID + ":" + stageName,
-		WorkflowID:      r.cfg.Machine.Def.Name,
+		WorkflowID:      in.Machine.Def.Name,
 		RunID:           in.RunID,
 		Gaggle:          in.Gaggle,
 		Goal:            goal,

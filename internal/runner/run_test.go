@@ -100,7 +100,7 @@ func fixtureMachine(t *testing.T) *workflow.Machine {
 	return m
 }
 
-func newTestRunner(t *testing.T, machine *workflow.Machine, executors Executors, automated invoke.Automated) (*Runner, string) {
+func newTestRunner(t *testing.T, executors Executors, automated invoke.Automated) (*Runner, string) {
 	t.Helper()
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -120,7 +120,6 @@ func newTestRunner(t *testing.T, machine *workflow.Machine, executors Executors,
 	fixtureRepo := newFixtureRepo(t)
 
 	r, err := New(Config{
-		Machine:     machine,
 		Executors:   executors,
 		Automated:   automated,
 		Worktrees:   wtMgr,
@@ -146,10 +145,11 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 			},
 		}},
 	}
-	r, runsDir := newTestRunner(t, machine, executors, gate.NewAutomatedEvaluator())
+	r, runsDir := newTestRunner(t, executors, gate.NewAutomatedEvaluator())
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-1",
+		Machine: machine,
 		Gaggle:  "acme-web",
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
@@ -236,10 +236,11 @@ func TestRunnerBranchesToAbortOnGateFail(t *testing.T) {
 			"run-2:implement": {Result: apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Error: &apiv1.ErrorInfo{Code: "build_failed", Message: "nope"}}},
 		}},
 	}
-	r, _ := newTestRunner(t, machine, executors, gate.NewAutomatedEvaluator())
+	r, _ := newTestRunner(t, executors, gate.NewAutomatedEvaluator())
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-2",
+		Machine: machine,
 		Gaggle:  "acme-web",
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
@@ -270,10 +271,11 @@ func TestRunnerPausesAtHumanGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	r, runsDir := newTestRunner(t, machine, Executors{}, nil)
+	r, runsDir := newTestRunner(t, Executors{}, nil)
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-3",
+		Machine: machine,
 		Gaggle:  "acme-web",
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
