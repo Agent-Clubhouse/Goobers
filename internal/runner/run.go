@@ -161,7 +161,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	}
 	defer func() { _ = jr.Close() }()
 
-	return r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, registrar)
+	return r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, registrar)
 }
 
 // executors holds the per-run invoke.* instances, constructed lazily on first
@@ -232,16 +232,20 @@ type resumeContext struct {
 // gate.evaluated journaling) is entirely owned by the gate.Evaluator
 // constructed once here — it MUST NOT be shared across runs (its repass
 // counters are run-scoped state), so a fresh one is built per walk. Start
-// always begins at the machine's declared start state with resume=nil;
-// Resume (resume.go) begins at the journal's checkpointed state, optionally
-// with a resumeContext for an interrupted task attempt. reg is the run's
-// SecretRegistrar (see Start), threaded to every executor constructed here.
-func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, reg SecretRegistrar) (Result, error) {
+// always begins at the machine's declared start state with resume=nil and
+// gateAttempts=nil; Resume (resume.go) begins at the journal's checkpointed
+// state, optionally with a resumeContext for an interrupted task attempt and
+// gateAttempts seeded from each gate's last gate.evaluated event, so a
+// resumed run's repass budget continues rather than resetting (#89). reg is
+// the run's SecretRegistrar (see Start), threaded to every executor
+// constructed here.
+func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, gateAttempts map[string]int, reg SecretRegistrar) (Result, error) {
 	ex := newExecutors(r.cfg, jr, reg)
 	gateEval := &gate.Evaluator{
 		Automated:   r.cfg.Automated,
 		Journal:     jr,
 		MaxRepasses: r.cfg.MaxRepasses,
+		Attempts:    gateAttempts,
 	}
 
 	state := startState

@@ -48,11 +48,12 @@ type ResumeInput struct {
 //
 // A gate-state resume has no equivalent in-flight signal to detect (a gate
 // evaluation journals only its terminal gate.evaluated event, never a
-// started/finished pair) — it always just re-evaluates fresh. One known,
-// accepted V0 limitation: the gate's bounded-repass counter
-// (internal/gate.Evaluator) is in-memory, reconstructed fresh per walk, so a
-// crash during a repass loop resets that count rather than continuing it —
-// tracked as a fast-follow once internal/gate exposes seedable repass state.
+// started/finished pair) — it always just re-evaluates fresh. Its bounded-
+// repass counter (internal/gate.Evaluator.Attempts, #89) IS restored, though:
+// gateRepassSeed reconstructs it from each gate's last gate.evaluated event
+// (Runner["repassAttempt"], recordVerdict in internal/gate/journal.go) — the
+// same event log state.json itself is always reconstructable from — so a
+// crash mid repass-loop cannot grant a gate extra passes beyond its budget.
 func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
@@ -120,7 +121,33 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		RepoRef: in.RepoRef,
 		Item:    item,
 	}
-	return r.walk(ctx, jr, startIn, st.MachineState, resume, registrar)
+	return r.walk(ctx, jr, startIn, st.MachineState, resume, gateRepassSeed(events), registrar)
+}
+
+// gateRepassSeed reconstructs internal/gate.Evaluator.Attempts from the
+// journal's event log: each gate.evaluated event's Runner["repassAttempt"]
+// (recordVerdict, internal/gate/journal.go) is exactly the count Attempts
+// held for that gate right after the event was journaled, so the LAST such
+// event per gate name is that gate's count as of the moment of interruption
+// — a later "pass" event's repassAttempt is already 0, so no separate reset
+// tracking is needed here. Returns nil (Evaluator's own nil-safe zero value)
+// if the run never evaluated a gate.
+func gateRepassSeed(events []journal.Event) map[string]int {
+	var seed map[string]int
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated {
+			continue
+		}
+		n, ok := e.Runner["repassAttempt"].(float64)
+		if !ok {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]int)
+		}
+		seed[e.Gate] = int(n)
+	}
+	return seed
 }
 
 // interruptedAttempt reports the attempt number of stageName's most recent
