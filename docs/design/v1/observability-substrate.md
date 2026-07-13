@@ -226,14 +226,18 @@ mid-run.
 
 | # | Mission | Design | Depends on |
 |---|---|---|---|
-| **O1** | Canonical span model + attribute registry, applied to existing spans; drift-guard test | D1 | — |
-| **O2** | Usage accounting: adapter → envelope metrics under canonical names; rollup columns + aggregates; runner enforcement of MaxTokens/MaxCostUSD | D2 | O1 |
-| **O3** | Transcript artifact standard + Copilot adapter capture (composed-prompt floor; session-log parse when available) | D4 | O1 |
-| **O4** | `GOOBERS_TELEMETRY_DIR` emission surface + ingest (metrics.jsonl / events.jsonl) | D5 | O1 |
-| **O5** | OTLP file export + opt-in collector push + `telemetry export` backfill; Jaeger guide | D3 | O1 |
-| **O6** | Connector stage: typed `telemetry-query` + versioned candidate-findings schema; migrate work-nomination onto it | D6 | O1 |
-| **O7** | Retention: config, daemon housekeeping, `telemetry prune` | D8 | — |
-| **O8** | DSL: `Goober.spec.model` + `harnessOptions` (+ validation, docs, starter examples) | D9 | — |
+| **O1** (#143) | Canonical span model + attribute registry, applied to existing spans; drift-guard test | D1 | #126 |
+| **O2** (#144) | Usage accounting: adapter → envelope metrics under canonical names; rollup columns + aggregates; runner enforcement of MaxTokens/MaxCostUSD | D2 | O1 |
+| **O3** (#145) | Transcript artifact standard + Copilot adapter capture (composed-prompt floor; session-log parse when available) | D4 | O1, #117 |
+| **O4** (#146) | `GOOBERS_TELEMETRY_DIR` emission surface + ingest (metrics.jsonl / events.jsonl) | D5 | O1 |
+| **O5** (#147) | OTLP file export + opt-in collector push + `telemetry export` backfill; Jaeger guide | D3 | O1 |
+| **O6** (#148) | Connector stage: typed `telemetry-query` + versioned candidate-findings schema; migrate work-nomination onto it | D6 | O1, #132, #127 |
+| **O7** (#149) | Retention: config, daemon housekeeping, `telemetry prune` | D8 | — |
+| **O8** (#150) | DSL: `Goober.spec.model` + `harnessOptions` (+ validation, docs, starter examples) | D9 | — |
+
+(V0.1 remediation prerequisites: #126 wires the span pipeline; #132 implements the
+minimal `telemetry-query` subcommand; #127 makes the rollup robust; #117 unifies
+scrubbing across at-rest surfaces.)
 
 Test plans follow the repo standard: seeded-fixture unit tests per aggregate/surface,
 negative controls for redaction on every new at-rest form (per the #qa-gate standard
