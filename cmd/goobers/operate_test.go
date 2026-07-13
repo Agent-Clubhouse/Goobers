@@ -15,8 +15,13 @@ func initDemo(t *testing.T) string {
 	return root
 }
 
-func TestRunTriggersManualRunEscalated(t *testing.T) {
-	root := initDemo(t)
+// TestRunCompletesDeterministicWorkflow exercises `goobers run` end to end
+// against the real runner (issue #23's daemon-loop follow-up rewired both
+// `run` and `up` off the old escalation stub) — a deterministic-only fixture
+// workflow so it needs neither a real Copilot CLI nor network access; see
+// initDeterministicDemo in daemon_test.go.
+func TestRunCompletesDeterministicWorkflow(t *testing.T) {
+	root := initDeterministicDemo(t)
 
 	code, stdout, stderr := runArgs(t, "run", "default-implement", root)
 	if code != 0 {
@@ -25,26 +30,26 @@ func TestRunTriggersManualRunEscalated(t *testing.T) {
 	if !strings.Contains(stdout, "created run ") {
 		t.Fatalf("run stdout = %q", stdout)
 	}
-	if !strings.Contains(stdout, "escalated") {
-		t.Fatalf("expected an honest escalation note (no runner yet), stdout = %q", stdout)
+	if !strings.Contains(stdout, "phase=completed") {
+		t.Fatalf("expected the real runner to complete the deterministic task, stdout = %q", stdout)
 	}
 
-	// status lists the run, escalated.
+	// status lists the run, completed.
 	code, stdout, stderr = runArgs(t, "status", root)
 	if code != 0 {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stdout, "default-implement") || !strings.Contains(stdout, "escalated") {
+	if !strings.Contains(stdout, "default-implement") || !strings.Contains(stdout, "completed") {
 		t.Fatalf("status stdout = %q", stdout)
 	}
 
-	// trace shows the run.started / error / run.finished sequence.
+	// trace shows the real stage dispatch sequence.
 	runID := strings.Fields(strings.Split(stdout, "\n")[1])[0]
 	code, stdout, stderr = runArgs(t, "trace", runID, root)
 	if code != 0 {
 		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
 	}
-	for _, want := range []string{"run.started", "runner_unavailable", "run.finished status=escalated"} {
+	for _, want := range []string{"run.started", "stage.started", "local-ci", "stage.finished", "run.finished status=completed"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("trace stdout missing %q: %q", want, stdout)
 		}
@@ -101,16 +106,11 @@ func TestTraceTooFewArgs(t *testing.T) {
 	}
 }
 
-func TestUpValidInstance(t *testing.T) {
-	root := initDemo(t)
-	code, stdout, _ := runArgs(t, "up", root)
-	if code != 1 {
-		t.Fatalf("code = %d, want 1 (daemon not yet wired)", code)
-	}
-	if !strings.Contains(stdout, "not yet wired") {
-		t.Fatalf("stdout = %q", stdout)
-	}
-}
+// TestUpValidInstance-equivalent coverage (a valid instance's daemon starts,
+// idles, and drains cleanly) now lives in daemon_test.go's
+// TestUpIdlesThenDrainsOnCancel — `up` blocks on the real daemon loop, so it
+// needs a cancellable context (runUpContext) rather than runArgs' synchronous
+// signal-only runUp.
 
 func TestUpMissingInstance(t *testing.T) {
 	code, _, stderr := runArgs(t, "up", t.TempDir())

@@ -2,9 +2,7 @@
 
 Walks the full `goobers` CLI surface end to end: scaffold an instance, point it
 at your repo, and trigger a run. See `docs/ARCHITECTURE.md` §6 for the instance
-layout these commands operate on, and §11 for what's still landing (the local
-runner core, #17, and the embedded scheduler, #21 — see the note on `up`/`run`
-below).
+layout these commands operate on.
 
 ## 1. Build the binary
 
@@ -48,10 +46,12 @@ bin/goobers up ./my-instance
 ```
 
 Runs the daemon: the embedded scheduler (cron triggers + run conditions, #21)
-driving the local runner (#17). **Not yet wired end to end** — both land as
-separate V0 missions — so today this validates the instance and tells you to
-use `run` in the meantime (exit code `1`, a business condition, not a usage
-error).
+driving the local runner (#17) — restarting any run left interrupted by a
+prior crash or unclean shutdown via `Runner.Resume` before admitting new
+work, and draining in-flight runs gracefully on SIGINT/SIGTERM rather than
+killing them mid-attempt (#23). Blocks until interrupted; exit code `0` on a
+clean shutdown, `1` if the daemon fails to start (e.g. another `up` already
+holds this instance's lock).
 
 ## 6. `run` — trigger one manually
 
@@ -61,13 +61,11 @@ bin/goobers run default-implement ./my-instance
 
 Triggers a run of the named `config/` workflow manually, still honoring run
 conditions (max-parallel, budgets). Pins the workflow's compiled digest,
-creates its run journal (ARCHITECTURE.md §4), and prints the run id.
-
-**Current limitation:** until the local runner (#17) lands, `run` cannot
-actually advance the compiled machine — it creates the run, records an honest
-`escalated` outcome (not a silent no-op), and points you at `trace` to inspect
-it. Once #17 lands, the same command advances the machine for real; nothing
-about the CLI surface changes.
+creates its run journal (ARCHITECTURE.md §4), and advances it through the
+real local runner — deterministic tasks execute in a fresh worktree, agentic
+tasks/gates invoke the goober's harness (Copilot CLI by default) — blocking
+until the run reaches a terminal state or pauses (e.g. a human gate). Prints
+the run id up front and the final phase/state once it returns.
 
 ## 7. `status` — list runs
 
@@ -77,7 +75,7 @@ bin/goobers status ./my-instance
 
 ```
 RUN ID                              WORKFLOW                  GAGGLE      PHASE       STARTED
-a671b69fe766595e550677b91658726a    default-implement         example     escalated   2026-07-12T23:37:36-07:00
+a671b69fe766595e550677b91658726a    default-implement         example     completed   2026-07-12T23:37:36-07:00
 ```
 
 ## 8. `trace` — inspect one run
