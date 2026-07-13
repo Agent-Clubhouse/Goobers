@@ -19,7 +19,7 @@
       "x-conformance": "normative"
     },
     "type": {
-      "description": "Event kind.",
+      "description": "Event kind. The last four (trigger.fired, tick.skipped, claim.acquired, claim.released) are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
       "type": "string",
       "enum": [
         "run.started",
@@ -32,7 +32,11 @@
         "ref.touched",
         "error",
         "redaction",
-        "repaired"
+        "repaired",
+        "trigger.fired",
+        "tick.skipped",
+        "claim.acquired",
+        "claim.released"
       ],
       "x-conformance": "normative"
     },
@@ -110,6 +114,21 @@
       "description": "Runner-specific annotations. The ONLY sanctioned runner-specific divergence and ALWAYS excluded from conformance.",
       "type": "object",
       "x-conformance": "excluded"
+    },
+    "workflow": {
+      "description": "Instance-journal only: workflow name for a scheduler decision (trigger.fired, tick.skipped, or an instance-level run.started/run.finished echo). Not present in a run's own events.jsonl.",
+      "type": "string",
+      "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+    },
+    "runId": {
+      "description": "Instance-journal only: the run a scheduler decision or claim transition pertains to.",
+      "type": "string",
+      "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+    },
+    "reason": {
+      "description": "Instance-journal only: short, stable explanation for a tick.skipped decision.",
+      "type": "string",
+      "x-conformance": "not applicable (instance journal, not a run's conformance set)"
     }
   },
   "$defs": {

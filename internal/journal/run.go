@@ -1,7 +1,6 @@
 package journal
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -151,27 +150,8 @@ func (r *Run) Append(ev Event) error {
 
 // append is the lock-held core: assign seq, scrub the serialized line, write, fsync.
 func (r *Run) append(ev Event) error {
-	r.seq++
-	ev.Seq = r.seq
-	ev.Schema = EventSchema
-	ev.Time = r.now()
-
-	line, err := json.Marshal(ev)
-	if err != nil {
-		r.seq--
-		return fmt.Errorf("journal: marshal event: %w", err)
-	}
-	// Scrub the serialized bytes — the exact material that lands at rest — then
-	// frame as one JSONL record.
-	line = r.scrubber.Scrub(line)
-	line = append(line, '\n')
-	if _, err := r.events.Write(line); err != nil {
-		return fmt.Errorf("journal: append event: %w", err)
-	}
-	if err := r.events.Sync(); err != nil {
-		return fmt.Errorf("journal: fsync event: %w", err)
-	}
-	return nil
+	_, err := appendEvent(r.events, &r.seq, r.scrubber, r.now, ev)
+	return err
 }
 
 // SetMachineState records the current state-machine node used in the next

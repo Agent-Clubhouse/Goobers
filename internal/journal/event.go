@@ -32,6 +32,23 @@ const (
 	EventRedaction EventType = "redaction"
 	// EventRepaired records crash-recovery repair of a torn final write.
 	EventRepaired EventType = "repaired"
+
+	// Instance-journal event types (§4/§6): scheduler decisions and
+	// claim-ledger transitions recorded to scheduler/events.jsonl, the same
+	// envelope as a run journal's events.jsonl. EventRunStarted/EventRunFinished
+	// above are reused there to announce a run's start/end at the instance
+	// level (with Workflow/RunID set); these four are scheduler-only concepts.
+
+	// EventTriggerFired records a cron/manual trigger firing for a workflow.
+	EventTriggerFired EventType = "trigger.fired"
+	// EventTickSkipped records a tick that did not start a run, with Reason set
+	// (e.g. "conditions: max-parallel", "conditions: budget").
+	EventTickSkipped EventType = "tick.skipped"
+	// EventClaimAcquired records the claim ledger granting a lease.
+	EventClaimAcquired EventType = "claim.acquired"
+	// EventClaimReleased records a lease release (run finished, expired, or
+	// crash-recovered).
+	EventClaimReleased EventType = "claim.released"
 )
 
 // AttemptClass tags why a stage attempt exists. Only policy attempts are
@@ -103,6 +120,19 @@ type Event struct {
 	// Runner holds runner-specific annotations. The ONLY sanctioned
 	// runner-specific divergence and ALWAYS EXCLUDED from conformance.
 	Runner map[string]any `json:"runner,omitempty"`
+
+	// --- instance-journal payload (scheduler/events.jsonl only; not used in a
+	// run's own events.jsonl, since a run event's identity is implicit from its
+	// directory) ---
+
+	// Workflow is the workflow name for a scheduler decision (trigger.fired,
+	// tick.skipped, or an instance-level run.started/run.finished echo).
+	Workflow string `json:"workflow,omitempty"`
+	// RunID is the run a scheduler decision or claim transition pertains to.
+	RunID string `json:"runId,omitempty"`
+	// Reason is a short, stable explanation for a tick.skipped decision (e.g.
+	// "conditions: max-parallel", "conditions: budget").
+	Reason string `json:"reason,omitempty"`
 }
 
 // ExternalRef identifies an external reference the run touched — an issue or PR
