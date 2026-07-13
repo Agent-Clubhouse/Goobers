@@ -13,16 +13,29 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-// noopRegistrar satisfies credentials.SecretRegistrar for building test
-// Injectors — this package's own scrubbing is independent of it.
+// fakeRecorder is an in-memory ArtifactRecorder for tests: no real journal
+// directory needed.
+type fakeRecorder struct {
+	recorded map[string][]byte
+}
+
+func newFakeRecorder() *fakeRecorder { return &fakeRecorder{recorded: map[string][]byte{}} }
+
+func (f *fakeRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	f.recorded[name] = cp
+	return journal.Ref{Path: name, Digest: journal.Digest(cp), Size: int64(len(cp))}, nil
+}
+
+// noopRegistrar satisfies credentials.SecretRegistrar for tests that don't
+// care about scrub-registration (ShellExecutor.Run builds and uses its own
+// scrubber independently of the Injector's registrar).
 type noopRegistrar struct{}
 
 func (noopRegistrar) Register([]byte) {}
 
-// newTestTokenSource materializes a real *credentials.Set for capability,
-// backed by envVar=value, so tests exercise the actual fail-closed
-// credentials.Set.Token contract rather than a hand-rolled fake.
-func newTestTokenSource(t *testing.T, capability, envVar, value string) TokenSource {
+func newTestInjector(t *testing.T, capability, envVar, value string) *credentials.Injector {
 	t.Helper()
 	t.Setenv(envVar, value)
 	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "ref", Env: envVar}})
@@ -33,45 +46,55 @@ func newTestTokenSource(t *testing.T, capability, envVar, value string) TokenSou
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, err := injector.Materialize(context.Background(), []string{capability})
+	return injector
+}
+
+func newTestExecutor(t *testing.T, injector *credentials.Injector) (*ShellExecutor, *fakeRecorder) {
+	t.Helper()
+	if injector == nil {
+		var err error
+		injector, err = credentials.NewInjector(&credentials.Resolver{}, nil, noopRegistrar{})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := newFakeRecorder()
+	exec, err := NewShellExecutor(injector, rec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return set
+	return exec, rec
 }
 
-func artifact(produced []ProducedArtifact, name string) []byte {
-	for _, p := range produced {
-		if p.Name == name {
-			return p.Data
-		}
-	}
-	return nil
+func baseEnvelope(t *testing.T) apiv1.InvocationEnvelope {
+	t.Helper()
+	return apiv1.InvocationEnvelope{TaskID: "task-1", Workspace: t.TempDir()}
 }
 
 func TestShellExecutor_RunSuccess(t *testing.T) {
-	exec := NewShellExecutor()
-	result, produced, err := exec.Run(context.Background(), t.TempDir(), nil, nil, ShellConfig{Command: []string{"sh", "-c", "echo hello"}})
+	exec, rec := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"sh", "-c", "echo hello"}})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
 	}
-	if len(produced) != 2 {
-		t.Fatalf("expected stdout+stderr artifacts, got %d", len(produced))
+	if len(result.Artifacts) != 2 {
+		t.Fatalf("expected stdout+stderr artifacts, got %d", len(result.Artifacts))
 	}
-	if got := string(artifact(produced, "stdout.log")); !strings.Contains(got, "hello") {
+	if got := string(rec.recorded["task-1/stdout.log"]); !strings.Contains(got, "hello") {
 		t.Fatalf("stdout artifact = %q, want it to contain %q", got, "hello")
-	}
-	if len(result.Artifacts) != 0 {
-		t.Fatalf("expected ResultEnvelope.Artifacts to stay empty (caller commits Produced), got %v", result.Artifacts)
 	}
 }
 
 func TestShellExecutor_NonZeroExit(t *testing.T) {
-	exec := NewShellExecutor()
-	result, _, err := exec.Run(context.Background(), t.TempDir(), nil, nil, ShellConfig{Command: []string{"sh", "-c", "exit 3"}})
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"sh", "-c", "exit 3"}})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -87,13 +110,15 @@ func TestShellExecutor_NonZeroExit(t *testing.T) {
 }
 
 func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
-	exec := NewShellExecutor()
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputTimeout: "100ms"}
+
 	start := time.Now()
 	// A background child under a parent that waits on it — proves the whole
 	// group dies, not just the directly-exec'd shell.
-	result, _, err := exec.Run(context.Background(), t.TempDir(), nil, nil, ShellConfig{
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
 		Command: []string{"sh", "-c", "sleep 30 & wait"},
-		Timeout: 100 * time.Millisecond,
 	})
 	elapsed := time.Since(start)
 	if err != nil {
@@ -112,10 +137,12 @@ func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 
 func TestShellExecutor_CanarySecretNeverInCapturedOutput(t *testing.T) {
 	const canary = "s3cr3t-canary-token-value"
-	tokens := newTestTokenSource(t, "test:cap", "GOOBERS_TEST_CANARY", canary)
-	exec := NewShellExecutor()
+	injector := newTestInjector(t, "test:cap", "GOOBERS_TEST_CANARY", canary)
+	exec, rec := newTestExecutor(t, injector)
+	env := baseEnvelope(t)
+	env.Capabilities = []string{"test:cap"}
 
-	result, produced, err := exec.Run(context.Background(), t.TempDir(), []string{"test:cap"}, tokens, ShellConfig{
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
 		Command: []string{"sh", "-c", "echo $GOOBERS_CRED_TEST_CAP"},
 	})
 	if err != nil {
@@ -124,7 +151,7 @@ func TestShellExecutor_CanarySecretNeverInCapturedOutput(t *testing.T) {
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success", result.Status)
 	}
-	stdout := string(artifact(produced, "stdout.log"))
+	stdout := string(rec.recorded["task-1/stdout.log"])
 	if strings.Contains(stdout, canary) {
 		t.Fatalf("captured stdout contains the raw canary secret: %q", stdout)
 	}
@@ -134,10 +161,12 @@ func TestShellExecutor_CanarySecretNeverInCapturedOutput(t *testing.T) {
 }
 
 func TestShellExecutor_CapabilityInjectedAsEnvVar(t *testing.T) {
-	tokens := newTestTokenSource(t, "test:cap", "GOOBERS_TEST_TOKEN", "token-value-123")
-	exec := NewShellExecutor()
+	injector := newTestInjector(t, "test:cap", "GOOBERS_TEST_TOKEN", "token-value-123")
+	exec, rec := newTestExecutor(t, injector)
+	env := baseEnvelope(t)
+	env.Capabilities = []string{"test:cap"}
 
-	result, produced, err := exec.Run(context.Background(), t.TempDir(), []string{"test:cap"}, tokens, ShellConfig{
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
 		Command: []string{"sh", "-c", `test -n "$GOOBERS_CRED_TEST_CAP" && echo present`},
 	})
 	if err != nil {
@@ -146,19 +175,19 @@ func TestShellExecutor_CapabilityInjectedAsEnvVar(t *testing.T) {
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success (the credential env var should have been set)", result.Status)
 	}
-	if !strings.Contains(string(artifact(produced, "stdout.log")), "present") {
+	if !strings.Contains(string(rec.recorded["task-1/stdout.log"]), "present") {
 		t.Fatalf("expected stdout to show the credential env var was non-empty")
 	}
 }
 
 func TestShellExecutor_UndeclaredCapabilityNotInjected(t *testing.T) {
-	// The token source COULD resolve "test:cap", but Run is called without it
-	// in the capabilities list — fail-closed: no credential should be
-	// injected for a capability this specific invocation doesn't declare.
-	tokens := newTestTokenSource(t, "test:cap", "GOOBERS_TEST_UNDECLARED", "should-not-appear")
-	exec := NewShellExecutor()
+	// Injector is configured for "test:cap", but the stage does not declare
+	// it — fail-closed: no credential should be materialized or injected.
+	injector := newTestInjector(t, "test:cap", "GOOBERS_TEST_UNDECLARED", "should-not-appear")
+	exec, rec := newTestExecutor(t, injector)
+	env := baseEnvelope(t) // no Capabilities declared
 
-	result, produced, err := exec.Run(context.Background(), t.TempDir(), nil, tokens, ShellConfig{
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
 		Command: []string{"sh", "-c", `test -z "$GOOBERS_CRED_TEST_CAP" && echo absent`},
 	})
 	if err != nil {
@@ -167,16 +196,18 @@ func TestShellExecutor_UndeclaredCapabilityNotInjected(t *testing.T) {
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success (env var should be absent)", result.Status)
 	}
-	if !strings.Contains(string(artifact(produced, "stdout.log")), "absent") {
+	if !strings.Contains(string(rec.recorded["task-1/stdout.log"]), "absent") {
 		t.Fatalf("expected the undeclared capability's env var to be unset")
 	}
 }
 
 func TestShellExecutor_ResultFileLiftedToArtifact(t *testing.T) {
-	exec := NewShellExecutor()
-	result, produced, err := exec.Run(context.Background(), t.TempDir(), nil, nil, ShellConfig{
-		Command:    []string{"sh", "-c", `echo '{"ok":true}' > out.json`},
-		ResultFile: "out.json",
+	exec, rec := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputResultFile: "out.json"}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `echo '{"ok":true}' > out.json`},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -184,20 +215,20 @@ func TestShellExecutor_ResultFileLiftedToArtifact(t *testing.T) {
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success", result.Status)
 	}
-	if len(produced) != 3 {
-		t.Fatalf("expected stdout+stderr+result artifacts, got %d", len(produced))
+	if len(result.Artifacts) != 3 {
+		t.Fatalf("expected stdout+stderr+result artifacts, got %d", len(result.Artifacts))
 	}
-	if !strings.Contains(string(artifact(produced, "result")), `"ok":true`) {
-		t.Fatalf("result artifact missing expected content: %v", artifact(produced, "result"))
+	if !strings.Contains(string(rec.recorded["task-1/result"]), `"ok":true`) {
+		t.Fatalf("result artifact missing expected content: %v", rec.recorded["task-1/result"])
 	}
 }
 
 func TestShellExecutor_MissingDeclaredResultFileIsFailure(t *testing.T) {
-	exec := NewShellExecutor()
-	result, _, err := exec.Run(context.Background(), t.TempDir(), nil, nil, ShellConfig{
-		Command:    []string{"sh", "-c", "exit 0"},
-		ResultFile: "never-written.json",
-	})
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputResultFile: "never-written.json"}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"sh", "-c", "exit 0"}})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -210,10 +241,11 @@ func TestShellExecutor_MissingDeclaredResultFileIsFailure(t *testing.T) {
 }
 
 func TestShellExecutor_OutputTruncation(t *testing.T) {
-	exec := NewShellExecutor()
+	exec, rec := newTestExecutor(t, nil)
 	exec.DefaultMaxOutputBytes = 8
+	env := baseEnvelope(t)
 
-	result, produced, err := exec.Run(context.Background(), t.TempDir(), nil, nil, ShellConfig{
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
 		Command: []string{"sh", "-c", "echo 0123456789abcdef"},
 	})
 	if err != nil {
@@ -222,56 +254,44 @@ func TestShellExecutor_OutputTruncation(t *testing.T) {
 	if result.Outputs["stdoutTruncated"] != true {
 		t.Fatalf("outputs = %+v, want stdoutTruncated=true", result.Outputs)
 	}
-	if got := len(artifact(produced, "stdout.log")); got != 8 {
+	if got := len(rec.recorded["task-1/stdout.log"]); got != 8 {
 		t.Fatalf("captured stdout length = %d, want capped at 8", got)
 	}
 }
 
 func TestShellExecutor_RunsInDeclaredWorkspace(t *testing.T) {
-	exec := NewShellExecutor()
-	workspace := t.TempDir()
-	if err := os.WriteFile(filepath.Join(workspace, "marker.txt"), []byte("present\n"), 0o644); err != nil {
+	exec, rec := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	if err := os.WriteFile(filepath.Join(env.Workspace, "marker.txt"), []byte("present\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	_, produced, err := exec.Run(context.Background(), workspace, nil, nil, ShellConfig{Command: []string{"cat", "marker.txt"}})
+	_, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"cat", "marker.txt"}})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !strings.Contains(string(artifact(produced, "stdout.log")), "present") {
-		t.Fatalf("command did not appear to run in the declared workspace")
+	if !strings.Contains(string(rec.recorded["task-1/stdout.log"]), "present") {
+		t.Fatalf("command did not appear to run in env.Workspace")
 	}
 }
 
 func TestShellExecutor_EmptyCommandIsConfigError(t *testing.T) {
-	exec := NewShellExecutor()
-	_, _, err := exec.Run(context.Background(), t.TempDir(), nil, nil, ShellConfig{})
+	exec, _ := newTestExecutor(t, nil)
+	_, err := exec.Run(context.Background(), baseEnvelope(t), apiv1.DeterministicRun{})
 	if err == nil {
 		t.Fatal("expected an error for an empty Command")
 	}
 }
 
-func TestConfigFromEnvelope(t *testing.T) {
-	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{
-		InputTimeout:        "5m",
-		InputResultFile:     "out.json",
-		InputMaxOutputBytes: "2048",
-	}}
-	cfg, err := ConfigFromEnvelope(env, apiv1.DeterministicRun{Command: []string{"make", "ci"}})
+func TestNewShellExecutor_RequiresInjectorAndJournal(t *testing.T) {
+	if _, err := NewShellExecutor(nil, newFakeRecorder()); err == nil {
+		t.Fatal("expected error for nil injector")
+	}
+	injector, err := credentials.NewInjector(&credentials.Resolver{}, nil, noopRegistrar{})
 	if err != nil {
-		t.Fatalf("ConfigFromEnvelope: %v", err)
+		t.Fatal(err)
 	}
-	if cfg.Timeout != 5*time.Minute || cfg.ResultFile != "out.json" || cfg.MaxOutputBytes != 2048 {
-		t.Fatalf("cfg = %+v, unexpected", cfg)
-	}
-	if len(cfg.Command) != 2 || cfg.Command[0] != "make" {
-		t.Fatalf("cfg.Command = %v, want run.Command carried through", cfg.Command)
-	}
-}
-
-func TestConfigFromEnvelope_InvalidTimeoutIsError(t *testing.T) {
-	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputTimeout: "not-a-duration"}}
-	if _, err := ConfigFromEnvelope(env, apiv1.DeterministicRun{Command: []string{"true"}}); err == nil {
-		t.Fatal("expected an error for a malformed timeout input")
+	if _, err := NewShellExecutor(injector, nil); err == nil {
+		t.Fatal("expected error for nil journal recorder")
 	}
 }

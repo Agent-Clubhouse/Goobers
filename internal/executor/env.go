@@ -10,15 +10,6 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 )
 
-// TokenSource resolves a capability-scoped credential. *credentials.Set
-// (internal/credentials, #14) satisfies this structurally — this package
-// depends only on the method shape, not the concrete type, so a caller can
-// supply any pre-materialized credential source (or a fake, in tests)
-// without this package needing to know how it was built.
-type TokenSource interface {
-	Token(ctx context.Context, capability string) (string, error)
-}
-
 // credentialEnvVar returns the deterministic env var name a stage's declared
 // capability is injected under, e.g. "github:issues:write" ->
 // "GOOBERS_CRED_GITHUB_ISSUES_WRITE".
@@ -48,22 +39,27 @@ func baseEnv() []string {
 	return env
 }
 
-// buildStageEnv resolves a token for each declared capability via tokens, and
-// returns the full process env for the stage: baseEnv() plus one
-// GOOBERS_CRED_* var per declared capability that has a credential. Every
-// resolved token is also registered with registrar so it can be scrubbed from
+// buildStageEnv resolves credentials for declared, and returns the full
+// process env for the stage: baseEnv() plus one GOOBERS_CRED_* var per
+// declared capability that has a materialized credential. Every resolved
+// token is also registered with registrar so it can be scrubbed from
 // anything the stage's process writes.
 //
-// A declared capability with no configured grant is silently skipped (not
-// every capability is credentialed, e.g. "telemetry:read"); resolution
-// failure for a capability that IS granted fails closed.
-func buildStageEnv(ctx context.Context, tokens TokenSource, declared []string, registrar credentials.SecretRegistrar) ([]string, error) {
+// A declared capability with no configured grant is silently skipped
+// (credentials.Injector's own contract — not every capability is
+// credentialed); resolution failure for a capability that IS granted fails
+// closed.
+func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar) ([]string, error) {
 	env := baseEnv()
-	if tokens == nil || len(declared) == 0 {
+	if injector == nil || len(declared) == 0 {
 		return env, nil
 	}
+	set, err := injector.Materialize(ctx, declared)
+	if err != nil {
+		return nil, err
+	}
 	for _, capability := range declared {
-		token, err := tokens.Token(ctx, capability)
+		token, err := set.Token(ctx, capability)
 		if err != nil {
 			if errors.Is(err, credentials.ErrNoCredentialForCapability) {
 				continue // declared but uncredentialed capability (e.g. telemetry:read)
