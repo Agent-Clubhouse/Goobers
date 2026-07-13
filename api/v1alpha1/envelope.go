@@ -1,26 +1,45 @@
 package v1alpha1
 
-// This file defines the three canonical wire envelopes every component exchanges
-// at runtime. They are plain Go types (JSON-tagged) — NOT CRDs — so the
-// scheduler, providers, gate evaluators, and goober runtime can import them
-// without pulling in CRD machinery. JSON Schemas in api/schemas/ mirror these
-// shapes and are the cross-language contract (TSK-Q1/TSK-Q2, GT-Q1).
+// This file defines the V0 stage contract: the three canonical wire envelopes
+// every stage executor and the runner exchange at runtime. They are plain Go
+// types (JSON-tagged) — NOT CRDs — so the runner, stage executors, providers,
+// and gate evaluators can import them without pulling in CRD machinery. JSON
+// Schemas in api/schemas/ mirror these shapes and are the cross-language,
+// closed (additionalProperties:false) contract. See docs/stage-contract.md.
+//
+// Terminology: a "stage" (ARCHITECTURE.md §5) is what the workflow/task types
+// call a "task"; the terms are equivalent. Field names keep the task-flavored
+// spelling (taskId, ...) already used by the workflow definition and compiler.
+//
+// Load-bearing invariant (ARCHITECTURE.md §2.4): stages communicate ONLY through
+// envelopes and artifact pointers. No stage reaches into another stage's state.
+// The invocation envelope therefore carries context *pointers* (see ContextPointer
+// in artifact.go) — never the result bodies of upstream stages.
+
+// StageContractVersion identifies the version of the stage contract these types
+// and the api/schemas/*.schema.json documents implement. The schemas are closed:
+// unknown fields are a validation error, and additive changes bump this version.
+const StageContractVersion = "v1alpha1"
 
 // ---------------------------------------------------------------------------
-// Invocation envelope — handed to a task (agentic via the goober invocation
-// hook, or to a deterministic task runner) when the workflow advances.
+// Invocation envelope — what the runner hands a stage when the workflow advances.
 // ---------------------------------------------------------------------------
 
-// InvocationEnvelope is the standard context/data block delivered to a task at
-// invocation (GBO-012, TSK-011). Shape: taskId, workflowId, runId, gaggle, item,
-// goal, repoRef, upstreamOutputs, limits, inputs.
+// InvocationEnvelope is the standard context block delivered to a stage at
+// invocation (agentic via the harness adapter, or to a deterministic stage
+// runner). It carries the goal, the isolated workspace, read-only context
+// pointers, the declared capability grants, and the stage's static config.
+//
+// It deliberately carries NO upstream result bodies: a stage consumes prior work
+// only by resolving ContextPointers read-only from the journal (§2.4). This makes
+// cross-stage state reach-through impossible by construction.
 //
 // This is a runtime wire envelope, not a Kubernetes object, so it is excluded
 // from controller-gen DeepCopy generation (its free-form Inputs map cannot be
 // deep-copied generically).
 // +kubebuilder:object:generate=false
 type InvocationEnvelope struct {
-	// TaskID identifies this task instance within the run.
+	// TaskID identifies this stage instance within the run.
 	TaskID string `json:"taskId"`
 	// WorkflowID identifies the workflow definition being executed.
 	WorkflowID string `json:"workflowId"`
@@ -28,20 +47,31 @@ type InvocationEnvelope struct {
 	RunID string `json:"runId"`
 	// Gaggle is the gaggle this run belongs to.
 	Gaggle string `json:"gaggle"`
-	// Item is the backlog item / trigger payload that started the run. Nil for
-	// schedule/signal-triggered producer runs with no originating item.
-	Item *BacklogItem `json:"item,omitempty"`
-	// Goal is the intended outcome of this task (from the task definition).
+	// Goal is the intended outcome of this stage (from the stage definition).
 	Goal string `json:"goal"`
-	// RepoRef is the target repository for this run (fresh checkout per run).
+	// Workspace is the absolute path to the fresh, isolated, disposable working
+	// copy (§5) this stage runs in. The runner guarantees it exists.
+	Workspace string `json:"workspace"`
+	// RepoRef is the target repository for this run.
 	RepoRef RepoRef `json:"repoRef"`
-	// UpstreamOutputs are the results of prior tasks in this run, keyed by task
-	// name, so a task can build on earlier work.
-	UpstreamOutputs map[string]ResultEnvelope `json:"upstreamOutputs,omitempty"`
-	// Limits bound this task's execution (duration/tokens/cost).
+	// Item is the backlog item / trigger payload that started the run. Nil for
+	// schedule/signal-triggered runs with no originating item. It is a bounded
+	// provider-neutral descriptor, not another stage's state; the authoritative,
+	// content-digested snapshot is a ContextPointer into the journal's inputs/.
+	Item *BacklogItem `json:"item,omitempty"`
+	// ContextPointers are the read-only inputs this stage may consume: journal
+	// artifact pointers (upstream outputs, input snapshots) and external refs
+	// (e.g. issue/PR URLs). Pointers only — never upstream result bodies.
+	ContextPointers []ContextPointer `json:"contextPointers,omitempty"`
+	// Capabilities are the capability grants declared by this stage's definition
+	// (e.g. "github:issues:write", "repo:push"). Undeclared use fails closed:
+	// credentials for capabilities not listed here are never materialized (§5).
+	Capabilities []string `json:"capabilities,omitempty"`
+	// Limits bound this stage's execution (duration/tokens/cost).
 	Limits Limits `json:"limits"`
-	// Inputs are task-specific inputs (the task definition's static inputs plus
-	// any dynamically supplied values).
+	// Inputs are the stage's static config from its definition (plus any values
+	// the compiler resolved for it). This is the stage's own config, not another
+	// stage's runtime state.
 	Inputs map[string]interface{} `json:"inputs,omitempty"`
 }
 
@@ -62,9 +92,9 @@ type BacklogItem struct {
 	Labels []string `json:"labels,omitempty"`
 }
 
-// Limits bound a task's execution. Zero values mean "no explicit limit".
+// Limits bound a stage's execution. Zero values mean "no explicit limit".
 type Limits struct {
-	// MaxDurationSeconds caps wall-clock time for the task.
+	// MaxDurationSeconds caps wall-clock time for the stage.
 	MaxDurationSeconds int32 `json:"maxDurationSeconds,omitempty"`
 	// MaxTokens caps model tokens the run may consume.
 	MaxTokens int64 `json:"maxTokens,omitempty"`
@@ -73,36 +103,40 @@ type Limits struct {
 }
 
 // ---------------------------------------------------------------------------
-// Result envelope — returned by a task (the goober completion tool for agentic
-// tasks; the runner return for deterministic tasks).
+// Result envelope — what a stage returns.
 // ---------------------------------------------------------------------------
 
-// ResultStatus is the terminal status of a task.
+// ResultStatus is the terminal status of a stage.
 type ResultStatus string
 
 const (
-	// ResultSuccess means the task met its goal.
+	// ResultSuccess means the stage met its goal; the runner advances.
 	ResultSuccess ResultStatus = "success"
-	// ResultFailed means the task did not meet its goal.
-	ResultFailed ResultStatus = "failed"
-	// ResultNeedsEscalation means the task needs human/other intervention.
-	ResultNeedsEscalation ResultStatus = "needs-escalation"
+	// ResultFailure means the stage did not meet its goal; the runner applies the
+	// stage's retry policy and, if exhausted, branches on failure.
+	ResultFailure ResultStatus = "failure"
+	// ResultBlocked means the stage cannot proceed without external intervention
+	// (human input, an unmet dependency); the runner halts the run pending it.
+	ResultBlocked ResultStatus = "blocked"
 )
 
-// ResultEnvelope is the standard task result the engine acts on, and that gates
-// and telemetry consume (TSK-Q2). Shape: status, outputs, artifacts, summary,
-// metrics, error?.
+// ResultEnvelope is the standard stage result the runner acts on, and that gates
+// and telemetry consume. Bulk outputs are written into the journal and returned
+// as ArtifactPointers; Outputs carries only small declared scalar values.
 //
 // Runtime wire envelope, not a Kubernetes object — excluded from controller-gen
 // DeepCopy generation (its free-form Outputs map cannot be deep-copied).
 // +kubebuilder:object:generate=false
 type ResultEnvelope struct {
-	// Status is the terminal status of the task.
+	// Status is the terminal status of the stage.
 	Status ResultStatus `json:"status"`
-	// Outputs are named result values downstream tasks/gates can consume.
+	// Outputs are small, named scalar values downstream stages/gates can consume
+	// directly. Anything larger than a scalar is an artifact, referenced by
+	// pointer — state does not travel through Outputs.
 	Outputs map[string]interface{} `json:"outputs,omitempty"`
-	// Artifacts are produced artifacts (e.g. PR links, files).
-	Artifacts []Artifact `json:"artifacts,omitempty"`
+	// Artifacts are the stage's produced outputs, each a journal-relative pointer
+	// (path + sha256 digest). Downstream stages receive these as ContextPointers.
+	Artifacts []ArtifactPointer `json:"artifacts,omitempty"`
 	// Summary is a human-readable summary of what happened.
 	Summary string `json:"summary,omitempty"`
 	// Metrics are numeric measures (duration, tokens, cost, custom).
@@ -111,31 +145,22 @@ type ResultEnvelope struct {
 	Error *ErrorInfo `json:"error,omitempty"`
 }
 
-// Artifact is a produced output referenced by URI.
-type Artifact struct {
-	// Type categorizes the artifact (e.g. "pull-request", "file", "log").
-	Type string `json:"type"`
-	// URI locates the artifact.
-	URI string `json:"uri"`
-	// Label is an optional human-facing label.
-	Label string `json:"label,omitempty"`
-}
-
-// ErrorInfo describes a task failure.
+// ErrorInfo describes a stage failure.
 type ErrorInfo struct {
 	// Code is a stable, machine-readable error code.
 	Code string `json:"code"`
 	// Message is the human-readable error message.
 	Message string `json:"message"`
-	// Retryable indicates whether a retry might succeed (informs WF-021 retries).
+	// Retryable indicates whether a retry might succeed (informs the runner's
+	// retry decision alongside the stage's declared policy).
 	Retryable bool `json:"retryable,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
-// Verdict — returned by an agentic reviewer gate (mirrors the result envelope).
+// Verdict — what a gate evaluator returns (§5 gates).
 // ---------------------------------------------------------------------------
 
-// VerdictDecision is the outcome of a reviewer gate.
+// VerdictDecision is the outcome of a gate evaluator.
 type VerdictDecision string
 
 const (
@@ -158,18 +183,23 @@ const (
 	SeverityCritical Severity = "critical"
 )
 
-// Verdict is the structured result an agentic reviewer gate produces (GT-Q1).
-// Shape: decision, findings[], summary.
+// Verdict is the structured result a gate evaluator produces. The gate maps the
+// decision to a branch. Evidence points at journal artifacts (e.g. a diff, a
+// test log) that back the decision — pointers, never inlined state.
 type Verdict struct {
-	// Decision is the reviewer's outcome; the gate maps it to a branch.
+	// Decision is the evaluator's outcome; the gate maps it to a branch.
 	Decision VerdictDecision `json:"decision"`
-	// Findings enumerate specific issues the reviewer found.
+	// Rationale explains the decision in prose.
+	Rationale string `json:"rationale,omitempty"`
+	// Evidence are journal artifact pointers backing the decision.
+	Evidence []ArtifactPointer `json:"evidence,omitempty"`
+	// Findings enumerate specific issues the evaluator found.
 	Findings []Finding `json:"findings,omitempty"`
 	// Summary is a human-readable summary of the review.
 	Summary string `json:"summary,omitempty"`
 }
 
-// Finding is a single issue raised by a reviewer.
+// Finding is a single issue raised by an evaluator.
 type Finding struct {
 	// Severity ranks the finding.
 	Severity Severity `json:"severity"`
@@ -182,7 +212,7 @@ type Finding struct {
 // IsValid reports whether s is a known result status.
 func (s ResultStatus) IsValid() bool {
 	switch s {
-	case ResultSuccess, ResultFailed, ResultNeedsEscalation:
+	case ResultSuccess, ResultFailure, ResultBlocked:
 		return true
 	}
 	return false

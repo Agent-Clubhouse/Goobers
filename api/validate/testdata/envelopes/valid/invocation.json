@@ -4,6 +4,7 @@
   "runId": "0af7651916cd43dd8448eb211c80319c",
   "gaggle": "acme-web",
   "goal": "Implement the backlog item and open a PR.",
+  "workspace": "/var/goobers/runs/0af7651916cd43dd8448eb211c80319c/worktrees/implement-001",
   "item": {
     "id": "1421",
     "provider": "github",
@@ -19,7 +20,26 @@
     "branch": "main",
     "connectionRef": "github-main"
   },
-  "upstreamOutputs": {},
+  "contextPointers": [
+    {
+      "name": "plan",
+      "artifact": {
+        "path": "artifacts/plan/plan.md",
+        "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mediaType": "text/markdown",
+        "size": 0
+      }
+    },
+    {
+      "name": "issue",
+      "external": {
+        "kind": "issue",
+        "uri": "https://github.com/acme/web/issues/1421",
+        "description": "The backlog item this run is implementing."
+      }
+    }
+  ],
+  "capabilities": ["repo:read", "repo:push", "github:pulls:write"],
   "limits": {
     "maxDurationSeconds": 1800,
     "maxTokens": 2000000,

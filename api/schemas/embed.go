@@ -21,11 +21,14 @@ var Kind = map[string]string{
 	"Workflow": "workflow.schema.json",
 }
 
-// Envelope maps an envelope name to its schema file name.
+// Envelope maps an envelope name to its schema file name. "artifact" names the
+// shared ArtifactPointer schema that invocation/result/verdict $ref and that the
+// journal (#8) imports directly.
 var Envelope = map[string]string{
 	"invocation": "invocation.schema.json",
 	"result":     "result.schema.json",
 	"verdict":    "verdict.schema.json",
+	"artifact":   "artifact-pointer.schema.json",
 }
 
 // Files lists every embedded schema file name.
@@ -38,5 +41,6 @@ func Files() []string {
 		"invocation.schema.json",
 		"result.schema.json",
 		"verdict.schema.json",
+		"artifact-pointer.schema.json",
 	}
 }

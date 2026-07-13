@@ -1,5 +1,13 @@
 {
   "decision": "needs-changes",
+  "rationale": "Solid approach, but one correctness bug and a coverage gap block a pass.",
+  "evidence": [
+    {
+      "path": "artifacts/review/diff-annotated.patch",
+      "digest": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "mediaType": "text/x-patch"
+    }
+  ],
   "findings": [
     {
       "severity": "error",

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/artifact-pointer.schema.json",
+  "title": "ArtifactPointer",
+  "description": "A journal-relative pointer (path + content digest) to a stage artifact. The only way stages exchange non-scalar data (ARCHITECTURE.md §5).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["path", "digest"],
+  "properties": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Journal-relative path to the artifact bytes. Must not be absolute; the schema rejects a leading '/', and full containment (no '..' traversal) is enforced at resolve time by ArtifactPointer.Resolve.",
+      "pattern": "^[^/]"
+    },
+    "digest": {
+      "type": "string",
+      "description": "Content digest as sha256:<64-hex>.",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "mediaType": { "type": "string" },
+    "size": { "type": "integer", "minimum": 0 }
+  }
+}

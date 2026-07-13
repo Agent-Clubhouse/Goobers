@@ -2,16 +2,22 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://goobers.dev/schemas/result.schema.json",
   "title": "ResultEnvelope",
-  "description": "Standard task result the engine acts on; consumed by gates and telemetry (TSK-Q2).",
+  "description": "The V0 stage result envelope the runner acts on; consumed by gates and telemetry (ARCHITECTURE.md §5). Bulk outputs are artifact pointers; outputs carries scalars only.",
   "type": "object",
   "additionalProperties": false,
   "required": ["status"],
   "properties": {
-    "status": { "type": "string", "enum": ["success", "failed", "needs-escalation"] },
-    "outputs": { "type": "object" },
+    "status": { "type": "string", "enum": ["success", "failure", "blocked"] },
+    "outputs": {
+      "type": "object",
+      "description": "Small declared scalar values only. Anything larger is an artifact, referenced by pointer — state does not travel through outputs.",
+      "additionalProperties": {
+        "type": ["string", "number", "integer", "boolean", "null"]
+      }
+    },
     "artifacts": {
       "type": "array",
-      "items": { "$ref": "#/$defs/artifact" }
+      "items": { "$ref": "artifact-pointer.schema.json" }
     },
     "summary": { "type": "string" },
     "metrics": {
@@ -22,25 +28,15 @@
   },
   "allOf": [
     {
-      "comment": "A non-success result should carry error detail.",
+      "comment": "A failure result must carry error detail.",
       "if": {
-        "properties": { "status": { "const": "failed" } },
+        "properties": { "status": { "const": "failure" } },
         "required": ["status"]
       },
       "then": { "required": ["error"] }
     }
   ],
   "$defs": {
-    "artifact": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "uri"],
-      "properties": {
-        "type": { "type": "string", "minLength": 1 },
-        "uri": { "type": "string", "minLength": 1 },
-        "label": { "type": "string" }
-      }
-    },
     "errorInfo": {
       "type": "object",
       "additionalProperties": false,

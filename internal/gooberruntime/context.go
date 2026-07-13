@@ -20,17 +20,17 @@ const (
 // GooberContext is the complete task or reviewer context delivered to the
 // harness.
 type GooberContext struct {
-	TaskID          string                          `json:"taskId"`
-	WorkflowID      string                          `json:"workflowId"`
-	RunID           string                          `json:"runId"`
-	Gaggle          string                          `json:"gaggle"`
-	Goal            string                          `json:"goal"`
-	Instructions    string                          `json:"instructions,omitempty"`
-	RepoRef         apiv1.RepoRef                   `json:"repoRef"`
-	Item            *apiv1.BacklogItem              `json:"item,omitempty"`
-	Inputs          map[string]interface{}          `json:"inputs,omitempty"`
-	UpstreamOutputs map[string]apiv1.ResultEnvelope `json:"upstreamOutputs,omitempty"`
-	Limits          apiv1.Limits                    `json:"limits,omitempty"`
+	TaskID          string                 `json:"taskId"`
+	WorkflowID      string                 `json:"workflowId"`
+	RunID           string                 `json:"runId"`
+	Gaggle          string                 `json:"gaggle"`
+	Goal            string                 `json:"goal"`
+	Instructions    string                 `json:"instructions,omitempty"`
+	RepoRef         apiv1.RepoRef          `json:"repoRef"`
+	Item            *apiv1.BacklogItem     `json:"item,omitempty"`
+	Inputs          map[string]interface{} `json:"inputs,omitempty"`
+	ContextPointers []apiv1.ContextPointer `json:"contextPointers,omitempty"`
+	Limits          apiv1.Limits           `json:"limits,omitempty"`
 }
 
 // InstructionResolver resolves the instruction markdown for an invocation.
@@ -163,7 +163,7 @@ func buildContext(ctx context.Context, env apiv1.InvocationEnvelope, resolver In
 		RepoRef:         env.RepoRef,
 		Item:            env.Item,
 		Inputs:          copyInputs(env.Inputs),
-		UpstreamOutputs: copyResults(env.UpstreamOutputs),
+		ContextPointers: copyContextPointers(env.ContextPointers),
 		Limits:          env.Limits,
 	}, nil
 }
@@ -179,13 +179,11 @@ func copyInputs(in map[string]interface{}) map[string]interface{} {
 	return out
 }
 
-func copyResults(in map[string]apiv1.ResultEnvelope) map[string]apiv1.ResultEnvelope {
+func copyContextPointers(in []apiv1.ContextPointer) []apiv1.ContextPointer {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make(map[string]apiv1.ResultEnvelope, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	out := make([]apiv1.ContextPointer, len(in))
+	copy(out, in)
 	return out
 }
