@@ -261,8 +261,13 @@ func TestRunDoesNotBusyPoll(t *testing.T) {
 		mu.Unlock()
 		fc.advance(cur)
 	}
-	// Give the loop a moment to process the 3rd fire before cancelling.
-	fc.awaitAfterCall(t)
+	// Wait on the actual observable the assertion below checks — dispatch()
+	// hands the Starter.Start call to its own goroutine (Run must never
+	// block on a run), so the loop registering its next After call (what a
+	// 4th awaitAfterCall would prove) does NOT happen-before that goroutine
+	// incrementing starter's count. Waiting on the count itself closes that
+	// race deterministically instead of relying on tick timing as a proxy.
+	waitForCount(t, starter.count, 3)
 	cancel()
 	<-done
 
