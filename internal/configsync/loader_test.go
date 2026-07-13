@@ -42,10 +42,13 @@ func TestLoad_ValidExampleRepo(t *testing.T) {
 		t.Errorf("namespace = %q, want %q", set.Namespace, DefaultNamespace)
 	}
 
+	// config-examples ships one Manifest/Gaggle and two Goobers/Workflows
+	// (coder/default-implement, curator/backlog-curation — issue #25).
+	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 1, "Goober": 2, "Workflow": 2}
 	by := objectsByKind(set.Objects)
-	for _, kind := range []string{"Manifest", "Gaggle", "Goober", "Workflow"} {
-		if len(by[kind]) != 1 {
-			t.Errorf("kind %s: got %d objects, want 1", kind, len(by[kind]))
+	for kind, want := range wantByKind {
+		if len(by[kind]) != want {
+			t.Errorf("kind %s: got %d objects, want %d", kind, len(by[kind]), want)
 		}
 	}
 
