@@ -29,6 +29,11 @@ type Capability string
 // admission, internal/workflow/compile.go), so a definition can never drift
 // ahead of this registry.
 const (
+	// RepoRead grants a read-only checkout of the target repository's per-stage
+	// worktree — no push. Added for the work-nomination workflow (issue #26):
+	// its nominator goober analyzes the codebase for gaps but writes issues
+	// only, never code.
+	RepoRead Capability = "repo:read"
 	// RepoPush grants `git push` to the target repository's per-stage worktree.
 	RepoPush Capability = "repo:push"
 	// GitHubIssuesWrite grants GitHub issue query/create/label/close/comment
@@ -44,7 +49,7 @@ const (
 
 // All returns every canonical capability, in declaration order.
 func All() []Capability {
-	return []Capability{RepoPush, GitHubIssuesWrite, GitHubPRWrite, TelemetryRead}
+	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubPRWrite, TelemetryRead}
 }
 
 // Known reports whether s is a canonical capability string.
