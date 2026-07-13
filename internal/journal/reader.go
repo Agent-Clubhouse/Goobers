@@ -86,6 +86,13 @@ func (r *Reader) ArtifactBytes(ref Ref) ([]byte, error) {
 	return b, nil
 }
 
+// SpanBytes reads and verifies a stored span blob against its Ref.Digest —
+// identical machinery to ArtifactBytes; a separate name keeps call sites at a
+// harness-adapter/executor readable (spans/ vs artifacts/).
+func (r *Reader) SpanBytes(ref Ref) ([]byte, error) {
+	return r.ArtifactBytes(ref)
+}
+
 // RecoverReport describes what Recover found and did.
 type RecoverReport struct {
 	// LastSeq is the highest seq of a durably-committed event.

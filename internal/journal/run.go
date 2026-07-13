@@ -190,6 +190,37 @@ func (r *Run) RecordArtifact(name string, data []byte) (Ref, error) {
 	return ref, nil
 }
 
+// RecordSpan scrubs data, stores it by content digest under spans/, and
+// appends a span.recorded event — the within-stage trace/transcript capture
+// GBO-020 requires (e.g. a harness adapter's transcript, issue #19). Mirrors
+// RecordArtifact's content-addressed, scrub-then-write pattern; spans are
+// excluded from conformance (§3.3) since harness/LLM output is not
+// content-comparable across runners.
+func (r *Run) RecordSpan(stage, name string, data []byte) (Ref, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return Ref{}, ErrClosed
+	}
+	scrubbed := r.scrubber.Scrub(data)
+	digest := Digest(scrubbed)
+	relPath, err := spanPath(digest)
+	if err != nil {
+		return Ref{}, err
+	}
+	ref, err := writeContentScrubbed(r.dir, relPath, scrubbed, digest)
+	if err != nil {
+		return Ref{}, fmt.Errorf("journal: record span %q: %w", name, err)
+	}
+	if err := r.append(Event{Type: EventSpanRecorded, Stage: stage, Name: name, Ref: &ref}); err != nil {
+		return Ref{}, err
+	}
+	if err := r.checkpoint(); err != nil {
+		return Ref{}, err
+	}
+	return ref, nil
+}
+
 // Close flushes and releases the events handle. It does not write a
 // run.finished event — the caller appends that explicitly so the terminal status
 // is part of the log.

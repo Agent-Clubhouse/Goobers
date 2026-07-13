@@ -21,6 +21,9 @@ const (
 	EventGateEvaluated EventType = "gate.evaluated"
 	// EventArtifactRecorded records an artifact committed by content digest.
 	EventArtifactRecorded EventType = "artifact.recorded"
+	// EventSpanRecorded records a within-stage trace span (harness transcript,
+	// tool events) committed by content digest under spans/ (GBO-020).
+	EventSpanRecorded EventType = "span.recorded"
 	// EventInputSnapshot records an immutable input snapshot by content digest.
 	EventInputSnapshot EventType = "input.snapshot"
 	// EventRefTouched records an external reference touched (issue/PR).
@@ -171,6 +174,10 @@ func (e Event) IsConformanceNormative() bool {
 	switch e.Type {
 	case EventRepaired:
 		// Torn-write repair is a durability mechanic, not orchestration.
+		return false
+	case EventSpanRecorded:
+		// Spans carry live-harness transcripts (LLM output); structural only
+		// per §3.3, never content-compared across runners.
 		return false
 	default:
 		return true
