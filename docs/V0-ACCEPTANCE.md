@@ -2,13 +2,18 @@
 
 > Status: **Scaffolded, not yet executed.** This is the verification artifact for
 > issue #30, the V0 milestone gate. It is structured against the expected
-> definition of done now, ahead of its remaining dependencies (#17, #19, #23,
-> #24, #26, #28, #29) landing; commands marked **[pending]** below don't exist
-> on `main` yet. The milestone closes only once someone other than the
-> runner's primary implementer executes this runbook clean, end to end, and
-> the [Execution record](#execution-record) appendix is filled in with real
-> journal excerpts and PR links (issue #30's acceptance criteria) — not before.
-> Owner: Goobers-Dev-5.
+> definition of done now, ahead of its remaining dependencies landing. The
+> self-hosting dogfood config (#28) and CLI surface (#23, partially — see
+> below) are on `main`; what's left is **#17 Deliverable B** (durability/
+> resume/retries, PR #87 in QA re-verify) — which unblocks `up`'s real daemon
+> loop and `run`'s real execution (both currently honest stubs) plus #29's
+> crash-resume variant — and **#26** (work nomination, not started). Commands
+> marked **[pending]** below don't behave end-to-end on `main` yet even though
+> the CLI surface exists. The milestone closes only once someone other than
+> the runner's primary implementer executes this runbook clean, end to end,
+> and the [Execution record](#execution-record) appendix is filled in with
+> real journal excerpts and PR links (issue #30's acceptance criteria) — not
+> before. Owner: Goobers-Dev-5.
 
 ## Purpose
 
@@ -32,10 +37,12 @@ against the responsible issue, per issue #30's scope.
   access to a repo you're willing to have the instance open PRs against —
   **use a scratch/fork repo for the first execution, not this one**, until
   the loop has been proven once.
-- The [self-hosting dogfood config](#28) this repo ships (#28, in progress) —
-  until it lands, substitute `config-examples/` (already on `main`) to
-  exercise the mechanics, understanding that its single starter workflow
-  doesn't demonstrate the full curation → nomination → implementation chain.
+- The [self-hosting dogfood config](#28) this repo ships — `selfhost/` is on
+  `main` (PR #77): 4 goobers, 3 workflows (curation, nomination,
+  implementation), with the trust gate, reviewer gate, 2/day cap, and no-merge
+  guardrails all in place. `config-examples/` remains available as a lighter
+  single-workflow stand-in if you'd rather exercise the mechanics without the
+  full chain.
 
 ## Procedure
 
@@ -57,12 +64,15 @@ cd my-instance
 ../bin/goobers validate .
 ```
 
-### 2. Run **[pending #17, #23]**
+### 2. Run **[pending #17 Deliverable B]**
 
 ```sh
-# goobers up / goobers run don't exist on main yet — #17 (runner core) is the
-# execution engine, #23 wraps it as `up` (daemon: scheduler + runner) and
-# `run` (one manual trigger, still honoring run conditions). Once landed:
+# goobers up / goobers run exist on main (#23, PR #67) but are honest stubs
+# today: `up` validates + takes the single-instance lock, then reports the
+# daemon (scheduler #21 + runner #17) isn't wired in yet; `run` reports an
+# "escalated: local runner not yet wired — no stages executed" result rather
+# than silently doing nothing. Both become real once #17 Deliverable B
+# (durability/resume/retries, PR #87) lands. Once it does:
 ../bin/goobers up          # long-lived: embedded scheduler + local runner
 # or, for a single manual pass:
 ../bin/goobers run <workflow-name>
@@ -91,8 +101,8 @@ open PR:
    and stops at a reviewer gate.
 
 ```sh
-../bin/goobers status       # [pending #23] — instance + active runs at a glance
-../bin/goobers trace <run-id>  # [pending #23] — one run's journal, human-readable
+../bin/goobers status       # shipped (#23, PR #67) — instance + active runs at a glance
+../bin/goobers trace <run-id>  # shipped (#23, PR #67) — one run's journal, human-readable
 ```
 
 Until `status`/`trace` ship, the run journal is directly inspectable per
@@ -112,9 +122,7 @@ Goobers doesn't self-merge at V0). Then confirm telemetry answers "what
 happened and what's failing":
 
 ```sh
-# [pending #24's query surface + #23's CLI wiring — the query package
-# (internal/telemetry/query, shipped) is usable programmatically today; a CLI
-# front-end is #23's scope]
+# shipped (#24's query surface + #23's CLI wiring, PR #67)
 ../bin/goobers telemetry stats
 ../bin/goobers telemetry errors
 ```
@@ -146,18 +154,19 @@ reflects `main` as of this writing, not the eventual acceptance run.
 | Telemetry query surface | #24 | ✅ shipped | Verify (telemetry) |
 | Gate execution: automated + agentic, bounded repass | #20 | ✅ shipped | Observe (implementation) |
 | Local credential handling, capability scoping | #14 | ✅ shipped | Setup (implicit) |
-| Runner core: lifecycle, durability, resume, retries | #17 | 🔶 in review (PR #64) | Run |
-| CLI surface: `up`/`run`/`status`/`trace` | #23 | ⬜ not started | Run, Observe, Verify |
+| Runner core: lifecycle, durability, resume, retries | #17 | 🔶 partial — Deliverable A shipped (`27805e7`), Deliverable B in QA re-verify (PR #87) | Run |
+| CLI surface: `up`/`run`/`status`/`trace` | #23 | 🔶 partial — init/validate/status/trace/telemetry + quickstart shipped (PR #67); `up`'s daemon loop and `run`'s real execution are honest stubs, blocked on #17 Deliverable B | Run, Observe, Verify |
 | Workflow: backlog curation | #25 | ✅ shipped | Observe (1) |
 | Workflow: work nomination | #26 | ⬜ not started | Observe (2) |
 | Workflow: implementation, reviewer + CI-poll repass | #27 | ✅ shipped | Observe (3) |
-| Self-hosting dogfood config | #28 | ⬜ in progress | Setup |
-| E2E walking skeleton (conformance seed) | #29 | ⬜ in progress | (validates the whole chain on fixtures, ahead of this live run) |
+| Self-hosting dogfood config | #28 | ✅ shipped (PR #77, `12feace`) | Setup |
+| E2E walking skeleton (conformance seed) | #29 | 🔶 partial — walking skeleton on real runner Deliverable A shipped (PR #83, `6cb6f05`); crash-resume variant explicitly `t.Skip`'d, blocked on #17 Deliverable B | (validates the whole chain on fixtures, ahead of this live run) |
 
-**5 of 20 bullets are not yet demonstrable** (#17 in review; #23/#26/#28/#29
-not started or in progress) — this runbook cannot be executed for real until
-they land. Re-run the checklist after each merge; strike "not yet
-demonstrable" once its issue closes.
+**4 of 20 bullets are not fully demonstrable yet** (#17 Deliverable B in QA
+re-verify — this is the pacing item, it also unblocks #23's daemon loop/real
+`run` and #29's crash-resume variant; #26 not started) — this runbook cannot
+be executed for real until they land. Re-run the checklist after each merge;
+strike "not yet demonstrable" once its issue closes.
 
 ## Known limitations (V0 → later)
 
@@ -184,9 +193,6 @@ decision for a bug:
 - **Registry-scrubber wiring gap on runner-written journal events** (not
   executor-materialized credentials, which are already scrubbed) — tracked as
   #66/re-scoped per QA-1's #64 review, V1.
-- **No stricter capability-string canonicalization** — `github:pr:write` vs
-  `github:prs:write`-style spelling drift is caught by tests today, not a
-  registry — tracked as #74 (V1).
 - **Agentic subprocess env is a bare PATH/HOME/TMPDIR allowlist** (default-deny,
   by design — safer than a denylist filter that could miss a credential var),
   which may starve tools that expect `XDG_*`/`LANG`/`SSL_CERT_FILE`/proxy vars
