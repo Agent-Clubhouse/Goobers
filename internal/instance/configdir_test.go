@@ -21,10 +21,20 @@ func TestLoadConfigDirValid(t *testing.T) {
 	if len(set.Gaggles) != 1 || set.Gaggles[0].Name != "acme-web" {
 		t.Fatalf("unexpected gaggles: %+v", set.Gaggles)
 	}
-	if len(set.Goobers) != 1 || set.Goobers[0].Name != "coder" {
+	// config-examples ships two goobers/workflows (coder/default-implement,
+	// curator/backlog-curation — issue #25); check membership, not order.
+	gotGoobers := map[string]bool{}
+	for _, g := range set.Goobers {
+		gotGoobers[g.Name] = true
+	}
+	if len(set.Goobers) != 2 || !gotGoobers["coder"] || !gotGoobers["curator"] {
 		t.Fatalf("unexpected goobers: %+v", set.Goobers)
 	}
-	if len(set.Workflows) != 1 || set.Workflows[0].Name != "default-implement" {
+	gotWorkflows := map[string]bool{}
+	for _, w := range set.Workflows {
+		gotWorkflows[w.Name] = true
+	}
+	if len(set.Workflows) != 2 || !gotWorkflows["default-implement"] || !gotWorkflows["backlog-curation"] {
 		t.Fatalf("unexpected workflows: %+v", set.Workflows)
 	}
 }
