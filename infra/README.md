@@ -1,5 +1,8 @@
 # Goobers — `infra` reference
 
+> **Tier-3 (V2) — quarantined, not on the V0 path.** See
+> [`docs/ARCHITECTURE.md` §11](../docs/ARCHITECTURE.md#11-repo-impact-map). Revived in V2.
+
 Reference layout + templates for a Goobers instance's **`infra` repo** — the rarely-changing
 half of the two singleton repos per instance (the other being `config`, the
 workforce-as-code). Per-instance teams fork this as their own `infra` repo.

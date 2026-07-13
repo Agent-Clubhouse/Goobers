@@ -4,6 +4,10 @@
 // CR manifest set that ArgoCD applies (DEP-012); a direct Applier is available
 // behind an interface. Invalid config is rejected up front with the M1 validator's
 // field-level errors.
+//
+// Tier-3 (V2) — quarantined, not on the V0 path (the CRD-apply path; local tiers
+// 1-2 watch config/ directly, see ARCHITECTURE.md §6). See docs/ARCHITECTURE.md
+// §11. Revived in V2.
 package configsync
 
 import (

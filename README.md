@@ -19,13 +19,20 @@ clustered orchestration over a large monorepo.
 |---|---|---|
 | `api/` | Definition types, JSON invocation/result/verdict envelopes, YAML schema | Active — extended by DSL v0 |
 | `providers/` | Backlog + repo provider abstraction (GitHub / ADO) | Active — V0 workload |
-| `cmd/` | Binary entrypoints | Being consolidated into the `goobers` binary (V0) |
-| `internal/` | Shared Go packages (engine core, telemetry, app bootstrap) | Active |
-| `infra/` | Bicep, ArgoCD, Temporal, ADX | Quarantined — tier-3 drop-ins, revived in V2 |
+| `cmd/goobers` | The product binary: `init`, `validate`, `up`, `run`, `status`, `trace` | Active — being built under V0 |
+| `cmd/operator` | Kubernetes operator entrypoint | **Quarantined** — tier-3, revived in V2 |
+| `cmd/scheduler` | Cluster scheduler process (Temporal-backed) | **Quarantined** — tier-3, revived in V2 |
+| `cmd/goober-runtime` | Per-run agent pod runtime | **Superseded** — folds into `goobers`' local stage execution |
+| `internal/operator` | Kubernetes operator reconcile logic | **Quarantined** — tier-3, revived in V2 |
+| `internal/configsync` | Config-repo → CRD render/apply (ArgoCD bridge) | **Quarantined** — tier-3 (CRD-apply path), revived in V2 |
+| `internal/` (other) | Shared Go packages (engine core, telemetry, app bootstrap) | Active |
+| `infra/` | Bicep, ArgoCD, Temporal, ADX | **Quarantined** — tier-3 drop-ins, revived in V2 |
 | `portal/` | TypeScript + React observability portal | Active — retargets to run journals in V1 |
 | `config-examples/` | Reference config layout + starter definitions | Active |
 | `test/` | CI + e2e harness | Active |
 
+Quarantined paths stay in-tree, compiling, and status-bannered — they are the
+documented tier-3 drop-in points (`docs/ARCHITECTURE.md §10`), not dead code.
 See `docs/ARCHITECTURE.md §11` for the full disposition map.
 
 ## Go module

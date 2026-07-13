@@ -1,6 +1,10 @@
 // Command goober-runtime is the per-run agent runtime. It executes inside an
 // ephemeral run pod: it receives the invocation envelope, drives the harness,
 // and signals completion (DEP-004..DEP-007, GBO-011..GBO-013).
+//
+// Superseded — folds into the local runner's stage execution (the `goobers`
+// binary); kept compiling as the tier-3 agent-pod reference. See
+// docs/ARCHITECTURE.md §11.
 package main
 
 import (
