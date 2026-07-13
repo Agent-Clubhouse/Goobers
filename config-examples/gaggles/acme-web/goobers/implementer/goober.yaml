@@ -1,0 +1,23 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: implementer
+spec:
+  gaggle: acme-web
+  role: implementer
+  displayName: Implementer
+  instructions: instructions.md
+  harness: copilot
+  # Implement-only: this stage never opens the PR or touches issues directly
+  # (those are separate deterministic stages in the implementation
+  # workflow) — repo:push is the whole grant.
+  capabilities:
+    - repo:push
+  skills:
+    - implement
+    - run-tests
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - implementation

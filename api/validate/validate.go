@@ -425,7 +425,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow) {
 				r.add(Error, "", "Workflow", w.Name, "task %q targets goober %q which is not defined", t.Name, t.Goober)
 			}
 		}
-		if t.Next != "" && !states[t.Next] {
+		if t.Next != "" && !wf.IsReservedTarget(t.Next) && !states[t.Next] {
 			r.add(Error, "", "Workflow", w.Name, "task %q next state %q is not defined", t.Name, t.Next)
 		}
 	}
@@ -438,7 +438,10 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow) {
 			}
 		}
 		for outcome, next := range g.Branches {
-			if next != "" && !states[next] {
+			// Empty means the success terminal (TerminalComplete); "@abort"
+			// and "@escalate" are reserved terminal targets — neither is a
+			// dangling reference (workflow.IsReservedTarget).
+			if next != "" && !wf.IsReservedTarget(next) && !states[next] {
 				r.add(Error, "", "Workflow", w.Name, "gate %q branch %q -> %q is not a defined state", g.Name, outcome, next)
 			}
 		}
