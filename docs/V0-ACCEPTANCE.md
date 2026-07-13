@@ -56,14 +56,46 @@ go build -o bin/goobers ./cmd/goobers
 
 # Scaffold a fresh instance root.
 ./bin/goobers init ./my-instance
-cd my-instance
 
-# Point instance.yaml's connections at the target repo + a github-pat token
-# ref (see instance.yaml's inline comments), then drop in the dogfood config
-# (#28) — or config-examples/ as an interim stand-in — under config/.
+# Replace the seeded starter config with the dogfood config (#28) — all
+# three copies are required (gaggles/ alone fails validate closed with "no
+# Manifest object found"); config-examples/ remains a lighter stand-in if
+# you'd rather exercise the mechanics without the full chain:
+rm -rf my-instance/config && mkdir -p my-instance/config
+cp -r selfhost/gaggles my-instance/config/
+cp selfhost/manifest.yaml my-instance/config/
+cp selfhost/instance.yaml.example my-instance/instance.yaml
+
+# Set the GitHub PAT (never inline it into instance.yaml — the loader
+# rejects that, CFG-009/SEC-010) and any other token refs instance.yaml
+# names, matching instance.yaml's inline comments:
+export GOOBERS_GITHUB_TOKEN=ghp_...
 
 # Validate before anything runs (fails closed on bad config/definitions).
+cd my-instance
 ../bin/goobers validate .
+# OK: instance.yaml valid; config/ valid (1 gaggle(s), 4 goober(s), 3 workflow(s))
+```
+
+Verified locally against a scratch instance root (no network, no live repo
+touched): the above sequence builds and validates clean on `main` as of this
+writing.
+
+Before running anything against the target repo, bootstrap its label
+taxonomy once (idempotent, `selfhost/README.md` §Setup) — the trust gate
+(`SEC-047`) depends on `goobers:approved` existing:
+
+```sh
+for l in \
+  "goobers:approved:0E8A16:Maintainer-approved — eligible for curation/implementation (SEC-047)" \
+  "goobers:ready:1D76DB:Curated and scoped — eligible for implementation" \
+  "goobers:claimed:FBCA04:Currently claimed by an in-flight run" \
+  "goobers:nominated:5319E7:Filed by the nominator — awaiting maintainer approval" \
+  "goobers:needs-human:D93F0B:Needs a decision only a human can make" \
+; do
+  IFS=: read -r ns name color desc <<<"$l"
+  gh label create "$ns:$name" --color "$color" --description "$desc" --force
+done
 ```
 
 ### 2. Run **[pending #23 daemon loop]**
