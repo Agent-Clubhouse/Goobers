@@ -224,6 +224,119 @@ func TestCopilotAdapterDoesNotPassthroughAmbientDaemonEnv(t *testing.T) {
 	}
 }
 
+// TestCopilotAdapterPassesThroughExtendedAllowlist is the regression test for
+// #75: the well-known, non-secret env conventions diverse tier-1 hosts rely
+// on (XDG base dirs, locale, TLS/proxy config) must reach the subprocess, not
+// just PATH/HOME/TMPDIR.
+func TestCopilotAdapterPassesThroughExtendedAllowlist(t *testing.T) {
+	extended := map[string]string{
+		"XDG_CONFIG_HOME": "/home/tester/.config",
+		"XDG_DATA_HOME":   "/home/tester/.local/share",
+		"LANG":            "en_US.UTF-8",
+		"LC_ALL":          "C",
+		"LC_CTYPE":        "en_US.UTF-8",
+		"SSL_CERT_FILE":   "/etc/ssl/certs/custom-ca.pem",
+		"HTTP_PROXY":      "http://proxy.example.internal:8080",
+		"HTTPS_PROXY":     "https://proxy.example.internal:8443",
+		"NO_PROXY":        "localhost,127.0.0.1",
+	}
+	for name, value := range extended {
+		t.Setenv(name, value)
+	}
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+
+	req := RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    pushCredentials(t, "unused", "unused"),
+	}
+	if _, err := adapter.Run(context.Background(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := make(map[string]bool, len(extended))
+	for name, value := range extended {
+		want := name + "=" + value
+		for _, kv := range runner.lastReq.Env {
+			if kv == want {
+				got[name] = true
+			}
+		}
+	}
+	for name := range extended {
+		if !got[name] {
+			t.Fatalf("%s did not pass through into subprocess env, got %v", name, runner.lastReq.Env)
+		}
+	}
+}
+
+// TestCopilotAdapterExtendedAllowlistStillBlocksSecretShapedVars proves the
+// #75 extension stays default-deny: an ambient var that merely resembles an
+// allowlisted name (shares a prefix substring) or looks like a credential
+// must not pass, only exact allowlisted names and the LC_* family do.
+func TestCopilotAdapterExtendedAllowlistStillBlocksSecretShapedVars(t *testing.T) {
+	blocked := map[string]string{
+		// Secret-shaped, unrelated to the allowlist.
+		"AWS_SECRET_ACCESS_KEY": "not-a-real-secret-but-should-never-pass",
+		// Shares the "LANG" substring as a prefix but is a distinct var name —
+		// would leak if baseEnv used strings.HasPrefix(name, "LANG") instead
+		// of an exact match.
+		"LANGUAGE_MODEL_API_KEY": "should-not-pass-either",
+		// Shares "LC_" as a substring but not as a prefix — must not match
+		// the LC_* family.
+		"LOCALE_LC_OVERRIDE_SECRET": "should-not-pass",
+	}
+	for name, value := range blocked {
+		t.Setenv(name, value)
+	}
+	t.Setenv("LANG", "en_US.UTF-8") // the real, exact allowlisted name
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+
+	req := RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    pushCredentials(t, "unused", "unused"),
+	}
+	if _, err := adapter.Run(context.Background(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for name := range blocked {
+		for _, kv := range runner.lastReq.Env {
+			if strings.HasPrefix(kv, name+"=") {
+				t.Fatalf("blocked var %s leaked into subprocess env: %v", name, runner.lastReq.Env)
+			}
+		}
+	}
+	foundLang := false
+	for _, kv := range runner.lastReq.Env {
+		if kv == "LANG=en_US.UTF-8" {
+			foundLang = true
+		}
+	}
+	if !foundLang {
+		t.Fatalf("expected the exact allowlisted LANG to still pass through, got %v", runner.lastReq.Env)
+	}
+}
+
 func TestCopilotAdapterFailsClosedOnMissingCommand(t *testing.T) {
 	adapter := &CopilotAdapter{}
 	if err := adapter.Preflight(context.Background()); err == nil {
