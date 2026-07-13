@@ -31,6 +31,14 @@ var Envelope = map[string]string{
 	"artifact":   "artifact-pointer.schema.json",
 }
 
+// Journal maps a run-journal contract name to its schema file name — the
+// versioned provenance contract (ARCHITECTURE.md §4): the events.jsonl event
+// envelope and run.yaml pinned identity.
+var Journal = map[string]string{
+	"event": "journal-event.schema.json",
+	"run":   "journal-run.schema.json",
+}
+
 // Files lists every embedded schema file name.
 func Files() []string {
 	return []string{
@@ -42,5 +50,7 @@ func Files() []string {
 		"result.schema.json",
 		"verdict.schema.json",
 		"artifact-pointer.schema.json",
+		"journal-event.schema.json",
+		"journal-run.schema.json",
 	}
 }

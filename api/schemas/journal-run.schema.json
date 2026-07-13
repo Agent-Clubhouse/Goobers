@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/journal-run.schema.json",
+  "title": "JournalRun",
+  "description": "run.yaml — the pinned identity of a run (ARCHITECTURE.md §4). Written once at run start and never edited: a run records the workflow definition (name, version, and content digest) it starts and completes on (WF-016), plus the trigger and content-digested input snapshots.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "runId", "workflow", "workflowVersion", "gaggle", "trigger", "startedAt"],
+  "properties": {
+    "schema": { "const": "goobers.dev/journal/run/v1" },
+    "runId": {
+      "description": "Run identifier — the OpenTelemetry trace id for the run.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "workflow": { "type": "string", "minLength": 1 },
+    "workflowVersion": { "type": "integer", "minimum": 0 },
+    "workflowDigest": {
+      "description": "Content digest of the pinned workflow Definition (WF-016 tamper-evident pin).",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gaggle": { "type": "string", "minLength": 1 },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["manual", "schedule", "signal", "item"] },
+        "ref": { "type": "string" }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "ref"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "ref": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "digest", "size"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+              "size": { "type": "integer", "minimum": 0 },
+              "mediaType": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "startedAt": { "type": "string", "format": "date-time" }
+  }
+}
