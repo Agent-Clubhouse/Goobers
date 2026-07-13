@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -18,23 +17,25 @@ import (
 // from the Temporal engine core, ARCHITECTURE §3.1).
 const DefaultMaxSteps = 10000
 
-// Config wires a Runner's dependencies: the executor/gate seam
-// implementations (executor.go), and the substrate the local runner drives
-// directly — worktrees (#16), credentials (#14), and the journal's runs
-// directory (#8). One Runner serves every workflow definition a daemon
-// knows about; the compiled Machine for a specific run is supplied per call
-// in StartInput, not fixed here (a daemon starts runs across many different
-// workflows from one long-lived Runner).
+// Config wires a Runner's dependencies: the daemon-wide singletons (worktree
+// provisioning, gate evaluation) and the per-run executor factories
+// (executor.go) — the substrate the local runner drives directly (worktrees
+// #16, the journal's runs directory #8). One Runner serves every workflow
+// definition a daemon knows about; the compiled Machine for a specific run is
+// supplied per call in StartInput, not fixed here.
 type Config struct {
-	// Executors dispatches deterministic/agentic stage attempts.
-	Executors Executors
-	// Automated evaluates automated gates (internal/gate, #20). Required if the
-	// machine has any evaluator=automated gate. gate.NewAutomatedEvaluator()
-	// (the default check registry) is a ready-made implementation.
+	// NewDeterministic constructs this run's deterministic-task executor
+	// (invoke.Deterministic). Required if any workflow run through this
+	// Runner has a deterministic task.
+	NewDeterministic NewDeterministicFunc
+	// NewAgentic constructs a named goober's executor (invoke.Goober) for this
+	// run. Required if any workflow has an agentic task or agentic gate.
+	NewAgentic NewAgenticFunc
+	// Automated evaluates automated gates (internal/gate, #20) — stateless,
+	// shared across every run. Required if any workflow has an
+	// evaluator=automated gate. gate.NewAutomatedEvaluator() (the default
+	// check registry) is a ready-made implementation.
 	Automated invoke.Automated
-	// Reviewer evaluates agentic gates (internal/gate, #20). Required if the
-	// machine has any evaluator=agentic gate.
-	Reviewer *gate.ReviewerEvaluator
 	// MaxRepasses bounds gate repass loops before escalating
 	// (gate.DefaultMaxRepasses if 0). See internal/gate.Evaluator.
 	MaxRepasses int
@@ -44,8 +45,6 @@ type Config struct {
 	// Worktrees provisions the fresh, isolated, disposable working copy each
 	// stage attempt runs in (§5).
 	Worktrees *worktree.Manager
-	// Credentials materializes capability-scoped credentials per attempt.
-	Credentials *credentials.Injector
 	// RunsDir is the journal's run directory (<instance-root>/runs).
 	RunsDir string
 	// MaxSteps overrides DefaultMaxSteps when > 0.
@@ -57,10 +56,11 @@ type Config struct {
 }
 
 // Runner advances a compiled workflow.Machine stage-by-stage, durably
-// recording every transition to the run journal, and dispatching stages
-// through the executor seam. It is the substrate-neutral local runner core
-// (ARCHITECTURE.md §3.1) — deliverable A: seam + deterministic walk. Retries,
-// crash-resume, and cancellation (deliverable B) build on top of this.
+// recording every transition to the run journal, and dispatching tasks
+// through the pre-existing internal/invoke seam. It is the substrate-neutral
+// local runner core (ARCHITECTURE.md §3.1) — deliverable A: seam +
+// deterministic walk. Retries, crash-resume, and cancellation (deliverable B)
+// build on top of this.
 type Runner struct {
 	cfg      Config
 	maxSteps int
@@ -68,14 +68,8 @@ type Runner struct {
 
 // New validates cfg and returns a ready Runner.
 func New(cfg Config) (*Runner, error) {
-	if cfg.Executors == nil {
-		return nil, fmt.Errorf("runner: Executors is required")
-	}
 	if cfg.Worktrees == nil {
 		return nil, fmt.Errorf("runner: Worktrees is required")
-	}
-	if cfg.Credentials == nil {
-		return nil, fmt.Errorf("runner: Credentials is required")
 	}
 	if cfg.RunsDir == "" {
 		return nil, fmt.Errorf("runner: RunsDir is required")
@@ -162,6 +156,55 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	return r.walk(ctx, jr, in)
 }
 
+// executors holds the per-run invoke.* instances, constructed lazily on first
+// use and reused for the rest of the run. A deterministic executor is bound
+// once (§18 has no per-goober concept); an agentic executor is bound per
+// goober name, since one run can target more than one distinct goober (e.g.
+// "coder" for a task, "reviewer" for its gate) and each needs its own
+// instructions/model — but the SAME instance serves both a task's Invoke and
+// a paired gate's Review.
+type executors struct {
+	cfg Config
+	rec ArtifactRecorder
+
+	det    invoke.Deterministic
+	agents map[string]invoke.Goober
+}
+
+func newExecutors(cfg Config, rec ArtifactRecorder) *executors {
+	return &executors{cfg: cfg, rec: rec, agents: map[string]invoke.Goober{}}
+}
+
+func (e *executors) deterministic() (invoke.Deterministic, error) {
+	if e.det != nil {
+		return e.det, nil
+	}
+	if e.cfg.NewDeterministic == nil {
+		return nil, fmt.Errorf("runner: no NewDeterministic configured for a deterministic task")
+	}
+	det, err := e.cfg.NewDeterministic(e.rec)
+	if err != nil {
+		return nil, fmt.Errorf("runner: construct deterministic executor: %w", err)
+	}
+	e.det = det
+	return det, nil
+}
+
+func (e *executors) agentic(gooberName string) (invoke.Goober, error) {
+	if ag, ok := e.agents[gooberName]; ok {
+		return ag, nil
+	}
+	if e.cfg.NewAgentic == nil {
+		return nil, fmt.Errorf("runner: no NewAgentic configured for goober %q", gooberName)
+	}
+	ag, err := e.cfg.NewAgentic(gooberName, e.rec)
+	if err != nil {
+		return nil, fmt.Errorf("runner: construct agentic executor for goober %q: %w", gooberName, err)
+	}
+	e.agents[gooberName] = ag
+	return ag, nil
+}
+
 // walk advances the machine from its start state to a terminal state (or a
 // human-gate pause), journaling every stage/gate attempt and every artifact
 // produced along the way. Gate dispatch (bounded repass, escalation,
@@ -169,9 +212,9 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 // constructed once here — it MUST NOT be shared across runs (its repass
 // counters are run-scoped state), so a fresh one is built per walk.
 func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput) (Result, error) {
+	ex := newExecutors(r.cfg, jr)
 	gateEval := &gate.Evaluator{
 		Automated:   r.cfg.Automated,
-		Reviewer:    r.cfg.Reviewer,
 		Journal:     jr,
 		MaxRepasses: r.cfg.MaxRepasses,
 	}
@@ -190,7 +233,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput) (Resu
 		jr.SetMachineState(state)
 
 		if t, ok := in.Machine.Task(state); ok {
-			result, produced, err := r.runTask(ctx, jr, in, t, pointers)
+			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers)
 			if err != nil {
 				return Result{}, err
 			}
@@ -216,7 +259,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput) (Resu
 				return Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: steps}, nil
 			}
 
-			gr, err := r.evaluateGate(ctx, gateEval, in, g, lastStage, lastResult, pointers)
+			gr, err := r.evaluateGate(ctx, gateEval, ex, in, g, lastStage, lastResult, pointers)
 			if err != nil {
 				return Result{}, err
 			}
@@ -249,45 +292,56 @@ func (r *Runner) finish(jr *journal.Run, phase journal.RunPhase, finalState stri
 	return Result{Phase: phase, FinalState: finalState, Steps: steps}, nil
 }
 
-// runTask dispatches one task attempt: provisions its worktree, materializes
-// its declared capabilities' credentials, invokes the matching StageExecutor,
-// commits any produced artifacts to the journal, and journals the attempt.
-// Per the Temporal engine's established semantics, a task always flows to
-// Next regardless of its ResultStatus — a downstream gate is what branches;
-// only a genuine dispatch error (infra failure, not a business "failure"
-// status) aborts the run. Retries (deliverable B) will wrap this call.
-func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, t apiv1.Task, upstream []apiv1.ContextPointer) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+// runTask dispatches one task attempt: provisions its worktree, invokes the
+// matching invoke.Deterministic/invoke.Goober executor (which resolves its own
+// capability-scoped credentials and commits its own artifacts to the run
+// journal — see executor.go's ArtifactRecorder doc), and journals the
+// attempt. Per the Temporal engine's established semantics, a task always
+// flows to Next regardless of its ResultStatus — a downstream gate is what
+// branches; only a genuine dispatch error (infra failure, not a business
+// "failure" status) aborts the run. Retries (deliverable B) will wrap this
+// call.
+func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	const attempt = 1
 	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: t.Name, Attempt: attempt}); err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
 	}
 
-	executor, ok := r.cfg.Executors[t.Type]
-	if !ok {
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: no executor registered for task type %q (task %q)", t.Type, t.Name)
-	}
-
-	req, wt, err := r.prepareStage(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream)
+	env, wt, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: prepare stage %q: %w", t.Name, err)
 	}
 	defer func() { _ = wt.Remove(ctx, worktree.RemoveOptions{}) }()
 
-	out, err := executor.Execute(ctx, req)
+	var result apiv1.ResultEnvelope
+	switch t.Type {
+	case apiv1.TaskDeterministic:
+		if t.Run == nil {
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: task %q is deterministic but declares no DeterministicRun", t.Name)
+		}
+		det, derr := ex.deterministic()
+		if derr != nil {
+			return apiv1.ResultEnvelope{}, nil, derr
+		}
+		result, err = det.Run(ctx, env, *t.Run)
+	case apiv1.TaskAgentic:
+		ag, aerr := ex.agentic(t.Goober)
+		if aerr != nil {
+			return apiv1.ResultEnvelope{}, nil, aerr
+		}
+		result, err = ag.Invoke(ctx, env)
+	default:
+		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: task %q has unknown type %q", t.Name, t.Type)
+	}
 	if err != nil {
 		_ = jr.Append(journal.Event{Type: journal.EventError, Stage: t.Name, Error: &journal.ErrorDetail{Code: "executor_error", Message: err.Error()}})
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: execute stage %q: %w", t.Name, err)
 	}
 
-	result, produced, err := r.commitArtifacts(jr, t.Name, out)
-	if err != nil {
-		return apiv1.ResultEnvelope{}, nil, err
-	}
-
 	if err := jr.Append(journal.Event{Type: journal.EventStageFinished, Stage: t.Name, Attempt: attempt, Status: string(result.Status)}); err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal stage.finished for %q: %w", t.Name, err)
 	}
-	return result, produced, nil
+	return result, contextPointersFor(t.Name, result.Artifacts), nil
 }
 
 // evaluateGate dispatches one gate attempt through gateEval (internal/gate,
@@ -302,15 +356,15 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, t 
 // serialized, not journaled as such) purely so an agentic reviewer gate can
 // attach its artifacts as evidence ContextPointers (internal/gate/reviewer.go)
 // — that is a same-process function argument, not a stage-boundary crossing.
-func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer) (gate.Result, error) {
-	req, wt, err := r.prepareStage(ctx, in, g.Name, "gate: "+g.Name, nil, nil, upstream)
+func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer) (gate.Result, error) {
+	env, wt, err := r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, nil, upstream)
 	if err != nil {
 		return gate.Result{}, fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
 	}
 	defer func() { _ = wt.Remove(ctx, worktree.RemoveOptions{}) }()
 
-	env := req.Envelope
-	if g.Evaluator == apiv1.EvaluatorAutomated {
+	switch g.Evaluator {
+	case apiv1.EvaluatorAutomated:
 		if env.Inputs == nil {
 			env.Inputs = make(map[string]interface{}, 1+len(subjectResult.Outputs))
 		}
@@ -318,6 +372,20 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, in 
 		for k, v := range subjectResult.Outputs {
 			env.Inputs[k] = v
 		}
+	case apiv1.EvaluatorAgentic:
+		gooberName := ""
+		if g.Agentic != nil {
+			gooberName = g.Agentic.Goober
+		}
+		ag, aerr := ex.agentic(gooberName)
+		if aerr != nil {
+			return gate.Result{}, fmt.Errorf("runner: gate %q: %w", g.Name, aerr)
+		}
+		// Rebound per gate evaluated, not shared across gateEval's lifetime:
+		// different agentic gates in the same run may target different
+		// reviewer goobers. gate.Evaluator reads this field fresh on every
+		// Evaluate call, so mutating it here between calls is safe.
+		gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: ag}
 	}
 
 	result, err := gateEval.Evaluate(ctx, g, env, subjectStage, subjectResult)
@@ -327,13 +395,15 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, in 
 	return result, nil
 }
 
-// prepareStage provisions the isolated worktree, materializes capability-
-// scoped credentials, and builds the invocation envelope + StageRequest for
-// one stage attempt. The caller owns removing the returned worktree.
-func (r *Runner) prepareStage(ctx context.Context, in StartInput, stageName, goal string, taskInputs map[string]string, capabilities []string, upstream []apiv1.ContextPointer) (StageRequest, *worktree.Worktree, error) {
+// buildEnvelope provisions the isolated worktree and builds the invocation
+// envelope for one stage attempt. The caller owns removing the returned
+// worktree. Credentials are NOT resolved here — each invoke.Deterministic/
+// invoke.Goober executor resolves its own capability-scoped credentials from
+// env.Capabilities (see executor.go).
+func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, goal string, taskInputs map[string]string, capabilities []string, upstream []apiv1.ContextPointer) (apiv1.InvocationEnvelope, *worktree.Worktree, error) {
 	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 	if err != nil {
-		return StageRequest{}, nil, err
+		return apiv1.InvocationEnvelope{}, nil, err
 	}
 	baseRef := in.RepoRef.Branch
 	if baseRef == "" {
@@ -345,13 +415,7 @@ func (r *Runner) prepareStage(ctx context.Context, in StartInput, stageName, goa
 		BaseRef: baseRef,
 	})
 	if err != nil {
-		return StageRequest{}, nil, fmt.Errorf("create worktree: %w", err)
-	}
-
-	creds, err := r.cfg.Credentials.Materialize(ctx, capabilities)
-	if err != nil {
-		_ = wt.Remove(ctx, worktree.RemoveOptions{})
-		return StageRequest{}, nil, fmt.Errorf("materialize credentials: %w", err)
+		return apiv1.InvocationEnvelope{}, nil, fmt.Errorf("create worktree: %w", err)
 	}
 
 	inputs := make(map[string]interface{}, len(taskInputs))
@@ -371,38 +435,23 @@ func (r *Runner) prepareStage(ctx context.Context, in StartInput, stageName, goa
 		Capabilities:    capabilities,
 		Inputs:          inputs,
 	}
-	return StageRequest{Envelope: env, Credentials: creds}, wt, nil
+	return env, wt, nil
 }
 
-// commitArtifacts writes each of out.Produced into the journal by content
-// digest, folds the resulting ArtifactPointers into out.Result.Artifacts, and
-// builds the ContextPointers downstream stages will receive for them — named
-// "<stageName>/<artifact name>". This is the one place an executor's raw bytes
-// become the wire-visible ArtifactPointer type (#10); see executor.go's
-// StageOutput doc for why executors don't construct pointers themselves.
-//
-// V0 has no explicit data-flow declaration in the DSL yet, so every downstream
-// stage sees every artifact produced so far in the run — pointer only, never
-// the producing stage's full result (§2.4) — and picks out what it needs by
-// name.
-func (r *Runner) commitArtifacts(jr *journal.Run, stageName string, out StageOutput) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
-	result := out.Result
-	pointers := make([]apiv1.ContextPointer, 0, len(out.Produced))
-	for _, p := range out.Produced {
-		ref, err := jr.RecordArtifact(p.Name, p.Data)
-		if err != nil {
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: commit artifact %q for stage %q: %w", p.Name, stageName, err)
-		}
-		pointer := apiv1.ArtifactPointer{
-			Path:      ref.Path,
-			Digest:    ref.Digest,
-			Size:      ref.Size,
-			MediaType: p.MediaType,
-		}
-		result.Artifacts = append(result.Artifacts, pointer)
-		pointers = append(pointers, apiv1.ContextPointer{Name: stageName + "/" + p.Name, Artifact: &pointer})
+// contextPointersFor turns stageName's already-committed artifacts into the
+// ContextPointers downstream stages receive, named "<stageName>.artifact[i]"
+// (matching internal/gate/reviewer.go's evidencePointers naming). V0 has no
+// explicit data-flow declaration in the DSL yet, so every downstream stage
+// sees every artifact produced so far in the run — pointer only, never the
+// producing stage's full result (§2.4) — and picks out what it needs by
+// index/media type.
+func contextPointersFor(stageName string, artifacts []apiv1.ArtifactPointer) []apiv1.ContextPointer {
+	out := make([]apiv1.ContextPointer, 0, len(artifacts))
+	for i := range artifacts {
+		a := artifacts[i]
+		out = append(out, apiv1.ContextPointer{Name: fmt.Sprintf("%s.artifact[%d]", stageName, i), Artifact: &a})
 	}
-	return result, pointers, nil
+	return out
 }
 
 // defaultRepoCloneURL derives the git remote URL worktree.Manager clones from

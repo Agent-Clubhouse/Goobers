@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -18,26 +17,47 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
-// --- stub executors/evaluators (the "stub stage effects" issue #17 asks for) ---
+// --- stub executors (the "stub stage effects" issue #17 asks for), built
+// against the real invoke.Deterministic/invoke.Goober interfaces #18/#19
+// implement — not a bespoke seam of this package's own. ---
 
-// stubExecutor returns a canned StageOutput per task name, and echoes an
-// artifact whose content is the task's own name so downstream stages have
-// something concrete to resolve.
-type stubExecutor struct {
-	byTask map[string]StageOutput
+// stubTaskResult scripts one task's canned outcome, keyed by TaskID.
+type stubTaskResult struct {
+	status            apiv1.ResultStatus
+	summary           string
+	errorInfo         *apiv1.ErrorInfo
+	artifactName      string
+	artifactData      []byte
+	artifactMediaType string
 }
 
-func (s stubExecutor) Execute(_ context.Context, req StageRequest) (StageOutput, error) {
-	name := req.Envelope.TaskID
-	if out, ok := s.byTask[name]; ok {
-		return out, nil
+// stubDeterministic implements invoke.Deterministic like a real executor
+// would: it commits its own artifact to the run's journal (via the
+// ArtifactRecorder bound at construction) and returns a ResultEnvelope whose
+// Artifacts are already real ArtifactPointers — mirroring
+// internal/executor.ShellExecutor exactly, just without the shell.
+type stubDeterministic struct {
+	rec    ArtifactRecorder
+	byTask map[string]stubTaskResult
+}
+
+func (s *stubDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	cfg, ok := s.byTask[env.TaskID]
+	if !ok {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("stub executor: no canned output for %q", env.TaskID)
 	}
-	return StageOutput{}, fmt.Errorf("stub executor: no canned output for %q", name)
+	result := apiv1.ResultEnvelope{Status: cfg.status, Summary: cfg.summary, Error: cfg.errorInfo}
+	if cfg.artifactName != "" {
+		ref, err := s.rec.RecordArtifact(cfg.artifactName, cfg.artifactData)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		result.Artifacts = []apiv1.ArtifactPointer{{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: cfg.artifactMediaType,
+		}}
+	}
+	return result, nil
 }
-
-type nopRegistrar struct{}
-
-func (nopRegistrar) Register([]byte) {}
 
 // --- fixture repo: a local bare repo, so the test needs no network access ---
 
@@ -70,7 +90,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// --- fixture workflow: implement -> review (gate) -> pass/fail/needs-changes ---
+// --- fixture workflow: implement -> review (gate) -> pass/fail ---
 
 func fixtureMachine(t *testing.T) *workflow.Machine {
 	t.Helper()
@@ -79,7 +99,7 @@ func fixtureMachine(t *testing.T) *workflow.Machine {
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
 		Start:    "implement",
 		Tasks: []apiv1.Task{
-			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Next: "review"},
+			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "review"},
 		},
 		Gates: []apiv1.Gate{
 			{
@@ -100,31 +120,23 @@ func fixtureMachine(t *testing.T) *workflow.Machine {
 	return m
 }
 
-func newTestRunner(t *testing.T, executors Executors, automated invoke.Automated) (*Runner, string) {
+func newTestRunner(t *testing.T, byTask map[string]stubTaskResult, automated invoke.Automated) (*Runner, string) {
 	t.Helper()
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
 	if err != nil {
 		t.Fatalf("new worktree manager: %v", err)
 	}
-	resolver, err := credentials.NewResolver(nil)
-	if err != nil {
-		t.Fatalf("new resolver: %v", err)
-	}
-	injector, err := credentials.NewInjector(resolver, nil, nopRegistrar{})
-	if err != nil {
-		t.Fatalf("new injector: %v", err)
-	}
 	runsDir := filepath.Join(instanceRoot, "runs")
-
 	fixtureRepo := newFixtureRepo(t)
 
 	r, err := New(Config{
-		Executors:   executors,
-		Automated:   automated,
-		Worktrees:   wtMgr,
-		Credentials: injector,
-		RunsDir:     runsDir,
+		NewDeterministic: func(rec ArtifactRecorder) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: byTask}, nil
+		},
+		Automated: automated,
+		Worktrees: wtMgr,
+		RunsDir:   runsDir,
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
 			return fixtureRepo, nil
 		},
@@ -137,15 +149,13 @@ func newTestRunner(t *testing.T, executors Executors, automated invoke.Automated
 
 func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	machine := fixtureMachine(t)
-	executors := Executors{
-		apiv1.TaskDeterministic: stubExecutor{byTask: map[string]StageOutput{
-			"run-1:implement": {
-				Result:   apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "wrote a diff"},
-				Produced: []ProducedArtifact{{Name: "diff", Data: []byte("--- a\n+++ b\n"), MediaType: "text/x-patch"}},
-			},
-		}},
+	byTask := map[string]stubTaskResult{
+		"run-1:implement": {
+			status: apiv1.ResultSuccess, summary: "wrote a diff",
+			artifactName: "diff", artifactData: []byte("--- a\n+++ b\n"), artifactMediaType: "text/x-patch",
+		},
 	}
-	r, runsDir := newTestRunner(t, executors, gate.NewAutomatedEvaluator())
+	r, runsDir := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-1",
@@ -231,12 +241,10 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 
 func TestRunnerBranchesToAbortOnGateFail(t *testing.T) {
 	machine := fixtureMachine(t)
-	executors := Executors{
-		apiv1.TaskDeterministic: stubExecutor{byTask: map[string]StageOutput{
-			"run-2:implement": {Result: apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Error: &apiv1.ErrorInfo{Code: "build_failed", Message: "nope"}}},
-		}},
+	byTask := map[string]stubTaskResult{
+		"run-2:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "build_failed", Message: "nope"}},
 	}
-	r, _ := newTestRunner(t, executors, gate.NewAutomatedEvaluator())
+	r, _ := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-2",
@@ -271,7 +279,7 @@ func TestRunnerPausesAtHumanGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	r, runsDir := newTestRunner(t, Executors{}, nil)
+	r, runsDir := newTestRunner(t, nil, nil)
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-3",
