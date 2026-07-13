@@ -35,8 +35,18 @@ func (l *leakyDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, 
 // caught by the pattern net — even when it leaks into a field the runner
 // itself writes (an executor_error message), not an artifact the executor
 // scrubs and commits on its own.
+//
+// The token is deliberately opaque — no ghp_/AKIA/xox.../bearer-shaped
+// prefix — so this test can only pass via the registry-value redaction #66
+// wires in, never via journal's pattern-net fallback (a recognizable-shaped
+// token would pass on unfixed code too, giving false assurance; see the
+// negative control below).
 func TestRunnerJournalRedactsRegisteredSecretValue(t *testing.T) {
-	const token = "ghp_liveIssuedTokenValueThatMustNeverPersist"
+	const token = "Kf9wQ2mNpZ7-internal-issued-value-with-no-known-shape"
+
+	if scrubbed := journal.NewPatternScrubber().Scrub([]byte(token)); string(scrubbed) != token {
+		t.Fatalf("negative control failed: the pattern net alone already redacts this token (%q) — it can't isolate the registry fix", token)
+	}
 
 	machine := fixtureMachine(t)
 	instanceRoot := t.TempDir()
