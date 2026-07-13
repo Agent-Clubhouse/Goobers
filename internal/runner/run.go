@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
@@ -58,9 +59,7 @@ type Config struct {
 // Runner advances a compiled workflow.Machine stage-by-stage, durably
 // recording every transition to the run journal, and dispatching tasks
 // through the pre-existing internal/invoke seam. It is the substrate-neutral
-// local runner core (ARCHITECTURE.md §3.1) — deliverable A: seam +
-// deterministic walk. Retries, crash-resume, and cancellation (deliverable B)
-// build on top of this.
+// local runner core (ARCHITECTURE.md §3.1).
 type Runner struct {
 	cfg      Config
 	maxSteps int
@@ -106,10 +105,10 @@ type StartInput struct {
 	Item *apiv1.BacklogItem
 }
 
-// Result is a run's outcome as of the moment Start returns. A human gate
-// leaves the run non-terminal (Phase stays journal.PhaseRunning, FinalState is
-// the paused gate's name) — resuming past it is deliverable B's job; the
-// journal's state.json already checkpoints exactly where to pick up.
+// Result is a run's outcome as of the moment Start/Resume returns. A human
+// gate or a drained cancellation both leave the run non-terminal (Phase stays
+// journal.PhaseRunning, FinalState is where it paused) — the journal's
+// state.json already checkpoints exactly where to pick up next.
 type Result struct {
 	Phase      journal.RunPhase
 	FinalState string
@@ -118,11 +117,11 @@ type Result struct {
 
 // Start creates a new run journal pinned to the compiled machine's identity,
 // snapshots Item as an immutable input, and walks the machine to a terminal
-// state (or a human-gate pause). Start is synchronous — it returns once the
-// run reaches a terminal state or pauses at a human gate, which for a real
-// agentic stage may be minutes. A caller driving many runs (e.g. a scheduler)
-// should call Start in its own goroutine per run rather than block its own
-// dispatch loop on it.
+// state (or a human-gate/drain pause). Start is synchronous — it returns once
+// the run reaches a terminal state or pauses, which for a real agentic stage
+// may be minutes. A caller driving many runs (e.g. a scheduler) should call
+// Start in its own goroutine per run rather than block its own dispatch loop
+// on it.
 func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
@@ -162,7 +161,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	}
 	defer func() { _ = jr.Close() }()
 
-	return r.walk(ctx, jr, in, registrar)
+	return r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, registrar)
 }
 
 // executors holds the per-run invoke.* instances, constructed lazily on first
@@ -215,13 +214,29 @@ func (e *executors) agentic(gooberName string) (invoke.Goober, error) {
 	return ag, nil
 }
 
-// walk advances the machine from its start state to a terminal state (or a
-// human-gate pause), journaling every stage/gate attempt and every artifact
-// produced along the way. Gate dispatch (bounded repass, escalation,
+// resumeContext carries the one piece of resume-specific state walk needs: if
+// the checkpointed resume point is a task that was still in flight when the
+// runner was interrupted (crash or unclean shutdown), the interrupted attempt
+// number to journal as a terminal, infra-tagged failure before continuing —
+// see resume.go's interruptedAttempt. nil for a fresh Start; consumed (set to
+// nil) after its one use, so it never applies to a later dispatch of a
+// different stage.
+type resumeContext struct {
+	stage   string
+	attempt int
+}
+
+// walk advances the machine from startState to a terminal state (or a
+// human-gate/drain pause), journaling every stage/gate attempt and every
+// artifact produced along the way. Gate dispatch (bounded repass, escalation,
 // gate.evaluated journaling) is entirely owned by the gate.Evaluator
 // constructed once here — it MUST NOT be shared across runs (its repass
-// counters are run-scoped state), so a fresh one is built per walk.
-func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, reg SecretRegistrar) (Result, error) {
+// counters are run-scoped state), so a fresh one is built per walk. Start
+// always begins at the machine's declared start state with resume=nil;
+// Resume (resume.go) begins at the journal's checkpointed state, optionally
+// with a resumeContext for an interrupted task attempt. reg is the run's
+// SecretRegistrar (see Start), threaded to every executor constructed here.
+func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, reg SecretRegistrar) (Result, error) {
 	ex := newExecutors(r.cfg, jr, reg)
 	gateEval := &gate.Evaluator{
 		Automated:   r.cfg.Automated,
@@ -229,7 +244,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, reg S
 		MaxRepasses: r.cfg.MaxRepasses,
 	}
 
-	state := in.Machine.Def.Spec.Start
+	state := startState
 	var pointers []apiv1.ContextPointer
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
@@ -242,8 +257,40 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, reg S
 		}
 		jr.SetMachineState(state)
 
+		// Drain, don't abort, on cancellation (SIGTERM: internal/signals
+		// cancels this same ctx). Checked only BETWEEN stages — an in-flight
+		// dispatch below runs on context.WithoutCancel(ctx), so a signal never
+		// interrupts an attempt already underway; it only stops the NEXT one
+		// from starting. Checkpointing here (state.json already points at
+		// `state`, the next stage to run) is what makes this a resumable
+		// pause, not a failure: journal.Recover replays straight back to it.
+		if err := ctx.Err(); err != nil {
+			if cerr := jr.Checkpoint(); cerr != nil {
+				return Result{}, fmt.Errorf("runner: checkpoint drain at %q: %w", state, cerr)
+			}
+			return Result{Phase: journal.PhaseRunning, FinalState: state, Steps: steps}, nil
+		}
+
 		if t, ok := in.Machine.Task(state); ok {
-			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers)
+			startAttempt := int32(1)
+			if resume != nil && resume.stage == t.Name {
+				// The attempt in flight when the runner was interrupted is
+				// terminal now — journal it as a failed, infra-tagged attempt
+				// (never silently re-run, §17) before dispatching the next
+				// one, which continues the SAME attempt count (so a crash
+				// cannot grant a task more attempts than its own policy
+				// allows).
+				if err := jr.Append(journal.Event{
+					Type: journal.EventStageFinished, Stage: t.Name, Attempt: resume.attempt, AttemptClass: journal.AttemptInfra,
+					Status: string(apiv1.ResultFailure),
+					Error:  &journal.ErrorDetail{Code: "interrupted", Message: "attempt was in flight when the runner was interrupted"},
+				}); err != nil {
+					return Result{}, fmt.Errorf("runner: journal interrupted attempt for %q: %w", t.Name, err)
+				}
+				startAttempt = int32(resume.attempt) + 1
+				resume = nil
+			}
+			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, startAttempt)
 			if err != nil {
 				return Result{}, err
 			}
@@ -262,7 +309,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, reg S
 				// attempt runs and no event is appended, so checkpoint
 				// explicitly — Append's implicit checkpoint never fires on
 				// this path, and state.json must still point resume at this
-				// gate (deliverable B: resuming on the operator's decision).
+				// gate (resume on the operator's decision).
 				if err := jr.Checkpoint(); err != nil {
 					return Result{}, fmt.Errorf("runner: checkpoint pause at gate %q: %w", g.Name, err)
 				}
@@ -302,56 +349,125 @@ func (r *Runner) finish(jr *journal.Run, phase journal.RunPhase, finalState stri
 	return Result{Phase: phase, FinalState: finalState, Steps: steps}, nil
 }
 
-// runTask dispatches one task attempt: provisions its worktree, invokes the
+// runTask dispatches one task, retrying dispatch-level failures up to its
+// declared policy: provisions a fresh worktree per attempt, invokes the
 // matching invoke.Deterministic/invoke.Goober executor (which resolves its own
 // capability-scoped credentials and commits its own artifacts to the run
-// journal — see executor.go's ArtifactRecorder doc), and journals the
-// attempt. Per the Temporal engine's established semantics, a task always
-// flows to Next regardless of its ResultStatus — a downstream gate is what
-// branches; only a genuine dispatch error (infra failure, not a business
-// "failure" status) aborts the run. Retries (deliverable B) will wrap this
-// call.
-func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
-	const attempt = 1
-	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: t.Name, Attempt: attempt}); err != nil {
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
+// journal — see executor.go's ArtifactRecorder doc), and journals every
+// attempt distinctly, never overwriting history (§5). Per the Temporal
+// engine's established semantics, a SUCCESSFUL attempt's task always flows to
+// Next regardless of its business ResultStatus — a downstream gate is what
+// branches on that; only a genuine dispatch error (the executor returning a
+// Go error — infra failure, not a business "failure" status) triggers a
+// retry, and only Task.Retry's declared policy governs it.
+//
+// Dispatch runs on a context.WithoutCancel of ctx: a run-level cancellation
+// (SIGTERM) must let the CURRENT attempt — including any retries already in
+// flight for this same stage — finish and journal cleanly; walk only checks
+// ctx between stages, never mid-dispatch.
+//
+// startAttempt is normally 1; a resume past an interrupted attempt (resume.go)
+// passes the next attempt number instead, so the attempts a crash already
+// consumed still count against the task's own MaxAttempts budget — a crash
+// must never grant a task more attempts than its declared policy allows.
+func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, startAttempt int32) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+	attemptCtx := context.WithoutCancel(ctx)
+
+	maxAttempts := int32(1)
+	var backoff time.Duration
+	if t.Retry != nil {
+		if t.Retry.MaxAttempts > 0 {
+			maxAttempts = t.Retry.MaxAttempts
+		}
+		backoff = time.Duration(t.Retry.BackoffSeconds) * time.Second
+	}
+	if startAttempt > maxAttempts {
+		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: task %q has no attempts left after resume (interrupted attempt already exhausted its %d-attempt budget)", t.Name, maxAttempts)
 	}
 
+	var lastErr error
+	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
+		// The initial attempt carries no class and is always conformance-
+		// normative; a retry is tagged "policy" since Task.Retry drove it
+		// (journal §3.3 — "infra" is reserved for a crash-triggered resume
+		// retry, not this stage-declared policy loop).
+		var class journal.AttemptClass
+		if attempt > 1 {
+			class = journal.AttemptPolicy
+		}
+		if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: t.Name, Attempt: int(attempt), AttemptClass: class}); err != nil {
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
+		}
+
+		result, dispatchErr := r.dispatchTask(attemptCtx, in, ex, t, upstream)
+		if dispatchErr != nil {
+			lastErr = dispatchErr
+			_ = jr.Append(journal.Event{
+				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
+				Error: &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
+			})
+			if attempt < maxAttempts {
+				if backoff > 0 {
+					time.Sleep(backoff)
+				}
+				continue
+			}
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, attempt, maxAttempts)
+		}
+
+		if err := jr.Append(journal.Event{
+			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
+			Status: string(result.Status), Error: errorDetailFrom(result.Error),
+		}); err != nil {
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal stage.finished for %q: %w", t.Name, err)
+		}
+		return result, contextPointersFor(t.Name, result.Artifacts), nil
+	}
+	// Unreachable: maxAttempts >= 1 always executes the loop body at least
+	// once, and every path inside either returns or continues.
+	return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
+}
+
+// dispatchTask provisions one attempt's worktree and invokes the task's
+// executor. It never journals — runTask owns attempt/retry journaling so a
+// retried attempt is never mistaken for the run's overall outcome.
+func (r *Runner) dispatchTask(ctx context.Context, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer) (apiv1.ResultEnvelope, error) {
 	env, wt, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: prepare stage %q: %w", t.Name, err)
+		return apiv1.ResultEnvelope{}, fmt.Errorf("prepare stage %q: %w", t.Name, err)
 	}
 	defer func() { _ = wt.Remove(ctx, worktree.RemoveOptions{}) }()
 
-	var result apiv1.ResultEnvelope
 	switch t.Type {
 	case apiv1.TaskDeterministic:
 		if t.Run == nil {
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: task %q is deterministic but declares no DeterministicRun", t.Name)
+			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q is deterministic but declares no DeterministicRun", t.Name)
 		}
-		det, derr := ex.deterministic()
-		if derr != nil {
-			return apiv1.ResultEnvelope{}, nil, derr
+		det, err := ex.deterministic()
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
 		}
-		result, err = det.Run(ctx, env, *t.Run)
+		return det.Run(ctx, env, *t.Run)
 	case apiv1.TaskAgentic:
-		ag, aerr := ex.agentic(t.Goober)
-		if aerr != nil {
-			return apiv1.ResultEnvelope{}, nil, aerr
+		ag, err := ex.agentic(t.Goober)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
 		}
-		result, err = ag.Invoke(ctx, env)
+		return ag.Invoke(ctx, env)
 	default:
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: task %q has unknown type %q", t.Name, t.Type)
+		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type)
 	}
-	if err != nil {
-		_ = jr.Append(journal.Event{Type: journal.EventError, Stage: t.Name, Error: &journal.ErrorDetail{Code: "executor_error", Message: err.Error()}})
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: execute stage %q: %w", t.Name, err)
-	}
+}
 
-	if err := jr.Append(journal.Event{Type: journal.EventStageFinished, Stage: t.Name, Attempt: attempt, Status: string(result.Status)}); err != nil {
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal stage.finished for %q: %w", t.Name, err)
+// errorDetailFrom converts a stage's business-level error (apiv1.ErrorInfo,
+// part of its ResultEnvelope) into the journal's normative ErrorDetail
+// (Code+Message) so a failed/blocked stage's reason is actually visible in
+// the journal, not just its coarse Status string. nil in, nil out.
+func errorDetailFrom(e *apiv1.ErrorInfo) *journal.ErrorDetail {
+	if e == nil {
+		return nil
 	}
-	return result, contextPointersFor(t.Name, result.Artifacts), nil
+	return &journal.ErrorDetail{Code: e.Code, Message: e.Message}
 }
 
 // evaluateGate dispatches one gate attempt through gateEval (internal/gate,
@@ -367,6 +483,10 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 // attach its artifacts as evidence ContextPointers (internal/gate/reviewer.go)
 // — that is a same-process function argument, not a stage-boundary crossing.
 func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer) (gate.Result, error) {
+	// Same drain contract as runTask: a gate attempt already underway when
+	// SIGTERM cancels the run-level ctx finishes and journals cleanly.
+	ctx = context.WithoutCancel(ctx)
+
 	env, wt, err := r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, nil, upstream)
 	if err != nil {
 		return gate.Result{}, fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
