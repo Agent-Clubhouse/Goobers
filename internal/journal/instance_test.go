@@ -1,9 +1,12 @@
 package journal
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/goobers/goobers/api/validate"
 )
 
 func TestInstanceLogRoundTrip(t *testing.T) {
@@ -107,6 +110,56 @@ func TestInstanceLogRecoversTornTail(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Type != EventRepaired {
 		t.Fatalf("expected exactly one repaired event, got %+v", events)
+	}
+}
+
+// TestInstanceLogEmittedBytesMatchSchema is the InstanceLog counterpart to
+// TestEmittedBytesMatchSchema: it validates the instance journal's actual
+// on-disk event bytes against journal-event.schema.json, so the four
+// instance-only event types (and the workflow/runId/reason fields) can't
+// silently drift from the checked-in contract, matching #8's established
+// drift-guard pattern.
+func TestInstanceLogEmittedBytesMatchSchema(t *testing.T) {
+	v, err := validate.New()
+	if err != nil {
+		t.Fatalf("build validator: %v", err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	log, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range []Event{
+		{Type: EventTriggerFired, Workflow: "nominate", Reason: "scheduled"},
+		{Type: EventTriggerFired, Workflow: "nominate", Reason: "catch-up (missed 3)"},
+		{Type: EventTickSkipped, Workflow: "implement", Reason: "conditions: max-parallel"},
+		{Type: EventTickSkipped, Workflow: "implement", Reason: "conditions: budget"},
+		{Type: EventRunStarted, Workflow: "nominate", RunID: testIdentity().RunID},
+		{Type: EventRunFinished, Workflow: "nominate", RunID: testIdentity().RunID, Status: string(PhaseCompleted)},
+		{Type: EventClaimAcquired, Name: "issue-8", RunID: testIdentity().RunID, Workflow: "curate"},
+		{Type: EventClaimReleased, Name: "issue-8", RunID: testIdentity().RunID, Workflow: "curate"},
+	} {
+		if err := log.Append(ev); err != nil {
+			t.Fatalf("Append %s: %v", ev.Type, err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, fileEvents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n"))
+	if len(lines) == 0 {
+		t.Fatal("no instance log lines emitted")
+	}
+	for i, line := range lines {
+		if err := v.ValidateJSON("journal-event.schema.json", line); err != nil {
+			t.Errorf("instance log line %d fails schema: %v\n%s", i, err, line)
+		}
 	}
 }
 
