@@ -205,9 +205,10 @@ func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestReq
 	if err != nil {
 		return PullRequestResult{}, err
 	}
+	prBody := withRunIDFooter(req.Body, req.RunID)
 	body := map[string]interface{}{
 		"title": req.Title,
-		"body":  withRunIDFooter(req.Body, req.RunID),
+		"body":  prBody,
 		"head":  req.Head,
 		"base":  req.Base,
 		"draft": req.Draft,
@@ -216,16 +217,23 @@ func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestReq
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
 		return PullRequestResult{}, err
 	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, strconv.Itoa(out.Number)),
+		URL:       out.HTMLURL,
+		Operation: "open",
+		RunID:     req.RunID,
+		Fields: map[string]FieldDigest{
+			"title": {After: digestString(req.Title)},
+			"body":  {After: digestString(prBody)},
+		},
+	})
 	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
 }
 
 // PollPullRequest reports mergeability, review decision, combined check state,
-// and comments-since for a GitHub pull request (BL-031).
-//
-// TODO(#12/#8): rate-limit backoff and MutationRecorder/RateLimitObserver wiring
-// land once Goober-Dev-2's decoupled seams (#12) merge — coordinated in
-// #mission-gh-issues-provider so this doesn't fork the interface. Polling is a
-// read, so it does not emit a mutation event regardless.
+// and comments-since for a GitHub pull request (BL-031). A read, so it does not
+// emit a mutation event.
 func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPollRequest) (PullRequestPollResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return PullRequestPollResult{}, err
@@ -273,8 +281,6 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 
 // ClosePullRequest closes a GitHub pull request, detecting merged-vs-closed, and
 // optionally leaves a comment.
-//
-// TODO(#12/#8): MutationRecorder wiring lands once #12 merges (see PollPullRequest).
 func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return ClosePullRequestResult{}, err
@@ -300,9 +306,22 @@ func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequ
 		}
 	}
 	state := "closed"
+	operation := "close"
 	if out.Merged {
 		state = "merged"
+		operation = "merge"
 	}
+	fields := map[string]FieldDigest{"state": {After: digestString(state)}}
+	if req.Comment != "" {
+		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, req.PullID),
+		URL:       out.HTMLURL,
+		Operation: operation,
+		Fields:    fields,
+	})
 	return ClosePullRequestResult{Number: out.Number, Merged: out.Merged, State: state}, nil
 }
 
