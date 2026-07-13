@@ -102,3 +102,25 @@ func TestUnknownCheckErrors(t *testing.T) {
 		t.Fatal("want error for unknown check name")
 	}
 }
+
+func TestEvaluateVerdictMapsOutcomeToDecision(t *testing.T) {
+	e := NewAutomatedEvaluator()
+	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "success"}}
+	v, err := e.EvaluateVerdict(context.Background(), apiv1.AutomatedGate{Check: "status-equals"}, env)
+	if err != nil || v.Decision != apiv1.VerdictPass {
+		t.Fatalf("got %+v, %v; want VerdictPass", v, err)
+	}
+
+	env.Inputs[InputKeyStatus] = "failure"
+	v, err = e.EvaluateVerdict(context.Background(), apiv1.AutomatedGate{Check: "status-equals"}, env)
+	if err != nil || v.Decision != apiv1.VerdictFail {
+		t.Fatalf("got %+v, %v; want VerdictFail", v, err)
+	}
+}
+
+func TestEvaluateVerdictPropagatesError(t *testing.T) {
+	e := NewAutomatedEvaluator()
+	if _, err := e.EvaluateVerdict(context.Background(), apiv1.AutomatedGate{Check: "no-such-check"}, apiv1.InvocationEnvelope{}); err == nil {
+		t.Fatal("want error propagated from Evaluate")
+	}
+}

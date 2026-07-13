@@ -171,3 +171,27 @@ func (e *AutomatedEvaluator) Evaluate(_ context.Context, gate apiv1.AutomatedGat
 	}
 	return check(env.Inputs, gate.Params)
 }
+
+// EvaluateVerdict adapts Evaluate's outcome string into an apiv1.Verdict —
+// for callers that need a uniform Verdict from every gate evaluator kind
+// (e.g. the local runner's GateEvaluator seam, internal/runner#17, whose
+// Evaluate returns apiv1.Verdict for both automated and agentic gates so the
+// runner can branch on Decision uniformly). Only valid for checks that return
+// OutcomePass/OutcomeFail (every check in DefaultChecks does); a custom check
+// returning a different outcome string has no VerdictDecision to map to and
+// should be driven through Evaluate directly against a seam that accepts a
+// raw outcome (e.g. invoke.Automated), not through this method.
+func (e *AutomatedEvaluator) EvaluateVerdict(ctx context.Context, gate apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	outcome, err := e.Evaluate(ctx, gate, env)
+	if err != nil {
+		return apiv1.Verdict{}, err
+	}
+	decision := apiv1.VerdictFail
+	if outcome == OutcomePass {
+		decision = apiv1.VerdictPass
+	}
+	return apiv1.Verdict{
+		Decision: decision,
+		Summary:  fmt.Sprintf("automated check %q: %s", gate.Check, outcome),
+	}, nil
+}
