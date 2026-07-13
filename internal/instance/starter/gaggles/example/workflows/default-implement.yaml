@@ -1,0 +1,25 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  displayName: Default (implement-only)
+  # The default starter is an ordinary length-1, implement-only workflow shipped
+  # so a gaggle works immediately (WF-004). Author richer workflows (research,
+  # tests, reviewer gates) by adding tasks and gates.
+  triggers:
+    - type: backlog-item
+      selector:
+        goobers: "true"
+  readiness:
+    maxConcurrentRuns: 1
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement the backlog item and open a PR.
+      expectedOutputs:
+        - pull-request
+      # No `next` — this is the single, terminal state of the workflow.
