@@ -1,0 +1,22 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  displayName: Example
+  # The project codebase this gaggle works on. Point this at your own repo.
+  project:
+    provider: github
+    owner: your-org
+    name: your-repo
+    branch: main
+    connectionRef: repo-token
+  # The singleton backlog this gaggle draws work from (GAG-004).
+  backlog:
+    provider: github
+    project: your-org/your-repo
+    labels:
+      - goobers
+    connectionRef: repo-token
+  isolation:
+    namespace: gaggle-example

@@ -46,6 +46,23 @@ superseded skeletons kept per the quarantine plan (`docs/ARCHITECTURE.md §11`).
 Every binary shares `internal/app.Main`, which wires `--version`, structured logging
 (`--log-level`, `--log-format`), and SIGINT/SIGTERM-aware shutdown.
 
+## Quickstart (tier 1, local)
+
+```sh
+go build -o bin/goobers ./cmd/goobers    # or: make build
+
+bin/goobers init ./my-instance           # scaffold an instance root
+bin/goobers validate ./my-instance       # check instance.yaml + config/
+```
+
+`goobers init` scaffolds the instance root described in
+`docs/ARCHITECTURE.md §6` — `instance.yaml`, `config/` (seeded with a starter
+gaggle/goober/workflow), `runs/`, `scheduler/`, `workcopies/`, and a
+`telemetry.db` placeholder — and is safe to re-run (existing pieces are left
+untouched). Edit `instance.yaml` to point at your own repo and set the
+referenced token env var or file; edit `config/` to shape your workforce.
+`goobers up` (the daemon: scheduler + runner) lands in a later V0 mission.
+
 ## Developing
 
 ```sh
