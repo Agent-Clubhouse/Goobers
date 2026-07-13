@@ -71,9 +71,11 @@ gaggle/goober/workflow), `runs/`, `scheduler/`, `workcopies/`, and a
 `telemetry.db` placeholder — and is safe to re-run (existing pieces are left
 untouched). Edit `instance.yaml` to point at your own repo and set the
 referenced token env var or file; edit `config/` to shape your workforce.
-`goobers up` (the daemon: scheduler + runner) validates the instance today —
-the scheduler (#21) and local runner (#17) it drives are still landing, so
-`run` is the way to trigger work meanwhile. Full walkthrough:
+`goobers up` runs the daemon (embedded scheduler + local runner): it restarts
+any run interrupted by a prior crash via `Runner.Resume`, then drives
+scheduled workflows until interrupted, draining in-flight runs gracefully on
+SIGINT/SIGTERM. `run` remains the way to trigger one workflow manually
+without a daemon running. Full walkthrough:
 [`docs/guides/quickstart.md`](docs/guides/quickstart.md).
 
 ## Developing
