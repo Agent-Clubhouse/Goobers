@@ -69,3 +69,13 @@ func artifactPath(digest string) (string, error) {
 	}
 	return fmt.Sprintf("%s/%s/%s/%s", dirArtifacts, DigestAlgo, hexPart[:2], hexPart[2:]), nil
 }
+
+// spanPath is the fan-out storage path for a span blob, mirroring artifactPath
+// but rooted under spans/.
+func spanPath(digest string) (string, error) {
+	hexPart, err := digestHex(digest)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s/%s/%s/%s", dirSpans, DigestAlgo, hexPart[:2], hexPart[2:]), nil
+}

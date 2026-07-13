@@ -28,6 +28,7 @@
         "stage.finished",
         "gate.evaluated",
         "artifact.recorded",
+        "span.recorded",
         "input.snapshot",
         "ref.touched",
         "error",
