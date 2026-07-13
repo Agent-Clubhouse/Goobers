@@ -137,6 +137,13 @@ func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 
 func TestShellExecutor_CanarySecretNeverInCapturedOutput(t *testing.T) {
 	const canary = "s3cr3t-canary-token-value"
+	// Negative control: this canary must NOT be a shape the pattern-net catches
+	// on its own, or a passing test below wouldn't prove the registry scrubber
+	// (which redacts by exact registered value) is what's doing the work.
+	if got := journal.NewPatternScrubber().Scrub([]byte(canary)); string(got) != canary {
+		t.Fatalf("test setup: canary %q is pattern-net-catchable (scrubbed to %q) — this test would pass even if registry scrubbing were broken; use an opaque value with no recognizable credential shape", canary, got)
+	}
+
 	injector := newTestInjector(t, "test:cap", "GOOBERS_TEST_CANARY", canary)
 	exec, rec := newTestExecutor(t, injector)
 	env := baseEnvelope(t)
