@@ -1,0 +1,15 @@
+# Code owners for Goobers.
+# Owners are requested for review automatically and, once branch protection (#3)
+# requires CODEOWNER review, must approve before merge.
+# Order matters: the last matching pattern wins.
+#
+# NOTE: as the project grows, replace @masra91 with an org team
+# (e.g. @Agent-Clubhouse/maintainers) so ownership isn't tied to one account.
+
+# Default owner for everything in the repo.
+*                       @masra91
+
+# Build/CI tooling — the enforced merge gate.
+/.github/               @masra91
+/Makefile               @masra91
+/.golangci.yml          @masra91
