@@ -789,6 +789,92 @@ func TestRunnerResumeAlreadyTerminalIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestRunnerResumeRestoresGateRepassCounter is #89's acceptance scenario: a
+// crash mid repass-loop must not grant the gate extra passes beyond its
+// budget. The fixture's "review" gate loops "fail" back to "implement"
+// (rather than aborting), so a broken seed would let the resumed run take a
+// second full pass before escalating instead of escalating immediately.
+func TestRunnerResumeRestoresGateRepassCounter(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "review"},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "review",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+				Branches:  map[string]string{"pass": workflow.TerminalComplete, "fail": "implement"},
+			},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "repass-loop", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	byTask := map[string]stubTaskResult{
+		"run-repass:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "x", Message: "always fails"}},
+	}
+	r, runsDir := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+	r.cfg.MaxRepasses = 1 // a 2nd non-pass evaluation must escalate
+
+	// Hand-build a journal at the point a real Start would have reached had
+	// the process died right after journaling "review"'s first fail (attempt
+	// 1, not yet escalated) and looping back to "implement" for a 2nd pass —
+	// mirroring simulateCrashMidAttempt's pattern for task attempts.
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-repass", Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("implement")
+	if err := jr.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: "implement",
+		Runner: map[string]any{"repassAttempt": 1, "escalated": false},
+	}); err != nil {
+		t.Fatalf("append gate.evaluated: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	res, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-repass",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated (seeded repass count should exhaust the budget on the very next evaluation)", res.Phase)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-repass"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	gateEvals := 0
+	for _, e := range events {
+		if e.Type == journal.EventGateEvaluated {
+			gateEvals++
+		}
+	}
+	if gateEvals != 2 {
+		t.Fatalf("gate.evaluated count = %d, want 2 (1 pre-crash + exactly 1 post-resume before escalating) — a broken repass seed would allow extra passes before escalating", gateEvals)
+	}
+}
+
 func eventTypesEqual(got, want []journal.EventType) bool {
 	if len(got) != len(want) {
 		return false
