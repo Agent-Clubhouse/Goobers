@@ -30,12 +30,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Track the toolchain declared in go.mod (currently go 1.26) rather than a
       # hardcoded version, so CI can't drift from the module's `go` directive.
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -58,7 +58,7 @@ jobs:
       # coverage *gate* is `make cover-check`, intentionally separate from `ci`).
       - name: Upload coverage profile
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: coverage
           path: coverage.out
