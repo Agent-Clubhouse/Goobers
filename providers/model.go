@@ -11,6 +11,14 @@ const (
 	ProviderADO    ProviderKind = "ado"
 )
 
+// Goobers marker labels applied to backlog items. The claim label mirrors the
+// runner's lease for human visibility (BL-032); the ready label is the curated
+// marker meaning an item is scoped and eligible for implementation.
+const (
+	LabelClaimed = "goobers:claimed"
+	LabelReady   = "goobers:ready"
+)
+
 // WorkItemStatus is the Goobers processing status mirrored to backlog items.
 type WorkItemStatus string
 
@@ -65,6 +73,15 @@ func (w WorkItem) HasLabel(label string) bool {
 		}
 	}
 	return false
+}
+
+// Comment is a comment on a backlog work item (a GitHub issue comment).
+type Comment struct {
+	ID        string     `json:"id"`
+	Author    string     `json:"author,omitempty"`
+	Body      string     `json:"body"`
+	CreatedAt *time.Time `json:"createdAt,omitempty"`
+	URL       string     `json:"url,omitempty"`
 }
 
 // RepositoryRef identifies a repository in a provider backend.
@@ -166,7 +183,51 @@ type ListWorkItemsRequest struct {
 	Repository RepositoryRef `json:"repository"`
 	Labels     []string      `json:"labels,omitempty"`
 	State      string        `json:"state,omitempty"`
-	Limit      int           `json:"limit,omitempty"`
+	Assignee   string        `json:"assignee,omitempty"`
+	// UpdatedSince, when set, restricts results to items updated at or after it.
+	UpdatedSince *time.Time `json:"updatedSince,omitempty"`
+	Limit        int        `json:"limit,omitempty"`
+	// Page selects a 1-based page for stable pagination; 0 means the first page.
+	Page int `json:"page,omitempty"`
+}
+
+// UpdateWorkItemRequest is a general backlog item edit: title/body edits, label
+// add/remove, open/close, and an optional comment. Fields left nil/empty are
+// unchanged, so callers touch only what they intend to.
+type UpdateWorkItemRequest struct {
+	Repository   RepositoryRef `json:"repository"`
+	ID           string        `json:"id"`
+	Title        *string       `json:"title,omitempty"`
+	Body         *string       `json:"body,omitempty"`
+	AddLabels    []string      `json:"addLabels,omitempty"`
+	RemoveLabels []string      `json:"removeLabels,omitempty"`
+	// State, when set, opens or closes the item ("open" or "closed").
+	State   string `json:"state,omitempty"`
+	Comment string `json:"comment,omitempty"`
+}
+
+// ClaimWorkItemRequest requests a best-effort claiming marker on an item so
+// concurrent runs observing the backlog do not double-process it (WF-031, BL-032).
+// The runner's lease ledger remains the claim source of truth (BL-005); this marker
+// mirrors it for human visibility and cross-run signaling.
+type ClaimWorkItemRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	ID         string        `json:"id"`
+	// RunID identifies the claiming run; it is written into the claim breadcrumb so
+	// exactly one run is recognized as the winner under a race.
+	RunID string `json:"runId"`
+	// ClaimLabel overrides the claiming label; defaults to LabelClaimed.
+	ClaimLabel string `json:"claimLabel,omitempty"`
+}
+
+// ClaimResult reports the outcome of a claim attempt.
+type ClaimResult struct {
+	// Claimed is true when RunID is the recognized winner of the claim.
+	Claimed bool `json:"claimed"`
+	// ClaimedBy is the run id of the recognized winner (may differ from RunID when
+	// another run claimed first).
+	ClaimedBy string   `json:"claimedBy,omitempty"`
+	Item      WorkItem `json:"item"`
 }
 
 // CreateWorkItemRequest describes a backlog item to create.

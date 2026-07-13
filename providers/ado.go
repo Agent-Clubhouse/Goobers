@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -9,6 +10,10 @@ import (
 	"strings"
 	"time"
 )
+
+// errADOBacklogV1 marks the extended backlog operations that reach ADO parity in
+// V1 (BL-033); the V0 workload runs on GitHub only.
+var errADOBacklogV1 = errors.New("ado: extended backlog operations (comments, general update, claim) land in V1 (BL-033)")
 
 // ADOProvider implements repo, backlog, and trigger operations for Azure DevOps.
 type ADOProvider struct {
@@ -301,6 +306,22 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 		return WorkItem{}, err
 	}
 	return mapADOWorkItem(out), nil
+}
+
+// ListComments reaches parity in V1 (BL-033); the ADO discussion-thread mapping
+// is not part of the V0 GitHub workload.
+func (p *ADOProvider) ListComments(context.Context, RepositoryRef, string) ([]Comment, error) {
+	return nil, errADOBacklogV1
+}
+
+// UpdateWorkItem reaches parity in V1 (BL-033).
+func (p *ADOProvider) UpdateWorkItem(context.Context, UpdateWorkItemRequest) (WorkItem, error) {
+	return WorkItem{}, errADOBacklogV1
+}
+
+// ClaimWorkItem reaches parity in V1 (BL-033).
+func (p *ADOProvider) ClaimWorkItem(context.Context, ClaimWorkItemRequest) (ClaimResult, error) {
+	return ClaimResult{}, errADOBacklogV1
 }
 
 // Subscribe emits Azure Boards backlog item availability events.

@@ -19,20 +19,65 @@ type GitHubProvider struct {
 	Token   string
 	Client  HTTPClient
 	Runner  CommandRunner
+
+	// tokenSource, when set, resolves the token per request (issue #14 seam);
+	// otherwise Token is used.
+	tokenSource TokenSource
+	// recorder receives "external ref touched" facts for the run journal.
+	recorder MutationRecorder
+	// rateObserver receives rate-limit backoff signals for telemetry.
+	rateObserver RateLimitObserver
+	// maxRetries bounds rate-limit retries on a single request.
+	maxRetries int
+	// now and sleep are injectable for deterministic rate-limit tests.
+	now   func() time.Time
+	sleep func(context.Context, time.Duration) error
 }
 
 // NewGitHubProvider constructs a GitHub provider with optional overrides.
 func NewGitHubProvider(token string, opts ...func(*GitHubProvider)) *GitHubProvider {
 	p := &GitHubProvider{
-		BaseURL: "https://api.github.com",
-		Token:   token,
+		BaseURL:    "https://api.github.com",
+		Token:      token,
+		maxRetries: defaultRateLimitRetries,
+		now:        time.Now,
+		sleep:      contextSleep,
 	}
 	for _, opt := range opts {
 		opt(p)
 	}
 	p.Client = httpClientOrDefault(p.Client)
 	p.Runner = commandRunnerOrDefault(p.Runner)
+	if p.now == nil {
+		p.now = time.Now
+	}
+	if p.sleep == nil {
+		p.sleep = contextSleep
+	}
 	return p
+}
+
+// WithTokenSource resolves the access token per request from the given source
+// (issue #14 token-source seam) instead of the statically injected token.
+func WithTokenSource(source TokenSource) func(*GitHubProvider) {
+	return func(p *GitHubProvider) { p.tokenSource = source }
+}
+
+// WithMutationRecorder records every provider-side mutation as an external-ref
+// touched fact for the run journal.
+func WithMutationRecorder(recorder MutationRecorder) func(*GitHubProvider) {
+	return func(p *GitHubProvider) { p.recorder = recorder }
+}
+
+// WithRateLimitObserver receives rate-limit backoff signals for telemetry.
+func WithRateLimitObserver(observer RateLimitObserver) func(*GitHubProvider) {
+	return func(p *GitHubProvider) { p.rateObserver = observer }
+}
+
+// WithMaxRateLimitRetries overrides how many times a rate-limited request is
+// retried before the error is surfaced.
+func WithMaxRateLimitRetries(n int) func(*GitHubProvider) {
+	return func(p *GitHubProvider) { p.maxRetries = n }
 }
 
 // Kind returns the GitHub provider kind.
@@ -206,8 +251,17 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 	if len(req.Labels) > 0 {
 		values.Set("labels", strings.Join(req.Labels, ","))
 	}
+	if req.Assignee != "" {
+		values.Set("assignee", req.Assignee)
+	}
+	if req.UpdatedSince != nil {
+		values.Set("since", req.UpdatedSince.UTC().Format(time.RFC3339))
+	}
 	if req.Limit > 0 {
 		values.Set("per_page", strconv.Itoa(req.Limit))
+	}
+	if req.Page > 0 {
+		values.Set("page", strconv.Itoa(req.Page))
 	}
 	endpoint, err = addQuery(endpoint, values)
 	if err != nil {
@@ -219,6 +273,11 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 	}
 	items := make([]WorkItem, 0, len(issues))
 	for _, issue := range issues {
+		// The GitHub issues endpoint also returns pull requests; a backlog issues
+		// query excludes them (PRs are the repo provider's surface, issue #13).
+		if issue.PullRequest != nil {
+			continue
+		}
 		items = append(items, mapGitHubIssue(issue))
 	}
 	return items, nil
@@ -344,8 +403,12 @@ func (p *GitHubProvider) contentSHA(ctx context.Context, endpoint string) (strin
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if p.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+p.Token)
+	token, err := p.resolveToken(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := httpClientOrDefault(p.Client).Do(req)
 	if err != nil {
@@ -381,16 +444,69 @@ func (p *GitHubProvider) getGitHubRef(ctx context.Context, repo RepositoryRef, r
 }
 
 func (p *GitHubProvider) do(ctx context.Context, method, endpoint string, body interface{}, out interface{}) error {
-	req, err := newJSONRequest(ctx, method, endpoint, body)
-	if err != nil {
-		return err
+	return p.doStatus(ctx, method, endpoint, body, out, nil)
+}
+
+// doStatus performs a GitHub request with rate-limit-aware retries. Status codes in
+// allowStatus are treated as success (used to tolerate a 404 when removing a label
+// that is not present); the response body is not decoded for those.
+func (p *GitHubProvider) doStatus(ctx context.Context, method, endpoint string, body, out interface{}, allowStatus []int) error {
+	for attempt := 0; ; attempt++ {
+		req, err := newJSONRequest(ctx, method, endpoint, body)
+		if err != nil {
+			return err
+		}
+		token, err := p.resolveToken(ctx)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := httpClientOrDefault(p.Client).Do(req)
+		if err != nil {
+			return fmt.Errorf("send request: %w", err)
+		}
+		if isRateLimited(resp) && attempt < p.maxRetries {
+			wait, ev := p.rateLimitPlan(resp, endpoint, attempt)
+			_ = resp.Body.Close()
+			p.observeRateLimit(ctx, ev)
+			if err := p.sleep(ctx, wait); err != nil {
+				return err
+			}
+			continue
+		}
+		for _, code := range allowStatus {
+			if resp.StatusCode == code {
+				_ = resp.Body.Close()
+				return nil
+			}
+		}
+		return readJSONResponse(resp, method, endpoint, out)
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if p.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+p.Token)
+}
+
+// resolveToken returns the per-request token from the token source when configured,
+// falling back to the statically injected token.
+func (p *GitHubProvider) resolveToken(ctx context.Context) (string, error) {
+	if p.tokenSource != nil {
+		return p.tokenSource.Token(ctx)
 	}
-	return doJSON(httpClientOrDefault(p.Client), req, out)
+	return p.Token, nil
+}
+
+func (p *GitHubProvider) recordExternalRef(ctx context.Context, ref ExternalRef) {
+	if p.recorder != nil {
+		p.recorder.RecordExternalRef(ctx, ref)
+	}
+}
+
+func (p *GitHubProvider) observeRateLimit(ctx context.Context, ev RateLimitEvent) {
+	if p.rateObserver != nil {
+		p.rateObserver.ObserveRateLimit(ctx, ev)
+	}
 }
 
 type githubIssue struct {
@@ -404,6 +520,13 @@ type githubIssue struct {
 	Assignees []githubUser  `json:"assignees"`
 	Milestone *githubNode   `json:"milestone"`
 	UpdatedAt *time.Time    `json:"updated_at"`
+	// PullRequest is non-nil when this "issue" is actually a pull request.
+	PullRequest *githubPullRequestLink `json:"pull_request"`
+}
+
+// githubPullRequestLink marks an issues-endpoint entry as a pull request.
+type githubPullRequestLink struct {
+	URL string `json:"url"`
 }
 
 type githubLabel struct {
