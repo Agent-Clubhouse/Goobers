@@ -140,6 +140,15 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		inputs["item"] = b
 	}
 
+	// registrar/scrubber are fresh per run (never shared — a run's secrets
+	// have no business outliving it in an in-memory registry). Chaining the
+	// registry ahead of the pattern net (#66) means any secret this run's
+	// executors resolve (registered via registrar, threaded to
+	// NewDeterministic/NewAgentic below) is redacted from this run's journal
+	// by exact value — not just pattern-matched — even for events the runner
+	// itself authors (e.g. an executor_error message), not only the
+	// artifacts an executor scrubs and commits itself.
+	registrar, scrubber := journal.DefaultScrubber()
 	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{
 		RunID:           in.RunID,
 		Workflow:        in.Machine.Def.Name,
@@ -147,13 +156,13 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		WorkflowDigest:  in.Machine.Digest(),
 		Gaggle:          in.Gaggle,
 		Trigger:         in.Trigger,
-	}, inputs)
+	}, inputs, journal.WithScrubber(scrubber))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: create journal for run %q: %w", in.RunID, err)
 	}
 	defer func() { _ = jr.Close() }()
 
-	return r.walk(ctx, jr, in)
+	return r.walk(ctx, jr, in, registrar)
 }
 
 // executors holds the per-run invoke.* instances, constructed lazily on first
@@ -166,13 +175,14 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 type executors struct {
 	cfg Config
 	rec ArtifactRecorder
+	reg SecretRegistrar
 
 	det    invoke.Deterministic
 	agents map[string]invoke.Goober
 }
 
-func newExecutors(cfg Config, rec ArtifactRecorder) *executors {
-	return &executors{cfg: cfg, rec: rec, agents: map[string]invoke.Goober{}}
+func newExecutors(cfg Config, rec ArtifactRecorder, reg SecretRegistrar) *executors {
+	return &executors{cfg: cfg, rec: rec, reg: reg, agents: map[string]invoke.Goober{}}
 }
 
 func (e *executors) deterministic() (invoke.Deterministic, error) {
@@ -182,7 +192,7 @@ func (e *executors) deterministic() (invoke.Deterministic, error) {
 	if e.cfg.NewDeterministic == nil {
 		return nil, fmt.Errorf("runner: no NewDeterministic configured for a deterministic task")
 	}
-	det, err := e.cfg.NewDeterministic(e.rec)
+	det, err := e.cfg.NewDeterministic(e.rec, e.reg)
 	if err != nil {
 		return nil, fmt.Errorf("runner: construct deterministic executor: %w", err)
 	}
@@ -197,7 +207,7 @@ func (e *executors) agentic(gooberName string) (invoke.Goober, error) {
 	if e.cfg.NewAgentic == nil {
 		return nil, fmt.Errorf("runner: no NewAgentic configured for goober %q", gooberName)
 	}
-	ag, err := e.cfg.NewAgentic(gooberName, e.rec)
+	ag, err := e.cfg.NewAgentic(gooberName, e.rec, e.reg)
 	if err != nil {
 		return nil, fmt.Errorf("runner: construct agentic executor for goober %q: %w", gooberName, err)
 	}
@@ -211,8 +221,8 @@ func (e *executors) agentic(gooberName string) (invoke.Goober, error) {
 // gate.evaluated journaling) is entirely owned by the gate.Evaluator
 // constructed once here — it MUST NOT be shared across runs (its repass
 // counters are run-scoped state), so a fresh one is built per walk.
-func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput) (Result, error) {
-	ex := newExecutors(r.cfg, jr)
+func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, reg SecretRegistrar) (Result, error) {
+	ex := newExecutors(r.cfg, jr, reg)
 	gateEval := &gate.Evaluator{
 		Automated:   r.cfg.Automated,
 		Journal:     jr,
