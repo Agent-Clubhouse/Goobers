@@ -71,6 +71,18 @@ source and the enforcement mechanism of its write-boundary vary by tier.
   (journals/traces/patterns) that motivated it.
 - **TUT-008 (SHOULD):** The Tutor SHOULD assess whether prior changes helped (closing the
   loop on its own edits) to avoid churn/regressions.
+- **TUT-010 (MUST):** Detection MUST cover all four finding families — **failure
+  patterns**, **waste** (duration/token/cost, retry waste), **gate noise** (gates that
+  never fail, repetitive reviewer feedback), and **coverage gaps** (missing
+  workflows/stages/tests) — per the detection catalog in
+  `../design/v1/observability-substrate.md` (D7). The waste family depends on usage
+  accounting (`TEL-041`).
+- **TUT-011 (SHOULD):** Tutor proposals SHOULD span the full config surface, e.g.:
+  adding test or gate stages; changing a goober's skills, instructions, stage
+  prompts (`goal`), or **model** (requires the `Goober.spec.model` field — design
+  D9); adding or removing entire workflows to cover gaps; removing or loosening
+  noisy gates. The Tutor also reads the declarative workflow/goober definitions
+  themselves as input (`config` read access) — evidence-linked per `TUT-007`.
 
 ## Relationships
 
