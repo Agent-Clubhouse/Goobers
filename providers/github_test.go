@@ -499,6 +499,71 @@ func TestGitHubProviderClosePullRequestUnmerged(t *testing.T) {
 	}
 }
 
+func TestGitHubProviderOpenPullRequestRecordsMutation(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"number": 9, "html_url": "https://github.com/acme/app/pull/9"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	rec := &recordingRecorder{}
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL }, WithMutationRecorder(rec))
+	_, err := provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+		Title:      "Implement #13", Body: "Adds PR polling.", Head: "goobers/impl/run-1", Base: "main", RunID: "run-1",
+	})
+	if err != nil {
+		t.Fatalf("OpenPullRequest returned error: %v", err)
+	}
+	ref, ok := rec.last()
+	if !ok {
+		t.Fatalf("expected a recorded external ref")
+	}
+	if ref.Ref != "acme/app#9" || ref.Operation != "open" || ref.RunID != "run-1" {
+		t.Fatalf("ref = %#v", ref)
+	}
+	if _, ok := ref.Fields["body"]; !ok {
+		t.Fatalf("expected body field digest, got %#v", ref.Fields)
+	}
+}
+
+func TestGitHubProviderClosePullRequestRecordsMergeVsClose(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		merged    bool
+		operation string
+	}{
+		{"merged", true, "merge"},
+		{"closed", false, "close"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, map[string]interface{}{"number": 9, "state": "closed", "merged": tc.merged, "html_url": "https://github.com/acme/app/pull/9"})
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			rec := &recordingRecorder{}
+			provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL }, WithMutationRecorder(rec))
+			_, err := provider.ClosePullRequest(context.Background(), ClosePullRequestRequest{
+				Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
+			})
+			if err != nil {
+				t.Fatalf("ClosePullRequest returned error: %v", err)
+			}
+			ref, ok := rec.last()
+			if !ok {
+				t.Fatalf("expected a recorded external ref")
+			}
+			if ref.Operation != tc.operation {
+				t.Fatalf("Operation = %q, want %q", ref.Operation, tc.operation)
+			}
+		})
+	}
+}
+
 func writeJSON(t *testing.T, w http.ResponseWriter, value interface{}) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
