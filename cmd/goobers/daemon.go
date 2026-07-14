@@ -284,8 +284,13 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 		if err != nil {
 			continue
 		}
-		if st, err := rd.State(); err == nil {
-			switch st.Phase {
+		// Event-log-first (#242): state.json can lag a crash-fsynced
+		// run.finished event, so Phase() (reconstructed from the log) is
+		// what decides whether this run is actually terminal — trusting
+		// the checkpoint directly here risks spinning up a resume
+		// goroutine for a run that already finished.
+		if phase, err := rd.Phase(); err == nil {
+			switch phase {
 			case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
 				continue // terminal: nothing to resume
 			}

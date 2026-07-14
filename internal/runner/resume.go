@@ -33,9 +33,12 @@ type ResumeInput struct {
 // Resume reopens an interrupted run's journal (journal.Recover — replays the
 // event log and repairs any torn final write left by a crash mid-append),
 // verifies it is still pinned to Machine's exact digest, and continues the
-// walk from state.json's checkpointed MachineState. A run already at a
-// terminal phase returns that phase immediately without re-walking — Resume
-// is safe to call on a run that turns out to have already finished.
+// walk from a checkpointed MachineState. A run already at a terminal phase
+// returns that phase immediately without re-walking — Resume is safe to
+// call on a run that turns out to have already finished. That terminal
+// check, and the MachineState it resumes from, are both event-log-first
+// (#242): state.json is read only as a checked hint, never a requirement —
+// see rd.Phase() and the MachineState fallback below.
 //
 // If the checkpointed state names a task, and that task's last attempt has a
 // stage.started event with no matching stage.finished, the runner was
@@ -105,16 +108,24 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		return Result{}, fmt.Errorf("runner: run %q is pinned to workflow digest %q, cannot resume against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest())
 	}
 
-	st, err := rd.State()
+	// Terminal detection is event-log-first (#242): the on-disk state.json
+	// checkpoint can lag a crash-fsynced run.finished event by the write
+	// window inside Append (the event's own fsync, then the checkpoint
+	// rename that follows it in the same call — a crash between the two
+	// leaves state.json still claiming {running, <last stage/gate>}), so
+	// trusting it directly for the terminal decision risks re-executing
+	// side effects (a re-evaluated gate re-dispatching implement/open-pr)
+	// or a duplicate NotifyEscalated call. Phase() reconstructs straight
+	// from the event log — the source of truth — so it stays correct
+	// regardless of whether state.json ever caught up, and a missing or
+	// corrupt checkpoint no longer fails Resume outright.
+	phase, err := rd.Phase()
 	if err != nil {
-		return Result{}, fmt.Errorf("runner: read state.json for run %q: %w", in.RunID, err)
+		return Result{}, fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)
 	}
-	switch st.Phase {
+	switch phase {
 	case journal.PhaseCompleted, journal.PhaseAborted, journal.PhaseEscalated, journal.PhaseFailed:
-		return Result{Phase: st.Phase}, nil
-	}
-	if st.MachineState == "" {
-		return Result{}, fmt.Errorf("runner: run %q has no checkpointed machine state to resume from", in.RunID)
+		return Result{Phase: phase}, nil
 	}
 
 	events, err := rd.Events()
@@ -131,7 +142,27 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	lastStage, lastResult, hasLast := lastFinishedSubject(events)
 	seed.lastStage, seed.lastResult = lastStage, lastResult
 
-	startState := st.MachineState
+	// state.json's MachineState is a checked hint, not a requirement
+	// (#242): read it when available, but a missing/corrupt checkpoint no
+	// longer fails Resume. The fallback exploits the exact timing
+	// state.json itself relies on — SetMachineState is only reassigned to
+	// the NEXT state after the post-runTask transition decision (see the
+	// SetMachineState-timing note below) — so at the instant of a crash
+	// MachineState always still names the stage that just finished, i.e.
+	// exactly lastStage. A run interrupted before its first
+	// stage.finished (hasLast false) falls back to the machine's own
+	// declared start state — the same state Start() itself begins at.
+	var startState string
+	if st, serr := rd.State(); serr == nil {
+		startState = st.MachineState
+	}
+	if startState == "" {
+		if hasLast {
+			startState = lastStage
+		} else {
+			startState = in.Machine.Def.Spec.Start
+		}
+	}
 	var resume *resumeContext
 	if t, isTask := in.Machine.Task(startState); isTask {
 		if attempt := interruptedAttempt(events, startState); attempt > 0 {
