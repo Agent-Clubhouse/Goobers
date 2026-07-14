@@ -206,13 +206,22 @@ func readEvents(path string) ([]Event, int, error) {
 	sc.Buffer(make([]byte, 0, 64*1024), maxEventBytes)
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
+		// NUL bytes are never part of a scrubbed JSON event line — they are crash
+		// zero-fill left by an interrupted append. Leading fill appears when a
+		// prior NUL tail was not truncated and a later append ran past it (the
+		// #116 cascade); strip it so a recoverable torn write is not mistaken for
+		// fatal corruption. A line that is only fill collapses to empty and skips.
+		if stripped := bytes.TrimLeft(line, "\x00"); len(stripped) != len(line) {
+			line = bytes.TrimSpace(stripped)
+		}
 		if len(line) == 0 {
 			continue
 		}
 		var ev Event
 		if err := json.Unmarshal(line, &ev); err != nil {
-			// A completed (newline-terminated, fsynced) line failing to parse is
-			// corruption beyond a torn tail — surface it rather than hide it.
+			// A completed (newline-terminated, fsynced) line that still fails to
+			// parse after stripping crash fill is corruption beyond a torn tail —
+			// surface it rather than hide it.
 			return nil, 0, fmt.Errorf("journal: corrupt event at seq boundary: %w", err)
 		}
 		events = append(events, ev)
@@ -220,7 +229,13 @@ func readEvents(path string) ([]Event, int, error) {
 	if err := sc.Err(); err != nil {
 		return nil, 0, fmt.Errorf("journal: scan events log: %w", err)
 	}
-	return events, len(bytes.TrimRight(tail, "\x00")), nil
+	// The torn tail is EVERY byte after the last complete record: a partial final
+	// append and/or NUL zero-fill from a crash that extended the file without
+	// flushing. All of it is torn and must be truncated. Discounting trailing
+	// NULs from this length (as earlier code did) leaves zero-fill behind, which
+	// the next append concatenates onto — fabricating a corrupt "complete" line
+	// on the following recovery and bricking the journal (#116).
+	return events, len(tail), nil
 }
 
 // maxEventBytes bounds a single event line during recovery scanning.

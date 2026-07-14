@@ -34,9 +34,10 @@ func appendEvent(f *os.File, seq *uint64, scrubber Scrubber, now func() time.Tim
 	return ev, nil
 }
 
-// truncateTornTail removes a torn (non-newline-terminated) final record from
-// path, sized tornBytes as reported by readEvents, so the next append starts on
-// a clean record boundary. A no-op when tornBytes is 0.
+// truncateTornTail removes a torn final region from path, sized tornBytes as
+// reported by readEvents — a partial (non-newline-terminated) record and/or NUL
+// zero-fill left by a crash — so the next append starts on a clean record
+// boundary. A no-op when tornBytes is 0.
 func truncateTornTail(path string, tornBytes int) error {
 	if tornBytes == 0 {
 		return nil

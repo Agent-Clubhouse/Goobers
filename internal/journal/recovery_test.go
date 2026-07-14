@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,6 +121,148 @@ func TestRecoverTruncationProperty(t *testing.T) {
 				t.Fatalf("tlen=%d: second recover not clean: %+v", tlen, report2)
 			}
 		}
+	}
+}
+
+// TestRecoverNulTailIsTruncatedNotBricking is the #116 negative control for the
+// NUL-tail bricking cascade. A crash can extend events.jsonl without flushing the
+// record, leaving NUL zero-fill after the last complete event. Recovery must
+// count that fill as torn and truncate ALL of it, so a resumed run's next append
+// lands on a clean boundary — not concatenate onto surviving zeros and fabricate
+// a corrupt "complete" line that bricks the log on the following recovery.
+func TestRecoverNulTailIsTruncatedNotBricking(t *testing.T) {
+	root := t.TempDir()
+	run, err := Create(root, testIdentity(), nil, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := run.Append(Event{Type: EventStageStarted, Stage: "s", Attempt: i + 1}); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	_ = run.Close()
+
+	dir := filepath.Join(root, testIdentity().RunID)
+	eventsPath := filepath.Join(dir, fileEvents)
+
+	// Simulate the crash: NUL zero-fill after the last complete, newline-terminated
+	// event (the file was extended but the record was never written).
+	const fill = 64
+	before, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(eventsPath, append(before, bytes.Repeat([]byte{0}, fill)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First recovery must treat the whole NUL fill as torn.
+	run, report, err := Recover(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("first Recover: %v", err)
+	}
+	if report.TornBytes != fill {
+		t.Fatalf("NUL fill not counted as torn: tornBytes=%d want %d — zeros will survive and brick the log", report.TornBytes, fill)
+	}
+	// Resume: append a fresh event, exactly as a recovered run continues.
+	if err := run.Append(Event{Type: EventStageStarted, Stage: "resumed", Attempt: 1}); err != nil {
+		t.Fatalf("post-recovery Append: %v", err)
+	}
+	_ = run.Close()
+
+	// No NUL byte may survive — any that did would merge with the next append.
+	after, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.IndexByte(after, 0) >= 0 {
+		t.Fatal("NUL fill survived recovery; a later append will brick the log")
+	}
+
+	// Second recovery must succeed and see the resumed event — no fatal
+	// "corrupt event at seq boundary" cascade formed.
+	rd, _ := OpenRead(dir)
+	got, err := rd.Events()
+	if err != nil {
+		t.Fatalf("journal bricked after NUL tail + append: %v", err)
+	}
+	var sawResumed bool
+	for _, ev := range got {
+		if ev.Stage == "resumed" {
+			sawResumed = true
+		}
+	}
+	if !sawResumed {
+		t.Fatalf("resumed event lost after recovery: %+v", got)
+	}
+	for i, ev := range got {
+		if ev.Seq != uint64(i+1) {
+			t.Fatalf("non-contiguous seq at %d: %d", i, ev.Seq)
+		}
+	}
+}
+
+// TestReadEventsToleratesEmbeddedNulFill is the #116 negative control for the
+// read side: a log a pre-fix crash+append already corrupted — a complete record,
+// then NUL fill, then a later newline-terminated record written past the fill.
+// readEvents must strip the leading crash fill and recover both records rather
+// than fataling on the NUL-prefixed line ("short writes merge into fatal
+// corruption").
+func TestReadEventsToleratesEmbeddedNulFill(t *testing.T) {
+	root := t.TempDir()
+	run, err := Create(root, testIdentity(), nil, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := run.Append(Event{Type: EventStageStarted, Stage: "first", Attempt: 1}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = run.Close()
+
+	dir := filepath.Join(root, testIdentity().RunID)
+	eventsPath := filepath.Join(dir, fileEvents)
+	before, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Hand-craft the cascaded shape: <valid records>\n<NUL fill><valid record>\n
+	extra, err := json.Marshal(Event{
+		Seq:    uint64(bytes.Count(before, []byte{'\n'}) + 1),
+		Schema: EventSchema,
+		Type:   EventStageStarted,
+		Stage:  "second",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := before
+	corrupt = append(corrupt, bytes.Repeat([]byte{0}, 32)...)
+	corrupt = append(corrupt, extra...)
+	corrupt = append(corrupt, '\n')
+	if err := os.WriteFile(eventsPath, corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, tornBytes, err := readEvents(eventsPath)
+	if err != nil {
+		t.Fatalf("embedded NUL fill bricked the reader: %v", err)
+	}
+	if tornBytes != 0 {
+		t.Fatalf("final record is newline-terminated; tornBytes=%d want 0", tornBytes)
+	}
+	var sawFirst, sawSecond bool
+	for _, ev := range got {
+		switch ev.Stage {
+		case "first":
+			sawFirst = true
+		case "second":
+			sawSecond = true
+		}
+	}
+	if !sawFirst || !sawSecond {
+		t.Fatalf("records lost around NUL fill: first=%v second=%v events=%+v", sawFirst, sawSecond, got)
 	}
 }
 
