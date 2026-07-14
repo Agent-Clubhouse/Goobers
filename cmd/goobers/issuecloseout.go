@@ -54,6 +54,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 
 	l := layoutFor(root)
 	var claim localscheduler.ClaimEntry
+	var claimHeld bool
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	err = withClaimLock(lockPath, func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
@@ -61,15 +62,27 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 			return fmt.Errorf("open claim ledger: %w", lerr)
 		}
 		entry, ok := ledger.ForRun(runID)
-		if !ok {
-			return fmt.Errorf("no item claimed by run %s in the claim ledger", runID)
+		if ok {
+			claim = entry
+			claimHeld = true
 		}
-		claim = entry
 		return nil
 	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if !claimHeld {
+		// Resume-idempotency (#241): close-out RELEASES the claim as its very
+		// last step, so an absent ledger entry means a prior attempt of this
+		// stage already ran through the comment + mark-done + release. A crash
+		// after the release but before stage.finished is journaled would
+		// otherwise re-run close-out here, find no live claim, and fail the run
+		// at its final stage after all real work succeeded. Treat an
+		// already-released claim as done and succeed as a no-op so the run
+		// terminates completed.
+		pf(stdout, "run %s: claim already released by a prior close-out; nothing to do\n", runID)
+		return 0
 	}
 
 	ctx := context.Background()
