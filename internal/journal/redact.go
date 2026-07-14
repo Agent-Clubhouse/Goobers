@@ -28,7 +28,15 @@ func (r *Run) Redact(target Ref, reason string) (Ref, error) {
 	if r.closed {
 		return Ref{}, ErrClosed
 	}
-	oldPath := filepath.Join(r.dir, target.Path)
+	// Redact is the one journal operation that reads, overwrites, and removes an
+	// existing on-disk blob, so a target path that escaped the run directory
+	// (via "..", or an absolute path) could read or destroy files outside the
+	// journal. Every blob the journal writes is a plain relative path under the
+	// run dir; anything else is rejected before we touch the filesystem.
+	oldPath, err := containedBlobPath(r.dir, target.Path)
+	if err != nil {
+		return Ref{}, err
+	}
 	raw, err := os.ReadFile(oldPath)
 	if err != nil {
 		return Ref{}, fmt.Errorf("journal: read blob to redact %q: %w", target.Path, err)
@@ -50,6 +58,13 @@ func (r *Run) Redact(target Ref, reason string) (Ref, error) {
 	newRef, err := writeContentScrubbed(r.dir, newRelPath, scrubbed, newDigest)
 	if err != nil {
 		return Ref{}, fmt.Errorf("journal: write redacted blob: %w", err)
+	}
+	// Fail closed: verify the bytes actually at rest hash to the scrubbed digest
+	// before we record success and delete the leaked original. Without this a
+	// skipped or torn write (the blob never changed on disk) would be reported as
+	// a successful redaction while the leaked bytes remained (SEC-041).
+	if err := verifyBlobDigest(r.dir, newRef); err != nil {
+		return Ref{}, err
 	}
 	// Remove the leaked bytes from rest. If the path is unchanged (in-place
 	// rewrite) writeContentScrubbed already overwrote them.
@@ -83,4 +98,37 @@ func (r *Run) Redact(target Ref, reason string) (Ref, error) {
 // (as opposed to a named input snapshot).
 func isArtifactPath(relPath string) bool {
 	return strings.HasPrefix(relPath, dirArtifacts+"/")
+}
+
+// containedBlobPath resolves relPath against dir and guarantees the result stays
+// inside dir. It rejects absolute paths and any path that climbs out via ".."
+// so a caller-supplied Ref can never steer Redact's read/overwrite/remove at a
+// file outside the run journal.
+func containedBlobPath(dir, relPath string) (string, error) {
+	if relPath == "" {
+		return "", errors.New("journal: empty blob path")
+	}
+	clean := filepath.Clean(relPath)
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("journal: blob path %q escapes the run directory", relPath)
+	}
+	return filepath.Join(dir, clean), nil
+}
+
+// verifyBlobDigest re-reads the blob at ref.Path (relative to dir) and confirms
+// its bytes hash to ref.Digest — the post-write proof that a redaction actually
+// landed on disk, so Redact never reports success over unchanged or torn bytes.
+func verifyBlobDigest(dir string, ref Ref) error {
+	full, err := containedBlobPath(dir, ref.Path)
+	if err != nil {
+		return err
+	}
+	got, err := os.ReadFile(full)
+	if err != nil {
+		return fmt.Errorf("journal: verify redacted blob %q: %w", ref.Path, err)
+	}
+	if d := Digest(got); d != ref.Digest {
+		return fmt.Errorf("journal: redacted blob %q has digest %s at rest, expected %s", ref.Path, d, ref.Digest)
+	}
+	return nil
 }
