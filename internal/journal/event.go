@@ -105,6 +105,17 @@ type Event struct {
 	Target string `json:"target,omitempty"`
 	// Status is the terminal status for run.finished / stage.finished. Normative.
 	Status string `json:"status,omitempty"`
+	// Outputs mirrors a stage.finished ResultEnvelope's small, scalar-only
+	// Outputs (docs/stage-contract.md) — journaled so a resumed run can
+	// reconstruct a finished stage's result without it (walk's lastStage/
+	// lastResult, or a gate's subject) being lost to an in-memory-only value
+	// a crash wipes. Normative.
+	Outputs map[string]any `json:"outputs,omitempty"`
+	// Artifacts mirrors a stage.finished ResultEnvelope's Artifacts — the
+	// pointers this attempt produced — for the same reconstruction reason as
+	// Outputs. Each entry's Digest is normative; Path/Size/MediaType are not
+	// (see Ref).
+	Artifacts []Ref `json:"artifacts,omitempty"`
 
 	// Ref points at in-journal content (artifact.recorded, input.snapshot). Its
 	// Digest is normative; Path/Size are not (see Ref).

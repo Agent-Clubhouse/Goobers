@@ -46,10 +46,22 @@ type ResumeInput struct {
 // silently re-run as if the interrupted attempt never happened, and the
 // crash cannot grant the task extra attempts beyond its own declared policy.
 //
+// If instead that task's last attempt already finished cleanly before the
+// crash (state.json's machineState still names it — see walk's
+// SetMachineState timing), Resume does NOT re-dispatch it: re-running a
+// side-effecting stage that already completed would duplicate its effects
+// (#107). It reconstructs the finished result from the journal and applies
+// the exact transition (taskOutcome) a live walk would have taken, so the
+// walk actually resumes at the RIGHT next state.
+//
 // A gate-state resume has no equivalent in-flight signal to detect (a gate
 // evaluation journals only its terminal gate.evaluated event, never a
-// started/finished pair) — it always just re-evaluates fresh. Its bounded-
-// repass counter (internal/gate.Evaluator.Attempts, #89) IS restored, though:
+// started/finished pair) — it always just re-evaluates fresh, but now
+// against the REAL subject: lastFinishedSubject reconstructs the last
+// finished stage's full result (status, outputs, artifacts — journaled on
+// stage.finished for exactly this) instead of walk's in-memory-only
+// lastStage/lastResult defaulting to a zero value (#108). Its bounded-repass
+// counter (internal/gate.Evaluator.Attempts, #89) IS restored too:
 // gateRepassSeed reconstructs it from each gate's last gate.evaluated event
 // (Runner["repassAttempt"], recordVerdict in internal/gate/journal.go) — the
 // same event log state.json itself is always reconstructable from — so a
@@ -102,10 +114,37 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		return Result{}, fmt.Errorf("runner: read events for run %q: %w", in.RunID, err)
 	}
 
+	// Reconstruct the walk-local state a live run only ever holds in memory —
+	// pointers accumulated so far (#107) and the last finished stage's result
+	// (#108), the subject a resumed gate needs. Both are exactly what a live
+	// walk carries forward call-to-call within one process; a crash loses
+	// that memory, so Resume rebuilds it from the journal every time.
+	seed := walkSeed{pointers: reconstructPointers(events)}
+	lastStage, lastResult, hasLast := lastFinishedSubject(events)
+	seed.lastStage, seed.lastResult = lastStage, lastResult
+
+	startState := st.MachineState
 	var resume *resumeContext
-	if _, isTask := in.Machine.Task(st.MachineState); isTask {
-		if attempt := interruptedAttempt(events, st.MachineState); attempt > 0 {
-			resume = &resumeContext{stage: st.MachineState, attempt: attempt}
+	if t, isTask := in.Machine.Task(startState); isTask {
+		if attempt := interruptedAttempt(events, startState); attempt > 0 {
+			resume = &resumeContext{stage: startState, attempt: attempt}
+		} else if hasLast && lastStage == startState {
+			// state.json's machineState still names this task (walk's
+			// SetMachineState timing: it's set BEFORE dispatch and not
+			// reassigned until the transition decision after runTask
+			// returns), but its last attempt already finished cleanly
+			// before the crash — interruptedAttempt found nothing in
+			// flight. Re-dispatching it now would silently re-run its side
+			// effects (#107); instead apply the exact transition a live
+			// walk would have taken right after runTask returned.
+			next, res, advance, terr := r.taskOutcome(jr, in.Machine, t, lastResult, 0)
+			if terr != nil {
+				return Result{}, terr
+			}
+			if !advance {
+				return res, nil
+			}
+			startState = next
 		}
 	}
 
@@ -121,7 +160,55 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		RepoRef: in.RepoRef,
 		Item:    item,
 	}
-	return r.walk(ctx, jr, startIn, st.MachineState, resume, gateRepassSeed(events), registrar)
+	return r.walk(ctx, jr, startIn, startState, resume, gateRepassSeed(events), registrar, seed)
+}
+
+// lastFinishedSubject reconstructs the (stage, ResultEnvelope) pair a live
+// walk's lastStage/lastResult holds at the moment of a crash — the most
+// recent REAL stage.finished event in the journal (excluding the
+// infra-tagged interrupted-attempt marker Resume itself synthesizes, which
+// is never a genuine subject: it always precedes a fresh attempt of the SAME
+// task that finishes for real later, so scanning from the end naturally
+// prefers that real finish once it exists). ok is false only for a run that
+// has not finished any stage yet (crashed before its first stage.finished).
+func lastFinishedSubject(events []journal.Event) (stage string, result apiv1.ResultEnvelope, ok bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		if e.Type != journal.EventStageFinished || e.AttemptClass == journal.AttemptInfra {
+			continue
+		}
+		var errInfo *apiv1.ErrorInfo
+		if e.Error != nil {
+			errInfo = &apiv1.ErrorInfo{Code: e.Error.Code, Message: e.Error.Message}
+		}
+		return e.Stage, apiv1.ResultEnvelope{
+			Status:    apiv1.ResultStatus(e.Status),
+			Outputs:   e.Outputs,
+			Artifacts: artifactPointersFrom(e.Artifacts),
+			Error:     errInfo,
+		}, true
+	}
+	return "", apiv1.ResultEnvelope{}, false
+}
+
+// reconstructPointers rebuilds walk's pointers slice — the ContextPointers
+// every downstream stage receives — from every REAL stage.finished event in
+// the journal, mirroring the live path's unconditional `pointers =
+// append(pointers, produced...)` right after every runTask call (regardless
+// of the stage's business status). The infra-tagged interrupted-attempt
+// marker is excluded — it never carries real Artifacts (see
+// lastFinishedSubject); a task revisited more than once (a gate looping back
+// to it) contributes each visit's artifacts in order, exactly as the live
+// path would.
+func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
+	var out []apiv1.ContextPointer
+	for _, e := range events {
+		if e.Type != journal.EventStageFinished || e.AttemptClass == journal.AttemptInfra {
+			continue
+		}
+		out = append(out, contextPointersFor(e.Stage, artifactPointersFrom(e.Artifacts))...)
+	}
+	return out
 }
 
 // gateRepassSeed reconstructs internal/gate.Evaluator.Attempts from the
