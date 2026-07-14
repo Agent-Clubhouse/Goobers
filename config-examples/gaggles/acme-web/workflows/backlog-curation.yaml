@@ -37,13 +37,18 @@ spec:
         # Idempotency: items already bearing either output marker are excluded,
         # so a re-run over an already-curated backlog claims nothing.
         excludeLabels: "goobers:ready,goobers:needs-human"
+        # Batch: claim up to 20 eligible items per run; backlog-query honors
+        # maxItems and writes a claimed-items.json array for a batch (#236).
         maxItems: "20"
-        # Declared so shell.go reads the file back and can report
-        # ResultNoWork on an empty/fully-contested tick (issue #233) —
-        # without this, an empty claim's exit-0 result carries no structured
-        # signal beyond the exit code, and the runner has no way to tell
-        # "genuinely nothing to do" from "claimed something."
-        resultFile: "claimed-item.json"
+        # Serves two purposes, both requiring the file be declared:
+        # (#236) lifts the claimed-items array into a journal artifact so the
+        # curator receives it as a context pointer — without this the claimed
+        # list never reaches curate; and (#233) lets shell.go read the file back
+        # to report ResultNoWork on an empty/fully-contested tick, so the runner
+        # can tell "genuinely nothing to do" from "claimed something" rather than
+        # relying on the exit code alone. Plural name: curation claims a batch
+        # (maxItems>1 → JSON array), unlike implementation's single claimed-item.
+        resultFile: "claimed-items.json"
       capabilities:
         - github:issues:write
       expectedOutputs:
