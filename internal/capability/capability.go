@@ -45,11 +45,20 @@ const (
 	// TelemetryRead grants read access to the local telemetry rollup
 	// (stats/errors/spans) — internal/telemetry/query's gate.
 	TelemetryRead Capability = "telemetry:read"
+	// JournalRead grants an agentic stage read-only, digest-verified access
+	// to ANOTHER run's journal (issue #103/T3: the Tutor's analyst stage
+	// resolving evidence for runs flagged by a cross-run telemetry query).
+	// Distinct from the same-run context-pointer resolution #121 already
+	// wired unconditionally — that needs no capability because a stage's own
+	// upstream artifacts are never a trust boundary; a DIFFERENT run's
+	// journal is, so crossing it is capability-gated and fails closed when
+	// undeclared (internal/harness's materializeContext).
+	JournalRead Capability = "journal:read"
 )
 
 // All returns every canonical capability, in declaration order.
 func All() []Capability {
-	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubPRWrite, TelemetryRead}
+	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubPRWrite, TelemetryRead, JournalRead}
 }
 
 // Known reports whether s is a canonical capability string.

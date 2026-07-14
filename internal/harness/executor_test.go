@@ -3,12 +3,14 @@ package harness
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -26,13 +28,17 @@ func writeRaw(workspace, relPath, content string) error {
 
 // fakeRecorder is an in-memory SpanRecorder + ArtifactRecorder +
 // ContextResolver double — mirrors production, where the same *journal.Run
-// satisfies all three structurally. dir backs ContextResolver's Dir(); tests
-// that never populate ContextPointers can leave it empty, since
-// materializeContext never calls Dir() when there's nothing to resolve.
+// satisfies all three structurally (with runsDir standing in for the
+// instance-layout pairing harness.NewContextResolver does in production,
+// #103/T3). dir backs ContextResolver's Dir(); tests that never populate
+// ContextPointers can leave it empty, since materializeContext never calls
+// Dir() when there's nothing to resolve. runsDir similarly can stay empty
+// for any test that never sets ContextPointer.RunID.
 type fakeRecorder struct {
 	spans     []recordedSpan
 	artifacts []recordedArtifact
 	dir       string
+	runsDir   string
 	err       error
 }
 
@@ -63,6 +69,8 @@ func (f *fakeRecorder) RecordArtifact(name string, data []byte) (journal.Ref, er
 }
 
 func (f *fakeRecorder) Dir() string { return f.dir }
+
+func (f *fakeRecorder) RunsDir() string { return f.runsDir }
 
 func testInjector(t *testing.T, tokenEnv, envVal string, registrar credentials.SecretRegistrar) *credentials.Injector {
 	t.Helper()
@@ -608,6 +616,184 @@ func TestExecutorFailsHardWhenContextArtifactCannotBeResolved(t *testing.T) {
 	env.ContextPointers = []apiv1.ContextPointer{{Name: "implement.artifact[0]", Artifact: &badPtr}}
 	if _, err := exec.Invoke(context.Background(), env); err == nil {
 		t.Fatal("expected a hard error when an upstream context artifact cannot be resolved")
+	}
+}
+
+// TestExecutorResolvesCrossRunContextPointerWhenCapabilityDeclared is
+// issue #103/T3's core positive case: a ContextPointer naming ANOTHER run
+// (RunID set) resolves read-only and digest-verified into the stage
+// workspace when journal:read is declared, exactly like a same-run pointer
+// (#121) — and the resolved path lands in the rendered prompt (evidence
+// links, per the design doc's test plan), not just the workspace file.
+func TestExecutorResolvesCrossRunContextPointerWhenCapabilityDeclared(t *testing.T) {
+	runsDir := t.TempDir()
+	otherRunDir := filepath.Join(runsDir, "other-run-abc123")
+	if err := os.MkdirAll(otherRunDir, 0o755); err != nil {
+		t.Fatalf("mkdir other run dir: %v", err)
+	}
+	content := []byte("flagged run transcript excerpt\n")
+	ptr, err := apiv1.WriteArtifact(otherRunDir, "artifacts/diagnose/evidence.txt", content, "text/plain")
+	if err != nil {
+		t.Fatalf("WriteArtifact: %v", err)
+	}
+
+	var gotPath string
+	var gotBytes []byte
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			path, ok := req.ContextPaths["flagged-run.evidence"]
+			if !ok {
+				return errors.New("context path not resolved")
+			}
+			gotPath = path
+			data, rerr := os.ReadFile(filepath.Join(req.Workspace, path))
+			if rerr != nil {
+				return rerr
+			}
+			gotBytes = data
+			if !strings.Contains(renderPrompt(req), path) {
+				return fmt.Errorf("rendered prompt does not reference resolved evidence path %q", path)
+			}
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	rec := &fakeRecorder{dir: t.TempDir(), runsDir: runsDir}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	env := testEnvelope(t.TempDir(), string(capability.JournalRead))
+	env.ContextPointers = []apiv1.ContextPointer{
+		{Name: "flagged-run.evidence", Artifact: &ptr, RunID: "other-run-abc123"},
+	}
+	result, err := exec.Invoke(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("Status = %q, want success", result.Status)
+	}
+	if string(gotBytes) != string(content) {
+		t.Fatalf("materialized cross-run bytes = %q, want %q", gotBytes, content)
+	}
+	if gotPath == "" {
+		t.Fatal("expected a non-empty resolved path")
+	}
+}
+
+// TestExecutorRefusesCrossRunContextPointerWithoutCapability is T3's
+// fail-closed test-plan item: a ContextPointer naming another run is
+// refused when the stage did NOT declare journal:read, even though the
+// pointer itself (path + digest) is perfectly valid — the capability check
+// runs before resolution is even attempted.
+func TestExecutorRefusesCrossRunContextPointerWithoutCapability(t *testing.T) {
+	runsDir := t.TempDir()
+	otherRunDir := filepath.Join(runsDir, "other-run-abc123")
+	if err := os.MkdirAll(otherRunDir, 0o755); err != nil {
+		t.Fatalf("mkdir other run dir: %v", err)
+	}
+	ptr, err := apiv1.WriteArtifact(otherRunDir, "artifacts/diagnose/evidence.txt", []byte("secret evidence"), "text/plain")
+	if err != nil {
+		t.Fatalf("WriteArtifact: %v", err)
+	}
+
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	rec := &fakeRecorder{dir: t.TempDir(), runsDir: runsDir}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	// No journal:read in the declared capabilities.
+	env := testEnvelope(t.TempDir())
+	env.ContextPointers = []apiv1.ContextPointer{
+		{Name: "flagged-run.evidence", Artifact: &ptr, RunID: "other-run-abc123"},
+	}
+	if _, err := exec.Invoke(context.Background(), env); !errors.Is(err, ErrJournalReadRequired) {
+		t.Fatalf("Invoke error = %v, want ErrJournalReadRequired", err)
+	}
+}
+
+// TestExecutorRefusesCrossRunRunIDPathEscape is T3's path-escape test-plan
+// item: a RunID that is not a single safe path segment (a traversal or
+// absolute-path attempt smuggled in via, e.g., a tampered candidate-findings
+// artifact — SEC-047's threat model) is refused before it is ever joined
+// onto RunsDir, even with journal:read declared.
+func TestExecutorRefusesCrossRunRunIDPathEscape(t *testing.T) {
+	runsDir := t.TempDir()
+	// A syntactically valid pointer — the escape is entirely in RunID.
+	ptr := apiv1.ArtifactPointer{Path: "artifacts/x", Digest: apiv1.Digest([]byte("x"))}
+
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	rec := &fakeRecorder{dir: t.TempDir(), runsDir: runsDir}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	for _, runID := range []string{"../../etc", "/etc/passwd", "..", "a/b"} {
+		env := testEnvelope(t.TempDir(), string(capability.JournalRead))
+		env.ContextPointers = []apiv1.ContextPointer{
+			{Name: "flagged-run.evidence", Artifact: &ptr, RunID: runID},
+		}
+		if _, err := exec.Invoke(context.Background(), env); !errors.Is(err, ErrInvalidRunID) {
+			t.Fatalf("RunID %q: Invoke error = %v, want ErrInvalidRunID", runID, err)
+		}
+	}
+}
+
+// TestExecutorRefusesCrossRunDigestMismatch is T3's digest-verified
+// test-plan item exercised cross-run: a pointer whose recorded digest no
+// longer matches the OTHER run's on-disk bytes is refused exactly like the
+// same-run case (TestExecutorFailsHardWhenContextArtifactCannotBeResolved)
+// — the cross-run path reuses apiv1.ArtifactPointer.Resolve unchanged, so
+// tampering detection is identical regardless of which run's journal root
+// the pointer resolves against.
+func TestExecutorRefusesCrossRunDigestMismatch(t *testing.T) {
+	runsDir := t.TempDir()
+	otherRunDir := filepath.Join(runsDir, "other-run-abc123")
+	if err := os.MkdirAll(otherRunDir, 0o755); err != nil {
+		t.Fatalf("mkdir other run dir: %v", err)
+	}
+	ptr, err := apiv1.WriteArtifact(otherRunDir, "artifacts/diagnose/evidence.txt", []byte("original"), "text/plain")
+	if err != nil {
+		t.Fatalf("WriteArtifact: %v", err)
+	}
+	// Tamper with the bytes after the pointer's digest was computed.
+	if err := os.WriteFile(filepath.Join(otherRunDir, "artifacts/diagnose/evidence.txt"), []byte("tampered"), 0o644); err != nil {
+		t.Fatalf("tamper artifact: %v", err)
+	}
+
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	rec := &fakeRecorder{dir: t.TempDir(), runsDir: runsDir}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	env := testEnvelope(t.TempDir(), string(capability.JournalRead))
+	env.ContextPointers = []apiv1.ContextPointer{
+		{Name: "flagged-run.evidence", Artifact: &ptr, RunID: "other-run-abc123"},
+	}
+	if _, err := exec.Invoke(context.Background(), env); !errors.Is(err, apiv1.ErrDigestMismatch) {
+		t.Fatalf("Invoke error = %v, want ErrDigestMismatch", err)
 	}
 }
 

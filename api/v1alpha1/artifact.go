@@ -73,6 +73,16 @@ type ContextPointer struct {
 	// External points at a resource outside the journal (e.g. an issue/PR URL).
 	// Mutually exclusive with Artifact.
 	External *ExternalRef `json:"external,omitempty"`
+	// RunID names the run Artifact lives in, when it is NOT this stage's own
+	// run (issue #103/T3: the Tutor's analyst resolving evidence for a
+	// DIFFERENT run a cross-run telemetry query flagged). Empty (the default)
+	// means Artifact is this run's own upstream output — the #121 same-run
+	// path, unchanged and uncapability-gated. Non-empty crosses a real trust
+	// boundary (another run's journal) and requires the journal:read
+	// capability; internal/harness's materializeContext is what enforces
+	// that and resolves Artifact against the OTHER run's journal root
+	// instead of this run's own. Ignored when Artifact is nil.
+	RunID string `json:"runId,omitempty"`
 }
 
 // ExternalRef points at a resource outside the run journal — an issue, a pull
