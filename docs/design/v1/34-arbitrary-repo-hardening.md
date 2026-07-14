@@ -22,7 +22,9 @@ repos*. Two facts from the V0 code set the shape:
   (`config/gaggles/<gaggle>/goobers/...`).
 - **Provider rate-limit handling already exists.** `providers/seams.go` defines
   `RateLimitObserver` / `RateLimitEvent` (Retry-After, GitHub secondary/abuse limit) and
-  `providers/github_issues.go` honors `X-RateLimit-*` / `Retry-After`.
+  `providers/github_issues.go` honors `X-RateLimit-*` / `Retry-After`. *(Caveat from the
+  2026-07-13 review: the provider has **no pagination and no 5xx retry** — #139 — and
+  mutation idempotency gaps — #140. H4 builds on those fixes rather than re-doing them.)*
 
 **The load-bearing gap is runtime scoping (GAG-011).** The instance layout is **flat**:
 `RunsDir` = `<root>/runs`, `WorkcopiesDir` = `<root>/workcopies`, `TelemetryDB` =
@@ -72,7 +74,8 @@ is **#38**.
   workflows (gaggle named by a workflow but not defined), manifest/gaggle mismatches,
   capability-string typos (validate against the #74 registry), missing goober
   instructions, target-repo reachability check. Human-readable "here's what's wrong and
-  where" output.
+  where" output. *(Complementary to #124, which makes `validate` actually compile
+  definitions and closes the admission holes — H1 is the UX layer on top; coordinate.)*
 - **Seams:** `internal/instance/configdir.go`, `cmd/goobers/validate.go`, `internal/capability`.
 - **Test plan:** table of malformed foreign-layout fixtures → expected diagnostic + exit
   code; a valid foreign layout passes; capability typo is caught.

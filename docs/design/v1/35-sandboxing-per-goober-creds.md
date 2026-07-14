@@ -73,7 +73,10 @@ Special-Agent-security** — see OQ-1.
 
 ### S2 — Filesystem confinement to the stage worktree (SEC-044, part)
 - Using S0's `Sandbox`, confine the agentic subprocess so reads/writes outside its stage
-  worktree are denied. Depends on **S0**.
+  worktree are denied. Depends on **S0**. *(Independent but complementary: #120 fixes the
+  executor's own declared-output-file reads — traversal/symlink containment on the
+  journal side; the sandbox confines the subprocess. Both are required; neither
+  substitutes for the other.)*
 - **Seams:** `internal/worktree`, `internal/harness`, S0 sandbox seam.
 - **Test plan:** a stage that attempts to read/write outside the worktree is denied and the
   run fails closed with a clear journal event; in-worktree I/O succeeds.
@@ -81,7 +84,9 @@ Special-Agent-security** — see OQ-1.
 ### S3 — Sandboxed agentic execution (SEC-044, core)
 - Wrap the harness subprocess launch in S0's mechanism; **fail-closed if the sandbox is
   unavailable** (block the run) with an explicit, logged opt-out for trusted-local
-  (dogfood) use. Depends on **S0**.
+  (dogfood) use. Depends on **S0**. *(Coordinate with #119: the sandbox wrapper must
+  preserve the process-group timeout/kill semantics that issue adds — a sandbox that
+  swallows the group kill reintroduces the hung-harness bug.)*
 - **Seams:** `internal/harness/copilot.go` (process launch), S0 sandbox seam.
 - **Test plan:** sandbox-unavailable → run blocked + journal event (not a silent bypass);
   opt-out flag path is logged; a normal run executes sandboxed and completes.

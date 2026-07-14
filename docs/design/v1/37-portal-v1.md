@@ -58,6 +58,11 @@ daemon read API (served by `goobers up`, local port):
   awaiting-approval journal event and suspends the run; an approval/rejection signal
   resumes it to the gate's branch (`pass`/`needs-changes`/`reject`). Reuses `Runner.Resume`
   (#17). Fail-closed: an unknown/expired approval never auto-passes.
+- *(2026-07-13 review notes: the pause half already exists — `internal/runner/run.go:311-321`
+  checkpoints and halts at a human gate; the gap is the approval signal → resume →
+  verdict-branch mapping. P0 inherits the resume-context fixes (#107/#108) and MUST
+  agree with #135's ruling on whether paused runs hold max-parallel slots — today a
+  paused run starves its workflow after any daemon restart.)*
 - **Seams:** `internal/gate/evaluate.go`, `internal/runner` (pause/resume), `internal/journal`.
 - **Test plan:** run pauses at a human gate (journal event present); approve → resumes to
   `pass` branch; reject → `reject`/`@abort` branch; crash between pause and approve →
