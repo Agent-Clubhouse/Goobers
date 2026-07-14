@@ -55,7 +55,7 @@ var goldenDigests = map[string]string{
 	// #239: ci-gate gained a "timeout" branch (routes a ci-poll timeout to
 	// @escalate instead of the "fail" branch's implement repass).
 	"implementation.yaml":   "sha256:3be1fae17a30d399e3379a2cfd0b4d936d8e56673c6bd0d331aaad6314496414",
-	"backlog-curation.yaml": "sha256:dfc3d1f4c7b366051f6356e391ff515c21190bafe5cf974eeba61fc83ba97539",
+	"backlog-curation.yaml": "sha256:87f2720460c1848f303bc0ac2a96080ffb3d9d1b9a16ed42e9d8204eda38a300",
 	"work-nomination.yaml":  "sha256:013d029452371b4a0ada36d53b94713fb04a31a15b9fa27049ac46acc1f9debc",
 }
 

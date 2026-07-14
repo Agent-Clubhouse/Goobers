@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"go.temporal.io/sdk/testsuite"
@@ -105,7 +106,17 @@ func TestBacklogCurationDryRun(t *testing.T) {
 
 	var gotQueryInputs map[string]interface{}
 	det := &fakeRunner{
+		// Keyed by TaskID, not applied blindly to every deterministic
+		// invocation: release-claim (issue #234) is also a deterministic
+		// task in this pipeline now, and a single unconditional assignment
+		// here would have gotQueryInputs clobbered by its (empty) env.Inputs
+		// since it runs after query-backlog.
 		run: func(_ context.Context, env apiv1.InvocationEnvelope, r apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+			// TaskID is "<runID>:<stateName>" (engine.go), not the bare
+			// stage name.
+			if strings.HasSuffix(env.TaskID, ":release-claim") {
+				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "released"}, nil
+			}
 			gotQueryInputs = env.Inputs
 			claimed := make([]interface{}, len(items))
 			for i, it := range items {
