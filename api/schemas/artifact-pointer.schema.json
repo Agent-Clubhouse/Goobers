@@ -10,8 +10,8 @@
     "path": {
       "type": "string",
       "minLength": 1,
-      "description": "Journal-relative path to the artifact bytes. Must not be absolute; the schema rejects a leading '/', and full containment (no '..' traversal) is enforced at resolve time by ArtifactPointer.Resolve.",
-      "pattern": "^[^/]"
+      "description": "Journal-relative path to the artifact bytes. Must be contained: not absolute (no leading '/') and no '..' path component. This pattern matches the Go containment check (ArtifactPointer.Resolve / ResolveContainedPath), so a foreign-authored envelope that would escape the journal fails at validate time, not only at resolve time (#125). Uses an RE2-compatible pattern (no lookahead): each '/'-separated segment must contain a non-dot char, or be a lone '.', or be three-or-more dots — so a '..' segment can never appear.",
+      "pattern": "^([^/]*[^/.][^/]*|\\.\\.\\.+|\\.)(/([^/]*[^/.][^/]*|\\.\\.\\.+|\\.))*$"
     },
     "digest": {
       "type": "string",
