@@ -470,6 +470,69 @@ func TestShellExecutor_ResultFileJSONMergedIntoOutputs(t *testing.T) {
 	}
 }
 
+// TestShellExecutor_NoWorkOutputReportsResultNoWork is issue #233's core
+// executor-level acceptance: a declared result file whose JSON carries
+// noWork:true (OutputNoWork) reports ResultNoWork, not ResultSuccess, even
+// though the command exited 0 and every other success condition held.
+func TestShellExecutor_NoWorkOutputReportsResultNoWork(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputResultFile: "claimed-item.json"}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `echo '{"claimed":false,"noWork":true}' > claimed-item.json`},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultNoWork {
+		t.Fatalf("status = %v, want no-work", result.Status)
+	}
+	if result.Outputs["claimed"] != false {
+		t.Fatalf("outputs[claimed] = %v, want false", result.Outputs["claimed"])
+	}
+}
+
+// TestShellExecutor_FalseNoWorkOutputIsStillSuccess is the negative control
+// for TestShellExecutor_NoWorkOutputReportsResultNoWork: noWork explicitly
+// false (or the key simply absent, the common case) must not accidentally
+// trip the ResultNoWork path — only a literal boolean true does.
+func TestShellExecutor_FalseNoWorkOutputIsStillSuccess(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputResultFile: "claimed-item.json"}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `echo '{"id":"7","noWork":false}' > claimed-item.json`},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (noWork:false must not trip ResultNoWork)", result.Status)
+	}
+}
+
+// TestShellExecutor_NonzeroExitIsStillFailureNotNoWork is #233's negative
+// control at the exit-code layer: a genuine command failure (a provider/auth
+// error, in backlog-query's real usage) must still be ResultFailure, never
+// reinterpreted as ResultNoWork just because no declared result file was
+// produced — OutputNoWork is only ever consulted after exitCode==0.
+func TestShellExecutor_NonzeroExitIsStillFailureNotNoWork(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `exit 1`},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure {
+		t.Fatalf("status = %v, want failure", result.Status)
+	}
+}
+
 // TestShellExecutor_ResultFileNonJSONIsNotAnError proves a declared result
 // file that isn't JSON (or isn't a flat object) still satisfies the
 // artifact/presence-check contract unchanged — merging Outputs is additive,

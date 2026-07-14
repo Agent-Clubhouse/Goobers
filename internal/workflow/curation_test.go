@@ -87,7 +87,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 		t.Errorf("curator capabilities = %v, want exactly [github:issues:write]", curator.Spec.Capabilities)
 	}
 
-	const wantDigest = "sha256:48da9be3e0c4db532d6da3f9107b805e386defdfce7dddf4114df49a655efd64"
+	const wantDigest = "sha256:2b6a33311188c0ef12d431cc24b0e6d0211e65a803d33fbe1cbb1c4f518d9dae"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
