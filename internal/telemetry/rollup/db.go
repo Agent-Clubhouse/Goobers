@@ -16,7 +16,12 @@ type DB struct {
 }
 
 // Open opens (creating if needed) the SQLite rollup at path and applies any
-// pending forward migrations (seeds the V1 upgrade story, #33).
+// pending forward migrations (seeds the V1 upgrade story, #33). WAL mode lets
+// a reader (a `goobers telemetry`/`goobers trace` query) proceed concurrently
+// with a writer (the daemon's incremental ingest on run finish, #127)
+// instead of blocking behind SQLITE_BUSY; busy_timeout covers the remaining
+// writer-vs-writer window (two CLI invocations racing an explicit --rebuild)
+// by retrying instead of failing immediately.
 func Open(path string) (*DB, error) {
 	sqlDB, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -25,6 +30,19 @@ func Open(path string) (*DB, error) {
 	// A single connection avoids SQLite "database is locked" errors from our
 	// own concurrent writers; the rollup is a local, single-process store.
 	sqlDB.SetMaxOpenConns(1)
+	// busy_timeout MUST be set before anything else touches the file: a
+	// concurrent process creating the schema (or holding the WAL init lock)
+	// can make even the "PRAGMA journal_mode=WAL" statement itself return
+	// SQLITE_BUSY immediately, with no retry, if the connection's own
+	// busy-wait isn't already configured.
+	if _, err := sqlDB.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("rollup: set busy_timeout on %s: %w", path, err)
+	}
+	if _, err := sqlDB.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("rollup: set WAL mode on %s: %w", path, err)
+	}
 	db := &DB{sql: sqlDB}
 	if err := db.migrate(); err != nil {
 		_ = sqlDB.Close()

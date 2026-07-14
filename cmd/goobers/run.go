@@ -86,6 +86,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer func() { _ = setup.Telemetry.Shutdown(context.Background()) }()
+	defer func() { _ = setup.RollupDB.Close() }()
 
 	found := false
 	var gaggle string

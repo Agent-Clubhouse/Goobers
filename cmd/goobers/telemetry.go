@@ -34,15 +34,21 @@ func runTelemetry(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// openRollup rebuilds the telemetry rollup from the instance's run journals
-// and opens it. Rebuilding on every query (rather than trusting a
-// possibly-stale telemetry.db) keeps stats/errors correct without a separate
-// `goobers telemetry rebuild` step a user could forget — the rollup is
-// derived state, always rebuildable, never the source of truth
-// (internal/telemetry/rollup's own doc comment).
-func openRollup(l instance.Layout) (*rollup.DB, error) {
-	if err := rollup.Rebuild(l.TelemetryDB(), l.RunsDir()); err != nil {
-		return nil, err
+// openRollup opens the telemetry rollup, trusting the incremental ingest
+// `goobers up`/`run` already do on every run finish (issue #127) unless
+// rebuild is set. It used to unconditionally call rollup.Rebuild — which
+// os.Removes the shared telemetry.db — on every single query; two concurrent
+// CLI invocations (e.g. `goobers trace` racing `goobers telemetry stats`)
+// could unlink each other mid-ingest, and every query paid an O(all-runs-
+// ever) full rescan just to stay correct. Now a query only pays that cost
+// when explicitly asked (--rebuild), e.g. to pick up runs journaled
+// out-of-band (a hand-repaired run dir, or an instance upgraded from a
+// pre-#126 binary that never incrementally ingested).
+func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
+	if rebuild {
+		if err := rollup.Rebuild(l.TelemetryDB(), l.RunsDir()); err != nil {
+			return nil, err
+		}
 	}
 	return rollup.Open(l.TelemetryDB())
 }
@@ -51,8 +57,9 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("telemetry stats", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	workflow := fs.String("workflow", "", "filter to one workflow name")
+	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers telemetry stats [--workflow=name] [path]\n\n"+
+		pf(stderr, "Usage: goobers telemetry stats [--workflow=name] [--rebuild] [path]\n\n"+
 			"Success rate and duration aggregates per workflow and per stage,\n"+
 			"across every run (default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
 	}
@@ -69,7 +76,7 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	db, err := openRollup(l)
+	db, err := openRollup(l, *rebuild)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -112,8 +119,9 @@ func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
 	workflow := fs.String("workflow", "", "filter to one workflow name")
 	class := fs.String("class", "", "filter to one error class")
 	limit := fs.Int("limit", 50, "max errors to show (newest first)")
+	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers telemetry errors [--workflow=name] [--class=name] [--limit=N] [path]\n\n"+
+		pf(stderr, "Usage: goobers telemetry errors [--workflow=name] [--class=name] [--limit=N] [--rebuild] [path]\n\n"+
 			"Recent errors across every run, newest first, with run/stage refs\n"+
 			"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
 	}
@@ -130,7 +138,7 @@ func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	db, err := openRollup(l)
+	db, err := openRollup(l, *rebuild)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2

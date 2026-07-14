@@ -51,11 +51,16 @@ func writeFixtureRunWithError(t *testing.T, root string) {
 	}
 }
 
+// TestTelemetryStatsAfterRun hand-writes its fixture run directly to disk
+// (writeFixtureRunWithError), bypassing `goobers run`/`up` entirely — so
+// none of the incremental-ingest hooks issue #127 wires into those commands
+// ever fire for it. --rebuild is the explicit, documented way to pick up a
+// run journaled out-of-band, exactly the case this test exercises.
 func TestTelemetryStatsAfterRun(t *testing.T) {
 	root := initDemo(t)
 	writeFixtureRunWithError(t, root)
 
-	code, stdout, stderr := runArgs(t, "telemetry", "stats", root)
+	code, stdout, stderr := runArgs(t, "telemetry", "stats", "--rebuild", root)
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
@@ -68,12 +73,33 @@ func TestTelemetryErrorsAfterRun(t *testing.T) {
 	root := initDemo(t)
 	writeFixtureRunWithError(t, root)
 
-	code, stdout, stderr := runArgs(t, "telemetry", "errors", root)
+	code, stdout, stderr := runArgs(t, "telemetry", "errors", "--rebuild", root)
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
 	if !strings.Contains(stdout, "fixture_error") {
 		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+// TestTelemetryStatsWithoutRebuildMissesOutOfBandRun is issue #127's core
+// contract change: a query no longer force-rebuilds (os.Remove + full
+// rescan) on every call — that was the "two concurrent CLI queries unlink
+// each other mid-ingest" defect. A run journaled out-of-band (no incremental
+// ingest hook ever ran for it) is invisible to a plain query; --rebuild is
+// required to discover it. This is the negative-space proof that
+// TestTelemetryStatsAfterRun's --rebuild flag is load-bearing, not
+// decorative.
+func TestTelemetryStatsWithoutRebuildMissesOutOfBandRun(t *testing.T) {
+	root := initDemo(t)
+	writeFixtureRunWithError(t, root)
+
+	code, stdout, stderr := runArgs(t, "telemetry", "stats", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "no runs found") {
+		t.Fatalf("stdout = %q, want the out-of-band run to be invisible without --rebuild", stdout)
 	}
 }
 

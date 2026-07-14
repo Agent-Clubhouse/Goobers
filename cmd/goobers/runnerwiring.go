@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -35,6 +36,24 @@ func buildTelemetryClient(ctx context.Context, l instance.Layout) (*telemetry.Cl
 		SpanExporter:   telemetry.NewJournalSpanExporter(l.RunsDir()),
 		Batch:          true,
 	})
+}
+
+// ingestRunTelemetry incrementally ingests one finished run into the local
+// telemetry rollup (issue #127) — internal/telemetry/rollup/ingest.go's own
+// doc comment already claimed IngestRun is meant to hook a run's completion
+// ("call it once a run finishes"), but nothing in cmd/goobers ever called it;
+// every `goobers telemetry`/`trace` query instead paid for a full
+// rollup.Rebuild (an os.Remove + full rescan) just to stay correct. Called
+// from both up.go (every scheduler-dispatched and resumed run) and run.go
+// (the one-shot manual run), regardless of the run's own error, so a failed
+// run's errors/stage_attempts still show up in `goobers telemetry errors`.
+// Best-effort: the rollup is derived state, never the source of truth, so an
+// ingest failure here must never fail the run itself.
+func ingestRunTelemetry(db *rollup.DB, l instance.Layout, runID string) {
+	if db == nil {
+		return
+	}
+	_ = db.IngestRun(filepath.Join(l.RunsDir(), runID))
 }
 
 // repoCloneURL overrides runner.Config.RepoCloneURL when non-nil. It exists
