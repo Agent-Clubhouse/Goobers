@@ -192,7 +192,12 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // `goobers run` share: real worktrees, the real Copilot harness adapter and
 // shell executor, credentials scoped to instance.yaml's configured repo(s).
 // One Config serves every workflow/run — runner.Runner is not bound to a
-// single compiled machine.
+// single compiled machine. Also returns the *worktree.Manager directly (not
+// just embedded in the Config) so the daemon can call Reap on the exact same
+// Manager instance the runner itself dispatches through (issue #136) —
+// constructing a second, separate Manager over the same root would give Reap
+// its own independent repoLocks map, defeating the per-repo git-operation
+// serialization both share Root for in the first place.
 //
 // tel may be nil (instance.yaml's telemetry.enabled: false, issue #129) —
 // deliberately NOT assigned to the returned Config.Telemetry field in that
@@ -202,18 +207,18 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client) (runner.Config, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client) (runner.Config, *worktree.Manager, error) {
 	wtMgr, err := worktree.NewManager(l.WorkcopiesDir())
 	if err != nil {
-		return runner.Config{}, fmt.Errorf("new worktree manager: %w", err)
+		return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 	}
 	resolver, grants, err := buildCredentials(cfg)
 	if err != nil {
-		return runner.Config{}, err
+		return runner.Config{}, nil, err
 	}
 	instanceRoot, err := filepath.Abs(l.Root)
 	if err != nil {
-		return runner.Config{}, fmt.Errorf("resolve instance root: %w", err)
+		return runner.Config{}, nil, fmt.Errorf("resolve instance root: %w", err)
 	}
 
 	envCaps := make(map[string]string, len(credentialedCapabilities))
@@ -283,7 +288,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if tel != nil {
 		rc.Telemetry = tel
 	}
-	return rc, nil
+	return rc, wtMgr, nil
 }
 
 // goobersByName indexes set's Goobers by name for workflow.WithGoobers

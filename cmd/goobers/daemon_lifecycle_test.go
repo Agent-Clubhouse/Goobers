@@ -9,10 +9,12 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // newStuckRun hand-constructs a run left non-terminal (task-checkpointed, no
@@ -173,6 +175,64 @@ func TestResumeJournalsActualPhaseNotHardcodedStatus(t *testing.T) {
 	if status != string(journal.PhaseCompleted) {
 		t.Fatalf("instance-log status = %q, want %q (the run's real outcome, not a hardcoded \"resumed\")", status, journal.PhaseCompleted)
 	}
+}
+
+// TestResumePastOrphanedWorktreeAtSameKey is issue #136's core fix
+// end-to-end: a real leftover worktree directory at the exact key a resumed
+// run's stage would reuse (RunID + "-" + stageName) — the signature of a
+// mid-stage crash that never got to call Remove — must not make Resume fail
+// forever with "already has a worktree"; worktree.Create's adopt-and-reset
+// clears it and starts fresh.
+func TestResumePastOrphanedWorktreeAtSameKey(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const runID = "stuck-orphan-1"
+	newStuckRun(t, l, runID, "default-implement")
+
+	// repoCloneURL is the same test-seam closure initDeterministicDemo just
+	// installed — call it to get the identical fixture repo path, so the
+	// orphaned worktree below is keyed against the exact repo the resumed
+	// run's worktree.Manager will resolve to.
+	fixtureRepo, err := repoCloneURL(apiv1.RepoRef{})
+	if err != nil {
+		t.Fatalf("repoCloneURL: %v", err)
+	}
+
+	wtMgr, err := worktree.NewManager(l.WorkcopiesDir())
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	orphanKey := runID + "-local-ci" // buildEnvelope's RunID+"-"+stageName convention
+	if _, err := wtMgr.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: fixtureRepo, RunID: orphanKey, BaseRef: "main",
+	}); err != nil {
+		t.Fatalf("plant orphaned worktree: %v", err)
+	}
+	// Never call Remove — simulating the crash that left this worktree
+	// behind mid-stage, exactly what issue #136 says makes resume fail
+	// forever without the adopt-and-reset fix.
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
+	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, warned, err := resumeInterruptedRuns(context.Background(), l.RunsDir(), setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, sched.Release, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warned) != 0 {
+		t.Fatalf("warned = %v, want none", warned)
+	}
+	if len(resumed) != 1 || resumed[0] != runID {
+		t.Fatalf("resumed = %v, want [%s]", resumed, runID)
+	}
+	waitForRunPhase(t, l.RunsDir(), runID, journal.PhaseCompleted)
 }
 
 // TestUpSkipsUnresolvableWorkflowWithWarningNotFatal is issue #135 point 2's

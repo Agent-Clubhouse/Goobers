@@ -16,23 +16,26 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // schedulerSetup bundles everything both `up` and `run` need to build a
 // localscheduler.Scheduler over an instance's config: the shared runner, the
 // telemetry client both the runner and the scheduler span through, the
 // telemetry rollup every dispatched run incrementally ingests into (issue
-// #127), its instance log, and one WorkflowEntry per configured workflow.
-// Factored out so both commands construct it identically (issue #134: `run`
-// used to build its own bare *runner.Runner and skip the scheduler/
-// conditions/journal/lock entirely — the two commands must agree on this
-// construction, not maintain two divergent copies of it). The caller owns
-// calling Telemetry.Shutdown and RollupDB.Close once it's done driving runs,
-// exactly as it did before this seam existed.
+// #127), the worktree.Manager the runner dispatches through, its instance
+// log, and one WorkflowEntry per configured workflow. Factored out so both
+// commands construct it identically (issue #134: `run` used to build its own
+// bare *runner.Runner and skip the scheduler/conditions/journal/lock
+// entirely — the two commands must agree on this construction, not maintain
+// two divergent copies of it). The caller owns calling Telemetry.Shutdown and
+// RollupDB.Close once it's done driving runs, exactly as it did before this
+// seam existed.
 type schedulerSetup struct {
 	Runner      *runner.Runner
 	Telemetry   *telemetry.Client
 	RollupDB    *rollup.DB
+	Worktrees   *worktree.Manager
 	InstanceLog *journal.InstanceLog
 	Entries     []localscheduler.WorkflowEntry
 	Machines    map[string]*workflow.Machine
@@ -88,7 +91,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		}
 	}
 
-	runnerCfg, err := buildRunnerConfig(l, cfg, goobers, tel)
+	runnerCfg, wtMgr, err := buildRunnerConfig(l, cfg, goobers, tel)
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +133,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		Runner:      rn,
 		Telemetry:   tel,
 		RollupDB:    rollupDB,
+		Worktrees:   wtMgr,
 		InstanceLog: instanceLog,
 		Entries:     entries,
 		Machines:    machines,
