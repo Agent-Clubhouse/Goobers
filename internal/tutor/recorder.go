@@ -14,6 +14,10 @@ import (
 type Recorder interface {
 	RecordNoSignal(ctx context.Context, signalCount int)
 	RecordProposal(ctx context.Context, proposal Proposal, pr providers.PullRequestResult)
+	// RecordBoundaryViolation records that a proposal was refused by the T4
+	// write-boundary (#104) — an audit trail for a run that tried to write
+	// outside the configured config root.
+	RecordBoundaryViolation(ctx context.Context, proposal Proposal, err error)
 }
 
 // SpanRecorder records Tutor findings as events on an existing telemetry span.
@@ -43,10 +47,28 @@ func (r SpanRecorder) RecordProposal(_ context.Context, proposal Proposal, pr pr
 	)
 }
 
+// RecordBoundaryViolation records a refused proposal as a distinct span event so
+// a write-boundary breach is visible in the Tutor's own run journal (TUT-006).
+func (r SpanRecorder) RecordBoundaryViolation(_ context.Context, proposal Proposal, err error) {
+	r.Span.Event("tutor.boundary_violation",
+		attribute.String("tutor.finding.type", string(proposal.Finding.Type)),
+		attribute.String("tutor.workflow.id", proposal.Finding.WorkflowID),
+		attribute.String("tutor.error", errString(err)),
+	)
+}
+
 type noopRecorder struct{}
 
 func (noopRecorder) RecordNoSignal(context.Context, int) {}
 func (noopRecorder) RecordProposal(context.Context, Proposal, providers.PullRequestResult) {
+}
+func (noopRecorder) RecordBoundaryViolation(context.Context, Proposal, error) {}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func prID(pr providers.PullRequestResult) string {

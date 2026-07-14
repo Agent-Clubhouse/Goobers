@@ -61,6 +61,14 @@ config itself, not left to operator discretion:
   nominator get `github:issues:write` only (+ nominator gets
   `telemetry:read`); implementer gets `repo:push` only; reviewer gets no
   capability at all.
+- **The Tutor is confined to this config root.** When the self-tuning Tutor
+  loop (#104 / epic #36) opens a config-as-code PR, it is path-scoped to
+  `selfhost/` and refuses (fail-closed, before any commit) to touch anything
+  outside it — platform code, CI, and credentials are unreachable through it.
+  Since Tutor PRs land in this same repo as platform code, `.github/CODEOWNERS`
+  owns `/selfhost/` so a maintainer must review before merge. Structural
+  credential scoping rides #35. See
+  [`docs/guides/tutor-write-boundary.md`](../docs/guides/tutor-write-boundary.md).
 
 ## Tokens and scopes
 
