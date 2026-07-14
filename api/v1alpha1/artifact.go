@@ -32,6 +32,17 @@ var ErrDigestMismatch = errors.New("artifact digest mismatch")
 // journal-relative and contained.
 var ErrPathEscape = errors.New("artifact path escapes the journal root")
 
+// ErrSymlinkEscape is returned when a path's real, symlink-resolved location
+// lies outside root even though it lexically appeared contained (#120): a
+// declared path (or one of its parent components) is a symlink whose target
+// escapes root. Declared paths — a deterministic stage's resultFile, an
+// agentic stage's artifactFile, a journal ArtifactPointer's Path — are
+// untrusted input under SEC-047's threat model (the producer may be a
+// prompt-injected agent), so a symlink is refused rather than followed:
+// otherwise the executor would faithfully lift an arbitrary host file (e.g.
+// ~/.ssh/id_rsa) into the journal as if it were the stage's own output.
+var ErrSymlinkEscape = errors.New("path resolves outside root via a symlink")
+
 // ArtifactPointer references a stage output stored in the run journal. It is the
 // ONLY way stages exchange non-scalar data. The path is journal-relative (e.g.
 // "artifacts/<stage>/diff.patch"); the digest pins the content so a resolve is
@@ -93,13 +104,13 @@ func (p ArtifactPointer) Validate() error {
 }
 
 // Resolve reads the artifact bytes from journalRoot and verifies them against the
-// pointer's digest. It is read-only and refuses any path that escapes journalRoot.
-// A digest mismatch returns ErrDigestMismatch.
+// pointer's digest. It is read-only and refuses any path that escapes journalRoot,
+// lexically or via a symlink (#120). A digest mismatch returns ErrDigestMismatch.
 func (p ArtifactPointer) Resolve(journalRoot string) ([]byte, error) {
 	if err := validateDigest(p.Digest); err != nil {
 		return nil, err
 	}
-	full, err := containedPath(journalRoot, p.Path)
+	full, err := ResolveContainedPath(journalRoot, p.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -181,6 +192,43 @@ func validateDigest(d string) error {
 		return fmt.Errorf("artifact digest %q: not valid hex: %w", d, err)
 	}
 	return nil
+}
+
+// ResolveContainedPath is the single containment primitive every "read a
+// declared, untrusted-relative path against a fixed root" call site must use
+// instead of a bare filepath.Join + os.ReadFile (#120): a deterministic
+// stage's declared resultFile, an agentic stage's declared artifactFile, and
+// in-journal ArtifactPointer resolution all read this way.
+//
+// It first requires rel to be lexically contained (see containedPath: no
+// absolute path, no ".." traversal — ErrPathEscape). It then resolves
+// symlinks in both root and the joined path and requires the *resolved* path
+// to still be contained within the *resolved* root, refusing a path that is
+// lexically safe but is (or passes through) a symlink whose target escapes
+// root (ErrSymlinkEscape).
+//
+// A target that does not yet exist surfaces as filepath.EvalSymlinks' own
+// not-exist error (a *PathError satisfying errors.Is(err, fs.ErrNotExist)),
+// so callers can keep distinguishing "missing" from "escapes" from a deeper
+// I/O failure exactly as before this check existed.
+func ResolveContainedPath(root, rel string) (string, error) {
+	full, err := containedPath(root, rel)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return "", err
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve root %q: %w", root, err)
+	}
+	relBack, err := filepath.Rel(resolvedRoot, resolved)
+	if err != nil || relBack == ".." || strings.HasPrefix(relBack, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: %q resolves to %q", ErrSymlinkEscape, rel, resolved)
+	}
+	return resolved, nil
 }
 
 // containedPath joins a journal-relative rel onto root and guarantees the result

@@ -23,6 +23,14 @@ import (
 // mirroring internal/executor's InputResultFile contract.
 var ErrDeclaredArtifactMissing = errors.New("harness: declared artifact file not produced")
 
+// ErrDeclaredArtifactPathEscape is returned when a stage's declared
+// InputArtifactFile escapes the workspace, lexically or via a symlink (#120)
+// — an untrusted (possibly prompt-injected) declaration must never let the
+// executor lift an arbitrary host file into the journal as if it were the
+// stage's own output. The stage fails closed the same way a missing file
+// does, not as a hard executor error.
+var ErrDeclaredArtifactPathEscape = errors.New("harness: declared artifact file path escapes the workspace")
+
 // Executor is the engine-facing invoke.Goober implementation for agentic
 // stages (GBO-051) — checked at compile time so a signature drift is caught
 // here, not at the runner's wiring site.
@@ -148,10 +156,10 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	}
 	ptr, err := e.liftArtifactFile(env)
 	if err != nil {
-		if errors.Is(err, ErrDeclaredArtifactMissing) {
+		if code, summary, ok := declaredArtifactFailure(err); ok {
 			result.Status = apiv1.ResultFailure
-			result.Error = &apiv1.ErrorInfo{Code: "missing_declared_artifact", Message: err.Error(), Retryable: false}
-			result.Summary = "declared artifact file missing"
+			result.Error = &apiv1.ErrorInfo{Code: code, Message: err.Error(), Retryable: false}
+			result.Summary = summary
 			return result, nil
 		}
 		return apiv1.ResultEnvelope{}, err
@@ -179,9 +187,9 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	}
 	ptr, err := e.liftArtifactFile(env)
 	if err != nil {
-		if errors.Is(err, ErrDeclaredArtifactMissing) {
+		if _, summary, ok := declaredArtifactFailure(err); ok {
 			verdict.Decision = apiv1.VerdictFail
-			verdict.Summary = fmt.Sprintf("declared artifact file missing: %v", err)
+			verdict.Summary = fmt.Sprintf("%s: %v", summary, err)
 			return verdict, nil
 		}
 		return apiv1.Verdict{}, err
@@ -190,6 +198,22 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		verdict.Evidence = append(verdict.Evidence, *ptr)
 	}
 	return verdict, nil
+}
+
+// declaredArtifactFailure classifies an error from liftArtifactFile as a
+// normal, non-executor-fault stage failure (the declared file is missing, or
+// its path escapes the workspace lexically or via a symlink — #120) that
+// Invoke/Review should surface as ResultFailure/VerdictFail, vs. anything
+// else, which callers must propagate as a hard executor error instead.
+func declaredArtifactFailure(err error) (code, summary string, ok bool) {
+	switch {
+	case errors.Is(err, ErrDeclaredArtifactMissing):
+		return "missing_declared_artifact", "declared artifact file missing", true
+	case errors.Is(err, ErrDeclaredArtifactPathEscape):
+		return "declared_artifact_path_escape", "declared artifact file path escapes the workspace", true
+	default:
+		return "", "", false
+	}
 }
 
 // run materializes capability-scoped credentials, drives the adapter, and
@@ -242,7 +266,18 @@ func (e *Executor) liftArtifactFile(env apiv1.InvocationEnvelope) (*apiv1.Artifa
 	if path == "" {
 		return nil, nil
 	}
-	data, err := os.ReadFile(filepath.Join(env.Workspace, path))
+	full, err := apiv1.ResolveContainedPath(env.Workspace, path)
+	if err != nil {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return nil, fmt.Errorf("%w: %s", ErrDeclaredArtifactMissing, path)
+		case errors.Is(err, apiv1.ErrPathEscape), errors.Is(err, apiv1.ErrSymlinkEscape):
+			return nil, fmt.Errorf("%w: %s: %w", ErrDeclaredArtifactPathEscape, path, err)
+		default:
+			return nil, fmt.Errorf("harness: resolve declared artifact file %q: %w", path, err)
+		}
+	}
+	data, err := os.ReadFile(full)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("%w: %s", ErrDeclaredArtifactMissing, path)

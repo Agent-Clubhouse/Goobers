@@ -247,6 +247,77 @@ func TestShellExecutor_MissingDeclaredResultFileIsFailure(t *testing.T) {
 	}
 }
 
+// TestShellExecutor_ResultFilePathTraversalIsRejected is the regression test
+// for #120: a declared resultFile that lexically escapes the workspace (via
+// "..") must fail the stage closed, never lift the escaped file's content
+// into a recorded artifact.
+func TestShellExecutor_ResultFilePathTraversalIsRejected(t *testing.T) {
+	parent := t.TempDir()
+	workspace := filepath.Join(parent, "workspace")
+	if err := os.Mkdir(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte(`{"leaked":true}`)
+	if err := os.WriteFile(filepath.Join(parent, "secret.json"), secret, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, rec := newTestExecutor(t, nil)
+	env := apiv1.InvocationEnvelope{TaskID: "task-1", Workspace: workspace}
+	env.Inputs = map[string]interface{}{InputResultFile: "../secret.json"}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"sh", "-c", "exit 0"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure {
+		t.Fatalf("status = %v, want failure", result.Status)
+	}
+	if result.Error == nil || result.Error.Code != "result_file_path_escape" {
+		t.Fatalf("error = %+v, want result_file_path_escape", result.Error)
+	}
+	for name, data := range rec.recorded {
+		if strings.Contains(string(data), "leaked") {
+			t.Fatalf("escaped file content leaked into recorded artifact %q: %s", name, data)
+		}
+	}
+}
+
+// TestShellExecutor_ResultFileSymlinkEscapeIsRejected is the symlink half of
+// #120: a declared resultFile name that is lexically contained but is itself
+// a symlink to a file outside the workspace must also fail the stage closed.
+func TestShellExecutor_ResultFileSymlinkEscapeIsRejected(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	secret := []byte(`{"leaked":true}`)
+	if err := os.WriteFile(filepath.Join(outside, "secret.json"), secret, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.json"), filepath.Join(workspace, "out.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, rec := newTestExecutor(t, nil)
+	env := apiv1.InvocationEnvelope{TaskID: "task-1", Workspace: workspace}
+	env.Inputs = map[string]interface{}{InputResultFile: "out.json"}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"sh", "-c", "exit 0"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure {
+		t.Fatalf("status = %v, want failure", result.Status)
+	}
+	if result.Error == nil || result.Error.Code != "result_file_path_escape" {
+		t.Fatalf("error = %+v, want result_file_path_escape", result.Error)
+	}
+	for name, data := range rec.recorded {
+		if strings.Contains(string(data), "leaked") {
+			t.Fatalf("symlinked outside file content leaked into recorded artifact %q: %s", name, data)
+		}
+	}
+}
+
 func TestShellExecutor_OutputTruncation(t *testing.T) {
 	exec, rec := newTestExecutor(t, nil)
 	exec.DefaultMaxOutputBytes = 8
