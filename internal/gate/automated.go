@@ -41,10 +41,14 @@ const (
 // poll itself never reached a terminal passing/failing state before its
 // deadline, which is different evidence from "CI ran and failed" and must
 // not resolve through the same "fail" branch a workflow definition wires to
-// an implement repass. A workflow definition wanting the historical
-// pass/fail-only behavior simply omits a "timeout" branch; Evaluate then
-// fails closed with an unhandled-outcome error (GT-002) rather than
-// silently falling through to "fail".
+// an implement repass. Unlike a bare pass/fail check, this third outcome is
+// enforced at compile time, not just evaluation time: internal/workflow's
+// gateOutcomeProblems (compile.go's automatedCheckOutcomes table) treats
+// "timeout" as one of ci-status's producible outcomes, so a ci-status gate
+// missing a "timeout" branch fails Compile outright (GT-002) rather than
+// compiling clean and only failing closed the first time a real poll times
+// out. Every in-tree ci-status gate (acme-web/selfhost/testdata) declares
+// one.
 const OutcomeTimeout = "timeout"
 
 // CheckFunc evaluates one named automated check against a gate's flattened
