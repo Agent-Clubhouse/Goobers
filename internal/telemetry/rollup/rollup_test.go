@@ -166,6 +166,147 @@ func TestSeededFailingRunYieldsRightErrorClass(t *testing.T) {
 	}
 }
 
+// TestInlineStageFinishedErrorSurfacesInRunErrors is issue #230: a business
+// failure (nonzero_exit, timeout, missing_result_file, exec_start,
+// result_file_path_escape) is recorded ONLY inline on stage.finished's own
+// error field — never as a standalone `error` event — so `run_errors`
+// (and everything reading it: `telemetry errors`, Tutor's error-signature
+// detection) silently missed it even though `stage_attempts`/`stats`
+// correctly counted the failure. No standalone error event exists in this
+// fixture at all — mirrors the real #229 run (`query-backlog`/`exec_start`)
+// that surfaced the gap.
+func TestInlineStageFinishedErrorSurfacesInRunErrors(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	runID := fixtureRunID
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), minimalRunYAML(runID, fixtureStart))
+	events := strings.Join([]string{
+		eventLine(1, fixtureStart, `"type":"run.started"`),
+		eventLine(2, fixtureStart.Add(time.Second), `"type":"stage.started","stage":"query-backlog","attempt":1`),
+		eventLine(3, fixtureStart.Add(2*time.Second), `"type":"stage.finished","stage":"query-backlog","attempt":1,"status":"failure","error":{"code":"exec_start","message":"exec: \"goobers\": executable file not found in $PATH"}`),
+		eventLine(4, fixtureStart.Add(3*time.Second), `"type":"run.finished","status":"failed"`),
+	}, "\n") + "\n"
+	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(dir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+
+	errs, err := db.RunErrors(runID)
+	if err != nil {
+		t.Fatalf("RunErrors: %v", err)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("RunErrors = %#v, want exactly 1 (derived from stage.finished's inline error)", errs)
+	}
+	if errs[0].Code != "exec_start" || errs[0].Stage != "query-backlog" || errs[0].Attempt != 1 {
+		t.Fatalf("unexpected run_error: %#v", errs[0])
+	}
+
+	stages, err := db.StageAttempts(runID)
+	if err != nil || len(stages) != 1 {
+		t.Fatalf("StageAttempts: %v, %#v", err, stages)
+	}
+	if stages[0].ErrorCode != "exec_start" || stages[0].ErrorClass == "" {
+		t.Fatalf("stage_attempts.error_code/error_class = %q/%q, want exec_start/non-empty (was NULL before #230)", stages[0].ErrorCode, stages[0].ErrorClass)
+	}
+
+	// The regression guard the architect ruling called for: stats'
+	// FailedAttempts and the errors table's row count must agree — that
+	// asymmetry (stats says 1 failed, errors says 0) was the bug.
+	stats, err := db.Stats(StatsRequest{})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if len(stats.Stages) != 1 || stats.Stages[0].FailedAttempts != len(errs) {
+		t.Fatalf("stats.Stages[0].FailedAttempts = %+v, want it to equal len(errs)=%d", stats.Stages, len(errs))
+	}
+}
+
+// TestStageFinishedErrorDedupesAgainstStandaloneEvent is #230's other half:
+// if a stage/attempt somehow carries both a standalone error event AND a
+// matching inline stage.finished error for the SAME code, it must count
+// once, not twice.
+func TestStageFinishedErrorDedupesAgainstStandaloneEvent(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	runID := fixtureRunID
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), minimalRunYAML(runID, fixtureStart))
+	events := strings.Join([]string{
+		eventLine(1, fixtureStart, `"type":"run.started"`),
+		eventLine(2, fixtureStart.Add(time.Second), `"type":"stage.started","stage":"s","attempt":1`),
+		eventLine(3, fixtureStart.Add(2*time.Second), `"type":"error","stage":"s","attempt":1,"error":{"code":"exec_start","message":"dup"}`),
+		eventLine(4, fixtureStart.Add(3*time.Second), `"type":"stage.finished","stage":"s","attempt":1,"status":"failure","error":{"code":"exec_start","message":"dup"}`),
+		eventLine(5, fixtureStart.Add(4*time.Second), `"type":"run.finished","status":"failed"`),
+	}, "\n") + "\n"
+	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(dir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+
+	errs, err := db.RunErrors(runID)
+	if err != nil {
+		t.Fatalf("RunErrors: %v", err)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("RunErrors = %#v, want exactly 1 (deduped, not double-counted)", errs)
+	}
+}
+
+// TestDeleteRunCoversEverySchemaTable is issue #246's schema-drift guard:
+// every per-run table IngestRun populates must appear in deleteRun's list,
+// or a second IngestRun on the same run dir (e.g. after a daemon restart
+// resumes it) hits a stale primary key and silently rolls back — the exact
+// bug that left harness_transcripts uncleared. This asserts the converse of
+// the missing-table bug directly: ingest twice, second call must succeed.
+func TestDeleteRunCoversEverySchemaTable(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	runID := fixtureRunID
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), minimalRunYAML(runID, fixtureStart))
+	events := strings.Join([]string{
+		eventLine(1, fixtureStart, `"type":"run.started"`),
+		eventLine(2, fixtureStart.Add(time.Second), `"type":"stage.started","stage":"implement","attempt":1`),
+		`{"schema":"goobers.dev/journal/event/v1","seq":3,"branch":0,"time":"2026-07-13T00:00:03Z","type":"span.recorded","stage":"implement","name":"copilot-transcript","ref":{"path":"spans/sha256/ab/cdef","digest":"sha256:abcdef","size":4096}}`,
+		eventLine(4, fixtureStart.Add(3*time.Second), `"type":"stage.finished","stage":"implement","attempt":1,"status":"success"`),
+		eventLine(5, fixtureStart.Add(4*time.Second), `"type":"run.finished","status":"completed"`),
+	}, "\n") + "\n"
+	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(dir); err != nil {
+		t.Fatalf("first IngestRun: %v", err)
+	}
+	before, err := db.HarnessTranscripts(runID)
+	if err != nil || len(before) != 1 {
+		t.Fatalf("HarnessTranscripts after first ingest: %v, %#v", err, before)
+	}
+
+	// Simulating the daemon-restart re-ingest (issue #246): calling
+	// IngestRun a second time on the identical run dir used to hit
+	// harness_transcripts' (run_id, seq) primary key and roll back the
+	// whole transaction, since deleteRun never cleared that table.
+	if err := db.IngestRun(dir); err != nil {
+		t.Fatalf("second IngestRun (re-ingest) must succeed, got: %v", err)
+	}
+	after, err := db.HarnessTranscripts(runID)
+	if err != nil {
+		t.Fatalf("HarnessTranscripts after second ingest: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("transcript row count = %d after re-ingest, want stable at %d (not duplicated, not lost)", len(after), len(before))
+	}
+}
+
 // TestRebuildIsReproducible: delete telemetry.db, rebuild from journals,
 // query results must be identical to incremental per-run ingestion.
 func TestRebuildIsReproducible(t *testing.T) {

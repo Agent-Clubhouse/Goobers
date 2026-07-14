@@ -51,8 +51,16 @@ func (db *DB) IngestRun(runDir string) error {
 	return tx.Commit()
 }
 
+// perRunTables lists every table keyed by run_id that IngestRun populates —
+// deleteRun must clear all of them before a fresh insert, or a re-ingest
+// (e.g. after a daemon restart resumes a run that already ingested once,
+// issue #246) hits a stale row's primary key and rolls back the whole
+// transaction. TestDeleteRunCoversEverySchemaTable guards against the next
+// table added to insertEvents/insertSpans silently repeating this gap.
+var perRunTables = []string{"runs", "stage_attempts", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts"}
+
 func deleteRun(tx *sql.Tx, runID string) error {
-	for _, table := range []string{"runs", "stage_attempts", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events"} {
+	for _, table := range perRunTables {
 		if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE run_id = ?`, table), runID); err != nil {
 			return fmt.Errorf("rollup: clear %s for run %s: %w", table, runID, err)
 		}
@@ -110,6 +118,24 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 		return a
 	}
 
+	// Pre-scan standalone error codes per stage/attempt so the
+	// eventStageFinished case below can dedupe against them (issue #230)
+	// regardless of where each event falls in the slice — a standalone
+	// error event and stage.finished's own inline error are recorded for
+	// genuinely different faults in practice (worktree_remove_failed vs a
+	// business failure code) and both are wanted, but if the same code ever
+	// shows up both ways for the same attempt, it must count once.
+	standaloneErrorCodes := map[stageKey]map[string]bool{}
+	for _, ev := range events {
+		if ev.Type == eventError && ev.Error != nil && ev.Stage != "" {
+			k := stageKey{ev.Stage, ev.Attempt}
+			if standaloneErrorCodes[k] == nil {
+				standaloneErrorCodes[k] = map[string]bool{}
+			}
+			standaloneErrorCodes[k][ev.Error.Code] = true
+		}
+	}
+
 	for _, ev := range events {
 		switch ev.Type {
 		case eventStageStarted:
@@ -132,6 +158,28 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 				return err
 			} else if rj.Valid {
 				a.runnerJSON = rj
+			}
+			// Business failures (nonzero_exit, timeout, missing_result_file,
+			// exec_start, result_file_path_escape) are recorded ONLY inline
+			// here, never as a standalone error event (architect ruling,
+			// #230) — derive a run_errors row from them the same way the
+			// eventError case below does, or `telemetry errors` silently
+			// misses this entire failure class despite `telemetry stats`
+			// correctly counting it.
+			if ev.Status == stageStatusFailure && ev.Error != nil {
+				class := string(telemetry.ClassifyError(ev.Error.Code))
+				a.errorCode = ev.Error.Code
+				a.errorClass = class
+				k := stageKey{ev.Stage, ev.Attempt}
+				if !standaloneErrorCodes[k][ev.Error.Code] {
+					if _, err := tx.Exec(`
+						INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+						runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), ev.Error.Code,
+						nullIfEmpty(class), nullIfEmpty(telemetry.Redact(ev.Error.Message)), formatTime(ev.Time)); err != nil {
+						return fmt.Errorf("rollup: insert run_error (stage.finished) seq %d: %w", ev.Seq, err)
+					}
+				}
 			}
 
 		case eventError:

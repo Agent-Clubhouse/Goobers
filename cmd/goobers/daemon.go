@@ -146,7 +146,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 			Gaggle:    wf.Spec.Gaggle,
 			Readiness: wf.Spec.Readiness,
 			Schedule:  sched,
-			Starter:   &trackedStarter{r: rn, machine: machines[wf.Name], wg: wg, l: l, tel: tel, rollupDB: rollupDB},
+			Starter:   &trackedStarter{r: rn, machine: machines[wf.Name], wg: wg, l: l, tel: tel, rollupDB: rollupDB, log: instanceLog},
 			RepoRef:   repoRefs[wf.Name],
 		})
 	}
@@ -208,6 +208,7 @@ type trackedStarter struct {
 	l        instance.Layout
 	tel      *telemetry.Client
 	rollupDB *rollup.DB
+	log      *journal.InstanceLog
 }
 
 func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
@@ -221,7 +222,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		RepoRef: req.RepoRef,
 		Item:    req.Item,
 	})
-	ingestRunTelemetry(s.tel, s.rollupDB, s.l, req.RunID)
+	ingestRunTelemetry(s.tel, s.rollupDB, s.l, req.RunID, s.log)
 	return localscheduler.StartResult{Phase: res.Phase, FinalState: res.FinalState}, err
 }
 
@@ -313,7 +314,7 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 			defer wg.Done()
 			defer release(wfName)
 			result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, RepoRef: repoRef})
-			ingestRunTelemetry(tel, rollupDB, l, runID)
+			ingestRunTelemetry(tel, rollupDB, l, runID, log)
 			status := string(result.Phase)
 			if err != nil {
 				status = "error: " + err.Error()

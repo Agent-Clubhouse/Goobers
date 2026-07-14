@@ -80,15 +80,41 @@ func (t teeRegistrar) Register(secret []byte) {
 // is exactly the gap that made `goobers trace` depend on a prior
 // `goobers telemetry` call, which itself flushed via a DIFFERENT process's
 // tel.Shutdown before this fix existed).
-func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout, runID string) {
+func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout, runID string, log *journal.InstanceLog) {
 	if tel != nil {
 		_ = tel.Flush(context.Background())
 	}
 	if db == nil {
 		return
 	}
-	_ = db.IngestRun(filepath.Join(l.RunsDir(), runID))
-	_ = db.IngestSchedulerLog(l.SchedulerDir())
+	// Best-effort (the rollup is derived state, never the source of truth,
+	// so a failure here must never fail the run) does NOT mean silent
+	// (issue #246): a swallowed error here — e.g. the harness_transcripts PK
+	// conflict on re-ingesting a resumed run — left the rollup silently
+	// stale with nothing but a blank `_ =` to show for it. logIngestFailure
+	// records it to the instance log, matching resumeInterruptedRuns' own
+	// resume_unresolvable_workflow convention, without changing the
+	// swallow-and-continue control flow.
+	if err := db.IngestRun(filepath.Join(l.RunsDir(), runID)); err != nil {
+		logIngestFailure(log, runID, "telemetry_ingest_run_failed", err)
+	}
+	if err := db.IngestSchedulerLog(l.SchedulerDir()); err != nil {
+		logIngestFailure(log, runID, "telemetry_ingest_scheduler_log_failed", err)
+	}
+}
+
+// logIngestFailure appends a best-effort diagnostic event for a failed
+// rollup ingest (issue #246) — nil-safe (log may be nil in a test/standalone
+// context) and itself swallows its own Append error, since a logging
+// failure must not cascade into a second failure mode.
+func logIngestFailure(log *journal.InstanceLog, runID, code string, cause error) {
+	if log == nil {
+		return
+	}
+	_ = log.Append(journal.Event{
+		Type: journal.EventError, RunID: runID,
+		Error: &journal.ErrorDetail{Code: code, Message: cause.Error()},
+	})
 }
 
 // repoCloneURL overrides runner.Config.RepoCloneURL when non-nil. It exists
