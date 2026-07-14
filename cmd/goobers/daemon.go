@@ -64,6 +64,15 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	if err != nil {
 		return nil, err
 	}
+	// Fail fast if an agentic stage's harness isn't usable (missing/broken/
+	// signed-out CLI) — before any worktree/claim/journal side effect — rather
+	// than burning a mid-run agentic attempt (#238). Indirected through the
+	// preflightHarnesses seam so the cmd/goobers test suite (which drives up/run
+	// without a real, installed Copilot CLI) can neutralize it uniformly; the
+	// real preflight logic is covered directly by preflight_test.go.
+	if err := preflightHarnesses(goobers, set.Workflows); err != nil {
+		return nil, err
+	}
 	repoRefs, err := repoRefsByWorkflow(set)
 	if err != nil {
 		return nil, err
