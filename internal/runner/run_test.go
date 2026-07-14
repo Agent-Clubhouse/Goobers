@@ -96,6 +96,17 @@ func (b *blockingDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelop
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
+// alwaysFailAutomated is an invoke.Automated that always reports "fail",
+// regardless of the subject's actual status — for constructing a gate whose
+// declared "pass" branch is statically reachable (satisfying
+// workflow.Compile's reachability check) but never actually taken at
+// runtime, e.g. to exercise a genuine runaway machine against maxSteps.
+type alwaysFailAutomated struct{}
+
+func (alwaysFailAutomated) Evaluate(context.Context, apiv1.AutomatedGate, apiv1.InvocationEnvelope) (string, error) {
+	return "fail", nil
+}
+
 // --- fixture repo: a local bare repo, so the test needs no network access ---
 
 func newFixtureRepo(t *testing.T) string {
@@ -336,6 +347,331 @@ func TestRunnerBranchesToAbortOnGateFail(t *testing.T) {
 	}
 	if res.Phase != journal.PhaseAborted {
 		t.Fatalf("phase = %q, want aborted", res.Phase)
+	}
+}
+
+// terminalFailMachine is a single task with no Next (terminal) — the exact
+// shape #110's ruling targets: "a terminal task's failure journals the run
+// as PhaseCompleted" was the bug (run.go:303-305 pre-fix).
+func terminalFailMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "terminal-fail", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile terminal-fail machine: %v", err)
+	}
+	return m
+}
+
+// chainedNoGateMachine is two tasks back to back with no gate between them —
+// "implement" feeds directly into "deploy", never through a gate that could
+// branch on a business failure.
+func chainedNoGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "deploy"},
+			{Name: "deploy", Type: apiv1.TaskDeterministic, Goal: "ship it", Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "chained-no-gate", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile chained-no-gate machine: %v", err)
+	}
+	return m
+}
+
+// TestRunnerTaskFailureWithNoGateNextFailsRun proves the #110 ruling's core
+// fix: a terminal task's business "failure" must journal PhaseFailed, not
+// PhaseCompleted — the exact defect the architect review caught (every
+// shipped V0 workflow has no gate after its first stage, so every broken run
+// used to journal as completed, fail-open).
+func TestRunnerTaskFailureWithNoGateNextFailsRun(t *testing.T) {
+	machine := terminalFailMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-fail-terminal:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "build_failed", Message: "nope"}},
+	}
+	r, runsDir := newTestRunner(t, byTask, nil)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-fail-terminal",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, want failed (a terminal task's failure must never journal as completed)", res.Phase)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-fail-terminal"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	st, err := rd.State()
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.Phase != journal.PhaseFailed {
+		t.Fatalf("state.json phase = %q, want failed", st.Phase)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	last := events[len(events)-1]
+	if last.Type != journal.EventRunFinished || last.Status != string(journal.PhaseFailed) {
+		t.Fatalf("last event = %+v, want run.finished status=failed", last)
+	}
+}
+
+// TestRunnerTaskFailureWithNonGateNextFailsRunAndSkipsDownstream proves a
+// business failure whose Next names another task (not a gate) never
+// dispatches that downstream task — "never run downstream stages on
+// garbage" (ruling #110) — instead of the pre-fix behavior of advancing
+// unconditionally regardless of status.
+func TestRunnerTaskFailureWithNonGateNextFailsRunAndSkipsDownstream(t *testing.T) {
+	machine := chainedNoGateMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-fail-chain:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "build_failed", Message: "nope"}},
+		// Deliberately no canned result for "deploy" — if the runner ever
+		// dispatches it, stubDeterministic.Run errors ("no canned output"),
+		// which would surface as a different failure than PhaseFailed and
+		// fail this test's phase assertion below.
+	}
+	r, runsDir := newTestRunner(t, byTask, nil)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-fail-chain",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, want failed", res.Phase)
+	}
+	if res.FinalState != "implement" {
+		t.Fatalf("finalState = %q, want implement (the run must stop there, never reach deploy)", res.FinalState)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-fail-chain"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, e := range events {
+		if e.Stage == "deploy" {
+			t.Fatalf("deploy must never be dispatched after implement's failure, got event %+v", e)
+		}
+	}
+}
+
+// TestRunnerTaskFailureWithGateNextStillBranches proves the ruling's
+// preserved case: a business failure whose Next is a gate still advances so
+// the gate can branch on it (the shipped reviewer-gate pattern) — the same
+// path TestRunnerBranchesToAbortOnGateFail exercises end to end, asserted
+// here directly against the gate.evaluated event so a regression that
+// terminalizes on ANY failure (over-correcting #110) is caught too.
+func TestRunnerTaskFailureWithGateNextStillBranches(t *testing.T) {
+	machine := fixtureMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-fail-gate:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "build_failed", Message: "nope"}},
+	}
+	r, runsDir := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-fail-gate",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseAborted {
+		t.Fatalf("phase = %q, want aborted (the gate branches fail->@abort)", res.Phase)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-fail-gate"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var sawGateEval bool
+	for _, e := range events {
+		if e.Type == journal.EventGateEvaluated {
+			sawGateEval = true
+			if e.Verdict != "fail" {
+				t.Errorf("gate verdict = %q, want fail", e.Verdict)
+			}
+		}
+	}
+	if !sawGateEval {
+		t.Fatal("expected the review gate to evaluate the failure, got no gate.evaluated event")
+	}
+}
+
+// TestRunnerTaskBlockedHaltsResumablePause proves a "blocked" business status
+// halts the run at that task — a resumable pause like a human gate's, at any
+// position — instead of the pre-fix behavior of advancing to Next
+// unconditionally (which would evaluate "review" against a blocked result).
+func TestRunnerTaskBlockedHaltsResumablePause(t *testing.T) {
+	machine := fixtureMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-blocked:implement": {status: apiv1.ResultBlocked, summary: "waiting on an external dependency"},
+	}
+	r, runsDir := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-blocked",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseRunning {
+		t.Fatalf("phase = %q, want running (paused pending intervention, not terminal)", res.Phase)
+	}
+	if res.FinalState != "implement" {
+		t.Fatalf("finalState = %q, want implement (halted there, not advanced to review)", res.FinalState)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-blocked"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	st, err := rd.State()
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.Phase != journal.PhaseRunning || st.MachineState != "implement" {
+		t.Fatalf("state.json = %+v, want running at implement (resume point)", st)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == journal.EventGateEvaluated {
+			t.Fatalf("review must not be evaluated against a blocked result, got gate.evaluated event %+v", e)
+		}
+	}
+}
+
+// TestRunnerMaxStepsExceededFailsRunClosed proves a runaway machine's
+// max-steps abort journals PhaseFailed instead of leaving the run stuck at
+// phase=running forever — the daemon auto-resumes every PhaseRunning run on
+// restart (cmd/goobers/daemon.go), so an unterminated runaway run would
+// re-loop and re-fail identically on every restart (ruling #110 item 6: every
+// error return out of walk must first append a terminal event).
+func TestRunnerMaxStepsExceededFailsRunClosed(t *testing.T) {
+	// compile.go's reachability check requires every state have SOME path to
+	// a terminal, so a bare task->task self-loop is rejected at compile time
+	// (tasks have only one Next, no branching). A gate's "pass" branch gives
+	// the machine a statically reachable terminal; alwaysFailAutomated below
+	// makes the gate never actually take it at runtime, so "loop"->"check"
+	// cycles forever — the genuine runaway-machine shape maxSteps guards.
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "loop",
+		Tasks: []apiv1.Task{
+			{Name: "loop", Type: apiv1.TaskDeterministic, Goal: "spin", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "check"},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "check",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+				Branches:  map[string]string{"pass": workflow.TerminalComplete, "fail": "loop"},
+			},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "runaway", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	runsDir := filepath.Join(instanceRoot, "runs")
+	fixtureRepo := newFixtureRepo(t)
+
+	det := &stubDeterministic{byTask: map[string]stubTaskResult{
+		"run-runaway:loop": {status: apiv1.ResultSuccess},
+	}}
+
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
+		Automated:        alwaysFailAutomated{},
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		MaxSteps:         3,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = r.Start(context.Background(), StartInput{
+		RunID:   "run-runaway",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil {
+		t.Fatal("Start: want an error after exceeding max steps")
+	}
+
+	rd, rerr := journal.OpenRead(filepath.Join(runsDir, "run-runaway"))
+	if rerr != nil {
+		t.Fatalf("OpenRead: %v", rerr)
+	}
+	st, serr := rd.State()
+	if serr != nil {
+		t.Fatalf("State: %v", serr)
+	}
+	if st.Phase != journal.PhaseFailed {
+		t.Fatalf("state.json phase = %q, want failed — the run must not be left at phase=running for the daemon to re-resume and re-loop forever", st.Phase)
+	}
+	events, eerr := rd.Events()
+	if eerr != nil {
+		t.Fatalf("Events: %v", eerr)
+	}
+	last := events[len(events)-1]
+	if last.Type != journal.EventRunFinished || last.Status != string(journal.PhaseFailed) {
+		t.Fatalf("last event = %+v, want run.finished status=failed", last)
 	}
 }
 

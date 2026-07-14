@@ -257,7 +257,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	for {
 		steps++
 		if steps > r.maxSteps {
-			return Result{}, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps)
+			return r.failTerminal(jr, state, steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps))
 		}
 		jr.SetMachineState(state)
 
@@ -296,10 +296,35 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}
 			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, startAttempt)
 			if err != nil {
-				return Result{}, err
+				return r.failTerminal(jr, t.Name, steps, err)
 			}
 			pointers = append(pointers, produced...)
 			lastStage, lastResult = t.Name, result
+
+			switch result.Status {
+			case apiv1.ResultBlocked:
+				// Halt pending external intervention, at any position — a
+				// resumable pause like a human gate's (ruling #110). The
+				// stage.finished event's Append already checkpointed
+				// state.json at t.Name (SetMachineState above ran before
+				// dispatch and hasn't changed since), so no extra Checkpoint
+				// call is needed here.
+				return Result{Phase: journal.PhaseRunning, FinalState: t.Name, Steps: steps}, nil
+			case apiv1.ResultFailure:
+				if _, isGate := in.Machine.Gate(t.Next); t.Next != "" && isGate {
+					// A downstream gate branches on the failure — the
+					// shipped reviewer-gate pattern (docs/stage-contract.md).
+					// Advance; do not terminalize here.
+					state = t.Next
+					continue
+				}
+				// Next is empty, a task, or a reserved terminal target: no
+				// gate to branch on the failure. Never dispatch downstream
+				// stages on a failed result, never silently complete
+				// (ruling #110).
+				return r.finish(jr, journal.PhaseFailed, t.Name, steps)
+			}
+
 			if t.Next == "" {
 				return r.finish(jr, journal.PhaseCompleted, t.Name, steps)
 			}
@@ -322,11 +347,11 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 
 			gr, err := r.evaluateGate(ctx, gateEval, ex, in, g, lastStage, lastResult, pointers)
 			if err != nil {
-				return Result{}, err
+				return r.failTerminal(jr, g.Name, steps, err)
 			}
 			if gr.Escalated && r.cfg.Escalation != nil && in.Item != nil {
 				if err := r.cfg.Escalation.NotifyEscalated(ctx, in.Item.ID, gr, "repass budget exhausted"); err != nil {
-					return Result{}, fmt.Errorf("runner: notify escalation for gate %q: %w", g.Name, err)
+					return r.failTerminal(jr, g.Name, steps, fmt.Errorf("runner: notify escalation for gate %q: %w", g.Name, err))
 				}
 			}
 			switch gr.Target {
@@ -341,8 +366,23 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			continue
 		}
 
-		return Result{}, fmt.Errorf("runner: unknown state %q", state)
+		return r.failTerminal(jr, state, steps, fmt.Errorf("runner: unknown state %q", state))
 	}
+}
+
+// failTerminal journals the run's terminal run.finished(PhaseFailed) event
+// before surfacing origErr, so a walk-level error never leaves phase=running
+// forever — the daemon auto-resumes every PhaseRunning run on restart
+// (cmd/goobers/daemon.go), and an unterminated failed run would be resumed
+// (and fail identically) on every restart. Per §2.6's fail-closed journaling,
+// the journal must record the failure, not pretend the run is still live
+// (ruling #110). If the terminal append itself fails, both errors are
+// reported rather than one silently swallowing the other.
+func (r *Runner) failTerminal(jr *journal.Run, finalState string, steps int, origErr error) (Result, error) {
+	if _, ferr := r.finish(jr, journal.PhaseFailed, finalState, steps); ferr != nil {
+		return Result{}, fmt.Errorf("%w (additionally failed to journal terminal failure: %w)", origErr, ferr)
+	}
+	return Result{Phase: journal.PhaseFailed, FinalState: finalState, Steps: steps}, origErr
 }
 
 // finish appends the run's terminal run.finished event and returns its Result.
@@ -406,10 +446,15 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		result, dispatchErr := r.dispatchTask(attemptCtx, in, ex, t, upstream)
 		if dispatchErr != nil {
 			lastErr = dispatchErr
-			_ = jr.Append(journal.Event{
+			// A journal that cannot be written stops the run (§2.6): this
+			// write failing means the run's own record of what happened is
+			// now unreliable, so it is fatal, not best-effort.
+			if aerr := jr.Append(journal.Event{
 				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 				Error: &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
-			})
+			}); aerr != nil {
+				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal executor error for %q: %w", t.Name, aerr)
+			}
 			if attempt < maxAttempts {
 				if backoff > 0 {
 					time.Sleep(backoff)
