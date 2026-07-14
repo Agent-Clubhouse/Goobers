@@ -57,6 +57,16 @@ type CopilotAdapter struct {
 	// VersionArgs are the args used to preflight-check the CLI responds
 	// (default {"--version"}).
 	VersionArgs []string
+	// AuthCheckArgs, if non-empty, are run as a second preflight probe after
+	// VersionArgs to detect a signed-OUT CLI: `--version` succeeds even when the
+	// user is not authenticated (GBO-011, #238), so a version check alone can't
+	// catch a signed-out session — the failure would instead surface mid-run as
+	// a burned agentic attempt. A non-zero exit (or runner error) from this probe
+	// fails preflight with an actionable sign-in message. Empty by default: the
+	// exact non-interactive auth/status invocation the real Copilot CLI offers is
+	// wired at the composition root once confirmed, so a wrong guess can't
+	// falsely refuse to start every agentic run.
+	AuthCheckArgs []string
 }
 
 // Name returns the adapter's registry name.
@@ -88,6 +98,18 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) error {
 	}
 	if res.ExitCode != 0 {
 		return fmt.Errorf("harness: copilot-cli: %q %v exited %d — check it is installed and signed in", bin, args, res.ExitCode)
+	}
+	// A signed-out CLI passes --version but can't do agentic work, so probe
+	// authentication too when configured (GBO-011, #238) — catching it here at
+	// startup rather than as a burned mid-run agentic attempt.
+	if len(c.AuthCheckArgs) > 0 {
+		res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, c.AuthCheckArgs...), Env: baseEnv()})
+		if err != nil {
+			return fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) failed: %w — run the Copilot CLI and sign in", bin, c.AuthCheckArgs, err)
+		}
+		if res.ExitCode != 0 {
+			return fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) exited %d — the CLI appears signed out; run the Copilot CLI and sign in", bin, c.AuthCheckArgs, res.ExitCode)
+		}
 	}
 	return nil
 }

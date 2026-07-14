@@ -554,3 +554,59 @@ func TestCopilotAdapterLiveSmoke(t *testing.T) {
 		t.Fatal("expected a completion payload from the live CLI")
 	}
 }
+
+// TestCopilotAdapterPreflightSignedOutFailsAuthProbe is the #238 control: a CLI
+// that passes --version but fails the configured auth probe (signed out) fails
+// preflight — the case a version-only check misses (GBO-011).
+func TestCopilotAdapterPreflightSignedOutFailsAuthProbe(t *testing.T) {
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0}, // --version succeeds
+		act: func(req ProcessRequest) error {
+			for _, a := range req.Command {
+				if a == "auth" { // the auth probe fails: signed out
+					return errors.New("not signed in")
+				}
+			}
+			return nil
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"echo"}, AuthCheckArgs: []string{"auth", "status"}, Runner: runner}
+	err := adapter.Preflight(context.Background())
+	if err == nil {
+		t.Fatal("expected preflight to fail when the sign-in probe fails")
+	}
+	if !strings.Contains(err.Error(), "sign") {
+		t.Fatalf("error should be an actionable sign-in message: %v", err)
+	}
+}
+
+// TestCopilotAdapterPreflightSignedInPasses confirms preflight passes when both
+// --version and the configured auth probe succeed.
+func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command:       []string{"echo"},
+		AuthCheckArgs: []string{"auth", "status"},
+		Runner:        &fakeProcessRunner{result: ProcessResult{ExitCode: 0}},
+	}
+	if err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("preflight should pass when signed in: %v", err)
+	}
+}
+
+// TestCopilotAdapterPreflightNoAuthProbeByDefault confirms that with no
+// AuthCheckArgs configured, preflight does not run (or require) an auth probe —
+// so the version-only path is unchanged until a real auth command is wired.
+func TestCopilotAdapterPreflightNoAuthProbeByDefault(t *testing.T) {
+	calls := 0
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act:    func(ProcessRequest) error { calls++; return nil },
+	}
+	adapter := &CopilotAdapter{Command: []string{"echo"}, Runner: runner} // no AuthCheckArgs
+	if err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected exactly one probe (--version), got %d — no auth probe should run by default", calls)
+	}
+}
