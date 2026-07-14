@@ -155,7 +155,16 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 				Transcript: []byte("fake harness session transcript for " + gooberName + "\n"),
 				Act: func(_ context.Context, req harness.RunRequest) error {
 					calls++
-					return harness.WriteCompletion(req.Workspace, req.CompletionPath, act(calls))
+					payload := act(calls)
+					// A coderAct/reviewerAct closure may return dispatchFailure
+					// to simulate a dispatch error on this call (distinct from a
+					// well-formed ResultEnvelope{Status: failure}) — the only
+					// path internal/runner's own retry loop (run.go's runTask)
+					// actually retries, tagging the next attempt AttemptPolicy.
+					if df, ok := payload.(dispatchFailure); ok {
+						return df.err
+					}
+					return harness.WriteCompletion(req.Workspace, req.CompletionPath, payload)
 				},
 			}
 			// The runner always constructs executors against the run's own
@@ -193,6 +202,18 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 	}
 	return r, runsDir
 }
+
+// dispatchFailure, returned by a coderAct/reviewerAct closure in place of a
+// resultPayload/verdictPayload, tells newSkeletonRunner's FakeAdapter to fail
+// this call's dispatch outright (harness.RunRequest.Act returning err) rather
+// than write a completion file — the shape a real infrastructure hiccup takes,
+// and the only one internal/runner's task-level retry loop actually retries
+// (run.go's runTask: a dispatch error is retried up to the task's declared
+// Retry.MaxAttempts, tagging the next attempt AttemptPolicy; a well-formed
+// ResultEnvelope{Status: failure} is NOT retried — it's a completed, failed
+// attempt). Used to exercise a genuine stage-level policy retry in
+// TestWalkingSkeletonLocalRunnerDeterministicJournal's conformance comparison.
+type dispatchFailure struct{ err error }
 
 func resultPayload(status apiv1.ResultStatus, summary string) apiv1.ResultEnvelope {
 	return apiv1.ResultEnvelope{
@@ -355,18 +376,35 @@ func TestWalkingSkeletonLocalRunnerGateFailAborts(t *testing.T) {
 // runs — RunID is caller-supplied, never runner-generated, so a real
 // conformance harness pins it identically across the runners it compares)
 // and a deterministic fake harness (no live LLM variance), produce
-// digest-identical event sequences over the conformance-normative field set
-// — timestamps, durations, infra-retry attempts, and namespaced runner.*
-// annotations excluded per §3.3 and journal.Event.IsConformanceNormative/doc
-// comments. (Artifact/span Name legitimately embeds the RunID via
-// env.TaskID, per internal/executor.ShellExecutor — same RunID is what makes
-// Name comparable at all, not something to strip from the comparison.) This
-// is the seed the V2 local↔Temporal conformance harness (ARCHITECTURE §3.3,
-// issue tracked for V2) extends to diff the two runners' journals against
-// shared fixtures.
+// digest-identical event sequences over the FULL conformance-normative field
+// set (journal.ConformanceView — issue #141: Schema, Branch, Attempt,
+// AttemptClass, and ExternalRef included alongside the fields the seed
+// already compared, not just a test-local subset) — timestamps, durations,
+// infra-retry attempts, and namespaced runner.* annotations excluded per
+// §3.3 and journal.Event.IsConformanceNormative/doc comments. (Artifact/span
+// Name legitimately embeds the RunID via env.TaskID, per
+// internal/executor.ShellExecutor — same RunID is what makes Name comparable
+// at all, not something to strip from the comparison.) The comparison
+// includes one genuine stage-level policy retry (coderAct's first dispatch
+// fails, tagging the retried attempt AttemptClass=policy per run.go's
+// runTask — see dispatchFailure) — #141 flagged that no prior compared run
+// exercised this. journal.MonotonicSeq additionally asserts each run's own
+// seq values are gap-free, per #141. This is the seed the V2 local↔Temporal
+// conformance harness (ARCHITECTURE §3.3, issue #40) extends to diff the two
+// runners' journals against shared fixtures, through this same
+// ConformanceView — not a bespoke comparator.
 func TestWalkingSkeletonLocalRunnerDeterministicJournal(t *testing.T) {
 	machine := skeletonMachine(t)
-	coderAct := func(int) interface{} { return resultPayload(apiv1.ResultSuccess, "implemented") }
+	coderAct := func(call int) interface{} {
+		if call == 1 {
+			// Fails this dispatch outright (not a well-formed ResultEnvelope
+			// failure) so runTask's own retry loop retries it, tagging
+			// attempt 2 AttemptClass=policy — deterministic across both
+			// canon() runs since `call` counts from a fresh 0 each run.
+			return dispatchFailure{err: fmt.Errorf("transient dispatch failure")}
+		}
+		return resultPayload(apiv1.ResultSuccess, "implemented")
+	}
 	reviewerAct := func(call int) interface{} {
 		if call == 1 {
 			return verdictPayload(apiv1.VerdictNeedsChanges, "add a test for the new branch")
@@ -374,7 +412,7 @@ func TestWalkingSkeletonLocalRunnerDeterministicJournal(t *testing.T) {
 		return verdictPayload(apiv1.VerdictPass, "looks good")
 	}
 
-	canon := func(runID string) []string {
+	canon := func(runID string) []journal.NormativeEvent {
 		r, runsDir := newSkeletonRunner(t, coderAct, reviewerAct)
 		res, err := r.Start(context.Background(), skeletonStartInput(runID, machine))
 		if err != nil {
@@ -391,7 +429,19 @@ func TestWalkingSkeletonLocalRunnerDeterministicJournal(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Events(%s): %v", runID, err)
 		}
-		return canonicalizeNormative(events)
+		if err := journal.MonotonicSeq(events); err != nil {
+			t.Fatalf("MonotonicSeq(%s): %v", runID, err)
+		}
+		var sawPolicyRetry bool
+		for _, e := range events {
+			if e.Stage == "implement" && e.AttemptClass == journal.AttemptPolicy {
+				sawPolicyRetry = true
+			}
+		}
+		if !sawPolicyRetry {
+			t.Fatalf("Start(%s): expected a policy-retried implement attempt, saw none", runID)
+		}
+		return journal.ConformanceView(events)
 	}
 
 	// Same RunID for both — newSkeletonRunner gives each call its own fresh
@@ -563,34 +613,4 @@ func countEventType(types []journal.EventType, typ journal.EventType) int {
 		}
 	}
 	return n
-}
-
-// canonicalizeNormative projects each conformance-normative event
-// (journal.Event.IsConformanceNormative) down to a stable string of only its
-// normative fields, in the doc-commented normative/excluded split
-// (internal/journal/event.go): Time, Ref.Path/Size, Error.Message, and the
-// entire Runner map are excluded; Ref.Digest, Error.Code, and every other
-// orchestration field are kept.
-func canonicalizeNormative(events []journal.Event) []string {
-	out := make([]string, 0, len(events))
-	for _, e := range events {
-		if !e.IsConformanceNormative() {
-			continue
-		}
-		digest := ""
-		if e.Ref != nil {
-			digest = e.Ref.Digest
-		}
-		errCode := ""
-		if e.Error != nil {
-			errCode = e.Error.Code
-		}
-		out = append(out, fmtNormative(e, digest, errCode))
-	}
-	return out
-}
-
-func fmtNormative(e journal.Event, refDigest, errCode string) string {
-	return string(e.Type) + "|" + e.Stage + "|" + e.Gate + "|" + e.Verdict + "|" + e.Target + "|" +
-		e.Status + "|" + e.Name + "|" + refDigest + "|" + errCode
 }
