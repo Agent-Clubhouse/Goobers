@@ -89,8 +89,15 @@ pipeline.
 | Status | Runner action |
 |---|---|
 | `success` | advance the state machine to the next stage/gate |
-| `failure` | apply the stage's declared retry policy; when exhausted, branch on failure. Each attempt is a new journal entry, never overwritten history (§5). |
-| `blocked` | halt the run pending external intervention (human input, an unmet dependency) |
+| `failure` | if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern). Otherwise (a non-gate stage, terminal, or empty `Next`) the run ends `PhaseFailed`: never run downstream stages on a failed result, never silently complete. |
+| `blocked` | halt the run pending external intervention (human input, an unmet dependency) — a resumable pause, like a human gate's, at any position |
+
+`Task.Retry` (declared retry policy, attempt budget, backoff) governs only
+**dispatch/infra errors** — a Go error returned by the executor, not a
+business `failure`/`blocked` `ResultEnvelope`. Each policy-driven retry
+attempt is a new journal entry, never overwritten history (§5). A business
+`failure`/`blocked` result is never retried by `Task.Retry`; it is handled
+per the table above.
 
 For gates, the evaluator returns a `Verdict` (`decision` ∈ `pass` / `fail` /
 `needs-changes`, plus `rationale`, `evidence[]` artifact pointers, and
