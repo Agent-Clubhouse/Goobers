@@ -398,7 +398,13 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return r.failTerminal(jr, g.Name, steps, err)
 			}
 			if gr.Escalated && r.cfg.Escalation != nil && in.Item != nil {
-				if err := r.cfg.Escalation.NotifyEscalated(ctx, in.Item.ID, gr, "repass budget exhausted"); err != nil {
+				// Same drain contract as runTask/evaluateGate: a SIGTERM mid-
+				// notification must let it finish, not abort it — an
+				// aborted notification here would leave the escalation
+				// comment un-posted, and a later resume re-evaluating the
+				// same escalated gate would fire NotifyEscalated again,
+				// duplicating it (#112).
+				if err := r.cfg.Escalation.NotifyEscalated(context.WithoutCancel(ctx), in.Item.ID, gr, "repass budget exhausted"); err != nil {
 					return r.failTerminal(jr, g.Name, steps, fmt.Errorf("runner: notify escalation for gate %q: %w", g.Name, err))
 				}
 			}

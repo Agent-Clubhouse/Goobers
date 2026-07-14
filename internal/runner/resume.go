@@ -93,7 +93,15 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
 	}
-	if id.WorkflowDigest != "" && id.WorkflowDigest != in.Machine.Digest() {
+	// Every run Start creates pins WorkflowDigest (run.go's journal.Create
+	// call, always from in.Machine.Digest()) — an empty value here means the
+	// pin itself is missing (a corrupted or pre-WF-016 run.yaml), which is
+	// exactly the "resuming under a changed definition" risk WF-016 exists
+	// to catch: refuse rather than silently skip verification (#112).
+	if id.WorkflowDigest == "" {
+		return Result{}, fmt.Errorf("runner: run %q has no pinned workflow digest, refusing to resume (WF-016)", in.RunID)
+	}
+	if id.WorkflowDigest != in.Machine.Digest() {
 		return Result{}, fmt.Errorf("runner: run %q is pinned to workflow digest %q, cannot resume against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest())
 	}
 
