@@ -53,6 +53,10 @@ killing them mid-attempt (#23). Blocks until interrupted; exit code `0` on a
 clean shutdown, `1` if the daemon fails to start (e.g. another `up` already
 holds this instance's lock).
 
+`instance.yaml` is read once, at startup — editing it while `up` is running
+(a new repo, a `runConditions` change, etc.) has no effect until you restart
+the daemon. There is no live reload yet (V1, #142).
+
 ## 6. `run` — trigger one manually
 
 ```sh

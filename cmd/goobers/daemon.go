@@ -32,14 +32,15 @@ import (
 // RollupDB.Close once it's done driving runs, exactly as it did before this
 // seam existed.
 type schedulerSetup struct {
-	Runner      *runner.Runner
-	Telemetry   *telemetry.Client
-	RollupDB    *rollup.DB
-	Worktrees   *worktree.Manager
-	InstanceLog *journal.InstanceLog
-	Entries     []localscheduler.WorkflowEntry
-	Machines    map[string]*workflow.Machine
-	RepoRefs    map[string]apiv1.RepoRef
+	Runner        *runner.Runner
+	Telemetry     *telemetry.Client
+	RollupDB      *rollup.DB
+	Worktrees     *worktree.Manager
+	InstanceLog   *journal.InstanceLog
+	Entries       []localscheduler.WorkflowEntry
+	Machines      map[string]*workflow.Machine
+	RepoRefs      map[string]apiv1.RepoRef
+	RunConditions instance.RunConditions
 }
 
 // buildSchedulerSetup loads an instance's config, compiles its workflows,
@@ -142,14 +143,15 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	}
 
 	return &schedulerSetup{
-		Runner:      rn,
-		Telemetry:   tel,
-		RollupDB:    rollupDB,
-		Worktrees:   wtMgr,
-		InstanceLog: instanceLog,
-		Entries:     entries,
-		Machines:    machines,
-		RepoRefs:    repoRefs,
+		Runner:        rn,
+		Telemetry:     tel,
+		RollupDB:      rollupDB,
+		Worktrees:     wtMgr,
+		InstanceLog:   instanceLog,
+		Entries:       entries,
+		Machines:      machines,
+		RepoRefs:      repoRefs,
+		RunConditions: cfg.RunConditions,
 	}, nil
 }
 

@@ -101,7 +101,8 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	sched := localscheduler.New(setup.Entries, setup.InstanceLog, setup.SchedulerOptions()...)
+	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets))
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

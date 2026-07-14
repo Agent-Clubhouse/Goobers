@@ -245,14 +245,20 @@ func TestManager_Reap_RemovesDeadProcessOrphan(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Simulate a crash: overwrite the marker with a PID that is guaranteed
-	// dead (a short-lived subprocess we've already waited on).
-	dead := deadPID(t)
+	// Simulate a crash: force processAlive to report this marker's PID as
+	// dead. A real reaped-subprocess PID is inherently racy against PID
+	// recycling on a busy machine (issue #142's QA-gate stress flake) — the
+	// injected fake makes "dead" deterministic instead.
+	const fakeDeadPID = 999999
+	prev := processAlive
+	processAlive = func(pid int) bool { return pid != fakeDeadPID }
+	t.Cleanup(func() { processAlive = prev })
+
 	mk, err := readMarker(m.markerPath(wt.key, wt.RunID))
 	if err != nil {
 		t.Fatalf("readMarker: %v", err)
 	}
-	mk.PID = dead
+	mk.PID = fakeDeadPID
 	if err := writeMarker(m.markerPath(wt.key, wt.RunID), mk); err != nil {
 		t.Fatalf("writeMarker: %v", err)
 	}

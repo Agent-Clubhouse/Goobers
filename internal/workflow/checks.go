@@ -98,13 +98,20 @@ func gateVocabProblems(def Definition) []string {
 	return problems
 }
 
-// scheduleProblems validates the schedule expression of every schedule trigger.
+// scheduleProblems validates the schedule expression of every schedule
+// trigger, and rejects more than one schedule trigger on a single workflow:
+// the runtime scheduler (localscheduler's buildSchedulerSetup) honors only
+// the first and silently drops the rest, so a second schedule trigger would
+// otherwise compile cleanly and simply never fire — a fail-closed compile
+// error here catches that at authoring time instead (issue #142).
 func scheduleProblems(def Definition) []string {
 	var problems []string
+	scheduleTriggers := 0
 	for i, tr := range def.Spec.Triggers {
 		if tr.Type != apiv1.TriggerSchedule {
 			continue
 		}
+		scheduleTriggers++
 		if strings.TrimSpace(tr.Schedule) == "" {
 			problems = append(problems, fmt.Sprintf("trigger[%d] type=schedule requires a schedule expression", i))
 			continue
@@ -112,6 +119,9 @@ func scheduleProblems(def Definition) []string {
 		if err := validateSchedule(tr.Schedule); err != nil {
 			problems = append(problems, fmt.Sprintf("trigger[%d] invalid schedule %q: %v", i, tr.Schedule, err))
 		}
+	}
+	if scheduleTriggers > 1 {
+		problems = append(problems, fmt.Sprintf("only one schedule trigger per workflow is supported, found %d — the runtime scheduler uses only the first and silently ignores the rest", scheduleTriggers))
 	}
 	return problems
 }

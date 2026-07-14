@@ -128,6 +128,59 @@ func TestAdmitWithoutBudgetDoesNotAccumulateStarts(t *testing.T) {
 	}
 }
 
+// TestInstanceMaxParallelCapsAcrossWorkflows is issue #142: instance.yaml's
+// runConditions.maxParallelRuns was parsed and scaffolded but enforced
+// nowhere — each workflow's own MaxConcurrentRuns capped that workflow
+// alone, with no ceiling on the instance's total concurrent runs across
+// every workflow combined (ARCHITECTURE §7's "max-parallel per
+// workflow/instance").
+func TestInstanceMaxParallelCapsAcrossWorkflows(t *testing.T) {
+	c := NewConditions()
+	c.SetInstanceLimits(2, nil)
+	now := time.Now()
+	r := apiv1.ReadinessConditions{MaxConcurrentRuns: 5} // generous per-workflow limit
+
+	ok, _ := c.Admit("wf-a", r, now)
+	if !ok {
+		t.Fatal("1st run should admit under the instance cap of 2")
+	}
+	ok, _ = c.Admit("wf-b", r, now)
+	if !ok {
+		t.Fatal("2nd run (different workflow) should admit under the instance cap of 2")
+	}
+	ok, reason := c.Admit("wf-c", r, now)
+	if ok || reason != ReasonInstanceMaxParallel {
+		t.Fatalf("3rd run should be refused by the instance-wide cap, not per-workflow: ok=%v reason=%s", ok, reason)
+	}
+
+	c.Release("wf-a")
+	ok, reason = c.Admit("wf-c", r, now)
+	if !ok {
+		t.Fatalf("after a release, the instance cap should have room again: reason=%s", reason)
+	}
+}
+
+// TestWorkflowBudgetOverridesPerWorkflowSpec is issue #142: instance.yaml's
+// runConditions.workflowBudgets lets an operator override a specific
+// workflow's runs-per-hour budget without editing that workflow's own spec —
+// previously parsed and scaffolded but never consulted by Admit.
+func TestWorkflowBudgetOverridesPerWorkflowSpec(t *testing.T) {
+	c := NewConditions()
+	c.SetInstanceLimits(0, map[string]int{"wf": 1})
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	r := apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 10} // spec allows 10/hr
+
+	ok, _ := c.Admit("wf", r, base)
+	if !ok {
+		t.Fatal("1st run should admit under the override budget of 1")
+	}
+	c.Release("wf")
+	ok, reason := c.Admit("wf", r, base.Add(time.Minute))
+	if ok || reason != ReasonBudget {
+		t.Fatalf("2nd run should be refused by the instance override (1/hr), not the spec's 10/hr: ok=%v reason=%s", ok, reason)
+	}
+}
+
 func TestReconcileSeedsActiveCounts(t *testing.T) {
 	c := NewConditions()
 	c.Reconcile(map[string]int{"wf": 3})
