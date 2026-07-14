@@ -332,6 +332,101 @@ func taskReservedNextFixtureMachine(t *testing.T, next string) *workflow.Machine
 	return m
 }
 
+// noWorkFixtureMachine is a two-task query-backlog -> curate chain — the
+// exact shape backlog-curation.yaml uses (issue #233) — where "curate" is
+// compiled into the machine but deliberately has NO canned output in the
+// test's byTask map, so if the runner ever dispatches it the stub
+// executor's own "no canned output" error surfaces as a hard Start error
+// (see stubDeterministic.Run) — a directly observable proof that a
+// ResultNoWork query-backlog never reaches it, not just an indirect
+// phase-only assertion.
+func noWorkFixtureMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "query-backlog",
+		Tasks: []apiv1.Task{
+			{
+				Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "claim eligible items",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "curate",
+			},
+			{
+				Name: "curate", Type: apiv1.TaskDeterministic, Goal: "curate the claimed items",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+			},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "no-work-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile no-work fixture machine: %v", err)
+	}
+	return m
+}
+
+// TestRunnerNoWorkResultShortCircuitsToCompleted is issue #233's core
+// runner-level acceptance: a task reporting ResultNoWork ends the run
+// PhaseCompleted immediately, WITHOUT dispatching its declared Next
+// ("curate") — an empty-backlog tick must not invoke a downstream agentic
+// stage with no subject to act on.
+func TestRunnerNoWorkResultShortCircuitsToCompleted(t *testing.T) {
+	machine := noWorkFixtureMachine(t)
+	runID := "run-no-work"
+	// Deliberately no entry for "curate" — see noWorkFixtureMachine's doc.
+	byTask := map[string]stubTaskResult{
+		runID + ":query-backlog": {status: apiv1.ResultNoWork, summary: "nothing eligible"},
+	}
+	r, _ := newTestRunner(t, byTask, nil)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v (a non-nil error here means curate was dispatched despite no canned output — the short-circuit failed)", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if res.FinalState != "query-backlog" {
+		t.Fatalf("finalState = %q, want query-backlog (curate must never have become the final state)", res.FinalState)
+	}
+}
+
+// TestRunnerNoWorkResultIgnoresReservedNextToo proves the short-circuit is
+// unconditional on Next, not merely a coincidence of "curate" being a plain
+// state name: even when Next names a RESERVED terminal target, ResultNoWork
+// still routes to PhaseCompleted specifically (via the ResultNoWork case),
+// not whatever phase that reserved target would have produced (@abort would
+// otherwise journal PhaseAborted) — the stage's own reported outcome must
+// win over a coincidentally-matching Next, since @abort here would mean
+// something very different from "no work."
+func TestRunnerNoWorkResultIgnoresReservedNextToo(t *testing.T) {
+	machine := taskReservedNextFixtureMachine(t, workflow.TargetAbort)
+	runID := "run-no-work-reserved-next"
+	byTask := map[string]stubTaskResult{
+		runID + ":implement": {status: apiv1.ResultNoWork, summary: "nothing to do"},
+	}
+	r, _ := newTestRunner(t, byTask, nil)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed (ResultNoWork must win over Next=@abort)", res.Phase)
+	}
+}
+
 // inputsFromFixtureMachine is a minimal open-pr -> ci-poll chain proving
 // #132's task-to-task output->input threading: ci-poll declares
 // InputsFrom: {"prNumber": "prNumber"}, so it must receive open-pr's

@@ -118,6 +118,19 @@ const (
 	// ResultBlocked means the stage cannot proceed without external intervention
 	// (human input, an unmet dependency); the runner halts the run pending it.
 	ResultBlocked ResultStatus = "blocked"
+	// ResultNoWork means the stage ran without error but found nothing to act
+	// on (issue #233: an empty-backlog claim tick) — distinct from
+	// ResultSuccess (which implies the stage actually produced work for a
+	// downstream stage to consume) and ResultFailure (which implies a retry
+	// policy should apply). The runner short-circuits a ResultNoWork task
+	// straight to a clean PhaseCompleted, regardless of the task's declared
+	// Next — an agentic downstream stage is never invoked with no subject
+	// (ARCHITECTURE.md's "don't fake a success that then does nothing
+	// useful" principle). A stage that genuinely errored (a provider/auth
+	// failure, a malformed query) must still return ResultFailure, not
+	// ResultNoWork — this status is only for "correctly found nothing," the
+	// steady state of an idle instance, never a masked error.
+	ResultNoWork ResultStatus = "no-work"
 )
 
 // ResultEnvelope is the standard stage result the runner acts on, and that gates
@@ -212,7 +225,7 @@ type Finding struct {
 // IsValid reports whether s is a known result status.
 func (s ResultStatus) IsValid() bool {
 	switch s {
-	case ResultSuccess, ResultFailure, ResultBlocked:
+	case ResultSuccess, ResultFailure, ResultBlocked, ResultNoWork:
 		return true
 	}
 	return false

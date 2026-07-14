@@ -20,6 +20,13 @@ spec:
       goal: Query the provider for eligible items and claim them.
       run:
         command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        # Declared so shell.go reads the file back and can report
+        # ResultNoWork on an empty/fully-contested tick (issue #233) —
+        # without this, an empty claim's exit-0 result carries no structured
+        # signal beyond the exit code, and the runner has no way to tell
+        # "genuinely nothing to do" from "claimed something."
+        resultFile: "claimed-item.json"
       next: curate
     - name: curate
       type: agentic

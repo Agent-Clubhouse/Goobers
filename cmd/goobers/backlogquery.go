@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -155,8 +156,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(eligible) == 0 {
-		pln(stderr, "error: no eligible item to claim")
-		return 1
+		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
 	}
 
 	runID, workflow, err := providerRunContext()
@@ -216,8 +216,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if claimed == nil {
-		pln(stderr, "error: every eligible item is already claimed by another run")
-		return 1
+		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
 	}
 
 	// Provider-visible marker: best-effort mirror of the ledger's (already
@@ -300,5 +299,33 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	pf(stdout, "released %s\n", released)
+	return 0
+}
+
+// writeNoWorkResult is `--claim`'s clean, structured "nothing to do this
+// tick" outcome (issue #233): an empty eligible set, or every eligible item
+// already claimed by another run, is a routine steady state — the same
+// backlog-curation.yaml doc comment's own "re-running is a no-op" contract
+// — not an error. Exit 0, with the declared result file (the same
+// resultFile convention the successful-claim path uses) carrying
+// executor.OutputNoWork=true so internal/executor/shell.go reports
+// apiv1.ResultNoWork instead of ResultSuccess, and the runner short-circuits
+// to a clean PhaseCompleted without ever invoking a downstream agentic
+// stage with no subject (internal/runner's taskOutcome). A genuine
+// provider/credential/list error is NOT routed through here — those return
+// 1 from their own call sites above, unchanged, so a real outage still
+// fails the run loudly (the acceptance criteria's negative control).
+func writeNoWorkResult(stdout, stderr io.Writer, reason string) int {
+	resultFile := providerInput("resultFile", "claimed-item.json")
+	data, err := json.Marshal(map[string]interface{}{"claimed": false, executor.OutputNoWork: true})
+	if err != nil {
+		pf(stderr, "error: marshal no-work result: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		pf(stderr, "error: write %s: %v\n", resultFile, err)
+		return 1
+	}
+	pf(stdout, "no work: %s\n", reason)
 	return 0
 }

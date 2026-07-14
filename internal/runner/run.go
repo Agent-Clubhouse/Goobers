@@ -498,6 +498,19 @@ func (r *Runner) taskOutcome(jr *journal.Run, machine *workflow.Machine, t apiv1
 		}
 		res, err = r.finish(jr, journal.PhaseFailed, t.Name, steps)
 		return "", res, false, err
+	case apiv1.ResultNoWork:
+		// Short-circuits straight to PhaseCompleted, unconditionally — never
+		// t.Next, regardless of what it names (issue #233): a query stage
+		// that genuinely found nothing to do must not hand off to a
+		// downstream agentic stage with no subject to act on. Distinct from
+		// the reserved-Next-target switch below, which only fires for a
+		// state the WORKFLOW DEFINITION declares as terminal — this fires
+		// on the STAGE'S OWN reported outcome, so an ordinary
+		// query-backlog -> curate/implement wiring (Next names a real,
+		// non-reserved state) still terminates cleanly on an empty tick
+		// without the workflow author having to special-case it in the DSL.
+		res, err = r.finish(jr, journal.PhaseCompleted, t.Name, steps)
+		return "", res, false, err
 	}
 	// A successful task's Next may be a plain state name or one of the
 	// compiler's reserved terminal targets (@abort/@escalate, #123) — the

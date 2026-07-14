@@ -63,6 +63,19 @@ const (
 	InputMaxOutputBytes = "maxOutputBytes"
 )
 
+// OutputNoWork is the well-known InputResultFile output key a deterministic
+// command sets to boolean true to report ResultNoWork instead of
+// ResultSuccess (issue #233): the command exited 0 (it did not error) and
+// its declared result file was present and parsed as JSON, but it found
+// nothing to act on this tick (e.g. `goobers backlog-query --claim` with an
+// empty or fully-contested eligible set). Checked only after a successful
+// declared-result-file read, so this is an explicit, structured signal, not
+// an exit-code convention every unrelated shell stage would have to avoid
+// colliding with. A command with no declared InputResultFile has no way to
+// signal ResultNoWork — only ResultSuccess (exit 0) or ResultFailure — since
+// there is nowhere else fail-closed to read a structured signal from.
+const OutputNoWork = "noWork"
+
 // ArtifactRecorder persists stage output bytes into the run journal and
 // returns a content-addressed pointer to them. *journal.Run satisfies this.
 type ArtifactRecorder interface {
@@ -299,6 +312,17 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 
 	if exitCode == 0 {
+		// OutputNoWork (issue #233) only ever downgrades a would-be Success
+		// to NoWork — it's read from result.Outputs, which is only ever
+		// populated by a successful declared-result-file read above, never
+		// on a failure path (those all return early). A stage with no
+		// declared resultFile has result.Outputs empty here, so this is a
+		// no-op for it.
+		if v, ok := result.Outputs[OutputNoWork].(bool); ok && v {
+			result.Status = apiv1.ResultNoWork
+			result.Summary = "stage found no work to do"
+			return result, nil
+		}
 		result.Status = apiv1.ResultSuccess
 		result.Summary = "stage completed"
 		return result, nil

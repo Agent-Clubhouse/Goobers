@@ -38,6 +38,12 @@ spec:
         # so a re-run over an already-curated backlog claims nothing.
         excludeLabels: "goobers:ready,goobers:needs-human"
         maxItems: "20"
+        # Declared so shell.go reads the file back and can report
+        # ResultNoWork on an empty/fully-contested tick (issue #233) —
+        # without this, an empty claim's exit-0 result carries no structured
+        # signal beyond the exit code, and the runner has no way to tell
+        # "genuinely nothing to do" from "claimed something."
+        resultFile: "claimed-item.json"
       capabilities:
         - github:issues:write
       expectedOutputs:

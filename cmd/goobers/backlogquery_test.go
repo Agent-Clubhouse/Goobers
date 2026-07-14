@@ -80,7 +80,10 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 
 // TestBacklogQueryUnlabeledItemNeverClaimed proves SEC-047 eligibility is
 // enforced in code, not just documented: an item missing the trust label is
-// never claimed even though it's otherwise ready.
+// never claimed even though it's otherwise ready. Also issue #233's core
+// acceptance: an empty eligible set is a clean no-work exit 0, not a
+// business-error exit 1 — every idle tick must not poison telemetry as a
+// false run failure.
 func TestBacklogQueryUnlabeledItemNeverClaimed(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -89,14 +92,37 @@ func TestBacklogQueryUnlabeledItemNeverClaimed(t *testing.T) {
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
 	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
-	t.Chdir(t.TempDir())
+	workDir := t.TempDir()
+	t.Chdir(workDir)
 
-	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
-	if code != 1 {
-		t.Fatalf("code = %d, want 1 (no eligible item), stderr = %q", code, stderr)
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (empty backlog is no-work, not a failure), stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stderr, "no eligible item") {
-		t.Fatalf("stderr = %q, want a clear no-eligible-item message", stderr)
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("stdout = %q, want a clear no-work message", stdout)
+	}
+	assertNoWorkResultFile(t, workDir)
+}
+
+// assertNoWorkResultFile confirms the default resultFile carries the
+// structured OutputNoWork signal internal/executor/shell.go's ResultNoWork
+// mapping reads (issue #233) — not just a human-facing stdout line.
+func assertNoWorkResultFile(t *testing.T, workDir string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal claimed-item.json: %v", err)
+	}
+	if got["noWork"] != true {
+		t.Fatalf("claimed-item.json = %v, want noWork:true", got)
+	}
+	if got["claimed"] != false {
+		t.Fatalf("claimed-item.json = %v, want claimed:false", got)
 	}
 }
 
@@ -107,7 +133,9 @@ func TestBacklogQueryUnlabeledItemNeverClaimed(t *testing.T) {
 // exclusivity property under test is the claim ledger's own atomicity
 // (already proven under real concurrency at the ledger level by
 // internal/localscheduler's TestClaimConcurrentRace), not raw goroutine
-// timing.
+// timing. Also issue #233: the loser's outcome is now a clean no-work exit
+// 0, not a business-error exit 1 — losing a claim race is exactly as
+// routine as an empty backlog, not a failure.
 func TestBacklogQuerySecondRunLosesTheClaimRace(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -123,11 +151,16 @@ func TestBacklogQuerySecondRunLosesTheClaimRace(t *testing.T) {
 	}
 
 	t.Setenv("GOOBERS_RUN_ID", "run-2")
-	t.Chdir(t.TempDir())
-	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
-	if code != 1 {
-		t.Fatalf("second claim: code = %d, want 1 (already claimed by run-1), stderr = %q", code, stderr)
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("second claim: code = %d, want 0 (losing the race is no-work, not a failure), stderr = %q", code, stderr)
 	}
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("stdout = %q, want a clear no-work message", stdout)
+	}
+	assertNoWorkResultFile(t, workDir)
 }
 
 // TestBacklogQueryListsWithoutClaiming proves the no-flag form is read-only:

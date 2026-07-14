@@ -153,6 +153,18 @@ PR:
 ../bin/goobers trace <run-id>  # one run's journal, human-readable
 ```
 
+**Steady state (issue #233):** curation and implementation both start with a
+`backlog-query --claim` tick on their own schedule (curation hourly+, implement
+every ~15m in the shipped cadence). Most ticks find nothing new to claim — an
+empty backlog, or every eligible item already claimed by another run — and that
+is the expected, routine outcome, **not a failure**: such a run's journal ends
+`phase: completed` (`goobers trace <run-id>` shows `query-backlog` reporting
+`no-work`, with `curate`/`implement` never dispatched — no agentic stage runs
+against zero subjects), and `goobers telemetry stats`/`telemetry errors` stay
+clean across a day of idle ticks. A run that ends `phase: failed` on
+`query-backlog` means a genuine provider/credential/config error — that (not an
+empty backlog) is the signal to investigate.
+
 The run journal is also directly inspectable per `docs/ARCHITECTURE.md` §4 —
 it's designed to be (`cat`/`jq`/`grep` are legitimate debug tools at tier 1),
 independent of `status`/`trace`:
