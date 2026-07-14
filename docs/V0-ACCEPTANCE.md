@@ -229,6 +229,7 @@ on `e739bd0` (2026-07-14, ahead of the live run):
 | Gap epic #130 found | Fix | Status |
 |---|---|---|
 | No `backlog-query`/`open-pr`/`issue-close-out` subcommands existed | `cmd/goobers/{backlogquery,openpr,issuecloseout}.go`, dispatch in `main.go` | ✅ real subcommands, `#131`/`#132` |
+| Subcommands *existed and were declared* on the live path, but the static audit never live-*executed* one — a bare `goobers` command token can't resolve from a stage worktree (a fresh clone that never contains the gitignored, uncommitted binary; a bare name PATH-resolves against the *daemon's* PATH, not the worktree), so every deterministic stage failed at first exec | `ShellExecutor.SelfBin` (set once from `os.Executable()` at wiring) rewrites a `goobers` token to the running daemon's own binary — byte-identical, no version skew | ✅ fixed, `#229` (found by the first live run, not the static audit) |
 | `TaskExecutor`/`CIPollExecutor` registered but never wired to a real stage | `runnerwiring.go` constructs `CIPollExecutor` against the real `ci-poll` stage-kind | ✅ live, `#132` |
 | No `GitHubProvider` constructed on the live path | `providercmd.go`'s `newGitHubProvider` used by all three subcommands + ci-poll's poller | ✅ live, `#132`/`#139` |
 | `ref.touched` / claim ledger had zero production callers | Claim ledger: ✅ real (`backlogquery.go --claim`, `up.go`'s `RecoverExpired`). `ref.touched` for provider mutations: ❌ still gap, tracked as #228 | 🔶 partial, `#132`/`#228` |
