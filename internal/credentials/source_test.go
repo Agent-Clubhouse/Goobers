@@ -3,6 +3,7 @@ package credentials
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -96,5 +97,28 @@ func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %q: %v", path, err)
+	}
+}
+
+// TestInsecureTokenFileWarning covers the #118 token-file permission check: a
+// secret file readable/writable by group or other warns; owner-only is silent.
+func TestInsecureTokenFileWarning(t *testing.T) {
+	cases := []struct {
+		mode     fs.FileMode
+		wantWarn bool
+	}{
+		{0o600, false}, // owner-only: safe
+		{0o400, false},
+		{0o640, true}, // group-readable
+		{0o604, true}, // world-readable
+		{0o644, true},
+		{0o660, true}, // group-writable
+		{0o777, true},
+	}
+	for _, c := range cases {
+		got := insecureTokenFileWarning("gh", "/tmp/tok", c.mode)
+		if (got != "") != c.wantWarn {
+			t.Fatalf("mode %#o: warn=%v want %v (msg=%q)", c.mode, got != "", c.wantWarn, got)
+		}
 	}
 }

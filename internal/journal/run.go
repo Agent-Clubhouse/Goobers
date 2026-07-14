@@ -58,7 +58,12 @@ func newConfig(opts ...Option) config {
 		opt(&c)
 	}
 	if c.scrubber == nil {
-		c.scrubber = nopScrubber{}
+		// Fail closed: a nil scrubber must never disable redaction. Fall back to
+		// the pattern net (the same default as an unset scrubber), not nopScrubber
+		// — silently degrading to no scrubbing would let secrets land at rest
+		// (SEC-041). A caller that genuinely wants no scrubbing opts in explicitly
+		// via WithScrubber(Chain()).
+		c.scrubber = NewPatternScrubber()
 	}
 	if c.now == nil {
 		c.now = time.Now
@@ -79,12 +84,25 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	}
 	cfg := newConfig(opts...)
 	dir := filepath.Join(runsDir, id.RunID)
-	if _, err := os.Stat(dir); err == nil {
-		return nil, fmt.Errorf("journal: run %q already exists at %s", id.RunID, dir)
+	// Create the run directory atomically. os.Mkdir fails with EEXIST if the dir
+	// already exists, so two processes racing to create the same run id can't both
+	// proceed and interleave writers on one journal — the loser gets a clean
+	// "already exists" error instead of the previous Stat-then-MkdirAll TOCTOU
+	// window (goobers run takes no flock). The parent chain (shared instance state,
+	// plus any nested segments if a run id contains a separator) is created
+	// non-exclusively first; only the leaf run dir needs the atomic guarantee.
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return nil, fmt.Errorf("journal: create runs dir: %w", err)
 	}
-	for _, sub := range []string{"", dirInputs, dirArtifacts, dirSpans} {
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("journal: run %q already exists at %s", id.RunID, dir)
+		}
+		return nil, fmt.Errorf("journal: create run dir: %w", err)
+	}
+	for _, sub := range []string{dirInputs, dirArtifacts, dirSpans} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
-			return nil, fmt.Errorf("journal: create run dir: %w", err)
+			return nil, fmt.Errorf("journal: create run subdir %q: %w", sub, err)
 		}
 	}
 

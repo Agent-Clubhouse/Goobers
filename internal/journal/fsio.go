@@ -2,10 +2,12 @@ package journal
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"syscall"
 
 	"sigs.k8s.io/yaml"
 )
@@ -120,11 +122,15 @@ func fsyncDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	// Directory fsync is unsupported on some platforms; tolerate that rather
-	// than failing an otherwise-durable write.
 	if err := d.Sync(); err != nil {
 		_ = d.Close()
-		return nil
+		// Directory fsync is unsupported on some platforms/filesystems (EINVAL or
+		// ENOTSUP) — tolerate exactly that. Any other sync failure is a genuine
+		// durability problem and must surface, not be swallowed.
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+			return nil
+		}
+		return fmt.Errorf("journal: fsync dir %s: %w", dir, err)
 	}
 	return d.Close()
 }
