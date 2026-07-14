@@ -58,6 +58,21 @@ func (r *Reader) State() (State, error) {
 	return st, nil
 }
 
+// Phase reconstructs the run's phase from the event log — the source of
+// truth this package documents (see reconstructPhase) — rather than the
+// on-disk state.json checkpoint, which can lag it in the crash window
+// between an event's fsync and the checkpoint rename that follows it in the
+// same Append (#242). Every terminal-phase decision in this codebase
+// (Resume, the daemon's resume scan, `run abort`) must use this, not
+// State().Phase, which is only a checked hint.
+func (r *Reader) Phase() (RunPhase, error) {
+	events, err := r.Events()
+	if err != nil {
+		return "", err
+	}
+	return reconstructPhase(events), nil
+}
+
 // Events returns every durably-committed event in seq order. A torn final record
 // from an interrupted append is skipped, not returned — the same rule Recover
 // applies — so a reader never trips over a partial write. Use Recover to detect
@@ -149,8 +164,31 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 		seq:      report.LastSeq,
 		phase:    reconstructPhase(events),
 	}
-	if st, err := rd.State(); err == nil {
-		r.machineState = st.MachineState
+	diskSt, diskErr := rd.State()
+	if diskErr == nil {
+		r.machineState = diskSt.MachineState
+	}
+
+	// Heal state.json if it disagrees with what the log durably shows
+	// happened. The crash window this closes is Append's own event-fsync-
+	// then-checkpoint sequence (#242): a run.finished event can be fsynced
+	// while the crash lands before the checkpoint rename that follows it in
+	// the same Append call, leaving state.json still claiming
+	// {running, <last stage/gate>}. The torn-tail repair below never
+	// catches this case — a cleanly-fsynced run.finished leaves no torn
+	// tail. A terminal reconstructed phase always implies MachineState
+	// should be empty (State's own documented invariant), so healing here
+	// clears it too. Only the terminal direction is healed: a non-terminal
+	// reconstructed phase can't tell us the correct MachineState (that
+	// requires the workflow Machine, which this package doesn't have), so
+	// a missing/corrupt checkpoint for a still-running run is left for the
+	// caller (Resume) to fall back on, not fabricated here.
+	needsCheckpoint := tornBytes > 0
+	if r.phase != PhaseRunning {
+		if diskErr != nil || diskSt.Phase != r.phase || diskSt.MachineState != "" {
+			r.machineState = ""
+			needsCheckpoint = true
+		}
 	}
 
 	if tornBytes > 0 {
@@ -161,11 +199,13 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 			_ = f.Close()
 			return nil, RecoverReport{}, err
 		}
+		report.Repaired = true
+	}
+	if needsCheckpoint {
 		if err := r.checkpoint(); err != nil {
 			_ = f.Close()
 			return nil, RecoverReport{}, err
 		}
-		report.Repaired = true
 	}
 	return r, report, nil
 }

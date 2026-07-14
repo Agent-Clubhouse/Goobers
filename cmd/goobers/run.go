@@ -172,10 +172,14 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	if reader, err := journal.OpenRead(dir); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
-	} else if st, err := reader.State(); err == nil {
-		switch st.Phase {
+	} else if phase, err := reader.Phase(); err == nil {
+		// Event-log-first (#242): a stale state.json can still claim
+		// {running, ...} after a crash-fsynced run.finished — trusting it
+		// here would let abort append a SECOND run.finished onto an
+		// already-terminal run, flipping its recorded terminal phase.
+		switch phase {
 		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-			pf(stderr, "error: run %s is already terminal (phase=%s)\n", runID, st.Phase)
+			pf(stderr, "error: run %s is already terminal (phase=%s)\n", runID, phase)
 			return 1
 		}
 	}
