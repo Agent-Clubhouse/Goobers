@@ -26,6 +26,16 @@ import (
 // falls back to its own github.com default.
 var repoCloneURL func(apiv1.RepoRef) (string, error)
 
+// newAgenticAdapter overrides how buildRunnerConfig constructs the harness
+// adapter for an agentic stage when non-nil. It is a test seam (mirroring
+// repoCloneURL above) so the CLI-level acceptance check (acceptance_test.go)
+// can substitute a fake for the real Copilot CLI subprocess and drive the full
+// agentic loop — implement -> reviewer gate -> local-ci — through `goobers
+// run`/`up` offline, extending #29's runner-API-level walking skeleton to the
+// CLI entrypoint. Production leaves it nil and buildRunnerConfig uses the real
+// CopilotAdapter.
+var newAgenticAdapter func(gooberName string, envCaps map[string]string) harness.Adapter
+
 // credentialGrantEnv is the environment variable the Copilot CLI reads a
 // credentialed capability's token from (internal/harness.CopilotAdapter's
 // EnvCapabilities convention — matches internal/harness/copilot_test.go's
@@ -121,7 +131,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if err != nil {
 				return nil, fmt.Errorf("read goober %q instructions: %w", gooberName, err)
 			}
-			adapter := &harness.CopilotAdapter{Command: []string{"copilot"}, EnvCapabilities: envCaps}
+			var adapter harness.Adapter = &harness.CopilotAdapter{Command: []string{"copilot"}, EnvCapabilities: envCaps}
+			if newAgenticAdapter != nil {
+				adapter = newAgenticAdapter(gooberName, envCaps)
+			}
 			recorder, ok := rec.(harness.SpanRecorder)
 			if !ok {
 				return nil, fmt.Errorf("runner artifact recorder does not implement harness.SpanRecorder")
