@@ -67,6 +67,13 @@ type RunRequest struct {
 	// Credentials is pre-scoped to Envelope.Capabilities: Token(ctx, cap)
 	// fails closed for anything not declared for this stage.
 	Credentials *credentials.Set
+	// ContextPaths maps a resolved ContextPointer's Name to the
+	// workspace-relative path its in-journal artifact bytes were
+	// materialized to (#121) — populated for Artifact-backed pointers only;
+	// External pointers carry no in-journal content to resolve. The prompt
+	// renderer uses this to reference actual, readable file content instead
+	// of an opaque pointer name.
+	ContextPaths map[string]string
 	// Timeout bounds the harness session; zero means no timeout.
 	Timeout time.Duration
 }

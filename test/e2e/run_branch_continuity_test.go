@@ -106,12 +106,19 @@ func newContinuityRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, runsD
 			if !ok {
 				return nil, fmt.Errorf("test double %T does not implement harness.SpanRecorder", rec)
 			}
+			// rec is this run's own *journal.Run, which also satisfies
+			// harness.ContextResolver structurally (same Dir method) —
+			// resolving declared ContextPointers into the workspace (#121).
+			contextResolver, ok := rec.(harness.ContextResolver)
+			if !ok {
+				return nil, fmt.Errorf("test double %T does not implement harness.ContextResolver", rec)
+			}
 			registryScrubber, ok := reg.(journal.Scrubber)
 			if !ok {
 				return nil, fmt.Errorf("test double %T does not implement journal.Scrubber", reg)
 			}
 			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
-			return harness.NewExecutor(adapter, injector, recorder, rec, scrubber, "you are the "+gooberName+" fixture goober")
+			return harness.NewExecutor(adapter, injector, recorder, rec, contextResolver, scrubber, "you are the "+gooberName+" fixture goober")
 		},
 		Automated:    gate.NewAutomatedEvaluator(),
 		Worktrees:    mgr,
