@@ -476,6 +476,35 @@ func TestExecProcessRunnerTimeoutGivesUpOnEscapedDescendant(t *testing.T) {
 	}
 }
 
+// TestExecProcessRunnerDistinguishesCancelFromTimeout is #122's low-priority
+// defense-in-depth item: runCtx.Done() fires both when its own timeout
+// elapses and when the caller's ctx is externally canceled, and the two must
+// not be conflated — a canceled ctx should never come back as ErrTimeout.
+// internal/runner's dispatch always uses context.WithoutCancel today, so this
+// path is otherwise unreachable in production; the test drives it directly by
+// canceling ctx itself rather than through the runner.
+func TestExecProcessRunnerDistinguishesCancelFromTimeout(t *testing.T) {
+	if _, err := exec.LookPath("sleep"); err != nil {
+		t.Skip("sleep not available")
+	}
+	runner := ExecProcessRunner{}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	_, err := runner.Run(ctx, ProcessRequest{
+		Command: []string{"sleep", "5"},
+		Timeout: 10 * time.Second, // comfortably longer than the external cancel
+	})
+	if !errors.Is(err, ErrCanceled) {
+		t.Fatalf("error = %v, want ErrCanceled", err)
+	}
+	if errors.Is(err, ErrTimeout) {
+		t.Fatalf("error = %v, must not also be ErrTimeout", err)
+	}
+}
+
 // TestExecProcessRunnerDefaultsToEmptyEnv is the regression test for #122:
 // os/exec treats a nil Cmd.Env as "inherit this process's environment" —
 // ExecProcessRunner must not let that fail-open default through when a

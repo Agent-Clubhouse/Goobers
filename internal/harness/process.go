@@ -204,12 +204,22 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 
-	var timedOut bool
+	var timedOut, canceled bool
 	var err error
 	select {
 	case err = <-waitDone:
 	case <-runCtx.Done():
-		timedOut = true
+		// runCtx.Done() fires both when its own timeout elapses and when the
+		// caller's ctx is canceled out from under it — distinguishing the two
+		// via context.Cause matters even though only the timeout path is
+		// reachable today (internal/runner's dispatch always uses
+		// context.WithoutCancel): a future hard-shutdown path that DOES
+		// cancel ctx must not be mislabeled as a retryable timeout (#122).
+		if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
+			timedOut = true
+		} else {
+			canceled = true
+		}
 		// Kill the whole process group (negative pid), not just the direct
 		// child, so a runaway subprocess tree can't outlive the stage.
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -230,7 +240,7 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	}
 	var exitErr *exec.ExitError
 	switch {
-	case err == nil && !timedOut:
+	case err == nil && !timedOut && !canceled:
 		result.ExitCode = 0
 	case errors.As(err, &exitErr):
 		result.ExitCode = exitErr.ExitCode()
@@ -238,6 +248,9 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 
 	if timedOut {
 		return result, fmt.Errorf("%w after %s: %s", ErrTimeout, timeout, req.Command[0])
+	}
+	if canceled {
+		return result, fmt.Errorf("%w: %s", ErrCanceled, req.Command[0])
 	}
 	if err != nil {
 		return result, fmt.Errorf("harness: run %v: %w", req.Command, err)

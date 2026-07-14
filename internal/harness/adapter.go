@@ -41,6 +41,16 @@ var ErrNoCompletion = errors.New("harness: no completion file written")
 // declared timeout.
 var ErrTimeout = errors.New("harness: session timed out")
 
+// ErrCanceled is returned when a harness session's context is canceled for a
+// reason other than its own declared timeout (e.g. a hard-shutdown path
+// cancels the ctx a caller passed in, distinct from runCtx's own deadline
+// elapsing). Currently unreachable in practice — internal/runner's dispatch
+// deliberately uses context.WithoutCancel as its drain contract, so no caller
+// today ever cancels the ctx an Adapter/ProcessRunner receives — but kept
+// distinct from ErrTimeout so a future hard-shutdown path is never mislabeled
+// as a retryable timeout (#122).
+var ErrCanceled = errors.New("harness: session canceled")
+
 // ErrInvalidCompletion is returned when a harness's completion file exists but
 // fails schema validation — fail closed the same as a missing file (GBO-013).
 var ErrInvalidCompletion = errors.New("harness: completion file failed validation")
