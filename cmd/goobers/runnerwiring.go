@@ -235,6 +235,14 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if err != nil {
 		return runner.Config{}, nil, fmt.Errorf("resolve instance root: %w", err)
 	}
+	// The running daemon's own binary path, substituted for a bare "goobers"
+	// command token in deterministic stages — a fresh stage worktree never
+	// contains the goobers binary, so a bare name fails at exec (#229). Fail
+	// closed here rather than let every deterministic stage fail at exec time.
+	selfBin, err := os.Executable()
+	if err != nil {
+		return runner.Config{}, nil, fmt.Errorf("resolve goobers binary path: %w", err)
+	}
 
 	envCaps := make(map[string]string, len(credentialedCapabilities))
 	for _, c := range credentialedCapabilities {
@@ -261,6 +269,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// worktree, not the instance root) locates instance.yaml/config/
 			// scheduler (#131/#132's backlog-query/open-pr/issue-close-out).
 			shell.InstanceRoot = instanceRoot
+			// Resolve a bare "goobers" command token to the running daemon's own
+			// binary, so a deterministic stage execs it from its fresh worktree
+			// clone (which never contains the binary) rather than failing (#229).
+			shell.SelfBin = selfBin
 
 			ciPoll, err := buildCIPollExecutor(cfg, resolver, reg)
 			if err != nil {

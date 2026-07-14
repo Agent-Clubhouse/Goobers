@@ -543,3 +543,49 @@ func TestNewShellExecutor_RequiresInjectorAndJournal(t *testing.T) {
 		t.Fatal("expected error for nil journal recorder")
 	}
 }
+
+// TestShellExecutor_SelfBinResolvesGoobersToken is the #229 regression control:
+// a bare "goobers" command token — which a fresh stage worktree can never
+// resolve, since it holds no copy of the (gitignored, uncommitted) binary — is
+// rewritten to SelfBin and execs successfully; without SelfBin it fails at
+// exec_start, documenting the pre-#229 behavior.
+func TestShellExecutor_SelfBinResolvesGoobersToken(t *testing.T) {
+	// The no-SelfBin half below observes an exec failure only if "goobers" is
+	// absent from PATH; a dev machine with goobers installed would exec the real
+	// binary instead. Skip in that case rather than assert against a real binary.
+	if _, err := exec.LookPath("goobers"); err == nil {
+		t.Skip("a real goobers is on PATH; this test isolates the SelfBin rewrite")
+	}
+
+	// A stub standing in for the goobers binary, reachable ONLY via its absolute
+	// path (SelfBin), never via the "goobers" token — mirroring the worktree.
+	stub := filepath.Join(t.TempDir(), "goobers-stub")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\necho self-bin-marker\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	e, rec := newTestExecutor(t, nil)
+	e.SelfBin = stub
+	result, err := e.Run(context.Background(), baseEnvelope(t),
+		apiv1.DeterministicRun{Command: []string{"goobers", "--marker"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("SelfBin should have execed the stub for the \"goobers\" token: %+v", result)
+	}
+	if got := string(rec.recorded["task-1/stdout.log"]); !strings.Contains(got, "self-bin-marker") {
+		t.Fatalf("stub not invoked via SelfBin; stdout = %q", got)
+	}
+
+	// Directional: without SelfBin, the bare "goobers" token fails at exec.
+	e2, _ := newTestExecutor(t, nil) // SelfBin unset
+	result2, err := e2.Run(context.Background(), baseEnvelope(t),
+		apiv1.DeterministicRun{Command: []string{"goobers", "--marker"}})
+	if err != nil {
+		t.Fatalf("Run (no SelfBin): %v", err)
+	}
+	if result2.Status != apiv1.ResultFailure || result2.Error == nil || result2.Error.Code != "exec_start" {
+		t.Fatalf("without SelfBin, bare \"goobers\" must fail at exec_start: %+v", result2)
+	}
+}

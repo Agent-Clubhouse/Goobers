@@ -90,6 +90,16 @@ type ShellExecutor struct {
 	// default: a caller that never sets it (e.g. an existing test) gets
 	// unchanged behavior — no such var is set.
 	InstanceRoot string
+	// SelfBin, if set, is the absolute path substituted for a bare "goobers"
+	// command token before exec. Deterministic stages declare their command as
+	// e.g. ["goobers", "backlog-query", …], but a stage runs with cwd set to a
+	// fresh worktree clone that never contains the (gitignored, uncommitted)
+	// goobers binary, and a bare name is PATH-resolved against the *daemon's*
+	// PATH — not the worktree — so "goobers" fails at exec (#229). Wiring sets
+	// this once from os.Executable() so a stage execs the exact same binary as
+	// the running daemon (no version skew). Empty by default: an unset caller
+	// runs the command verbatim (unchanged behavior).
+	SelfBin string
 }
 
 // NewShellExecutor builds a ShellExecutor. injector and journal must not be
@@ -148,7 +158,16 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.Command(run.Command[0], run.Command[1:]...)
+	// Substitute the running daemon's own binary for a bare "goobers" token: the
+	// stage's cwd is a fresh worktree clone that never contains the goobers
+	// binary, and a bare name would PATH-resolve against the daemon's PATH, not
+	// the worktree — so it fails at exec (#229). SelfBin is byte-identical to the
+	// running daemon, avoiding version skew.
+	name := run.Command[0]
+	if e.SelfBin != "" && name == "goobers" {
+		name = e.SelfBin
+	}
+	cmd := exec.Command(name, run.Command[1:]...)
 	cmd.Dir = env.Workspace
 	cmd.Env = stageEnv
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
