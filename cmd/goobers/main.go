@@ -40,6 +40,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runTrace(args[1:], stdout, stderr)
 	case "telemetry":
 		return runTelemetry(args[1:], stdout, stderr)
+	case "telemetry-query":
+		return runTelemetryQuery(args[1:], stdout, stderr)
 	case "journal":
 		return runJournal(args[1:], stdout, stderr)
 	case "backlog-query":
@@ -75,6 +77,7 @@ Usage:
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
+  goobers telemetry-query [--window <d>] emit telemetry signals JSON over a window (a workflow stage)
 
 path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
 business errors, 2 = usage/IO error.
