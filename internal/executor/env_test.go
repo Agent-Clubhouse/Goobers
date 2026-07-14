@@ -1,9 +1,29 @@
 package executor
 
 import (
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/procenv"
 )
+
+// TestBaseEnvMatchesProcenv is the #248 drift-guard: executor's baseEnv()
+// must be exactly procenv.BaseEnv() — the shared definition harness's
+// baseEnv() also delegates to — not a local copy that can silently diverge
+// again the way #98/#122 did.
+func TestBaseEnvMatchesProcenv(t *testing.T) {
+	t.Setenv("GOPROXY", "https://proxy.example.internal")
+	t.Setenv("LC_ALL", "C")
+
+	got := append([]string(nil), baseEnv()...)
+	want := append([]string(nil), procenv.BaseEnv()...)
+	sort.Strings(got)
+	sort.Strings(want)
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("executor baseEnv() diverged from procenv.BaseEnv():\n got:  %v\n want: %v", got, want)
+	}
+}
 
 // TestBaseEnvPassesThroughExtendedAllowlist is the regression test for #122's
 // allowlist-parity fix: internal/harness's #75/#98 extension (XDG base dirs,

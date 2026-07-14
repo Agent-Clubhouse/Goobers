@@ -3,11 +3,11 @@ package executor
 import (
 	"context"
 	"errors"
-	"os"
 	"regexp"
 	"strings"
 
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/procenv"
 )
 
 // CredentialEnvVar returns the deterministic env var name a stage's declared
@@ -33,54 +33,12 @@ func InputEnvVar(key string) string {
 
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
-// passthroughVars are the only ambient daemon-process env vars carried into a
-// stage's process — never the full os.Environ(). PATH/HOME/TMPDIR are
-// required for the child (and the subprocesses it may itself exec, e.g.
-// `make` invoking `go`) to locate its own toolchain; the rest (#122, parity
-// with internal/harness's identical #75/#98 allowlist) are well-known,
-// non-secret environment conventions a deterministic stage's own command
-// (e.g. `make ci` behind a corporate proxy) may depend on: XDG_CONFIG_HOME/
-// XDG_DATA_HOME, LANG (locale), SSL_CERT_FILE (custom CA bundles), and the
-// HTTP_PROXY/HTTPS_PROXY/NO_PROXY trio. None of these carries secret
-// material — the allowlist stays default-deny (SEC-045).
-var passthroughVars = []string{
-	"PATH", "HOME", "TMPDIR",
-	"XDG_CONFIG_HOME", "XDG_DATA_HOME",
-	"LANG",
-	"SSL_CERT_FILE",
-	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-}
-
-// passthroughPrefixes are ambient env var name prefixes carried through as a
-// family — LC_* (POSIX locale category overrides) — rather than one name at
-// a time. A var must actually start with one of these prefixes, not merely
-// share a substring, to stay default-deny.
-var passthroughPrefixes = []string{"LC_"}
-
-// baseEnv returns the minimal, explicit env every stage process starts with:
-// the passthrough allowlist (exact names, plus the LC_* family) carried
-// forward from the daemon process, and nothing else. No os.Environ()
-// passthrough (SEC-045).
+// baseEnv returns the minimal, explicit env every stage process starts with
+// — internal/procenv.BaseEnv(), the allowlist internal/harness's baseEnv()
+// shares (#248, closing the #98/#122 drift for good: one definition instead
+// of two hand-kept-in-sync copies). No os.Environ() passthrough (SEC-045).
 func baseEnv() []string {
-	env := make([]string, 0, len(passthroughVars))
-	for _, name := range passthroughVars {
-		if v, ok := os.LookupEnv(name); ok {
-			env = append(env, name+"="+v)
-		}
-	}
-	for _, kv := range os.Environ() {
-		name, _, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue
-		}
-		for _, prefix := range passthroughPrefixes {
-			if strings.HasPrefix(name, prefix) {
-				env = append(env, kv)
-				break
-			}
-		}
-	}
-	return env
+	return procenv.BaseEnv()
 }
 
 // buildStageEnv resolves credentials for declared, and returns the full

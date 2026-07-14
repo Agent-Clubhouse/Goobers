@@ -4,6 +4,16 @@ Walks the full `goobers` CLI surface end to end: scaffold an instance, point it
 at your repo, and trigger a run. See `docs/ARCHITECTURE.md` §6 for the instance
 layout these commands operate on.
 
+## Prerequisites
+
+- `golangci-lint` must be on the **daemon's** `PATH` — a workflow's `local-ci`
+  stage (`make ci` -> `lint`) runs as a subprocess of the daemon, not your
+  interactive shell, so it inherits the daemon's `PATH`, not your dotfile's.
+- The daemon passes through the Go toolchain env family (`GOPATH`, `GOBIN`,
+  `GOCACHE`, `GOMODCACHE`, `GOFLAGS`, `GOPROXY`, `GOSUMDB`, `GOPRIVATE`,
+  `GOTOOLCHAIN`) into every stage — set these before `goobers up` if your host
+  relocates the Go cache/module store or sits behind a corporate module proxy.
+
 ## 1. Build the binary
 
 ```sh
