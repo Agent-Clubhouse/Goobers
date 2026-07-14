@@ -56,8 +56,29 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	head := providerInput("head", providers.BranchName(workflow, runID))
 	base := providerInput("base", "main")
-	title := providerInput("title", "Automated implementation")
-	body := providerInput("body", "Automated PR opened by the goobers implementation workflow.")
+
+	// Issue linkage (#241): derive the PR title from the claimed issue and add a
+	// `Fixes #N` back-reference, so a human triaging several loop PRs can tell
+	// them apart and the issue<->PR breadcrumb the #30 runbook checks exists on
+	// both sides. Recovered from the run journal (resume-safe), so this holds on
+	// a repass too. Falls back to the generic title/body when the run claimed no
+	// issue (other workflows) or an explicit title/body input is set.
+	issueID, issueTitle, haveIssue := claimedIssueFromJournal(root, runID)
+	title := providerInput("title", "")
+	if title == "" {
+		if haveIssue && issueTitle != "" {
+			title = issueTitle
+		} else {
+			title = "Automated implementation"
+		}
+	}
+	body := providerInput("body", "")
+	if body == "" {
+		body = "Automated PR opened by the goobers implementation workflow."
+	}
+	if haveIssue && issueID != "" {
+		body += "\n\nFixes #" + issueID
+	}
 
 	// Config write-boundary (#104/T4, wired here per #223). Opt-in and no-op by
 	// default, so implementation/work-nomination are unaffected. When the Tutor

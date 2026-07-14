@@ -83,21 +83,36 @@ func TestIssueCloseOutCommentsClosesAndReleasesClaim(t *testing.T) {
 // clearly when the claim ledger holds no entry for its run — it has no other
 // way to know which item to comment on/close, so it must not guess or no-op
 // silently.
-func TestIssueCloseOutNoClaimInLedgerFailsClosed(t *testing.T) {
+// TestIssueCloseOutNoLiveClaimIsResumeNoOp: with no claim in the ledger for
+// this run, close-out no longer fails closed — an absent claim means a prior
+// close-out attempt already ran through its comment + mark-done + release (the
+// release is close-out's last step), so resuming succeeds as a no-op instead of
+// failing the run at its final stage (#241 flipped the earlier fail-closed
+// behavior; the resume/no-re-comment guarantees are asserted in
+// prchainfinish241_test.go).
+func TestIssueCloseOutNoLiveClaimIsResumeNoOp(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Fix the bug", "goobers:approved", "goobers:ready")
 
 	const runID = "run-1"
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
 	t.Chdir(t.TempDir())
 
-	// No claim seeded in the ledger for run-1.
-	code, _, stderr := runArgs(t, "issue-close-out", root)
-	if code != 1 {
-		t.Fatalf("code = %d, want 1 (no claim in ledger for this run), stderr = %q", code, stderr)
+	// No claim seeded in the ledger for run-1 (a prior attempt released it).
+	code, stdout, stderr := runArgs(t, "issue-close-out", root)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (resume no-op), stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stderr, "no item claimed") {
-		t.Fatalf("stderr = %q, want a clear no-claim message", stderr)
+	if !strings.Contains(stdout, "already released") {
+		t.Fatalf("stdout = %q, want an already-released no-op note", stdout)
+	}
+	// A no-op must not re-touch the issue (no duplicate comment on resume).
+	server.mu.Lock()
+	comments := len(server.issues[7].comments)
+	server.mu.Unlock()
+	if comments != 0 {
+		t.Fatalf("no-op close-out must not re-comment; got %d comment(s)", comments)
 	}
 }
 
