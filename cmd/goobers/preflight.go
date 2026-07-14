@@ -7,6 +7,14 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+// preflightHarnesses is the seam buildSchedulerSetup calls to preflight agentic
+// harnesses at startup (#238). It defaults to the real preflightAgenticHarnesses;
+// the cmd/goobers test suite replaces it with a no-op in TestMain, since those
+// tests drive `goobers up`/`run` against configs with agentic stages but have no
+// real, installed Copilot CLI (LookPath would fail in CI). The real logic is
+// tested directly in preflight_test.go.
+var preflightHarnesses = preflightAgenticHarnesses
+
 // preflightAgenticHarnesses preflights every distinct harness an agentic stage
 // of the given workflows references, failing closed on the first unusable one
 // (missing binary, non-responsive, or — when an auth probe is configured —

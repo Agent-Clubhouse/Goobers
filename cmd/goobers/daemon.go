@@ -66,14 +66,12 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	}
 	// Fail fast if an agentic stage's harness isn't usable (missing/broken/
 	// signed-out CLI) — before any worktree/claim/journal side effect — rather
-	// than burning a mid-run agentic attempt (#238). Skipped when a test
-	// substitutes a fake agentic adapter (newAgenticAdapter != nil): that path
-	// never touches the real Copilot CLI, so preflighting it is both wrong and
-	// impossible in CI.
-	if newAgenticAdapter == nil {
-		if err := preflightAgenticHarnesses(goobers, set.Workflows); err != nil {
-			return nil, err
-		}
+	// than burning a mid-run agentic attempt (#238). Indirected through the
+	// preflightHarnesses seam so the cmd/goobers test suite (which drives up/run
+	// without a real, installed Copilot CLI) can neutralize it uniformly; the
+	// real preflight logic is covered directly by preflight_test.go.
+	if err := preflightHarnesses(goobers, set.Workflows); err != nil {
+		return nil, err
 	}
 	repoRefs, err := repoRefsByWorkflow(set)
 	if err != nil {
