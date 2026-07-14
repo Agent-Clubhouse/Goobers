@@ -170,7 +170,7 @@ func TestInitThenSelfhostValidates(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "1 gaggle(s), 4 goober(s), 3 workflow(s)") {
+	if !strings.Contains(stdout, "1 gaggle(s), 6 goober(s), 4 workflow(s)") {
 		t.Fatalf("validate stdout = %q, want all self-hosting objects to resolve", stdout)
 	}
 }

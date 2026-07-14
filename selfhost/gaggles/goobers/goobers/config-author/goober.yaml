@@ -1,0 +1,26 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: config-author
+spec:
+  gaggle: goobers
+  role: config-author
+  displayName: Config author
+  instructions: instructions.md
+  harness: copilot
+  # Writes config only, and only inside this instance's configured config
+  # root (`selfhost/` on this dogfood instance, not the repo root) — never
+  # opens the PR itself (open-pr, a separate deterministic stage, does).
+  # The structural half of this boundary (a credential that cannot push
+  # platform changes at all) is #35's hard dependency; today the boundary is
+  # enforced by governance (CODEOWNERS + branch protection on the config
+  # root, #104/T4) and this goober's own scope discipline (instructions.md).
+  capabilities:
+    - repo:push
+  skills:
+    - config-authoring
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - tutor
