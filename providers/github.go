@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -334,7 +335,16 @@ func (p *GitHubProvider) reviewDecision(ctx context.Context, repo RepositoryRef,
 		return "", 0, err
 	}
 	var reviews []githubReview
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &reviews); err != nil {
+	// Follow pagination: a CHANGES_REQUESTED review on page 2+ would otherwise
+	// be invisible and a truly-blocked PR would read as Approved (#139).
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageItems []githubReview
+		if err := json.Unmarshal(page, &pageItems); err != nil {
+			return fmt.Errorf("decode reviews page: %w", err)
+		}
+		reviews = append(reviews, pageItems...)
+		return nil
+	}); err != nil {
 		return "", 0, err
 	}
 	latest := map[string]string{}
@@ -383,11 +393,18 @@ func (p *GitHubProvider) combinedCheckState(ctx context.Context, repo Repository
 	if err != nil {
 		return "", nil, err
 	}
-	var combined githubCombinedStatus
-	if err := p.do(ctx, http.MethodGet, statusEndpoint, nil, &combined); err != nil {
+	var statuses []githubStatus
+	if err := p.getAllPages(ctx, statusEndpoint, func(page []byte) error {
+		var pageOut githubCombinedStatus
+		if err := json.Unmarshal(page, &pageOut); err != nil {
+			return fmt.Errorf("decode combined status page: %w", err)
+		}
+		statuses = append(statuses, pageOut.Statuses...)
+		return nil
+	}); err != nil {
 		return "", nil, err
 	}
-	for _, status := range combined.Statuses {
+	for _, status := range statuses {
 		state := normalizeCombinedStatusState(status.State)
 		details = append(details, CheckDetail{Name: status.Context, State: state, URL: status.TargetURL, Summary: status.Description})
 		switch state {
@@ -402,11 +419,20 @@ func (p *GitHubProvider) combinedCheckState(ctx context.Context, repo Repository
 	if err != nil {
 		return "", nil, err
 	}
-	var runsOut githubCheckRunsResponse
-	if err := p.do(ctx, http.MethodGet, runsEndpoint, nil, &runsOut); err != nil {
+	var checkRuns []githubCheckRun
+	// The single biggest silent failure in the cluster: a failing check-run on
+	// page 2+ would be unseen and the ci-gate would pass a red PR (#139).
+	if err := p.getAllPages(ctx, runsEndpoint, func(page []byte) error {
+		var pageOut githubCheckRunsResponse
+		if err := json.Unmarshal(page, &pageOut); err != nil {
+			return fmt.Errorf("decode check-runs page: %w", err)
+		}
+		checkRuns = append(checkRuns, pageOut.CheckRuns...)
+		return nil
+	}); err != nil {
 		return "", nil, err
 	}
-	for _, run := range runsOut.CheckRuns {
+	for _, run := range checkRuns {
 		state := normalizeCheckRunState(run.Status, run.Conclusion)
 		details = append(details, CheckDetail{Name: run.Name, State: state, URL: run.HTMLURL, Summary: run.Output.Summary})
 		switch state {
@@ -512,30 +538,68 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 	if req.UpdatedSince != nil {
 		values.Set("since", req.UpdatedSince.UTC().Format(time.RFC3339))
 	}
-	if req.Limit > 0 {
-		values.Set("per_page", strconv.Itoa(req.Limit))
-	}
 	if req.Page > 0 {
+		// An explicit Page means the caller drives pagination itself: honor it
+		// as a single-page read (its own per_page, no Link following).
+		if req.Limit > 0 {
+			values.Set("per_page", strconv.Itoa(req.Limit))
+		}
 		values.Set("page", strconv.Itoa(req.Page))
+		endpoint, err = addQuery(endpoint, values)
+		if err != nil {
+			return nil, err
+		}
+		var issues []githubIssue
+		if err := p.do(ctx, http.MethodGet, endpoint, nil, &issues); err != nil {
+			return nil, err
+		}
+		return issuesToWorkItems(issues, req.Limit), nil
 	}
+
 	endpoint, err = addQuery(endpoint, values)
 	if err != nil {
 		return nil, err
 	}
-	var issues []githubIssue
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &issues); err != nil {
+	// Follow pagination and accumulate up to Limit NON-PR items. The issues
+	// endpoint also returns pull requests (excluded — PRs are the repo
+	// provider's surface, #13); filtering them out of a single Limit-sized page
+	// silently returned fewer than Limit real issues (#139).
+	var items []WorkItem
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var issues []githubIssue
+		if err := json.Unmarshal(page, &issues); err != nil {
+			return fmt.Errorf("decode issues page: %w", err)
+		}
+		for _, issue := range issues {
+			if issue.PullRequest != nil {
+				continue
+			}
+			items = append(items, mapGitHubIssue(issue))
+			if req.Limit > 0 && len(items) >= req.Limit {
+				return errStopPaging
+			}
+		}
+		return nil
+	}); err != nil {
 		return nil, err
 	}
+	return items, nil
+}
+
+// issuesToWorkItems maps a page of GitHub issues to WorkItems, skipping pull
+// requests, and truncates to limit (0 = no cap).
+func issuesToWorkItems(issues []githubIssue, limit int) []WorkItem {
 	items := make([]WorkItem, 0, len(issues))
 	for _, issue := range issues {
-		// The GitHub issues endpoint also returns pull requests; a backlog issues
-		// query excludes them (PRs are the repo provider's surface, issue #13).
 		if issue.PullRequest != nil {
 			continue
 		}
 		items = append(items, mapGitHubIssue(issue))
+		if limit > 0 && len(items) >= limit {
+			break
+		}
 	}
-	return items, nil
+	return items
 }
 
 // GetWorkItem reads a GitHub issue as a unified work item.
@@ -652,22 +716,13 @@ func (p *GitHubProvider) Subscribe(ctx context.Context, sub TriggerSubscription)
 }
 
 func (p *GitHubProvider) contentSHA(ctx context.Context, endpoint string) (string, bool, error) {
-	req, err := newJSONRequest(ctx, http.MethodGet, endpoint, nil)
+	// Routed through send so this read gets the same rate-limit/5xx/transport
+	// retries as every other request — it previously issued a raw Do and a
+	// single blip failed the caller outright (#139). The 404 = "no such
+	// content" semantic below is preserved (send does not retry 404).
+	resp, err := p.send(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return "", false, err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	token, err := p.resolveToken(ctx)
-	if err != nil {
-		return "", false, err
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := httpClientOrDefault(p.Client).Do(req)
-	if err != nil {
-		return "", false, fmt.Errorf("send request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
@@ -702,18 +757,21 @@ func (p *GitHubProvider) do(ctx context.Context, method, endpoint string, body i
 	return p.doStatus(ctx, method, endpoint, body, out, nil)
 }
 
-// doStatus performs a GitHub request with rate-limit-aware retries. Status codes in
-// allowStatus are treated as success (used to tolerate a 404 when removing a label
-// that is not present); the response body is not decoded for those.
-func (p *GitHubProvider) doStatus(ctx context.Context, method, endpoint string, body, out interface{}, allowStatus []int) error {
+// send issues one GitHub request, retrying transient failures — rate limits,
+// 5xx server errors, and transport errors — with bounded backoff (up to
+// p.maxRetries). It returns the final response for the caller to consume and
+// close; a nil error guarantees a non-nil response. Callers that only need a
+// decoded body should use doStatus; getAllPages uses send directly so it can
+// read the Link header for pagination (#139).
+func (p *GitHubProvider) send(ctx context.Context, method, endpoint string, body interface{}) (*http.Response, error) {
 	for attempt := 0; ; attempt++ {
 		req, err := newJSONRequest(ctx, method, endpoint, body)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		token, err := p.resolveToken(ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
@@ -722,25 +780,86 @@ func (p *GitHubProvider) doStatus(ctx context.Context, method, endpoint string, 
 		}
 		resp, err := httpClientOrDefault(p.Client).Do(req)
 		if err != nil {
-			return fmt.Errorf("send request: %w", err)
+			// Transport error (connection reset, DNS blip, timeout): retry with
+			// backoff rather than fail the stage on a single network hiccup
+			// (#139). No response to close on this path.
+			if attempt < p.maxRetries {
+				if serr := p.sleep(ctx, backoffDuration(attempt)); serr != nil {
+					return nil, serr
+				}
+				continue
+			}
+			return nil, fmt.Errorf("send request: %w", err)
 		}
 		if isRateLimited(resp) && attempt < p.maxRetries {
 			wait, ev := p.rateLimitPlan(resp, endpoint, attempt)
 			_ = resp.Body.Close()
 			p.observeRateLimit(ctx, ev)
 			if err := p.sleep(ctx, wait); err != nil {
-				return err
+				return nil, err
 			}
 			continue
 		}
-		for _, code := range allowStatus {
-			if resp.StatusCode == code {
-				_ = resp.Body.Close()
+		if resp.StatusCode >= 500 && attempt < p.maxRetries {
+			// Server-side error: retry with backoff. GitHub 5xx is usually
+			// transient; without this a single blip fails the stage attempt.
+			_ = resp.Body.Close()
+			if err := p.sleep(ctx, backoffDuration(attempt)); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		return resp, nil
+	}
+}
+
+// doStatus performs a GitHub request with transient-failure retries (see send).
+// Status codes in allowStatus are treated as success (used to tolerate a 404
+// when removing a label that is not present); the response body is not decoded
+// for those.
+func (p *GitHubProvider) doStatus(ctx context.Context, method, endpoint string, body, out interface{}, allowStatus []int) error {
+	resp, err := p.send(ctx, method, endpoint, body)
+	if err != nil {
+		return err
+	}
+	for _, code := range allowStatus {
+		if resp.StatusCode == code {
+			_ = resp.Body.Close()
+			return nil
+		}
+	}
+	return readJSONResponse(resp, method, endpoint, out)
+}
+
+// getAllPages issues GET requests against endpoint with per_page maximized,
+// following the response Link header's rel="next" until the result set is
+// exhausted, and invokes onPage with each page's raw JSON body. This is the
+// shared paginator (#139): before it, every list/read site consumed only the
+// first (default 30-item) page, so a claim breadcrumb, failing check, or
+// changes-requested review beyond page 1 was silently invisible.
+func (p *GitHubProvider) getAllPages(ctx context.Context, endpoint string, onPage func([]byte) error) error {
+	next, err := withPerPage(endpoint, maxPerPage)
+	if err != nil {
+		return err
+	}
+	for next != "" {
+		resp, err := p.send(ctx, http.MethodGet, next, nil)
+		if err != nil {
+			return err
+		}
+		body, nextLink, err := readPage(resp, http.MethodGet, next)
+		if err != nil {
+			return err
+		}
+		if err := onPage(body); err != nil {
+			if errors.Is(err, errStopPaging) {
 				return nil
 			}
+			return err
 		}
-		return readJSONResponse(resp, method, endpoint, out)
+		next = nextLink
 	}
+	return nil
 }
 
 // resolveToken returns the per-request token from the token source when configured,

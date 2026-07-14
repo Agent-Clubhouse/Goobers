@@ -11,9 +11,71 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// maxPerPage is the GitHub REST API's maximum page size; getAllPages requests
+// it to minimize round trips when following pagination (#139).
+const maxPerPage = 100
+
+// errStopPaging lets a getAllPages callback halt pagination early (e.g. once a
+// bounded list has collected enough items) without surfacing an error.
+var errStopPaging = errors.New("stop paging")
+
+// withPerPage sets per_page=n on endpoint, unless the caller already pinned a
+// per_page (a Limit-bounded list keeps its own page size).
+func withPerPage(endpoint string, n int) (string, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint %q: %w", endpoint, err)
+	}
+	q := u.Query()
+	if q.Get("per_page") == "" {
+		q.Set("per_page", strconv.Itoa(n))
+		u.RawQuery = q.Encode()
+	}
+	return u.String(), nil
+}
+
+// readPage reads and closes a paginated GET response, returning the raw body
+// and the rel="next" URL from the Link header ("" when there is no next page).
+func readPage(resp *http.Response, method, endpoint string) ([]byte, string, error) {
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s %s: read body: %w", method, endpoint, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, "", fmt.Errorf("%s %s failed: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return body, parseNextLink(resp.Header.Get("Link")), nil
+}
+
+// parseNextLink extracts the rel="next" URL from a GitHub Link header, e.g.
+//
+//	<https://api.github.com/...&page=2>; rel="next", <...&page=5>; rel="last"
+//
+// returning "" when there is no next page.
+func parseNextLink(link string) string {
+	for _, part := range strings.Split(link, ",") {
+		segs := strings.Split(part, ";")
+		if len(segs) < 2 {
+			continue
+		}
+		urlPart := strings.TrimSpace(segs[0])
+		if !strings.HasPrefix(urlPart, "<") || !strings.HasSuffix(urlPart, ">") {
+			continue
+		}
+		for _, attr := range segs[1:] {
+			if strings.TrimSpace(attr) == `rel="next"` {
+				return urlPart[1 : len(urlPart)-1]
+			}
+		}
+	}
+	return ""
+}
 
 // HTTPClient sends HTTP requests for provider implementations.
 type HTTPClient interface {

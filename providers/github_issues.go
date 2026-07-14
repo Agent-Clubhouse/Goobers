@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -97,12 +98,8 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 	if id == "" {
 		return nil, fmt.Errorf("issue id is required")
 	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
+	raw, err := p.allIssueComments(ctx, repo, id)
 	if err != nil {
-		return nil, err
-	}
-	var raw []githubComment
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &raw); err != nil {
 		return nil, err
 	}
 	comments := make([]Comment, 0, len(raw))
@@ -110,6 +107,28 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 		comments = append(comments, mapGitHubComment(c))
 	}
 	return comments, nil
+}
+
+// allIssueComments fetches every comment on an issue, following pagination
+// (#139). Both ListComments and the claim protocol's claimWinner read the full
+// comment set through here: a claim breadcrumb landing on page 2+ used to be
+// invisible, so two racers each read "no claim" and both took the empty-read
+// "we win" branch — a double claim on any issue with >30 comments.
+func (p *GitHubProvider) allIssueComments(ctx context.Context, repo RepositoryRef, id string) ([]githubComment, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
+	if err != nil {
+		return nil, err
+	}
+	var all []githubComment
+	err = p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageItems []githubComment
+		if err := json.Unmarshal(page, &pageItems); err != nil {
+			return fmt.Errorf("decode comments page: %w", err)
+		}
+		all = append(all, pageItems...)
+		return nil
+	})
+	return all, err
 }
 
 // UpdateWorkItem applies title/body edits, label add/remove, open/close, and an
@@ -262,12 +281,8 @@ func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id
 // claimer: the claim breadcrumb with the smallest comment id. ok is false when no
 // claim breadcrumb exists yet.
 func (p *GitHubProvider) claimWinner(ctx context.Context, repo RepositoryRef, id string) (string, bool, error) {
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
+	raw, err := p.allIssueComments(ctx, repo, id)
 	if err != nil {
-		return "", false, err
-	}
-	var raw []githubComment
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &raw); err != nil {
 		return "", false, err
 	}
 	claims := make([]githubComment, 0, len(raw))
