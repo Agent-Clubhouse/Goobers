@@ -402,6 +402,60 @@ func TestExecProcessRunnerTimeout(t *testing.T) {
 	}
 }
 
+// TestExecProcessRunnerKillsProcessGroup is the regression test for #119: a
+// background grandchild that stays in the same process group (the common
+// case — job control off) must die with the timeout kill, not survive and
+// keep the harness stage's stdout pipe open.
+func TestExecProcessRunnerKillsProcessGroup(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	runner := ExecProcessRunner{}
+	start := time.Now()
+	_, err := runner.Run(context.Background(), ProcessRequest{
+		Command: []string{"sh", "-c", "sleep 30 & wait"},
+		Timeout: 100 * time.Millisecond,
+	})
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("error = %v, want ErrTimeout", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("Run took %s, want well under the 30s sleep — process group was not killed", elapsed)
+	}
+}
+
+// TestExecProcessRunnerTimeoutGivesUpOnEscapedDescendant is the regression
+// test for #119's WaitDelay gap: a grandchild that escapes the process
+// group (via job control's own new-pgid-per-background-job behavior, the
+// portable stand-in for setsid) survives the group kill and keeps the
+// stdout pipe open, so cmd.Wait() would never return on its own. Run must
+// still return within groupKillWaitDelay of the timeout rather than hanging
+// for the escaped process's full lifetime.
+func TestExecProcessRunnerTimeoutGivesUpOnEscapedDescendant(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	runner := ExecProcessRunner{}
+	start := time.Now()
+	// `set -m` gives the backgrounded sleep its own process group — it
+	// outlives bash's own near-immediate exit and is never reached by the
+	// group kill (bash's group, not its own). 30s comfortably exceeds
+	// groupKillWaitDelay (5s), so the test can only pass via the give-up
+	// bound, not by the escaped process happening to exit on its own first.
+	_, err := runner.Run(context.Background(), ProcessRequest{
+		Command: []string{"bash", "-c", "set -m; sleep 30 & sleep 0.1"},
+		Timeout: 100 * time.Millisecond,
+	})
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("error = %v, want ErrTimeout", err)
+	}
+	if elapsed > 8*time.Second {
+		t.Fatalf("Run took %s, want under ~%s (timeout + groupKillWaitDelay) — the give-up bound did not engage", elapsed, 100*time.Millisecond+groupKillWaitDelay)
+	}
+}
+
 // TestExecProcessRunnerDefaultsToEmptyEnv is the regression test for #122:
 // os/exec treats a nil Cmd.Env as "inherit this process's environment" —
 // ExecProcessRunner must not let that fail-open default through when a
