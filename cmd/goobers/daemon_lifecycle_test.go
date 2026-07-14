@@ -83,7 +83,7 @@ func TestResumeReleasesReconciledSlotForFollowUpTrigger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.RollupDB, sched.Release, &wg)
+	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestResumeJournalsActualPhaseNotHardcodedStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.RollupDB, sched.Release, &wg); err != nil {
+	if _, _, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg); err != nil {
 		t.Fatal(err)
 	}
 	wg.Wait()

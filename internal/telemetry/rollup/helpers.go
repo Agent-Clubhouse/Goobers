@@ -30,16 +30,29 @@ func nullIfZeroInt64(n int64) sql.NullInt64 {
 	return sql.NullInt64{Int64: n, Valid: true}
 }
 
-// formatTime renders a timestamp as RFC3339Nano UTC text. Timestamps are
-// always bound as explicit strings (never left to a driver's implicit
-// time.Time conversion) so rollup rows are byte-for-byte reproducible across
-// drivers and across an ingest/rebuild cycle (the rebuild-is-byte-identical
-// acceptance criterion, #22).
+// timeFormat is RFC3339 with a fixed-width 9-digit fractional second — unlike
+// time.RFC3339Nano's ".999999999" (which trims trailing zeros: "12:00:00Z"
+// and "12:00:00.5Z" and "12:00:00.500000000Z" are three different string
+// lengths for what could be three same-second events), ".000000000" always
+// pads to the full width. Lexicographic string ORDER BY / range comparisons
+// (aggregates.go's time-window filters, query.go's ORDER BY occurred_at) only
+// agree with chronological order when every row's timestamp string is the
+// same width — issue #129's checklist. Parsing is unaffected: time.Parse
+// accepts any fractional-second width regardless of which layout formatted
+// it, so parseTime (time.RFC3339Nano) reads both old (trimmed) and new
+// (fixed-width) rows the same way — no migration needed for existing rows.
+const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
+
+// formatTime renders a timestamp as fixed-width RFC3339Nano UTC text.
+// Timestamps are always bound as explicit strings (never left to a driver's
+// implicit time.Time conversion) so rollup rows are byte-for-byte
+// reproducible across drivers and across an ingest/rebuild cycle (the
+// rebuild-is-byte-identical acceptance criterion, #22).
 func formatTime(t time.Time) sql.NullString {
 	if t.IsZero() {
 		return sql.NullString{}
 	}
-	return sql.NullString{String: t.UTC().Format(time.RFC3339Nano), Valid: true}
+	return sql.NullString{String: t.UTC().Format(timeFormat), Valid: true}
 }
 
 func durationMillis(start, end time.Time) sql.NullInt64 {

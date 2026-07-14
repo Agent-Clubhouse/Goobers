@@ -56,12 +56,12 @@ startedAt: %s
 	lines := []string{
 		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":%q,"type":"run.started"}`, ts(0)),
 		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":2,"branch":0,"time":%q,"type":"stage.started","stage":"build","attempt":1,"attemptClass":"policy"}`, ts(1)),
-		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":3,"branch":0,"time":%q,"type":"stage.finished","stage":"build","attempt":1,"status":"succeeded"}`, ts(3)),
+		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":3,"branch":0,"time":%q,"type":"stage.finished","stage":"build","attempt":1,"status":"success"}`, ts(3)),
 		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":4,"branch":0,"time":%q,"type":"gate.evaluated","gate":"review","verdict":"approve","target":"deploy"}`, ts(4)),
 		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":5,"branch":0,"time":%q,"type":"ref.touched","externalRef":{"provider":"github","kind":"issue","id":"42","url":"https://github.com/acme/app/issues/42"},"runner":{"operation":"claim"}}`, ts(5)),
 		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":6,"branch":0,"time":%q,"type":"stage.started","stage":"deploy","attempt":1,"attemptClass":"policy"}`, ts(6)),
 		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":7,"branch":0,"time":%q,"type":"error","stage":"deploy","attempt":1,"error":{"code":"provider.rate_limit","message":"github secondary rate limit hit"}}`, ts(7)),
-		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":8,"branch":0,"time":%q,"type":"stage.finished","stage":"deploy","attempt":1,"status":"failed"}`, ts(8)),
+		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":8,"branch":0,"time":%q,"type":"stage.finished","stage":"deploy","attempt":1,"status":"failure"}`, ts(8)),
 		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":9,"branch":0,"time":%q,"type":"run.finished","status":"failed"}`, ts(9)),
 	}
 	events := strings.Join(lines, "\n") + "\n"
@@ -97,8 +97,8 @@ startedAt: %s
 	lines := []string{
 		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":%q,"type":"run.started"}`, t0.UTC().Format(time.RFC3339Nano)),
 		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":2,"branch":0,"time":%q,"type":"stage.started","stage":"scan","attempt":1,"attemptClass":"policy"}`, t0.Add(time.Second).UTC().Format(time.RFC3339Nano)),
-		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":3,"branch":0,"time":%q,"type":"stage.finished","stage":"scan","attempt":1,"status":"succeeded"}`, t0.Add(2*time.Second).UTC().Format(time.RFC3339Nano)),
-		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":4,"branch":0,"time":%q,"type":"run.finished","status":"succeeded"}`, t0.Add(3*time.Second).UTC().Format(time.RFC3339Nano)),
+		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":3,"branch":0,"time":%q,"type":"stage.finished","stage":"scan","attempt":1,"status":"success"}`, t0.Add(2*time.Second).UTC().Format(time.RFC3339Nano)),
+		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":4,"branch":0,"time":%q,"type":"run.finished","status":"completed"}`, t0.Add(3*time.Second).UTC().Format(time.RFC3339Nano)),
 	}
 	events := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(filepath.Join(dir, fileEvents), []byte(events), 0o644); err != nil {

@@ -54,7 +54,21 @@ func buildTelemetryClient(ctx context.Context, l instance.Layout) (*telemetry.Cl
 // `goobers telemetry errors`. Best-effort: the rollup is derived state, never
 // the source of truth, so an ingest failure here must never fail the run
 // itself.
-func ingestRunTelemetry(db *rollup.DB, l instance.Layout, runID string) {
+//
+// tel.Flush MUST run before IngestRun reads spans.jsonl: buildTelemetryClient
+// sets Batch: true, so completed spans sit in the OTel SDK's in-memory batch
+// processor and are only written to disk on the processor's own interval or
+// an explicit flush/shutdown — not synchronously when a span ends. Without
+// this, IngestRun would race that flush and snapshot a run's spans as empty
+// into telemetry.db, with nothing to re-ingest them later even after
+// spans.jsonl itself eventually gets written (issue #129's checklist: this
+// is exactly the gap that made `goobers trace` depend on a prior
+// `goobers telemetry` call, which itself flushed via a DIFFERENT process's
+// tel.Shutdown before this fix existed).
+func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout, runID string) {
+	if tel != nil {
+		_ = tel.Flush(context.Background())
+	}
 	if db == nil {
 		return
 	}
@@ -179,6 +193,15 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // shell executor, credentials scoped to instance.yaml's configured repo(s).
 // One Config serves every workflow/run — runner.Runner is not bound to a
 // single compiled machine.
+//
+// tel may be nil (instance.yaml's telemetry.enabled: false, issue #129) —
+// deliberately NOT assigned to the returned Config.Telemetry field in that
+// case. runner.Config.Telemetry is the SpanStarter INTERFACE; a nil
+// *telemetry.Client assigned to it would produce a non-nil interface value
+// wrapping a nil pointer, so the runner's own `r.cfg.Telemetry == nil` guard
+// would incorrectly evaluate false and panic on first use — Go's classic
+// typed-nil-in-interface trap. Leaving the field unset keeps the interface
+// itself nil.
 func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client) (runner.Config, error) {
 	wtMgr, err := worktree.NewManager(l.WorkcopiesDir())
 	if err != nil {
@@ -198,7 +221,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		envCaps[string(c)] = credentialGrantEnv
 	}
 
-	return runner.Config{
+	rc := runner.Config{
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
 			injector, err := credentials.NewInjector(resolver, grants, reg)
 			if err != nil {
@@ -256,8 +279,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		Worktrees:    wtMgr,
 		RunsDir:      l.RunsDir(),
 		RepoCloneURL: repoCloneURL,
-		Telemetry:    tel,
-	}, nil
+	}
+	if tel != nil {
+		rc.Telemetry = tel
+	}
+	return rc, nil
 }
 
 // goobersByName indexes set's Goobers by name for workflow.WithGoobers

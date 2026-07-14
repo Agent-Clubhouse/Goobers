@@ -71,13 +71,13 @@ func TestIngestRunMatchesJournalEvents(t *testing.T) {
 		t.Fatalf("len(stages) = %d, want 2 (build, deploy)", len(stages))
 	}
 	build, deploy := stages[0], stages[1]
-	if build.Stage != "build" || build.Status != "succeeded" || build.AttemptClass != "policy" {
+	if build.Stage != "build" || build.Status != "success" || build.AttemptClass != "policy" {
 		t.Fatalf("unexpected build stage row: %#v", build)
 	}
 	if build.DurationMs != 2000 { // finished at +3s, started at +1s
 		t.Fatalf("build DurationMs = %d, want 2000", build.DurationMs)
 	}
-	if deploy.Stage != "deploy" || deploy.Status != "failed" {
+	if deploy.Stage != "deploy" || deploy.Status != "failure" {
 		t.Fatalf("unexpected deploy stage row: %#v", deploy)
 	}
 	if deploy.ErrorCode != "provider.rate_limit" {

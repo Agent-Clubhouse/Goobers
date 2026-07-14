@@ -31,10 +31,13 @@ const (
 )
 
 // StatsRequest filters the aggregate views Stats returns. Zero-value fields
-// are unfiltered: empty Workflow matches every workflow, zero Since/Until
-// leaves that bound open.
+// are unfiltered: empty Workflow/Gaggle matches every workflow/gaggle, zero
+// Since/Until leaves that bound open. Gaggle exists because runs.gaggle does
+// (TEL-Q4 per-gaggle partitioning) — issue #129: it was queryable in the
+// schema but had no request field to filter on it.
 type StatsRequest struct {
 	Workflow string
+	Gaggle   string
 	Since    time.Time
 	Until    time.Time
 }
@@ -95,7 +98,7 @@ func (db *DB) Stats(req StatsRequest) (StatsResult, error) {
 }
 
 func (db *DB) runStats(req StatsRequest) ([]RunStats, error) {
-	where, args := statsWhere("workflow", "started_at", req)
+	where, args := statsWhere("workflow", "gaggle", "started_at", req)
 	query := fmt.Sprintf(`
 		SELECT workflow,
 			COUNT(*) AS total,
@@ -136,7 +139,7 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 	// the workflow filter (and to keep the time window anchored on run start,
 	// consistent with runStats — a stage's own started_at can be null for an
 	// attempt that never started).
-	joinWhere, args := statsWhere("r.workflow", "r.started_at", req)
+	joinWhere, args := statsWhere("r.workflow", "r.gaggle", "r.started_at", req)
 	query := fmt.Sprintf(`
 		SELECT sa.stage,
 			COUNT(*) AS total,
@@ -173,13 +176,17 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 }
 
 // statsWhere builds a "WHERE ..." clause (or "" if unfiltered) plus its bind
-// args for the given workflow/time columns and request filters.
-func statsWhere(workflowCol, timeCol string, req StatsRequest) (string, []any) {
+// args for the given workflow/gaggle/time columns and request filters.
+func statsWhere(workflowCol, gaggleCol, timeCol string, req StatsRequest) (string, []any) {
 	var clauses []string
 	var args []any
 	if req.Workflow != "" {
 		clauses = append(clauses, workflowCol+" = ?")
 		args = append(args, req.Workflow)
+	}
+	if req.Gaggle != "" {
+		clauses = append(clauses, gaggleCol+" = ?")
+		args = append(args, req.Gaggle)
 	}
 	if !req.Since.IsZero() {
 		clauses = append(clauses, timeCol+" >= ?")
@@ -212,6 +219,7 @@ type ErrorEvent struct {
 // are unfiltered. Limit <= 0 defaults to 50.
 type ErrorsRequest struct {
 	Workflow   string
+	Gaggle     string
 	ErrorClass string
 	Since      time.Time
 	Limit      int
@@ -232,6 +240,10 @@ func (db *DB) Errors(req ErrorsRequest) ([]ErrorEvent, error) {
 	if req.Workflow != "" {
 		clauses = append(clauses, "r.workflow = ?")
 		args = append(args, req.Workflow)
+	}
+	if req.Gaggle != "" {
+		clauses = append(clauses, "r.gaggle = ?")
+		args = append(args, req.Gaggle)
 	}
 	if req.ErrorClass != "" {
 		clauses = append(clauses, "e.error_class = ?")
@@ -299,7 +311,7 @@ func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature,
 	if limit <= 0 {
 		limit = 20
 	}
-	where, args := statsWhere("r.workflow", "e.occurred_at", req)
+	where, args := statsWhere("r.workflow", "r.gaggle", "e.occurred_at", req)
 	query := fmt.Sprintf(`
 		SELECT e.code, e.error_class, COUNT(*) AS cnt, MAX(e.occurred_at) AS last_seen
 		FROM run_errors e
@@ -334,13 +346,25 @@ func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature,
 		return nil, err
 	}
 
+	// The example row must respect the SAME workflow/window filter the
+	// aggregate query above used — otherwise a signature filtered to one
+	// workflow/window could surface an example from a run outside it
+	// (issue #129: this previously queried run_errors bare, with no join or
+	// filter at all).
+	exampleWhere, exampleArgs := statsWhere("r.workflow", "r.gaggle", "e.occurred_at", req)
+	exampleFilter := "e.code = ? AND e.error_class = ?"
+	if exampleWhere != "" {
+		exampleFilter = strings.TrimPrefix(exampleWhere, "WHERE ") + " AND " + exampleFilter
+	}
 	for i := range sigs {
 		var runID, stage sql.NullString
 		var attempt sql.NullInt64
-		err := db.sql.QueryRow(`
-			SELECT run_id, stage, attempt FROM run_errors
-			WHERE code = ? AND error_class = ?
-			ORDER BY occurred_at DESC, seq DESC LIMIT 1`, sigs[i].Code, sigs[i].ErrorClass).
+		args := append(append([]any{}, exampleArgs...), sigs[i].Code, sigs[i].ErrorClass)
+		err := db.sql.QueryRow(fmt.Sprintf(`
+			SELECT e.run_id, e.stage, e.attempt FROM run_errors e
+			JOIN runs r ON r.run_id = e.run_id
+			WHERE %s
+			ORDER BY e.occurred_at DESC, e.seq DESC LIMIT 1`, exampleFilter), args...).
 			Scan(&runID, &stage, &attempt)
 		if err != nil {
 			return nil, fmt.Errorf("rollup: find example for signature %q: %w", sigs[i].Code, err)
@@ -363,7 +387,7 @@ type ProviderMutationCount struct {
 // optionally filtered by workflow/time window (#24's "provider-mutation
 // counts").
 func (db *DB) ProviderMutationCounts(req StatsRequest) ([]ProviderMutationCount, error) {
-	where, args := statsWhere("r.workflow", "m.occurred_at", req)
+	where, args := statsWhere("r.workflow", "r.gaggle", "m.occurred_at", req)
 	query := fmt.Sprintf(`
 		SELECT m.provider, m.kind, COALESCE(m.operation, ''), COUNT(*) AS cnt
 		FROM provider_mutations m

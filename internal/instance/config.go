@@ -52,7 +52,8 @@ type TokenRef struct {
 
 // TelemetryConfig configures the local telemetry rollup store (§8).
 type TelemetryConfig struct {
-	// Enabled toggles the local SQLite rollup. Defaults to true.
+	// Enabled toggles the local SQLite rollup (OTel client construction, span
+	// emission, and incremental ingest into telemetry.db). Defaults to true.
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
@@ -64,7 +65,9 @@ type RunConditions struct {
 }
 
 // TelemetryEnabled reports whether the local rollup store is enabled
-// (defaults to true when unset).
+// (defaults to true when unset). Wired into cmd/goobers' up.go/run.go (issue
+// #129): telemetry.enabled was documented and set in the real self-hosting
+// config (selfhost/instance.yaml.example) but had zero callers.
 func (c *Config) TelemetryEnabled() bool {
 	return c.Telemetry.Enabled == nil || *c.Telemetry.Enabled
 }

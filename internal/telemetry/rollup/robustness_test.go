@@ -50,6 +50,46 @@ func rawSpanLine(name string) string {
 		telemetry.SpanSchema, name, fixtureStart.UTC().Format(time.RFC3339Nano), fixtureStart.Add(time.Second).UTC().Format(time.RFC3339Nano))
 }
 
+// TestFormatTimeIsFixedWidthForLexicographicOrder is issue #129's checklist:
+// time.RFC3339Nano trims trailing fractional zeros, so two same-second
+// timestamps can format to different-length strings — lexicographic ORDER BY
+// / range comparisons (aggregates.go's Since/Until filters, query.go's
+// ORDER BY occurred_at) then disagree with chronological order. formatTime's
+// fixed-width layout must always emit the same length.
+func TestFormatTimeIsFixedWidthForLexicographicOrder(t *testing.T) {
+	base := fixtureStart
+	times := []time.Time{
+		base,                             // whole second: RFC3339Nano would trim ALL fractional digits
+		base.Add(500 * time.Millisecond), // RFC3339Nano would trim to 1 digit
+		base.Add(1 * time.Second),
+	}
+	var formatted []string
+	for _, tm := range times {
+		formatted = append(formatted, formatTime(tm).String)
+	}
+	for i, s := range formatted {
+		if len(s) != len(formatted[0]) {
+			t.Fatalf("formatTime(%v) = %q (len %d), want same length as %q (len %d) — mixed-width timestamps break lexicographic ordering",
+				times[i], s, len(s), formatted[0], len(formatted[0]))
+		}
+	}
+	if formatted[0] >= formatted[1] || formatted[1] >= formatted[2] {
+		t.Fatalf("formatted timestamps not in lexicographic order: %v", formatted)
+	}
+
+	// Round-trip: parseTime must still read the fixed-width format back to
+	// the exact same instant.
+	for i, tm := range times {
+		got, err := parseTime(formatTime(tm))
+		if err != nil {
+			t.Fatalf("parseTime: %v", err)
+		}
+		if !got.Equal(tm) {
+			t.Fatalf("round-trip[%d]: got %v, want %v", i, got, tm)
+		}
+	}
+}
+
 // TestIngestRunToleratesTornEventsTail is issue #127's first defect: a run
 // interrupted mid-append (crashed, not yet journal.Recover'd) leaves an
 // incomplete final events.jsonl line with no trailing newline. Before this
