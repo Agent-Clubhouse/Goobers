@@ -479,7 +479,22 @@ func (r *Runner) taskOutcome(jr *journal.Run, machine *workflow.Machine, t apiv1
 		res, err = r.finish(jr, journal.PhaseFailed, t.Name, steps)
 		return "", res, false, err
 	}
-	if t.Next == "" {
+	// A successful task's Next may be a plain state name or one of the
+	// compiler's reserved terminal targets (@abort/@escalate, #123) — the
+	// same three-way switch the gate branch below already uses. Before this
+	// fix, only "" was handled here; a compiled definition with a reserved
+	// task-next fell through to being treated as a state name, then
+	// "unknown state" in walk(), even though workflow.Compile admits it
+	// identically to a gate branch (ARCHITECTURE.md §3.3: a compile-admitted
+	// surface must not crash one runner while completing on another).
+	switch t.Next {
+	case workflow.TargetAbort:
+		res, err = r.finish(jr, journal.PhaseAborted, t.Name, steps)
+		return "", res, false, err
+	case workflow.TargetEscalate:
+		res, err = r.finish(jr, journal.PhaseEscalated, t.Name, steps)
+		return "", res, false, err
+	case workflow.TerminalComplete:
 		res, err = r.finish(jr, journal.PhaseCompleted, t.Name, steps)
 		return "", res, false, err
 	}
