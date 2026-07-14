@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
@@ -97,6 +98,26 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	requireLabel := providerInput("requireLabels", "")
 	excludeLabel := providerInput("excludeLabels", "")
 
+	// maxItems caps how many eligible items one --claim run claims (#236): it was
+	// a dead input everywhere (the query hardcoded a limit and --claim took
+	// exactly one), so a documented input was silently ignored — the #130 class
+	// of gap. Default 1 (the single-item implementation shape). The provider
+	// query scans at least 20 so eligibility filtering has candidates even when
+	// maxItems is small (preserving the pre-#236 scan breadth).
+	maxItems := 1
+	if s := providerInput("maxItems", ""); s != "" {
+		n, perr := strconv.Atoi(s)
+		if perr != nil || n < 1 {
+			pf(stderr, "error: invalid maxItems %q (want a positive integer)\n", s)
+			return 1
+		}
+		maxItems = n
+	}
+	queryLimit := maxItems
+	if queryLimit < 20 {
+		queryLimit = 20
+	}
+
 	// SEC-047 fails CLOSED, not open: an empty trustLabel must refuse to
 	// claim, not silently skip the trust check and claim anything eligible
 	// by requireLabels alone — backlog content on a public repo is untrusted
@@ -120,7 +141,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		Repository: repo,
 		Labels:     labels,
 		State:      "open",
-		Limit:      20,
+		Limit:      queryLimit,
 	})
 	if err != nil {
 		pf(stderr, "error: list work items: %v\n", err)
@@ -191,7 +212,10 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = instanceLog.Close() }()
 
-	var claimed *providers.WorkItem
+	// Claim up to maxItems eligible items under this run (#236): curation runs a
+	// batch (maxItems 20), implementation a single item (maxItems 1). All claims
+	// share this run's id; each item gets its own ledger entry.
+	var claimed []providers.WorkItem
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	err = withClaimLock(lockPath, func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName), localscheduler.WithInstanceLog(instanceLog))
@@ -199,14 +223,16 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 			return fmt.Errorf("open claim ledger: %w", lerr)
 		}
 		for i := range eligible {
+			if len(claimed) >= maxItems {
+				break
+			}
 			item := eligible[i]
 			ok, _, cerr := ledger.Claim(item.ID, runID, workflow, leaseDuration)
 			if cerr != nil {
 				return fmt.Errorf("claim %s in ledger: %w", item.ID, cerr)
 			}
 			if ok {
-				claimed = &item
-				return nil
+				claimed = append(claimed, item)
 			}
 		}
 		return nil
@@ -215,22 +241,40 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if claimed == nil {
+	// Every eligible item is already claimed by another run — a routine no-work
+	// tick (#233), not an error: exit 0 with the structured noWork result the
+	// runner short-circuits on, rather than the old return 1. Batch-aware len
+	// check (#236) replaces #274's pointer-nil check.
+	if len(claimed) == 0 {
 		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
 	}
 
-	// Provider-visible marker: best-effort mirror of the ledger's (already
-	// authoritative, per localscheduler.ClaimLedger's doc) decision, for
-	// human visibility on the provider. A failure here does not undo the
-	// ledger claim — the ledger, not this marker, is the source of truth.
-	if _, err := provider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: claimed.ID, RunID: runID}); err != nil {
-		pf(stderr, "warning: provider claim marker failed (ledger claim still holds): %v\n", err)
+	// Provider-visible marker per claimed item: best-effort mirror of the
+	// ledger's (already authoritative, per localscheduler.ClaimLedger's doc)
+	// decision, for human visibility on the provider. A failure here does not
+	// undo the ledger claim — the ledger, not this marker, is the source of truth.
+	for i := range claimed {
+		if _, err := provider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: claimed[i].ID, RunID: runID}); err != nil {
+			pf(stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", claimed[i].ID, err)
+		}
 	}
 
+	// Result-file shape follows the workflow's cardinality: a single-item run
+	// (maxItems 1, implementation) writes the claimed WorkItem as an object so
+	// its scalar fields (id/title) merge into the stage's journaled Outputs
+	// (open-pr's #241 issue linkage reads them); a batch run (maxItems >1,
+	// curation) writes the array the curator persona expects. The stage lifts
+	// this file into an artifact only when the workflow declares the resultFile
+	// input — curation's #236 fix adds it so the batch actually reaches curate.
 	resultFile := providerInput("resultFile", "claimed-item.json")
-	data, err := json.Marshal(claimed)
+	var data []byte
+	if maxItems == 1 {
+		data, err = json.Marshal(claimed[0])
+	} else {
+		data, err = json.Marshal(claimed)
+	}
 	if err != nil {
-		pf(stderr, "error: marshal claimed item: %v\n", err)
+		pf(stderr, "error: marshal claimed item(s): %v\n", err)
 		return 1
 	}
 	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
@@ -238,7 +282,11 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	pf(stdout, "claimed %s: %s\n", claimed.ID, claimed.Title)
+	if len(claimed) == 1 {
+		pf(stdout, "claimed %s: %s\n", claimed[0].ID, claimed[0].Title)
+	} else {
+		pf(stdout, "claimed %d items\n", len(claimed))
+	}
 	return 0
 }
 
