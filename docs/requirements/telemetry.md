@@ -71,6 +71,37 @@ Instrumentation is OpenTelemetry throughout; **only the exporter changes per tie
   rebuildable from the journals (journals are the source of truth, the rollup a
   projection).
 
+### Standards & capture depth (V1 — design: `../design/v1/observability-substrate.md`)
+
+- **TEL-040 (MUST):** *(All tiers)* Spans MUST carry the **canonical attribute
+  registry** (design D1): standard OTel semconv names where they exist, `goobers.*`
+  otherwise; agentic stage spans MUST follow the **OTel GenAI semantic conventions**
+  (`gen_ai.*`) (design D2). The registry is code + drift-guarded by test.
+- **TEL-041 (MUST):** *(All tiers)* Agentic stages MUST report usage the harness
+  exposes — `gen_ai.usage.input_tokens`/`output_tokens`,
+  `goobers.usage.copilot_premium_requests`, `goobers.usage.cost_usd` — in
+  `ResultEnvelope.Metrics` and on the stage span. Missing data is *absent*, never
+  zero. Once usage is reported, the runner MUST enforce declared
+  `Limits.MaxTokens`/`MaxCostUSD` (fail with `budget-exceeded`, branch per policy).
+- **TEL-042 (MUST):** *(All tiers)* Every agentic stage attempt MUST capture at
+  minimum the **composed invocation prompt and final output** as a scrubbed,
+  digested **transcript artifact** (`transcript.jsonl`, GenAI-events shape);
+  harness-native full transcripts SHOULD be converted in when available (design D4).
+  Instructed agent self-logging MAY supplement but never substitutes.
+- **TEL-043 (MUST):** *(Tiers 1–2)* Stages MUST have a zero-dependency custom
+  metric/log emission surface (`GOOBERS_TELEMETRY_DIR`: `metrics.jsonl`,
+  `events.jsonl`) ingested at stage completion (scrub → journal → rollup); malformed
+  telemetry MUST NOT fail a run (design D5).
+- **TEL-044 (MUST):** *(Tiers 1–2)* Run spans MUST additionally be exported as
+  **OTLP/JSON files** in the journal, re-emittable from journals
+  (`goobers telemetry export`); an **opt-in OTLP push** endpoint MAY be configured
+  per instance. Standard OTel tooling consumes both. Cloud collection is the tier-3
+  drop-in of the same exporter (design D3).
+- **TEL-045 (MUST):** *(All tiers)* The query surface MUST be reachable from inside
+  workflows as a built-in **connector stage** (the `backlog-query` pattern) emitting
+  a **versioned candidate-findings artifact** with journal evidence pointers
+  (design D6) — the deterministic half of the Tutor and a general workflow primitive.
+
 ### Consumption
 
 - **TEL-020 (MUST):** *(All tiers)* The portal MUST be able to read telemetry for
