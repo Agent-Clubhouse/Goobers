@@ -18,8 +18,12 @@ type CreateOptions struct {
 	// BaseRef is the pinned ref (branch, tag, or commit sha) to branch or
 	// check out from. Required.
 	BaseRef string
-	// Branch, if set, is created and checked out from BaseRef (e.g.
-	// "goobers/<workflow>/<run-id>"). If empty, the worktree is a detached
+	// Branch, if set, is the run branch this worktree checks out (e.g.
+	// "goobers/<workflow>/<run-id>", providers.BranchName). It is created off
+	// BaseRef the first time it is requested and checked out as-is (carrying
+	// the prior stages' commits, ignoring BaseRef) every time after — this is
+	// what gives a run's sequential stages continuity while keeping each stage
+	// isolated in a fresh worktree (#133). If empty, the worktree is a detached
 	// checkout of BaseRef.
 	Branch string
 }
@@ -74,13 +78,26 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		return nil, fmt.Errorf("worktree: create runs dir: %w", err)
 	}
 
+	// A run's stages share one branch, not one tree: the first stage creates
+	// the run branch off BaseRef; every later stage checks out that same
+	// branch — now carrying the prior stages' commits — in its own fresh
+	// worktree. That is what makes local-ci and the reviewer gate evaluate the
+	// run's actual diff rather than a pristine BaseRef (#133). A detached
+	// checkout (Branch == "") keeps the pre-#133 behavior.
 	args := []string{"worktree", "add"}
-	if opts.Branch != "" {
-		args = append(args, "-b", opts.Branch)
-	} else {
-		args = append(args, "--detach")
+	switch {
+	case opts.Branch == "":
+		args = append(args, "--detach", path, opts.BaseRef)
+	case branchExists(ctx, repoDir, opts.Branch):
+		// Existing run branch: check it out as-is. BaseRef is not the
+		// continuity point — the branch's own tip is. git forbids the same
+		// branch in two live worktrees, which holds here because stages run
+		// sequentially and each stage's worktree is removed before the next.
+		args = append(args, path, opts.Branch)
+	default:
+		// First stage of the run: create the run branch off BaseRef.
+		args = append(args, "-b", opts.Branch, path, opts.BaseRef)
 	}
-	args = append(args, path, opts.BaseRef)
 	if err := runGit(ctx, repoDir, args...); err != nil {
 		return nil, fmt.Errorf("worktree: create for run %s: %w", opts.RunID, err)
 	}
