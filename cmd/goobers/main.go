@@ -40,6 +40,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runTrace(args[1:], stdout, stderr)
 	case "telemetry":
 		return runTelemetry(args[1:], stdout, stderr)
+	case "journal":
+		return runJournal(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0
@@ -61,6 +63,8 @@ Usage:
   goobers status [path]         list runs and their current phase
   goobers trace <run-id> [path] show a run's journal events (+ spans if rolled up)
   goobers telemetry stats|errors [path]  success rate/duration or recent-error aggregates
+  goobers journal redact --run <id> --path <blob> --reason <text> [path]
+                                remove a leaked secret from a stored blob (SEC-041)
 
 path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
 business errors, 2 = usage/IO error.
