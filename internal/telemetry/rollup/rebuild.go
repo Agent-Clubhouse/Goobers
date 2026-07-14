@@ -8,15 +8,17 @@ import (
 )
 
 // Rebuild derives telemetry.db from scratch by wiping any existing rollup at
-// dbPath and re-ingesting every run directory under runsDir. The journals are
-// always the source of truth; the rollup is a projection (TEL-032) — this is
-// the primitive behind `goobers telemetry rebuild`.
+// dbPath and re-ingesting every run directory under runsDir plus the instance
+// journal at schedulerDir (scheduler decisions and claim-ledger transitions,
+// issue #128). The journals are always the source of truth; the rollup is a
+// projection (TEL-032) — this is the primitive behind `goobers telemetry
+// --rebuild`.
 //
 // Run directories are processed in sorted-name order so a rebuild is
 // deterministic run-over-run; each run's own IngestRun is itself idempotent
 // (delete-then-insert), so the resulting rows are identical regardless of
 // processing order or whether a run was previously ingested incrementally.
-func Rebuild(dbPath, runsDir string) error {
+func Rebuild(dbPath, runsDir, schedulerDir string) error {
 	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
 		if err := os.Remove(dbPath + suffix); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("rollup: remove existing %s%s: %w", dbPath, suffix, err)
@@ -37,6 +39,9 @@ func Rebuild(dbPath, runsDir string) error {
 		if err := db.IngestRun(dir); err != nil {
 			return fmt.Errorf("rollup: ingest %s: %w", dir, err)
 		}
+	}
+	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+		return fmt.Errorf("rollup: ingest scheduler log %s: %w", schedulerDir, err)
 	}
 	return nil
 }

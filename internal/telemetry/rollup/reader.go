@@ -61,6 +61,31 @@ func readEvents(runDir string) ([]journalEvent, error) {
 	return events, nil
 }
 
+// readInstanceEvents decodes the instance journal at
+// <instance-root>/scheduler/events.jsonl — the same envelope and file name
+// (fileEvents) as a run's own events.jsonl, just under the scheduler
+// directory instead of a run directory, and thus tolerant of a torn tail the
+// same way. Before issue #128, this file was never read by the rollup at
+// all — Rebuild only ever scanned run directories — so scheduler decisions
+// (trigger.fired/tick.skipped/claim.*) were unqueryable regardless of how
+// long the daemon had been running. A missing scheduler directory (no
+// `goobers up` has run yet) is not an error, just zero scheduler events.
+func readInstanceEvents(schedulerDir string) ([]journalEvent, error) {
+	path := filepath.Join(schedulerDir, fileEvents)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("rollup: read %s: %w", path, err)
+	}
+	events, err := decodeJSONLTolerant[journalEvent](data)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: decode %s: %w", path, err)
+	}
+	return events, nil
+}
+
 // readSpans decodes spans/spans.jsonl, tolerating a missing file (a run may
 // not have emitted spans yet) and a torn final line (JournalSpanExporter
 // appends per ExportSpans batch, fsyncing after each — an interrupted process

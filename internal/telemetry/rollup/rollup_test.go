@@ -191,7 +191,7 @@ func TestRebuildIsReproducible(t *testing.T) {
 	}
 
 	rebuildPath := filepath.Join(tmp, "rebuilt.db")
-	if err := Rebuild(rebuildPath, runsDir); err != nil {
+	if err := Rebuild(rebuildPath, runsDir, filepath.Join(tmp, "scheduler")); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	rebuiltDB, err := Open(rebuildPath)
@@ -207,7 +207,7 @@ func TestRebuildIsReproducible(t *testing.T) {
 
 	// Rebuilding again (delete + rebuild) over the same journals must be
 	// byte-identical to the first rebuild.
-	if err := Rebuild(rebuildPath, runsDir); err != nil {
+	if err := Rebuild(rebuildPath, runsDir, filepath.Join(tmp, "scheduler")); err != nil {
 		t.Fatalf("second Rebuild: %v", err)
 	}
 	rebuiltDB2, err := Open(rebuildPath)

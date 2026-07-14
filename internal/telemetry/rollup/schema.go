@@ -104,4 +104,40 @@ CREATE INDEX IF NOT EXISTS idx_run_errors_run         ON run_errors(run_id);
 CREATE INDEX IF NOT EXISTS idx_spans_run              ON spans(run_id);
 CREATE INDEX IF NOT EXISTS idx_span_events_span       ON span_events(run_id, span_id);
 `,
+	// v2 (issue #128): the signals nomination/Tutor need that v1 silently
+	// dropped. harness_transcripts makes within-stage agent transcripts
+	// (span.recorded, GBO-020) queryable by pointer (the blob itself stays in
+	// the run journal's content-addressed spans/ store — this is an index
+	// over it, not a copy). scheduler_events makes "why didn't a run start at
+	// tick N" (trigger.fired/tick.skipped/claim.*) queryable at all — v1 never
+	// ingested scheduler/events.jsonl, only run directories. Both are plain
+	// CREATE TABLE/INDEX IF NOT EXISTS, so — unlike a future ALTER TABLE
+	// (tracked separately, #129) — reapplying this migration after a crash
+	// mid-batch is inherently safe.
+	`
+CREATE TABLE IF NOT EXISTS harness_transcripts (
+	run_id      TEXT NOT NULL,
+	seq         INTEGER NOT NULL,
+	stage       TEXT NOT NULL,
+	name        TEXT NOT NULL,
+	ref_digest  TEXT,
+	ref_size    INTEGER,
+	occurred_at TEXT,
+	PRIMARY KEY (run_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_events (
+	seq         INTEGER NOT NULL PRIMARY KEY,
+	type        TEXT NOT NULL,
+	workflow    TEXT,
+	run_id      TEXT,
+	reason      TEXT,
+	status      TEXT,
+	occurred_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_harness_transcripts_run  ON harness_transcripts(run_id);
+CREATE INDEX IF NOT EXISTS idx_scheduler_events_workflow ON scheduler_events(workflow);
+CREATE INDEX IF NOT EXISTS idx_scheduler_events_run      ON scheduler_events(run_id);
+`,
 }

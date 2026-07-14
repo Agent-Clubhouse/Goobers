@@ -21,7 +21,11 @@ import "time"
 // Once #8 merges, a follow-up can additionally round-trip through the real
 // journal.Event/RunIdentity types for a belt-and-suspenders check.
 
-// journalEvent mirrors internal/journal.Event.
+// journalEvent mirrors internal/journal.Event. Workflow/RunID/Reason are only
+// populated on instance-journal events (scheduler/events.jsonl) — a run's own
+// events.jsonl never sets them, since a run event's identity is implicit from
+// its directory (internal/journal/event.go's own doc comment on those three
+// fields).
 type journalEvent struct {
 	Schema       string              `json:"schema"`
 	Seq          uint64              `json:"seq"`
@@ -41,6 +45,9 @@ type journalEvent struct {
 	Error        *journalErrorDetail `json:"error,omitempty"`
 	Redaction    *journalRedaction   `json:"redaction,omitempty"`
 	Runner       map[string]any      `json:"runner,omitempty"`
+	Workflow     string              `json:"workflow,omitempty"`
+	RunID        string              `json:"runId,omitempty"`
+	Reason       string              `json:"reason,omitempty"`
 }
 
 // Event type values, mirroring internal/journal's EventType constants.
@@ -50,7 +57,13 @@ const (
 	eventGateEvaluated = "gate.evaluated"
 	eventRefTouched    = "ref.touched"
 	eventError         = "error"
+	eventRunStarted    = "run.started"
 	eventRunFinished   = "run.finished"
+	eventSpanRecorded  = "span.recorded"
+	eventTriggerFired  = "trigger.fired"
+	eventTickSkipped   = "tick.skipped"
+	eventClaimAcquired = "claim.acquired"
+	eventClaimReleased = "claim.released"
 )
 
 // journalRef mirrors internal/journal.Ref.

@@ -23,6 +23,13 @@ func nullIfZeroInt(n int) sql.NullInt64 {
 	return sql.NullInt64{Int64: int64(n), Valid: true}
 }
 
+func nullIfZeroInt64(n int64) sql.NullInt64 {
+	if n == 0 {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: n, Valid: true}
+}
+
 // formatTime renders a timestamp as RFC3339Nano UTC text. Timestamps are
 // always bound as explicit strings (never left to a driver's implicit
 // time.Time conversion) so rollup rows are byte-for-byte reproducible across
