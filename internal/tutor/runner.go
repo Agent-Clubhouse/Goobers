@@ -80,6 +80,15 @@ func (r Runner) Run(ctx context.Context) (RunResult, error) {
 		planner.BranchPrefix = r.Config.BranchPrefix
 	}
 	proposal := planner.Propose(findings[0])
+	// Write-boundary (#104/T4): refuse a proposal that would touch anything
+	// outside the instance's configured config root, before we branch, commit,
+	// or even read the current config off disk. This fails the whole cycle
+	// closed — a Tutor run cannot reach platform paths regardless of how the
+	// proposal's files were constructed.
+	if err := enforceConfigBoundary(planner.ConfigRoot, proposal.Files); err != nil {
+		recorder.RecordBoundaryViolation(ctx, proposal, err)
+		return RunResult{}, err
+	}
 	baseBranch := r.Config.BaseBranch
 	if baseBranch == "" {
 		baseBranch = "main"

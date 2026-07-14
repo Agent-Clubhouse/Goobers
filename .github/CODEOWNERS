@@ -13,3 +13,11 @@
 /.github/               @masra91
 /Makefile               @masra91
 /.golangci.yml          @masra91
+
+# Tutor config-only write-boundary (#104 / T4). selfhost/ is the dogfood
+# instance's config root — the only tree the Tutor is path-scoped to write.
+# Because Tutor PRs land in the same repo as platform code here, CODEOWNER
+# review on this root is the required human gate before a self-tuning config
+# change merges (structural credential enforcement rides #35).
+# See docs/guides/tutor-write-boundary.md.
+/selfhost/              @masra91

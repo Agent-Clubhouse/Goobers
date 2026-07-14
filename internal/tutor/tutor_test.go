@@ -233,6 +233,49 @@ func TestRunnerPropagatesProviderErrors(t *testing.T) {
 	}
 }
 
+// TestRunnerConfinesProposalToConfiguredConfigRoot proves the T4 (#104)
+// write-boundary end-to-end through the Runner: with the config root set to a
+// NON-default value ("selfhost", the dogfood root), the committed proposal lands
+// under that root — the configured root flows through, and the run is not
+// confined to a hardcoded "config/".
+func TestRunnerConfinesProposalToConfiguredConfigRoot(t *testing.T) {
+	const root = "selfhost"
+	provider := &mockRepoProvider{
+		pr: providers.PullRequestResult{ID: "5", Number: 5, URL: "pr-url"},
+		existingFiles: map[string]string{
+			root + "/gaggles/acme-web/goobers/coder/instructions.md": "# Coder\nWrite code.\n",
+		},
+	}
+	result, err := Runner{
+		Store: StaticStore{
+			taskSignal("run-1", statusError, 11*time.Minute, 3),
+			taskSignal("run-2", statusError, 12*time.Minute, 4),
+			taskSignal("run-3", statusError, 13*time.Minute, 5),
+		},
+		Provider: provider,
+		Planner:  Planner{ConfigRoot: root},
+		Config: RunnerConfig{
+			Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "config"},
+			BaseBranch: "main",
+		},
+	}.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !result.Opened || len(provider.commit.Files) == 0 {
+		t.Fatalf("Run() result = %#v, want an opened PR with committed files", result)
+	}
+	for _, f := range provider.commit.Files {
+		if !strings.HasPrefix(f.Path, root+"/") {
+			t.Fatalf("committed path %q is not confined under %q/", f.Path, root)
+		}
+		// Belt-and-braces: the boundary the runner enforced must accept it.
+		if err := enforceConfigBoundary(root, []providers.CommitFile{f}); err != nil {
+			t.Fatalf("committed path %q fails the enforced boundary: %v", f.Path, err)
+		}
+	}
+}
+
 func taskSignal(runID, status string, duration time.Duration, retries int) Signal {
 	return Signal{
 		Kind:       SignalTask,
