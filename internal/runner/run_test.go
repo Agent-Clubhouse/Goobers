@@ -305,6 +305,33 @@ func retryFixtureMachine(t *testing.T, maxAttempts int32) *workflow.Machine {
 	return m
 }
 
+// taskReservedNextFixtureMachine is a single deterministic task whose Next is
+// a reserved terminal target directly (#123) — unlike retryFixtureMachine's
+// abort path, there is no gate mediating it: workflow.Compile admits a
+// reserved target as a task's Next exactly as it does for a gate branch
+// (compile.go's isTerminal check covers both), so the runner must walk it the
+// same way too.
+func taskReservedNextFixtureMachine(t *testing.T, next string) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+				Next: next,
+			},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "task-reserved-next-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile task-reserved-next fixture machine (next=%q): %v", next, err)
+	}
+	return m
+}
+
 // inputsFromFixtureMachine is a minimal open-pr -> ci-poll chain proving
 // #132's task-to-task output->input threading: ci-poll declares
 // InputsFrom: {"prNumber": "prNumber"}, so it must receive open-pr's
@@ -502,6 +529,46 @@ func TestRunnerBranchesToAbortOnGateFail(t *testing.T) {
 	}
 	if res.Phase != journal.PhaseAborted {
 		t.Fatalf("phase = %q, want aborted", res.Phase)
+	}
+}
+
+// TestRunnerWalksTaskReservedNextTargets is the regression test for #123: a
+// task's Next can itself be a reserved terminal target (@abort/@escalate),
+// admitted by workflow.Compile the same way a gate's branch is, but before
+// this fix walk() only special-cased Next == "" and fell through to
+// "unknown state" for anything else — a compile-admitted definition crashing
+// the local runner while completing fine on the (quarantined) Temporal
+// engine, a direct §3.3 conformance violation.
+func TestRunnerWalksTaskReservedNextTargets(t *testing.T) {
+	cases := []struct {
+		name      string
+		next      string
+		wantPhase journal.RunPhase
+	}{
+		{"abort", workflow.TargetAbort, journal.PhaseAborted},
+		{"escalate", workflow.TargetEscalate, journal.PhaseEscalated},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			machine := taskReservedNextFixtureMachine(t, tc.next)
+			runID := "run-task-next-" + tc.name
+			byTask := map[string]stubTaskResult{runID + ":implement": {status: apiv1.ResultSuccess, summary: "done"}}
+			r, _ := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+
+			res, err := r.Start(context.Background(), StartInput{
+				RunID:   runID,
+				Machine: machine,
+				Gaggle:  "acme-web",
+				Trigger: journal.Trigger{Kind: journal.TriggerManual},
+				RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+			})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if res.Phase != tc.wantPhase {
+				t.Fatalf("phase = %q, want %q", res.Phase, tc.wantPhase)
+			}
+		})
 	}
 }
 
