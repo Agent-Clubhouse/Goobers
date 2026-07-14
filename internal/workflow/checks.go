@@ -32,6 +32,13 @@ func CheckSchedules(def Definition) []string {
 	return scheduleProblems(def)
 }
 
+// CheckTriggerFields reports a trigger missing the field its own type
+// requires — a signal trigger with no signal name, a backlog-item trigger
+// with no selector (#125).
+func CheckTriggerFields(def Definition) []string {
+	return triggerFieldProblems(def)
+}
+
 // CheckAdmission reports capability-admission and unknown-harness violations
 // against the supplied goober definitions.
 func CheckAdmission(def Definition, goobers map[string]apiv1.GooberSpec) []string {
@@ -103,6 +110,30 @@ func gateVocabProblems(def Definition) []string {
 // no defined branch (#124) — workflow-intrinsic, no goober data needed.
 func CheckGateOutcomes(def Definition) []string {
 	return gateOutcomeProblems(def, nil)
+}
+
+// triggerFieldProblems reports a trigger declared without the field its own
+// type requires to do anything (#125): type=signal with no Signal name has
+// nothing to fire on. type=schedule's own requirement (a non-empty Schedule
+// expression) is already covered by scheduleProblems.
+//
+// #125 also flagged type=backlog-item with no Selector — deliberately NOT
+// enforced here: Selector (WF-040/SCH-010) has no runtime consumer anywhere
+// in the codebase yet (nothing matches on it), and a huge fraction of
+// existing test fixtures across internal/engine, internal/scheduler (a
+// quarantined tier-3 package), internal/runner, and test/e2e declare a
+// selector-less backlog-item trigger as ordinary scaffolding. Requiring it
+// would mean touching fixtures repo-wide for a field with zero behavioral
+// effect today — a disproportionate cost for a "minor" item; revisit once
+// Selector is actually wired to real routing logic.
+func triggerFieldProblems(def Definition) []string {
+	var problems []string
+	for i, tr := range def.Spec.Triggers {
+		if tr.Type == apiv1.TriggerSignal && strings.TrimSpace(tr.Signal) == "" {
+			problems = append(problems, fmt.Sprintf("trigger[%d] type=signal requires a signal name", i))
+		}
+	}
+	return problems
 }
 
 // scheduleProblems validates the schedule expression of every schedule

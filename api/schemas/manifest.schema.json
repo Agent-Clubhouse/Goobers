@@ -37,6 +37,7 @@
   },
   "$defs": {
     "metadata": {
+      "description": "Deliberately left open (no additionalProperties:false) unlike the rest of this schema: k8s-style metadata objects tolerate forward-compatible extra fields (e.g. a future resourceVersion) by convention (#125).",
       "type": "object",
       "required": ["name"],
       "properties": {

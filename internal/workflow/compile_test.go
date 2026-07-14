@@ -188,6 +188,24 @@ func TestCompileRejectsMultipleScheduleTriggers(t *testing.T) {
 	}
 }
 
+// TestCompileRejectsSignalTriggerWithNoName is the regression test for
+// #125's trigger cross-field validation: a type=signal trigger with no
+// Signal name has nothing to fire on, but previously passed schema and
+// compiler unnoticed.
+func TestCompileRejectsSignalTriggerWithNoName(t *testing.T) {
+	spec := linearSpec()
+	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerSignal}}
+	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `trigger[0] type=signal requires a signal name`) {
+		t.Fatalf("expected missing-signal-name error, got %v", err)
+	}
+
+	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerSignal, Signal: "upstream-workflow-done"}}
+	if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("a named signal trigger should compile, got %v", err)
+	}
+}
+
 func TestCompileAdmissionCapabilities(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",

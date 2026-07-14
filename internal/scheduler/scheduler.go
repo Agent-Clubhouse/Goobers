@@ -6,6 +6,9 @@
 // Exactly-once is the engine's: the scheduler derives a deterministic RunID per
 // unit of work (e.g. one per backlog item), so a duplicate dispatch is a no-op
 // rather than a second run.
+//
+// Tier-3 (V2) — quarantined, not on the V0 path. See docs/ARCHITECTURE.md §11.
+// Revived in V2. The V0-live scheduler is internal/localscheduler.
 package scheduler
 
 import (
