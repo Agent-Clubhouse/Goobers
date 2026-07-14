@@ -35,13 +35,19 @@ type StageAttempt struct {
 	ErrorClass   string
 }
 
-// GateVerdict is a queryable row from the gate_verdicts table.
+// GateVerdict is a queryable row from the gate_verdicts table. RunnerJSON is
+// the raw JSON text of Runner{repassAttempt, escalated} plus, for an agentic
+// gate, a verdictRef{name, digest, size} pointer at the decision/rationale/
+// evidence artifact (issue #128) — callers needing structured access should
+// json.Unmarshal it; kept as text here rather than parsed, matching
+// stage_attempts'/provider_mutations' runner_json convention.
 type GateVerdict struct {
 	Seq        uint64
 	Gate       string
 	Verdict    string
 	Target     string
 	OccurredAt time.Time
+	RunnerJSON string
 }
 
 // ProviderMutation is a queryable row from the provider_mutations table.
@@ -156,7 +162,7 @@ func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 // GateVerdicts returns every gate evaluation for runID, in seq order.
 func (db *DB) GateVerdicts(runID string) ([]GateVerdict, error) {
 	rows, err := db.sql.Query(`
-		SELECT seq, gate, verdict, target, occurred_at FROM gate_verdicts
+		SELECT seq, gate, verdict, target, occurred_at, runner_json FROM gate_verdicts
 		WHERE run_id = ? ORDER BY seq`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query gate_verdicts: %w", err)
@@ -166,15 +172,103 @@ func (db *DB) GateVerdicts(runID string) ([]GateVerdict, error) {
 	var out []GateVerdict
 	for rows.Next() {
 		var g GateVerdict
-		var verdict, target, occurredAt sql.NullString
-		if err := rows.Scan(&g.Seq, &g.Gate, &verdict, &target, &occurredAt); err != nil {
+		var verdict, target, occurredAt, runnerJSON sql.NullString
+		if err := rows.Scan(&g.Seq, &g.Gate, &verdict, &target, &occurredAt, &runnerJSON); err != nil {
 			return nil, fmt.Errorf("rollup: scan gate_verdict: %w", err)
 		}
-		g.Verdict, g.Target = verdict.String, target.String
+		g.Verdict, g.Target, g.RunnerJSON = verdict.String, target.String, runnerJSON.String
 		if g.OccurredAt, err = parseTime(occurredAt); err != nil {
 			return nil, err
 		}
 		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// HarnessTranscript is a queryable row from the harness_transcripts table — a
+// pointer at a within-stage agent transcript/tool-output blob a harness
+// executor recorded (journal.Run.RecordSpan, GBO-020); the blob itself stays
+// content-addressed in the run journal's spans/ store (issue #128).
+type HarnessTranscript struct {
+	Seq        uint64
+	Stage      string
+	Name       string
+	RefDigest  string
+	RefSize    int64
+	OccurredAt time.Time
+}
+
+// HarnessTranscripts returns every within-stage transcript pointer for runID,
+// in seq order.
+func (db *DB) HarnessTranscripts(runID string) ([]HarnessTranscript, error) {
+	rows, err := db.sql.Query(`
+		SELECT seq, stage, name, ref_digest, ref_size, occurred_at FROM harness_transcripts
+		WHERE run_id = ? ORDER BY seq`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query harness_transcripts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []HarnessTranscript
+	for rows.Next() {
+		var h HarnessTranscript
+		var digest, occurredAt sql.NullString
+		var size sql.NullInt64
+		if err := rows.Scan(&h.Seq, &h.Stage, &h.Name, &digest, &size, &occurredAt); err != nil {
+			return nil, fmt.Errorf("rollup: scan harness_transcript: %w", err)
+		}
+		h.RefDigest, h.RefSize = digest.String, size.Int64
+		if h.OccurredAt, err = parseTime(occurredAt); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// SchedulerEvent is a queryable row from the scheduler_events table — a
+// scheduler decision or claim-ledger transition from the instance journal
+// (scheduler/events.jsonl), never per-run (issue #128).
+type SchedulerEvent struct {
+	Seq        uint64
+	Type       string
+	Workflow   string
+	RunID      string
+	Reason     string
+	Status     string
+	OccurredAt time.Time
+}
+
+// SchedulerEvents returns scheduler decisions in seq order, optionally
+// filtered to one workflow (empty = every workflow) — "why didn't a run start
+// at tick N" (issue #128).
+func (db *DB) SchedulerEvents(workflow string) ([]SchedulerEvent, error) {
+	query := `SELECT seq, type, workflow, run_id, reason, status, occurred_at FROM scheduler_events`
+	args := []any{}
+	if workflow != "" {
+		query += ` WHERE workflow = ?`
+		args = append(args, workflow)
+	}
+	query += ` ORDER BY seq`
+
+	rows, err := db.sql.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query scheduler_events: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []SchedulerEvent
+	for rows.Next() {
+		var e SchedulerEvent
+		var wf, runID, reason, status, occurredAt sql.NullString
+		if err := rows.Scan(&e.Seq, &e.Type, &wf, &runID, &reason, &status, &occurredAt); err != nil {
+			return nil, fmt.Errorf("rollup: scan scheduler_event: %w", err)
+		}
+		e.Workflow, e.RunID, e.Reason, e.Status = wf.String, runID.String, reason.String, status.String
+		if e.OccurredAt, err = parseTime(occurredAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
 	}
 	return out, rows.Err()
 }

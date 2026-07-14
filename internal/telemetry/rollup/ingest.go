@@ -153,11 +153,41 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 			}
 
 		case eventGateEvaluated:
+			// Runner{repassAttempt, escalated} plus a pointer at the verdict
+			// artifact (decision/rationale/evidence, for agentic gates —
+			// internal/gate/journal.go's recordVerdict) is exactly the
+			// "gate X failed 3 repasses then escalated" signal Tutor/
+			// nomination need (TUT-010 gate-noise family, issue #128) — v1
+			// discarded both, leaving runner_json permanently NULL.
+			rj, err := gateRunnerJSON(ev)
+			if err != nil {
+				return err
+			}
 			if _, err := tx.Exec(`
-				INSERT INTO gate_verdicts (run_id, seq, gate, verdict, target, occurred_at)
-				VALUES (?, ?, ?, ?, ?, ?)`,
-				runID, ev.Seq, ev.Gate, nullIfEmpty(telemetry.Redact(ev.Verdict)), nullIfEmpty(ev.Target), formatTime(ev.Time)); err != nil {
+				INSERT INTO gate_verdicts (run_id, seq, gate, verdict, target, occurred_at, runner_json)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				runID, ev.Seq, ev.Gate, nullIfEmpty(telemetry.Redact(ev.Verdict)), nullIfEmpty(ev.Target), formatTime(ev.Time), rj); err != nil {
 				return fmt.Errorf("rollup: insert gate_verdict seq %d: %w", ev.Seq, err)
+			}
+
+		case eventSpanRecorded:
+			// Within-stage harness data (agent transcripts, tool output —
+			// GBO-020) that v1 recorded to the journal via
+			// journal.Run.RecordSpan but the rollup never ingested: the blob
+			// itself stays content-addressed in the run journal's spans/
+			// store (§3.3 excludes it from conformance, and it's often large
+			// live-harness output) — this is a queryable pointer, not a copy.
+			var digest sql.NullString
+			var size sql.NullInt64
+			if ev.Ref != nil {
+				digest = nullIfEmpty(ev.Ref.Digest)
+				size = nullIfZeroInt64(ev.Ref.Size)
+			}
+			if _, err := tx.Exec(`
+				INSERT INTO harness_transcripts (run_id, seq, stage, name, ref_digest, ref_size, occurred_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				runID, ev.Seq, ev.Stage, ev.Name, digest, size, formatTime(ev.Time)); err != nil {
+				return fmt.Errorf("rollup: insert harness_transcript seq %d: %w", ev.Seq, err)
 			}
 
 		case eventRefTouched:
@@ -190,6 +220,63 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 		}
 	}
 	return nil
+}
+
+// gateRunnerJSON merges a gate.evaluated event's Runner annotations
+// (repassAttempt, escalated) with a pointer at its verdict artifact, if any
+// (Name + Ref.Digest/Size — the decision/rationale/evidence blob an agentic
+// gate recorded), into the one runner_json blob gate_verdicts stores. No new
+// column: merging into the JSON runner_json already carries is cheaper than a
+// migration and matches how stage_attempts/provider_mutations already stash
+// their own runner-local detail there.
+func gateRunnerJSON(ev journalEvent) (sql.NullString, error) {
+	if len(ev.Runner) == 0 && ev.Ref == nil {
+		return sql.NullString{}, nil
+	}
+	m := make(map[string]any, len(ev.Runner)+1)
+	for k, v := range ev.Runner {
+		m[k] = v
+	}
+	if ev.Ref != nil {
+		m["verdictRef"] = map[string]any{"name": ev.Name, "digest": ev.Ref.Digest, "size": ev.Ref.Size}
+	}
+	return runnerJSON(m)
+}
+
+// IngestSchedulerLog reads the instance journal (scheduler/events.jsonl) —
+// trigger.fired/tick.skipped/claim.acquired/claim.released and the instance-
+// level run.started/run.finished echoes localscheduler's dispatch appends —
+// and (re)populates scheduler_events (issue #128: this was never ingested at
+// all). Idempotent (delete-then-insert over the whole table, since the
+// instance log is a single stream, not per-run), so it's safe to call after
+// every dispatch tick (incremental) or as part of Rebuild (full rescan).
+func (db *DB) IngestSchedulerLog(schedulerDir string) error {
+	events, err := readInstanceEvents(schedulerDir)
+	if err != nil {
+		return err
+	}
+
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("rollup: begin scheduler ingest tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	if _, err := tx.Exec(`DELETE FROM scheduler_events`); err != nil {
+		return fmt.Errorf("rollup: clear scheduler_events: %w", err)
+	}
+	for _, ev := range events {
+		switch ev.Type {
+		case eventTriggerFired, eventTickSkipped, eventClaimAcquired, eventClaimReleased, eventRunStarted, eventRunFinished:
+			if _, err := tx.Exec(`
+				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				ev.Seq, ev.Type, nullIfEmpty(ev.Workflow), nullIfEmpty(ev.RunID), nullIfEmpty(ev.Reason), nullIfEmpty(ev.Status), formatTime(ev.Time)); err != nil {
+				return fmt.Errorf("rollup: insert scheduler_event seq %d: %w", ev.Seq, err)
+			}
+		}
+	}
+	return tx.Commit()
 }
 
 func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
