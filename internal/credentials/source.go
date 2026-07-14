@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 )
@@ -53,6 +54,11 @@ func (r TokenRef) resolve() (string, error) {
 			return "", fmt.Errorf("credentials: token ref %q: env var %q is not set", r.Name, r.Env)
 		}
 	case r.File != "":
+		if fi, statErr := os.Stat(r.File); statErr == nil {
+			if w := insecureTokenFileWarning(r.Name, r.File, fi.Mode()); w != "" {
+				fmt.Fprintln(os.Stderr, w)
+			}
+		}
 		b, err := os.ReadFile(r.File)
 		if err != nil {
 			return "", fmt.Errorf("credentials: token ref %q: read %q: %w", r.Name, r.File, err)
@@ -64,6 +70,18 @@ func (r TokenRef) resolve() (string, error) {
 		return "", fmt.Errorf("%w: ref %q", ErrTokenRefEmpty, r.Name)
 	}
 	return val, nil
+}
+
+// insecureTokenFileWarning returns a warning message when a token file is
+// readable or writable by group or other — a secret file should be owner-only
+// (e.g. 0600). It returns "" when the permissions are safe. Kept pure (mode
+// passed in) so it is unit-testable; resolve prints the result to stderr.
+func insecureTokenFileWarning(name, path string, mode fs.FileMode) string {
+	if mode.Perm()&0o077 == 0 {
+		return ""
+	}
+	return fmt.Sprintf("credentials: warning: token file %q for ref %q is accessible to group/other "+
+		"(mode %#o); tighten it to 0600", path, name, mode.Perm())
 }
 
 // Resolver resolves named token refs to secret values. It holds no secret
