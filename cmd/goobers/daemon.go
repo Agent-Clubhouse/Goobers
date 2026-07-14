@@ -105,6 +105,18 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		return nil, fmt.Errorf("open instance log: %w", err)
 	}
 
+	// Issue #137: every workflow's cron schedule evaluates in the
+	// instance-configured timezone (Config.Timezone, default UTC), not
+	// whatever the host process's own local zone happens to be — InLocation
+	// already does the right thing with a restart-reconstructed LastEval
+	// too, since it normalizes via time.Time.In(loc) before any wall-clock
+	// field matching, regardless of what zone that reconstructed time was
+	// itself expressed in (a JSON-round-tripped fixed UTC offset).
+	loc, err := cfg.Location()
+	if err != nil {
+		return nil, err
+	}
+
 	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
@@ -115,7 +127,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 				if err != nil {
 					return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
 				}
-				sched = s
+				sched = localscheduler.InLocation(s, loc)
 				break
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeInstanceYAML(t *testing.T, body string) string {
@@ -124,6 +125,15 @@ func TestConfigValidate(t *testing.T) {
 				{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
 			}},
 		},
+		{
+			name:    "unresolvable timezone",
+			cfg:     Config{Timezone: "Not/ARealZone"},
+			wantErr: `timezone "Not/ARealZone"`,
+		},
+		{
+			name: "valid timezone",
+			cfg:  Config{Timezone: "America/New_York"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,6 +149,36 @@ func TestConfigValidate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestConfigLocation is issue #137's timezone-config wiring: Config.Location
+// defaults to UTC when Timezone is unset (a fixed, reproducible default
+// independent of the host process's own local zone) and resolves the
+// configured IANA zone otherwise.
+func TestConfigLocation(t *testing.T) {
+	t.Run("defaults to UTC when unset", func(t *testing.T) {
+		cfg := Config{}
+		loc, err := cfg.Location()
+		if err != nil {
+			t.Fatalf("Location: %v", err)
+		}
+		if loc != time.UTC {
+			t.Fatalf("Location = %v, want time.UTC", loc)
+		}
+	})
+	t.Run("resolves the configured zone", func(t *testing.T) {
+		if _, err := time.LoadLocation("America/New_York"); err != nil {
+			t.Skipf("tzdata unavailable: %v", err)
+		}
+		cfg := Config{Timezone: "America/New_York"}
+		loc, err := cfg.Location()
+		if err != nil {
+			t.Fatalf("Location: %v", err)
+		}
+		if loc.String() != "America/New_York" {
+			t.Fatalf("Location = %v, want America/New_York", loc)
+		}
+	})
 }
 
 func TestWriteConfigRoundTrip(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"sigs.k8s.io/yaml"
 )
@@ -18,13 +19,22 @@ const (
 )
 
 // Config is the parsed instance.yaml: target repo(s) + provider, token source
-// refs, telemetry settings, and instance-level run conditions (INST-010).
+// refs, telemetry settings, instance-level run conditions (INST-010), and the
+// timezone cron schedules evaluate in (issue #137 — previously promised by
+// internal/localscheduler's own doc comments but never actually a field
+// anywhere, so every schedule silently ran in whatever the host process's
+// local zone happened to be).
 type Config struct {
 	APIVersion    string          `json:"apiVersion" yaml:"apiVersion"`
 	Kind          string          `json:"kind" yaml:"kind"`
 	Repos         []RepoRef       `json:"repos" yaml:"repos"`
 	Telemetry     TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	RunConditions RunConditions   `json:"runConditions,omitempty" yaml:"runConditions,omitempty"`
+	// Timezone is an IANA location name (e.g. "America/New_York") every
+	// workflow's cron schedule evaluates in. Empty defaults to UTC — a fixed,
+	// reproducible default independent of the host process's own local zone,
+	// which would otherwise vary by deployment and isn't itself DST-free.
+	Timezone string `json:"timezone,omitempty" yaml:"timezone,omitempty"`
 }
 
 // RepoRef is a target repository this instance connects to.
@@ -72,6 +82,22 @@ func (c *Config) TelemetryEnabled() bool {
 	return c.Telemetry.Enabled == nil || *c.Telemetry.Enabled
 }
 
+// Location resolves Timezone to a *time.Location, defaulting to UTC when
+// unset. Validate already rejects an unresolvable Timezone at load time, so
+// this only errors if tzdata disappeared from underneath an already-loaded
+// instance (e.g. between validate and use) — callers can treat a non-nil
+// error here as exceptional.
+func (c *Config) Location() (*time.Location, error) {
+	if c.Timezone == "" {
+		return time.UTC, nil
+	}
+	loc, err := time.LoadLocation(c.Timezone)
+	if err != nil {
+		return nil, fmt.Errorf("load timezone %q: %w", c.Timezone, err)
+	}
+	return loc, nil
+}
+
 // LoadConfig reads and validates instance.yaml at path. Decoding is strict:
 // unknown fields (including an inline secret value under a token ref) are
 // rejected rather than silently ignored.
@@ -99,8 +125,15 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 // Validate checks instance.yaml-level invariants: known provider, non-empty
-// owner/name, and exactly one token source per repo.
+// owner/name, exactly one token source per repo, and (if set) a resolvable
+// IANA timezone — fail closed at load time rather than at the first cron
+// tick that tries to use it.
 func (c *Config) Validate() error {
+	if c.Timezone != "" {
+		if _, err := time.LoadLocation(c.Timezone); err != nil {
+			return fmt.Errorf("timezone %q: %w", c.Timezone, err)
+		}
+	}
 	for i, r := range c.Repos {
 		if r.Provider != "github" {
 			return fmt.Errorf("repos[%d]: unsupported provider %q (V0 supports \"github\" only)", i, r.Provider)
