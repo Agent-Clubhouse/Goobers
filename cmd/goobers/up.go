@@ -80,10 +80,24 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	defer func() { _ = setup.Telemetry.Shutdown(context.Background()) }()
 
+	// Reconcile BEFORE the resume scan (issue #135): it seeds Conditions'
+	// active-run counts from the very same non-terminal runs the resume scan
+	// is about to act on, so each resumed run's Release call (below) has a
+	// reserved slot to actually release — reversing this order would let the
+	// resume scan's Releases race Reconcile's blind Conditions.Reconcile
+	// overwrite and land before the slot even exists.
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog, localscheduler.WithTelemetry(setup.Telemetry))
+	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
 	// shutdown restarts now, before the scheduler starts admitting new ticks
-	// (#23 AC: restart via Runner.Resume).
-	resumed, err := resumeInterruptedRuns(ctx, l.RunsDir(), setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, &wg)
+	// (#23 AC: restart via Runner.Resume). A run whose workflow no longer
+	// resolves in config is skipped with a warning (issue #135), not fatal —
+	// recover it with `goobers run abort <run-id>`.
+	resumed, warned, err := resumeInterruptedRuns(ctx, l.RunsDir(), setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, sched.Release, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -91,11 +105,8 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	for _, runID := range resumed {
 		pf(stdout, "resuming interrupted run %s\n", runID)
 	}
-
-	sched := localscheduler.New(setup.Entries, setup.InstanceLog, localscheduler.WithTelemetry(setup.Telemetry))
-	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+	for _, runID := range warned {
+		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
 	}
 
 	pf(stdout, "daemon started at %s (%d workflow(s))\n", root, len(setup.Entries))

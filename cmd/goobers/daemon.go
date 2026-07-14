@@ -155,23 +155,34 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // Resume itself is idempotent on an already-terminal run and safe to call on
 // one that merely paused gracefully (a human gate, or a prior clean drain),
 // not only a genuine crash — so this scan doesn't need to distinguish those
-// cases itself.
+// cases itself; a gate-paused run's Resume call returns almost immediately
+// (walk re-checkpoints at the same gate without evaluating anything), so its
+// reserved slot (below) is held only briefly, not for the daemon's lifetime.
 //
-// A resume failure has nowhere synchronous to report to (this runs
-// concurrently with the caller going on to start the scheduler) — it is
-// journaled to the instance log with the same run.finished/error convention
-// localscheduler's own dispatch uses for a failed Start, so it is visible
-// via the instance journal rather than silently dropped.
-func resumeInterruptedRuns(ctx context.Context, runsDir string, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, wg *sync.WaitGroup) ([]string, error) {
+// release is called with each resumed run's workflow once its Resume call
+// returns (success or error) — the counterpart to Scheduler.Reconcile having
+// already seeded that run's workflow into Conditions' active count (issue
+// #135: previously nothing ever released a reconciled slot, so any restart
+// with a non-terminal run starved that workflow of new dispatches forever).
+// Pass sched.Release; a plain func so this doesn't need a *Scheduler to test.
+//
+// A run whose workflow no longer resolves in the current config (renamed or
+// removed, issue #135 point 2) is skipped with a warning journaled to log,
+// not a fatal error — a stale run must never prevent the daemon from
+// starting; recovering it is `goobers run abort <run-id>` (abort.go).
+//
+// resumeInterruptedRuns itself only errors on something that makes the scan
+// as a whole meaningless (runsDir unreadable for a reason other than not
+// existing yet).
+func resumeInterruptedRuns(ctx context.Context, runsDir string, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, release func(workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("read runs directory: %w", err)
+		return nil, nil, fmt.Errorf("read runs directory: %w", err)
 	}
 
-	var resumed []string
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -194,7 +205,17 @@ func resumeInterruptedRuns(ctx context.Context, runsDir string, rn *runner.Runne
 
 		machine, ok := machines[id.Workflow]
 		if !ok {
-			return nil, fmt.Errorf("interrupted run %q references unknown workflow %q", id.RunID, id.Workflow)
+			warned = append(warned, id.RunID)
+			if log != nil {
+				_ = log.Append(journal.Event{
+					Type: journal.EventError, Workflow: id.Workflow, RunID: id.RunID,
+					Error: &journal.ErrorDetail{
+						Code:    "resume_unresolvable_workflow",
+						Message: fmt.Sprintf("run %q references unknown workflow %q — recover with `goobers run abort %s`", id.RunID, id.Workflow, id.RunID),
+					},
+				})
+			}
+			continue
 		}
 		repoRef := repoRefs[id.Workflow]
 
@@ -202,8 +223,9 @@ func resumeInterruptedRuns(ctx context.Context, runsDir string, rn *runner.Runne
 		wg.Add(1)
 		go func(runID, wfName string) {
 			defer wg.Done()
-			_, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, RepoRef: repoRef})
-			status := "resumed"
+			defer release(wfName)
+			result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, RepoRef: repoRef})
+			status := string(result.Phase)
 			if err != nil {
 				status = "error: " + err.Error()
 			}
@@ -212,7 +234,7 @@ func resumeInterruptedRuns(ctx context.Context, runsDir string, rn *runner.Runne
 			}
 		}(id.RunID, id.Workflow)
 	}
-	return resumed, nil
+	return resumed, warned, nil
 }
 
 // waitDrained waits for wg to finish, returning false if timeout elapses

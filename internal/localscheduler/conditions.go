@@ -35,12 +35,32 @@ func NewConditions() *Conditions {
 }
 
 // Reconcile sets the initial active-run counts after a restart (Conditions'
-// in-memory counters don't survive one) — see ActiveRunCounts.
+// in-memory counters don't survive one) — see ActiveRunCounts. A seeded
+// count MUST be paired with a later Release once whatever the daemon does
+// with that pre-existing run (e.g. Runner.Resume, issue #135) finishes —
+// Reconcile only seeds the starting point, exactly like Admit's own
+// reserve-then-Release contract.
 func (c *Conditions) Reconcile(active map[string]int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for wf, n := range active {
 		c.active[wf] = n
+	}
+}
+
+// ReconcileBudget seeds each workflow's rolling MaxRunsPerHour window from
+// admitted-run start times read from durable history (the instance
+// journal's run.started events) — issue #135's "budget amnesia": without
+// this, Admit's in-memory starts map begins empty on every restart, so a
+// crash-looping daemon admits one extra catch-up fire per restart, silently
+// exceeding MaxRunsPerHour. Only entries within budgetWindow of now matter;
+// Admit's own pruneStarts drops the rest lazily on first use, but callers
+// may filter before calling this too.
+func (c *Conditions) ReconcileBudget(starts map[string][]time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for wf, ts := range starts {
+		c.starts[wf] = append([]time.Time(nil), ts...)
 	}
 }
 

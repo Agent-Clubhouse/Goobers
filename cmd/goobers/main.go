@@ -60,6 +60,7 @@ Usage:
   goobers validate [path]       validate an instance's instance.yaml + config/
   goobers up [path]             run the daemon (scheduler + runner)
   goobers run <workflow> [path] trigger a run manually (still honors run conditions)
+  goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
   goobers status [path]         list runs and their current phase
   goobers trace <run-id> [path] show a run's journal events (+ spans if rolled up)
   goobers telemetry stats|errors [path]  success rate/duration or recent-error aggregates
