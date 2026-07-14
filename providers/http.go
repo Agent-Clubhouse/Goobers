@@ -232,8 +232,13 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
+// statusLabelPrefix namespaces the labels that mirror a work item's Goobers
+// processing status, kept distinct from workflow trust/ready labels so a status
+// update never touches those.
+const statusLabelPrefix = "goobers/status:"
+
 func statusLabel(status WorkItemStatus) string {
-	return "goobers/status:" + string(status)
+	return statusLabelPrefix + string(status)
 }
 
 func replaceStatusLabel(labels []string, status WorkItemStatus) []string {
@@ -252,8 +257,8 @@ func replaceStatusLabel(labels []string, status WorkItemStatus) []string {
 
 func statusFromLabels(labels []string, fallbackState string) WorkItemStatus {
 	for _, label := range labels {
-		if strings.HasPrefix(label, "goobers/status:") {
-			return WorkItemStatus(strings.TrimPrefix(label, "goobers/status:"))
+		if strings.HasPrefix(label, statusLabelPrefix) {
+			return WorkItemStatus(strings.TrimPrefix(label, statusLabelPrefix))
 		}
 	}
 	switch strings.ToLower(fallbackState) {
@@ -273,11 +278,18 @@ func basicAuth(username, token string) string {
 // withRunIDFooter appends a run-id breadcrumb footer to a PR body so the run
 // journal (once #8 lands) can link the PR URL back to the run bidirectionally.
 // A no-op when runID is empty.
+// runFooter is the marker line withRunIDFooter embeds to tie a created provider
+// entity back to its run — and the exact term CreateWorkItem searches for to
+// make creation idempotent (#140).
+func runFooter(runID string) string {
+	return "goobers run-id: " + runID
+}
+
 func withRunIDFooter(body, runID string) string {
 	if runID == "" {
 		return body
 	}
-	footer := "goobers run-id: " + runID
+	footer := runFooter(runID)
 	if body == "" {
 		return "---\n" + footer
 	}
