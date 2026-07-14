@@ -2,9 +2,11 @@ package worktree
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -71,14 +73,24 @@ func writeMarker(path string, m marker) error {
 // fsyncDir fsyncs a directory so a preceding rename into it is durable
 // across a crash — mirrors internal/journal/fsio.go's fsyncDir; duplicated
 // rather than shared since internal/worktree has no other reason to depend
-// on internal/journal.
+// on internal/journal. Directory fsync is unsupported on some
+// platforms/filesystems; EINVAL/ENOTSUP from that case is tolerated (the
+// write itself already landed, just without the extra durability guarantee)
+// rather than turning every worktree.Create into a hard failure on those
+// systems — anything else is a real error and is surfaced.
 func fsyncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = d.Close() }()
-	return d.Sync()
+	if err := d.Sync(); err != nil {
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func readMarker(path string) (marker, error) {

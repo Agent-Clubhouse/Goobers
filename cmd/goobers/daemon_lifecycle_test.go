@@ -222,7 +222,7 @@ func TestResumePastOrphanedWorktreeAtSameKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed, warned, err := resumeInterruptedRuns(context.Background(), l.RunsDir(), setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, sched.Release, &wg)
+	resumed, warned, err := resumeInterruptedRuns(context.Background(), l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg)
 	if err != nil {
 		t.Fatal(err)
 	}
