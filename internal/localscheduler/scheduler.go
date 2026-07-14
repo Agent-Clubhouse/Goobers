@@ -76,6 +76,19 @@ func WithTelemetry(t SpanStarter) Option {
 	}
 }
 
+// WithInstanceRunConditions applies instance.yaml's runConditions (§7,
+// SCH-003's "max-parallel per workflow/instance") on top of each workflow's
+// own per-workflow conditions — before this option existed, instance.yaml's
+// maxParallelRuns/workflowBudgets were parsed and scaffolded but enforced
+// nowhere (issue #142). maxParallelRuns caps total concurrent runs across
+// every workflow in the instance (0/unset = unlimited); workflowBudgets
+// overrides a named workflow's runs-per-hour budget.
+func WithInstanceRunConditions(maxParallelRuns int, workflowBudgets map[string]int) Option {
+	return func(s *Scheduler) {
+		s.conditions.SetInstanceLimits(maxParallelRuns, workflowBudgets)
+	}
+}
+
 // New builds a Scheduler over the given workflow entries. Call Reconcile
 // before Run to seed run-condition and trigger state from durable state after
 // a restart; a freshly-created instance can skip it (everything starts empty).
@@ -258,11 +271,25 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	span := s.startSpan(ctx, entry, tick, kind)
 	defer span.End()
 
-	s.journalEvent(journal.Event{
+	// Unlike the journalEvent calls below (best-effort: they record a
+	// decision already made, so a write failure doesn't roll it back), a
+	// failed trigger.fired append MUST stop this dispatch here rather than
+	// being swallowed (SCH-031, issue #142): ReconstructLastEval rebuilds
+	// each workflow's LastEval purely from trigger.fired history after a
+	// restart, so a fire that started a run but never durably recorded
+	// having fired would replay on the very next restart — dispatching a
+	// second run for the same nominal firing. Refusing to dispatch keeps the
+	// invariant that a run only ever starts once its trigger.fired record
+	// has durably landed.
+	if err := s.appendJournalEvent(journal.Event{
 		Type:     journal.EventTriggerFired,
 		Workflow: entry.Workflow,
 		Reason:   fireReason(tick, kind),
-	})
+	}); err != nil {
+		reason := "trigger.fired journal write failed: " + err.Error()
+		span.Fail(err)
+		return "", false, reason
+	}
 
 	ok, reason := s.conditions.Admit(entry.Workflow, entry.Readiness, now)
 	if !ok {
@@ -384,8 +411,16 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 // same rationale as ClaimLedger.journal — a journal write failure doesn't roll
 // back a scheduling decision already made.
 func (s *Scheduler) journalEvent(ev journal.Event) {
+	_ = s.appendJournalEvent(ev)
+}
+
+// appendJournalEvent appends to the instance journal if one is wired,
+// returning the write error to the (rare) caller that must act on it —
+// dispatch's trigger.fired append, see its own comment for why. A nil log is
+// not an error (many tests construct a Scheduler with none).
+func (s *Scheduler) appendJournalEvent(ev journal.Event) error {
 	if s.log == nil {
-		return
+		return nil
 	}
-	_ = s.log.Append(ev)
+	return s.log.Append(ev)
 }

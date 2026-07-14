@@ -233,6 +233,22 @@ decision for a bug:
   by design — safer than a denylist filter that could miss a credential var),
   which may starve tools that expect `XDG_*`/`LANG`/`SSL_CERT_FILE`/proxy vars
   in less common environments — tracked as #75 (V1).
+- **`instance.yaml` is loaded once, at `goobers up` startup.** Editing it
+  (repos, telemetry, `runConditions`) while the daemon is running has no
+  effect until the next restart — there is no file watch or SIGHUP-style
+  reload (CFG-020/DEP-025 call for this at tiers 1–2; V0.1 scope is
+  documenting the restart-required semantics here rather than building
+  watch/reload, which is V1, #142). A config that fails `Validate()` is
+  caught at that startup load (`goobers up` refuses to start, per `up.go`'s
+  `os.Stat(l.ConfigFile())`/`LoadConfig` checks), not silently ignored — the
+  gap is strictly "doesn't pick up a later edit," not "runs on bad config."
+- **Workflow definitions are pinned at `Version: 1` permanently.** There is no
+  mechanism yet to bump a workflow's version when its definition changes;
+  `trace`'s `(v1)` display and journal `Trigger.Kind`/gate-outcome comparisons
+  (WF-016) key off the run's recorded digest, not this version field, so
+  nothing currently depends on it changing — but a reader should not infer
+  "unversioned" or "unchanged since v1" from it. Deriving a real version from
+  the definition (or its digest) is left for a later pass (#142).
 
 ## Execution record
 

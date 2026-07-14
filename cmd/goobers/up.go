@@ -148,7 +148,8 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// reserved slot to actually release — reversing this order would let the
 	// resume scan's Releases race Reconcile's blind Conditions.Reconcile
 	// overwrite and land before the slot even exists.
-	sched := localscheduler.New(setup.Entries, setup.InstanceLog, setup.SchedulerOptions()...)
+	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets))
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

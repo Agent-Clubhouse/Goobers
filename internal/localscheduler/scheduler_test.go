@@ -266,6 +266,44 @@ func TestTriggerSkipRejectsWithReason(t *testing.T) {
 	}
 }
 
+// TestDispatchRefusesWhenTriggerFiredJournalFails is issue #142/SCH-031: a
+// failed trigger.fired append used to be silently swallowed, so dispatch
+// would start a run whose firing was never durably recorded — on restart,
+// ReconstructLastEval (which derives LastEval purely from trigger.fired
+// history) would then replay that same nominal firing, double-dispatching a
+// run for it. Refusing to dispatch when the append fails closes that gap.
+func TestDispatchRefusesWhenTriggerFiredJournalFails(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Close the log before it's ever used: Append on a closed InstanceLog
+	// deterministically returns journal.ErrClosed, forcing dispatch's
+	// trigger.fired append to fail without relying on filesystem tricks.
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched := New([]WorkflowEntry{{
+		Workflow:  "curate",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Starter:   starter,
+	}}, log)
+
+	_, err = sched.Trigger(context.Background(), "curate", time.Now())
+	if err == nil {
+		t.Fatal("expected Trigger to fail when the trigger.fired journal append fails")
+	}
+	if !strings.Contains(err.Error(), "journal") {
+		t.Fatalf("err = %v, want it to mention the journal failure", err)
+	}
+	if got := starter.count(); got != 0 {
+		t.Fatalf("starter.count() = %d, want 0 — no run should start when trigger.fired didn't durably land", got)
+	}
+}
+
 // TestReconcileRestoresBudgetWindowFromInstanceLog is issue #135's "budget
 // amnesia" fix: Conditions' MaxRunsPerHour rolling window is in-memory only,
 // so without reconstructing it from the instance journal's run.started
@@ -530,7 +568,11 @@ func TestConcurrentTickDoesNotDoubleDispatch(t *testing.T) {
 
 func waitForCount(t *testing.T, count func() int, want int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	// 10s (not the original 2s, issue #142's QA-gate stress flake): this is a
+	// safety net against a genuine hang, not an expected duration — on a
+	// machine running many concurrent agents/test suites, legitimate work
+	// occasionally exceeds 2s under contention with no actual bug involved.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if count() >= want {
 			return
@@ -577,7 +619,7 @@ func (f *fakeClock) awaitAfterCall(t *testing.T) {
 	t.Helper()
 	select {
 	case <-f.waiting:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second): // same contention margin as waitForCount, issue #142
 		t.Fatal("timed out waiting for the scheduler loop to call After (idle-between-ticks)")
 	}
 }

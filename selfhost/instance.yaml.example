@@ -20,9 +20,11 @@ repos:
       env: GOOBERS_GITHUB_TOKEN
 telemetry:
   enabled: true
-# Optional, reserved instance-level ceilings on top of each workflow's own
-# `readiness` block (which is what the embedded scheduler actually enforces
-# today — see the three workflow definitions under gaggles/goobers/workflows/
-# for the real per-workflow maxConcurrentRuns/maxRunsPerHour guardrails).
+# Optional instance-level ceilings on top of each workflow's own `readiness`
+# block: maxParallelRuns caps total concurrent runs across every workflow in
+# this instance; workflowBudgets (a map of workflow name -> runs/hour)
+# overrides a named workflow's own maxRunsPerHour. See the three workflow
+# definitions under gaggles/goobers/workflows/ for the per-workflow
+# maxConcurrentRuns/maxRunsPerHour guardrails these ceilings sit on top of.
 runConditions:
   maxParallelRuns: 2

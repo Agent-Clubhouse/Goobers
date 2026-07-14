@@ -10,8 +10,9 @@ import (
 // Reason strings for a skipped tick (SCH-004 backpressure) — stable, so a
 // journal reader can match on them without parsing prose.
 const (
-	ReasonMaxParallel = "conditions: max-parallel"
-	ReasonBudget      = "conditions: budget"
+	ReasonMaxParallel         = "conditions: max-parallel"
+	ReasonInstanceMaxParallel = "conditions: instance max-parallel"
+	ReasonBudget              = "conditions: budget"
 )
 
 // budgetWindow is the rolling window MaxRunsPerHour is measured over.
@@ -27,11 +28,36 @@ type Conditions struct {
 	mu     sync.Mutex
 	active map[string]int
 	starts map[string][]time.Time
+
+	// totalActive is the sum of active across every workflow — kept as a
+	// running counter (not recomputed from active on every Admit) so Admit
+	// stays O(1) regardless of workflow count.
+	totalActive int
+	// instanceMaxParallel caps totalActive across the whole instance (§7,
+	// SCH-003's "per workflow/instance"); 0 means unlimited (unset).
+	instanceMaxParallel int
+	// workflowBudgets overrides a specific workflow's runs-per-hour budget
+	// from instance.yaml's runConditions.workflowBudgets, taking precedence
+	// over that workflow's own spec'd MaxRunsPerHour when set.
+	workflowBudgets map[string]int
 }
 
 // NewConditions returns an empty Conditions tracker.
 func NewConditions() *Conditions {
 	return &Conditions{active: map[string]int{}, starts: map[string][]time.Time{}}
+}
+
+// SetInstanceLimits applies instance-level run conditions (instance.yaml's
+// runConditions, §7/SCH-003) on top of each workflow's own per-workflow
+// conditions: maxParallelRuns caps total concurrent runs across every
+// workflow in the instance (0 = unlimited); workflowBudgets overrides a named
+// workflow's runs-per-hour budget. Call once, before Admit is first used —
+// it does not itself re-check already-admitted slots.
+func (c *Conditions) SetInstanceLimits(maxParallelRuns int, workflowBudgets map[string]int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.instanceMaxParallel = maxParallelRuns
+	c.workflowBudgets = workflowBudgets
 }
 
 // Reconcile sets the initial active-run counts after a restart (Conditions'
@@ -46,6 +72,11 @@ func (c *Conditions) Reconcile(active map[string]int) {
 	for wf, n := range active {
 		c.active[wf] = n
 	}
+	total := 0
+	for _, n := range c.active {
+		total += n
+	}
+	c.totalActive = total
 }
 
 // ReconcileBudget seeds each workflow's rolling MaxRunsPerHour window from
@@ -81,21 +112,29 @@ func (c *Conditions) Admit(workflow string, r apiv1.ReadinessConditions, now tim
 	if c.active[workflow] >= int(maxConcurrent) {
 		return false, ReasonMaxParallel
 	}
+	if c.instanceMaxParallel > 0 && c.totalActive >= c.instanceMaxParallel {
+		return false, ReasonInstanceMaxParallel
+	}
 
-	if r.MaxRunsPerHour > 0 {
+	maxRunsPerHour := r.MaxRunsPerHour
+	if override, ok := c.workflowBudgets[workflow]; ok && override > 0 {
+		maxRunsPerHour = int32(override)
+	}
+	if maxRunsPerHour > 0 {
 		starts := pruneStarts(c.starts[workflow], now)
-		if len(starts) >= int(r.MaxRunsPerHour) {
+		if len(starts) >= int(maxRunsPerHour) {
 			c.starts[workflow] = starts
 			return false, ReasonBudget
 		}
 		c.starts[workflow] = append(starts, now)
 	}
-	// A workflow with no MaxRunsPerHour never has c.starts[workflow] touched,
-	// so it can't accumulate unboundedly (e.g. ~1,440 entries/day for an
-	// `@every 1m` schedule) — nothing ever reads that map without a
-	// MaxRunsPerHour check, so there's no reason to record starts for it.
+	// A workflow with no effective budget never has c.starts[workflow]
+	// touched, so it can't accumulate unboundedly (e.g. ~1,440 entries/day
+	// for an `@every 1m` schedule) — nothing ever reads that map without a
+	// budget check, so there's no reason to record starts for it.
 
 	c.active[workflow]++
+	c.totalActive++
 	return true, ""
 }
 
@@ -105,6 +144,7 @@ func (c *Conditions) Release(workflow string) {
 	defer c.mu.Unlock()
 	if c.active[workflow] > 0 {
 		c.active[workflow]--
+		c.totalActive--
 	}
 }
 

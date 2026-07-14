@@ -172,6 +172,22 @@ func TestValidSchedulesAccepted(t *testing.T) {
 	}
 }
 
+// TestCompileRejectsMultipleScheduleTriggers is issue #142: the runtime
+// scheduler honors only the first schedule trigger and silently drops the
+// rest, so a second one must fail at compile time rather than compiling
+// clean and simply never firing.
+func TestCompileRejectsMultipleScheduleTriggers(t *testing.T) {
+	spec := linearSpec()
+	spec.Triggers = []apiv1.Trigger{
+		{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"},
+		{Type: apiv1.TriggerSchedule, Schedule: "0 9 * * *"},
+	}
+	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "only one schedule trigger per workflow") {
+		t.Fatalf("expected a multiple-schedule-trigger error, got %v", err)
+	}
+}
+
 func TestCompileAdmissionCapabilities(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",

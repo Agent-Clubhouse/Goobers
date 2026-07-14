@@ -211,11 +211,18 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string) err
 	return nil
 }
 
-// processAlive reports whether pid names a live process, using signal 0 to
-// probe without actually signaling it. This is a best-effort Unix check: PID
-// reuse after a reboot can in principle produce a false "alive" for an
-// unrelated process, which is an accepted limitation at V0.
-func processAlive(pid int) bool {
+// processAlive reports whether pid names a live process. Indirected through
+// a var (like newRunID elsewhere) so a test can inject a deterministic check
+// instead of depending on a real OS PID belonging to no live process — a
+// genuinely-dead PID from a reaped subprocess is inherently racy against PID
+// recycling on a busy machine (issue #142, a real QA-gate stress-test flake).
+var processAlive = processAliveUnix
+
+// processAliveUnix probes pid with signal 0, which checks liveness without
+// actually signaling it. Best-effort: PID reuse after a reboot can in
+// principle produce a false "alive" for an unrelated process, an accepted
+// limitation at V0.
+func processAliveUnix(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
