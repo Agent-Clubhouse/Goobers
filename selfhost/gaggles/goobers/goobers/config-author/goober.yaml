@@ -1,0 +1,28 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: config-author
+spec:
+  gaggle: goobers
+  role: config-author
+  displayName: Config author
+  instructions: instructions.md
+  harness: copilot
+  # Writes config only, and only inside this instance's configured config
+  # root (`selfhost/` on this dogfood instance, not the repo root) — never
+  # opens the PR itself (open-pr, a separate deterministic stage, does).
+  # The write-boundary is enforced structurally by open-pr's git-diff
+  # confinement (#104/T4 -> #223: aborts before the PR opens if any changed
+  # file escapes the configured root), backed by CODEOWNERS + branch
+  # protection governance and this goober's own scope discipline
+  # (instructions.md). The one remaining gap — a credential that structurally
+  # cannot push platform changes at all, independent of this check — is #35.
+  capabilities:
+    - repo:push
+  skills:
+    - config-authoring
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - tutor

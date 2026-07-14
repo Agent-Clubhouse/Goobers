@@ -22,7 +22,7 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
 
 	goobers := map[string]apiv1.GooberSpec{}
-	for _, name := range []string{"implementer", "reviewer", "curator", "nominator"} {
+	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author"} {
 		var g apiv1.Goober
 		raw, err := os.ReadFile(filepath.Join(root, "goobers", name, "goober.yaml"))
 		if err != nil {
@@ -34,7 +34,7 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 		goobers[g.Name] = g.Spec
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml"} {
+	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml"} {
 		t.Run(file, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 			if err != nil {

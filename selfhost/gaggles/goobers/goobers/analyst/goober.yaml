@@ -1,0 +1,23 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: analyst
+spec:
+  gaggle: goobers
+  role: analyst
+  displayName: Analyst
+  instructions: instructions.md
+  harness: copilot
+  # Diagnosis-only: reads telemetry + cross-run journal evidence, writes a
+  # finding artifact. Never touches the repo's working tree or opens
+  # anything — same read-only shape as the `reviewer` goober.
+  capabilities:
+    - telemetry:read
+    - journal:read
+  skills:
+    - tutor-diagnosis
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - tutor

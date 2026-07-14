@@ -1,0 +1,116 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: tutor
+spec:
+  gaggle: goobers
+  displayName: Tutor (self-improvement loop)
+  # Schedule producer, same shape as work-nomination.yaml: gather ->
+  # (agentic diagnose) -> (agentic draft+commit) -> open-pr. Instead of
+  # filing issues, the Tutor mines this instance's OWN run telemetry for
+  # recurring problems (flaky gates, coverage gaps, noisy checks) and opens
+  # a PR against this instance's own config — closing the self-improvement
+  # loop (epic #36, docs/design/v1/36-tutor-workflow.md).
+  #
+  # DOGFOOD GUARDRAIL: weekly, not daily — a self-improvement pass needs a
+  # wider telemetry window to find *recurring* (not one-off) problems, and a
+  # human reviewing config-changing PRs weekly is a sustainable cadence for
+  # this instance's current scale. maxRunsPerHour 1 is redundant at this
+  # cadence but kept for consistency with the other shipped workflows'
+  # explicit-budget convention.
+  triggers:
+    - type: schedule
+      schedule: "30 5 * * 0"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+  start: gather-signals
+  tasks:
+    # Built-in provider-chain style stage: queries the telemetry rollup for
+    # cross-run aggregates (T2, #102) and emits the versioned
+    # candidate-findings artifact (#148's schema) for the analyst to
+    # diagnose. NOTE: the `telemetry-query` connector subcommand itself is
+    # not wired into the live runner path yet (#132 minimal subcommand ->
+    # #148 typed stage) — this stage is defined to the same shape
+    # work-nomination.yaml's gather-signals stage already ships in this same
+    # config with (also currently blocked on #132/#148), so `tutor` and
+    # `work-nomination` unblock together rather than needing two separate
+    # fixes.
+    - name: gather-signals
+      type: deterministic
+      goal: Query cross-run telemetry for recurring failure/noise/coverage problems.
+      run:
+        command: ["goobers", "telemetry-query", "--window", "168h"]
+      next: analyze
+
+    # Agentic diagnosis: resolves the flagged runs' journal evidence
+    # read-only (cross-run journal:read, #103) and writes a single
+    # prioritized finding + recommended config change as a declared-output
+    # artifact for config-author to act on. Never touches the repo's
+    # working tree — diagnosis only, same read/no-write shape as the
+    # `reviewer` goober in implementation.yaml.
+    - name: analyze
+      type: agentic
+      goober: analyst
+      goal: >-
+        Diagnose the highest-priority recurring problem from the gathered
+        signals using its resolvable journal evidence, and write a single
+        finding.md artifact naming the exact config change to propose and
+        why (with evidence links).
+      capabilities:
+        - telemetry:read
+        - journal:read
+      expectedOutputs:
+        - finding
+      next: draft-change
+
+    # Agentic authoring: reads the analyst's finding (via ContextPointers,
+    # not a fresh telemetry/journal read of its own — narrowest capability
+    # footprint that can still cite the same evidence) and drafts the
+    # config change in this run's worktree, committing + pushing to the
+    # run's branch. Never opens the PR itself (open-pr below does). The
+    # config-only write boundary (T4, #104) is enforced structurally by
+    # open-pr's confineToConfigRoot check below (#223) — this stage's own
+    # scope discipline (instructions.md) and CODEOWNERS/branch-protection
+    # governance back it up, but the hard backstop is open-pr refusing to
+    # open a PR at all if this stage's diff ever escapes the config root. A
+    # credential that structurally cannot push platform changes in the first
+    # place (independent of this check) is #35.
+    - name: draft-change
+      type: agentic
+      goober: config-author
+      goal: >-
+        Read the analyst's finding, make exactly the config change it
+        recommends (and nothing else), and commit + push to the run's
+        branch.
+      capabilities:
+        - repo:push
+      expectedOutputs:
+        - changed-files
+      next: open-pr
+
+    - name: open-pr
+      type: deterministic
+      goal: Open the PR for the run's proposed config change, with evidence links in the body.
+      run:
+        command: ["goobers", "open-pr"]
+      inputs:
+        runIdFooter: "true"
+        title: "tutor: config improvement"
+        resultFile: "pr-result.json"
+        # Config write-boundary (#104/T4, activated here per #223): every file
+        # this run's branch changed (relative to base) must be within
+        # configRoot, or the cycle aborts closed before the PR opens — the
+        # structural half of "the Tutor authors config only" that draft-change's
+        # own goober-instructions scope discipline can't guarantee by itself.
+        confineToConfigRoot: "true"
+        configRoot: "selfhost"
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        - pull-request-url
+        - prNumber
+      # Terminal: no `next`. Same governance model as every other
+      # config-affecting change on this instance — a human reviews and
+      # merges behind branch protection / CODEOWNERS; there is no
+      # in-product gate (TUT-006, design doc OQ-3).
