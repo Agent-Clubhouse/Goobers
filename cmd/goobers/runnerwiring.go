@@ -30,13 +30,28 @@ import (
 // layout goobers trace/telemetry read back through the rollup. Shared by
 // up.go/run.go exactly like buildRunnerConfig; each caller owns calling
 // Shutdown on the returned client once it's done driving runs.
-func buildTelemetryClient(ctx context.Context, l instance.Layout) (*telemetry.Client, error) {
+func buildTelemetryClient(ctx context.Context, l instance.Layout, scrubber journal.Scrubber) (*telemetry.Client, error) {
 	return telemetry.New(ctx, telemetry.Config{
 		ServiceName:    "goobers",
 		ServiceVersion: version.Get().Version,
-		SpanExporter:   telemetry.NewJournalSpanExporter(l.RunsDir()),
+		SpanExporter:   telemetry.NewJournalSpanExporter(l.RunsDir(), scrubber),
 		Batch:          true,
 	})
+}
+
+// teeRegistrar forwards every registered secret to BOTH a run's own
+// SecretRegistrar (feeding that run's journal scrubber) and the instance-global
+// shared registry (feeding the span exporter + instance log). It is how a
+// per-run secret reaches the two instance-lifetime consumers without changing
+// internal/runner's per-run registrar creation (#117 Piece B).
+type teeRegistrar struct {
+	run    runner.SecretRegistrar
+	shared *journal.RegistryScrubber
+}
+
+func (t teeRegistrar) Register(secret []byte) {
+	t.run.Register(secret)
+	t.shared.Register(secret)
 }
 
 // ingestRunTelemetry incrementally ingests one finished run, plus a refresh
@@ -207,7 +222,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client, sharedReg *journal.RegistryScrubber) (runner.Config, *worktree.Manager, error) {
 	wtMgr, err := worktree.NewManager(l.WorkcopiesDir())
 	if err != nil {
 		return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
@@ -228,6 +243,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 
 	rc := runner.Config{
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
+			// Register resolved secrets into the run's own registrar AND the
+			// instance-global shared registry, so they are scrubbed from the run
+			// journal (via reg) and from the span exporter / instance log (via
+			// sharedReg) alike (#117 Piece B).
+			reg = teeRegistrar{run: reg, shared: sharedReg}
 			injector, err := credentials.NewInjector(resolver, grants, reg)
 			if err != nil {
 				return nil, err
@@ -253,7 +273,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if !ok {
 				return nil, fmt.Errorf("goober %q not found in config", gooberName)
 			}
-			injector, err := credentials.NewInjector(resolver, grants, reg)
+			// The injector registers resolved secrets into the run's registrar AND
+			// the shared instance registry (#117 Piece B). reg (not the tee) is
+			// kept below for the journal.Scrubber assertion — it still accumulates
+			// every secret, since the tee forwards to it.
+			injector, err := credentials.NewInjector(resolver, grants, teeRegistrar{run: reg, shared: sharedReg})
 			if err != nil {
 				return nil, err
 			}
