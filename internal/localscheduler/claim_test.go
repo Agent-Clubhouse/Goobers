@@ -45,6 +45,40 @@ func TestClaimAndRelease(t *testing.T) {
 	}
 }
 
+// TestForRun proves the #131/#132 lookup a downstream stage (issue-close-out)
+// uses to recover which item its own run claimed, several stages after
+// backlog-query and in a different worktree/process.
+func TestForRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	l, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := l.ForRun("run-a"); ok {
+		t.Fatal("no claim yet: ForRun should report false")
+	}
+
+	if ok, _, err := l.Claim("issue-8", "run-a", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("Claim: ok=%v err=%v", ok, err)
+	}
+
+	entry, ok := l.ForRun("run-a")
+	if !ok || entry.ItemID != "issue-8" || entry.RunID != "run-a" {
+		t.Fatalf("ForRun(run-a) = %+v, %v, want issue-8 held by run-a", entry, ok)
+	}
+	if _, ok := l.ForRun("run-b"); ok {
+		t.Fatal("a different run should not resolve another run's claim")
+	}
+
+	if err := l.Release("issue-8", "run-a"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if _, ok := l.ForRun("run-a"); ok {
+		t.Fatal("released claim should no longer resolve via ForRun")
+	}
+}
+
 func TestReleaseIsIdempotentAndOwnerScoped(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claims.json")
 	l, err := OpenClaimLedger(path)

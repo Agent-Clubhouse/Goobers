@@ -111,8 +111,15 @@ func TestGitHubProviderRepoAndBacklogOperations(t *testing.T) {
 		}
 	})
 	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodPost)
-		writeJSON(t, w, map[string]interface{}{"id": 44, "number": 9, "html_url": "pr-url"})
+		switch r.Method {
+		case http.MethodGet:
+			// OpenPullRequest's idempotency check (#132): no existing open PR.
+			writeJSON(t, w, []map[string]interface{}{})
+		case http.MethodPost:
+			writeJSON(t, w, map[string]interface{}{"id": 44, "number": 9, "html_url": "pr-url"})
+		default:
+			t.Fatalf("unexpected pulls method %s", r.Method)
+		}
 	})
 	mux.HandleFunc("/repos/acme/app/pulls/9/requested_reviewers", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
@@ -328,6 +335,11 @@ func TestGitHubProviderOpenPullRequestStampsRunIDFooter(t *testing.T) {
 	var gotBody map[string]interface{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// OpenPullRequest's idempotency check (#132): no existing open PR.
+			writeJSON(t, w, []map[string]interface{}{})
+			return
+		}
 		assertMethod(t, r, http.MethodPost)
 		decodeJSON(t, r, &gotBody)
 		writeJSON(t, w, map[string]interface{}{"number": 9, "html_url": "https://github.com/acme/app/pull/9"})
@@ -354,6 +366,11 @@ func TestGitHubProviderOpenPullRequestFooterNoOpWithoutRunID(t *testing.T) {
 	var gotBody map[string]interface{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// OpenPullRequest's idempotency check (#132): no existing open PR.
+			writeJSON(t, w, []map[string]interface{}{})
+			return
+		}
 		decodeJSON(t, r, &gotBody)
 		writeJSON(t, w, map[string]interface{}{"number": 9, "html_url": "https://github.com/acme/app/pull/9"})
 	})
@@ -370,6 +387,70 @@ func TestGitHubProviderOpenPullRequestFooterNoOpWithoutRunID(t *testing.T) {
 	}
 	if body, _ := gotBody["body"].(string); body != "Adds PR polling." {
 		t.Fatalf("body = %q, want unchanged (no run-id)", body)
+	}
+}
+
+// TestGitHubProviderOpenPullRequestIsIdempotentOnRepass proves #132's fix: a
+// second OpenPullRequest call for the same stable run branch (a workflow
+// repass through open-pr) finds the already-open PR via the head/base lookup
+// and PATCHes it instead of POSTing a duplicate (which GitHub would 422 on).
+func TestGitHubProviderOpenPullRequestIsIdempotentOnRepass(t *testing.T) {
+	var posts, patches int
+	var patchedTitle string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if got := r.URL.Query().Get("head"); got != "acme:goobers/impl/run-1" {
+				t.Fatalf("lookup head query = %q", got)
+			}
+			if got := r.URL.Query().Get("base"); got != "main" {
+				t.Fatalf("lookup base query = %q", got)
+			}
+			if got := r.URL.Query().Get("state"); got != "open" {
+				t.Fatalf("lookup state query = %q", got)
+			}
+			writeJSON(t, w, []map[string]interface{}{
+				{"number": 9, "html_url": "https://github.com/acme/app/pull/9"},
+			})
+		case http.MethodPost:
+			posts++
+			writeJSON(t, w, map[string]interface{}{"number": 9, "html_url": "https://github.com/acme/app/pull/9"})
+		default:
+			t.Fatalf("unexpected method %s on /pulls", r.Method)
+		}
+	})
+	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		var body map[string]interface{}
+		decodeJSON(t, r, &body)
+		patchedTitle, _ = body["title"].(string)
+		patches++
+		writeJSON(t, w, map[string]interface{}{"number": 9, "html_url": "https://github.com/acme/app/pull/9"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+		Title:      "Implement #13 (repass)", Body: "Adds PR polling.",
+		Head: "goobers/impl/run-1", Base: "main", RunID: "run-1",
+	})
+	if err != nil {
+		t.Fatalf("OpenPullRequest returned error: %v", err)
+	}
+	if result.Number != 9 {
+		t.Fatalf("result.Number = %d, want 9 (the existing PR)", result.Number)
+	}
+	if posts != 0 {
+		t.Fatalf("expected no POST (duplicate-create) call, got %d", posts)
+	}
+	if patches != 1 {
+		t.Fatalf("expected exactly one PATCH (update) call, got %d", patches)
+	}
+	if patchedTitle != "Implement #13 (repass)" {
+		t.Fatalf("patched title = %q", patchedTitle)
 	}
 }
 
@@ -542,6 +623,11 @@ func TestGitHubProviderClosePullRequestUnmerged(t *testing.T) {
 func TestGitHubProviderOpenPullRequestRecordsMutation(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// OpenPullRequest's idempotency check (#132): no existing open PR.
+			writeJSON(t, w, []map[string]interface{}{})
+			return
+		}
 		writeJSON(t, w, map[string]interface{}{"number": 9, "html_url": "https://github.com/acme/app/pull/9"})
 	})
 	server := httptest.NewServer(mux)

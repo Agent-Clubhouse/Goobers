@@ -183,6 +183,29 @@ func (l *ClaimLedger) Lookup(itemID string) (ClaimEntry, bool) {
 	return e, ok
 }
 
+// ForRun returns the entry runID currently holds, if any (for inspection;
+// same expired/live caveat as Lookup). A workflow whose backlog-query stage
+// claims at most one item per run (#131's implementation.yaml: maxItems=1)
+// can use this to recover which item its own run is processing from a
+// later stage — a downstream stage such as issue-close-out runs as its own
+// OS process in its own worktree, several stages after backlog-query, with
+// no other way to learn the claimed item's id (Task.InputsFrom only threads
+// from the immediately preceding stage, not an arbitrary earlier one, and
+// backlog-query's own worktree — where it wrote the claimed item as a result
+// file — no longer exists by the time a later stage runs). If a run somehow
+// holds more than one claim, the entry returned is unspecified — the ledger
+// does not track per-run claim order.
+func (l *ClaimLedger) ForRun(runID string) (ClaimEntry, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, e := range l.entries {
+		if e.RunID == runID {
+			return e, true
+		}
+	}
+	return ClaimEntry{}, false
+}
+
 // persist rewrites the ledger file atomically. Caller holds l.mu.
 func (l *ClaimLedger) persist() error {
 	data, err := json.MarshalIndent(l.entries, "", "  ")

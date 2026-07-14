@@ -11,9 +11,19 @@
 // newAgenticAdapter (the harness -> a scripted fake), both in runnerwiring.go.
 //
 // The provider-backed stages of the real dogfood workflows (backlog-query,
-// open-pr, ci-poll, issue-close-out) are NOT exercised here: they are not yet
-// wired into the CLI runner, so they remain the manual/[pending] portion of
-// the runbook. This check covers the runnable-today agentic core.
+// open-pr, ci-poll, issue-close-out) are wired into the CLI runner now
+// (#131/#132) — each has its own CLI-level integration test
+// (backlogquery_test.go/openpr_test.go/issuecloseout_test.go) plus a
+// runner-level test proving the ci-poll output->input threading
+// (internal/runner's TestRunnerThreadsInputsFromUpstreamOutputs) — but they
+// are deliberately not chained together into one single mega end-to-end run
+// here: open-pr/issue-close-out dispatch as real `goobers <subcommand>` OS
+// subprocesses (DeterministicRun.Command, not an in-process seam the way
+// implement/review are), so exercising them through the real runner in this
+// same test binary would need either a separately built `goobers` binary on
+// PATH or a new production-facing GitHub-API-base-URL override added purely
+// to make that possible — scope this PR intentionally didn't take on. This
+// check still covers the runnable-today agentic core.
 package main
 
 import (

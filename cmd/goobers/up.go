@@ -22,6 +22,13 @@ import (
 // than waiting out a real 30s.
 var drainGrace = 30 * time.Second
 
+// claimRecoverInterval bounds how often runUpContext sweeps the claim ledger
+// for expired leases while running, catching a live run that overran its
+// lease without crashing (localscheduler.ClaimLedger.RecoverExpired's doc:
+// "call once at startup... and periodically thereafter"). Var, not const, so
+// tests can shrink it rather than waiting out a real 5 minutes.
+var claimRecoverInterval = 5 * time.Minute
+
 func runUp(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signals.SetupSignalContext()
 	defer stop()
@@ -81,6 +88,39 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	defer func() { _ = setup.Telemetry.Shutdown(context.Background()) }()
 	defer func() { _ = setup.RollupDB.Close() }()
 
+	// Claim-lease recovery (#131): released once now (recovers leases
+	// orphaned by a prior crash) and periodically thereafter (catches a live
+	// run that overran its lease without crashing) — before the scheduler
+	// starts admitting new ticks, same ordering rationale as crash-resume
+	// below. withClaimLock serializes this against a concurrent
+	// `goobers backlog-query` subprocess claiming/releasing on the same
+	// ledger file (providercmd.go's doc). recoverExpiredClaims itself never
+	// touches stdout/stderr — it returns the released entries so ONLY the
+	// synchronous startup call site below prints; the periodic goroutine
+	// below deliberately does not (see its own comment).
+	claimLedgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
+	claimLockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
+	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
+		var released []localscheduler.ClaimEntry
+		err := withClaimLock(claimLockPath, func() error {
+			ledger, err := localscheduler.OpenClaimLedger(claimLedgerPath, localscheduler.WithInstanceLog(setup.InstanceLog))
+			if err != nil {
+				return err
+			}
+			released, err = ledger.RecoverExpired(now)
+			return err
+		})
+		return released, err
+	}
+	startupReleased, err := recoverExpiredClaims(time.Now())
+	if err != nil {
+		pf(stderr, "error: recover expired claims: %v\n", err)
+		return 1
+	}
+	for _, entry := range startupReleased {
+		pf(stdout, "recovered expired claim %s (was held by run %s)\n", entry.ItemID, entry.RunID)
+	}
+
 	// Reconcile BEFORE the resume scan (issue #135): it seeds Conditions'
 	// active-run counts from the very same non-terminal runs the resume scan
 	// is about to act on, so each resumed run's Release call (below) has a
@@ -112,8 +152,41 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
 	}
 
+	// The periodic sweep runs on its own goroutine for the daemon's entire
+	// lifetime, concurrently with the main goroutine's own stdout/stderr
+	// writes (both "daemon started" above and the shutdown messages below) —
+	// io.Writer implementations like *bytes.Buffer (tests) are not safe for
+	// concurrent use, so this goroutine deliberately never writes to
+	// stdout/stderr itself (unlike the startup sweep above, which runs
+	// synchronously before this goroutine exists and so writes safely).
+	// Recovery failures are swallowed here the same way ClaimLedger's own
+	// journal() best-effort observability is (claim.go's doc) — routine
+	// background maintenance, not a run-affecting operation.
+	claimTicker := time.NewTicker(claimRecoverInterval)
+	claimTickerDone := make(chan struct{})
+	go func() {
+		defer close(claimTickerDone)
+		defer claimTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-claimTicker.C:
+				_, _ = recoverExpiredClaims(now)
+			}
+		}
+	}()
+
 	pf(stdout, "daemon started at %s (%d workflow(s))\n", root, len(setup.Entries))
 	runErr := sched.Run(ctx) // blocks until ctx is cancelled
+
+	// Wait for the claim-recovery goroutine to fully stop BEFORE any further
+	// stdout/stderr writes below: both it and this goroutine react to the
+	// same ctx cancellation independently, so without this join a tick still
+	// in flight when sched.Run returns would race the writes below on the
+	// shared io.Writer (stdout/stderr are not safe for concurrent use).
+	<-claimTickerDone
+
 	if runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {
 		pf(stderr, "error: scheduler stopped: %v\n", runErr)
 	}

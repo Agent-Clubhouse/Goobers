@@ -63,6 +63,7 @@ type stubTaskResult struct {
 	artifactName      string
 	artifactData      []byte
 	artifactMediaType string
+	outputs           map[string]interface{}
 }
 
 // stubDeterministic implements invoke.Deterministic like a real executor
@@ -80,9 +81,44 @@ func (s *stubDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope,
 	if !ok {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("stub executor: no canned output for %q", env.TaskID)
 	}
-	result := apiv1.ResultEnvelope{Status: cfg.status, Summary: cfg.summary, Error: cfg.errorInfo}
+	result := apiv1.ResultEnvelope{Status: cfg.status, Summary: cfg.summary, Error: cfg.errorInfo, Outputs: cfg.outputs}
 	if cfg.artifactName != "" {
 		ref, err := s.rec.RecordArtifact(cfg.artifactName, cfg.artifactData)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		result.Artifacts = []apiv1.ArtifactPointer{{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: cfg.artifactMediaType,
+		}}
+	}
+	return result, nil
+}
+
+// outputCapturingDeterministic is stubDeterministic plus recording each
+// call's full InvocationEnvelope by TaskID, so a test can assert what
+// actually arrived in env.Inputs — e.g. #132's InputsFrom output->input
+// threading, which stubDeterministic's plain canned-Outputs lookup can't
+// observe from the consuming side. (Named distinctly from #107's
+// capturingDeterministic below, which records only its last call for a
+// different purpose — resume pointer-visibility, not input threading.)
+type outputCapturingDeterministic struct {
+	rec      ArtifactRecorder
+	byTask   map[string]stubTaskResult
+	received map[string]apiv1.InvocationEnvelope
+}
+
+func (c *outputCapturingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	if c.received == nil {
+		c.received = map[string]apiv1.InvocationEnvelope{}
+	}
+	c.received[env.TaskID] = env
+	cfg, ok := c.byTask[env.TaskID]
+	if !ok {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("stub executor: no canned output for %q", env.TaskID)
+	}
+	result := apiv1.ResultEnvelope{Status: cfg.status, Summary: cfg.summary, Error: cfg.errorInfo, Outputs: cfg.outputs}
+	if cfg.artifactName != "" {
+		ref, err := c.rec.RecordArtifact(cfg.artifactName, cfg.artifactData)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, err
 		}
@@ -267,6 +303,91 @@ func retryFixtureMachine(t *testing.T, maxAttempts int32) *workflow.Machine {
 		t.Fatalf("compile retry fixture machine: %v", err)
 	}
 	return m
+}
+
+// inputsFromFixtureMachine is a minimal open-pr -> ci-poll chain proving
+// #132's task-to-task output->input threading: ci-poll declares
+// InputsFrom: {"prNumber": "prNumber"}, so it must receive open-pr's
+// Outputs["prNumber"] as its own env.Inputs["prNumber"].
+func inputsFromFixtureMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "open-pr",
+		Tasks: []apiv1.Task{
+			{Name: "open-pr", Type: apiv1.TaskDeterministic, Goal: "open the pr", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "ci-poll"},
+			{Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll ci", Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+				InputsFrom: map[string]string{"prNumber": "prNumber"}},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "inputs-from-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile inputs-from fixture machine: %v", err)
+	}
+	return m
+}
+
+// TestRunnerThreadsInputsFromUpstreamOutputs proves the #132 prNumber-handoff
+// mechanism end to end at the runner level: open-pr's Outputs["prNumber"]
+// arrives in ci-poll's env.Inputs["prNumber"] via the declared InputsFrom
+// mapping, not blanket propagation.
+func TestRunnerThreadsInputsFromUpstreamOutputs(t *testing.T) {
+	machine := inputsFromFixtureMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-1:open-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{"prNumber": "42"}},
+		"run-1:ci-poll": {status: apiv1.ResultSuccess},
+	}
+	det := &outputCapturingDeterministic{byTask: byTask}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-1",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	ciPollEnv, ok := det.received["run-1:ci-poll"]
+	if !ok {
+		t.Fatal("ci-poll never dispatched")
+	}
+	if got := ciPollEnv.Inputs["prNumber"]; got != "42" {
+		t.Fatalf("ci-poll env.Inputs[prNumber] = %v, want \"42\" (threaded from open-pr's Outputs)", got)
+	}
+}
+
+// TestRunnerInputsFromMissingUpstreamOutputFailsClosed proves a declared
+// InputsFrom entry whose referenced upstream output key never showed up
+// fails the stage closed rather than silently dispatching with the key
+// absent — InputsFrom is a contract, not a best-effort hint.
+func TestRunnerInputsFromMissingUpstreamOutputFailsClosed(t *testing.T) {
+	machine := inputsFromFixtureMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-1:open-pr": {status: apiv1.ResultSuccess}, // no Outputs["prNumber"] set
+		"run-1:ci-poll": {status: apiv1.ResultSuccess},
+	}
+	r, _ := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+
+	_, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-1",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil {
+		t.Fatal("expected an error when a declared InputsFrom output is missing upstream")
+	}
 }
 
 func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {

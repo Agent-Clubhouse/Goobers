@@ -92,12 +92,17 @@ func DefaultChecks() map[string]CheckFunc {
 			return boolOutcome(got >= threshold), nil
 		},
 		// "ci-status": pass iff Inputs["ciStatus"] (the well-known output key
-		// a ci-poll deterministic stage — issue #18 — is expected to set)
-		// equals Params["equals"] (default "success").
+		// a ci-poll deterministic stage — issue #18 — is expected to set,
+		// using the providers.CheckState vocabulary "passing"/"failing" —
+		// internal/executor's own package, not this one, imports providers,
+		// so the literal string mirrors it rather than importing it here)
+		// equals Params["equals"] (default "passing"). Prior to #132 this
+		// defaulted to apiv1.ResultStatus's "success", which a ci-poll stage
+		// emitting "passing"/"failing" could never match.
 		"ci-status": func(inputs map[string]interface{}, params map[string]string) (string, error) {
 			want := params["equals"]
 			if want == "" {
-				want = string(apiv1.ResultSuccess)
+				want = "passing"
 			}
 			return boolOutcome(stringField(inputs, "ciStatus") == want), nil
 		},

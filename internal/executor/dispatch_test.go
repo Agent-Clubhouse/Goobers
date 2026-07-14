@@ -47,8 +47,8 @@ func TestTaskExecutor_RoutesToCIPoll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if result.Outputs[OutputCIStatus] != string(apiv1.ResultSuccess) {
-		t.Fatalf("outputs = %+v, want ciStatus=success", result.Outputs)
+	if result.Outputs[OutputCIStatus] != string(providers.CheckStatePassing) {
+		t.Fatalf("outputs = %+v, want ciStatus=%q", result.Outputs, providers.CheckStatePassing)
 	}
 }
 

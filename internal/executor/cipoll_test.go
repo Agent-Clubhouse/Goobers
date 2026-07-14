@@ -43,8 +43,8 @@ func TestCIPollExecutor_Pass(t *testing.T) {
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success (the poll itself succeeded)", result.Status)
 	}
-	if result.Outputs[OutputCIStatus] != string(apiv1.ResultSuccess) {
-		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], apiv1.ResultSuccess)
+	if result.Outputs[OutputCIStatus] != string(providers.CheckStatePassing) {
+		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStatePassing)
 	}
 	if poller.calls != 0 {
 		t.Fatalf("expected exactly one poll call, got %d", poller.calls+1)
@@ -68,8 +68,8 @@ func TestCIPollExecutor_Fail(t *testing.T) {
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success", result.Status)
 	}
-	if result.Outputs[OutputCIStatus] != string(apiv1.ResultFailure) {
-		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], apiv1.ResultFailure)
+	if result.Outputs[OutputCIStatus] != string(providers.CheckStateFailing) {
+		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStateFailing)
 	}
 }
 
@@ -88,8 +88,8 @@ func TestCIPollExecutor_PendingThenPass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if result.Outputs[OutputCIStatus] != string(apiv1.ResultSuccess) {
-		t.Fatalf("outputs[%s] = %v, want success", OutputCIStatus, result.Outputs[OutputCIStatus])
+	if result.Outputs[OutputCIStatus] != string(providers.CheckStatePassing) {
+		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStatePassing)
 	}
 	if poller.calls != 2 {
 		t.Fatalf("expected 3 poll calls (2 pending + 1 terminal), got %d", poller.calls+1)
@@ -151,5 +151,52 @@ func TestCIPollConfigFromEnvelope_DefaultsFromRepoRef(t *testing.T) {
 func TestNewCIPollExecutor_RequiresPoller(t *testing.T) {
 	if _, err := NewCIPollExecutor(nil); err == nil {
 		t.Fatal("expected error for nil poller")
+	}
+}
+
+// TestCIPollConfigFromEnvelope_PollIntervalsParseAsDuration proves the #132
+// fix: pollIntervalSeconds/pollMaxIntervalSeconds/pollTimeoutSeconds are
+// time.ParseDuration strings (e.g. "5m"), not a bare count of seconds — the
+// previous implementation appended "s" unconditionally, silently turning
+// "5m" into 5 milliseconds.
+func TestCIPollConfigFromEnvelope_PollIntervalsParseAsDuration(t *testing.T) {
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Inputs: map[string]interface{}{
+			InputPRNumber:           "7",
+			InputPollIntervalSec:    "5m",
+			InputPollMaxIntervalSec: "1h",
+			InputPollTimeoutSec:     "45m",
+		},
+	}
+	cfg, err := CIPollConfigFromEnvelope(env)
+	if err != nil {
+		t.Fatalf("CIPollConfigFromEnvelope: %v", err)
+	}
+	if cfg.Interval != 5*time.Minute {
+		t.Fatalf("Interval = %s, want 5m", cfg.Interval)
+	}
+	if cfg.MaxInterval != time.Hour {
+		t.Fatalf("MaxInterval = %s, want 1h", cfg.MaxInterval)
+	}
+	if cfg.Timeout != 45*time.Minute {
+		t.Fatalf("Timeout = %s, want 45m", cfg.Timeout)
+	}
+}
+
+// TestCIPollConfigFromEnvelope_MalformedDurationFailsClosed proves a
+// malformed poll-cadence input is a hard error, not a silent zero/garbage
+// default (the #132 bug: appending "s" then swallowing ParseDuration's error
+// let a typo like "5mm" or a bare "5" corrupt silently instead of failing).
+func TestCIPollConfigFromEnvelope_MalformedDurationFailsClosed(t *testing.T) {
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Inputs: map[string]interface{}{
+			InputPRNumber:        "7",
+			InputPollIntervalSec: "not-a-duration",
+		},
+	}
+	if _, err := CIPollConfigFromEnvelope(env); err == nil {
+		t.Fatal("expected an error for a malformed pollIntervalSeconds value")
 	}
 }

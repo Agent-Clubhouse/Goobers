@@ -38,6 +38,66 @@ func CheckAdmission(def Definition, goobers map[string]apiv1.GooberSpec) []strin
 	return admissionProblems(def, goobers)
 }
 
+// CheckGateVocabulary reports an automated gate whose declared
+// params.equals is not a value from its check's fixed output vocabulary
+// (checkEqualsVocab below).
+func CheckGateVocabulary(def Definition) []string {
+	return gateVocabProblems(def)
+}
+
+// checkEqualsVocab is the fixed output vocabulary a gate's params.equals
+// must be drawn from, for automated checks that have one — the compile-time
+// half of the ci-gate vocabulary fix (#132): internal/gate/automated.go's
+// "ci-status" check reads providers.CheckState values ("passing"/"failing"/
+// "pending", the raw state a ci-poll stage's Outputs["ciStatus"] carries,
+// internal/executor/cipoll.go), while "status-equals" reads
+// apiv1.ResultStatus values ("success"/"failure"/"blocked") — a workflow
+// declaring the wrong one for a given check (e.g. ci-status's
+// params.equals: "success") would compile clean today but never match at
+// runtime, silently repassing forever. internal/workflow cannot import
+// internal/gate to reuse its DefaultChecks registry directly (internal/gate
+// already imports internal/workflow, for branch-target resolution) — this
+// table is intentionally kept in sync with automated.go's DefaultChecks by
+// hand; a check absent here has no fixed vocabulary (output-equals,
+// output-numeric-gte) and is not validated.
+var checkEqualsVocab = map[string][]string{
+	"status-equals": {"success", "failure", "blocked"},
+	"ci-status":     {"passing", "failing", "pending"},
+}
+
+// gateVocabProblems validates every automated gate's declared params.equals
+// (if any) against checkEqualsVocab. A gate with an unknown Check name, or no
+// declared params.equals, is left to internal/gate's own runtime error
+// ("unknown automated check") or default-value behavior respectively —
+// this check only guards the vocabulary-mismatch failure mode.
+func gateVocabProblems(def Definition) []string {
+	var problems []string
+	for _, g := range def.Spec.Gates {
+		if g.Evaluator != apiv1.EvaluatorAutomated || g.Automated == nil {
+			continue
+		}
+		vocab, ok := checkEqualsVocab[g.Automated.Check]
+		if !ok {
+			continue
+		}
+		equals, declared := g.Automated.Params["equals"]
+		if !declared || equals == "" {
+			continue
+		}
+		valid := false
+		for _, v := range vocab {
+			if v == equals {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			problems = append(problems, fmt.Sprintf("gate %q: check %q params.equals %q is not one of %v", g.Name, g.Automated.Check, equals, vocab))
+		}
+	}
+	return problems
+}
+
 // scheduleProblems validates the schedule expression of every schedule trigger.
 func scheduleProblems(def Definition) []string {
 	var problems []string

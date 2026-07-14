@@ -10,12 +10,25 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 )
 
-// credentialEnvVar returns the deterministic env var name a stage's declared
+// CredentialEnvVar returns the deterministic env var name a stage's declared
 // capability is injected under, e.g. "github:issues:write" ->
-// "GOOBERS_CRED_GITHUB_ISSUES_WRITE".
-func credentialEnvVar(capability string) string {
+// "GOOBERS_CRED_GITHUB_ISSUES_WRITE". Exported so a `goobers` CLI subcommand
+// invoked as a stage's shell command (e.g. backlog-query/open-pr/
+// issue-close-out, #131/#132) can look up its own injected credential by the
+// same convention buildStageEnv uses to set it, without duplicating the
+// sanitization rule.
+func CredentialEnvVar(capability string) string {
 	sanitized := nonAlnum.ReplaceAllString(capability, "_")
 	return "GOOBERS_CRED_" + strings.ToUpper(sanitized)
+}
+
+// InputEnvVar returns the deterministic env var name a stage's declared
+// Task.Inputs key is passed through under, e.g. "trustLabel" ->
+// "GOOBERS_INPUT_TRUSTLABEL". Exported for the same reason as
+// CredentialEnvVar above.
+func InputEnvVar(key string) string {
+	sanitized := nonAlnum.ReplaceAllString(key, "_")
+	return "GOOBERS_INPUT_" + strings.ToUpper(sanitized)
 }
 
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]+`)
@@ -41,16 +54,34 @@ func baseEnv() []string {
 
 // buildStageEnv resolves credentials for declared, and returns the full
 // process env for the stage: baseEnv() plus one GOOBERS_CRED_* var per
-// declared capability that has a materialized credential. Every resolved
-// token is also registered with registrar so it can be scrubbed from
-// anything the stage's process writes.
+// declared capability that has a materialized credential, plus
+// GOOBERS_RUN_ID/GOOBERS_WORKFLOW/GOOBERS_INSTANCE_ROOT (instanceRoot may be
+// empty — see ShellExecutor.InstanceRoot) and one GOOBERS_INPUT_* var per
+// entry in inputs. Every resolved token is also registered with registrar so
+// it can be scrubbed from anything the stage's process writes.
+//
+// Inputs/RunID/WorkflowID/InstanceRoot are the only way a `goobers` CLI
+// subcommand invoked as a stage's command (e.g. backlog-query/open-pr/
+// issue-close-out, #131/#132) learns its declared Task.Inputs or which run
+// it's part of — DeterministicRun.Command is a static argv, and
+// InvocationEnvelope is otherwise an in-process value never serialized to
+// the child.
 //
 // A declared capability with no configured grant is silently skipped
 // (credentials.Injector's own contract — not every capability is
 // credentialed); resolution failure for a capability that IS granted fails
 // closed.
-func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar) ([]string, error) {
+func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, workflowID, instanceRoot string, inputs map[string]interface{}) ([]string, error) {
 	env := baseEnv()
+	env = append(env, "GOOBERS_RUN_ID="+runID, "GOOBERS_WORKFLOW="+workflowID)
+	if instanceRoot != "" {
+		env = append(env, "GOOBERS_INSTANCE_ROOT="+instanceRoot)
+	}
+	for k, v := range inputs {
+		if s, ok := v.(string); ok {
+			env = append(env, InputEnvVar(k)+"="+s)
+		}
+	}
 	if injector == nil || len(declared) == 0 {
 		return env, nil
 	}
@@ -67,7 +98,7 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 			return nil, err
 		}
 		registrar.Register([]byte(token))
-		env = append(env, credentialEnvVar(capability)+"="+token)
+		env = append(env, CredentialEnvVar(capability)+"="+token)
 	}
 	return env, nil
 }
