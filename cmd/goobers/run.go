@@ -85,8 +85,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	defer func() { _ = setup.Telemetry.Shutdown(context.Background()) }()
-	defer func() { _ = setup.RollupDB.Close() }()
+	defer setup.Shutdown(context.Background())
 
 	found := false
 	var gaggle string
@@ -102,7 +101,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	sched := localscheduler.New(setup.Entries, setup.InstanceLog, localscheduler.WithTelemetry(setup.Telemetry))
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog, setup.SchedulerOptions()...)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -120,6 +119,15 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+
+	// waitForRunTerminal polls the run's OWN journal and returns as soon as
+	// it sees a terminal phase — that races trackedStarter.Start's dispatch
+	// goroutine, which still has its post-completion telemetry ingest
+	// (ingestRunTelemetry) to run before it calls wg.Done(). Waiting for wg
+	// here (this run is the only dispatch `goobers run` ever tracks) closes
+	// that gap, so `goobers trace` run immediately afterward reliably sees
+	// this run's rollup rows without needing a separate --rebuild.
+	wg.Wait()
 
 	pf(stdout, "finished: phase=%s\n", phase)
 	pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)

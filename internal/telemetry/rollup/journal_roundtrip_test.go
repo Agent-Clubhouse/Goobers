@@ -4,9 +4,36 @@ import (
 	"path/filepath"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
+
+// TestAggregateStatusLiteralsMatchRealConstants pins aggregates.go's
+// production-shaped status literals (runStatusCompleted/Failed,
+// stageStatusSuccess/Failure) against the real wire values internal/journal
+// and api/v1alpha1 actually write — issue #129's checklist: this package's
+// own hand-written test fixtures previously drifted from these ("succeeded"/
+// "failed" instead of "success"/"failure" for a stage; "succeeded" instead of
+// "completed" for a run), so aggregation math silently matched neither the
+// fixture NOR production, and no test caught it. aggregates.go deliberately
+// does not import these packages in production code (same decoupling
+// rationale as mirror.go) — this test-only import is the belt-and-suspenders
+// check, mirroring TestIngestRunAgainstRealJournalPackage below.
+func TestAggregateStatusLiteralsMatchRealConstants(t *testing.T) {
+	if runStatusCompleted != string(journal.PhaseCompleted) {
+		t.Errorf("runStatusCompleted = %q, want journal.PhaseCompleted %q", runStatusCompleted, journal.PhaseCompleted)
+	}
+	if runStatusFailed != string(journal.PhaseFailed) {
+		t.Errorf("runStatusFailed = %q, want journal.PhaseFailed %q", runStatusFailed, journal.PhaseFailed)
+	}
+	if stageStatusSuccess != string(apiv1.ResultSuccess) {
+		t.Errorf("stageStatusSuccess = %q, want apiv1.ResultSuccess %q", stageStatusSuccess, apiv1.ResultSuccess)
+	}
+	if stageStatusFailure != string(apiv1.ResultFailure) {
+		t.Errorf("stageStatusFailure = %q, want apiv1.ResultFailure %q", stageStatusFailure, apiv1.ResultFailure)
+	}
+}
 
 // TestIngestRunAgainstRealJournalPackage is the promised fast-follow now that
 // #8 (internal/journal, PR #56) has landed on main: it writes a run with the

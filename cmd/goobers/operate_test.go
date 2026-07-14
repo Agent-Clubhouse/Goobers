@@ -111,6 +111,97 @@ func TestRunEmitsParseableSpans(t *testing.T) {
 	}
 }
 
+// TestTraceShowsSpansWithoutPriorTelemetryCommand is issue #129's checklist:
+// `goobers trace` reads telemetry.db directly (no Rebuild call of its own),
+// so before #127/#128's incremental-ingest wiring, a fresh trace right after
+// `goobers run` showed no spans section at all — it depended on a separate
+// `goobers telemetry stats`/`errors` invocation having rebuilt the db first.
+// This drives only run -> trace, deliberately never calling `telemetry`, to
+// prove that dependency is gone.
+func TestTraceShowsSpansWithoutPriorTelemetryCommand(t *testing.T) {
+	root := initDeterministicDemo(t)
+
+	code, stdout, stderr := runArgs(t, "run", "default-implement", root)
+	if code != 0 {
+		t.Fatalf("run: code = %d, stderr = %q", code, stderr)
+	}
+	runID := strings.Fields(strings.Split(stdout, "\n")[0])[2]
+
+	code, stdout, stderr = runArgs(t, "trace", runID, root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "\nspans:") {
+		t.Fatalf("trace stdout missing a spans section without a prior `telemetry` call: %q", stdout)
+	}
+	if !strings.Contains(stdout, "run/default-implement") {
+		t.Fatalf("trace stdout missing the run span: %q", stdout)
+	}
+}
+
+// TestRunWithTelemetryDisabledSkipsSpansAndRollup is issue #129's
+// telemetry.enabled defect: the config field was documented (and set in the
+// real self-hosting config, selfhost/instance.yaml.example) but had zero
+// callers — setting it to false did nothing. It's wired now, and the
+// regression that would have shipped along with a naive wire-up is a
+// typed-nil-in-interface panic (a nil *telemetry.Client assigned to
+// runner.Config.Telemetry's SpanStarter interface field, or nil
+// *rollup.DB passed through localscheduler.WithTelemetry, would make the
+// runner's own `== nil` guard evaluate false and panic on first use) — this
+// exercises the real `goobers run` path end-to-end with it off.
+func TestRunWithTelemetryDisabledSkipsSpansAndRollup(t *testing.T) {
+	root := initDeterministicDemo(t)
+	instanceYAMLPath := filepath.Join(root, "instance.yaml")
+	data, err := os.ReadFile(instanceYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// `goobers init` already writes "telemetry: {}" (enabled defaults to
+	// true) and a 0-byte telemetry.db placeholder (INST-010) — replace the
+	// existing key rather than appending a duplicate one.
+	body := strings.Replace(string(data), "telemetry: {}\n", "telemetry:\n  enabled: false\n", 1)
+	if body == string(data) {
+		t.Fatalf("expected instance.yaml to contain \"telemetry: {}\", got %q", data)
+	}
+	if err := os.WriteFile(instanceYAMLPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(root, "telemetry.db")
+	before, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "run", "default-implement", root)
+	if code != 0 {
+		t.Fatalf("run: code = %d, stderr = %q", code, stderr)
+	}
+	firstLine := strings.Fields(strings.Split(stdout, "\n")[0])
+	if len(firstLine) < 3 {
+		t.Fatalf("unexpected run stdout = %q", stdout)
+	}
+	runID := firstLine[2]
+
+	spansPath := filepath.Join(root, "runs", runID, "spans", "spans.jsonl")
+	if _, err := os.Stat(spansPath); !os.IsNotExist(err) {
+		t.Fatalf("spans.jsonl exists at %s with telemetry disabled, err = %v", spansPath, err)
+	}
+	// The placeholder telemetry.db `goobers init` writes is 0 bytes; opening
+	// it for real (rollup.Open's WAL init + schema migration) would grow it.
+	// Unchanged size is the signal rollup.Open was never called.
+	after, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Size() != 0 {
+		t.Fatalf("test invariant broken: telemetry.db placeholder was not 0 bytes (%d)", before.Size())
+	}
+	if after.Size() != before.Size() {
+		t.Fatalf("telemetry.db grew from %d to %d bytes with telemetry disabled — rollup.Open must not have been called", before.Size(), after.Size())
+	}
+}
+
 func TestRunUnknownWorkflow(t *testing.T) {
 	root := initDemo(t)
 	code, _, stderr := runArgs(t, "run", "no-such-workflow", root)

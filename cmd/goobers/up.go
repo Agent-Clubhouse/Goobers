@@ -85,8 +85,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	defer func() { _ = setup.Telemetry.Shutdown(context.Background()) }()
-	defer func() { _ = setup.RollupDB.Close() }()
+	defer setup.Shutdown(context.Background())
 
 	// Claim-lease recovery (#131): released once now (recovers leases
 	// orphaned by a prior crash) and periodically thereafter (catches a live
@@ -127,7 +126,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// reserved slot to actually release — reversing this order would let the
 	// resume scan's Releases race Reconcile's blind Conditions.Reconcile
 	// overwrite and land before the slot even exists.
-	sched := localscheduler.New(setup.Entries, setup.InstanceLog, localscheduler.WithTelemetry(setup.Telemetry))
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog, setup.SchedulerOptions()...)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -140,7 +139,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.RollupDB, sched.Release, &wg)
+	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

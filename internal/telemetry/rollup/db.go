@@ -41,13 +41,13 @@ func Open(path string) (*DB, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("rollup: set busy_timeout on %s: %w", path, err)
 	}
-	// Retried like the migration loop below: switching journal_mode is
-	// itself a lock-acquiring operation, so several processes racing to
-	// open the SAME brand-new telemetry.db (e.g. `goobers up` starting at
-	// the same instant as a `goobers telemetry` query) can hit SQLITE_BUSY
-	// here even with busy_timeout already set on this connection —
-	// busy_timeout retries ordinary lock waits, but not every immediate-fail
-	// contention this specific pragma can hit during a WAL-mode switch.
+	// Retried like applyMigration below: switching journal_mode is itself a
+	// lock-acquiring operation, so several processes racing to open the SAME
+	// brand-new telemetry.db (e.g. `goobers up` starting at the same instant
+	// as a `goobers telemetry` query) can hit SQLITE_BUSY here even with
+	// busy_timeout already set on this connection — busy_timeout retries
+	// ordinary lock waits, but not every immediate-fail contention this
+	// specific pragma can hit during a WAL-mode switch.
 	if err := execWithBusyRetry(sqlDB, `PRAGMA journal_mode=WAL`); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("rollup: set WAL mode on %s: %w", path, err)
@@ -72,26 +72,26 @@ func (db *DB) migrate() error {
 		return err
 	}
 	for i := version; i < len(migrations); i++ {
-		if err := execWithBusyRetry(db.sql, migrations[i]); err != nil {
-			return fmt.Errorf("rollup: apply migration %d: %w", i+1, err)
-		}
-	}
-	if version < len(migrations) {
-		if err := execWithBusyRetry(db.sql, `DELETE FROM schema_meta`); err != nil {
-			return fmt.Errorf("rollup: reset schema_meta: %w", err)
-		}
-		if err := execWithBusyRetry(db.sql, `INSERT INTO schema_meta (version) VALUES (?)`, len(migrations)); err != nil {
-			return fmt.Errorf("rollup: record schema version: %w", err)
+		if err := db.applyMigration(i); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// busyRetryMaxAttempts bounds the retry loop execWithBusyRetry uses for
-// SQLITE_BUSY/SQLITE_LOCKED during Open() — the only place this package does
-// schema-shaped work multiple processes can race on simultaneously (ordinary
-// queries elsewhere rely on PRAGMA busy_timeout alone).
-const busyRetryMaxAttempts = 5
+// busyRetryMaxAttempts bounds the retry loop execWithBusyRetry/applyMigration
+// use for SQLITE_BUSY/SQLITE_LOCKED during Open() — the only place this
+// package does schema-shaped work multiple processes can race on
+// simultaneously (ordinary queries elsewhere rely on PRAGMA busy_timeout
+// alone). SQLITE_BUSY_SNAPSHOT (the case this retry actually exists for,
+// since busy_timeout's own C-level busy-handler does NOT retry it — a stale
+// read snapshot can't be waited out, only abandoned and retaken) can persist
+// for multiple retry rounds under N-way concurrent first-Opens of the same
+// fresh file; 5 attempts at up to 100ms backoff (300ms total) still flaked
+// ~1/30 under an 8-goroutine stress test wrapping a whole migration
+// transaction, so this is sized with real headroom rather than the tightest
+// value that happened to pass a few runs.
+const busyRetryMaxAttempts = 12
 
 // execWithBusyRetry runs a single statement, retrying on SQLITE_BUSY/LOCKED
 // with a short linear backoff. busy_timeout alone doesn't cover every
@@ -110,6 +110,54 @@ func execWithBusyRetry(sqlDB *sql.DB, query string, args ...any) error {
 		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
 	}
 	return err
+}
+
+// applyMigration runs migrations[i] and records the resulting schema version
+// in ONE transaction, so a crash between the two can never leave them out of
+// sync. Every migration so far is CREATE TABLE/INDEX IF NOT EXISTS (safe to
+// blindly re-run), but that won't always be true — a future migration that
+// needs ALTER TABLE is not idempotent, and without this transactional
+// pairing, a crash after applying it but before recording the version bump
+// would re-apply (and fail on) the same ALTER TABLE on the next restart
+// (issue #129). SQLite supports transactional DDL, so this is safe here
+// specifically — this package only ever targets SQLite (modernc.org/sqlite).
+//
+// Retried on SQLITE_BUSY (same rationale as execWithBusyRetry above): a
+// fresh telemetry.db with two near-simultaneous first Opens (e.g. `goobers
+// up` racing a `goobers telemetry` query at instance startup) can hit WAL's
+// write-lock-upgrade contention here even with busy_timeout set — that
+// PRAGMA covers ordinary lock waits, but a transaction that started as a
+// read and tries to upgrade to a writer while another connection already
+// holds the write lock can still surface SQLITE_BUSY immediately rather
+// than blocking.
+func (db *DB) applyMigration(i int) error {
+	var err error
+	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
+		if err = db.applyMigrationOnce(i); err == nil || !isSQLiteBusy(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
+	}
+	return err
+}
+
+func (db *DB) applyMigrationOnce(i int) error {
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("rollup: begin migration %d: %w", i+1, err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	if _, err := tx.Exec(migrations[i]); err != nil {
+		return fmt.Errorf("rollup: apply migration %d: %w", i+1, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM schema_meta`); err != nil {
+		return fmt.Errorf("rollup: reset schema_meta after migration %d: %w", i+1, err)
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_meta (version) VALUES (?)`, i+1); err != nil {
+		return fmt.Errorf("rollup: record schema version %d: %w", i+1, err)
+	}
+	return tx.Commit()
 }
 
 // isSQLiteBusy reports whether err (or a wrapped cause) is SQLITE_BUSY (5) or

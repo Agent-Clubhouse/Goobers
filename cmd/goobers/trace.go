@@ -122,11 +122,18 @@ func formatEvent(ev journal.Event) string {
 	}
 }
 
-// printSpans best-effort enriches trace output with rollup-ingested spans. A
-// missing telemetry.db (telemetry disabled, or never rebuilt) is not an error —
-// spans are informational only (ARCHITECTURE.md §3.3 excludes them from
-// conformance) — so this silently does nothing rather than requiring rollup
-// setup just to read a run's journal.
+// printSpans best-effort enriches trace output with rollup-ingested spans. It
+// reads telemetry.db directly (no Rebuild call here) — that used to mean a
+// fresh `goobers trace` right after `goobers run` showed nothing until a
+// separate `goobers telemetry stats/errors` had rebuilt the db first (issue
+// #129's checklist). That gap closed as a side effect of #127/#128's
+// incremental-ingest wiring: `goobers run`/`up` now call IngestRun on every
+// run finish, so telemetry.db already has this run's spans by the time
+// `trace` reads it — no explicit rebuild step needed. A missing telemetry.db
+// (telemetry disabled, issue #129's telemetry.enabled) is still not an
+// error — spans are informational only (ARCHITECTURE.md §3.3 excludes them
+// from conformance) — so this silently does nothing rather than requiring
+// rollup setup just to read a run's journal.
 func printSpans(stdout io.Writer, dbPath, runID string) {
 	if _, err := os.Stat(dbPath); err != nil {
 		return

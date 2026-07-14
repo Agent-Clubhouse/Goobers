@@ -65,14 +65,27 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		return nil, err
 	}
 
-	tel, err := buildTelemetryClient(ctx, l)
-	if err != nil {
-		return nil, err
-	}
-
-	rollupDB, err := rollup.Open(l.TelemetryDB())
-	if err != nil {
-		return nil, err
+	// telemetry.enabled defaults to true; instance.yaml can opt out (issue
+	// #129). tel/rollupDB stay nil in that case — every downstream use
+	// already tolerates nil: buildRunnerConfig only sets
+	// runner.Config.Telemetry when tel != nil, ingestRunTelemetry no-ops on a
+	// nil *rollup.DB, and SchedulerOptions/Shutdown below no-op too. A nil
+	// *telemetry.Client must never reach localscheduler.WithTelemetry
+	// directly — that would wrap it in a non-nil SpanStarter interface value
+	// (Go's typed-nil-in-interface trap), making localscheduler's own
+	// `s.telemetry == nil` guard wrongly evaluate false and panic on first
+	// use; SchedulerOptions is the one place that decision is made.
+	var tel *telemetry.Client
+	var rollupDB *rollup.DB
+	if cfg.TelemetryEnabled() {
+		tel, err = buildTelemetryClient(ctx, l)
+		if err != nil {
+			return nil, err
+		}
+		rollupDB, err = rollup.Open(l.TelemetryDB())
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	runnerCfg, err := buildRunnerConfig(l, cfg, goobers, tel)
@@ -108,7 +121,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 			Gaggle:    wf.Spec.Gaggle,
 			Readiness: wf.Spec.Readiness,
 			Schedule:  sched,
-			Starter:   &trackedStarter{r: rn, machine: machines[wf.Name], wg: wg, l: l, rollupDB: rollupDB},
+			Starter:   &trackedStarter{r: rn, machine: machines[wf.Name], wg: wg, l: l, tel: tel, rollupDB: rollupDB},
 			RepoRef:   repoRefs[wf.Name],
 		})
 	}
@@ -122,6 +135,29 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		Machines:    machines,
 		RepoRefs:    repoRefs,
 	}, nil
+}
+
+// SchedulerOptions returns the localscheduler.Option slice reflecting this
+// setup's telemetry state — empty when telemetry is disabled (issue #129).
+// See buildSchedulerSetup's doc comment for why a nil Telemetry must never
+// reach localscheduler.WithTelemetry directly.
+func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
+	if s.Telemetry == nil {
+		return nil
+	}
+	return []localscheduler.Option{localscheduler.WithTelemetry(s.Telemetry)}
+}
+
+// Shutdown flushes/closes the telemetry client and rollup db, nil-safe so a
+// caller can defer it unconditionally regardless of whether instance.yaml
+// enabled telemetry (issue #129).
+func (s *schedulerSetup) Shutdown(ctx context.Context) {
+	if s.Telemetry != nil {
+		_ = s.Telemetry.Shutdown(ctx)
+	}
+	if s.RollupDB != nil {
+		_ = s.RollupDB.Close()
+	}
 }
 
 // trackedStarter adapts a *runner.Runner + its compiled Machine into a
@@ -143,6 +179,7 @@ type trackedStarter struct {
 	machine  *workflow.Machine
 	wg       *sync.WaitGroup
 	l        instance.Layout
+	tel      *telemetry.Client
 	rollupDB *rollup.DB
 }
 
@@ -157,7 +194,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		RepoRef: req.RepoRef,
 		Item:    req.Item,
 	})
-	ingestRunTelemetry(s.rollupDB, s.l, req.RunID)
+	ingestRunTelemetry(s.tel, s.rollupDB, s.l, req.RunID)
 	return localscheduler.StartResult{Phase: res.Phase, FinalState: res.FinalState}, err
 }
 
@@ -189,12 +226,15 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // Each resumed run also incrementally ingests into rollupDB once its outcome
 // is known (issue #127), the same hook trackedStarter.Start uses for a live
 // dispatch — a resumed run's spans/errors/stage_attempts must show up in
-// `goobers telemetry` too, not just a freshly-dispatched one's.
+// `goobers telemetry` too, not just a freshly-dispatched one's. tel is
+// flushed first (issue #129), same ordering rationale as
+// trackedStarter.Start — the batched span exporter must write spans.jsonl to
+// disk before ingest reads it.
 //
 // resumeInterruptedRuns itself only errors on something that makes the scan
 // as a whole meaningless (runsDir unreadable for a reason other than not
 // existing yet).
-func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, rollupDB *rollup.DB, release func(workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	runsDir := l.RunsDir()
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
@@ -246,7 +286,7 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 			defer wg.Done()
 			defer release(wfName)
 			result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, RepoRef: repoRef})
-			ingestRunTelemetry(rollupDB, l, runID)
+			ingestRunTelemetry(tel, rollupDB, l, runID)
 			status := string(result.Phase)
 			if err != nil {
 				status = "error: " + err.Error()
