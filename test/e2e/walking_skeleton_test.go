@@ -175,13 +175,16 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 			if !ok {
 				return nil, fmt.Errorf("test double %T does not implement harness.SpanRecorder", rec)
 			}
-			// rec is this run's own *journal.Run, which also satisfies
-			// harness.ContextResolver structurally (same Dir method) —
-			// resolving declared ContextPointers into the workspace (#121).
-			contextResolver, ok := rec.(harness.ContextResolver)
+			// rec is this run's own *journal.Run, which satisfies Dir()
+			// structurally — harness.NewContextResolver pairs that with
+			// runsDir (this test's own instance layout) for cross-run
+			// resolution (#103/T3), mirroring cmd/goobers/runnerwiring.go's
+			// production wiring.
+			direr, ok := rec.(interface{ Dir() string })
 			if !ok {
-				return nil, fmt.Errorf("test double %T does not implement harness.ContextResolver", rec)
+				return nil, fmt.Errorf("test double %T does not implement Dir() string", rec)
 			}
+			contextResolver := harness.NewContextResolver(direr, runsDir)
 			// reg is this run's own *journal.RegistryScrubber (#66) — it also
 			// implements journal.Scrubber, so chaining it with the pattern
 			// net gives the harness executor the SAME per-run scrubbing the

@@ -273,10 +273,15 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if !ok {
 				return nil, fmt.Errorf("runner artifact recorder does not implement harness.ArtifactRecorder")
 			}
-			contextResolver, ok := rec.(harness.ContextResolver)
+			// harness.NewContextResolver pairs rec's own Dir() (same-run
+			// resolution, #121) with the instance's RunsDir (cross-run
+			// resolution, #103/T3) — rec (a *journal.Run) has no notion of
+			// sibling runs on its own, only l (the instance layout) does.
+			direr, ok := rec.(interface{ Dir() string })
 			if !ok {
-				return nil, fmt.Errorf("runner artifact recorder does not implement harness.ContextResolver")
+				return nil, fmt.Errorf("runner artifact recorder does not implement Dir() string")
 			}
+			contextResolver := harness.NewContextResolver(direr, l.RunsDir())
 			registryScrubber, ok := reg.(journal.Scrubber)
 			if !ok {
 				return nil, fmt.Errorf("runner secret registrar does not implement journal.Scrubber")
