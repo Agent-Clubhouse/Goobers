@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -24,10 +25,47 @@ type Run struct {
 
 	mu           sync.Mutex
 	events       *os.File
+	lock         *os.File
 	seq          uint64
 	phase        RunPhase
 	machineState string
 	closed       bool
+}
+
+// acquireRunLock takes a blocking exclusive flock on dir's lock file,
+// serializing every writer that opens the same run directory (#243): the
+// only flocks before this were the whole-instance up.lock and the claim
+// ledger's — the run journal itself took none, so `goobers run abort`
+// (which deliberately skips up.lock, see cmd/goobers/run.go) racing a live
+// daemon's own Resume of the same crashed run could open two independent
+// *Run writers on one events.jsonl, each with its own in-memory seq —
+// interleaved appends, duplicate/rewound seq, racing state.json renames.
+// Both Create and Recover hold this for the lifetime of the returned *Run,
+// releasing it in Close; a second caller's acquireRunLock simply blocks
+// until the first releases, rather than erroring — matching this
+// package's existing bias (see cmd/goobers's withClaimLock) that a loser
+// here should wait its turn and get a consistent view, not fail outright.
+func acquireRunLock(dir string) (*os.File, error) {
+	f, err := os.OpenFile(filepath.Join(dir, fileLock), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("journal: open run lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("journal: acquire run lock: %w", err)
+	}
+	return f, nil
+}
+
+// releaseRunLock unlocks and closes a lock file acquireRunLock returned. Safe
+// to call with nil (a Run that never acquired one, e.g. a construction path
+// that failed before acquireRunLock ran).
+func releaseRunLock(f *os.File) {
+	if f == nil {
+		return
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
 }
 
 // config holds constructor options.
@@ -100,10 +138,31 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		}
 		return nil, fmt.Errorf("journal: create run dir: %w", err)
 	}
+	// fsync the parent (runs) directory so the new run dir's own directory
+	// entry is durable across a crash (#243) — every OTHER durable write in
+	// this package (writeStateAtomic, writeFileAtomic) already fsyncs its
+	// parent after a rename into it; this Mkdir was the one directory-entry
+	// creation that didn't, so a crash right after it could lose the whole
+	// run dir despite its own contents being fsynced later.
+	if err := fsyncDir(filepath.Dir(dir)); err != nil {
+		return nil, fmt.Errorf("journal: fsync runs dir: %w", err)
+	}
 	for _, sub := range []string{dirInputs, dirArtifacts, dirSpans} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			return nil, fmt.Errorf("journal: create run subdir %q: %w", sub, err)
 		}
+	}
+
+	// Acquire the per-run-dir lock (#243) before any further writes. Create
+	// itself is already race-free against a second Create of the SAME new
+	// id (os.Mkdir's EEXIST atomicity above), but this run directory is
+	// about to become resumable — the lock, held for the lifetime of the
+	// returned *Run, is what stops a concurrent Recover (e.g. `goobers run
+	// abort` racing this same run while it's still live) from opening a
+	// second independent writer on this journal.
+	lock, err := acquireRunLock(dir)
+	if err != nil {
+		return nil, err
 	}
 
 	id.Schema = RunSchema
@@ -116,16 +175,19 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	for _, name := range sortedKeys(inputs) {
 		ref, err := writeContent(dir, filepath.Join(dirInputs, name), inputs[name], cfg.scrubber)
 		if err != nil {
+			releaseRunLock(lock)
 			return nil, fmt.Errorf("journal: snapshot input %q: %w", name, err)
 		}
 		id.Inputs = append(id.Inputs, InputRef{Name: name, Ref: ref})
 	}
 	if err := writeRunYAML(dir, id); err != nil {
+		releaseRunLock(lock)
 		return nil, err
 	}
 
 	events, err := os.OpenFile(filepath.Join(dir, fileEvents), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
+		releaseRunLock(lock)
 		return nil, fmt.Errorf("journal: open events log: %w", err)
 	}
 	r := &Run{
@@ -134,14 +196,17 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		scrubber: cfg.scrubber,
 		now:      cfg.now,
 		events:   events,
+		lock:     lock,
 		phase:    PhaseRunning,
 	}
 	if err := r.append(Event{Type: EventRunStarted, Status: string(PhaseRunning)}); err != nil {
 		_ = events.Close()
+		releaseRunLock(lock)
 		return nil, err
 	}
 	if err := r.checkpoint(); err != nil {
 		_ = events.Close()
+		releaseRunLock(lock)
 		return nil, err
 	}
 	return r, nil
@@ -254,9 +319,10 @@ func (r *Run) RecordSpan(stage, name string, data []byte) (Ref, error) {
 	return ref, nil
 }
 
-// Close flushes and releases the events handle. It does not write a
-// run.finished event — the caller appends that explicitly so the terminal status
-// is part of the log.
+// Close flushes and releases the events handle, and releases the per-run-dir
+// lock (#243) so a waiting Create/Recover in another process can proceed. It
+// does not write a run.finished event — the caller appends that explicitly
+// so the terminal status is part of the log.
 func (r *Run) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -264,7 +330,9 @@ func (r *Run) Close() error {
 		return nil
 	}
 	r.closed = true
-	return r.events.Close()
+	err := r.events.Close()
+	releaseRunLock(r.lock)
+	return err
 }
 
 // checkpoint writes state.json atomically. Caller holds r.mu.

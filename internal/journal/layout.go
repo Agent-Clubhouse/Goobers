@@ -7,6 +7,7 @@ const (
 	fileState     = "state.json"
 	fileEvents    = "events.jsonl"
 	fileStateTemp = "state.json.tmp"
+	fileLock      = ".lock"
 
 	dirInputs    = "inputs"
 	dirArtifacts = "artifacts"
