@@ -79,10 +79,19 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	// (Go's typed-nil-in-interface trap), making localscheduler's own
 	// `s.telemetry == nil` guard wrongly evaluate false and panic on first
 	// use; SchedulerOptions is the one place that decision is made.
+	// One instance-global registry, fed by every run's resolved credentials (via
+	// the teeRegistrar in buildRunnerConfig) and chained before the pattern net.
+	// It is what lets the span exporter and instance log — both instance-lifetime,
+	// outliving any single run — redact resolver-issued secrets by exact value,
+	// not just by shape (#117 Piece B). Registry redaction is concurrent-safe and
+	// keyed by digest, so many runs feeding it is fine.
+	sharedReg := journal.NewRegistryScrubber()
+	sharedScrubber := journal.Chain(sharedReg, journal.NewPatternScrubber())
+
 	var tel *telemetry.Client
 	var rollupDB *rollup.DB
 	if cfg.TelemetryEnabled() {
-		tel, err = buildTelemetryClient(ctx, l)
+		tel, err = buildTelemetryClient(ctx, l, sharedScrubber)
 		if err != nil {
 			return nil, err
 		}
@@ -92,7 +101,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		}
 	}
 
-	runnerCfg, wtMgr, err := buildRunnerConfig(l, cfg, goobers, tel)
+	runnerCfg, wtMgr, err := buildRunnerConfig(l, cfg, goobers, tel, sharedReg)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +110,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		return nil, err
 	}
 
-	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber))
 	if err != nil {
 		return nil, fmt.Errorf("open instance log: %w", err)
 	}

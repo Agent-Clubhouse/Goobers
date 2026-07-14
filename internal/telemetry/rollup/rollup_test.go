@@ -331,7 +331,7 @@ func TestWithinStageSpanEventsSurviveRollup(t *testing.T) {
 
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "goobers-test",
-		SpanExporter: telemetry.NewJournalSpanExporter(runsDir),
+		SpanExporter: telemetry.NewJournalSpanExporter(runsDir, nil),
 	})
 	if err != nil {
 		t.Fatalf("telemetry.New: %v", err)

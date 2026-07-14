@@ -33,16 +33,23 @@ var telemetryOnlyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(api[_-]?key|token|secret|password)["']?\s*[:=]\s*["']?[A-Za-z0-9._\-/+=]{8,}`),
 }
 
-// redactString returns s with every secret-shaped substring replaced by
-// RedactedPlaceholder: first the shared provider-token net, then telemetry's
-// own ephemeral-only nets.
-func redactString(s string) string {
-	out := providerNet.Scrub([]byte(s))
+// redactWith returns s scrubbed by the given base scrubber, then by telemetry's
+// own ephemeral-only nets. The base is the shared provider-token net for the
+// pattern-only path (redactString/Redact), or a registry-backed
+// Chain(registry, PatternScrubber) when a caller has a live secret registry —
+// the span exporter, so a resolver-issued secret registered for a run is caught
+// in that run's exported spans, not just pattern-shaped ones (#117 Piece B).
+func redactWith(base journal.Scrubber, s string) string {
+	out := base.Scrub([]byte(s))
 	for _, re := range telemetryOnlyPatterns {
 		out = re.ReplaceAll(out, []byte(RedactedPlaceholder))
 	}
 	return string(out)
 }
+
+// redactString returns s with every secret-shaped substring replaced by
+// RedactedPlaceholder, using the pattern-only provider net (no registry).
+func redactString(s string) string { return redactWith(providerNet, s) }
 
 // Redact returns s with any secret-shaped substring replaced. Exported so other
 // local (never-at-rest) consumers — notably the rollup ingester — apply the

@@ -11,6 +11,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // spansDirName and spanFileName match the run journal's reserved spans/ layout
@@ -30,13 +32,21 @@ const (
 // Spans are telemetry, not the conformance-normative journal (§3.3, §4) — this
 // exporter never touches events.jsonl/run.yaml/state.json.
 type JournalSpanExporter struct {
-	runsDir string
+	runsDir  string
+	scrubber journal.Scrubber
 }
 
 // NewJournalSpanExporter creates an exporter that writes spans under runsDir
-// (the instance's runs/ directory). runsDir is created if missing.
-func NewJournalSpanExporter(runsDir string) *JournalSpanExporter {
-	return &JournalSpanExporter{runsDir: runsDir}
+// (the instance's runs/ directory), redacting attribute/status values through
+// scrubber before write. Pass a Chain(registry, PatternScrubber) so
+// resolver-issued secrets registered for a run are caught in that run's spans,
+// not only pattern-shaped ones (#117 Piece B). A nil scrubber defaults to the
+// shared pattern net (pattern-only, no registry). runsDir is created if missing.
+func NewJournalSpanExporter(runsDir string, scrubber journal.Scrubber) *JournalSpanExporter {
+	if scrubber == nil {
+		scrubber = journal.NewPatternScrubber()
+	}
+	return &JournalSpanExporter{runsDir: runsDir, scrubber: scrubber}
 }
 
 // ExportSpans writes each span as one JSON line under its run's spans/
@@ -74,7 +84,7 @@ func (e *JournalSpanExporter) writeGroup(traceID string, spans []sdktrace.ReadOn
 
 	enc := json.NewEncoder(f)
 	for _, s := range spans {
-		if err := enc.Encode(toSpanRecord(s)); err != nil {
+		if err := enc.Encode(e.toSpanRecord(s)); err != nil {
 			return fmt.Errorf("telemetry: encode span for run %s: %w", traceID, err)
 		}
 	}
@@ -112,7 +122,7 @@ type SpanEventRecord struct {
 // conformance (§3.3) and may evolve on their own cadence.
 const SpanSchema = "goobers.dev/telemetry/span/v1"
 
-func toSpanRecord(s sdktrace.ReadOnlySpan) SpanRecord {
+func (e *JournalSpanExporter) toSpanRecord(s sdktrace.ReadOnlySpan) SpanRecord {
 	sc := s.SpanContext()
 	rec := SpanRecord{
 		Schema:     SpanSchema,
@@ -122,7 +132,7 @@ func toSpanRecord(s sdktrace.ReadOnlySpan) SpanRecord {
 		StartTime:  s.StartTime(),
 		EndTime:    s.EndTime(),
 		Status:     statusString(s.Status().Code),
-		Attributes: stringifyAttrs(s.Attributes()),
+		Attributes: e.stringifyAttrs(s.Attributes()),
 	}
 	if parent := s.Parent(); parent.HasSpanID() {
 		rec.ParentSpanID = parent.SpanID().String()
@@ -131,13 +141,13 @@ func toSpanRecord(s sdktrace.ReadOnlySpan) SpanRecord {
 		rec.Kind = kind
 	}
 	if desc := s.Status().Description; desc != "" {
-		rec.StatusMessage = redactString(desc)
+		rec.StatusMessage = redactWith(e.scrubber, desc)
 	}
 	for _, ev := range s.Events() {
 		rec.Events = append(rec.Events, SpanEventRecord{
 			Name:       ev.Name,
 			Time:       ev.Time,
-			Attributes: stringifyAttrs(ev.Attributes),
+			Attributes: e.stringifyAttrs(ev.Attributes),
 		})
 	}
 	return rec
@@ -154,13 +164,13 @@ func statusString(code codes.Code) string {
 	}
 }
 
-func stringifyAttrs(kvs []attribute.KeyValue) map[string]string {
+func (e *JournalSpanExporter) stringifyAttrs(kvs []attribute.KeyValue) map[string]string {
 	if len(kvs) == 0 {
 		return nil
 	}
 	out := make(map[string]string, len(kvs))
 	for _, kv := range kvs {
-		out[string(kv.Key)] = redactString(kv.Value.Emit())
+		out[string(kv.Key)] = redactWith(e.scrubber, kv.Value.Emit())
 	}
 	return out
 }

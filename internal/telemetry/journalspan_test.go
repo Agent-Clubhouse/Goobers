@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // newTestClient builds a Client wired to a JournalSpanExporter under dir, with
@@ -24,7 +26,7 @@ func newTestClient(t *testing.T, dir string) (*Client, string) {
 	}
 	client, err := New(context.Background(), Config{
 		ServiceName:  "goobers-test",
-		SpanExporter: NewJournalSpanExporter(dir),
+		SpanExporter: NewJournalSpanExporter(dir, nil),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -127,6 +129,64 @@ func TestJournalSpanExporterAppendsAcrossExportCalls(t *testing.T) {
 	recs := readSpanRecords(t, dir, runID)
 	if len(recs) != 3 {
 		t.Fatalf("expected 3 appended span records, got %d", len(recs))
+	}
+}
+
+// TestJournalSpanExporterRedactsRegisteredSecret is the #117 Piece B negative
+// control: an exporter given a registry-backed scrubber redacts a resolver-issued
+// secret registered for a run — even a shapeless one the pattern net alone cannot
+// catch. Before Piece B the exporter scrubbed pattern-only, so such a secret would
+// have landed in spans.jsonl at rest.
+func TestJournalSpanExporterRedactsRegisteredSecret(t *testing.T) {
+	// Deliberately shapeless: no provider prefix, no key=value framing. The
+	// pattern net can't catch it — only the registry can (mechanism isolation).
+	const secret = "Kf9wQ2mNpZ7-internal-issued-value"
+	if got := string(journal.NewPatternScrubber().Scrub([]byte(secret))); got != secret {
+		t.Fatalf("precondition: the pattern net alone must NOT catch %q (got %q), else this does not isolate the registry", secret, got)
+	}
+
+	reg := journal.NewRegistryScrubber()
+	reg.Register([]byte(secret))
+
+	dir := t.TempDir()
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatalf("NewRunID: %v", err)
+	}
+	client, err := New(context.Background(), Config{
+		ServiceName:  "goobers-test",
+		SpanExporter: NewJournalSpanExporter(dir, journal.Chain(reg, journal.NewPatternScrubber())),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	ctx, run, err := client.StartRun(context.Background(), RunAttributes{
+		Gaggle: "web", WorkflowID: "wf", WorkflowVersion: "1", RunID: runID,
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	_, task, err := client.StartTask(ctx, TaskAttributes{
+		Gaggle: "web", WorkflowID: "wf", WorkflowVersion: "1", RunID: runID, TaskID: "t",
+	})
+	if err != nil {
+		t.Fatalf("StartTask: %v", err)
+	}
+	task.Event("provider.request", attribute.String("token", secret))
+	task.Fail(fmt.Errorf("stage logged %s", secret))
+	run.Fail(fmt.Errorf("run carrying %s", secret))
+
+	raw, err := os.ReadFile(filepath.Join(dir, runID, spansDirName, spanFileName))
+	if err != nil {
+		t.Fatalf("read spans file: %v", err)
+	}
+	if strings.Contains(string(raw), secret) {
+		t.Fatalf("registered secret leaked into spans.jsonl — exporter bypassed the registry:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), RedactedPlaceholder) {
+		t.Fatalf("expected the redaction placeholder in spans.jsonl:\n%s", raw)
 	}
 }
 
