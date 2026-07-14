@@ -78,7 +78,11 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) error {
 	if len(args) == 0 {
 		args = []string{"--version"}
 	}
-	res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, args...)})
+	// Explicit baseEnv(), not the ProcessRequest zero value — since #122,
+	// ExecProcessRunner treats a nil Env as NO environment (SEC-045
+	// default-deny), so the version-check subprocess needs this passed
+	// explicitly the same way Run's credentialEnv does.
+	res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, args...), Env: baseEnv()})
 	if err != nil {
 		return fmt.Errorf("harness: copilot-cli: %q did not respond to %v: %w — check it is installed and signed in", bin, args, err)
 	}
@@ -101,6 +105,12 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
+	}
+	if req.Workspace == "" {
+		// exec.Cmd treats Dir == "" as "run in the daemon's own working
+		// directory" — a silent, surprising fallback (#122) rather than the
+		// fail-closed misconfiguration error an unset workspace should be.
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: RunRequest.Workspace is empty")
 	}
 
 	prompt := renderPrompt(req)

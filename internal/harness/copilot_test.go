@@ -337,6 +337,18 @@ func TestCopilotAdapterExtendedAllowlistStillBlocksSecretShapedVars(t *testing.T
 	}
 }
 
+// TestCopilotAdapterEmptyWorkspaceIsConfigError is the regression test for
+// #122: exec.Cmd treats Dir == "" as "run in the current process's working
+// directory" — an unset RunRequest.Workspace must fail closed as a
+// configuration error instead of silently running in the daemon's own cwd.
+func TestCopilotAdapterEmptyWorkspaceIsConfigError(t *testing.T) {
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}}
+	_, err := adapter.Run(context.Background(), RunRequest{CompletionPath: DefaultResultPath}) // Workspace left empty
+	if err == nil {
+		t.Fatal("expected an error for an empty Workspace")
+	}
+}
+
 func TestCopilotAdapterFailsClosedOnMissingCommand(t *testing.T) {
 	adapter := &CopilotAdapter{}
 	if err := adapter.Preflight(context.Background()); err == nil {
@@ -387,6 +399,30 @@ func TestExecProcessRunnerTimeout(t *testing.T) {
 	})
 	if !errors.Is(err, ErrTimeout) {
 		t.Fatalf("error = %v, want ErrTimeout", err)
+	}
+}
+
+// TestExecProcessRunnerDefaultsToEmptyEnv is the regression test for #122:
+// os/exec treats a nil Cmd.Env as "inherit this process's environment" —
+// ExecProcessRunner must not let that fail-open default through when a
+// caller leaves ProcessRequest.Env unset.
+func TestExecProcessRunnerDefaultsToEmptyEnv(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	const ambientSecretVar = "GOOBERS_AMBIENT_DAEMON_SECRET"
+	t.Setenv(ambientSecretVar, "ambient-daemon-secret-never-declared")
+
+	runner := ExecProcessRunner{}
+	res, err := runner.Run(context.Background(), ProcessRequest{
+		Command: []string{"sh", "-c", `test -z "$` + ambientSecretVar + `" && echo absent`},
+		// Env deliberately left unset.
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(string(res.Transcript), "absent") {
+		t.Fatalf("ambient daemon env var leaked with Env unset: transcript = %q", res.Transcript)
 	}
 }
 
