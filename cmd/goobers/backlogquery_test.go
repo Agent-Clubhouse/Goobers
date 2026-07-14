@@ -261,3 +261,93 @@ func TestBacklogQueryRejectsNonPositiveLeaseDuration(t *testing.T) {
 		t.Fatal("fail-closed rejection should not have touched the claim ledger")
 	}
 }
+
+// TestBacklogQueryReleaseUnblocksAFollowUpClaim is issue #234's core
+// acceptance criterion at the CLI level: immediately after a curation run
+// releases its claim, an implementation run can claim the same item — no
+// residual lease survives, and no provider/credential access is needed for
+// --release (a pure ledger operation, unlike --claim).
+func TestBacklogQueryReleaseUnblocksAFollowUpClaim(t *testing.T) {
+	root := initDemo(t)
+	schedulerDir := filepath.Join(root, "scheduler")
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed the claim curation's own query-backlog stage would have made.
+	if ok, _, err := ledger.Claim("7", "curation-run", "backlog-curation", DefaultClaimLease); err != nil || !ok {
+		t.Fatalf("seed curation claim: ok=%v err=%v", ok, err)
+	}
+
+	t.Setenv("GOOBERS_RUN_ID", "curation-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--release", root)
+	if code != 0 {
+		t.Fatalf("release: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "released 7") {
+		t.Fatalf("stdout = %q, want a mention of the released item", stdout)
+	}
+
+	// No residual lease: ForRun finds nothing for the curation run, and an
+	// implementation run can now claim the exact item curation just readied.
+	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := reopened.ForRun("curation-run"); held {
+		t.Fatal("curation run should hold no claim after release")
+	}
+	ok, holder, err := reopened.Claim("7", "impl-run", "implementation", DefaultClaimLease)
+	if err != nil || !ok || holder != "impl-run" {
+		t.Fatalf("implementation run should be able to claim the released item: ok=%v holder=%s err=%v", ok, holder, err)
+	}
+}
+
+// TestBacklogQueryReleaseIsIdempotent is issue #234's crash-resume
+// acceptance criterion: releasing a claim the run does not hold (already
+// released, or a crash-resume of the release stage itself) is a no-op
+// success, not an error — critical since a checkpoint-trust resume of a
+// deterministic stage may retry it after its work already durably landed.
+func TestBacklogQueryReleaseIsIdempotent(t *testing.T) {
+	root := initDemo(t)
+
+	t.Setenv("GOOBERS_RUN_ID", "curation-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Chdir(t.TempDir())
+
+	// No claim ledger exists at all yet — the run holds nothing.
+	code, stdout, stderr := runArgs(t, "backlog-query", "--release", root)
+	if code != 0 {
+		t.Fatalf("release with nothing held: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "nothing to release") {
+		t.Fatalf("stdout = %q, want a clear no-op message", stdout)
+	}
+
+	// A second release call (simulating a crash-resume retry) is the same
+	// clean no-op, not an error on an already-released claim.
+	code, stdout, stderr = runArgs(t, "backlog-query", "--release", root)
+	if code != 0 {
+		t.Fatalf("second release call: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "nothing to release") {
+		t.Fatalf("stdout = %q, want the same no-op message on retry", stdout)
+	}
+}
+
+// TestBacklogQueryClaimAndReleaseAreMutuallyExclusive proves the CLI-level
+// usage guard: --claim and --release together is a usage error, not an
+// attempt to do both or a silent pick of one.
+func TestBacklogQueryClaimAndReleaseAreMutuallyExclusive(t *testing.T) {
+	root := initDemo(t)
+	t.Chdir(t.TempDir())
+
+	code, _, _ := runArgs(t, "backlog-query", "--claim", "--release", root)
+	if code != 2 {
+		t.Fatalf("code = %d, want 2 (usage error)", code)
+	}
+}

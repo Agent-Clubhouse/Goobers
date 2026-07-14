@@ -44,10 +44,13 @@ func TestBacklogCurationCompiles(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	// Structural shape: query-backlog (deterministic) -> curate (agentic,
-	// terminal). No gates — curation is issues-only with no review/CI loop
-	// (ARCHITECTURE.md §12 reserves reviewer gates for the implementation
-	// workflow, not curation).
+	// Structural shape: query-backlog (deterministic) -> curate (agentic) ->
+	// release-claim (deterministic, terminal). No gates — curation is
+	// issues-only with no review/CI loop (ARCHITECTURE.md §12 reserves
+	// reviewer gates for the implementation workflow, not curation).
+	// release-claim (issue #234) is the explicit claim-ledger release
+	// curation needs since it never reaches issue-close-out's release
+	// (implementation-only).
 	if w.Spec.Start != "query-backlog" {
 		t.Errorf("start = %q, want query-backlog", w.Spec.Start)
 	}
@@ -62,11 +65,21 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if !ok {
 		t.Fatal("curate task not found")
 	}
-	if curate.Next != "" {
-		t.Errorf("curate.next = %q, want terminal", curate.Next)
+	if curate.Next != "release-claim" {
+		t.Errorf("curate.next = %q, want release-claim", curate.Next)
 	}
 	if curate.Goober != "curator" {
 		t.Errorf("curate.goober = %q, want curator", curate.Goober)
+	}
+	release, ok := m.Task("release-claim")
+	if !ok {
+		t.Fatal("release-claim task not found")
+	}
+	if release.Next != "" {
+		t.Errorf("release-claim.next = %q, want terminal", release.Next)
+	}
+	if release.Type != apiv1.TaskDeterministic {
+		t.Errorf("release-claim.type = %q, want deterministic", release.Type)
 	}
 
 	// Capability grant is issues-only (issue #25 scope: "no repo access").
@@ -74,7 +87,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 		t.Errorf("curator capabilities = %v, want exactly [github:issues:write]", curator.Spec.Capabilities)
 	}
 
-	const wantDigest = "sha256:50466bde8a6b668cc943c2cae9392c3472bbd396801bdae7a8aa9fd46d051ce6"
+	const wantDigest = "sha256:48da9be3e0c4db532d6da3f9107b805e386defdfce7dddf4114df49a655efd64"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

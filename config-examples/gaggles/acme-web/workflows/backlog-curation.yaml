@@ -57,7 +57,20 @@ spec:
         - github:issues:write
       expectedOutputs:
         - curation-summary
-      # Terminal: no `next`. Curation touches issues only; there is no CI-poll or
-      # reviewer loop here, so a single agentic stage is the whole pipeline
-      # (ARCHITECTURE.md §12 lists reviewer gates as an *implementation*-workflow
-      # concern, not curation's).
+      next: release-claim
+    # Explicit release (issue #234): curation touches issues only — there is
+    # no CI-poll or reviewer loop, and it never opens a PR or closes the
+    # issue (ARCHITECTURE.md §12 lists reviewer gates as an
+    # *implementation*-workflow concern, not curation's) — so
+    # issue-close-out's release (implementation-only) never runs for it.
+    # Without this stage a curation run's claim sat held for the full lease
+    # (up to 6h, #235) even though curation's own work on the item finished
+    # immediately, locking implementation out of exactly the item curation
+    # just readied (#234). No capabilities: a pure ledger operation, no
+    # provider/credential access needed.
+    - name: release-claim
+      type: deterministic
+      goal: Release this run's claim ledger lease now that curation is done.
+      run:
+        command: ["goobers", "backlog-query", "--release"]
+      # Terminal: no `next`.

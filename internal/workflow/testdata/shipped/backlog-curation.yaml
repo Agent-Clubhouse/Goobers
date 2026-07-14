@@ -27,4 +27,15 @@ spec:
       goal: Triage, label, and de-duplicate the claimed backlog items.
       capabilities:
         - github:issues:write
+      next: release-claim
+    # Explicit release (issue #234): curation never opens a PR or closes the
+    # issue, so issue-close-out's release never runs for it — without this
+    # stage the claim sat held for the full lease even though curation's own
+    # work on the item was already done. No capabilities: a pure ledger
+    # operation, no provider/credential access.
+    - name: release-claim
+      type: deterministic
+      goal: Release this run's claim ledger lease now that curation is done.
+      run:
+        command: ["goobers", "backlog-query", "--release"]
       # Terminal: no `next`.

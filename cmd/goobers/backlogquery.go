@@ -37,18 +37,27 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
+	release := fs.Bool("release", false, "release this run's claim ledger lease early (issue #234) — no provider access, pure ledger operation")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers backlog-query [--claim] [path]\n\n"+
+		pf(stderr, "Usage: goobers backlog-query [--claim | --release] [path]\n\n"+
 			"Query the provider for eligible backlog items — labeled with both\n"+
 			"trustLabel (SEC-047: required on public repos, since backlog content is\n"+
 			"untrusted input otherwise) and requireLabels. With --claim, claims\n"+
 			"exactly one via the local claim ledger (source of truth) mirrored to a\n"+
 			"provider-visible marker, and writes it to the declared result file.\n"+
 			"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n"+
-			"a plain list (no --claim) does not require it.\n"+
-			"Exit codes: 0 = eligible item found (and claimed, if --claim), 1 =\n"+
-			"business error (no eligible/claimable item, missing trustLabel with\n"+
-			"--claim, config/credential/provider error), 2 = usage/IO error.\n")
+			"a plain list (no --claim) does not require it.\n\n"+
+			"With --release, releases the claim this run holds in the local ledger\n"+
+			"(issue #234: a workflow that only reads/labels an item, never opening a\n"+
+			"PR or closing the issue — e.g. backlog-curation — must release its own\n"+
+			"claim explicitly, since issue-close-out's release is reached only by the\n"+
+			"implementation workflow). Idempotent: releasing a claim this run does not\n"+
+			"hold (already released, e.g. re-run after a crash) is a no-op success, not\n"+
+			"an error. --claim and --release are mutually exclusive.\n\n"+
+			"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n"+
+			"(--release), 1 = business error (no eligible/claimable item, missing\n"+
+			"trustLabel with --claim, config/credential/provider error), 2 =\n"+
+			"usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -57,11 +66,19 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
+	if *claim && *release {
+		fs.Usage()
+		return 2
+	}
 	pathArg := ""
 	if fs.NArg() == 1 {
 		pathArg = fs.Arg(0)
 	}
 	root := providerStageRoot(pathArg)
+
+	if *release {
+		return runBacklogQueryRelease(root, stdout, stderr)
+	}
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -223,5 +240,65 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	}
 
 	pf(stdout, "claimed %s: %s\n", claimed.ID, claimed.Title)
+	return 0
+}
+
+// runBacklogQueryRelease implements `backlog-query --release` (issue #234):
+// an explicit, deterministic-path release of the claim this run holds, for a
+// workflow whose consuming stage neither opens a PR nor closes the issue
+// (backlog-curation's curate: it triages/labels the item and stops) — the
+// only existing release path, issue-close-out, is reached solely by the
+// implementation workflow after it opens a PR, so a curation run's claim was
+// otherwise held for the full lease (up to 6h now, was 2h — #235) even
+// though curation's own work on the item finished immediately.
+//
+// No provider/credential access at all — this is a pure ledger operation,
+// unlike --claim (which needs a token to list/mirror against the provider).
+// That keeps a curation workflow's release stage free of any capability
+// declaration, and keeps ledger mutations on the deterministic path per the
+// issue's own fix-shape guidance.
+func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
+	runID, _, err := providerRunContext()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	l := layoutFor(root)
+	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
+	var released string
+	err = withClaimLock(lockPath, func() error {
+		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+		if lerr != nil {
+			return fmt.Errorf("open claim ledger: %w", lerr)
+		}
+		// ForRun + Release, not a blind Release-by-guess: idempotency (issue
+		// #234's acceptance criterion) requires distinguishing "this run
+		// holds nothing to release" (a no-op success — already released, or
+		// a crash-resume of this same stage) from an actual release, without
+		// needing the caller to already know the item id. Release itself is
+		// already a no-op on an unheld item (its own doc comment), so this
+		// is belt-and-suspenders for the "nothing to report" stdout case
+		// below, not required for correctness.
+		entry, ok := ledger.ForRun(runID)
+		if !ok {
+			return nil
+		}
+		if rerr := ledger.Release(entry.ItemID, runID); rerr != nil {
+			return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
+		}
+		released = entry.ItemID
+		return nil
+	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if released == "" {
+		pln(stdout, "nothing to release: run holds no claim")
+		return 0
+	}
+	pf(stdout, "released %s\n", released)
 	return 0
 }
