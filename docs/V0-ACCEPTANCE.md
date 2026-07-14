@@ -231,7 +231,7 @@ on `e739bd0` (2026-07-14, ahead of the live run):
 | No `backlog-query`/`open-pr`/`issue-close-out` subcommands existed | `cmd/goobers/{backlogquery,openpr,issuecloseout}.go`, dispatch in `main.go` | ✅ real subcommands, `#131`/`#132` |
 | `TaskExecutor`/`CIPollExecutor` registered but never wired to a real stage | `runnerwiring.go` constructs `CIPollExecutor` against the real `ci-poll` stage-kind | ✅ live, `#132` |
 | No `GitHubProvider` constructed on the live path | `providercmd.go`'s `newGitHubProvider` used by all three subcommands + ci-poll's poller | ✅ live, `#132`/`#139` |
-| `ref.touched` / claim ledger had zero production callers | Claim ledger: ✅ real (`backlogquery.go --claim`, `up.go`'s `RecoverExpired`). `ref.touched` for provider mutations: ❌ still gap — see Known limitations | 🔶 partial, `#132` |
+| `ref.touched` / claim ledger had zero production callers | Claim ledger: ✅ real (`backlogquery.go --claim`, `up.go`'s `RecoverExpired`). `ref.touched` for provider mutations: ❌ still gap, tracked as #228 | 🔶 partial, `#132`/`#228` |
 | Stage worktrees detached at `main` every stage | `worktree.go` — first stage branches off `BaseRef`, later stages check out the existing run branch | ✅ fixed, `#133` |
 | `prNumber` output→input handoff didn't exist | `run.go`'s `InputsFrom` overlay, fail-closed on a missing declared output | ✅ real, `#132` |
 | ci-gate compared against a vocabulary ci-poll never emitted | Both use `"passing"`/`"failing"` (`cipoll.go`, `automated.go`) | ✅ symmetric, `#132` |
@@ -267,8 +267,7 @@ decision for a bug:
   functionally harmless (the mutations themselves still happen for real) but
   the per-run "which issue/PR did this actually touch" journal traceability
   epic #130 called out is incomplete. Found during 2026-07-14's static
-  verification for the #30/#130 closing gate; not yet filed as its own
-  issue — worth one before V1 sandboxing work touches this seam again.
+  verification for the #30/#130 closing gate; tracked as #228.
 - **No sandboxed stage execution / per-goober credential injection.**
   Isolation is worktree + process only at tier 1 (`ARCHITECTURE.md` §9);
   sandboxing is V1 (tracked as #35).
