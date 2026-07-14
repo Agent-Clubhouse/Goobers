@@ -1,9 +1,11 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"time"
 
@@ -601,7 +603,18 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
-		result, dispatchErr, removeErr := r.dispatchTask(attemptCtx, in, ex, t, upstream, upstreamResult)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, in, ex, t, upstream, upstreamResult)
+		for _, m := range mutations {
+			// Best-effort, like ClaimLedger's own journal() (issue #228): a
+			// provider mutation already happened for real regardless of
+			// whether this projection succeeds, so a failed Append here must
+			// not fail the stage or mask the mutation's own outcome.
+			_ = jr.Append(journal.Event{
+				Type: journal.EventRefTouched, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
+				ExternalRef: &journal.ExternalRef{Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL},
+				Runner:      map[string]any{"operation": m.Operation},
+			})
+		}
 		if removeErr != nil {
 			// Non-fatal (issue #136): a failed worktree teardown doesn't
 			// change this attempt's own outcome, and worktree.Create's own
@@ -697,6 +710,17 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task)
 // issue #136) means a failed Remove no longer blocks the next attempt
 // either way — this is purely about not hiding the failure.
 //
+// mutations is the same kind of additive, non-overriding signal (issue
+// #228): a deterministic stage's underlying subcommand (backlog-query/
+// open-pr/issue-close-out) runs as a separate short-lived process with no
+// legal journal access, so it records its provider-mutation facts to a
+// sidecar file in the worktree instead; dispatchTask reads that sidecar
+// (before wt.Remove's defer destroys the worktree, since runTask can't read
+// it after the fact) and returns the parsed facts for runTask to project
+// into ref.touched events. Read on the deterministic success path only —
+// mutations only ever come from a deterministic provider-chain subcommand,
+// never an agentic stage.
+//
 // After buildEnvelope, t.InputsFrom is applied on top of the static declared
 // Inputs: for each inputKey/outputKey pair, upstreamResult.Outputs[outputKey]
 // overlays env.Inputs[inputKey] (#132) — a declared outputKey missing from
@@ -704,17 +728,17 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task)
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope) (result apiv1.ResultEnvelope, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	env, wt, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("prepare stage %q: %w", t.Name, err), nil
+		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("prepare stage %q: %w", t.Name, err), nil
 	}
 	defer func() { removeErr = wt.Remove(ctx, worktree.RemoveOptions{}) }()
 
 	for inputKey, outputKey := range t.InputsFrom {
 		v, ok := upstreamResult.Outputs[outputKey]
 		if !ok {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found", t.Name, inputKey, outputKey), nil
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found", t.Name, inputKey, outputKey), nil
 		}
 		env.Inputs[inputKey] = v
 	}
@@ -722,24 +746,81 @@ func (r *Runner) dispatchTask(ctx context.Context, in StartInput, ex *executors,
 	switch t.Type {
 	case apiv1.TaskDeterministic:
 		if t.Run == nil {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q is deterministic but declares no DeterministicRun", t.Name), nil
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q is deterministic but declares no DeterministicRun", t.Name), nil
 		}
 		det, err := ex.deterministic()
 		if err != nil {
-			return apiv1.ResultEnvelope{}, err, nil
+			return apiv1.ResultEnvelope{}, nil, err, nil
 		}
 		result, err = det.Run(ctx, env, *t.Run)
-		return result, err, nil
+		if err == nil {
+			mutations = readMutationSidecar(env.Workspace)
+		}
+		return result, mutations, err, nil
 	case apiv1.TaskAgentic:
 		ag, err := ex.agentic(t.Goober)
 		if err != nil {
-			return apiv1.ResultEnvelope{}, err, nil
+			return apiv1.ResultEnvelope{}, nil, err, nil
 		}
 		result, err = ag.Invoke(ctx, env)
-		return result, err, nil
+		return result, nil, err, nil
 	default:
-		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type), nil
+		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type), nil
 	}
+}
+
+// mutationsSidecarFile is the well-known, worktree-relative file a
+// provider-chain subcommand records its mutation facts to (issue #228);
+// mirrors cmd/goobers's own mutationsSidecarFile constant (kept independent
+// rather than imported — cmd depends on internal, never the reverse).
+const mutationsSidecarFile = "mutations.jsonl"
+
+// mutationFact mirrors one line of cmd/goobers's sidecar record shape
+// without importing cmd/goobers (same decoupling convention
+// internal/telemetry/rollup/mirror.go uses for the journal's own event
+// shape) — just enough to build a journal.ExternalRef plus an operation
+// annotation.
+type mutationFact struct {
+	Provider  string `json:"provider"`
+	Kind      string `json:"kind"`
+	ID        string `json:"id"`
+	URL       string `json:"url,omitempty"`
+	Operation string `json:"operation,omitempty"`
+}
+
+// readMutationSidecar reads and parses mutationsSidecarFile from workspace,
+// if present. Absence is the overwhelmingly common case (most deterministic
+// stages run no provider-mutating subcommand at all) and is not an error;
+// neither is a symlink/path escape or a malformed line — this is a
+// provenance signal, not the stage's deliverable, and the provider mutation
+// it describes already happened for real regardless of whether this sidecar
+// can be trusted, so failing the stage over it would be disproportionate
+// (and a way for a compromised subcommand to sabotage an otherwise-successful
+// stage). All failure modes simply yield no facts; ResolveContainedPath
+// still applies the #120 path/symlink-escape containment check others use
+// for declared-output files, so a malicious sidecar path is never followed.
+func readMutationSidecar(workspace string) []mutationFact {
+	full, err := apiv1.ResolveContainedPath(workspace, mutationsSidecarFile)
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return nil
+	}
+	var facts []mutationFact
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var f mutationFact
+		if err := json.Unmarshal(line, &f); err != nil {
+			continue
+		}
+		facts = append(facts, f)
+	}
+	return facts
 }
 
 // errorDetailFrom converts a stage's business-level error (apiv1.ErrorInfo,
