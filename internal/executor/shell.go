@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +26,19 @@ const DefaultTimeout = 10 * time.Minute
 // DefaultMaxOutputBytes caps captured stdout/stderr (each stream) when
 // neither the executor nor the stage declares a limit.
 const DefaultMaxOutputBytes int64 = 1 << 20 // 1 MiB
+
+// groupKillWaitDelay bounds how long Run waits for cmd.Wait() to return
+// after killing the whole process group on timeout, in case a descendant
+// escaped the group (e.g. via setsid) and is still holding a stdout/stderr
+// pipe open — cmd.Wait() would otherwise never return, hanging the stage
+// (and graceful drain) exactly as before the group-kill fix, just one layer
+// down (#119). Giving up after this bound lets the stage's own accounting
+// proceed even though the escaped process may leak; there is no portable,
+// unconditional way to guarantee its death. Mirrors internal/harness's
+// identical constant (a second, small copy — not worth a shared package for
+// one duration value, same tradeoff already accepted for fsyncDir this
+// wave).
+const groupKillWaitDelay = 5 * time.Second
 
 // Well-known Task.Inputs keys a deterministic shell stage may declare. These
 // travel through InvocationEnvelope.Inputs rather than as DeterministicRun
@@ -164,11 +178,20 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		// Kill the whole process group (negative pid), not just the direct
 		// child, so a runaway subprocess tree can't outlive the stage.
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		waitErr = <-waitDone
+		select {
+		case waitErr = <-waitDone:
+		case <-time.After(groupKillWaitDelay):
+			// A descendant escaped the process group (e.g. via setsid) and
+			// is still holding a stdout/stderr pipe open, so cmd.Wait()
+			// never returns (#119) — give up waiting rather than hang the
+			// stage (and graceful drain) forever. waitErr stays nil here,
+			// but it's only read below in the non-timeout path, so this
+			// bound never masks a real exit code.
+		}
 	}
 
-	outBytes := scrubber.Scrub(stdout.buf.Bytes())
-	errBytes := scrubber.Scrub(stderr.buf.Bytes())
+	outBytes := scrubber.Scrub(stdout.Bytes())
+	errBytes := scrubber.Scrub(stderr.Bytes())
 
 	result := apiv1.ResultEnvelope{Outputs: map[string]interface{}{}, Metrics: map[string]float64{}}
 
@@ -177,7 +200,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record stdout: %w", err)
 	}
 	result.Artifacts = append(result.Artifacts, refToPointer(stdoutRef, "text/plain"))
-	if stdout.truncated {
+	if stdout.Truncated() {
 		result.Outputs["stdoutTruncated"] = true
 	}
 
@@ -186,7 +209,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record stderr: %w", err)
 	}
 	result.Artifacts = append(result.Artifacts, refToPointer(stderrRef, "text/plain"))
-	if stderr.truncated {
+	if stderr.Truncated() {
 		result.Outputs["stderrTruncated"] = true
 	}
 
@@ -352,13 +375,22 @@ func mediaTypeFor(path string) string {
 // capturingWriter caps total bytes retained from a stream at limit, silently
 // discarding (but still acknowledging, so the writer never blocks or errors
 // the producing process) anything beyond it.
+//
+// Write is mutex-guarded because on a give-up timeout (#119's
+// groupKillWaitDelay) Run stops waiting on cmd.Wait() while os/exec's own
+// stdout/stderr-copying goroutines may still be running (an escaped
+// descendant can hold a pipe open indefinitely) — Bytes must not read the
+// buffer while such a goroutine could still be writing to it.
 type capturingWriter struct {
+	mu        sync.Mutex
 	buf       bytes.Buffer
 	limit     int64
 	truncated bool
 }
 
 func (w *capturingWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.truncated {
 		return len(p), nil
 	}
@@ -374,4 +406,20 @@ func (w *capturingWriter) Write(p []byte) (int, error) {
 	}
 	w.buf.Write(p)
 	return len(p), nil
+}
+
+// Bytes returns a snapshot of what's been captured so far. Safe to call
+// concurrently with Write (see the type doc for why that matters here).
+func (w *capturingWriter) Bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.buf.Bytes()...)
+}
+
+// Truncated reports whether the cap has been hit. Safe to call concurrently
+// with Write, for the same reason as Bytes.
+func (w *capturingWriter) Truncated() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.truncated
 }

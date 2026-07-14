@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -132,6 +133,46 @@ func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 	}
 	if result.Error == nil || result.Error.Code != "timeout" || !result.Error.Retryable {
 		t.Fatalf("error = %+v, want timeout, retryable", result.Error)
+	}
+}
+
+// TestShellExecutor_TimeoutGivesUpOnEscapedDescendant is the regression test
+// for #119's WaitDelay gap: a grandchild that escapes the process group
+// (via job control's own new-pgid-per-background-job behavior, the portable
+// stand-in for setsid) survives the group kill and keeps the stdout pipe
+// open, so cmd.Wait() would never return on its own. Run must still return
+// within groupKillWaitDelay of the timeout rather than hanging for the
+// escaped process's full lifetime.
+func TestShellExecutor_TimeoutGivesUpOnEscapedDescendant(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputTimeout: "100ms"}
+
+	start := time.Now()
+	// `set -m` gives the backgrounded sleep its own process group (the
+	// portable equivalent of setsid) — it outlives bash's own near-immediate
+	// exit and is never reached by the group kill (bash's group, not its
+	// own). 30s comfortably exceeds groupKillWaitDelay (5s), so the test can
+	// only pass via the give-up bound, not by the escaped process happening
+	// to exit on its own first.
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"bash", "-c", "set -m; sleep 30 & sleep 0.1"},
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if elapsed > 8*time.Second {
+		t.Fatalf("Run took %s, want under ~%s (timeout + groupKillWaitDelay) — the give-up bound did not engage", elapsed, 100*time.Millisecond+groupKillWaitDelay)
+	}
+	if result.Status != apiv1.ResultFailure {
+		t.Fatalf("status = %v, want failure", result.Status)
+	}
+	if result.Error == nil || result.Error.Code != "timeout" {
+		t.Fatalf("error = %+v, want timeout", result.Error)
 	}
 }
 

@@ -142,6 +142,13 @@ func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanR
 	for _, opt := range opts {
 		opt(e)
 	}
+	if e.timeout <= 0 {
+		// A caller that never sets WithTimeout must still get a bounded
+		// session, not an unbounded one (#119) — DefaultTimeout is applied
+		// here, at construction, rather than requiring every call site
+		// (cmd/goobers/runnerwiring.go included) to remember to pass it.
+		e.timeout = DefaultTimeout
+	}
 	return e, nil
 }
 

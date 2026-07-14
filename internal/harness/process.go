@@ -6,8 +6,53 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sync"
+	"syscall"
 	"time"
 )
+
+// DefaultTimeout bounds an agentic harness session when the Executor has no
+// timeout configured (#119): a hung Copilot CLI (network stall, or a
+// flag-semantics regression that reintroduces an interactive prompt) must
+// eventually be killed rather than blocking its run — and every run holding
+// a max-parallel slot — forever. This matters more here than for a
+// deterministic shell stage (internal/executor.DefaultTimeout) because the
+// runner deliberately dispatches every attempt on a context.WithoutCancel
+// (internal/runner/run.go's documented drain contract), so not even SIGTERM
+// can reach a stuck agentic call — only this process-level timeout can.
+const DefaultTimeout = 30 * time.Minute
+
+// groupKillWaitDelay bounds how long Run waits for cmd.Wait() to return
+// after killing the whole process group on timeout, in case a descendant
+// escaped the group (e.g. via setsid) and is still holding a stdout/stderr
+// pipe open — cmd.Wait() would otherwise never return, hanging the stage
+// (and graceful drain) exactly as before the group-kill fix, just one layer
+// down. Giving up after this bound lets the stage's own accounting proceed
+// even though the escaped process may leak; there is no portable,
+// unconditional way to guarantee its death.
+const groupKillWaitDelay = 5 * time.Second
+
+// syncBuffer is a mutex-guarded bytes.Buffer. Run gives up waiting on
+// cmd.Wait() after groupKillWaitDelay if a descendant escaped the process
+// group and is still holding a pipe open — at that point os/exec's own
+// stdout/stderr-copying goroutines may still be writing to this buffer, so
+// reading its contents (Bytes) must not race with those writes.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
+}
 
 // ProcessRequest describes one harness subprocess execution.
 type ProcessRequest struct {
@@ -50,16 +95,24 @@ type ExecProcessRunner struct{}
 // stdout+stderr as the transcript. A ProcessResult is always returned
 // alongside an error (including on timeout) so the caller can still record a
 // partial transcript as a journal span even when the harness fails.
+//
+// The command runs in its own process group (Setpgid) so a timeout kills the
+// whole subprocess tree, not just the direct child (#119) — an agent-spawned
+// grandchild (a dev server, a test watcher) would otherwise survive the
+// direct child's death and keep holding the stage's stdout/stderr pipes
+// open, which would in turn keep cmd.Wait() from ever returning.
 func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
 	if len(req.Command) == 0 {
 		return ProcessResult{}, fmt.Errorf("harness: empty command")
 	}
-	if req.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
-		defer cancel()
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
 	}
-	cmd := exec.CommandContext(ctx, req.Command[0], req.Command[1:]...)
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.Command(req.Command[0], req.Command[1:]...)
 	cmd.Dir = req.Dir
 	// A nil Env would make os/exec inherit the daemon's full environment —
 	// exactly the SEC-045 fail-open default #122 flags. An explicit non-nil,
@@ -70,23 +123,48 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 		env = []string{}
 	}
 	cmd.Env = env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	var buf bytes.Buffer
+	var buf syncBuffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return ProcessResult{ExitCode: -1}, fmt.Errorf("harness: start %v: %w", req.Command, err)
+	}
+
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+
+	var timedOut bool
+	var err error
+	select {
+	case err = <-waitDone:
+	case <-runCtx.Done():
+		timedOut = true
+		// Kill the whole process group (negative pid), not just the direct
+		// child, so a runaway subprocess tree can't outlive the stage.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		select {
+		case err = <-waitDone:
+		case <-time.After(groupKillWaitDelay):
+			// A descendant escaped the group and is still holding a pipe
+			// open; give up waiting rather than hang the stage (and drain)
+			// forever — see groupKillWaitDelay's doc.
+		}
+	}
+
 	result := ProcessResult{Transcript: buf.Bytes(), ExitCode: -1}
 	var exitErr *exec.ExitError
 	switch {
-	case err == nil:
+	case err == nil && !timedOut:
 		result.ExitCode = 0
 	case errors.As(err, &exitErr):
 		result.ExitCode = exitErr.ExitCode()
 	}
 
-	if ctx.Err() == context.DeadlineExceeded {
-		return result, fmt.Errorf("%w after %s: %s", ErrTimeout, req.Timeout, req.Command[0])
+	if timedOut {
+		return result, fmt.Errorf("%w after %s: %s", ErrTimeout, timeout, req.Command[0])
 	}
 	if err != nil {
 		return result, fmt.Errorf("harness: run %v: %w", req.Command, err)
