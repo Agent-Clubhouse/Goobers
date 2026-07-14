@@ -197,12 +197,15 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		if entry.Schedule == nil {
 			continue // manual-only workflow: not cron-managed
 		}
+		// Read, evaluate, and write the trigger state under a single lock
+		// acquisition. Tick is exported so a manual trigger and concurrent
+		// Tick calls (e.g. overlapping Run-loop iterations) can race here;
+		// dropping the lock between the read and the write let two callers
+		// both read the same pre-fire TriggerState, both compute Fire=true,
+		// and both dispatch the same due firing.
 		s.mu.Lock()
 		ts := s.triggers[entry.Workflow]
-		s.mu.Unlock()
-
 		res := Tick(ts, now)
-		s.mu.Lock()
 		s.triggers[entry.Workflow] = TriggerState{Workflow: entry.Workflow, Schedule: entry.Schedule, LastEval: res.LastEval}
 		s.mu.Unlock()
 		if !res.Fire {

@@ -101,6 +101,33 @@ func TestAdmitBudgetWindow(t *testing.T) {
 	}
 }
 
+// TestAdmitWithoutBudgetDoesNotAccumulateStarts is issue #138's unbounded-
+// growth fix: a workflow with no MaxRunsPerHour configured must never grow
+// Conditions' starts map, since nothing ever prunes it for that workflow
+// (Admit's own prune only runs inside the MaxRunsPerHour>0 branch) — before
+// this fix, a schedule like `@every 1m` with no budget set would accumulate
+// ~1,440 unpruned entries per day for the life of the daemon.
+func TestAdmitWithoutBudgetDoesNotAccumulateStarts(t *testing.T) {
+	c := NewConditions()
+	r := apiv1.ReadinessConditions{MaxConcurrentRuns: 1000} // no MaxRunsPerHour
+	now := time.Now()
+
+	for i := 0; i < 50; i++ {
+		ok, reason := c.Admit("wf", r, now)
+		if !ok {
+			t.Fatalf("admit %d should succeed: %s", i, reason)
+		}
+		c.Release("wf")
+	}
+
+	c.mu.Lock()
+	got := len(c.starts["wf"])
+	c.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("starts[wf] = %d entries, want 0 — a workflow with no MaxRunsPerHour must never accumulate starts", got)
+	}
+}
+
 func TestReconcileSeedsActiveCounts(t *testing.T) {
 	c := NewConditions()
 	c.Reconcile(map[string]int{"wf": 3})

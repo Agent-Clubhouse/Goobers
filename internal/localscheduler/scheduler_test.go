@@ -489,6 +489,45 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	}
 }
 
+// TestConcurrentTickDoesNotDoubleDispatch is issue #138's Tick race fix:
+// Tick is exported specifically so a manual trigger and tests can call it
+// outside the Run loop, which means overlapping calls are a real possibility,
+// not just a hypothetical. Before the fix, Tick read a workflow's
+// TriggerState, unlocked, evaluated it, then relocked to write back — two
+// concurrent Tick calls could both read the same pre-fire state, both
+// compute Fire=true, and both dispatch the same due firing. Racing many
+// concurrent Tick calls at the same due instant must start exactly one run.
+func TestConcurrentTickDoesNotDoubleDispatch(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1000},
+		Schedule:  fakeSchedule{d: time.Hour},
+		Starter:   starter,
+	}})
+
+	due := time.Now().Add(2 * time.Hour)
+	const workers = 50
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			sched.Tick(context.Background(), due)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	waitForCount(t, func() int { return starter.count() }, 1)
+	time.Sleep(20 * time.Millisecond) // let any erroneous second dispatch land
+	if got := starter.count(); got != 1 {
+		t.Fatalf("starter.count() = %d, want exactly 1 — concurrent Tick calls double-dispatched the same due firing", got)
+	}
+}
+
 func waitForCount(t *testing.T, count func() int, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

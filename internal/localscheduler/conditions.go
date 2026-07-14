@@ -84,14 +84,18 @@ func (c *Conditions) Admit(workflow string, r apiv1.ReadinessConditions, now tim
 
 	if r.MaxRunsPerHour > 0 {
 		starts := pruneStarts(c.starts[workflow], now)
-		c.starts[workflow] = starts
 		if len(starts) >= int(r.MaxRunsPerHour) {
+			c.starts[workflow] = starts
 			return false, ReasonBudget
 		}
+		c.starts[workflow] = append(starts, now)
 	}
+	// A workflow with no MaxRunsPerHour never has c.starts[workflow] touched,
+	// so it can't accumulate unboundedly (e.g. ~1,440 entries/day for an
+	// `@every 1m` schedule) — nothing ever reads that map without a
+	// MaxRunsPerHour check, so there's no reason to record starts for it.
 
 	c.active[workflow]++
-	c.starts[workflow] = append(c.starts[workflow], now)
 	return true, ""
 }
 

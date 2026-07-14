@@ -250,6 +250,89 @@ func TestClaimPersistFailurePreservesPriorOwner(t *testing.T) {
 	}
 }
 
+// TestReleasePersistFailureLeavesClaimHeld proves Release rolls back its
+// in-memory deletion when the durable write fails — the same rollback
+// discipline TestClaimPersistFailureLeavesItemClaimable proves for Claim
+// (issue #138: Release had the mutate-before-persist bug PR #99 fixed only
+// for Claim). Without rollback, a failed-persist Release would leave the
+// item claimable in memory while the durable ledger (and a crash-recovery
+// reread) still shows it held — a different run could then win a claim the
+// crashed process still believes it owns.
+func TestReleasePersistFailureLeavesClaimHeld(t *testing.T) {
+	dir := t.TempDir()
+	goodPath := filepath.Join(dir, "claims.json")
+	l, err := OpenClaimLedger(goodPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := l.Claim("issue-51", "run-a", "curate", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	l.path = filepath.Join(dir, "missing-subdir", "claims.json")
+	if err := l.Release("issue-51", "run-a"); err == nil {
+		t.Fatal("expected a persist error on the failed release")
+	}
+
+	e, held := l.Lookup("issue-51")
+	if !held || e.RunID != "run-a" {
+		t.Fatalf("a failed-persist release must leave the claim intact: %+v held=%v", e, held)
+	}
+
+	// And a different run is still refused — the claim genuinely survived,
+	// not just present in a struct nobody checks.
+	l.path = goodPath
+	ok, holder, err := l.Claim("issue-51", "run-b", "curate", time.Minute)
+	if err != nil || ok || holder != "run-a" {
+		t.Fatalf("prior owner should still hold the claim: ok=%v holder=%s err=%v", ok, holder, err)
+	}
+}
+
+// TestRecoverExpiredPersistFailureRestoresEntries proves RecoverExpired rolls
+// back every deletion from a pass whose persist fails, restoring both the
+// in-memory entries and reporting the failure (not a partial/discarded
+// (nil, err) that loses track of what needed releasing) — issue #138. A
+// caller retrying on its next periodic pass must see the same expired leases
+// again, not a ledger that silently lost them.
+func TestRecoverExpiredPersistFailureRestoresEntries(t *testing.T) {
+	dir := t.TempDir()
+	goodPath := filepath.Join(dir, "claims.json")
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	l, err := OpenClaimLedger(goodPath, WithLedgerClock(clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := l.Claim("issue-52", "run-crashed", "curate", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+
+	l.path = filepath.Join(dir, "missing-subdir", "claims.json")
+	released, err := l.RecoverExpired(now)
+	if err == nil {
+		t.Fatal("expected a persist error on the failed recovery pass")
+	}
+	if released != nil {
+		t.Fatalf("a failed pass must not report any released entries: %+v", released)
+	}
+
+	e, held := l.Lookup("issue-52")
+	if !held || e.RunID != "run-crashed" {
+		t.Fatalf("a failed-persist recovery must restore the expired entry: %+v held=%v", e, held)
+	}
+
+	// Retry with a writable path: the same lease must still be there to release.
+	l.path = goodPath
+	released, err = l.RecoverExpired(now)
+	if err != nil {
+		t.Fatalf("retry RecoverExpired: %v", err)
+	}
+	if len(released) != 1 || released[0].ItemID != "issue-52" {
+		t.Fatalf("retry should release the same lease the failed pass restored: %+v", released)
+	}
+}
+
 // TestClaimConcurrentRace is the "two schedulers/runs don't double-start the
 // same work" property under real concurrency: N goroutines race to claim the
 // same item; exactly one must win.
