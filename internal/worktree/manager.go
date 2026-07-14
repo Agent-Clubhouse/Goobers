@@ -17,7 +17,8 @@ import (
 // zero value is not usable; construct with NewManager.
 type Manager struct {
 	// Root is the workcopies directory (ARCHITECTURE.md §6:
-	// <instance-root>/workcopies).
+	// <instance-root>/workcopies), always absolute (NewManager resolves it) —
+	// see NewManager's doc comment for why.
 	Root string
 
 	mu        sync.Mutex // guards repoLocks
@@ -25,15 +26,30 @@ type Manager struct {
 }
 
 // NewManager returns a Manager rooted at root, creating the directory if it
-// does not already exist.
+// does not already exist. root is resolved to an absolute path immediately
+// (#282): every path this package derives from Root (repoDirForKey,
+// runsDirForKey, a worktree's own destination path) is used both as a plain
+// `git worktree add`/`git config` argument AND, later, as a subprocess's own
+// cmd.Dir — two different processes potentially resolving it against two
+// different cwds. A relative Root (the common case: an instance rooted at
+// ".") let git resolve a worktree's relative destination against runGit's
+// cmd.Dir (the managed mirror), not the daemon/CLI's own cwd it was actually
+// built against — silently nesting every worktree inside the mirror instead
+// of at its intended flat path. Resolving once, here, makes every path
+// derived from Root unambiguous regardless of which subprocess's cwd it is
+// later used against.
 func NewManager(root string) (*Manager, error) {
 	if root == "" {
 		return nil, fmt.Errorf("worktree: root must not be empty")
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return nil, fmt.Errorf("worktree: create root %s: %w", root, err)
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("worktree: resolve absolute root for %s: %w", root, err)
 	}
-	return &Manager{Root: root, repoLocks: make(map[string]*sync.Mutex)}, nil
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return nil, fmt.Errorf("worktree: create root %s: %w", abs, err)
+	}
+	return &Manager{Root: abs, repoLocks: make(map[string]*sync.Mutex)}, nil
 }
 
 // repoKey derives a stable, filesystem-safe directory name for a repo URL so

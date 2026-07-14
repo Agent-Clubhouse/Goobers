@@ -134,6 +134,48 @@ func TestManager_Create_Branch(t *testing.T) {
 	}
 }
 
+// TestManager_Create_ResolvesRelativeRootToAbsolute is #282's regression: a
+// Manager constructed with a relative Root (the common case — cmd/goobers
+// wires it off a "."-rooted instance) must not let git resolve a worktree's
+// destination path against the wrong subprocess's cwd. Before the fix,
+// Manager.Root stayed relative (resolved against whatever the daemon/CLI
+// process's cwd happened to be at construction time), and runGit's
+// cmd.Dir = repoDir made git resolve that same relative destination against
+// the managed mirror instead — silently nesting the real worktree inside
+// repoDir/<relative-root>/... instead of at the flat path every later step
+// (bot-identity config, the stage's own exec via cmd.Dir = wt.Path) expects.
+// A t.Chdir into a fresh temp dir before constructing the Manager reproduces
+// exactly how cmd/goobers wires this for a "."-rooted instance.
+func TestManager_Create_ResolvesRelativeRootToAbsolute(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+
+	t.Chdir(t.TempDir())
+	m, err := NewManager("workcopies")
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if !filepath.IsAbs(m.Root) {
+		t.Fatalf("Manager.Root = %q, want an absolute path", m.Root)
+	}
+
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "run-1", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !filepath.IsAbs(wt.Path) {
+		t.Fatalf("Worktree.Path = %q, want an absolute path (not resolved against some subprocess's cwd)", wt.Path)
+	}
+	// The real proof: the worktree is actually populated at the flat path the
+	// rest of the runner assumes — this is exactly where the live #282 repro
+	// failed (bot-identity `git config` chdir'd into wt.Path and got
+	// "no such file or directory" because the real checkout landed nested
+	// inside repoDir instead).
+	if _, err := os.Stat(filepath.Join(wt.Path, "README.md")); err != nil {
+		t.Fatalf("expected README.md in the real worktree location %q: %v", wt.Path, err)
+	}
+}
+
 // TestManager_Create_SetsLocalBotIdentity is #237's fix: an implementer
 // stage commits inside its worktree, and that commit must not depend on the
 // daemon host's own ambient git config (HOME/global gitconfig) — Create sets
