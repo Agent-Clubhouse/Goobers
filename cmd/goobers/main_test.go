@@ -74,6 +74,61 @@ func TestInitThenValidate(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsUnknownAutomatedCheckName is the regression test for
+// #124: `goobers validate` previously never called workflow.Compile at all,
+// so an AutomatedGate.Check typo (a real check name that just isn't
+// registered) passed validation clean and only surfaced once a run actually
+// reached that gate. It now compiles every workflow (compiledMachines, wired
+// into runValidate) with WithKnownChecks against internal/gate.DefaultChecks,
+// catching this at validate time.
+func TestValidateRejectsUnknownAutomatedCheckName(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo")
+	if code, _, stderr := runArgs(t, "init", root); code != 0 {
+		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
+	}
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	broken := `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: backlog-item
+      selector:
+        goobers: "true"
+  readiness:
+    maxConcurrentRuns: 1
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement the backlog item and open a PR.
+      next: done-check
+  gates:
+    - name: done-check
+      evaluator: automated
+      automated:
+        check: bogus-check
+      branches:
+        pass: ""
+        fail: "@abort"
+`
+	if err := os.WriteFile(workflowPath, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code == 0 {
+		t.Fatalf("validate: code = 0, want non-zero for an unknown check name; stdout = %q, stderr = %q", stdout, stderr)
+	}
+	if !strings.Contains(stdout, `unknown automated check "bogus-check"`) {
+		t.Fatalf("validate stdout = %q, want it to mention the unknown check", stdout)
+	}
+}
+
 // TestInitThenSelfhostValidates is issue #28's own acceptance criterion,
 // literally: `goobers init` + the self-hosting dogfood config ->
 // `goobers validate` passes, with every gaggle/goober/workflow resolving.

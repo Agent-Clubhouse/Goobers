@@ -20,7 +20,8 @@ var knownHarnesses = map[apiv1.Harness]bool{
 }
 
 type options struct {
-	goobers map[string]apiv1.GooberSpec
+	goobers     map[string]apiv1.GooberSpec
+	knownChecks map[string]bool
 }
 
 // Option customizes compilation.
@@ -35,6 +36,18 @@ type Option func(*options)
 // validation time.
 func WithGoobers(goobers map[string]apiv1.GooberSpec) Option {
 	return func(o *options) { o.goobers = goobers }
+}
+
+// WithKnownChecks supplies the names of every automated check actually
+// registered (internal/gate.DefaultChecks()'s keys, or a custom registry's),
+// so Compile can catch a typo'd AutomatedGate.Check at compile time instead of
+// it failing only when a run actually reaches that gate (#124). Without it,
+// check names are not validated — the same "runner path" default as
+// WithGoobers, since internal/gate can't be imported here (it already imports
+// this package) and already fails closed on an unknown check at evaluation
+// time regardless.
+func WithKnownChecks(names []string) Option {
+	return func(o *options) { o.knownChecks = toSet(names) }
 }
 
 // Compile validates a Definition and returns the compiled Machine. It is pure
@@ -66,6 +79,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		problems = append(problems, reachabilityProblems(m)...)
 	}
 	problems = append(problems, scheduleProblems(def)...)
+	problems = append(problems, gateOutcomeProblems(def, o.knownChecks)...)
 	problems = append(problems, admissionProblems(def, o.goobers)...)
 	problems = append(problems, gateVocabProblems(def)...)
 
@@ -253,6 +267,18 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec) []st
 	}
 
 	for _, t := range def.Spec.Tasks {
+		// A capability string must be canonical (internal/capability, #74)
+		// regardless of task type — a deterministic task's Capabilities feed
+		// its own credential resolution exactly like an agentic task's do
+		// (internal/executor's stage env, #18), so a typo here is the same
+		// SEC-042 drift class either way, not just an agentic-task concern
+		// (#124: this loop previously skipped every deterministic task
+		// entirely).
+		for _, cap := range t.Capabilities {
+			if !capability.Known(cap) {
+				problems = append(problems, fmt.Sprintf("task %q declares unknown capability %q", t.Name, cap))
+			}
+		}
 		if t.Type != apiv1.TaskAgentic || t.Goober == "" {
 			continue
 		}
@@ -263,9 +289,6 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec) []st
 		}
 		grants := toSet(g.Capabilities)
 		for _, cap := range t.Capabilities {
-			if !capability.Known(cap) {
-				problems = append(problems, fmt.Sprintf("task %q declares unknown capability %q", t.Name, cap))
-			}
 			if !grants[cap] {
 				problems = append(problems, fmt.Sprintf("task %q uses capability %q not granted to goober %q", t.Name, cap, t.Goober))
 			}
@@ -274,6 +297,67 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec) []st
 	for _, gate := range def.Spec.Gates {
 		if gate.Evaluator == apiv1.EvaluatorAgentic && gate.Agentic != nil && gate.Agentic.Goober != "" {
 			checkHarness(gate.Agentic.Goober, fmt.Sprintf("gate %q reviewer", gate.Name))
+		}
+	}
+	return problems
+}
+
+// agenticOutcomes is the closed set of decisions an agentic gate's reviewer
+// can produce (apiv1.VerdictDecision, envelope.go). Every agentic gate's
+// Branches must cover all three: an evaluator returning a decision with no
+// matching branch fails closed mid-run today (internal/gate/evaluate.go's
+// "outcome has no defined branch" error) even though the set of possible
+// decisions is fully known at compile time (#124).
+var agenticOutcomes = []string{"pass", "fail", "needs-changes"}
+
+// automatedBuiltinOutcomes is every outcome internal/gate.DefaultChecks can
+// produce — V0 ships no mechanism for a config-defined gate to select a
+// custom CheckFunc with a different outcome set (AutomatedGate.Check always
+// resolves against that fixed registry in production), so this is exhaustive
+// for every gate a real config can express today. If a custom, non-boolean
+// check registry is ever wired into config, this assumption is the first
+// thing to revisit.
+var automatedBuiltinOutcomes = []string{"pass", "fail"}
+
+// gateOutcomeProblems reports two distinct defect classes per gate (#124):
+//   - a branch key that is not one of the evaluator's producible outcomes —
+//     silently dead configuration, never taken;
+//   - a producible outcome with no matching branch — the evaluator can
+//     return it, but the gate has nowhere to send it, which today only fails
+//     at evaluation time instead of at compile time.
+//
+// Human gates have no evaluator outcome to check against (§5: "a human gate
+// executes nothing"; its Branches, if any, are consumed by the operator's own
+// decision, not an evaluator outcome) and are skipped. knownChecks, when
+// non-nil, additionally flags an AutomatedGate.Check name outside the
+// supplied registry (WithKnownChecks) — nil performs no such check (the
+// default; internal/gate already fails closed on an unknown check at
+// evaluation time regardless).
+func gateOutcomeProblems(def Definition, knownChecks map[string]bool) []string {
+	var problems []string
+	for _, g := range def.Spec.Gates {
+		var producible []string
+		switch g.Evaluator {
+		case apiv1.EvaluatorAgentic:
+			producible = agenticOutcomes
+		case apiv1.EvaluatorAutomated:
+			producible = automatedBuiltinOutcomes
+			if knownChecks != nil && g.Automated != nil && g.Automated.Check != "" && !knownChecks[g.Automated.Check] {
+				problems = append(problems, fmt.Sprintf("gate %q: unknown automated check %q", g.Name, g.Automated.Check))
+			}
+		default:
+			continue
+		}
+		want := toSet(producible)
+		for _, outcome := range sortedKeys(g.Branches) {
+			if !want[outcome] {
+				problems = append(problems, fmt.Sprintf("gate %q: branch %q is not a producible outcome for this evaluator (never taken)", g.Name, outcome))
+			}
+		}
+		for _, outcome := range producible {
+			if _, ok := g.Branches[outcome]; !ok {
+				problems = append(problems, fmt.Sprintf("gate %q: producible outcome %q has no branch (would fail closed at evaluation time)", g.Name, outcome))
+			}
 		}
 	}
 	return problems

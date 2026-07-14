@@ -58,7 +58,11 @@ spec:
 `
 	instructionsMD = "# Coder\nImplement backlog items.\n"
 
-	// validWorkflow: implement (agentic) -> review gate -> pass:finalize / fail:implement.
+	// validWorkflow: implement (agentic) -> review gate -> pass:finalize /
+	// needs-changes:implement / fail:implement. All three must be present —
+	// an agentic gate's reviewer can produce any of the closed
+	// pass/fail/needs-changes decision set (#124), so a real base fixture
+	// leaving one uncovered is itself invalid, not just this test's problem.
 	// All states defined; gate has exactly one evaluator. This must validate clean.
 	validWorkflow = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
@@ -87,6 +91,7 @@ spec:
         goober: coder
       branches:
         pass: finalize
+        needs-changes: implement
         fail: implement
 `
 )
