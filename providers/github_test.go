@@ -67,7 +67,10 @@ func TestGitHubProviderMapsWorkItemsAndStatus(t *testing.T) {
 }
 
 func TestGitHubProviderRepoAndBacklogOperations(t *testing.T) {
-	var patchedLabels []string
+	// issueLabels is the live label set for issue 7; the label sub-API handlers
+	// below mutate it so the re-GET in UpdateWorkItemStatus observes the swap
+	// (status updates now go through add/remove-label, not a whole-set PATCH — #140).
+	issueLabels := []string{"route/backend", "goobers/status:claimed"}
 	var requestedReviewers []string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/git/ref/heads/main", func(w http.ResponseWriter, r *http.Request) {
@@ -121,23 +124,55 @@ func TestGitHubProviderRepoAndBacklogOperations(t *testing.T) {
 		requestedReviewers = body.Reviewers
 		w.WriteHeader(http.StatusCreated)
 	})
+	labelObjs := func() []map[string]string {
+		out := make([]map[string]string, 0, len(issueLabels))
+		for _, l := range issueLabels {
+			out = append(out, map[string]string{"name": l})
+		}
+		return out
+	}
+	issueBody := func() map[string]interface{} {
+		return map[string]interface{}{
+			"id": 123, "number": 7, "title": "Fix API", "state": "open",
+			"labels": labelObjs(),
+		}
+	}
+	// Longer-prefix label routes must be registered before /issues/7 so the mux
+	// dispatches them; ServeMux matches the longest pattern.
+	mux.HandleFunc("/repos/acme/app/issues/7/labels", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		var body struct {
+			Labels []string `json:"labels"`
+		}
+		decodeJSON(t, r, &body)
+		issueLabels = append(issueLabels, body.Labels...)
+		writeJSON(t, w, labelObjs())
+	})
+	mux.HandleFunc("/repos/acme/app/issues/7/labels/", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodDelete)
+		name := strings.TrimPrefix(r.URL.Path, "/repos/acme/app/issues/7/labels/")
+		var kept []string
+		for _, l := range issueLabels {
+			if l != name {
+				kept = append(kept, l)
+			}
+		}
+		issueLabels = kept
+		writeJSON(t, w, labelObjs())
+	})
 	mux.HandleFunc("/repos/acme/app/issues/7", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			writeJSON(t, w, map[string]interface{}{
-				"id": 123, "number": 7, "title": "Fix API", "state": "open",
-				"labels": []map[string]string{{"name": "route/backend"}, {"name": "goobers/status:claimed"}},
-			})
+			writeJSON(t, w, issueBody())
 		case http.MethodPatch:
-			var body struct {
-				Labels []string `json:"labels"`
-			}
+			// A status update must swap labels via the sub-API, never PATCH the
+			// whole label set (that read-modify-write clobbers concurrent edits).
+			var body map[string]interface{}
 			decodeJSON(t, r, &body)
-			patchedLabels = body.Labels
-			writeJSON(t, w, map[string]interface{}{
-				"id": 123, "number": 7, "title": "Fix API", "state": "open",
-				"labels": []map[string]string{{"name": "route/backend"}, {"name": "goobers/status:in-progress"}},
-			})
+			if _, ok := body["labels"]; ok {
+				t.Fatalf("status update must not PATCH labels; got %#v", body)
+			}
+			writeJSON(t, w, issueBody())
 		default:
 			t.Fatalf("unexpected issue method %s", r.Method)
 		}
@@ -177,8 +212,13 @@ func TestGitHubProviderRepoAndBacklogOperations(t *testing.T) {
 	if item.Status != WorkItemStatusInProgress {
 		t.Fatalf("updated item status = %q", item.Status)
 	}
-	if strings.Join(patchedLabels, ",") != "route/backend,goobers/status:in-progress" {
-		t.Fatalf("patched labels = %#v", patchedLabels)
+	// The non-status label must survive the swap, and only the status label may
+	// change: claimed → in-progress, route/backend untouched (#140).
+	if strings.Join(issueLabels, ",") != "route/backend,goobers/status:in-progress" {
+		t.Fatalf("labels after status update = %#v; want route/backend preserved and status swapped to in-progress", issueLabels)
+	}
+	if len(item.Labels) != 2 {
+		t.Fatalf("returned item labels = %#v", item.Labels)
 	}
 }
 

@@ -138,6 +138,15 @@ func (p *GitHubProvider) CreateBranch(ctx context.Context, req BranchRequest) (B
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
 		return BranchResult{}, err
 	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       fmt.Sprintf("%s/%s@%s", req.Repository.Owner, req.Repository.Name, req.Name),
+		URL:       out.URL,
+		Operation: "branch",
+		Fields: map[string]FieldDigest{
+			"sha": {After: digestString(out.Object.SHA)},
+		},
+	})
 	return BranchResult{Name: req.Name, SHA: out.Object.SHA, URL: out.URL}, nil
 }
 
@@ -194,7 +203,23 @@ func (p *GitHubProvider) Commit(ctx context.Context, req CommitRequest) (CommitR
 			return CommitResult{}, err
 		}
 	}
-	return CommitResult{SHA: last.Commit.SHA, URL: last.Commit.HTMLURL}, nil
+	result := CommitResult{SHA: last.Commit.SHA, URL: last.Commit.HTMLURL}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       fmt.Sprintf("%s/%s@%s", req.Repository.Owner, req.Repository.Name, result.SHA),
+		URL:       result.URL,
+		Operation: "commit",
+		Fields: map[string]FieldDigest{
+			"sha":   {After: digestString(result.SHA)},
+			"files": {After: digestString(strconv.Itoa(len(req.Files)))},
+		},
+	})
+	// NOTE(#140 item 4): this still commits one Contents-API call per file, so a
+	// mid-loop failure can strand a half-committed branch and CommitResult
+	// reports only the last file's SHA. Making it atomic needs the Git data API
+	// (blobs -> tree -> commit -> update-ref); tracked as a follow-up so it can
+	// land with its own multi-file atomicity test rather than ride this PR.
+	return result, nil
 }
 
 // OpenPullRequest opens a GitHub pull request.
@@ -513,7 +538,18 @@ func (p *GitHubProvider) RequestReview(ctx context.Context, req ReviewRequest) e
 		return err
 	}
 	body := map[string][]string{"reviewers": req.Reviewers}
-	return p.do(ctx, http.MethodPost, endpoint, body, nil)
+	if err := p.do(ctx, http.MethodPost, endpoint, body, nil); err != nil {
+		return err
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, req.PullID),
+		Operation: "request-review",
+		Fields: map[string]FieldDigest{
+			"reviewers": {After: digestString(strings.Join(req.Reviewers, ","))},
+		},
+	})
+	return nil
 }
 
 // ListWorkItems lists GitHub issues as unified work items.
@@ -627,10 +663,26 @@ func (p *GitHubProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemR
 	if err != nil {
 		return WorkItem{}, err
 	}
+	// Idempotency (#140): a prior attempt's POST may have committed on the
+	// server before its response reached us (a timeout), so a policy retry must
+	// not file a duplicate. When the caller supplies a RunID we stamp a
+	// run-id footer into the body and, before creating, search for an existing
+	// item carrying it — returning that instead. Best-effort: GitHub's search
+	// index is eventually consistent, so a retry within a second or two of the
+	// original may still miss it; the footer at least makes any duplicate
+	// traceable and recordExternalRef journals every create.
+	itemBody := withRunIDFooter(req.Body, req.RunID)
+	if req.RunID != "" {
+		if existing, found, err := p.findRunItem(ctx, req.Repository, req.RunID); err != nil {
+			return WorkItem{}, err
+		} else if found {
+			return existing, nil
+		}
+	}
 	labels := replaceStatusLabel(req.Labels, req.Status)
 	body := map[string]interface{}{
 		"title":  req.Title,
-		"body":   req.Body,
+		"body":   itemBody,
 		"labels": labels,
 	}
 	if req.Assignee != "" {
@@ -640,7 +692,47 @@ func (p *GitHubProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemR
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &issue); err != nil {
 		return WorkItem{}, err
 	}
-	return mapGitHubIssue(issue), nil
+	item := mapGitHubIssue(issue)
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, strconv.Itoa(issue.Number)),
+		URL:       item.URL,
+		Operation: "create",
+		RunID:     req.RunID,
+		Fields: map[string]FieldDigest{
+			"title": {After: digestString(req.Title)},
+			"body":  {After: digestString(itemBody)},
+		},
+	})
+	return item, nil
+}
+
+// findRunItem searches the repo for an issue whose body carries the run-id
+// footer for runID, used by CreateWorkItem for idempotency (#140). The search
+// term is fuzzy, so the match is confirmed against the exact footer before
+// returning.
+func (p *GitHubProvider) findRunItem(ctx context.Context, repo RepositoryRef, runID string) (WorkItem, bool, error) {
+	endpoint, err := joinURL(p.BaseURL, "search", "issues")
+	if err != nil {
+		return WorkItem{}, false, err
+	}
+	query := fmt.Sprintf(`repo:%s/%s in:body type:issue "%s"`, repo.Owner, repo.Name, runFooter(runID))
+	endpoint, err = addQuery(endpoint, url.Values{"q": {query}, "per_page": {"20"}})
+	if err != nil {
+		return WorkItem{}, false, err
+	}
+	var out struct {
+		Items []githubIssue `json:"items"`
+	}
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
+		return WorkItem{}, false, err
+	}
+	for _, issue := range out.Items {
+		if strings.Contains(issue.Body, runFooter(runID)) {
+			return mapGitHubIssue(issue), true, nil
+		}
+	}
+	return WorkItem{}, false, nil
 }
 
 // UpdateWorkItemStatus mirrors Goobers processing status to GitHub labels.
@@ -652,17 +744,31 @@ func (p *GitHubProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWor
 	if err != nil {
 		return WorkItem{}, err
 	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID)
-	if err != nil {
+	// Swap only the status label via the label sub-API (add new, remove any
+	// stale status labels) rather than PATCHing the whole label set. A
+	// read-modify-write of all labels would silently clobber a label a human or
+	// the curator added between our GET above and the write — the status mirror
+	// has no business overwriting unrelated labels (#140).
+	newLabel := statusLabel(req.Status)
+	var remove []string
+	for _, l := range current.Labels {
+		if strings.HasPrefix(l, statusLabelPrefix) && l != newLabel {
+			remove = append(remove, l)
+		}
+	}
+	if err := p.applyLabelChanges(ctx, req.Repository, req.ID, []string{newLabel}, remove); err != nil {
 		return WorkItem{}, err
 	}
-	body := map[string]interface{}{"labels": replaceStatusLabel(current.Labels, req.Status)}
 	if req.Status == WorkItemStatusDone {
-		body["state"] = "closed"
-	}
-	var issue githubIssue
-	if err := p.do(ctx, http.MethodPatch, endpoint, body, &issue); err != nil {
-		return WorkItem{}, err
+		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID)
+		if err != nil {
+			return WorkItem{}, err
+		}
+		// state-only PATCH — labels are handled above, so closing never
+		// round-trips (and races) the label set.
+		if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"state": "closed"}, nil); err != nil {
+			return WorkItem{}, err
+		}
 	}
 	if req.Comment != "" {
 		comments, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID, "comments")
@@ -673,10 +779,30 @@ func (p *GitHubProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWor
 			return WorkItem{}, err
 		}
 	}
-	return mapGitHubIssue(issue), nil
+	item, err := p.GetWorkItem(ctx, req.Repository, req.ID)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, req.ID),
+		URL:       item.URL,
+		Operation: "status",
+		Fields: map[string]FieldDigest{
+			"status": {Before: digestString(string(statusFromLabels(current.Labels, current.State))), After: digestString(string(req.Status))},
+		},
+	})
+	return item, nil
 }
 
 // Subscribe emits GitHub backlog item availability events.
+//
+// NOT WIRED YET — banner per #140 item 5. Two issues to resolve before anyone
+// depends on this: (1) the poll loop silently swallows ListWorkItems errors
+// (a persistent failure looks like an empty backlog forever, not an error);
+// (2) the `seen` map grows unbounded for the process lifetime. At V0 the
+// scheduler triggers via cron backlog-query stages, not this in-process
+// subscription, so it has no live caller; fix both before it gets one.
 func (p *GitHubProvider) Subscribe(ctx context.Context, sub TriggerSubscription) (<-chan WorkItemEvent, error) {
 	if sub.Kind != TriggerPolling {
 		return nil, fmt.Errorf("github provider supports polling subscriptions in-process; webhook delivery is configured externally")
