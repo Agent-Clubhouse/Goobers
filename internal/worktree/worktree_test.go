@@ -527,6 +527,38 @@ func TestManager_Reap_RemovesMarkerlessWorktree(t *testing.T) {
 	}
 }
 
+// TestManager_SafeBareRepositoryExplicit_StillWorks is #247's regression: a
+// hardened `git config safe.bareRepository=explicit` (an increasingly common
+// security default) makes git refuse cwd-based discovery of a bare repo,
+// which is exactly how every call here reaches a managed mirror (cmd.Dir set
+// to the mirror, no --git-dir/GIT_DIR). Without bareRepoSafeArgs's
+// `-c safe.bareRepository=all` override, WorkingCopy/Create/Remove would all
+// fail under this setting. GIT_CONFIG_GLOBAL simulates the hardened machine
+// without mutating the real user/global git config.
+func TestManager_SafeBareRepositoryExplicit_StillWorks(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	hardenedConfig := filepath.Join(t.TempDir(), "gitconfig-hardened")
+	if err := os.WriteFile(hardenedConfig, []byte("[safe]\n\tbareRepository = explicit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", hardenedConfig)
+
+	if _, err := m.WorkingCopy(ctx, repo); err != nil {
+		t.Fatalf("WorkingCopy under safe.bareRepository=explicit: %v", err)
+	}
+
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "hardened-run", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create under safe.bareRepository=explicit: %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove under safe.bareRepository=explicit: %v", err)
+	}
+}
+
 // deadPID spawns a trivial subprocess, waits for it to exit, and returns its
 // PID — guaranteed not to be alive, without racing PID reuse in practice for
 // the lifetime of a test.

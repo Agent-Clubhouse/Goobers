@@ -627,6 +627,62 @@ func TestRunnerBranchesToAbortOnGateFail(t *testing.T) {
 	}
 }
 
+// TestRunnerAutomatedGateDoesNotProvisionWorktree is #112's regression: an
+// automated gate's checks are pure functions over env.Inputs alone
+// (internal/gate/automated.go's DefaultChecks), so unlike an agentic
+// reviewer gate it never reads or writes a workspace — provisioning one
+// anyway wasted a git clone/checkout on every automated-gate evaluation.
+// RepoCloneURL is the first thing buildEnvelope calls to provision a
+// worktree, so counting its calls across a one-task-one-automated-gate run
+// proves whether the gate skipped worktree provisioning: exactly 1 (the
+// task's) means it did; 2 would mean the gate still provisioned one too.
+func TestRunnerAutomatedGateDoesNotProvisionWorktree(t *testing.T) {
+	machine := fixtureMachine(t) // implement (task) -> review (automated gate) -> pass/fail
+	byTask := map[string]stubTaskResult{
+		"run-automated-gate-no-worktree:implement": {status: apiv1.ResultSuccess, summary: "done"},
+	}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+
+	var cloneURLCalls int
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: byTask}, nil
+		},
+		Automated: gate.NewAutomatedEvaluator(),
+		Worktrees: wtMgr,
+		RunsDir:   filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
+			cloneURLCalls++
+			return fixtureRepo, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-automated-gate-no-worktree",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if cloneURLCalls != 1 {
+		t.Fatalf("RepoCloneURL called %d times, want exactly 1 (the task's worktree only) — the automated gate must not provision one (#112)", cloneURLCalls)
+	}
+}
+
 // TestRunnerWalksTaskReservedNextTargets is the regression test for #123: a
 // task's Next can itself be a reserved terminal target (@abort/@escalate),
 // admitted by workflow.Compile the same way a gate's branch is, but before
@@ -1150,6 +1206,98 @@ func TestRunnerExhaustsRetriesAndFails(t *testing.T) {
 	}
 	if starts != 2 || errs != 2 {
 		t.Fatalf("stage.started=%d error=%d, want 2 and 2", starts, errs)
+	}
+}
+
+// retryFixtureMachineWithBackoff is retryFixtureMachine plus a configurable
+// BackoffSeconds, for tests (drain-during-backoff) that need the retry loop's
+// idle wait to actually take measurable wall-clock time.
+func retryFixtureMachineWithBackoff(t *testing.T, maxAttempts int32, backoff time.Duration) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff",
+				Run:   &apiv1.DeterministicRun{Command: []string{"true"}},
+				Next:  "review",
+				Retry: &apiv1.RetryPolicy{MaxAttempts: maxAttempts, BackoffSeconds: int32(backoff.Seconds())},
+			},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "review",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+				Branches:  map[string]string{"pass": workflow.TerminalComplete, "fail": workflow.TargetAbort},
+			},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "retry-backoff-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile retry backoff fixture machine: %v", err)
+	}
+	return m
+}
+
+// TestRunnerRetryBackoffInterruptedByDrainCancellation is #112's regression:
+// before the fix, the retry loop's time.Sleep(backoff) between attempts
+// ignored ctx entirely, so a SIGTERM mid-retry-storm still had to wait out
+// every remaining backoff in full before the run could finish draining. The
+// fix waits on the run-level ctx (not attemptCtx, which never cancels — the
+// drain contract for an in-flight dispatch) so the wait is interrupted the
+// moment a cancellation lands, without changing dispatch itself or the
+// number of attempts a task gets: every attempt still runs, just without the
+// full idle wait between them once shutdown is already in progress.
+func TestRunnerRetryBackoffInterruptedByDrainCancellation(t *testing.T) {
+	const backoff = 10 * time.Second
+	const maxAttempts = 5 // un-interrupted worst case: 4 waits * 10s = 40s
+	machine := retryFixtureMachineWithBackoff(t, maxAttempts, backoff)
+	flaky := &flakyDeterministic{failUntil: 1000} // always fails within budget
+	r, _ := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return flaky, nil
+	}, gate.NewAutomatedEvaluator())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type startResult struct {
+		res Result
+		err error
+	}
+	done := make(chan startResult, 1)
+	start := time.Now()
+	go func() {
+		res, err := r.Start(ctx, StartInput{
+			RunID:   "run-backoff-drain",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		done <- startResult{res, err}
+	}()
+
+	// Give the first attempt time to dispatch, fail, and enter its backoff
+	// wait (comfortably inside the 10s window — dispatch itself is
+	// near-instant here) before cancelling.
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	const bound = 8 * time.Second // comfortably under the un-interrupted 40s, comfortably over dispatch/scheduling noise
+	select {
+	case r := <-done:
+		if r.err == nil {
+			t.Fatal("Start: expected an error (retries exhausted, the executor never succeeds), got nil")
+		}
+	case <-time.After(bound):
+		t.Fatalf("Start did not return within %s — the backoff sleep ignored ctx cancellation (#112)", bound)
+	}
+	if elapsed := time.Since(start); elapsed > bound {
+		t.Fatalf("Start took %s, want well under the un-interrupted %s (4 * %s backoff) — cancellation should short-circuit the remaining waits", elapsed, 4*backoff, backoff)
+	}
+	if flaky.calls != maxAttempts {
+		t.Fatalf("executor called %d times, want %d (full retry budget still exhausted despite drain — dispatch itself is unaffected)", flaky.calls, maxAttempts)
 	}
 }
 

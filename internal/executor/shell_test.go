@@ -176,6 +176,39 @@ func TestShellExecutor_TimeoutGivesUpOnEscapedDescendant(t *testing.T) {
 	}
 }
 
+// TestShellExecutor_DistinguishesCancelFromTimeout is #122's low-priority
+// defense-in-depth item: runCtx.Done() fires both when its own timeout
+// elapses and when the caller's ctx is externally canceled, and the two must
+// not be conflated — a canceled ctx should never come back as the "timeout"
+// error code. internal/runner's dispatch always uses context.WithoutCancel
+// today, so this path is otherwise unreachable in production; the test
+// drives it directly by canceling ctx itself rather than through the runner.
+func TestShellExecutor_DistinguishesCancelFromTimeout(t *testing.T) {
+	if _, err := exec.LookPath("sleep"); err != nil {
+		t.Skip("sleep not available")
+	}
+	shellExec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputTimeout: "10s"} // comfortably longer than the external cancel
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	result, err := shellExec.Run(ctx, env, apiv1.DeterministicRun{Command: []string{"sleep", "5"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure {
+		t.Fatalf("status = %v, want failure", result.Status)
+	}
+	if result.Error == nil || result.Error.Code != "canceled" || result.Error.Retryable {
+		t.Fatalf("error = %+v, want canceled, non-retryable", result.Error)
+	}
+}
+
 func TestShellExecutor_CanarySecretNeverInCapturedOutput(t *testing.T) {
 	const canary = "s3cr3t-canary-token-value"
 	// Negative control: this canary must NOT be a shape the pattern-net catches

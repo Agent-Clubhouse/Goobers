@@ -657,7 +657,22 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			}
 			if attempt < maxAttempts {
 				if backoff > 0 {
-					time.Sleep(backoff)
+					// Wait on the run-level ctx (not attemptCtx, which never
+					// cancels — the drain contract for an in-flight
+					// dispatch), so a SIGTERM already in progress doesn't
+					// block this idle wait for the full backoff on every
+					// remaining retry of a transient-failure storm (#112).
+					// Dispatch itself, and the number of attempts a task may
+					// use, are unaffected — this only shortens how long a
+					// graceful shutdown waits between attempts; the next
+					// attempt still proceeds exactly as before (no new
+					// checkpoint/pause point — a graceful drain only ever
+					// pauses BETWEEN stages, per resume.go's interruptedAttempt
+					// doc).
+					select {
+					case <-time.After(backoff):
+					case <-ctx.Done():
+					}
 				}
 				continue
 			}
@@ -861,6 +876,14 @@ func errorDetailFrom(e *apiv1.ErrorInfo) *journal.ErrorDetail {
 // — that is a same-process function argument, not a stage-boundary crossing.
 // removeErr mirrors dispatchTask's own contract (issue #136): additive, never
 // overriding the gate's own result/err, but never silently discarded either.
+//
+// An automated gate never gets a worktree (#112): its checks are pure
+// functions over env.Inputs alone (internal/gate/automated.go's DefaultChecks
+// "keeps the checker registry pure — no journal/filesystem access"), so
+// unlike an agentic reviewer gate it reads and writes no workspace at all.
+// Provisioning one anyway wasted a git clone/checkout on every automated-gate
+// evaluation and turned a worktree-provisioning failure (disk, git) into a
+// failure of a gate that touches no filesystem whatsoever.
 func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer) (result gate.Result, err error, removeErr error) {
 	// Same drain contract as runTask: a gate attempt already underway when
 	// SIGTERM cancels the run-level ctx finishes and journals cleanly.
@@ -873,19 +896,31 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	ctx, span := r.startGateSpan(ctx, in, g, gooberName)
 	defer span.End()
 
-	env, wt, err := r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, nil, upstream)
-	if err != nil {
-		err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
-		span.Fail(err)
-		return gate.Result{}, err, nil
+	var env apiv1.InvocationEnvelope
+	if g.Evaluator == apiv1.EvaluatorAutomated {
+		env = apiv1.InvocationEnvelope{
+			TaskID:     in.RunID + ":" + g.Name,
+			WorkflowID: in.Machine.Def.Name,
+			RunID:      in.RunID,
+			Gaggle:     in.Gaggle,
+			Goal:       "gate: " + g.Name,
+			RepoRef:    in.RepoRef,
+			Item:       in.Item,
+		}
+	} else {
+		var wt *worktree.Worktree
+		env, wt, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, nil, upstream)
+		if err != nil {
+			err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
+			span.Fail(err)
+			return gate.Result{}, err, nil
+		}
+		defer func() { removeErr = wt.Remove(ctx, worktree.RemoveOptions{}) }()
 	}
-	defer func() { removeErr = wt.Remove(ctx, worktree.RemoveOptions{}) }()
 
 	switch g.Evaluator {
 	case apiv1.EvaluatorAutomated:
-		if env.Inputs == nil {
-			env.Inputs = make(map[string]interface{}, 1+len(subjectResult.Outputs))
-		}
+		env.Inputs = make(map[string]interface{}, 1+len(subjectResult.Outputs))
 		env.Inputs[gate.InputKeyStatus] = string(subjectResult.Status)
 		for k, v := range subjectResult.Outputs {
 			env.Inputs[k] = v

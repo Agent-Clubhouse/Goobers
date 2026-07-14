@@ -201,12 +201,22 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 
-	var timedOut bool
+	var timedOut, canceled bool
 	var waitErr error
 	select {
 	case waitErr = <-waitDone:
 	case <-runCtx.Done():
-		timedOut = true
+		// runCtx.Done() fires both when its own timeout elapses and when the
+		// caller's ctx is canceled out from under it — distinguishing the two
+		// via context.Cause matters even though only the timeout path is
+		// reachable today (internal/runner's dispatch always uses
+		// context.WithoutCancel): a future hard-shutdown path that DOES
+		// cancel ctx must not be mislabeled as a retryable timeout (#122).
+		if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
+			timedOut = true
+		} else {
+			canceled = true
+		}
 		// Kill the whole process group (negative pid), not just the direct
 		// child, so a runaway subprocess tree can't outlive the stage.
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -217,8 +227,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			// is still holding a stdout/stderr pipe open, so cmd.Wait()
 			// never returns (#119) — give up waiting rather than hang the
 			// stage (and graceful drain) forever. waitErr stays nil here,
-			// but it's only read below in the non-timeout path, so this
-			// bound never masks a real exit code.
+			// but it's only read below in the non-timeout/non-canceled path,
+			// so this bound never masks a real exit code.
 		}
 	}
 
@@ -253,6 +263,21 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			Retryable: true,
 		}
 		result.Summary = "stage timed out and was killed"
+		return result, nil
+	}
+	if canceled {
+		// Distinct from "timeout": the stage's own deadline had not elapsed —
+		// its context was canceled for some other reason (unreachable today,
+		// see the select above's doc comment). Not retryable: unlike a
+		// transient timeout, a deliberate cancellation should not be retried
+		// the same way.
+		result.Status = apiv1.ResultFailure
+		result.Error = &apiv1.ErrorInfo{
+			Code:      "canceled",
+			Message:   "stage's context was canceled (not a timeout)",
+			Retryable: false,
+		}
+		result.Summary = "stage was canceled"
 		return result, nil
 	}
 

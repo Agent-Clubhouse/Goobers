@@ -41,6 +41,16 @@ var ErrNoCompletion = errors.New("harness: no completion file written")
 // declared timeout.
 var ErrTimeout = errors.New("harness: session timed out")
 
+// ErrCanceled is returned when a harness session's context is canceled for a
+// reason other than its own declared timeout (e.g. a hard-shutdown path
+// cancels the ctx a caller passed in, distinct from runCtx's own deadline
+// elapsing). Currently unreachable in practice — internal/runner's dispatch
+// deliberately uses context.WithoutCancel as its drain contract, so no caller
+// today ever cancels the ctx an Adapter/ProcessRunner receives — but kept
+// distinct from ErrTimeout so a future hard-shutdown path is never mislabeled
+// as a retryable timeout (#122).
+var ErrCanceled = errors.New("harness: session canceled")
+
 // ErrInvalidCompletion is returned when a harness's completion file exists but
 // fails schema validation — fail closed the same as a missing file (GBO-013).
 var ErrInvalidCompletion = errors.New("harness: completion file failed validation")
@@ -76,6 +86,9 @@ type RunRequest struct {
 	ContextPaths map[string]string
 	// Timeout bounds the harness session; zero means no timeout.
 	Timeout time.Duration
+	// MaxTranscriptBytes caps the transcript a subprocess-based Adapter
+	// retains in memory; non-positive means DefaultMaxTranscriptBytes (#245).
+	MaxTranscriptBytes int64
 }
 
 // Outcome is what an Adapter hands back after a harness session ends.
@@ -84,8 +97,15 @@ type Outcome struct {
 	// Executor validates it against the mode's schema.
 	Payload []byte
 	// Transcript is the raw (unredacted) harness transcript, for the caller
-	// to scrub and record as a journal span (GBO-020).
+	// to scrub and record as a journal span (GBO-020). Bounded at
+	// MaxTranscriptBytes — a truncated transcript carries a trailing marker
+	// (#245), never a silently cut-off blob.
 	Transcript []byte
+	// TranscriptTruncated reports whether Transcript was capped.
+	TranscriptTruncated bool
+	// TranscriptDroppedBytes is how many transcript bytes were discarded past
+	// the cap (0 if TranscriptTruncated is false).
+	TranscriptDroppedBytes int64
 }
 
 // Adapter is the harness-adapter seam (GBO-051): the only way an agentic

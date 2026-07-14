@@ -71,8 +71,13 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
 	if err != nil {
+		// #231: don't imply a delegation capability that doesn't exist yet —
+		// `goobers up` has no live workflow-trigger delegation (see this
+		// function's own doc comment above), so "stop it first" is the only
+		// real option today.
 		pf(stderr, "error: %v (a running `goobers up` daemon holds this instance's lock — "+
-			"trigger workflows through it, or stop it first)\n", err)
+			"stop it first; `goobers up` has no live workflow-trigger delegation yet, "+
+			"see the doc comment on cmd/goobers/run.go's lock-acquire step)\n", err)
 		return 1
 	}
 	defer release()

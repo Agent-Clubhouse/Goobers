@@ -52,6 +52,43 @@ func cfgFor(owner, repo, pullID string) CIPollConfig {
 	return CIPollConfig{Owner: owner, Repo: repo, PullID: pullID}
 }
 
+// TestBackoff_DoublesPerAttemptUpToCap is #122's missing direct unit test
+// for the capped-exponential backoff calculation: attempt 0 is base, each
+// subsequent attempt doubles, and the cap is enforced once doubling would
+// exceed it.
+func TestBackoff_DoublesPerAttemptUpToCap(t *testing.T) {
+	const base = 10 * time.Second
+	const max = 100 * time.Second
+	cases := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{0, 10 * time.Second},
+		{1, 20 * time.Second},
+		{2, 40 * time.Second},
+		{3, 80 * time.Second},
+		{4, 100 * time.Second}, // 160s would exceed max — capped
+		{5, 100 * time.Second},
+	}
+	for _, tc := range cases {
+		if got := backoff(base, max, tc.attempt); got != tc.want {
+			t.Errorf("backoff(%s, %s, %d) = %s, want %s", base, max, tc.attempt, got, tc.want)
+		}
+	}
+}
+
+// TestBackoff_OverflowSafeAtLargeAttempt proves a large attempt count (the
+// left-shift base<<attempt overflowing time.Duration's int64 into a negative
+// value) still returns max, not garbage — the `d <= 0` branch in backoff's
+// switch exists precisely for this.
+func TestBackoff_OverflowSafeAtLargeAttempt(t *testing.T) {
+	const base = time.Second
+	const max = time.Minute
+	if got := backoff(base, max, 100); got != max {
+		t.Fatalf("backoff at a large attempt count = %s, want max %s (overflow must not produce a negative/garbage duration)", got, max)
+	}
+}
+
 func TestCIPollExecutor_Pass(t *testing.T) {
 	poller := &fakePoller{results: []providers.CheckState{providers.CheckStatePassing}}
 	exec, err := NewCIPollExecutor(poller)

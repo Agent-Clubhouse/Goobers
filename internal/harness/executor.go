@@ -80,6 +80,7 @@ type Executor struct {
 	resultPath      string
 	verdictPath     string
 	timeout         time.Duration
+	transcriptLimit int64
 }
 
 // Option configures an Executor at construction.
@@ -95,6 +96,11 @@ func WithVerdictPath(path string) Option { return func(e *Executor) { e.verdictP
 
 // WithTimeout bounds every harness session this Executor drives.
 func WithTimeout(d time.Duration) Option { return func(e *Executor) { e.timeout = d } }
+
+// WithTranscriptLimit caps the transcript a subprocess-based Adapter retains
+// in memory for every harness session this Executor drives (default
+// DefaultMaxTranscriptBytes, #245).
+func WithTranscriptLimit(n int64) Option { return func(e *Executor) { e.transcriptLimit = n } }
 
 // NewExecutor builds an Executor for one goober: adapter is the harness to
 // drive, injector resolves credentials scoped per invocation's declared
@@ -166,6 +172,17 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	var result apiv1.ResultEnvelope
 	if err := json.Unmarshal(out.Payload, &result); err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("%w: decode result envelope: %w", ErrInvalidCompletion, err)
+	}
+	if out.TranscriptTruncated {
+		// Mirrors internal/executor.ShellExecutor's stdoutTruncated/
+		// stderrTruncated outputs (#245): the recorded span already carries
+		// the truncation marker inline, but a scalar output lets a caller
+		// notice it without parsing transcript text.
+		if result.Outputs == nil {
+			result.Outputs = map[string]interface{}{}
+		}
+		result.Outputs["transcriptTruncated"] = true
+		result.Outputs["transcriptDroppedBytes"] = float64(out.TranscriptDroppedBytes)
 	}
 	ptr, err := e.liftArtifactFile(env)
 	if err != nil {
@@ -243,14 +260,15 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return Outcome{}, err
 	}
 	req := RunRequest{
-		Mode:           mode,
-		Envelope:       env,
-		Instructions:   e.instructions,
-		Workspace:      env.Workspace,
-		CompletionPath: completionPath,
-		Credentials:    creds,
-		ContextPaths:   contextPaths,
-		Timeout:        e.timeout,
+		Mode:               mode,
+		Envelope:           env,
+		Instructions:       e.instructions,
+		Workspace:          env.Workspace,
+		CompletionPath:     completionPath,
+		Credentials:        creds,
+		ContextPaths:       contextPaths,
+		Timeout:            e.timeout,
+		MaxTranscriptBytes: e.transcriptLimit,
 	}
 
 	out, runErr := e.adapter.Run(ctx, req)

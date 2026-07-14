@@ -183,9 +183,20 @@ func ensureScratchExcluded(ctx context.Context, dir string) error {
 	return nil
 }
 
+// bareRepoSafeArgs prepends `-c safe.bareRepository=all` to args (#247): under
+// a hardened `safe.bareRepository=explicit` git config, git refuses cwd-based
+// discovery of a bare repo, which is exactly how every call here reaches our
+// managed mirrors (cmd.Dir set to the mirror, no --git-dir/GIT_DIR). Opting
+// back into implicit discovery is safe for these specific invocations because
+// the mirrors are ones this package created and owns; it does not relax the
+// setting for anything else on the machine.
+func bareRepoSafeArgs(args []string) []string {
+	return append([]string{"-c", "safe.bareRepository=all"}, args...)
+}
+
 // gitOutput runs git in dir and returns its trimmed stdout.
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs(args)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -200,7 +211,7 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 // default if dir is empty), and returns combined output on failure for
 // debuggability.
 func runGit(ctx context.Context, dir string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs(args)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -218,7 +229,7 @@ func runGit(ctx context.Context, dir string, args ...string) error {
 // Create to decide whether to create the run branch or check out the existing
 // one (#133).
 func branchExists(ctx context.Context, repoDir, branch string) bool {
-	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
 	cmd.Dir = repoDir
 	return cmd.Run() == nil
 }
