@@ -3,6 +3,7 @@ package localscheduler
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -139,6 +140,38 @@ func TestTickSkipsWhenConditionsExhausted(t *testing.T) {
 	}
 }
 
+// TestCronRunHoldsSlotThenManualTriggerRejected is issue #134's literal
+// acceptance criterion: concurrent manual+cron admission respects
+// maxConcurrentRuns. A cron-dispatched run holds the one available slot;
+// a manual Trigger for the SAME workflow must be rejected by Conditions,
+// not silently double-dispatch it.
+func TestCronRunHoldsSlotThenManualTriggerRejected(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+	starter := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Schedule:  fakeSchedule{d: time.Hour},
+		Starter:   starter,
+	}})
+
+	base := time.Now()
+	sched.Tick(context.Background(), base.Add(time.Hour)) // cron fire holds the slot
+	waitForCount(t, func() int { return starter.count() }, 1)
+
+	_, err := sched.Trigger(context.Background(), "implement", base.Add(time.Minute))
+	if err == nil {
+		t.Fatal("expected the manual trigger to be rejected while the cron run holds the max-parallel slot")
+	}
+	if !strings.Contains(err.Error(), ReasonMaxParallel) {
+		t.Fatalf("err = %v, want it to mention %q", err, ReasonMaxParallel)
+	}
+	if starter.count() != 1 {
+		t.Fatalf("starter should have been called exactly once (cron only), got %d", starter.count())
+	}
+}
+
 func TestManualTriggerBypassesCronButHonorsConditions(t *testing.T) {
 	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	sched, _ := newTestScheduler(t, []WorkflowEntry{{
@@ -154,16 +187,82 @@ func TestManualTriggerBypassesCronButHonorsConditions(t *testing.T) {
 		t.Fatalf("manual-only workflow should not fire from Tick: %d starts", starter.count())
 	}
 
-	if err := sched.Trigger(context.Background(), "curate", time.Now()); err != nil {
+	runID, err := sched.Trigger(context.Background(), "curate", time.Now())
+	if err != nil {
 		t.Fatalf("Trigger: %v", err)
 	}
+	if runID == "" {
+		t.Fatal("expected Trigger to return the dispatched run's id")
+	}
 	waitForCount(t, func() int { return starter.count() }, 1)
+	if got := starter.starts[0].Trigger.Kind; got != journal.TriggerManual {
+		t.Fatalf("dispatched run's Trigger.Kind = %q, want %q (issue #134)", got, journal.TriggerManual)
+	}
 }
 
 func TestTriggerUnknownWorkflowErrors(t *testing.T) {
 	sched, _ := newTestScheduler(t, nil)
-	if err := sched.Trigger(context.Background(), "nope", time.Now()); err == nil {
+	if _, err := sched.Trigger(context.Background(), "nope", time.Now()); err == nil {
 		t.Fatal("expected an error for an unknown workflow")
+	}
+}
+
+// TestTriggerReasonIsManualNotScheduled is issue #134's fireReason fix: a
+// manual Trigger must never journal trigger.fired with reason "scheduled" —
+// the pre-fix bug that made a manual `goobers run` indistinguishable from a
+// real cron fire in the instance journal.
+func TestTriggerReasonIsManualNotScheduled(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, dir := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "curate",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Starter:   starter,
+	}})
+
+	if _, err := sched.Trigger(context.Background(), "curate", time.Now()); err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	waitForCount(t, func() int { return starter.count() }, 1)
+
+	events, err := journal.ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reason string
+	for _, ev := range events {
+		if ev.Type == journal.EventTriggerFired && ev.Workflow == "curate" {
+			reason = ev.Reason
+		}
+	}
+	if reason != "manual" {
+		t.Fatalf("trigger.fired reason = %q, want \"manual\"", reason)
+	}
+}
+
+// TestTriggerSkipRejectsWithReason is issue #134's other half: unlike a cron
+// tick's silent skip, a human explicitly asked for this run, so a
+// conditions-driven rejection must surface as an error, not a no-op.
+func TestTriggerSkipRejectsWithReason(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+	starter := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "curate",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Starter:   starter,
+	}})
+
+	if _, err := sched.Trigger(context.Background(), "curate", time.Now()); err != nil {
+		t.Fatalf("first Trigger: %v", err)
+	}
+	waitForCount(t, func() int { return starter.count() }, 1)
+
+	_, err := sched.Trigger(context.Background(), "curate", time.Now())
+	if err == nil {
+		t.Fatal("expected the second concurrent Trigger to be rejected by run conditions")
+	}
+	if !strings.Contains(err.Error(), ReasonMaxParallel) {
+		t.Fatalf("err = %v, want it to mention %q", err, ReasonMaxParallel)
 	}
 }
 

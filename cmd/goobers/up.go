@@ -10,11 +10,8 @@ import (
 	"sync"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
 )
 
@@ -75,59 +72,18 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	defer release()
 
-	cfg, err := instance.LoadConfig(l.ConfigFile())
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	set, _, err := instance.LoadConfigDir(l.ConfigDir())
-	if err != nil {
-		pf(stderr, "error: config directory invalid: %v\n", err)
-		return 1
-	}
-
-	goobers := goobersByName(set)
-	machines, err := compiledMachines(set, goobers)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	repoRefs, err := repoRefsByWorkflow(set)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-
-	tel, err := buildTelemetryClient(ctx, l)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	defer func() { _ = tel.Shutdown(context.Background()) }()
-
-	runnerCfg, err := buildRunnerConfig(l, cfg, goobers, tel)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	rn, err := runner.New(runnerCfg)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-
-	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir())
-	if err != nil {
-		pf(stderr, "error: open instance log: %v\n", err)
-		return 1
-	}
-
 	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(ctx, l, &wg)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	defer func() { _ = setup.Telemetry.Shutdown(context.Background()) }()
 
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
 	// shutdown restarts now, before the scheduler starts admitting new ticks
 	// (#23 AC: restart via Runner.Resume).
-	resumed, err := resumeInterruptedRuns(ctx, l.RunsDir(), rn, machines, repoRefs, instanceLog, &wg)
+	resumed, err := resumeInterruptedRuns(ctx, l.RunsDir(), setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -136,38 +92,13 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pf(stdout, "resuming interrupted run %s\n", runID)
 	}
 
-	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
-	for i := range set.Workflows {
-		wf := &set.Workflows[i]
-		var sched localscheduler.Schedule
-		for _, tr := range wf.Spec.Triggers {
-			if tr.Type == apiv1.TriggerSchedule && tr.Schedule != "" {
-				s, err := localscheduler.ParseSchedule(tr.Schedule)
-				if err != nil {
-					pf(stderr, "error: workflow %q: %v\n", wf.Name, err)
-					return 1
-				}
-				sched = s
-				break
-			}
-		}
-		entries = append(entries, localscheduler.WorkflowEntry{
-			Workflow:  wf.Name,
-			Gaggle:    wf.Spec.Gaggle,
-			Readiness: wf.Spec.Readiness,
-			Schedule:  sched,
-			Starter:   &trackedStarter{r: rn, machine: machines[wf.Name], wg: &wg},
-			RepoRef:   repoRefs[wf.Name],
-		})
-	}
-
-	sched := localscheduler.New(entries, instanceLog, localscheduler.WithTelemetry(tel))
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog, localscheduler.WithTelemetry(setup.Telemetry))
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 
-	pf(stdout, "daemon started at %s (%d workflow(s))\n", root, len(entries))
+	pf(stdout, "daemon started at %s (%d workflow(s))\n", root, len(setup.Entries))
 	runErr := sched.Run(ctx) // blocks until ctx is cancelled
 	if runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {
 		pf(stderr, "error: scheduler stopped: %v\n", runErr)
