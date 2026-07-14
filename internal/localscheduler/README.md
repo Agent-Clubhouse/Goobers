@@ -27,11 +27,19 @@ rather than silently misinterpreting a seconds column.
 `Schedule.Next(after)` is DST-correct because it does calendar arithmetic in
 `after`'s location, not fixed-duration wall-clock math (`InLocation` pins the
 instance-configured timezone regardless of what location a caller's clock
-happens to hand in). Verified empirically against `America/New_York` 2026:
-a schedule whose time doesn't exist on the spring-forward day skips to the next
-valid day; a schedule at a safe hour stays wall-clock-stable across the
-transition; a schedule inside the repeated fall-back hour fires once at each
-UTC offset it maps to (documented, not a bug).
+happens to hand in — wired from `Config.Timezone`, default UTC). Verified
+empirically against `America/New_York` 2026: a schedule whose time doesn't
+exist on the spring-forward day skips to the next valid day; a schedule at a
+safe hour stays wall-clock-stable across the transition; a schedule inside
+the repeated fall-back hour fires exactly once, not twice (issue #137 —
+`InLocation`'s `Next` detects when the underlying schedule's next candidate
+renders to the identical civil minute as its input, the signature of the
+repeated hour, and skips past it, rather than firing again for a schedule
+whose runs cost money and mutate GitHub state). Known simplification: this
+collapses a sub-daily wildcard schedule's own legitimate repeated-hour fire
+too, since `Schedule.Next(time.Time) time.Time` gives no visibility into
+which cron fields were fixed values versus wildcards/ranges — accepted for
+V0 since every real schedule here is a daily-or-longer workflow trigger.
 
 **Missed-tick policy**: `Tick(TriggerState, now)` collapses any number of
 fires that fell inside `[LastEval, now)` into exactly one catch-up — `LastEval`
