@@ -1,5 +1,10 @@
 // Package gooberruntime implements the runtime side of the neutral invoke.Goober
 // boundary used by the workflow engine.
+//
+// Superseded — folds into the local runner's stage execution (the `goobers`
+// binary, via internal/harness); kept compiling as the tier-3 agent-pod
+// reference its only consumer, cmd/goober-runtime, is. See
+// docs/ARCHITECTURE.md §11.
 package gooberruntime
 
 import (

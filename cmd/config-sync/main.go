@@ -4,6 +4,10 @@
 //
 //	config-sync --config ./my-config-repo --out ./rendered
 //	config-sync --config ./my-config-repo --apply --namespace goobers-system
+//
+// Tier-3 (V2) — quarantined, not on the V0 path (the CRD-apply path; local
+// tiers 1-2 watch config/ directly, see ARCHITECTURE.md §6). See
+// docs/ARCHITECTURE.md §11. Revived in V2.
 package main
 
 import (

@@ -80,6 +80,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	}
 	problems = append(problems, scheduleProblems(def)...)
 	problems = append(problems, gateOutcomeProblems(def, o.knownChecks)...)
+	problems = append(problems, triggerFieldProblems(def)...)
 	problems = append(problems, admissionProblems(def, o.goobers)...)
 	problems = append(problems, gateVocabProblems(def)...)
 

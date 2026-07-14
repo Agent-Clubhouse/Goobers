@@ -119,13 +119,51 @@ func TestInvocationHasNoUpstreamResultField(t *testing.T) {
 	}
 }
 
+// TestTypeMentionsRecursesIntoStructFields is the regression test for #125:
+// typeMentions previously only matched a direct/pointer/slice/map reference
+// to target, so a field of a type that merely WRAPS target in another struct
+// evaded the reach-through guard entirely.
+func TestTypeMentionsRecursesIntoStructFields(t *testing.T) {
+	target := reflect.TypeOf(ResultEnvelope{})
+
+	type wrapper struct{ R ResultEnvelope }
+	if !typeMentions(reflect.TypeOf(wrapper{}), target) {
+		t.Fatal("typeMentions did not catch a ResultEnvelope nested inside another struct")
+	}
+
+	type wrapperPtr struct{ R *ResultEnvelope }
+	if !typeMentions(reflect.TypeOf(wrapperPtr{}), target) {
+		t.Fatal("typeMentions did not catch a *ResultEnvelope nested inside another struct")
+	}
+
+	type unrelated struct{ S string }
+	if typeMentions(reflect.TypeOf(unrelated{}), target) {
+		t.Fatal("typeMentions false-positived on an unrelated struct")
+	}
+}
+
+// typeMentions reports whether t is, or (recursively) contains a field of,
+// target — the reach-through guard's actual check. It recurses into struct
+// fields (#125) so a field whose type merely wraps target in another struct
+// (e.g. struct{ R ResultEnvelope }), not just a direct/pointer/slice/map
+// reference, still gets caught.
 func typeMentions(t, target reflect.Type) bool {
+	if t == target {
+		return true
+	}
 	switch t.Kind() {
 	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan:
 		return typeMentions(t.Elem(), target)
 	case reflect.Map:
 		return typeMentions(t.Key(), target) || typeMentions(t.Elem(), target)
+	case reflect.Struct:
+		for i := 0; i < t.NumField(); i++ {
+			if typeMentions(t.Field(i).Type, target) {
+				return true
+			}
+		}
+		return false
 	default:
-		return t == target
+		return false
 	}
 }

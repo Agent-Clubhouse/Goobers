@@ -6,6 +6,11 @@
 // envelopes between nodes. The same compiled machine backs the local runner (V0)
 // without Temporal, which is what makes "one system, three tiers" enforceable.
 //
+// Tier-3 (V2) — quarantined, not on the V0 path. See docs/ARCHITECTURE.md §11.
+// Revived in V2; internal/runner is the V0-live runner. (#125: this package
+// previously read as the live adapter with no banner, even though
+// buildInvocation's own comment already calls it "superseded".)
+//
 // Design rules (Temporal determinism):
 //   - The workflow function (Run) contains no wall-clock reads, randomness, or
 //     I/O. Every side effect — invoking a goober, running a deterministic task,

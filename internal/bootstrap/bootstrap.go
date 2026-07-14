@@ -4,10 +4,14 @@
 // schedulers (M11) over an injected run Starter, telemetry, and readiness.
 //
 // It is the single wiring seam shared by the real /cmd entrypoints (which inject
-// a Temporal-backed engine.Starter and the real goober runtime) and the e2e
-// walking-skeleton harness (which injects test doubles). Keeping the wiring here
-// means the binaries and the acceptance harness construct the system the same
-// way.
+// a Temporal-backed engine.Starter and the real goober runtime) and
+// test/e2e/integration_test.go (which injects test doubles). Keeping the wiring
+// here means the binaries and that test construct the system the same way.
+//
+// Tier-3 (V2) — quarantined, not on the V0 path. See docs/ARCHITECTURE.md §11.
+// Revived in V2. Its only current consumer, cmd/scheduler, carries the same
+// banner; test/e2e/walking_skeleton_test.go (the V0-live e2e harness) wires
+// internal/runner directly instead, not through this package.
 package bootstrap
 
 import (
