@@ -266,6 +266,53 @@ func TestTriggerSkipRejectsWithReason(t *testing.T) {
 	}
 }
 
+// TestReconcileRestoresBudgetWindowFromInstanceLog is issue #135's "budget
+// amnesia" fix: Conditions' MaxRunsPerHour rolling window is in-memory only,
+// so without reconstructing it from the instance journal's run.started
+// history on restart, a crash-looping daemon would admit one extra
+// catch-up-style fire per restart, silently exceeding the declared budget.
+func TestReconcileRestoresBudgetWindowFromInstanceLog(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	now := time.Now()
+
+	// Simulate a prior process instance admitting one run 10 minutes ago —
+	// well within the 1-hour budget window Reconcile must restore.
+	past, _, err := journal.OpenInstanceLog(dir, journal.WithClock(func() time.Time { return now.Add(-10 * time.Minute) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Append(journal.Event{Type: journal.EventRunStarted, Workflow: "curate", RunID: "prior-run"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched := New([]WorkflowEntry{{
+		Workflow:  "curate",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 1},
+		Starter:   starter,
+	}}, log)
+	if err := sched.Reconcile(filepath.Join(t.TempDir(), "runs"), now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without the fix, Conditions.starts starts empty every restart — this
+	// Trigger would wrongly be admitted despite the budget already being spent.
+	if _, err := sched.Trigger(context.Background(), "curate", now); err == nil {
+		t.Fatal("expected the trigger to be rejected: budget already spent per the reconstructed instance-journal history")
+	} else if !strings.Contains(err.Error(), ReasonBudget) {
+		t.Fatalf("err = %v, want it to mention %q", err, ReasonBudget)
+	}
+}
+
 // TestTickSkipsOnBudgetExhaustion is the budget half of the run-conditions
 // acceptance criterion (the max-parallel half is TestTickSkipsWhenConditions
 // Exhausted): once MaxRunsPerHour is spent, further due ticks skip and journal

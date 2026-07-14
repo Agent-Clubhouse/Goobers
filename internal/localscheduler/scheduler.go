@@ -99,9 +99,17 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 	return s
 }
 
-// Reconcile seeds Conditions' active-run counts from runsDir and each
-// workflow's trigger LastEval from the instance journal's trigger.fired
-// history — the daemon-restart recovery pass. Call once before Run.
+// Reconcile seeds Conditions' active-run counts and rolling budget window,
+// and each workflow's trigger LastEval, from durable state — the
+// daemon-restart recovery pass. Call once before Run.
+//
+// The active-run counts this seeds are a starting point, not a
+// self-releasing snapshot: whatever the caller does with those pre-existing
+// non-terminal runs (issue #135's daemon-startup recovery, e.g.
+// Runner.Resume) MUST call Release once each one's outcome is known, the
+// same reserve-then-Release contract Admit's own callers follow — otherwise
+// the seeded count never comes back down and the workflow starves for the
+// rest of the daemon's life. See Release below.
 func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 	active, err := ActiveRunCounts(runsDir)
 	if err != nil {
@@ -114,11 +122,17 @@ func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 		return fmt.Errorf("localscheduler: reconcile trigger history: %w", err)
 	}
 	var fired []TriggerFiredRecord
+	starts := map[string][]time.Time{}
+	budgetCutoff := now.Add(-budgetWindow)
 	for _, ev := range events {
 		if ev.Type == journal.EventTriggerFired {
 			fired = append(fired, TriggerFiredRecord{Workflow: ev.Workflow, Time: ev.Time})
 		}
+		if ev.Type == journal.EventRunStarted && ev.Time.After(budgetCutoff) {
+			starts[ev.Workflow] = append(starts[ev.Workflow], ev.Time)
+		}
 	}
+	s.conditions.ReconcileBudget(starts)
 
 	names := make([]string, 0, len(s.workflows))
 	for name := range s.workflows {
@@ -134,6 +148,17 @@ func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 		s.triggers[name] = ts
 	}
 	return nil
+}
+
+// Release returns a workflow's held concurrency slot. Exported so a caller
+// resuming interrupted runs outside the normal Tick/Trigger dispatch path
+// (the daemon's startup recovery scan, issue #135) can release the slot
+// Reconcile seeded for it once that resumed run's outcome is known, exactly
+// as dispatch's own goroutine does for a newly-dispatched run — without
+// this, a reconciled slot for a run that predates this process has no
+// release path at all and starves its workflow for the daemon's lifetime.
+func (s *Scheduler) Release(workflow string) {
+	s.conditions.Release(workflow)
 }
 
 // Run is the daemon loop: evaluate every workflow's trigger, dispatch what's

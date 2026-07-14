@@ -21,16 +21,23 @@ import (
 var runPollInterval = 200 * time.Millisecond
 
 func runRun(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "abort" {
+		return runRunAbort(args[1:], stdout, stderr)
+	}
+
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers run <workflow> [path]\n\n"+
+		pf(stderr, "Usage: goobers run <workflow> [path]\n"+
+			"       goobers run abort <run-id> [path]\n\n"+
 			"Trigger a run of a config/ workflow manually, through the same scheduler\n"+
 			"(run conditions, instance journal, single-instance lock) a live `goobers up`\n"+
 			"daemon uses, then wait for it to reach a terminal state or pause (default\n"+
 			"path \".\"). Exit codes: 0 = run created and dispatched, 1 = business error\n"+
 			"(unknown workflow, invalid config, run conditions rejected the trigger, a\n"+
-			"daemon already holds this instance's lock), 2 = usage/IO error.\n")
+			"daemon already holds this instance's lock), 2 = usage/IO error.\n"+
+			"`run abort` marks a stuck non-terminal run aborted directly in its own\n"+
+			"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -115,6 +122,66 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "finished: phase=%s\n", phase)
 	pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
+	return 0
+}
+
+// runRunAbort marks a stuck non-terminal run as aborted by appending a
+// terminal run.finished(status=aborted) event directly to its own journal —
+// issue #135's sanctioned recovery path for a run resumeInterruptedRuns
+// can't resolve on its own (e.g. its workflow was renamed/removed from
+// config, so `goobers up` skips it with a warning forever rather than
+// erroring at startup). Works on the run's journal alone — it doesn't need
+// the run's workflow to still exist in config, unlike everything else in
+// this file.
+func runRunAbort(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("run abort", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		pf(stderr, "Usage: goobers run abort <run-id> [path]\n\n"+
+			"Mark a stuck non-terminal run aborted by appending a terminal\n"+
+			"run.finished(status=aborted) event to its own journal (default path\n"+
+			"\".\"). Exit codes: 0 = aborted, 1 = business error (run already terminal),\n"+
+			"2 = usage/IO error (unknown run).\n")
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() < 1 || fs.NArg() > 2 {
+		fs.Usage()
+		return 2
+	}
+	runID := fs.Arg(0)
+	root := "."
+	if fs.NArg() == 2 {
+		root = fs.Arg(1)
+	}
+
+	l := instance.NewLayout(root)
+	dir := filepath.Join(l.RunsDir(), runID)
+
+	if reader, err := journal.OpenRead(dir); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	} else if st, err := reader.State(); err == nil {
+		switch st.Phase {
+		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+			pf(stderr, "error: run %s is already terminal (phase=%s)\n", runID, st.Phase)
+			return 1
+		}
+	}
+
+	run, _, err := journal.Recover(dir)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	defer func() { _ = run.Close() }()
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted)}); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+
+	pf(stdout, "aborted run %s\n", runID)
 	return 0
 }
 
