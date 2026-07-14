@@ -8,19 +8,27 @@ Tutor run can never touch platform code, CI, credentials, or anything outside th
 instance's config.
 
 This guide covers the **path-scoped** half of that boundary (issue #104 / design
-§T4). It ships today. The **structural** half — a credential that cannot push
-platform changes even if this check were bypassed — is deferred to #35 (see
+§T4, wired into the real Tutor architecture by #223). It ships today. The
+**structural** half — a credential that cannot push platform changes even if this
+check were bypassed — is deferred to #35 (see
 [What #35 adds](#what-35-adds-structural-enforcement)).
 
 ## What the boundary does
 
-Every Tutor cycle builds a proposal (a set of files to commit) and, **before it
-creates a branch, commits, or even reads the current config off disk**, checks
-that every proposed file is contained within the instance's **configured config
-root**. If any file falls outside that root the whole cycle is aborted
-(`ErrOutsideConfigRoot`) and nothing is written. The refusal is recorded as a
-`tutor.boundary_violation` event on the Tutor's own run span, so a breach attempt
-is auditable in the run journal (TUT-006).
+The Tutor workflow (`tutor.yaml`) drafts its config change in the run's git
+worktree (the `draft-change` stage commits + pushes to the run branch), then the
+`open-pr` stage opens the PR. Before `open-pr` opens anything, it lists every
+file the run's branch changes — `git diff --name-only <base>...HEAD` in that
+worktree — and checks each is contained within the instance's **configured config
+root** (`internal/configboundary.Confine`). If any changed file falls outside the
+root, the stage **fails closed** (`ErrOutsideConfigRoot`): it exits non-zero and
+**no PR is opened**, so a self-improvement run can never open a PR touching
+platform code. An unverifiable diff (e.g. git failure) is treated as a breach and
+also refuses the PR.
+
+The check is **opt-in**: `open-pr` only enforces it when the workflow sets the
+`confineToConfigRoot=true` stage input (with `configRoot=<root>`). Other workflows
+(implementation, work-nomination) leave it off and are unaffected.
 
 The root is the **instance's configured config root — not a hardcoded
 `config/`**. On the dogfood instance (`selfhost/`) the root is `selfhost`;
@@ -72,17 +80,20 @@ before enabling it there:
 
 ## What #35 adds (structural enforcement)
 
-Today the boundary is enforced in-process by the Tutor before it calls the PR
-provider. #35 (per-goober credential injection) adds the second layer: a token
-scoped so that even a compromised or buggy Tutor **physically cannot** push a
-change outside config. Until then, path-scoping + CODEOWNERS + branch protection
-are the boundary; keep all three in place.
+Today the boundary is enforced by the `open-pr` stage checking the run's git diff
+before it opens the PR. #35 (per-goober credential injection) adds the second
+layer: a token scoped so that even a compromised or buggy Tutor **physically
+cannot** push a change outside config. Until then, path-scoping + CODEOWNERS +
+branch protection are the boundary; keep all three in place.
 
 ## Testing the boundary
 
-The negative test (`internal/tutor/boundary_test.go`) is exercised against a
+Two layers of tests cover it. The containment logic
+(`internal/configboundary/configboundary_test.go`) is exercised against a
 **non-default** root (`selfhost`, plus arbitrary custom roots) and asserts that
 every platform path — `internal/…`, `.github/…`, `Makefile`, `../…`, absolute
 paths, and even the *default* `config/…` — is refused, proving platform paths are
-unreachable through the workflow and that the check honors the configured root
-rather than a hardcoded one.
+unreachable and that the check honors the configured root rather than a hardcoded
+one. The end-to-end negative test (`cmd/goobers/configboundary_test.go`) drives
+the **real `open-pr` stage** over a git worktree whose run branch touches a
+platform file, and asserts the stage fails closed and opens **no** PR.
