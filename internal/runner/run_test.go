@@ -1827,6 +1827,179 @@ func TestRunnerResumeAtGateEvaluatesRealSubject(t *testing.T) {
 	}
 }
 
+// TestRunnerResumeRefusesEmptyWorkflowDigest proves the #112 hardening fix:
+// a run journal with no pinned WorkflowDigest (a corrupted or pre-WF-016
+// run.yaml — Start always pins one, so this should never happen in
+// practice) is refused, not silently resumed under whatever Machine the
+// caller happens to pass — WF-016's whole point is that a changed
+// definition is refused, not reinterpreted, and an unpinned run is
+// indistinguishable from "we don't know if the definition changed."
+func TestRunnerResumeRefusesEmptyWorkflowDigest(t *testing.T) {
+	machine := fixtureMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-no-digest", Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		// WorkflowDigest deliberately left empty.
+		Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("implement")
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	r, err := New(Config{
+		Automated:    gate.NewAutomatedEvaluator(),
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-no-digest",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil {
+		t.Fatal("Resume: want an error — an unpinned run must be refused, not silently resumed (WF-016)")
+	}
+}
+
+// blockingCommenter blocks inside UpdateWorkItem until released, recording
+// the ctx it was called with (checked AFTER release, once the caller has
+// had a chance to cancel it) — for proving NotifyEscalated survives a
+// SIGTERM-style cancellation of the run-level context (#112) instead of
+// racing it.
+type blockingCommenter struct {
+	called  chan struct{}
+	release chan struct{}
+	ctxErr  error
+}
+
+func (c *blockingCommenter) UpdateWorkItem(ctx context.Context, _ providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	close(c.called)
+	<-c.release
+	c.ctxErr = ctx.Err()
+	return providers.WorkItem{}, nil
+}
+
+// repassLoopMachine is implement (always fails) -> review (automated gate,
+// fail loops back to implement) — the same shape
+// TestRunnerResumeRestoresGateRepassCounter uses, factored out here so this
+// file's escalation test can drive it fresh via Start instead of a
+// hand-built journal.
+func repassLoopMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "review"},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "review",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+				Branches:  map[string]string{"pass": workflow.TerminalComplete, "fail": "implement"},
+			},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "repass-loop-escalate", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile repass-loop machine: %v", err)
+	}
+	return m
+}
+
+// TestRunnerNotifyEscalatedSurvivesCancellation proves the #112 hardening
+// fix: NotifyEscalated now runs on context.WithoutCancel, the same drain
+// contract as every other post-decision effect (runTask's dispatch,
+// evaluateGate) — a SIGTERM mid-notification must let it finish instead of
+// racing it, so the escalation comment reliably posts exactly once instead
+// of risking an aborted post that a later resume's re-evaluation would then
+// duplicate.
+func TestRunnerNotifyEscalatedSurvivesCancellation(t *testing.T) {
+	machine := repassLoopMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-escalate:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "x", Message: "always fails"}},
+	}
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+
+	commenter := &blockingCommenter{called: make(chan struct{}), release: make(chan struct{})}
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: byTask}, nil
+		},
+		Automated:    gate.NewAutomatedEvaluator(),
+		MaxRepasses:  0, // escalate on the very first non-pass evaluation
+		Escalation:   &gate.EscalationNotifier{Poster: commenter, Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type startResult struct {
+		res Result
+		err error
+	}
+	done := make(chan startResult, 1)
+	go func() {
+		res, err := r.Start(ctx, StartInput{
+			RunID:   "run-escalate",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+			Item:    &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix bug"},
+		})
+		done <- startResult{res, err}
+	}()
+
+	select {
+	case <-commenter.called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("NotifyEscalated's UpdateWorkItem was never dispatched")
+	}
+
+	// Cancel WHILE the notification is blocked mid-flight, then release it —
+	// proving the cancellation didn't abort the in-flight call.
+	cancel()
+	select {
+	case <-done:
+		t.Fatal("Start returned before the blocking notification was released")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(commenter.release)
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("Start: %v", r.err)
+		}
+		if r.res.Phase != journal.PhaseEscalated {
+			t.Fatalf("phase = %q, want escalated", r.res.Phase)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after the blocking notification was released")
+	}
+
+	if commenter.ctxErr != nil {
+		t.Fatalf("UpdateWorkItem's ctx.Err() = %v, want nil — the run-level cancellation must not have propagated to the escalation notification", commenter.ctxErr)
+	}
+}
+
 // TestRunnerEmitsRunTaskAndGateSpans is issue #126's runner-level acceptance:
 // when Config.Telemetry is set, Start opens a run span before walking and a
 // task/gate span for each stage dispatched, in walk order. Before this fix,
