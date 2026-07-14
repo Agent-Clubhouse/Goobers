@@ -94,18 +94,20 @@ func (s *stubDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope,
 	return result, nil
 }
 
-// capturingDeterministic is stubDeterministic plus recording each call's full
-// InvocationEnvelope by TaskID, so a test can assert what actually arrived in
-// env.Inputs — e.g. #132's InputsFrom output->input threading, which
-// stubDeterministic's plain canned-Outputs lookup can't observe from the
-// consuming side.
-type capturingDeterministic struct {
+// outputCapturingDeterministic is stubDeterministic plus recording each
+// call's full InvocationEnvelope by TaskID, so a test can assert what
+// actually arrived in env.Inputs — e.g. #132's InputsFrom output->input
+// threading, which stubDeterministic's plain canned-Outputs lookup can't
+// observe from the consuming side. (Named distinctly from #107's
+// capturingDeterministic below, which records only its last call for a
+// different purpose — resume pointer-visibility, not input threading.)
+type outputCapturingDeterministic struct {
 	rec      ArtifactRecorder
 	byTask   map[string]stubTaskResult
 	received map[string]apiv1.InvocationEnvelope
 }
 
-func (c *capturingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+func (c *outputCapturingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	if c.received == nil {
 		c.received = map[string]apiv1.InvocationEnvelope{}
 	}
@@ -336,7 +338,7 @@ func TestRunnerThreadsInputsFromUpstreamOutputs(t *testing.T) {
 		"run-1:open-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{"prNumber": "42"}},
 		"run-1:ci-poll": {status: apiv1.ResultSuccess},
 	}
-	det := &capturingDeterministic{byTask: byTask}
+	det := &outputCapturingDeterministic{byTask: byTask}
 	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
 		det.rec = rec
 		return det, nil
