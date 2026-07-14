@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 // drainGrace bounds how long runUpContext waits, after its context is
@@ -105,6 +106,13 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	defer func() { _ = tel.Shutdown(context.Background()) }()
 
+	rollupDB, err := rollup.Open(l.TelemetryDB())
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	defer func() { _ = rollupDB.Close() }()
+
 	runnerCfg, err := buildRunnerConfig(l, cfg, goobers, tel)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -127,7 +135,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
 	// shutdown restarts now, before the scheduler starts admitting new ticks
 	// (#23 AC: restart via Runner.Resume).
-	resumed, err := resumeInterruptedRuns(ctx, l.RunsDir(), rn, machines, repoRefs, instanceLog, &wg)
+	resumed, err := resumeInterruptedRuns(ctx, l, rn, machines, repoRefs, instanceLog, rollupDB, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -156,7 +164,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			Gaggle:    wf.Spec.Gaggle,
 			Readiness: wf.Spec.Readiness,
 			Schedule:  sched,
-			Starter:   &trackedStarter{r: rn, machine: machines[wf.Name], wg: &wg},
+			Starter:   &trackedStarter{r: rn, machine: machines[wf.Name], wg: &wg, l: l, rollupDB: rollupDB},
 			RepoRef:   repoRefs[wf.Name],
 		})
 	}

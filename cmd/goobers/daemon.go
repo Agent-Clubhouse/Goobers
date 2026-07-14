@@ -9,9 +9,11 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -27,9 +29,11 @@ import (
 // wg.Add actually running; closing it fully would need a scheduler-side
 // hook this seam doesn't expose.
 type trackedStarter struct {
-	r       *runner.Runner
-	machine *workflow.Machine
-	wg      *sync.WaitGroup
+	r        *runner.Runner
+	machine  *workflow.Machine
+	wg       *sync.WaitGroup
+	l        instance.Layout
+	rollupDB *rollup.DB
 }
 
 func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
@@ -43,6 +47,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		RepoRef: req.RepoRef,
 		Item:    req.Item,
 	})
+	ingestRunTelemetry(s.rollupDB, s.l, req.RunID)
 	return localscheduler.StartResult{Phase: res.Phase, FinalState: res.FinalState}, err
 }
 
@@ -62,7 +67,8 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // journaled to the instance log with the same run.finished/error convention
 // localscheduler's own dispatch uses for a failed Start, so it is visible
 // via the instance journal rather than silently dropped.
-func resumeInterruptedRuns(ctx context.Context, runsDir string, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, wg *sync.WaitGroup) ([]string, error) {
+func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, rollupDB *rollup.DB, wg *sync.WaitGroup) ([]string, error) {
+	runsDir := l.RunsDir()
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -103,6 +109,7 @@ func resumeInterruptedRuns(ctx context.Context, runsDir string, rn *runner.Runne
 		go func(runID, wfName string) {
 			defer wg.Done()
 			_, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, RepoRef: repoRef})
+			ingestRunTelemetry(rollupDB, l, runID)
 			status := "resumed"
 			if err != nil {
 				status = "error: " + err.Error()

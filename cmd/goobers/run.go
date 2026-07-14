@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 func runRun(args []string, stdout, stderr io.Writer) int {
@@ -87,6 +88,13 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = tel.Shutdown(context.Background()) }()
 
+	rollupDB, err := rollup.Open(l.TelemetryDB())
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	defer func() { _ = rollupDB.Close() }()
+
 	runnerCfg, err := buildRunnerConfig(l, cfg, goobers, tel)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -113,6 +121,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
 		RepoRef: repoRefs[wf.Name],
 	})
+	ingestRunTelemetry(rollupDB, l, runID)
 	if err != nil {
 		pf(stderr, "error: run %s failed: %v\n", runID, err)
 		return 1
