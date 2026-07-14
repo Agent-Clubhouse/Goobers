@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -23,6 +25,28 @@ func (f *fakePoller) PollPullRequest(ctx context.Context, req providers.PullRequ
 }
 
 func noSleep(context.Context, time.Duration) error { return nil }
+
+// pollStep is one scripted PollPullRequest outcome for sequencedPoller.
+type pollStep struct {
+	state providers.CheckState
+	err   error
+}
+
+// sequencedPoller replays one pollStep per call, staying on the last step
+// once exhausted (like fakePoller) — but able to script an error on a given
+// call, for #239's transient-error-handling tests.
+type sequencedPoller struct {
+	steps []pollStep
+	calls int
+}
+
+func (f *sequencedPoller) PollPullRequest(ctx context.Context, req providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
+	step := f.steps[f.calls]
+	if f.calls < len(f.steps)-1 {
+		f.calls++
+	}
+	return providers.PullRequestPollResult{CheckState: step.state}, step.err
+}
 
 func cfgFor(owner, repo, pullID string) CIPollConfig {
 	return CIPollConfig{Owner: owner, Repo: repo, PullID: pullID}
@@ -123,9 +147,103 @@ func TestCIPollExecutor_TimesOutIsAFailure(t *testing.T) {
 	if result.Error == nil || result.Error.Code != "poll_timeout" || !result.Error.Retryable {
 		t.Fatalf("error = %+v, want poll_timeout, retryable", result.Error)
 	}
-	if _, ok := result.Outputs[OutputCIStatus]; ok {
-		t.Fatalf("outputs = %+v, want no ciStatus set on a timeout (not a claimed pass/fail)", result.Outputs)
+	// #239: a timeout gets its own distinct ciStatus ("timeout") — neither a
+	// claimed pass nor fail — so a downstream ci-status gate check can route
+	// it to escalation instead of the "fail" branch's implement repass.
+	if result.Outputs[OutputCIStatus] != CIStatusTimeout {
+		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], CIStatusTimeout)
 	}
+}
+
+// TestCIPollExecutor_TransientErrorsThenPass is the regression test for
+// #239 Part 1: a handful of transient provider errors (a 503, a network
+// blip) must not abort the poll — the loop backs off and keeps polling,
+// eventually reaching the real terminal state.
+func TestCIPollExecutor_TransientErrorsThenPass(t *testing.T) {
+	poller := &sequencedPoller{steps: []pollStep{
+		{err: errors.New("GET .../status failed: status 503: temporarily unavailable")},
+		{err: &net.DNSError{Err: "temporary failure", IsTemporary: true}},
+		{state: providers.CheckStatePassing},
+	}}
+	exec, err := NewCIPollExecutor(poller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.Sleep = noSleep
+	exec.Timeout = time.Hour
+
+	result, err := exec.Run(context.Background(), cfgFor("o", "r", "42"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if result.Outputs[OutputCIStatus] != string(providers.CheckStatePassing) {
+		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStatePassing)
+	}
+	if poller.calls != 2 {
+		t.Fatalf("expected 3 poll calls (2 transient errors + 1 terminal), got %d", poller.calls+1)
+	}
+}
+
+// TestCIPollExecutor_NonTransientErrorAbortsImmediately is the negative
+// control for #239 Part 1: an error that doesn't look transient (a 404, a
+// permissions error) must still abort the poll on the first occurrence —
+// only transient-shaped errors get absorbed.
+func TestCIPollExecutor_NonTransientErrorAbortsImmediately(t *testing.T) {
+	poller := &sequencedPoller{steps: []pollStep{
+		{err: errors.New("GET .../status failed: status 404: not found")},
+		{state: providers.CheckStatePassing},
+	}}
+	exec, err := NewCIPollExecutor(poller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.Sleep = noSleep
+
+	_, err = exec.Run(context.Background(), cfgFor("o", "r", "42"))
+	if err == nil {
+		t.Fatal("expected Run to return an error for a non-transient poll failure")
+	}
+	if poller.calls != 1 {
+		t.Fatalf("expected exactly one poll call before aborting, got %d", poller.calls)
+	}
+}
+
+// TestCIPollExecutor_ConsecutiveTransientErrorsBoundedAbort is the
+// bounded-loop regression test for #239: a poller that fails transiently
+// forever must not spin until the overall Timeout — it gives up once
+// MaxConsecutivePollErrors back-to-back transient errors are seen.
+func TestCIPollExecutor_ConsecutiveTransientErrorsBoundedAbort(t *testing.T) {
+	alwaysTransient := &alwaysErrorPoller{err: errors.New("GET .../status failed: status 503: down")}
+	exec, err := NewCIPollExecutor(alwaysTransient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.Sleep = noSleep
+	exec.Timeout = time.Hour // large enough that only the error budget can end this
+	exec.MaxConsecutivePollErrors = 3
+
+	_, err = exec.Run(context.Background(), cfgFor("o", "r", "42"))
+	if err == nil {
+		t.Fatal("expected Run to give up after exhausting the consecutive-error budget")
+	}
+	if alwaysTransient.calls != 4 { // 3 absorbed + 1 that trips the budget
+		t.Fatalf("expected 4 poll calls (budget=3), got %d", alwaysTransient.calls)
+	}
+}
+
+// alwaysErrorPoller returns err on every call, for testing the
+// consecutive-error budget without needing a Timeout short enough to race.
+type alwaysErrorPoller struct {
+	err   error
+	calls int
+}
+
+func (f *alwaysErrorPoller) PollPullRequest(ctx context.Context, req providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
+	f.calls++
+	return providers.PullRequestPollResult{}, f.err
 }
 
 func TestCIPollConfigFromEnvelope_MissingLocatorIsError(t *testing.T) {

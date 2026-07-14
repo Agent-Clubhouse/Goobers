@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 func evalCheck(t *testing.T, check string, params map[string]string, inputs map[string]interface{}) (string, error) {
@@ -99,6 +101,52 @@ func TestCIStatusCheck(t *testing.T) {
 	out, err = evalCheck(t, "ci-status", nil, map[string]interface{}{"ciStatus": "pending"})
 	if err != nil || out != OutcomeFail {
 		t.Fatalf("got %q, %v; want fail", out, err)
+	}
+}
+
+// TestCIStatusCheckTimeoutIsADistinctOutcome is the routing regression test
+// for #239: a ci-poll timeout (executor.CIStatusTimeout) must resolve to its
+// own OutcomeTimeout, not get folded into OutcomeFail — a workflow's ci-gate
+// needs to tell "CI ran and failed" apart from "the poll never reached a
+// terminal state" so it can route the latter to escalation instead of an
+// implement repass.
+func TestCIStatusCheckTimeoutIsADistinctOutcome(t *testing.T) {
+	out, err := evalCheck(t, "ci-status", nil, map[string]interface{}{"ciStatus": executor.CIStatusTimeout})
+	if err != nil || out != OutcomeTimeout {
+		t.Fatalf("got %q, %v; want %q", out, err, OutcomeTimeout)
+	}
+	if out == OutcomeFail {
+		t.Fatal("a poll timeout must not resolve to the same outcome as a genuine CI failure")
+	}
+}
+
+// TestCIGateRoutesTimeoutOutcomeToEscalate proves the full gate.Evaluate path
+// (not just the check function) resolves a ci-poll timeout to @escalate when
+// a workflow's ci-gate declares a "timeout" branch — the routing half of
+// #239, exercised through the same Evaluator a real run uses.
+func TestCIGateRoutesTimeoutOutcomeToEscalate(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "ci-gate",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "ci-status"},
+		Branches: map[string]string{
+			OutcomePass:    "close-out",
+			OutcomeFail:    "implement",
+			OutcomeTimeout: wf.TargetEscalate,
+		},
+	}
+	e := &Evaluator{Automated: NewAutomatedEvaluator()}
+	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{"ciStatus": executor.CIStatusTimeout}}
+
+	result, err := e.Evaluate(context.Background(), g, env, "ci-poll", apiv1.ResultEnvelope{Status: apiv1.ResultFailure})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Outcome != OutcomeTimeout {
+		t.Fatalf("outcome = %q, want %q", result.Outcome, OutcomeTimeout)
+	}
+	if result.Target != wf.TargetEscalate {
+		t.Fatalf("target = %q, want %q (not the implement repass)", result.Target, wf.TargetEscalate)
 	}
 }
 

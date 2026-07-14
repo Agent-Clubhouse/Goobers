@@ -104,7 +104,9 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 		t.Errorf("reviewer capabilities = %v, want none", goobers["reviewer"].Capabilities)
 	}
 
-	const wantDigest = "sha256:764c9d83d96babfee867275e8c23af8de0ea2cb39f0a0fb7900318db4e5d80bf"
+	// #239: ci-gate gained a "timeout" branch (routes a ci-poll timeout to
+	// @escalate instead of the "fail" branch's implement repass).
+	const wantDigest = "sha256:3b05b23f3e34bf3b1da8686f721c278200c225aa913af619d75d2ae8607afd71"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

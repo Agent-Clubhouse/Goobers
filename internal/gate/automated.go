@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 )
 
 // InputKeyStatus is the env.Inputs key an automated gate reads the subject
@@ -34,6 +35,17 @@ const (
 	OutcomePass = "pass"
 	OutcomeFail = "fail"
 )
+
+// OutcomeTimeout is the "ci-status" check's third outcome (#239) — distinct
+// from pass/fail — when the polled ciStatus is executor.CIStatusTimeout: the
+// poll itself never reached a terminal passing/failing state before its
+// deadline, which is different evidence from "CI ran and failed" and must
+// not resolve through the same "fail" branch a workflow definition wires to
+// an implement repass. A workflow definition wanting the historical
+// pass/fail-only behavior simply omits a "timeout" branch; Evaluate then
+// fails closed with an unhandled-outcome error (GT-002) rather than
+// silently falling through to "fail".
+const OutcomeTimeout = "timeout"
 
 // CheckFunc evaluates one named automated check against a gate's flattened
 // Inputs and its configured Params, returning an outcome ("pass"/"fail" for
@@ -93,18 +105,27 @@ func DefaultChecks() map[string]CheckFunc {
 		},
 		// "ci-status": pass iff Inputs["ciStatus"] (the well-known output key
 		// a ci-poll deterministic stage — issue #18 — is expected to set,
-		// using the providers.CheckState vocabulary "passing"/"failing" —
-		// internal/executor's own package, not this one, imports providers,
-		// so the literal string mirrors it rather than importing it here)
+		// using the providers.CheckState vocabulary "passing"/"failing")
 		// equals Params["equals"] (default "passing"). Prior to #132 this
 		// defaulted to apiv1.ResultStatus's "success", which a ci-poll stage
 		// emitting "passing"/"failing" could never match.
+		//
+		// A ciStatus of executor.CIStatusTimeout ("timeout", #239) is
+		// reported as its own OutcomeTimeout outcome rather than folded into
+		// "fail": a poll that never reached a terminal state is not the same
+		// evidence as CI actually failing, and a workflow definition's
+		// ci-gate must be free to route it to escalation instead of the
+		// "fail" branch's implement repass.
 		"ci-status": func(inputs map[string]interface{}, params map[string]string) (string, error) {
 			want := params["equals"]
 			if want == "" {
 				want = "passing"
 			}
-			return boolOutcome(stringField(inputs, "ciStatus") == want), nil
+			got := stringField(inputs, "ciStatus")
+			if got == executor.CIStatusTimeout {
+				return OutcomeTimeout, nil
+			}
+			return boolOutcome(got == want), nil
 		},
 	}
 }
