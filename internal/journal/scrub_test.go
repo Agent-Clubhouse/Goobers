@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -9,6 +10,24 @@ import (
 )
 
 const canary = "SUPER-SECRET-CANARY-9f8e7d6c5b4a3210"
+
+// escCanary contains characters JSON-escapes — a quote, a backslash, and the
+// HTML-escaped <, >, & — so once an event is marshaled the secret appears ONLY
+// in its escaped form. This is the #114/SEC-041 leak the raw-bytes registry
+// missed: it searched for the literal secret, which the marshaled line no longer
+// contains.
+const escCanary = `ESC-CANARY-"<>&\-9f8e7d6c5b4a3210`
+
+// jsonEscapedInner returns the JSON-string encoding of s without its surrounding
+// quotes — the byte sequence s becomes as a marshaled field value.
+func jsonEscapedInner(t *testing.T, s string) []byte {
+	t.Helper()
+	enc, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal %q: %v", s, err)
+	}
+	return enc[1 : len(enc)-1]
+}
 
 // filesContaining walks a run dir and returns every file whose bytes contain
 // needle — the direct test that no secret material landed at rest.
@@ -107,6 +126,71 @@ func TestCanaryNeverLandsAtRest(t *testing.T) {
 	}
 	if art.Digest != Digest(got) {
 		t.Fatalf("digest does not commit to scrubbed bytes: %s vs %s", art.Digest, Digest(got))
+	}
+}
+
+// TestRegistryRedactsJSONEscapedSecret is the focused negative control for #114:
+// a secret with escaped characters, embedded in a marshaled event line, is
+// redacted in its escaped form. Against the raw-only registry this fails — the
+// escaped secret survives.
+func TestRegistryRedactsJSONEscapedSecret(t *testing.T) {
+	reg := NewRegistryScrubber()
+	reg.Register([]byte(escCanary))
+
+	// Marshal exactly as appendEvent does (default json.Marshal, HTML escaping on).
+	line, err := json.Marshal(map[string]string{"message": "token " + escCanary + " leaked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Precondition: the raw secret is NOT present in the marshaled bytes — it was
+	// escaped — so the test genuinely exercises the escaped path.
+	if bytes.Contains(line, []byte(escCanary)) {
+		t.Fatal("test setup: expected the secret to be JSON-escaped in the marshaled line")
+	}
+
+	out := reg.Scrub(line)
+	if bytes.Contains(out, jsonEscapedInner(t, escCanary)) {
+		t.Fatalf("JSON-escaped secret survived scrubbing: %s", out)
+	}
+	// The distinctive prefix is part of the secret, so it must be gone too.
+	if bytes.Contains(out, []byte("ESC-CANARY-")) {
+		t.Fatalf("secret material survived scrubbing: %s", out)
+	}
+	if !bytes.Contains(out, []byte(Redacted)) {
+		t.Fatalf("expected a redaction placeholder: %s", out)
+	}
+}
+
+// TestJSONEscapedSecretNeverLandsAtRest is the end-to-end negative control for
+// #114: a registered secret containing JSON-escaped characters, written into an
+// event, must appear at rest in NO form — neither raw nor JSON-escaped.
+func TestJSONEscapedSecretNeverLandsAtRest(t *testing.T) {
+	reg, scrub := DefaultScrubber()
+	reg.Register([]byte(escCanary))
+
+	root := t.TempDir()
+	run, err := Create(root, testIdentity(), nil, WithScrubber(scrub), WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := run.Append(Event{
+		Type:   EventError,
+		Error:  &ErrorDetail{Code: "leak", Message: "stage logged " + escCanary},
+		Runner: map[string]any{"note": "token=" + escCanary},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = run.Close()
+
+	dir := filepath.Join(root, testIdentity().RunID)
+	if hits := filesContaining(t, dir, []byte(escCanary)); len(hits) > 0 {
+		t.Fatalf("raw escaped-secret leaked to rest in: %v", hits)
+	}
+	if hits := filesContaining(t, dir, jsonEscapedInner(t, escCanary)); len(hits) > 0 {
+		t.Fatalf("JSON-escaped secret leaked to rest in: %v", hits)
+	}
+	if hits := filesContaining(t, dir, []byte("ESC-CANARY-")); len(hits) > 0 {
+		t.Fatalf("secret material leaked to rest in: %v", hits)
 	}
 }
 

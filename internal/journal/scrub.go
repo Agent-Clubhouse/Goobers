@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"encoding/json"
 	"regexp"
 	"sort"
 	"sync"
@@ -67,25 +68,78 @@ func (s *RegistryScrubber) Register(secret []byte) {
 	}
 }
 
-// Scrub replaces every registered secret value with the Redacted placeholder.
-// Longer secrets are replaced first so a secret that contains another registered
-// value is fully redacted rather than partially unmasked.
+// Scrub replaces every registered secret value with the Redacted placeholder,
+// in both its raw form AND its JSON-string-escaped form. The journal marshals an
+// event to JSON before scrubbing the marshaled bytes (see appendEvent), so a
+// secret containing any JSON-escaped byte — a quote, backslash, control char, or
+// the HTML-escaped <, >, & — reaches the scrubber in its escaped form. Matching
+// only the raw bytes would let that escaped form land at rest (SEC-041, #114), so
+// the escaped encodings are redacted too.
+//
+// Longer targets are replaced first (with a byte-order tiebreak for full
+// determinism, since digests commit to the scrubbed output) so a value that
+// contains another registered value — or whose escaped form contains another
+// target — is fully redacted rather than partially unmasked.
 func (s *RegistryScrubber) Scrub(b []byte) []byte {
 	s.mu.RLock()
-	values := make([][]byte, 0, len(s.secrets))
+	targets := make([][]byte, 0, len(s.secrets)*2)
 	for _, v := range s.secrets {
-		values = append(values, v)
+		targets = append(targets, v)
+		targets = append(targets, jsonEscapedForms(v)...)
 	}
 	s.mu.RUnlock()
-	if len(values) == 0 {
+	if len(targets) == 0 {
 		return b
 	}
-	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	sort.Slice(targets, func(i, j int) bool {
+		if len(targets[i]) != len(targets[j]) {
+			return len(targets[i]) > len(targets[j])
+		}
+		return bytes.Compare(targets[i], targets[j]) < 0
+	})
 	out := b
-	for _, v := range values {
-		out = bytes.ReplaceAll(out, v, []byte(Redacted))
+	for _, t := range targets {
+		out = bytes.ReplaceAll(out, t, []byte(Redacted))
 	}
 	return out
+}
+
+// jsonEscapedForms returns the JSON-string encodings of v (without the
+// surrounding quotes) that differ from v's raw bytes — the exact byte sequences
+// v becomes as a field value in a marshaled event. It returns both the
+// HTML-escaping form (Go's json.Marshal default, which the journal's appendEvent
+// uses) and the non-HTML-escaping form, so a secret is redacted whichever way an
+// encoder was configured. Marshaling a Go string cannot fail, so error paths
+// simply contribute no form.
+func jsonEscapedForms(v []byte) [][]byte {
+	var forms [][]byte
+	add := func(inner []byte) {
+		if len(inner) == 0 || bytes.Equal(inner, v) {
+			return
+		}
+		for _, existing := range forms {
+			if bytes.Equal(existing, inner) {
+				return
+			}
+		}
+		forms = append(forms, inner)
+	}
+
+	// HTML-escaping encoder (matches the journal's json.Marshal).
+	if enc, err := json.Marshal(string(v)); err == nil && len(enc) >= 2 {
+		add(enc[1 : len(enc)-1])
+	}
+	// Non-HTML-escaping encoder (a caller may disable HTML escaping).
+	var buf bytes.Buffer
+	e := json.NewEncoder(&buf)
+	e.SetEscapeHTML(false)
+	if err := e.Encode(string(v)); err == nil {
+		enc := bytes.TrimRight(buf.Bytes(), "\n") // Encoder appends a trailing newline
+		if len(enc) >= 2 {
+			add(enc[1 : len(enc)-1])
+		}
+	}
+	return forms
 }
 
 // minSecretLen is the shortest value the registry will redact.
