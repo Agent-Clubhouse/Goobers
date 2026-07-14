@@ -59,6 +59,19 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	title := providerInput("title", "Automated implementation")
 	body := providerInput("body", "Automated PR opened by the goobers implementation workflow.")
 
+	// Config write-boundary (#104/T4, wired here per #223). Opt-in and no-op by
+	// default, so implementation/work-nomination are unaffected. When the Tutor
+	// workflow sets confineToConfigRoot=true, every file this run's branch changes
+	// (relative to base) must be within the configured config root — else the
+	// cycle is aborted CLOSED before the PR is opened, so a self-improvement run
+	// can never open a PR touching platform code.
+	if providerInput("confineToConfigRoot", "") == "true" {
+		if err := confineDiffToConfigRoot(base, providerInput("configRoot", "")); err != nil {
+			pf(stderr, "error: config write-boundary: %v\n", err)
+			return 1
+		}
+	}
+
 	prReq := providers.PullRequestRequest{Repository: repo, Title: title, Body: body, Head: head, Base: base}
 	if providerInput("runIdFooter", "true") == "true" {
 		prReq.RunID = runID

@@ -62,8 +62,8 @@ config itself, not left to operator discretion:
   `telemetry:read`); implementer gets `repo:push` only; reviewer gets no
   capability at all.
 - **The Tutor is confined to this config root.** When the self-tuning Tutor
-  loop (#104 / epic #36) opens a config-as-code PR, it is path-scoped to
-  `selfhost/` and refuses (fail-closed, before any commit) to touch anything
+  loop (#104 / epic #36) opens a config-as-code PR, its `open-pr` stage checks
+  the run's git diff and refuses (fail-closed, no PR opened) to touch anything
   outside it — platform code, CI, and credentials are unreachable through it.
   Since Tutor PRs land in this same repo as platform code, `.github/CODEOWNERS`
   owns `/selfhost/` so a maintainer must review before merge. Structural
