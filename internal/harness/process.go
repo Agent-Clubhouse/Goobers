@@ -15,10 +15,14 @@ type ProcessRequest struct {
 	Command []string
 	// Dir is the working directory (the stage workspace).
 	Dir string
-	// Env is the full child environment. Nil means "inherit this process's
-	// environment" (the os/exec default) — callers that need to add
-	// capability tokens build on top of that explicitly (never a partial or
-	// synthetic env, so nothing PATH-dependent breaks by surprise).
+	// Env is the full child environment. Nil or empty means NO environment at
+	// all (#122) — the opposite of os/exec's own default, which would
+	// silently inherit this daemon process's full environment (SEC-045: any
+	// resolver-sourced credential env var the daemon happens to hold would
+	// leak into every subprocess regardless of declared capabilities). A
+	// caller that wants PATH/HOME/etc. must build that explicitly (baseEnv()
+	// in this package, or internal/executor's identical allowlist) — never a
+	// passthrough by omission.
 	Env []string
 	// Timeout bounds the process; zero means no timeout.
 	Timeout time.Duration
@@ -57,7 +61,15 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	}
 	cmd := exec.CommandContext(ctx, req.Command[0], req.Command[1:]...)
 	cmd.Dir = req.Dir
-	cmd.Env = req.Env
+	// A nil Env would make os/exec inherit the daemon's full environment —
+	// exactly the SEC-045 fail-open default #122 flags. An explicit non-nil,
+	// possibly-empty slice always wins instead, so "no Env supplied" means
+	// "no environment", never "whatever the daemon happens to hold".
+	env := req.Env
+	if env == nil {
+		env = []string{}
+	}
+	cmd.Env = env
 
 	var buf bytes.Buffer
 	cmd.Stdout = &buf

@@ -208,6 +208,51 @@ func TestShellExecutor_UndeclaredCapabilityNotInjected(t *testing.T) {
 	}
 }
 
+// TestShellExecutor_DoesNotPassthroughAmbientDaemonEnv is the regression test
+// for #122's missing-negative-control gap: internal/harness has had this
+// check since #70, but internal/executor's identical SEC-045 allowlist never
+// did. The subprocess must not inherit the daemon process's own environment
+// wholesale, since that would leak any resolver-sourced credential env var
+// (e.g. instance.yaml's token.env) into every stage regardless of whether it
+// declared the corresponding capability.
+func TestShellExecutor_DoesNotPassthroughAmbientDaemonEnv(t *testing.T) {
+	const ambientSecretVar = "GOOBERS_AMBIENT_DAEMON_SECRET"
+	t.Setenv(ambientSecretVar, "ambient-daemon-secret-never-declared")
+
+	exec, rec := newTestExecutor(t, nil)
+	env := baseEnvelope(t) // no capabilities declared at all
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `test -z "$` + ambientSecretVar + `" && echo absent; echo "PATH=$PATH" | head -c 5`},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	stdout := string(rec.recorded["task-1/stdout.log"])
+	if !strings.Contains(stdout, "absent") {
+		t.Fatalf("ambient daemon env var leaked into subprocess env: stdout = %q", stdout)
+	}
+	if !strings.Contains(stdout, "PATH=") {
+		t.Fatalf("expected PATH to still be passed through via the allowlist, got %q", stdout)
+	}
+}
+
+// TestShellExecutor_EmptyWorkspaceIsConfigError is the regression test for
+// #122: exec.Cmd treats Dir == "" as "run in the current process's working
+// directory" — an unset InvocationEnvelope.Workspace must fail closed as a
+// configuration error instead of silently running in the daemon's own cwd.
+func TestShellExecutor_EmptyWorkspaceIsConfigError(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	env := apiv1.InvocationEnvelope{TaskID: "task-1"} // Workspace left empty
+	_, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"true"}})
+	if err == nil {
+		t.Fatal("expected an error for an empty Workspace")
+	}
+}
+
 func TestShellExecutor_ResultFileLiftedToArtifact(t *testing.T) {
 	exec, rec := newTestExecutor(t, nil)
 	env := baseEnvelope(t)

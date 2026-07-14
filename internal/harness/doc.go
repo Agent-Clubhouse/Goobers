@@ -22,8 +22,10 @@
 //     (internal/credentials.Set.Token fails closed on that itself).
 //   - The harness transcript is captured and handed to the caller-supplied
 //     SpanRecorder (typically internal/journal.Run.RecordSpan) after
-//     passing through the caller-supplied Scrubber — this package has no
-//     dependency on internal/journal, mirroring how internal/credentials
-//     defines its own SecretRegistrar seam rather than importing journal
-//     directly.
+//     passing through the caller-supplied Scrubber. This package does
+//     import internal/journal (since #73/#94), but only for its small,
+//     stable Ref/Scrubber value types — never its full durability/
+//     event-log machinery — mirroring how internal/credentials defines
+//     its own SecretRegistrar seam rather than depending on journal for
+//     that narrower purpose.
 package harness

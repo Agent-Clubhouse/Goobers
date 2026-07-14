@@ -93,6 +93,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	if len(run.Command) == 0 {
 		return apiv1.ResultEnvelope{}, errors.New("executor: DeterministicRun declares no command")
 	}
+	if env.Workspace == "" {
+		// exec.Cmd treats Dir == "" as "run in the daemon's own working
+		// directory" — a silent, surprising fallback (#122) rather than the
+		// fail-closed misconfiguration error an unset workspace should be.
+		return apiv1.ResultEnvelope{}, errors.New("executor: InvocationEnvelope.Workspace is empty")
+	}
 	timeout, err := e.timeoutFor(env)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
