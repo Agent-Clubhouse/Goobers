@@ -1020,8 +1020,8 @@ func TestRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
 	wantTypes := []journal.EventType{
 		journal.EventStageStarted,  // attempt 1, pre-crash
 		journal.EventStageFinished, // attempt 1, infra, journaled by Resume
-		journal.EventStageStarted,  // attempt 2, policy
-		journal.EventStageFinished, // attempt 2, policy, success
+		journal.EventStageStarted,  // attempt 2, the crash-driven continuation
+		journal.EventStageFinished, // attempt 2, the crash-driven continuation, success
 	}
 	if len(stageEvents) != len(wantTypes) {
 		t.Fatalf("implement-stage events = %d, want %d: %+v", len(stageEvents), len(wantTypes), stageEvents)
@@ -1034,17 +1034,85 @@ func TestRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
 	if stageEvents[1].Attempt != 1 || stageEvents[1].AttemptClass != journal.AttemptInfra || stageEvents[1].Status != string(apiv1.ResultFailure) {
 		t.Errorf("interrupted-attempt event = %+v, want attempt=1 class=infra status=failure", stageEvents[1])
 	}
-	if stageEvents[2].Attempt != 2 || stageEvents[2].AttemptClass != journal.AttemptPolicy {
-		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=policy", stageEvents[2])
+	// #111: the continuation dispatched right after an interrupted attempt is
+	// driven by the CRASH, not Task.Retry — it must be tagged "infra", not
+	// "policy" (which would wrongly make it conformance-normative, §3.3).
+	if stageEvents[2].Attempt != 2 || stageEvents[2].AttemptClass != journal.AttemptInfra {
+		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=infra", stageEvents[2])
 	}
-	if stageEvents[3].Attempt != 2 || stageEvents[3].Status != string(apiv1.ResultSuccess) {
-		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 status=success", stageEvents[3])
+	if stageEvents[3].Attempt != 2 || stageEvents[3].AttemptClass != journal.AttemptInfra || stageEvents[3].Status != string(apiv1.ResultSuccess) {
+		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 class=infra status=success", stageEvents[3])
 	}
 
-	// interruptedAttempt is excluded from the conformance set (§3.3) via its
-	// infra class — confirm IsConformanceNormative agrees.
-	if stageEvents[1].IsConformanceNormative() {
-		t.Error("the infra-tagged interrupted attempt must be excluded from conformance (§3.3)")
+	// Every post-crash event for "implement" (the interrupted marker AND the
+	// crash-driven continuation's own started/finished) is excluded from the
+	// conformance set (§3.3) — confirm IsConformanceNormative agrees for all
+	// three, not just the interrupted marker.
+	for i := 1; i <= 3; i++ {
+		if stageEvents[i].IsConformanceNormative() {
+			t.Errorf("event[%d] = %+v must be excluded from conformance (§3.3) — only the original attempt=1 started event may be normative for a crashed stage", i, stageEvents[i])
+		}
+	}
+
+	// #111's conformance-seed assertion: a crash+resume run's normative
+	// event set must not gain phantom policy-retry events a crash-free run
+	// of the identical workflow never produces. Build a clean run of the
+	// SAME machine (succeeding on its first attempt, no crash) and confirm
+	// its normative set is exactly the crash run's normative set PLUS the
+	// one event a crash can never journal — "implement"'s own
+	// stage.finished(attempt=1) — since the interrupted attempt's true
+	// result is genuinely unknowable, not because of any policy-tagging bug.
+	cleanByTask := map[string]stubTaskResult{"run-clean:implement": {status: apiv1.ResultSuccess}}
+	cleanRunner, cleanRunsDir := newTestRunner(t, cleanByTask, gate.NewAutomatedEvaluator())
+	cleanRes, cerr := cleanRunner.Start(context.Background(), StartInput{
+		RunID:   "run-clean",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if cerr != nil {
+		t.Fatalf("clean Start: %v", cerr)
+	}
+	if cleanRes.Phase != journal.PhaseCompleted {
+		t.Fatalf("clean run phase = %q, want completed", cleanRes.Phase)
+	}
+	cleanRd, cerr := journal.OpenRead(filepath.Join(cleanRunsDir, "run-clean"))
+	if cerr != nil {
+		t.Fatalf("OpenRead (clean): %v", cerr)
+	}
+	cleanEvents, cerr := cleanRd.Events()
+	if cerr != nil {
+		t.Fatalf("Events (clean): %v", cerr)
+	}
+
+	normativeTypes := func(evs []journal.Event) []journal.EventType {
+		var out []journal.EventType
+		for _, e := range evs {
+			if e.IsConformanceNormative() {
+				out = append(out, e.Type)
+			}
+		}
+		return out
+	}
+	crashNormative := normativeTypes(events)
+	cleanNormative := normativeTypes(cleanEvents)
+	// The clean run has exactly one extra normative event vs the crash run:
+	// "implement"'s stage.finished(attempt=1) — remove it before comparing.
+	removed := false
+	var cleanNormativeMinusStageFinished []journal.EventType
+	for _, ty := range cleanNormative {
+		if !removed && ty == journal.EventStageFinished {
+			removed = true
+			continue
+		}
+		cleanNormativeMinusStageFinished = append(cleanNormativeMinusStageFinished, ty)
+	}
+	if !removed {
+		t.Fatal("clean run's normative set unexpectedly has no stage.finished to remove for comparison")
+	}
+	if !eventTypesEqual(crashNormative, cleanNormativeMinusStageFinished) {
+		t.Fatalf("crash-run normative types = %v, want clean-run normative types minus one stage.finished = %v (a crash must not add phantom normative events beyond the one it structurally cannot produce)", crashNormative, cleanNormativeMinusStageFinished)
 	}
 }
 

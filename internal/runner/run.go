@@ -432,11 +432,23 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 	var lastErr error
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
 		// The initial attempt carries no class and is always conformance-
-		// normative; a retry is tagged "policy" since Task.Retry drove it
-		// (journal §3.3 — "infra" is reserved for a crash-triggered resume
-		// retry, not this stage-declared policy loop).
+		// normative. A retry within THIS dispatch (attempt > startAttempt,
+		// i.e. the loop already iterated at least once here because a
+		// dispatch error retried) is tagged "policy" since Task.Retry drove
+		// it. The one exception: when this call was invoked as a resume
+		// continuation after an interrupted attempt (startAttempt > 1,
+		// resume.go), its FIRST iteration (attempt == startAttempt) is
+		// tagged "infra" instead — the crash drove it, not Task.Retry, so it
+		// must be excluded from the conformance set (§3.3) exactly like the
+		// interrupted attempt's own infra-tagged stage.finished marker
+		// (walk's resumeContext handling) — otherwise a crashed-and-resumed
+		// run's normative event set gains an extra started/finished pair a
+		// crash-free run of the identical workflow never produces (#111).
 		var class journal.AttemptClass
-		if attempt > 1 {
+		switch {
+		case attempt == startAttempt && startAttempt > 1:
+			class = journal.AttemptInfra
+		case attempt > 1:
 			class = journal.AttemptPolicy
 		}
 		if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: t.Name, Attempt: int(attempt), AttemptClass: class}); err != nil {

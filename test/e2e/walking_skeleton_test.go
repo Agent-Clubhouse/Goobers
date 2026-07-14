@@ -507,8 +507,8 @@ func TestWalkingSkeletonCrashResume(t *testing.T) {
 	wantTypes := []journal.EventType{
 		journal.EventStageStarted,  // attempt 1, pre-crash (hand-built above)
 		journal.EventStageFinished, // attempt 1, infra, journaled by Resume
-		journal.EventStageStarted,  // attempt 2, policy
-		journal.EventStageFinished, // attempt 2, policy, success
+		journal.EventStageStarted,  // attempt 2, the crash-driven continuation
+		journal.EventStageFinished, // attempt 2, the crash-driven continuation, success
 	}
 	if len(implementEvents) != len(wantTypes) {
 		t.Fatalf("implement-stage events = %d, want %d: %+v", len(implementEvents), len(wantTypes), implementEvents)
@@ -521,17 +521,23 @@ func TestWalkingSkeletonCrashResume(t *testing.T) {
 	if implementEvents[1].Attempt != 1 || implementEvents[1].AttemptClass != journal.AttemptInfra || implementEvents[1].Status != string(apiv1.ResultFailure) {
 		t.Errorf("interrupted-attempt event = %+v, want attempt=1 class=infra status=failure", implementEvents[1])
 	}
-	// The infra-tagged interrupted attempt is excluded from conformance
-	// (§3.3) — confirm IsConformanceNormative agrees, same as
+	// #111: the continuation dispatched right after the interrupted attempt
+	// is driven by the crash, not Task.Retry — it must be tagged "infra",
+	// not "policy" (which would wrongly make it conformance-normative,
+	// §3.3, adding a phantom retry event a crash-free run never produces).
+	if implementEvents[2].Attempt != 2 || implementEvents[2].AttemptClass != journal.AttemptInfra {
+		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=infra", implementEvents[2])
+	}
+	if implementEvents[3].Attempt != 2 || implementEvents[3].AttemptClass != journal.AttemptInfra || implementEvents[3].Status != string(apiv1.ResultSuccess) {
+		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 class=infra status=success", implementEvents[3])
+	}
+	// Every post-crash "implement" event is excluded from conformance
+	// (§3.3) — confirm IsConformanceNormative agrees for all three, same as
 	// internal/runner's own crash-resume test.
-	if implementEvents[1].IsConformanceNormative() {
-		t.Error("the infra-tagged interrupted attempt must be excluded from conformance (§3.3)")
-	}
-	if implementEvents[2].Attempt != 2 || implementEvents[2].AttemptClass != journal.AttemptPolicy {
-		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=policy", implementEvents[2])
-	}
-	if implementEvents[3].Attempt != 2 || implementEvents[3].Status != string(apiv1.ResultSuccess) {
-		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 status=success", implementEvents[3])
+	for i := 1; i <= 3; i++ {
+		if implementEvents[i].IsConformanceNormative() {
+			t.Errorf("event[%d] = %+v must be excluded from conformance (§3.3)", i, implementEvents[i])
+		}
 	}
 
 	// Resume doesn't just recover the interrupted stage in isolation — the
