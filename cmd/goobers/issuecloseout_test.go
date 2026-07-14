@@ -78,3 +78,47 @@ func TestIssueCloseOutCommentsClosesAndReleasesClaim(t *testing.T) {
 		t.Fatal("expected the claim to be released after close-out")
 	}
 }
+
+// TestIssueCloseOutNoClaimInLedgerFailsClosed proves issue-close-out errors
+// clearly when the claim ledger holds no entry for its run — it has no other
+// way to know which item to comment on/close, so it must not guess or no-op
+// silently.
+func TestIssueCloseOutNoClaimInLedgerFailsClosed(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+
+	const runID = "run-1"
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
+	t.Chdir(t.TempDir())
+
+	// No claim seeded in the ledger for run-1.
+	code, _, stderr := runArgs(t, "issue-close-out", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (no claim in ledger for this run), stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "no item claimed") {
+		t.Fatalf("stderr = %q, want a clear no-claim message", stderr)
+	}
+}
+
+// TestIssueCloseOutMissingRunIDFailsClosed proves issue-close-out refuses to
+// run without a real run identity.
+func TestIssueCloseOutMissingRunIDFailsClosed(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+
+	prev := newGitHubProvider
+	newGitHubProvider = server.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	// Deliberately no GOOBERS_RUN_ID/GOOBERS_WORKFLOW.
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "issue-close-out", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (fail closed on missing run context), stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "GOOBERS_RUN_ID") {
+		t.Fatalf("stderr = %q, want a clear missing-run-id message", stderr)
+	}
+}

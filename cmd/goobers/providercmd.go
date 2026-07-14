@@ -100,14 +100,19 @@ func providerInput(key, def string) string {
 // providerRunContext reads the run/workflow identity the runner injects for
 // every stage process (GOOBERS_RUN_ID/GOOBERS_WORKFLOW). Both are required —
 // a provider-chain subcommand run outside a real stage dispatch (e.g. by
-// hand, with no GOOBERS_RUN_ID set) has no meaningful claim/PR identity to
-// act under, so this fails closed rather than proceeding with an empty runID
-// that could collide with (or never match) a real run's claims.
+// hand, with no GOOBERS_RUN_ID/GOOBERS_WORKFLOW set) has no meaningful
+// claim/PR/branch identity to act under, so this fails closed rather than
+// proceeding with an empty runID (which could collide with, or never match,
+// a real run's claims) or an empty workflow (which would make
+// providers.BranchName(workflow, runID) produce a malformed branch name).
 func providerRunContext() (runID, workflow string, err error) {
 	runID = os.Getenv("GOOBERS_RUN_ID")
 	workflow = os.Getenv("GOOBERS_WORKFLOW")
 	if runID == "" {
 		return "", "", fmt.Errorf("GOOBERS_RUN_ID is not set — this subcommand must run as a workflow stage")
+	}
+	if workflow == "" {
+		return "", "", fmt.Errorf("GOOBERS_WORKFLOW is not set — this subcommand must run as a workflow stage")
 	}
 	return runID, workflow, nil
 }

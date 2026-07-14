@@ -69,3 +69,25 @@ func TestOpenPRCreatesThenUpdatesOnRepass(t *testing.T) {
 		t.Fatalf("expected still exactly one PR after the repass, got %d (a duplicate was created)", prCountAfterRepass)
 	}
 }
+
+// TestOpenPRMissingRunIDFailsClosed proves open-pr refuses to run without a
+// real run identity — no meaningful branch/PR to open otherwise.
+func TestOpenPRMissingRunIDFailsClosed(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+
+	prev := newGitHubProvider
+	newGitHubProvider = server.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	// Deliberately no GOOBERS_RUN_ID/GOOBERS_WORKFLOW.
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "open-pr", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (fail closed on missing run context), stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "GOOBERS_RUN_ID") {
+		t.Fatalf("stderr = %q, want a clear missing-run-id message", stderr)
+	}
+}

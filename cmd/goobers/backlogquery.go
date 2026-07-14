@@ -36,8 +36,11 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 			"untrusted input otherwise) and requireLabels. With --claim, claims\n"+
 			"exactly one via the local claim ledger (source of truth) mirrored to a\n"+
 			"provider-visible marker, and writes it to the declared result file.\n"+
-			"Exit codes: 0 = eligible item found (and claimed, if --claim), 1 = no\n"+
-			"eligible/claimable item, 2 = usage/IO error.\n")
+			"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n"+
+			"a plain list (no --claim) does not require it.\n"+
+			"Exit codes: 0 = eligible item found (and claimed, if --claim), 1 =\n"+
+			"business error (no eligible/claimable item, missing trustLabel with\n"+
+			"--claim, config/credential/provider error), 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -67,6 +70,17 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	trustLabel := providerInput("trustLabel", "")
 	requireLabel := providerInput("requireLabels", "")
 	excludeLabel := providerInput("excludeLabels", "")
+
+	// SEC-047 fails CLOSED, not open: an empty trustLabel must refuse to
+	// claim, not silently skip the trust check and claim anything eligible
+	// by requireLabels alone — backlog content on a public repo is untrusted
+	// input, and claiming is the mutating, consequential action (it starts
+	// implementation work). A read-only list (no --claim) is informational,
+	// so it's not gated the same way.
+	if *claim && trustLabel == "" {
+		pln(stderr, "error: trustLabel is required to claim (SEC-047: backlog content is untrusted input on a public repo) — declare inputs.trustLabel")
+		return 1
+	}
 
 	ctx := context.Background()
 	labels := make([]string, 0, 2)

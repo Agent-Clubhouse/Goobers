@@ -154,3 +154,79 @@ func TestBacklogQueryListsWithoutClaiming(t *testing.T) {
 		t.Fatal("list-only mode should not have touched the claim ledger")
 	}
 }
+
+// TestBacklogQueryClaimFailsClosedWithoutTrustLabel proves SEC-047 fails
+// CLOSED, not open: --claim with no declared trustLabel must refuse to
+// claim rather than silently skip the trust check and claim anything
+// eligible by requireLabels alone (an item with no trust label at all must
+// still never be claimed).
+func TestBacklogQueryClaimFailsClosedWithoutTrustLabel(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Fix the bug", "goobers:ready") // no trust label at all
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	// Deliberately no GOOBERS_INPUT_TRUSTLABEL.
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (fail closed on missing trustLabel), stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "trustLabel is required") {
+		t.Fatalf("stderr = %q, want a clear missing-trustLabel message", stderr)
+	}
+
+	// Confirm nothing was claimed.
+	if _, err := os.Stat(filepath.Join(root, "scheduler", "claims.json")); err == nil {
+		t.Fatal("fail-closed rejection should not have touched the claim ledger")
+	}
+}
+
+// TestBacklogQueryListWithoutTrustLabelStillWorks proves the fail-closed
+// SEC-047 guard is scoped to --claim (the mutating, consequential action) —
+// a plain read-only list doesn't require trustLabel to be declared.
+func TestBacklogQueryListWithoutTrustLabelStillWorks(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Fix the bug", "goobers:ready")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "7") {
+		t.Fatalf("stdout = %q, want the item listed", stdout)
+	}
+}
+
+// TestBacklogQueryMissingRunIDFailsClosed proves backlog-query refuses to
+// claim without a real run identity (GOOBERS_RUN_ID) rather than proceeding
+// under an empty/synthetic one that could collide with a real run's claims.
+func TestBacklogQueryMissingRunIDFailsClosed(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Fix the bug", "goobers:approved", "goobers:ready")
+
+	prev := newGitHubProvider
+	newGitHubProvider = server.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	// Deliberately no GOOBERS_RUN_ID.
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (fail closed on missing GOOBERS_RUN_ID), stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "GOOBERS_RUN_ID") {
+		t.Fatalf("stderr = %q, want a clear missing-run-id message", stderr)
+	}
+}
