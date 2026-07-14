@@ -78,7 +78,11 @@
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "artifact": { "$ref": "artifact-pointer.schema.json" },
-        "external": { "$ref": "#/$defs/externalRef" }
+        "external": { "$ref": "#/$defs/externalRef" },
+        "runId": {
+          "type": "string",
+          "description": "The run whose journal `artifact` lives in, when it is NOT this stage's own run (cross-run evidence resolution, #103/T3). Empty/absent means the artifact is this run's own upstream output. A non-empty value crosses a trust boundary and requires the journal:read capability, enforced by the harness. Mirrors ContextPointer.RunID (Go); present here so a valid cross-run envelope passes this closed schema (#125)."
+        }
       },
       "oneOf": [
         { "required": ["artifact"], "not": { "required": ["external"] } },
