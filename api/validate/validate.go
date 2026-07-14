@@ -360,7 +360,12 @@ func (ix *index) crossCheck(r *Report) {
 		r.add(Error, "", "Manifest", "", "no Manifest object found in config directory")
 	}
 	if len(ix.manifests) > 1 {
-		r.add(Warning, "", "Manifest", "", "more than one Manifest found (%d); exactly one is expected", len(ix.manifests))
+		// Error, not Warning (#243): internal/instance/configdir.go and
+		// internal/configsync/loader.go both reject a config directory with
+		// more than one Manifest outright — a validate-only consumer must
+		// not report success-with-warning for a config the daemon actually
+		// refuses to load.
+		r.add(Error, "", "Manifest", "", "more than one Manifest found (%d); exactly one is expected", len(ix.manifests))
 	}
 
 	// Manifest -> gaggle references resolve.

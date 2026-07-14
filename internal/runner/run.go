@@ -413,12 +413,21 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			gr, err, removeErr := r.evaluateGate(ctx, gateEval, ex, in, g, lastStage, lastResult, pointers)
 			if removeErr != nil {
 				// Non-fatal (issue #136), same rationale as runTask's own
-				// worktree_remove_failed journaling — never silently
-				// discarded, but doesn't change this gate's outcome.
-				_ = jr.Append(journal.Event{
+				// worktree_remove_failed journaling — the teardown failure
+				// itself doesn't change this gate's outcome, but the append
+				// recording it must not itself be silently discarded
+				// (#243): a journal that cannot be written is fatal (§2.6),
+				// and a gate's own outcome may `continue` the walk without
+				// any further append until the next stage dispatches, so
+				// this can be the only append for an arbitrarily long
+				// stretch — there is no guaranteed nearby append to also
+				// catch the same failure.
+				if aerr := jr.Append(journal.Event{
 					Type: journal.EventError, Gate: g.Name,
 					Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
-				})
+				}); aerr != nil {
+					return r.failTerminal(jr, g.Name, steps, fmt.Errorf("runner: journal worktree removal error for gate %q: %w", g.Name, aerr))
+				}
 			}
 			if err != nil {
 				return r.failTerminal(jr, g.Name, steps, err)
@@ -597,11 +606,17 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			// Non-fatal (issue #136): a failed worktree teardown doesn't
 			// change this attempt's own outcome, and worktree.Create's own
 			// adopt-and-reset means it no longer blocks the next attempt
-			// either — but it must not be silently swallowed.
-			_ = jr.Append(journal.Event{
+			// either — but the append recording it must not itself be
+			// silently discarded (#243): a journal that cannot be written
+			// is fatal (§2.6), consistent with the executor_error and
+			// stage.finished appends just below treating their own write
+			// failures the same way.
+			if aerr := jr.Append(journal.Event{
 				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 				Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
-			})
+			}); aerr != nil {
+				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal worktree removal error for %q: %w", t.Name, aerr)
+			}
 		}
 		if dispatchErr != nil {
 			lastErr = dispatchErr

@@ -145,14 +145,27 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 		report.LastSeq = events[len(events)-1].Seq
 	}
 
+	// Acquire the per-run-dir lock (#243) before any write below, including
+	// the torn-tail truncation: a second Recover of the SAME run dir (e.g.
+	// `goobers run abort` racing a live daemon's own resume of a crashed
+	// run) must block here rather than open its own independent writer on
+	// this events.jsonl. Held for the lifetime of the returned *Run,
+	// released in Close.
+	lock, err := acquireRunLock(dir)
+	if err != nil {
+		return nil, RecoverReport{}, err
+	}
+
 	// Truncate a torn partial final record so the next append starts on a clean
 	// record boundary.
 	if err := truncateTornTail(eventsPath, tornBytes); err != nil {
+		releaseRunLock(lock)
 		return nil, RecoverReport{}, err
 	}
 
 	f, err := os.OpenFile(eventsPath, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
+		releaseRunLock(lock)
 		return nil, RecoverReport{}, fmt.Errorf("journal: reopen events log: %w", err)
 	}
 	r := &Run{
@@ -161,6 +174,7 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 		scrubber: cfg.scrubber,
 		now:      cfg.now,
 		events:   f,
+		lock:     lock,
 		seq:      report.LastSeq,
 		phase:    reconstructPhase(events),
 	}
@@ -197,6 +211,7 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 			Runner: map[string]any{"discardedBytes": tornBytes},
 		}); err != nil {
 			_ = f.Close()
+			releaseRunLock(lock)
 			return nil, RecoverReport{}, err
 		}
 		report.Repaired = true
@@ -204,6 +219,7 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 	if needsCheckpoint {
 		if err := r.checkpoint(); err != nil {
 			_ = f.Close()
+			releaseRunLock(lock)
 			return nil, RecoverReport{}, err
 		}
 	}
