@@ -137,6 +137,13 @@ func (l *ClaimLedger) Release(itemID, runID string) error {
 	}
 	delete(l.entries, itemID)
 	if err := l.persist(); err != nil {
+		// Same rollback discipline as Claim: a failed persist must not leave
+		// memory believing the item is free while the durable ledger (if the
+		// write partially landed) or a crash-recovery reread still sees it
+		// held — otherwise the item could be double-claimed while this run
+		// still holds it, or the caller believes the release succeeded and
+		// finalizes the run while the ledger still lists it as claimed.
+		l.entries[itemID] = entry
 		return err
 	}
 	l.journal(journal.EventClaimReleased, entry)
@@ -149,6 +156,16 @@ func (l *ClaimLedger) Release(itemID, runID string) error {
 // item is claimable again exactly once. Call once at daemon startup (recovers
 // leases orphaned by a prior crash) and periodically thereafter (catches a live
 // run that overran its lease without crashing).
+//
+// Safety (WF-031): auto-releasing a lease whose owning run is still live but
+// simply ran long invites double-processing — the freed item can be claimed
+// by a second run while the first is still working it. This ledger's only
+// heartbeat mechanism is Claim's own idempotent re-claim-by-same-runID path
+// (see Claim's doc comment), which renews ExpiresAt; nothing currently drives
+// it periodically. Until a caller wires that renewal, leaseDuration passed to
+// Claim MUST be set well above the workflow's realistic max run duration, not
+// tuned tightly — RecoverExpired trusts the lease at face value and has no
+// way to distinguish "orphaned by a crash" from "still running, just slow."
 func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -164,6 +181,15 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 		return nil, nil
 	}
 	if err := l.persist(); err != nil {
+		// Roll back every deletion this pass made: a partial view (some
+		// entries released in memory, none durably, none journaled) would
+		// both strand those items as claimable-in-memory-only and discard,
+		// via the (nil, err) return, the exact set the caller would need to
+		// retry or reconcile — restoring them makes a failed pass a clean
+		// no-op the caller can safely retry on its next periodic call.
+		for _, entry := range released {
+			l.entries[entry.ItemID] = entry
+		}
 		return nil, err
 	}
 	for _, entry := range released {
