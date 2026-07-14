@@ -305,17 +305,37 @@ func goobersByName(set *instance.ConfigSet) map[string]apiv1.GooberSpec {
 	return out
 }
 
+// knownAutomatedCheckNames returns the automated check names actually
+// registered (internal/gate.DefaultChecks()'s keys) for
+// workflow.WithKnownChecks — every real automated gate resolves its Check
+// against this exact registry (internal/gate.AutomatedEvaluator.Evaluate), so
+// a typo here is caught at compile time instead of failing only when a run
+// actually reaches that gate (#124).
+func knownAutomatedCheckNames() []string {
+	checks := gate.DefaultChecks()
+	names := make([]string, 0, len(checks))
+	for name := range checks {
+		names = append(names, name)
+	}
+	return names
+}
+
 // compiledMachines compiles every workflow in set, admission-checked against
-// goobers, keyed by workflow name. WorkflowVersion is registry-assigned
-// (per-name monotonic, WF-016); no registry is wired at the instance level
-// yet, so this pins version 1 for every workflow, matching run.go's existing
-// limitation until a follow-up introduces one.
+// goobers (capabilities, harness, gate-outcome coverage, and known automated
+// check names — #124), keyed by workflow name. WorkflowVersion is registry-
+// assigned (per-name monotonic, WF-016); no registry is wired at the instance
+// level yet, so this pins version 1 for every workflow, matching run.go's
+// existing limitation until a follow-up introduces one.
 func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[string]*workflow.Machine, error) {
 	const workflowVersion = 1
+	knownChecks := knownAutomatedCheckNames()
 	machines := make(map[string]*workflow.Machine, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
-		m, err := workflow.Compile(workflow.Definition{Name: wf.Name, Version: workflowVersion, Spec: wf.Spec}, workflow.WithGoobers(goobers))
+		m, err := workflow.Compile(
+			workflow.Definition{Name: wf.Name, Version: workflowVersion, Spec: wf.Spec},
+			workflow.WithGoobers(goobers), workflow.WithKnownChecks(knownChecks),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("compile workflow %q: %w", wf.Name, err)
 		}

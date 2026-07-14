@@ -51,11 +51,11 @@ spec:
       branches:
         pass: await-ci
         needs-changes: implement
-        reject: "@abort"
+        fail: "@abort"
     - name: ci-gate
       evaluator: automated
       automated:
-        check: ci-green
+        check: ci-status
       branches:
         pass: ""
         fail: implement

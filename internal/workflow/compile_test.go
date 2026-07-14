@@ -299,6 +299,119 @@ func TestCompileAdmissionUnknownHarness(t *testing.T) {
 	}
 }
 
+// TestCompileDeterministicTaskUnknownCapability is the regression test for
+// #124's deterministic-task admission gap: capability admission previously
+// skipped every deterministic task entirely (`t.Type != apiv1.TaskAgentic`
+// short-circuited the whole loop body, including the canonical-registry
+// check that doesn't need a goober at all), so a typo'd capability on a
+// deterministic task passed compilation and surfaced only as a silent
+// no-credential failure mid-run.
+func TestCompileDeterministicTaskUnknownCapability(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "build",
+		Tasks: []apiv1.Task{
+			{Name: "build", Type: apiv1.TaskDeterministic, Goal: "g",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Capabilities: []string{"github:pr:wirte"}},
+		},
+	}
+	// WithGoobers supplied (even though this task has none) — matches the
+	// real config-validation call site (api/validate's CheckAdmission always
+	// passes the full goober set), so this must fail with goobers present.
+	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}, WithGoobers(map[string]apiv1.GooberSpec{}))
+	if err == nil || !strings.Contains(err.Error(), `task "build" declares unknown capability "github:pr:wirte"`) {
+		t.Fatalf("expected unknown-capability error for the deterministic task, got %v", err)
+	}
+}
+
+// TestCompileGateOutcomeCoverage is the regression test for #124's first
+// defect class: a gate branch that can never be taken (not a producible
+// outcome), and a producible outcome with no branch to send it to (today
+// only failing at evaluation time, internal/gate/evaluate.go's "outcome has
+// no defined branch").
+func TestCompileGateOutcomeCoverage(t *testing.T) {
+	agenticGate := func(branches map[string]string) apiv1.WorkflowSpec {
+		return apiv1.WorkflowSpec{
+			Gaggle: "web",
+			Start:  "implement",
+			Tasks:  []apiv1.Task{{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "g", Next: "review"}},
+			Gates: []apiv1.Gate{{
+				Name: "review", Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: branches,
+			}},
+		}
+	}
+
+	t.Run("unproducible branch key", func(t *testing.T) {
+		spec := agenticGate(map[string]string{"pass": TerminalComplete, "fail": TargetAbort, "needs-changes": "implement", "reject": TargetAbort})
+		_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+		if err == nil || !strings.Contains(err.Error(), `gate "review": branch "reject" is not a producible outcome`) {
+			t.Fatalf("expected unproducible-branch error, got %v", err)
+		}
+	})
+
+	t.Run("missing producible outcome", func(t *testing.T) {
+		spec := agenticGate(map[string]string{"pass": TerminalComplete, "fail": TargetAbort}) // no needs-changes
+		_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+		if err == nil || !strings.Contains(err.Error(), `gate "review": producible outcome "needs-changes" has no branch`) {
+			t.Fatalf("expected missing-outcome error, got %v", err)
+		}
+	})
+
+	t.Run("full coverage compiles", func(t *testing.T) {
+		spec := agenticGate(map[string]string{"pass": TerminalComplete, "fail": TargetAbort, "needs-changes": "implement"})
+		if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+			t.Fatalf("full outcome coverage should compile, got %v", err)
+		}
+	})
+
+	t.Run("automated gate missing fail branch", func(t *testing.T) {
+		spec := apiv1.WorkflowSpec{
+			Gaggle: "web",
+			Start:  "gate-only",
+			Tasks:  []apiv1.Task{{Name: "sink", Type: apiv1.TaskDeterministic, Goal: "g", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}},
+			Gates: []apiv1.Gate{{
+				Name: "gate-only", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+				Branches: map[string]string{"pass": "sink"},
+			}},
+		}
+		_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+		if err == nil || !strings.Contains(err.Error(), `gate "gate-only": producible outcome "fail" has no branch`) {
+			t.Fatalf("expected missing-fail-branch error, got %v", err)
+		}
+	})
+}
+
+// TestCompileWithKnownChecksRejectsUnknownCheckName is the regression test
+// for #124's second defect class: nothing validated AutomatedGate.Check
+// against the actual registry, so a typo'd check name compiled clean and
+// only errored once a run actually reached that gate
+// (internal/gate/automated.go's "unknown automated check").
+func TestCompileWithKnownChecksRejectsUnknownCheckName(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "gate-only",
+		Tasks:  []apiv1.Task{{Name: "sink", Type: apiv1.TaskDeterministic, Goal: "g", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}},
+		Gates: []apiv1.Gate{{
+			Name: "gate-only", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "ci-green"},
+			Branches: map[string]string{"pass": "sink", "fail": "sink"},
+		}},
+	}
+	def := Definition{Name: "x", Version: 1, Spec: spec}
+
+	_, err := Compile(def, WithKnownChecks([]string{"status-equals", "ci-status"}))
+	if err == nil || !strings.Contains(err.Error(), `gate "gate-only": unknown automated check "ci-green"`) {
+		t.Fatalf("expected unknown-check error, got %v", err)
+	}
+
+	// Without WithKnownChecks (the runner path default), check names are not
+	// validated — internal/gate itself still fails closed at evaluation time
+	// regardless, per the doc comment on WithKnownChecks.
+	if _, err := Compile(def); err != nil {
+		t.Fatalf("check-name validation should be opt-in; compiled without WithKnownChecks, got %v", err)
+	}
+}
+
 func TestAdmissionSkippedWithoutGoobers(t *testing.T) {
 	// Same spec that would fail admission compiles when no goober context is
 	// supplied (the runner path — admission already happened at config time).

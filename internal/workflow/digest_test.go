@@ -52,7 +52,7 @@ func loadShippedWorkflow(t *testing.T, file string) Definition {
 // value) or a regression (investigate). Digests are over the definition's
 // canonical form, so YAML reformatting alone never moves them.
 var goldenDigests = map[string]string{
-	"implementation.yaml":   "sha256:391c7de10b9ea69ebca540a82c4c276b056e3f5aaaa528900e0be9457a6fd5d9",
+	"implementation.yaml":   "sha256:3102e9304fc6e102aae1b74461d67f293ded837f453774f493ed4d4517efb534",
 	"backlog-curation.yaml": "sha256:dfc3d1f4c7b366051f6356e391ff515c21190bafe5cf974eeba61fc83ba97539",
 	"work-nomination.yaml":  "sha256:013d029452371b4a0ada36d53b94713fb04a31a15b9fa27049ac46acc1f9debc",
 }

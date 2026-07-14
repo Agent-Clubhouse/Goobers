@@ -39,7 +39,7 @@
       }
     }
   ],
-  "capabilities": ["repo:read", "repo:push", "github:pulls:write"],
+  "capabilities": ["repo:read", "repo:push", "github:pr:write"],
   "limits": {
     "maxDurationSeconds": 1800,
     "maxTokens": 2000000,

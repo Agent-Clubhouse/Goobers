@@ -458,6 +458,9 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow) {
 	for _, msg := range wf.CheckSchedules(def) {
 		r.add(Error, "", "Workflow", w.Name, "%s", msg)
 	}
+	for _, msg := range wf.CheckGateOutcomes(def) {
+		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+	}
 	for _, msg := range wf.CheckAdmission(def, ix.gooberSpecs()) {
 		r.add(Error, "", "Workflow", w.Name, "%s", msg)
 	}

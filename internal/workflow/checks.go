@@ -98,6 +98,13 @@ func gateVocabProblems(def Definition) []string {
 	return problems
 }
 
+// CheckGateOutcomes reports gate branches that can never be taken (not a
+// producible outcome for the gate's evaluator) and producible outcomes with
+// no defined branch (#124) — workflow-intrinsic, no goober data needed.
+func CheckGateOutcomes(def Definition) []string {
+	return gateOutcomeProblems(def, nil)
+}
+
 // scheduleProblems validates the schedule expression of every schedule
 // trigger, and rejects more than one schedule trigger on a single workflow:
 // the runtime scheduler (localscheduler's buildSchedulerSetup) honors only

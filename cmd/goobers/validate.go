@@ -64,6 +64,18 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
 		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
 
+	// api/validate's cross-reference checks (above) mirror most of
+	// workflow.Compile's own semantic analysis (CheckReachability/
+	// CheckSchedules/CheckGateOutcomes/CheckAdmission), but this is the one
+	// point that actually calls Compile with the same options `up`/`run` use
+	// at daemon startup — including WithKnownChecks, which nothing else here
+	// validates (#124). A config that fails this would also fail to start
+	// the daemon; catching that now, at `validate` time, is the whole point.
+	if _, err := compiledMachines(set, goobersByName(set)); err != nil {
+		pf(stdout, "\nINVALID workflow: %v\n", err)
+		return 1
+	}
+
 	if *checkHarness {
 		if !checkHarnesses(set.Goobers, stdout, stderr) {
 			return 1
