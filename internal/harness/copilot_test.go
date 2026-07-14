@@ -6,12 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/procenv"
 )
 
 // fakeProcessRunner is a scripted ProcessRunner double: it lets tests inspect
@@ -334,6 +336,23 @@ func TestCopilotAdapterExtendedAllowlistStillBlocksSecretShapedVars(t *testing.T
 	}
 	if !foundLang {
 		t.Fatalf("expected the exact allowlisted LANG to still pass through, got %v", runner.lastReq.Env)
+	}
+}
+
+// TestBaseEnvMatchesProcenv is the #248 drift-guard: harness's baseEnv()
+// must be exactly procenv.BaseEnv() — the shared definition executor's
+// baseEnv() also delegates to — not a local copy that can silently diverge
+// again the way #98/#122 did.
+func TestBaseEnvMatchesProcenv(t *testing.T) {
+	t.Setenv("GOMODCACHE", "/custom/gomodcache")
+	t.Setenv("LC_ALL", "C")
+
+	got := append([]string(nil), baseEnv()...)
+	want := append([]string(nil), procenv.BaseEnv()...)
+	sort.Strings(got)
+	sort.Strings(want)
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("harness baseEnv() diverged from procenv.BaseEnv():\n got:  %v\n want: %v", got, want)
 	}
 }
 

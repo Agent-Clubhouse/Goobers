@@ -281,6 +281,41 @@ func TestShellExecutor_DoesNotPassthroughAmbientDaemonEnv(t *testing.T) {
 	}
 }
 
+// TestShellExecutor_PassesThroughGoToolchainEnv is the regression test for
+// #248: a `local-ci` stage's `make ci` (-> `go build`/`go test`) must see a
+// relocated Go cache/module store/proxy, not silently fall back to
+// HOME-derived defaults that don't exist on a customized host.
+func TestShellExecutor_PassesThroughGoToolchainEnv(t *testing.T) {
+	gocache := t.TempDir()
+	gomodcache := t.TempDir()
+	t.Setenv("GOCACHE", gocache)
+	t.Setenv("GOMODCACHE", gomodcache)
+	t.Setenv("GOPROXY", "https://proxy.example.internal")
+
+	exec, rec := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `echo "GOCACHE=$GOCACHE"; echo "GOMODCACHE=$GOMODCACHE"; echo "GOPROXY=$GOPROXY"`},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	stdout := string(rec.recorded["task-1/stdout.log"])
+	for _, want := range []string{
+		"GOCACHE=" + gocache,
+		"GOMODCACHE=" + gomodcache,
+		"GOPROXY=https://proxy.example.internal",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected %q in stage stdout, got %q", want, stdout)
+		}
+	}
+}
+
 // TestShellExecutor_EmptyWorkspaceIsConfigError is the regression test for
 // #122: exec.Cmd treats Dir == "" as "run in the current process's working
 // directory" — an unset InvocationEnvelope.Workspace must fail closed as a
