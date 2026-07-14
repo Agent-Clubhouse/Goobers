@@ -37,6 +37,34 @@ in `instance.yaml`:
 Repository access: select **Only select repositories** and list exactly the
 gaggle's target repo(s) — never "All repositories".
 
+### Agentic (Copilot-harness) stages also need "Copilot Requests"
+
+The permissions above cover the ordinary GitHub API — issues, pull requests,
+contents. They are **not** sufficient for an **agentic** stage (any stage whose
+goober uses the `copilot` harness — curator, implementer, reviewer, nominator,
+analyst, config-author in the shipped gaggle). The GitHub Copilot CLI
+authenticates to Copilot itself using the same PAT (via `GH_TOKEN` /
+`COPILOT_GITHUB_TOKEN`, injected per capability), and Copilot requires its own
+**separate fine-grained permission — "Copilot Requests" (Account permissions →
+Copilot Requests: Read-only)** — which is unrelated to any repo/issue/PR access.
+
+A PAT minted with only the repo/issue/PR permissions above authenticates fine
+for deterministic stages (`backlog-query`, `open-pr`, `issue-close-out`) but
+**fails immediately at the first agentic stage** with `Authentication failed …
+ensure it has the 'Copilot Requests' permission` (#284) — every coder/reviewer
+goober is blocked, even though claims, comments, and PRs all work. So:
+
+- On **any** fine-grained PAT backing a capability that an agentic stage
+  declares (typically `repo:push` / `github:pr:write` for the implementer, and
+  whatever the other Copilot goobers use), also enable **Copilot Requests:
+  Read-only** under *Account permissions* — it is an account-level permission,
+  not a repository one, so it appears in a different section of the PAT form.
+- Classic PATs (`ghp_`) are **not** accepted by the Copilot CLI at all; agentic
+  stages require a fine-grained (v2) PAT regardless of the above.
+- Verify before a live run: `goobers validate --check-harness` preflights the
+  Copilot CLI (and, when `AuthCheckArgs` is configured, its authentication) so a
+  mis-scoped token fails fast at validation rather than mid-run.
+
 ## Least privilege per workflow
 
 A workflow's declared capabilities (`goober.md` GBO-052, `task.md` TSK-042)
