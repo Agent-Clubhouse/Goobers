@@ -1,21 +1,28 @@
 # V0 Acceptance Runbook
 
-> Status: **Scaffolded, not yet executed.** This is the verification artifact for
-> issue #30, the V0 milestone gate. It is structured against the expected
-> definition of done now, ahead of its remaining dependencies landing. The
-> self-hosting dogfood config (#28), capability registry (#74), and the local
-> runner core (#17 — durability/resume/retries merged as `2d75e2e`, issue
-> closed) are all on `main`. What's left: **#23**'s daemon loop (`goobers up`
-> wired to `Runner.Resume` + graceful drain) and **#29**'s crash-resume variant
-> (un-skipping `TestWalkingSkeletonCrashResume` against real `Resume`) — both
-> just given the GO now that #17 unblocks them — plus **#26** (work
-> nomination, not started). Commands marked **[pending]** below don't behave
-> end-to-end on `main` yet even though the CLI surface exists. The milestone
-> closes only once someone other than the runner's primary implementer
-> executes this runbook clean, end to end, and the
-> [Execution record](#execution-record) appendix is filled in with real
-> journal excerpts and PR links (issue #30's acceptance criteria) — not
-> before. Owner: Goobers-Dev-5.
+> Status: **All code dependencies shipped; live execution pending.** This is
+> the verification artifact for issue #30, the V0 milestone gate, and — per
+> epic #130 — the closing acceptance criterion for the V0.1 last-mile
+> integration remediation wave. As of `e739bd0` (2026-07-14): all 20 V0
+> bullets below are shipped, `#17`/`#23`/`#26`/`#29` (the last four holdouts
+> at the previous revision of this doc) are complete, and epic #130's own
+> remediation (real subcommands, live `CIPollExecutor`, live `GitHubProvider`
+> construction, worktree branch continuity, `prNumber` handoff, ci-gate
+> vocabulary symmetry, the Tutor wave T1–T5) is merged and independently
+> re-verified (`make ci` green, `-race`, 0 lint; static code-path audit —
+> see the epic-#130 remediation checklist below). **One known gap surfaced by
+> that audit:** `ref.touched` journal events for real provider mutations
+> (PR/issue/claim) never fire in production — `providers.WithMutationRecorder`
+> is wired in tests only; only a single per-run branch-touch event reaches the
+> journal. Tracked as a known limitation below, not yet filed as its own
+> issue. The milestone closes only once someone other than the runner's
+> primary implementer executes this runbook clean, end to end, on a real
+> target repo, and the [Execution record](#execution-record) appendix is
+> filled in with real journal excerpts and PR links (issue #30's acceptance
+> criteria) — **that live execution has not happened yet** as of this
+> revision; target-repo and credential provisioning are pending explicit
+> human confirmation (see #mission-conformance-acceptance, 2026-07-14).
+> Owner: Goobers-Dev-5.
 
 ## Purpose
 
@@ -40,11 +47,13 @@ against the responsible issue, per issue #30's scope.
   **use a scratch/fork repo for the first execution, not this one**, until
   the loop has been proven once.
 - The [self-hosting dogfood config](#28) this repo ships — `selfhost/` is on
-  `main` (PR #77): 4 goobers, 3 workflows (curation, nomination,
-  implementation), with the trust gate, reviewer gate, 2/day cap, and no-merge
-  guardrails all in place. `config-examples/` remains available as a lighter
-  single-workflow stand-in if you'd rather exercise the mechanics without the
-  full chain.
+  `main`: as of `e739bd0`, **6 goobers, 4 workflows** (curator, implementer,
+  reviewer, nominator, analyst, config-author; backlog-curation, work-nomination,
+  implementation, and `tutor.yaml`'s weekly self-improvement loop), with the
+  trust gate, reviewer gate, 2/day cap, no-merge guardrail, and (new, #223/#225)
+  the Tutor loop's config-write-boundary all in place. `config-examples/`
+  remains available as a lighter single-workflow stand-in if you'd rather
+  exercise the mechanics without the full chain.
 
 ## Procedure
 
@@ -74,12 +83,12 @@ export GOOBERS_GITHUB_TOKEN=ghp_...
 # Validate before anything runs (fails closed on bad config/definitions).
 cd my-instance
 ../bin/goobers validate .
-# OK: instance.yaml valid; config/ valid (1 gaggle(s), 4 goober(s), 3 workflow(s))
+# OK: instance.yaml valid; config/ valid (1 gaggle(s), 6 goober(s), 4 workflow(s))
 ```
 
 Verified locally against a scratch instance root (no network, no live repo
-touched): the above sequence builds and validates clean on `main` as of this
-writing.
+touched) on `e739bd0`: the above sequence builds and validates clean on
+`main` as of this writing.
 
 Before running anything against the target repo, bootstrap its label
 taxonomy once (idempotent, `selfhost/README.md` §Setup) — the trust gate
@@ -98,17 +107,15 @@ for l in \
 done
 ```
 
-### 2. Run **[pending #23 daemon loop]**
+### 2. Run
 
 ```sh
-# goobers up / goobers run exist on main (#23, PR #67) but are still honest
-# stubs as of this writing: `up` validates + takes the single-instance lock,
-# then reports the daemon isn't wired in yet; `run` reports an "escalated:
-# local runner not yet wired — no stages executed" result rather than
-# silently doing nothing. The local runner itself (#17) is now complete on
-# main (`2d75e2e`) — what's left is wiring `up`'s daemon loop to it
-# (scheduler + Runner.Resume + graceful SIGTERM drain), in progress. Once it
-# lands:
+# goobers up / goobers run are fully live as of e739bd0 (#23 + epic #130's
+# daemon-lifecycle/scheduler-routing remediation, #96/#134/#135/#197/#200):
+# `up` runs the real embedded scheduler + local runner + telemetry rollup,
+# resumes interrupted runs on startup, and drains cleanly on SIGTERM; `run`
+# dispatches a real manual trigger through the scheduler (run conditions +
+# instance journal both apply), no longer a stub.
 ../bin/goobers up          # long-lived: embedded scheduler + local runner
 # or, for a single manual pass:
 ../bin/goobers run <workflow-name>
@@ -116,34 +123,39 @@ done
 
 Seed the loop by filing N (start with 3–5) real issues against the target
 repo — plain, small, well-scoped asks a coder goober could plausibly finish.
-Backlog curation (#25, shipped) is the first stage of all three shipped
-workflows; it should pick these up on its next scheduled or manual run.
+Backlog curation (#25) is the first stage of all shipped workflows; it should
+pick these up on its next scheduled or manual run.
 
 ### 3. Observe
 
-Watch the three shipped workflows carry an issue from raw backlog item to an
-open PR:
+Watch the shipped workflows carry an issue from raw backlog item to an open
+PR:
 
-1. **Backlog curation** (#25, shipped) — dedupe/tag/split/mark-ready. Confirm
-   in the provider (GitHub issue labels/comments) that seeded issues get
-   curated.
-2. **Work nomination** (#26, **not yet shipped**) — code + telemetry →
-   evidence-backed issues. Until this lands, curated issues need the
-   trust-label eligibility marker (`SEC-047`) applied manually to reach
-   "ready" for the implementation workflow to claim them.
-3. **Implementation** (#27, shipped) — claims a ready issue, opens a worktree,
-   runs the agentic implement stage (#19, shipped), passes local
-   deterministic gates, opens a PR, polls CI to a repass loop (#18, shipped),
-   and stops at a reviewer gate.
+1. **Backlog curation** (#25) — dedupe/tag/split/mark-ready. Confirm in the
+   provider (GitHub issue labels/comments) that seeded issues get curated.
+2. **Work nomination** (#26, shipped) — code + telemetry → evidence-backed
+   issues, filed with the `goobers:nominated` label and never self-approved
+   (a maintainer applies `goobers:approved` — preserves the SEC-047 trust
+   gate). Composes with curation: a nominated issue curates to
+   `goobers:ready` on the next curation pass.
+3. **Implementation** (#27) — claims a ready issue, opens a worktree, runs
+   the agentic implement stage, passes local deterministic gates, opens a
+   real PR via `open-pr` (#132), polls CI via the live `CIPollExecutor`
+   (#132) to a repass loop, and stops at a reviewer gate.
+4. **Tutor** (`tutor.yaml`, T1–T5, weekly cron) — gathers telemetry signals,
+   diagnoses recurring failure/noise patterns, proposes a config-only change
+   (test/gate/goober-instruction/workflow tweaks), and opens a PR confined to
+   `selfhost/` by the config-write-boundary (#223/#225) — any out-of-root
+   file aborts the PR before it opens, not just at review time.
 
 ```sh
-../bin/goobers status       # shipped (#23, PR #67) — instance + active runs at a glance
-../bin/goobers trace <run-id>  # shipped (#23, PR #67) — one run's journal, human-readable
+../bin/goobers status       # instance + active runs at a glance
+../bin/goobers trace <run-id>  # one run's journal, human-readable
 ```
 
-Until `status`/`trace` ship, the run journal is directly inspectable per
-`docs/ARCHITECTURE.md` §4 — it's designed to be (`cat`/`jq`/`grep` are
-legitimate debug tools at tier 1):
+The run journal is also directly inspectable per `docs/ARCHITECTURE.md` §4 —
+it's designed to be (`cat`/`jq`/`grep` are legitimate debug tools at tier 1),
+independent of `status`/`trace`:
 
 ```sh
 cat runs/<run-id>/run.yaml
@@ -158,7 +170,6 @@ Goobers doesn't self-merge at V0). Then confirm telemetry answers "what
 happened and what's failing":
 
 ```sh
-# shipped (#24's query surface + #23's CLI wiring, PR #67)
 ../bin/goobers telemetry stats
 ../bin/goobers telemetry errors
 ```
@@ -191,18 +202,52 @@ reflects `main` as of this writing, not the eventual acceptance run.
 | Gate execution: automated + agentic, bounded repass | #20 | ✅ shipped | Observe (implementation) |
 | Local credential handling, capability scoping | #14 | ✅ shipped | Setup (implicit) |
 | Runner core: lifecycle, durability, resume, retries | #17 | ✅ shipped (PR #87, `2d75e2e`) | Run |
-| CLI surface: `up`/`run`/`status`/`trace` | #23 | 🔶 partial — init/validate/status/trace/telemetry + quickstart shipped (PR #67); `up`'s daemon loop and `run`'s real execution are honest stubs, wiring to #17's now-complete runner in progress | Run, Observe, Verify |
+| CLI surface: `up`/`run`/`status`/`trace` | #23 | ✅ shipped (PR #96, `6d165f5` — daemon loop wired to real scheduler+runner, resumes on startup, drains on SIGTERM; `run` dispatches through the scheduler for real) | Run, Observe, Verify |
 | Workflow: backlog curation | #25 | ✅ shipped | Observe (1) |
-| Workflow: work nomination | #26 | ⬜ not started | Observe (2) |
+| Workflow: work nomination | #26 | ✅ shipped (PR #93, `cf74dab` — evidence-backed issues, dedupes on rerun, composes with curation, never self-approves) | Observe (2) |
 | Workflow: implementation, reviewer + CI-poll repass | #27 | ✅ shipped | Observe (3) |
 | Self-hosting dogfood config | #28 | ✅ shipped (PR #77, `12feace`) | Setup |
-| E2E walking skeleton (conformance seed) | #29 | 🔶 partial — walking skeleton on real runner Deliverable A shipped (PR #83, `6cb6f05`); crash-resume variant explicitly `t.Skip`'d, un-skip against #17's now-complete `Runner.Resume` in progress | (validates the whole chain on fixtures, ahead of this live run) |
+| E2E walking skeleton (conformance seed) | #29 | ✅ shipped (PR #91, `d47f3cd` — crash-resume variant un-skipped against real `Runner.Resume`; full §3.3 conformance arc, `journal.ConformanceView` per #141, complete) | (validates the whole chain on fixtures, ahead of this live run) |
 
-**3 of 20 bullets are not fully demonstrable yet** (#23's daemon loop/real
-`run` and #29's crash-resume variant, both now unblocked and in progress
-following #17's completion; #26 not started) — this runbook cannot be
-executed for real until they land. Re-run the checklist after each merge;
-strike "not yet demonstrable" once its issue closes.
+**All 20 bullets shipped as of `e739bd0`.** The last four holdouts (#17
+Deliverable B, #23 daemon loop, #26, #29 crash-resume) landed
+2026-07-13/14. This runbook's mechanics are ready to execute for real —
+what remains is the live execution itself (see status banner above) plus
+epic #130's own remediation checklist below, which this same live run also
+serves as the acceptance evidence for.
+
+## Epic #130 remediation checklist (V0.1 last-mile integration)
+
+Epic #130 found that the V0 packages above were individually solid but never
+actually wired together end-to-end on the live path (`make ci` green, but
+every cron-fired run failed at its first real stage and journaled as
+`completed` anyway — fail-open). Its own closing acceptance criterion is
+"one real cron-fired end-to-end pass of all three shipped workflows... per
+the #30 runbook" — i.e. this document. Re-verified by static code-path audit
+on `e739bd0` (2026-07-14, ahead of the live run):
+
+| Gap epic #130 found | Fix | Status |
+|---|---|---|
+| No `backlog-query`/`open-pr`/`issue-close-out` subcommands existed | `cmd/goobers/{backlogquery,openpr,issuecloseout}.go`, dispatch in `main.go` | ✅ real subcommands, `#131`/`#132` |
+| `TaskExecutor`/`CIPollExecutor` registered but never wired to a real stage | `runnerwiring.go` constructs `CIPollExecutor` against the real `ci-poll` stage-kind | ✅ live, `#132` |
+| No `GitHubProvider` constructed on the live path | `providercmd.go`'s `newGitHubProvider` used by all three subcommands + ci-poll's poller | ✅ live, `#132`/`#139` |
+| `ref.touched` / claim ledger had zero production callers | Claim ledger: ✅ real (`backlogquery.go --claim`, `up.go`'s `RecoverExpired`). `ref.touched` for provider mutations: ❌ still gap, tracked as #228 | 🔶 partial, `#132`/`#228` |
+| Stage worktrees detached at `main` every stage | `worktree.go` — first stage branches off `BaseRef`, later stages check out the existing run branch | ✅ fixed, `#133` |
+| `prNumber` output→input handoff didn't exist | `run.go`'s `InputsFrom` overlay, fail-closed on a missing declared output | ✅ real, `#132` |
+| ci-gate compared against a vocabulary ci-poll never emitted | Both use `"passing"`/`"failing"` (`cipoll.go`, `automated.go`) | ✅ symmetric, `#132` |
+| GitHub provider had no pagination/retry (page-2 breadcrumbs invisible) | `providers/github.go` pagination + 5xx/transport retry | ✅ fixed, `#139` |
+| Provider mutations could clobber concurrent status labels | Label sub-API instead of full-array PATCH | ✅ fixed, `#140` |
+| Resume/crash-status: fail-open completion, mistagged attempts, budget bypass | `#110`/`#107`/`#108`/`#109`/`#111`/`#112` — `failTerminal`, attempt reconstruction, infra-vs-policy tagging | ✅ fixed |
+| Daemon lifecycle: slot leaks, budget amnesia, DST double-fire, claim races | `#135`/`#136`/`#137`/`#138` | ✅ fixed |
+| Telemetry: no live client, rollup fragility | `#126`/`#127`/`#128`/`#129` | ✅ fixed |
+| Journal/secret safety: 6 issues incl. registry-bypass on spans/instance-log | `#113`–`#118`, `#117` Pieces A+B | ✅ fixed |
+| DSL/validation gaps: gate-outcome coverage, capability admission, fixture drift | `#120`–`#125` | ✅ fixed (2 partial/Refs, documented deferrals) |
+
+**Static verification (2026-07-14, ahead of the live run):** `make ci` green
+on `e739bd0` (independent reproduction), `goobers validate` clean against
+`selfhost/`. Live execution — the actual cron-fired pass this table's own
+acceptance bar requires — is pending target-repo and credential
+confirmation; see status banner.
 
 ## Known limitations (V0 → later)
 
@@ -212,6 +257,17 @@ decision for a bug:
 - **No self-merge.** A human merges the PR the implementation workflow opens
   (`ARCHITECTURE.md` §12 roadmap). Full autonomy is out of scope at every
   tier documented so far.
+- **`ref.touched` journal events don't fire for real provider mutations.**
+  `providers.WithMutationRecorder` (`providers/github.go`/`seams.go`) exists
+  and is tested, but every production call site (`backlogquery.go`,
+  `openpr.go`, `issuecloseout.go`) constructs the provider without it — so
+  opening a PR, commenting on/closing an issue, or applying a claim marker
+  never gets journaled as `ref.touched`. Only one `ref.touched` event fires
+  per run in production, the run's own git branch (`runner/run.go`) —
+  functionally harmless (the mutations themselves still happen for real) but
+  the per-run "which issue/PR did this actually touch" journal traceability
+  epic #130 called out is incomplete. Found during 2026-07-14's static
+  verification for the #30/#130 closing gate; tracked as #228.
 - **No sandboxed stage execution / per-goober credential injection.**
   Isolation is worktree + process only at tier 1 (`ARCHITECTURE.md` §9);
   sandboxing is V1 (tracked as #35).
