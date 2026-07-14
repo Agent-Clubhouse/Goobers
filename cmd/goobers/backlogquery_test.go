@@ -230,3 +230,34 @@ func TestBacklogQueryMissingRunIDFailsClosed(t *testing.T) {
 		t.Fatalf("stderr = %q, want a clear missing-run-id message", stderr)
 	}
 }
+
+// TestBacklogQueryRejectsNonPositiveLeaseDuration is issue #235's edge 1,
+// exercised at the CLI level: a workflow's leaseDuration input of "0s" (or
+// any non-positive duration) must fail closed with an actionable message —
+// this is the same class of authoring mistake trustLabel's own fail-closed
+// check guards against, and it must be caught here, not just deep inside
+// ClaimLedger.Claim, so the error names the actual bad input.
+func TestBacklogQueryRejectsNonPositiveLeaseDuration(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Fix the bug", "goobers:approved", "goobers:ready")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	t.Setenv("GOOBERS_INPUT_LEASEDURATION", "0s")
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (fail closed on non-positive leaseDuration), stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "leaseDuration") || !strings.Contains(stderr, "must be positive") {
+		t.Fatalf("stderr = %q, want an actionable leaseDuration message", stderr)
+	}
+
+	// Confirm nothing was claimed — the ledger file must not even exist.
+	if _, err := os.Stat(filepath.Join(root, "scheduler", "claims.json")); err == nil {
+		t.Fatal("fail-closed rejection should not have touched the claim ledger")
+	}
+}

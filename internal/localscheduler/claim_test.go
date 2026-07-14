@@ -45,6 +45,40 @@ func TestClaimAndRelease(t *testing.T) {
 	}
 }
 
+// TestClaimRejectsNonPositiveLeaseDuration is issue #235 edge 1: a
+// non-positive leaseDuration computes ExpiresAt <= ClaimedAt, so the entry
+// is expired() at the moment it's written — the very check the exclusivity
+// guard relies on — which would let a second claimant win immediately
+// instead of being refused. Claim must fail closed before ever touching the
+// ledger, on both an unheld item and one already held live.
+func TestClaimRejectsNonPositiveLeaseDuration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	l, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, d := range []time.Duration{0, -time.Minute, -time.Hour} {
+		ok, holder, err := l.Claim("issue-9", "run-a", "curate", d)
+		if err == nil || ok || holder != "" {
+			t.Fatalf("leaseDuration=%s: Claim should fail closed, got ok=%v holder=%q err=%v", d, ok, holder, err)
+		}
+		if _, held := l.Lookup("issue-9"); held {
+			t.Fatalf("leaseDuration=%s: a rejected claim must not touch the ledger", d)
+		}
+	}
+
+	// A non-positive duration on a live claim (held by a DIFFERENT run) must
+	// be refused too, not silently succeed via the exclusivity check's own
+	// early-return — validation runs before that check.
+	if ok, _, err := l.Claim("issue-9", "run-a", "curate", time.Hour); err != nil || !ok {
+		t.Fatalf("seed a live claim: ok=%v err=%v", ok, err)
+	}
+	if ok, holder, err := l.Claim("issue-9", "run-b", "curate", 0); err == nil || ok {
+		t.Fatalf("leaseDuration=0 against a live claim should fail closed, not silently 'succeed' by hitting the exclusivity branch: ok=%v holder=%q err=%v", ok, holder, err)
+	}
+}
+
 // TestForRun proves the #131/#132 lookup a downstream stage (issue-close-out)
 // uses to recover which item its own run claimed, several stages after
 // backlog-query and in a different worktree/process.
@@ -218,28 +252,43 @@ func TestClaimPersistFailureLeavesItemClaimable(t *testing.T) {
 	}
 }
 
-// TestClaimPersistFailurePreservesPriorOwner proves rollback restores the prior
-// owner (not just "unheld"): when a run renews its own live lease and the renewal
-// persist fails, the run's existing claim must remain intact in memory.
+// TestClaimPersistFailurePreservesPriorOwner proves rollback restores the
+// prior owner's ENTRY, not just its RunID (issue #177, hardening a test that
+// previously passed with or without the hadPrev rollback): in the same-run
+// renewal case, the phantom entry left on a failed persist is still owned by
+// run-a either way, so an ownership-only assertion can't distinguish "rolled
+// back" from "rollback is a no-op." Renewing with a DIFFERENT leaseDuration
+// than the original claim, and asserting ExpiresAt reverts to the ORIGINAL
+// value (not the failed renewal's would-be new one), is the one thing the
+// hadPrev branch actually changes — so this fails against pre-#177 code that
+// skips the restore. A fixed clock (WithLedgerClock) makes ExpiresAt an
+// exact, comparable value instead of a wall-clock-dependent one.
 func TestClaimPersistFailurePreservesPriorOwner(t *testing.T) {
 	dir := t.TempDir()
 	goodPath := filepath.Join(dir, "claims.json")
-	l, err := OpenClaimLedger(goodPath)
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	l, err := OpenClaimLedger(goodPath, WithLedgerClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := l.Claim("issue-7", "run-a", "curate", time.Hour); err != nil {
 		t.Fatal(err)
 	}
+	originalExpiry := now.Add(time.Hour)
 
-	// A same-run renewal whose persist fails must not drop the existing claim.
+	// A same-run renewal, with a DIFFERENT leaseDuration than the original
+	// claim, whose persist fails must not adopt the new (would-be) expiry —
+	// it must roll back to the original entry exactly, ExpiresAt included.
 	l.path = filepath.Join(dir, "missing-subdir", "claims.json")
-	if _, _, err := l.Claim("issue-7", "run-a", "curate", time.Hour); err == nil {
+	if _, _, err := l.Claim("issue-7", "run-a", "curate", 2*time.Hour); err == nil {
 		t.Fatal("expected a persist error on the failed renewal")
 	}
 	e, held := l.Lookup("issue-7")
 	if !held || e.RunID != "run-a" {
 		t.Fatalf("a failed renewal must preserve the prior owner's claim: %+v held=%v", e, held)
+	}
+	if !e.ExpiresAt.Equal(originalExpiry) {
+		t.Fatalf("a failed renewal must restore the ORIGINAL ExpiresAt (rollback), got %s want %s", e.ExpiresAt, originalExpiry)
 	}
 
 	// And a different run is still refused — the claim genuinely survived.

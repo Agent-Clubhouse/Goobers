@@ -18,12 +18,20 @@ import (
 
 // DefaultClaimLease bounds how long a claimed item stays held before
 // localscheduler.ClaimLedger.RecoverExpired (wired into `goobers up`, #131)
-// releases it back to the pool — long enough to cover implement -> review ->
-// ci-poll's own DefaultPollTimeout (30m) plus retry/backoff slack, without
-// leaving a genuinely abandoned claim (a crashed run whose lease never gets
-// explicitly released) stuck for an unreasonable time. Overridable via the
-// leaseDuration Task.Input (a time.ParseDuration string).
-const DefaultClaimLease = 2 * time.Hour
+// releases it back to the pool. Raised from the original 2h to 6h (issue
+// #235, edge 2): a real implementation run is implement -> reviewer gate ->
+// make ci -> open-pr -> ci-poll, and ci-poll alone can legitimately run
+// close to its own DefaultPollTimeout (30m) *per attempt*, retried — the old
+// 2h default was reachable by a real run, not just a theoretical bound,
+// which meant RecoverExpired's known liveness-unaware hazard (see its own
+// doc comment) could fire on a still-live run in the shipped config, not
+// only on a genuinely abandoned one. 6h is comfortably above that realistic
+// ceiling while still bounding a genuinely abandoned claim (a crashed run
+// whose lease never gets explicitly released) to a reasonable stuck time.
+// Overridable via the leaseDuration Task.Input (a time.ParseDuration
+// string) — must be positive; see the leaseDuration parsing below and
+// localscheduler.ClaimLedger.Claim's own fail-closed check.
+const DefaultClaimLease = 6 * time.Hour
 
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
@@ -144,6 +152,15 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		d, perr := time.ParseDuration(s)
 		if perr != nil {
 			pf(stderr, "error: invalid leaseDuration %q: %v\n", s, perr)
+			return 1
+		}
+		// Fail closed here too, not just in ClaimLedger.Claim (issue #235,
+		// edge 1): a non-positive duration is a workflow-authoring mistake,
+		// not a business condition — catching it before ever reaching the
+		// ledger gives a caller-facing, actionable error instead of a claim
+		// silently having no exclusivity.
+		if d <= 0 {
+			pf(stderr, "error: invalid leaseDuration %q: must be positive\n", s)
 			return 1
 		}
 		leaseDuration = d

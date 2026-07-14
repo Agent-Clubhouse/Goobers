@@ -87,7 +87,20 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 // re-claim by the same runID succeeds and renews the lease — a retried
 // backlog-query stage attempt (same run, same item) must not be refused by its
 // own earlier claim.
+//
+// leaseDuration must be positive (issue #235, edge 1): a non-positive
+// duration computes ExpiresAt <= ClaimedAt, so the entry is expired() at the
+// moment it's written — expired() is exactly what the exclusivity guard
+// below checks, so a non-positive lease would admit it unconditionally and
+// let a second run silently co-own the same item. Fails closed before any
+// ledger mutation, independent of ledger state, so this can never be
+// bypassed by a caller-supplied duration (e.g. a workflow's leaseDuration
+// input) reaching a live-lease branch that skips validation.
 func (l *ClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
+	if leaseDuration <= 0 {
+		return false, "", fmt.Errorf("localscheduler: lease duration must be positive, got %s", leaseDuration)
+	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -166,6 +179,13 @@ func (l *ClaimLedger) Release(itemID, runID string) error {
 // Claim MUST be set well above the workflow's realistic max run duration, not
 // tuned tightly — RecoverExpired trusts the lease at face value and has no
 // way to distinguish "orphaned by a crash" from "still running, just slow."
+//
+// Issue #235 (edge 2): a ci-poll-bearing implementation run can exceed the
+// OLD 2h DefaultClaimLease (cmd/goobers/backlogquery.go), which made this
+// hazard reachable in the shipped config, not just theoretical. The chosen
+// V0.2 mitigation is raising DefaultClaimLease comfortably above a realistic
+// run's duration — not the liveness-aware renewal this comment already
+// describes as the durable fix, which remains deferred to V1 hardening.
 func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
