@@ -132,6 +132,20 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 		target = wf.TargetEscalate
 	}
 
+	// KNOWN GAP (#263, split out of #112): a crash between the evaluator
+	// returning above and this Append succeeding leaves no gate.evaluated
+	// event for this attempt at all — unlike a task (stage.started journaled
+	// BEFORE dispatch, letting resume.go's interruptedAttempt detect and
+	// terminally journal an in-flight crash, #89/#107/#111), a gate has no
+	// equivalent pre-dispatch marker, so Resume's gateRepassSeed reconstructs
+	// Attempts purely from journaled events and never learns this one
+	// happened. A single crash here is a one-off wasted (and, for an agentic
+	// gate, side-effecting) duplicate evaluation; a repeated crash-loop
+	// hitting this exact window would never actually exhaust the repass
+	// budget, defeating the escalation safety net. A real fix needs the same
+	// durable pre-dispatch marker pattern tasks have (a new journal event
+	// type + resume.go logic) — deferred to #263 rather than folded into this
+	// grouped hardening pass; see that issue for the full rationale.
 	r := Result{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated, Verdict: verdict}
 	if err := recordVerdict(e.Journal, r); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal verdict: %w", g.Name, err)
