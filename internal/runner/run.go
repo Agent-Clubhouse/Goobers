@@ -410,7 +410,16 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: steps}, nil
 			}
 
-			gr, err := r.evaluateGate(ctx, gateEval, ex, in, g, lastStage, lastResult, pointers)
+			gr, err, removeErr := r.evaluateGate(ctx, gateEval, ex, in, g, lastStage, lastResult, pointers)
+			if removeErr != nil {
+				// Non-fatal (issue #136), same rationale as runTask's own
+				// worktree_remove_failed journaling — never silently
+				// discarded, but doesn't change this gate's outcome.
+				_ = jr.Append(journal.Event{
+					Type: journal.EventError, Gate: g.Name,
+					Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
+				})
+			}
 			if err != nil {
 				return r.failTerminal(jr, g.Name, steps, err)
 			}
@@ -583,7 +592,17 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
-		result, dispatchErr := r.dispatchTask(attemptCtx, in, ex, t, upstream, upstreamResult)
+		result, dispatchErr, removeErr := r.dispatchTask(attemptCtx, in, ex, t, upstream, upstreamResult)
+		if removeErr != nil {
+			// Non-fatal (issue #136): a failed worktree teardown doesn't
+			// change this attempt's own outcome, and worktree.Create's own
+			// adopt-and-reset means it no longer blocks the next attempt
+			// either — but it must not be silently swallowed.
+			_ = jr.Append(journal.Event{
+				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
+				Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
+			})
+		}
 		if dispatchErr != nil {
 			lastErr = dispatchErr
 			// A journal that cannot be written stops the run (§2.6): this
@@ -652,8 +671,16 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task)
 }
 
 // dispatchTask provisions one attempt's worktree and invokes the task's
-// executor. It never journals — runTask owns attempt/retry journaling so a
-// retried attempt is never mistaken for the run's overall outcome.
+// executor. It never journals its own result/err — runTask owns attempt/
+// retry journaling so a retried attempt is never mistaken for the run's
+// overall outcome. removeErr is separate and additive: a failed worktree
+// teardown (issue #136 — previously silently discarded, letting a failed
+// Remove turn every subsequent retry of this stage into a guaranteed
+// "already has a worktree" error) never overrides the stage's own
+// result/err, but runTask still surfaces it as a journaled warning so it's
+// visible rather than silently dropped. Adopt-and-reset (worktree.Create,
+// issue #136) means a failed Remove no longer blocks the next attempt
+// either way — this is purely about not hiding the failure.
 //
 // After buildEnvelope, t.InputsFrom is applied on top of the static declared
 // Inputs: for each inputKey/outputKey pair, upstreamResult.Outputs[outputKey]
@@ -662,17 +689,17 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task)
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope) (apiv1.ResultEnvelope, error) {
+func (r *Runner) dispatchTask(ctx context.Context, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope) (result apiv1.ResultEnvelope, err error, removeErr error) {
 	env, wt, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("prepare stage %q: %w", t.Name, err)
+		return apiv1.ResultEnvelope{}, fmt.Errorf("prepare stage %q: %w", t.Name, err), nil
 	}
-	defer func() { _ = wt.Remove(ctx, worktree.RemoveOptions{}) }()
+	defer func() { removeErr = wt.Remove(ctx, worktree.RemoveOptions{}) }()
 
 	for inputKey, outputKey := range t.InputsFrom {
 		v, ok := upstreamResult.Outputs[outputKey]
 		if !ok {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found", t.Name, inputKey, outputKey)
+			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found", t.Name, inputKey, outputKey), nil
 		}
 		env.Inputs[inputKey] = v
 	}
@@ -680,21 +707,23 @@ func (r *Runner) dispatchTask(ctx context.Context, in StartInput, ex *executors,
 	switch t.Type {
 	case apiv1.TaskDeterministic:
 		if t.Run == nil {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q is deterministic but declares no DeterministicRun", t.Name)
+			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q is deterministic but declares no DeterministicRun", t.Name), nil
 		}
 		det, err := ex.deterministic()
 		if err != nil {
-			return apiv1.ResultEnvelope{}, err
+			return apiv1.ResultEnvelope{}, err, nil
 		}
-		return det.Run(ctx, env, *t.Run)
+		result, err = det.Run(ctx, env, *t.Run)
+		return result, err, nil
 	case apiv1.TaskAgentic:
 		ag, err := ex.agentic(t.Goober)
 		if err != nil {
-			return apiv1.ResultEnvelope{}, err
+			return apiv1.ResultEnvelope{}, err, nil
 		}
-		return ag.Invoke(ctx, env)
+		result, err = ag.Invoke(ctx, env)
+		return result, err, nil
 	default:
-		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type)
+		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type), nil
 	}
 }
 
@@ -721,7 +750,9 @@ func errorDetailFrom(e *apiv1.ErrorInfo) *journal.ErrorDetail {
 // serialized, not journaled as such) purely so an agentic reviewer gate can
 // attach its artifacts as evidence ContextPointers (internal/gate/reviewer.go)
 // — that is a same-process function argument, not a stage-boundary crossing.
-func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer) (gate.Result, error) {
+// removeErr mirrors dispatchTask's own contract (issue #136): additive, never
+// overriding the gate's own result/err, but never silently discarded either.
+func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer) (result gate.Result, err error, removeErr error) {
 	// Same drain contract as runTask: a gate attempt already underway when
 	// SIGTERM cancels the run-level ctx finishes and journals cleanly.
 	ctx = context.WithoutCancel(ctx)
@@ -737,9 +768,9 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	if err != nil {
 		err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
 		span.Fail(err)
-		return gate.Result{}, err
+		return gate.Result{}, err, nil
 	}
-	defer func() { _ = wt.Remove(ctx, worktree.RemoveOptions{}) }()
+	defer func() { removeErr = wt.Remove(ctx, worktree.RemoveOptions{}) }()
 
 	switch g.Evaluator {
 	case apiv1.EvaluatorAutomated:
@@ -755,7 +786,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		if aerr != nil {
 			err := fmt.Errorf("runner: gate %q: %w", g.Name, aerr)
 			span.Fail(err)
-			return gate.Result{}, err
+			return gate.Result{}, err, nil
 		}
 		// Rebound per gate evaluated, not shared across gateEval's lifetime:
 		// different agentic gates in the same run may target different
@@ -764,14 +795,14 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: ag}
 	}
 
-	result, err := gateEval.Evaluate(ctx, g, env, subjectStage, subjectResult)
+	result, err = gateEval.Evaluate(ctx, g, env, subjectStage, subjectResult)
 	if err != nil {
 		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, err)
 		span.Fail(err)
-		return gate.Result{}, err
+		return gate.Result{}, err, nil
 	}
 	span.Succeed(result.Outcome)
-	return result, nil
+	return result, nil, nil
 }
 
 // startGateSpan opens a gate span under the run's trace, if telemetry is

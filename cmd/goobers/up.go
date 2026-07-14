@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // drainGrace bounds how long runUpContext waits, after its context is
@@ -28,6 +29,13 @@ var drainGrace = 30 * time.Second
 // "call once at startup... and periodically thereafter"). Var, not const, so
 // tests can shrink it rather than waiting out a real 5 minutes.
 var claimRecoverInterval = 5 * time.Minute
+
+// reapStaleAfter bounds how long a Keep-on-failure worktree survives before
+// Manager.Reap sweeps it up too, on top of genuine crash orphans (issue
+// #136) — nothing in the runner sets RemoveOptions.Keep yet, so this only
+// matters once something does; a day gives an operator time to look at one
+// before it's reclaimed.
+const reapStaleAfter = 24 * time.Hour
 
 func runUp(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signals.SetupSignalContext()
@@ -118,6 +126,20 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	for _, entry := range startupReleased {
 		pf(stdout, "recovered expired claim %s (was held by run %s)\n", entry.ItemID, entry.RunID)
+	}
+
+	// Reap crash-orphaned worktrees before anything tries to resume into one
+	// of their keys (issue #136): a mid-stage crash otherwise leaves a
+	// worktree directory that makes worktree.Create refuse forever (fixed
+	// separately by adopt-and-reset, but Reap is still what actually reclaims
+	// the disk space and the git worktree-list registration).
+	if _, warnings, err := setup.Worktrees.Reap(ctx, worktree.ReapOptions{StaleAfter: reapStaleAfter}); err != nil {
+		pf(stderr, "error: reap worktrees: %v\n", err)
+		return 1
+	} else {
+		for _, w := range warnings {
+			pf(stdout, "warning: unreadable worktree marker %s: %v\n", w.Path, w.Err)
+		}
 	}
 
 	// Reconcile BEFORE the resume scan (issue #135): it seeds Conditions'

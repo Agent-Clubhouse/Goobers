@@ -70,7 +70,19 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 
 	path := filepath.Join(m.runsDirForKey(key), opts.RunID)
 	if _, err := os.Stat(path); err == nil {
-		return nil, fmt.Errorf("worktree: run %s already has a worktree at %s", opts.RunID, path)
+		// Adopt-and-reset (issue #136), not a hard error: a leftover
+		// worktree at this exact key can only be a previous attempt of the
+		// SAME (run, stage) that never got torn down — a crash mid-attempt
+		// (this key survives until the daemon resumes the same stage), or a
+		// same-process retry whose own Remove call failed (RemoveOptions
+		// errors were being silently discarded). Both cases are always
+		// sequential with whatever is calling Create now — a genuinely
+		// concurrent second attempt of the same (run, stage) never happens
+		// — so it is always safe to clear it and start fresh rather than
+		// refusing forever until an operator does disk surgery.
+		if err := m.forceClear(ctx, key, path); err != nil {
+			return nil, fmt.Errorf("worktree: clear stale worktree for run %s: %w", opts.RunID, err)
+		}
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("worktree: stat %s: %w", path, err)
 	}
@@ -111,6 +123,32 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	}
 
 	return &Worktree{RunID: opts.RunID, Path: path, Branch: opts.Branch, manager: m, key: key}, nil
+}
+
+// forceClear tears down whatever is left at path from a previous, never-torn-
+// down attempt at this same worktree key (issue #136's adopt-and-reset),
+// so Create can proceed as if the key were fresh. Tries git's own worktree
+// removal first (the common case — git still has it registered); if git
+// doesn't know about it (e.g. the crash happened between `worktree add` and
+// this process ever registering it, or a prior force-remove already pruned
+// git's record but left the directory), falls back to removing the
+// directory directly and pruning git's administrative state. The marker is
+// cleared too — Create writes a fresh one immediately after.
+func (m *Manager) forceClear(ctx context.Context, key, path string) error {
+	repoDir := m.repoDirForKey(key)
+	if err := runGit(ctx, repoDir, "worktree", "remove", "--force", path); err != nil {
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove stale worktree directory: %w", err)
+		}
+		if err := runGit(ctx, repoDir, "worktree", "prune"); err != nil {
+			return fmt.Errorf("prune stale worktree registration: %w", err)
+		}
+	}
+	runID := filepath.Base(path)
+	if err := os.Remove(m.markerPath(key, runID)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale marker: %w", err)
+	}
+	return nil
 }
 
 // RemoveOptions configures worktree teardown.

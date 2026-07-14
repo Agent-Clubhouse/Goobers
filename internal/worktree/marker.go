@@ -2,9 +2,11 @@ package worktree
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -31,21 +33,62 @@ type marker struct {
 }
 
 func writeMarker(path string, m marker) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("worktree: create marker dir: %w", err)
 	}
 	data, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("worktree: encode marker: %w", err)
 	}
-	// Write to a temp file and rename so a crash never leaves a half-written
-	// marker that Reap would fail to parse.
+	// Write to a temp file, fsync it, rename, then fsync the parent
+	// directory — a rename alone can still leave a torn or entirely absent
+	// marker after a crash on filesystems that don't guarantee rename
+	// durability without an explicit directory fsync (issue #136).
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
 		return fmt.Errorf("worktree: write marker: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("worktree: write marker: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("worktree: fsync marker: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("worktree: close marker: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("worktree: commit marker: %w", err)
+	}
+	if err := fsyncDir(dir); err != nil {
+		return fmt.Errorf("worktree: fsync marker dir: %w", err)
+	}
+	return nil
+}
+
+// fsyncDir fsyncs a directory so a preceding rename into it is durable
+// across a crash — mirrors internal/journal/fsio.go's fsyncDir; duplicated
+// rather than shared since internal/worktree has no other reason to depend
+// on internal/journal. Directory fsync is unsupported on some
+// platforms/filesystems; EINVAL/ENOTSUP from that case is tolerated (the
+// write itself already landed, just without the extra durability guarantee)
+// rather than turning every worktree.Create into a hard failure on those
+// systems — anything else is a real error and is surfaced.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.Sync(); err != nil {
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+			return nil
+		}
+		return err
 	}
 	return nil
 }

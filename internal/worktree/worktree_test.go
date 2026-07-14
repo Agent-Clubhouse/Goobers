@@ -79,16 +79,36 @@ func TestManager_Create_Branch(t *testing.T) {
 	}
 }
 
-func TestManager_Create_DuplicateRunID(t *testing.T) {
+// TestManager_Create_AdoptsAndResetsExistingKey is issue #136's fix: a
+// leftover worktree at the same key (a never-torn-down previous attempt of
+// the same run+stage — a crash mid-attempt, or a same-process retry whose
+// own Remove call failed) must be cleared and recreated fresh, not refused
+// forever. Two DIFFERENT concurrent attempts of the same (run, stage) key
+// never happen in practice (see forceClear's doc comment), so this is safe.
+func TestManager_Create_AdoptsAndResetsExistingKey(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
 	m := newTestManager(t)
 
-	if _, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "run-1", BaseRef: "main"}); err != nil {
-		t.Fatalf("Create: %v", err)
+	first, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "run-1", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
 	}
-	if _, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "run-1", BaseRef: "main"}); err == nil {
-		t.Fatal("expected error creating a second worktree for the same RunID")
+	if err := os.WriteFile(filepath.Join(first.Path, "marker-of-first-attempt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a crash: the first attempt's worktree was never torn down
+	// (no Remove call at all — the never-torn-down leftover this fix targets).
+
+	second, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "run-1", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("second Create should adopt-and-reset rather than error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(second.Path, "marker-of-first-attempt")); !os.IsNotExist(err) {
+		t.Fatalf("expected a genuinely fresh worktree, but the first attempt's file survived: err = %v", err)
+	}
+	if err := second.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove: %v", err)
 	}
 }
 
@@ -237,9 +257,12 @@ func TestManager_Reap_RemovesDeadProcessOrphan(t *testing.T) {
 		t.Fatalf("writeMarker: %v", err)
 	}
 
-	results, err := m.Reap(ctx, ReapOptions{})
+	results, warnings, err := m.Reap(ctx, ReapOptions{})
 	if err != nil {
 		t.Fatalf("Reap: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected Reap warnings: %+v", warnings)
 	}
 	if len(results) != 1 || results[0].RunID != "crashed" || results[0].Reason != ReapReasonOrphaned {
 		t.Fatalf("unexpected Reap results: %+v", results)
@@ -259,9 +282,12 @@ func TestManager_Reap_LeavesLiveRunAlone(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	results, err := m.Reap(ctx, ReapOptions{})
+	results, warnings, err := m.Reap(ctx, ReapOptions{})
 	if err != nil {
 		t.Fatalf("Reap: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected Reap warnings: %+v", warnings)
 	}
 	if len(results) != 0 {
 		t.Fatalf("expected no reap results for a live run, got %+v", results)
@@ -285,8 +311,8 @@ func TestManager_Reap_KeptWorktreeSurvivesUntilStale(t *testing.T) {
 	}
 
 	// StaleAfter disabled: kept worktree is left alone regardless of age.
-	if results, err := m.Reap(ctx, ReapOptions{}); err != nil || len(results) != 0 {
-		t.Fatalf("Reap with StaleAfter=0 should not touch kept worktrees, got %+v, err %v", results, err)
+	if results, warnings, err := m.Reap(ctx, ReapOptions{}); err != nil || len(results) != 0 || len(warnings) != 0 {
+		t.Fatalf("Reap with StaleAfter=0 should not touch kept worktrees, got %+v, warnings %+v, err %v", results, warnings, err)
 	}
 	if _, err := os.Stat(wt.Path); err != nil {
 		t.Fatalf("expected kept worktree still present: %v", err)
@@ -303,15 +329,106 @@ func TestManager_Reap_KeptWorktreeSurvivesUntilStale(t *testing.T) {
 		t.Fatalf("writeMarker: %v", err)
 	}
 
-	results, err := m.Reap(ctx, ReapOptions{StaleAfter: time.Minute})
+	results, warnings, err := m.Reap(ctx, ReapOptions{StaleAfter: time.Minute})
 	if err != nil {
 		t.Fatalf("Reap: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected Reap warnings: %+v", warnings)
 	}
 	if len(results) != 1 || results[0].RunID != "kept" || results[0].Reason != ReapReasonStale {
 		t.Fatalf("unexpected Reap results: %+v", results)
 	}
 	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
 		t.Fatalf("expected stale kept worktree removed, stat err = %v", err)
+	}
+}
+
+// TestManager_Reap_UnreadableMarkerDoesNotAbortPass is issue #136's
+// fail-open fix: one corrupt marker must not prevent every other repo's (or
+// even every other worktree in the SAME repo's) genuine orphans from being
+// cleaned up.
+func TestManager_Reap_UnreadableMarkerDoesNotAbortPass(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	// A genuine crash orphan that Reap must still clean up despite the
+	// corrupt marker below.
+	orphan, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "orphan", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	dead := deadPID(t)
+	mk, err := readMarker(m.markerPath(orphan.key, orphan.RunID))
+	if err != nil {
+		t.Fatalf("readMarker: %v", err)
+	}
+	mk.PID = dead
+	if err := writeMarker(m.markerPath(orphan.key, orphan.RunID), mk); err != nil {
+		t.Fatalf("writeMarker: %v", err)
+	}
+
+	// A second worktree in the same repo whose marker is corrupted (not
+	// valid JSON) — simulating a torn write.
+	corrupt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "corrupt", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	corruptMarkerPath := m.markerPath(corrupt.key, corrupt.RunID)
+	if err := os.WriteFile(corruptMarkerPath, []byte("{not valid json"), 0o644); err != nil {
+		t.Fatalf("corrupt marker: %v", err)
+	}
+
+	results, warnings, err := m.Reap(ctx, ReapOptions{})
+	if err != nil {
+		t.Fatalf("Reap returned an error instead of failing open: %v", err)
+	}
+	if len(warnings) != 1 || warnings[0].Path != corruptMarkerPath {
+		t.Fatalf("expected exactly one warning for the corrupt marker, got %+v", warnings)
+	}
+	if len(results) != 1 || results[0].RunID != "orphan" || results[0].Reason != ReapReasonOrphaned {
+		t.Fatalf("expected the orphan to still be reaped despite the corrupt marker: %+v", results)
+	}
+	if _, err := os.Stat(orphan.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected the orphan worktree removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(corrupt.Path); err != nil {
+		t.Fatalf("expected the corrupt-marker worktree left alone (not guessed at), stat err = %v", err)
+	}
+}
+
+// TestManager_Reap_RemovesMarkerlessWorktree is issue #136's orphan-diff
+// fix: a crash between `git worktree add` and Manager.Create's marker write
+// leaves a worktree with no marker at all, invisible to a marker-driven scan
+// unless Reap also diffs actual worktree directories against markers.
+func TestManager_Reap_RemovesMarkerlessWorktree(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "no-marker", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Simulate the crash window: the worktree exists, but its marker never
+	// got written.
+	if err := os.Remove(m.markerPath(wt.key, wt.RunID)); err != nil {
+		t.Fatalf("remove marker: %v", err)
+	}
+
+	results, warnings, err := m.Reap(ctx, ReapOptions{})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected Reap warnings: %+v", warnings)
+	}
+	if len(results) != 1 || results[0].RunID != "no-marker" || results[0].Reason != ReapReasonMarkerless {
+		t.Fatalf("unexpected Reap results: %+v", results)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected the markerless worktree removed, stat err = %v", err)
 	}
 }
 
