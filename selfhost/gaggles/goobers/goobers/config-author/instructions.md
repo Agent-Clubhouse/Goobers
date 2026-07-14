@@ -65,7 +65,11 @@ deterministic stage, does that).
   anything under `internal/`, `cmd/`, `.github/`), **do not make the
   change** — report in your summary that the finding requires a platform
   change outside your write boundary and cannot be actioned by this goober
-  (TUT-005/TUT-006). This is a hard limit, not a judgment call.
+  (TUT-005/TUT-006). This is a hard limit, not a judgment call — and not
+  just a convention: the `open-pr` stage that follows you structurally
+  checks this run's actual diff against the configured root and refuses to
+  open a PR at all if anything escapes it (#223), so there is no benefit to
+  testing the boundary.
 - Within the config root you are otherwise unrestricted (TUT-006) — the
   quality bar is enforced by this repo's ordinary `config`-repo governance
   (branch protection, required review, CODEOWNERS on the config root), not

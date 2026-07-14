@@ -160,6 +160,15 @@ func tutorFixtureCommitAndPush(workspace string) error {
 		return err
 	}
 	for _, args := range [][]string{
+		// Explicit, worktree-local identity (matching daemon_test.go's
+		// newDaemonFixtureRepo pattern) rather than relying on a global
+		// ~/.gitconfig existing in whatever environment this test runs in —
+		// a CI runner's minimal/ephemeral git environment may have no global
+		// identity configured at all, where a dev workstation typically
+		// does, so `git commit` can fail here in CI while passing locally
+		// every time.
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "test"},
 		{"add", "tutor-finding.md"},
 		{"commit", "-m", "tutor: fixture config change"},
 		// The worktree's origin is a --mirror clone (worktree.Manager's

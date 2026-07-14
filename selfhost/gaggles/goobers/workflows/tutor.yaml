@@ -68,11 +68,14 @@ spec:
     # not a fresh telemetry/journal read of its own — narrowest capability
     # footprint that can still cite the same evidence) and drafts the
     # config change in this run's worktree, committing + pushing to the
-    # run's branch. Never opens the PR itself (open-pr below does) and
-    # never writes outside the instance's configured config root (T4,
-    # #104's write-boundary — enforced today by governance/CODEOWNERS on
-    # that root per T4's PR, since the structural per-stage enforcement this
-    # stage's capability grant would ideally carry is blocked on #35).
+    # run's branch. Never opens the PR itself (open-pr below does). The
+    # config-only write boundary (T4, #104) is enforced structurally by
+    # open-pr's confineToConfigRoot check below (#223) — this stage's own
+    # scope discipline (instructions.md) and CODEOWNERS/branch-protection
+    # governance back it up, but the hard backstop is open-pr refusing to
+    # open a PR at all if this stage's diff ever escapes the config root. A
+    # credential that structurally cannot push platform changes in the first
+    # place (independent of this check) is #35.
     - name: draft-change
       type: agentic
       goober: config-author
@@ -95,6 +98,13 @@ spec:
         runIdFooter: "true"
         title: "tutor: config improvement"
         resultFile: "pr-result.json"
+        # Config write-boundary (#104/T4, activated here per #223): every file
+        # this run's branch changed (relative to base) must be within
+        # configRoot, or the cycle aborts closed before the PR opens — the
+        # structural half of "the Tutor authors config only" that draft-change's
+        # own goober-instructions scope discipline can't guarantee by itself.
+        confineToConfigRoot: "true"
+        configRoot: "selfhost"
       capabilities:
         - github:pr:write
       expectedOutputs:
