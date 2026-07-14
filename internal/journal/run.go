@@ -8,6 +8,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // ErrClosed is returned by writer operations after Close.
@@ -119,6 +121,14 @@ func (r *Run) Dir() string { return r.dir }
 func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Option) (*Run, error) {
 	if id.RunID == "" {
 		return nil, errors.New("journal: RunID is required")
+	}
+	// A run id is joined onto runsDir below as a single path segment — it
+	// must never itself be able to escape it (#244). Run ids are minted
+	// internally as safe random hex today, but this is the ONE place every
+	// run directory gets created, so it is the right fail-closed boundary
+	// regardless of how a future caller sources the id.
+	if !apiv1.ValidRunID(id.RunID) {
+		return nil, fmt.Errorf("journal: invalid run id %q", id.RunID)
 	}
 	cfg := newConfig(opts...)
 	dir := filepath.Join(runsDir, id.RunID)

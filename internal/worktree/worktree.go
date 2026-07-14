@@ -43,6 +43,17 @@ type Worktree struct {
 	key     string
 }
 
+// validRunID reports whether id is safe to join onto a directory as a
+// single path segment: non-empty, not "." or "..", and not itself a
+// multi-segment or absolute path (filepath.Base(id) == id is false for any
+// of those) — mirrors api/v1alpha1.ValidRunID; duplicated rather than
+// shared since this package has no other reason to depend on the stage
+// contract package (see doc.go), the same tradeoff already accepted for
+// marker.go's fsyncDir (which mirrors internal/journal's own copy).
+func validRunID(id string) bool {
+	return id != "" && id != "." && id != ".." && filepath.Base(id) == id
+}
+
 // Create prepares repoURL's managed working copy (cloning or fetching as
 // needed) and adds a new worktree off it for opts.BaseRef, keyed by
 // opts.RunID. Two calls with different RunIDs against the same repo may run
@@ -50,6 +61,11 @@ type Worktree struct {
 func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, error) {
 	if opts.RunID == "" {
 		return nil, fmt.Errorf("worktree: RunID is required")
+	}
+	// opts.RunID is joined into this worktree's path and marker key below —
+	// it must never itself be able to escape those directories (#244).
+	if !validRunID(opts.RunID) {
+		return nil, fmt.Errorf("worktree: RunID %q must be a single path segment (no \"..\", no \"/\")", opts.RunID)
 	}
 	if opts.BaseRef == "" {
 		return nil, fmt.Errorf("worktree: BaseRef is required")

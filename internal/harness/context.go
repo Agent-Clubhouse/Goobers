@@ -75,13 +75,6 @@ func hasCapability(declared []string, cap capability.Capability) bool {
 	return false
 }
 
-// validRunID reports whether id is safe to join onto RunsDir as a single
-// path segment: non-empty, not "." or "..", and not itself a multi-segment
-// or absolute path (filepath.Base(id) == id is false for any of those).
-func validRunID(id string) bool {
-	return id != "" && id != "." && id != ".." && filepath.Base(id) == id
-}
-
 // contextDir is the workspace-relative directory declared context artifacts
 // are materialized into, ahead of every harness session that declares any
 // ContextPointers.
@@ -155,7 +148,7 @@ func (e *Executor) materializeContext(env apiv1.InvocationEnvelope) (map[string]
 			if !hasCapability(env.Capabilities, capability.JournalRead) {
 				return nil, fmt.Errorf("harness: resolve context pointer %q: %w", cp.Name, ErrJournalReadRequired)
 			}
-			if !validRunID(cp.RunID) {
+			if !apiv1.ValidRunID(cp.RunID) {
 				return nil, fmt.Errorf("harness: resolve context pointer %q: %w: %q", cp.Name, ErrInvalidRunID, cp.RunID)
 			}
 			journalRoot = filepath.Join(e.contextResolver.RunsDir(), cp.RunID)

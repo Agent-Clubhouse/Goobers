@@ -2,6 +2,7 @@ package journal
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -166,7 +167,11 @@ func TestConformanceViewReplayedProviderFixtureEmitsRefTouched(t *testing.T) {
 		t.Helper()
 		root := t.TempDir()
 		id := testIdentity()
-		id.RunID = "replay-" + t.Name()
+		// t.Name() includes a "/" for a subtest (e.g. replay2ndRun's
+		// "second-replay") — a run id must be a single path segment
+		// (#244), so collapse it to "-" rather than passing t.Name()
+		// through raw.
+		id.RunID = "replay-" + strings.ReplaceAll(t.Name(), "/", "-")
 		run, err := Create(root, id, nil, WithClock(fixedClock()))
 		if err != nil {
 			t.Fatalf("Create: %v", err)

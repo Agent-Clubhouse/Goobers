@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -164,6 +165,13 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	root := "."
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
+	}
+	// runID is raw CLI input, joined onto RunsDir below and then used to
+	// append a terminal event — a traversal id (e.g. "../../x") must not
+	// touch anything outside the instance (#244).
+	if !apiv1.ValidRunID(runID) {
+		pf(stderr, "error: invalid run id %q\n", runID)
+		return 2
 	}
 
 	l := instance.NewLayout(root)

@@ -89,9 +89,18 @@ func (r *Reader) Events() ([]Event, error) {
 func (e Event) KnownSchema() bool { return e.Schema == EventSchema }
 
 // ArtifactBytes reads and verifies a stored blob against its Ref.Digest,
-// returning an error on any tamper/mismatch.
+// returning an error on any tamper/mismatch. ref.Path is untrusted at
+// resume time (#244): it round-trips through run.yaml, so a tampered
+// InputRef.Path (e.g. "../../…") must be refused before it steers a read
+// outside the run directory, not just joined blindly the way this used to
+// — the same containment guard Redact already applies to the identical
+// operation via containedBlobPath.
 func (r *Reader) ArtifactBytes(ref Ref) ([]byte, error) {
-	b, err := os.ReadFile(filepath.Join(r.dir, ref.Path))
+	full, err := containedBlobPath(r.dir, ref.Path)
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(full)
 	if err != nil {
 		return nil, fmt.Errorf("journal: read blob %q: %w", ref.Path, err)
 	}
