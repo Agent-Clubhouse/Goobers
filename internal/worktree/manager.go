@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -110,6 +111,9 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 			_ = os.RemoveAll(dir) // don't leave a partial clone masquerading as a valid one
 			return "", fmt.Errorf("worktree: clone %s: %w", repoURL, err)
 		}
+		if err := ensureScratchExcluded(ctx, dir); err != nil {
+			return "", err
+		}
 		return dir, nil
 	case err != nil:
 		return "", fmt.Errorf("worktree: stat workcopy for %s: %w", repoURL, err)
@@ -124,7 +128,72 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 		"+refs/*:refs/*", "^refs/heads/"+runBranchNamespace+"*"); err != nil {
 		return "", fmt.Errorf("worktree: fetch %s: %w", repoURL, err)
 	}
+	// A pre-existing mirror (cloned before #240) also needs the scratch exclude;
+	// it is idempotent, so refreshing it on every WorkingCopy is safe.
+	if err := ensureScratchExcluded(ctx, dir); err != nil {
+		return "", err
+	}
 	return dir, nil
+}
+
+// scratchExcludePattern is the harness scratch dir (internal/harness writes
+// <workspace>/.goobers/{prompt.md,result.json,verdict.json,context/}) that must
+// never be committed into a run's PR (#240).
+const scratchExcludePattern = ".goobers/"
+
+// ensureScratchExcluded makes the harness scratch dir invisible to git in every
+// worktree branched from this managed mirror, so the common `git add -A` agent
+// commit pattern never captures harness debris into the run's PR (#240). It
+// appends the pattern to the mirror's shared info/exclude — a common-dir file
+// (verified: it applies to every linked worktree, not just the mirror) — so the
+// exclusion is per-mirror and local, never a repo-visible change, and works for
+// any target repo regardless of its own .gitignore. Idempotent.
+func ensureScratchExcluded(ctx context.Context, dir string) error {
+	// `git rev-parse --git-path info/exclude` resolves the exclude file for both
+	// the bare mirror used here and any future non-bare layout; the path is
+	// returned relative to dir.
+	rel, err := gitOutput(ctx, dir, "rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		return fmt.Errorf("worktree: resolve info/exclude in %s: %w", dir, err)
+	}
+	excludePath := rel
+	if !filepath.IsAbs(excludePath) {
+		excludePath = filepath.Join(dir, excludePath)
+	}
+	existing, err := os.ReadFile(excludePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("worktree: read info/exclude: %w", err)
+	}
+	for _, line := range strings.Split(string(existing), "\n") {
+		if t := strings.TrimSpace(line); t == scratchExcludePattern || t == ".goobers" {
+			return nil // already excluded
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
+		return fmt.Errorf("worktree: create info dir: %w", err)
+	}
+	buf := existing
+	if len(buf) > 0 && buf[len(buf)-1] != '\n' {
+		buf = append(buf, '\n')
+	}
+	buf = append(buf, []byte(scratchExcludePattern+"\n")...)
+	if err := os.WriteFile(excludePath, buf, 0o644); err != nil {
+		return fmt.Errorf("worktree: write info/exclude: %w", err)
+	}
+	return nil
+}
+
+// gitOutput runs git in dir and returns its trimmed stdout.
+func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git %v: %w", args, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // runGit runs git with args, using dir as the working directory (the process

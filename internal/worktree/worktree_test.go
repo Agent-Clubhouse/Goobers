@@ -28,6 +28,61 @@ func newSourceRepo(t *testing.T) string {
 	return dir
 }
 
+// TestManager_Create_ExcludesHarnessScratch is #240's regression guard: the
+// harness scratch dir (.goobers/) written into a provisioned run worktree must
+// be invisible to git — a `git add -A && commit` (the common agent pattern)
+// captures none of it — even though the target repo has no .goobers entry in
+// its own .gitignore.
+func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t) // foreign repo: no .goobers in its .gitignore (it has none)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1", BaseRef: "main", Branch: "goobers/impl/run-1",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// The harness materializes its scratch dir into the workspace; the agent
+	// also makes a real change.
+	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "prompt.md"), "the full prompt")
+	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "result.json"), "{}")
+	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "context", "blob"), "materialized context")
+	mustWriteFile(t, filepath.Join(wt.Path, "src.txt"), "real implementation change")
+
+	// (a) status shows the real change but not the scratch dir.
+	status := runTestGit(t, wt.Path, "status", "--porcelain")
+	if strings.Contains(status, ".goobers") {
+		t.Fatalf("git status leaks harness scratch:\n%s", status)
+	}
+	if !strings.Contains(status, "src.txt") {
+		t.Fatalf("git status should still show the real change:\n%s", status)
+	}
+
+	// (b) `git add -A && commit` captures no .goobers/ paths.
+	runTestGit(t, wt.Path, "add", "-A")
+	runTestGit(t, wt.Path, "-c", "user.email=t@e.test", "-c", "user.name=t", "commit", "-m", "impl")
+	committed := runTestGit(t, wt.Path, "show", "--name-only", "--pretty=format:", "HEAD")
+	if strings.Contains(committed, ".goobers") {
+		t.Fatalf("committed tree contains harness scratch:\n%s", committed)
+	}
+	if !strings.Contains(committed, "src.txt") {
+		t.Fatalf("committed tree should contain the real change:\n%s", committed)
+	}
+}
+
+func mustWriteFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func runTestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
