@@ -1,9 +1,13 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 func initDemo(t *testing.T) string {
@@ -53,6 +57,57 @@ func TestRunCompletesDeterministicWorkflow(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("trace stdout missing %q: %q", want, stdout)
 		}
+	}
+}
+
+// TestRunEmitsParseableSpans is issue #126's core acceptance: before this
+// fix, no V0 binary ever constructed internal/telemetry.Client, so a real run
+// never wrote runs/<id>/spans/spans.jsonl at all — `goobers trace` had
+// nothing to enrich and the rollup's spans/span_events tables stayed
+// permanently empty. `goobers run` against the deterministic fixture (single
+// task, no gate) must now produce a parseable spans file with exactly one
+// run-kind and one task-kind span, both on the run's own trace id.
+func TestRunEmitsParseableSpans(t *testing.T) {
+	root := initDeterministicDemo(t)
+
+	code, stdout, stderr := runArgs(t, "run", "default-implement", root)
+	if code != 0 {
+		t.Fatalf("run: code = %d, stderr = %q", code, stderr)
+	}
+	firstLine := strings.Fields(strings.Split(stdout, "\n")[0])
+	if len(firstLine) < 3 {
+		t.Fatalf("unexpected run stdout = %q", stdout)
+	}
+	runID := firstLine[2]
+
+	spansPath := filepath.Join(root, "runs", runID, "spans", "spans.jsonl")
+	data, err := os.ReadFile(spansPath)
+	if err != nil {
+		t.Fatalf("read spans.jsonl: %v (a real run must emit spans now the telemetry client is wired)", err)
+	}
+
+	kinds := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var rec telemetry.SpanRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("unmarshal span line %q: %v", line, err)
+		}
+		if rec.Schema != telemetry.SpanSchema {
+			t.Fatalf("span %q schema = %q, want %q", rec.Name, rec.Schema, telemetry.SpanSchema)
+		}
+		if rec.TraceID != runID {
+			t.Fatalf("span %q traceId = %q, want run id %q", rec.Name, rec.TraceID, runID)
+		}
+		if rec.Status != "ok" {
+			t.Fatalf("span %q status = %q, want ok", rec.Name, rec.Status)
+		}
+		kinds[rec.Kind]++
+	}
+	if kinds["run"] != 1 {
+		t.Fatalf("span kinds = %v, want exactly one run span", kinds)
+	}
+	if kinds["task"] != 1 {
+		t.Fatalf("span kinds = %v, want exactly one task span", kinds)
 	}
 }
 

@@ -10,7 +10,27 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
+
+// fakeSpanStarter records every scheduler span opened (issue #126).
+type fakeSpanStarter struct {
+	mu    sync.Mutex
+	calls []telemetry.SchedulerAttributes
+}
+
+func (f *fakeSpanStarter) StartSchedulerSpan(ctx context.Context, attrs telemetry.SchedulerAttributes) (context.Context, telemetry.Span, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, attrs)
+	f.mu.Unlock()
+	return ctx, telemetry.Span{}, nil
+}
+
+func (f *fakeSpanStarter) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
 
 // fakeStarter records every Start call and returns a canned result. It blocks
 // on a channel if one is set, so tests can control exactly when a run
@@ -283,6 +303,43 @@ func TestRunDoesNotBusyPoll(t *testing.T) {
 	// (initial tick + one per advance), not run away on its own.
 	if calls := len(fc.durations()); calls > 6 {
 		t.Fatalf("too many After calls (%d) for 4 controlled advances — looks like busy-polling", calls)
+	}
+}
+
+// TestDispatchEmitsSchedulerSpan is issue #126's local-scheduler acceptance:
+// when WithTelemetry is configured, a dispatched tick opens exactly one
+// scheduler decision span, attributed to the firing workflow. Before this
+// fix, Scheduler had no telemetry seam at all — dispatch() never called
+// StartSchedulerSpan, the direct parity gap vs internal/scheduler.Scheduler.
+func TestDispatchEmitsSchedulerSpan(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	spans := &fakeSpanStarter{}
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	sched := New([]WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "acme-web",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Schedule:  fakeSchedule{d: time.Hour},
+		Starter:   starter,
+	}}, log, WithTelemetry(spans))
+
+	now := time.Now()
+	sched.Tick(context.Background(), now.Add(2*time.Hour))
+
+	waitForCount(t, starter.count, 1)
+	waitForCount(t, spans.count, 1)
+
+	spans.mu.Lock()
+	got := spans.calls[0]
+	spans.mu.Unlock()
+	if got.Gaggle != "acme-web" || got.WorkflowID != "implement" || got.Action != "dispatch" {
+		t.Fatalf("scheduler span attrs = %+v, want gaggle=acme-web workflowId=implement action=dispatch", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"io"
 	"os"
@@ -76,7 +77,17 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	runnerCfg, err := buildRunnerConfig(l, cfg, goobers)
+	ctx, stop := signals.SetupSignalContext()
+	defer stop()
+
+	tel, err := buildTelemetryClient(ctx, l)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	defer func() { _ = tel.Shutdown(context.Background()) }()
+
+	runnerCfg, err := buildRunnerConfig(l, cfg, goobers, tel)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -95,8 +106,6 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "created run %s (workflow=%s gaggle=%s)\n", runID, wf.Name, wf.Spec.Gaggle)
 
-	ctx, stop := signals.SetupSignalContext()
-	defer stop()
 	result, err := rn.Start(ctx, runner.StartInput{
 		RunID:   runID,
 		Machine: machines[wf.Name],
