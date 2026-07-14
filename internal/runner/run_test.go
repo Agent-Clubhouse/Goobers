@@ -1119,6 +1119,89 @@ func TestRunnerResumeFailsWhenInterruptedAttemptExhaustsBudget(t *testing.T) {
 	if det.calls != 0 {
 		t.Fatalf("executor called %d times, want 0 — must not dispatch beyond the exhausted budget", det.calls)
 	}
+
+	// The exhaustion must reach a terminal journal state (ruling #110's
+	// failTerminal), not leave the run at phase=running — that's what makes
+	// a SECOND Resume (TestDoubleResumeAfterExhaustedBudgetDoesNotGrantFreshBudget,
+	// #109) short-circuit instead of granting a fresh attempt budget.
+	rd, rerr := journal.OpenRead(filepath.Join(runsDir, "run-crash-exhausted"))
+	if rerr != nil {
+		t.Fatalf("OpenRead: %v", rerr)
+	}
+	st, serr := rd.State()
+	if serr != nil {
+		t.Fatalf("State: %v", serr)
+	}
+	if st.Phase != journal.PhaseFailed {
+		t.Fatalf("state.json phase = %q, want failed", st.Phase)
+	}
+}
+
+// TestDoubleResumeAfterExhaustedBudgetDoesNotGrantFreshBudget is #109's
+// acceptance scenario: Resume #1 of a crash on a task's LAST allowed attempt
+// must not leave the run resumable again with a fresh budget. Before #110's
+// failTerminal fix, Resume #1's "no attempts left" error propagated with no
+// terminal journal write, so Resume #2 read a still-"running" state.json,
+// found interruptedAttempt back at 0 (the infra-tagged marker Resume #1 DID
+// manage to journal made started==finished again), and re-dispatched
+// "implement" from attempt 1 with its full budget restored — exactly what a
+// crash-loop-of-restarts (cmd/goobers/daemon.go auto-resumes every
+// PhaseRunning run) would repeat forever. #110's failTerminal closes this by
+// journaling PhaseFailed before Resume #1 returns its error, so Resume #2
+// short-circuits at the terminal-phase check instead of re-entering the walk
+// at all.
+func TestDoubleResumeAfterExhaustedBudgetDoesNotGrantFreshBudget(t *testing.T) {
+	machine := retryFixtureMachine(t, 1) // MaxAttempts=1: no retries allowed at all
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	runsDir := filepath.Join(instanceRoot, "runs")
+	fixtureRepo := newFixtureRepo(t)
+
+	simulateCrashMidAttempt(t, runsDir, machine, "run-double-resume", "implement", 1)
+
+	det := &flakyDeterministic{}
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Resume #1: the interrupted attempt already consumed the entire budget,
+	// so this errors (TestRunnerResumeFailsWhenInterruptedAttemptExhaustsBudget
+	// covers this in isolation) — but must still journal a terminal phase.
+	if _, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-double-resume",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	}); err == nil {
+		t.Fatal("Resume #1: want an error — the interrupted attempt already exhausted its budget")
+	}
+
+	// Resume #2 (the daemon-restart-retries-forever scenario): must NOT
+	// re-dispatch "implement" with a fresh budget — it should short-circuit
+	// on the terminal phase Resume #1 already journaled.
+	res2, err2 := r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-double-resume",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err2 != nil {
+		t.Fatalf("Resume #2: %v", err2)
+	}
+	if res2.Phase != journal.PhaseFailed {
+		t.Fatalf("Resume #2 phase = %q, want failed (idempotent terminal short-circuit, not a fresh attempt)", res2.Phase)
+	}
+	if det.calls != 0 {
+		t.Fatalf("executor called %d times across both resumes, want 0 — a crash on the last attempt must never grant a fresh budget on a later resume", det.calls)
+	}
 }
 
 // TestRunnerResumeAlreadyTerminalIsIdempotent proves Resume on an
