@@ -79,6 +79,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return 1
 	}
 	defer func() { _ = setup.Telemetry.Shutdown(context.Background()) }()
+	defer func() { _ = setup.RollupDB.Close() }()
 
 	// Reconcile BEFORE the resume scan (issue #135): it seeds Conditions'
 	// active-run counts from the very same non-terminal runs the resume scan
@@ -96,8 +97,10 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// shutdown restarts now, before the scheduler starts admitting new ticks
 	// (#23 AC: restart via Runner.Resume). A run whose workflow no longer
 	// resolves in config is skipped with a warning (issue #135), not fatal —
-	// recover it with `goobers run abort <run-id>`.
-	resumed, warned, err := resumeInterruptedRuns(ctx, l.RunsDir(), setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, sched.Release, &wg)
+	// recover it with `goobers run abort <run-id>`. Each resumed run also
+	// incrementally ingests into the telemetry rollup once its outcome is
+	// known (issue #127).
+	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.RollupDB, sched.Release, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

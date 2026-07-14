@@ -14,22 +14,25 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
 // schedulerSetup bundles everything both `up` and `run` need to build a
 // localscheduler.Scheduler over an instance's config: the shared runner, the
-// telemetry client both the runner and the scheduler span through, its
-// instance log, and one WorkflowEntry per configured workflow. Factored out
-// so both commands construct it identically (issue #134: `run` used to
-// build its own bare *runner.Runner and skip the scheduler/conditions/
-// journal/lock entirely — the two commands must agree on this construction,
-// not maintain two divergent copies of it). The caller owns calling
-// Telemetry.Shutdown once it's done driving runs, exactly as it did before
-// this seam existed.
+// telemetry client both the runner and the scheduler span through, the
+// telemetry rollup every dispatched run incrementally ingests into (issue
+// #127), its instance log, and one WorkflowEntry per configured workflow.
+// Factored out so both commands construct it identically (issue #134: `run`
+// used to build its own bare *runner.Runner and skip the scheduler/
+// conditions/journal/lock entirely — the two commands must agree on this
+// construction, not maintain two divergent copies of it). The caller owns
+// calling Telemetry.Shutdown and RollupDB.Close once it's done driving runs,
+// exactly as it did before this seam existed.
 type schedulerSetup struct {
 	Runner      *runner.Runner
 	Telemetry   *telemetry.Client
+	RollupDB    *rollup.DB
 	InstanceLog *journal.InstanceLog
 	Entries     []localscheduler.WorkflowEntry
 	Machines    map[string]*workflow.Machine
@@ -37,11 +40,11 @@ type schedulerSetup struct {
 }
 
 // buildSchedulerSetup loads an instance's config, compiles its workflows,
-// resolves their RepoRefs, constructs the shared runner and telemetry
-// client, and builds one localscheduler.WorkflowEntry per workflow —
-// everything localscheduler.New needs. wg is threaded into every entry's
-// trackedStarter so a caller (up's daemon loop, or run's single foreground
-// trigger) can track dispatched runs uniformly.
+// resolves their RepoRefs, constructs the shared runner, telemetry client,
+// and telemetry rollup, and builds one localscheduler.WorkflowEntry per
+// workflow — everything localscheduler.New needs. wg is threaded into every
+// entry's trackedStarter so a caller (up's daemon loop, or run's single
+// foreground trigger) can track dispatched runs uniformly.
 func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGroup) (*schedulerSetup, error) {
 	cfg, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
@@ -63,6 +66,11 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	}
 
 	tel, err := buildTelemetryClient(ctx, l)
+	if err != nil {
+		return nil, err
+	}
+
+	rollupDB, err := rollup.Open(l.TelemetryDB())
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +108,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 			Gaggle:    wf.Spec.Gaggle,
 			Readiness: wf.Spec.Readiness,
 			Schedule:  sched,
-			Starter:   &trackedStarter{r: rn, machine: machines[wf.Name], wg: wg},
+			Starter:   &trackedStarter{r: rn, machine: machines[wf.Name], wg: wg, l: l, rollupDB: rollupDB},
 			RepoRef:   repoRefs[wf.Name],
 		})
 	}
@@ -108,6 +116,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	return &schedulerSetup{
 		Runner:      rn,
 		Telemetry:   tel,
+		RollupDB:    rollupDB,
 		InstanceLog: instanceLog,
 		Entries:     entries,
 		Machines:    machines,
@@ -125,11 +134,16 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 // dispatch already calls from its own goroutine, so there is an inherent
 // (and accepted) small race window between that goroutine launching and
 // wg.Add actually running; closing it fully would need a scheduler-side
-// hook this seam doesn't expose.
+// hook this seam doesn't expose. Every dispatch through this Starter — both
+// `goobers up`'s scheduled/manual-via-Trigger fires and `goobers run`'s own
+// sched.Trigger call, now that #134 routes it through the same scheduler —
+// incrementally ingests into rollupDB on completion (issue #127).
 type trackedStarter struct {
-	r       *runner.Runner
-	machine *workflow.Machine
-	wg      *sync.WaitGroup
+	r        *runner.Runner
+	machine  *workflow.Machine
+	wg       *sync.WaitGroup
+	l        instance.Layout
+	rollupDB *rollup.DB
 }
 
 func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
@@ -143,6 +157,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		RepoRef: req.RepoRef,
 		Item:    req.Item,
 	})
+	ingestRunTelemetry(s.rollupDB, s.l, req.RunID)
 	return localscheduler.StartResult{Phase: res.Phase, FinalState: res.FinalState}, err
 }
 
@@ -171,10 +186,16 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // not a fatal error — a stale run must never prevent the daemon from
 // starting; recovering it is `goobers run abort <run-id>` (abort.go).
 //
+// Each resumed run also incrementally ingests into rollupDB once its outcome
+// is known (issue #127), the same hook trackedStarter.Start uses for a live
+// dispatch — a resumed run's spans/errors/stage_attempts must show up in
+// `goobers telemetry` too, not just a freshly-dispatched one's.
+//
 // resumeInterruptedRuns itself only errors on something that makes the scan
 // as a whole meaningless (runsDir unreadable for a reason other than not
 // existing yet).
-func resumeInterruptedRuns(ctx context.Context, runsDir string, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, release func(workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, rollupDB *rollup.DB, release func(workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+	runsDir := l.RunsDir()
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -225,6 +246,7 @@ func resumeInterruptedRuns(ctx context.Context, runsDir string, rn *runner.Runne
 			defer wg.Done()
 			defer release(wfName)
 			result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, RepoRef: repoRef})
+			ingestRunTelemetry(rollupDB, l, runID)
 			status := string(result.Phase)
 			if err != nil {
 				status = "error: " + err.Error()
