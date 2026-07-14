@@ -319,6 +319,12 @@ type CreateWorkItemRequest struct {
 	Parent     *WorkItemRef   `json:"parent,omitempty"`
 	Links      []Link         `json:"links,omitempty"`
 	Status     WorkItemStatus `json:"status,omitempty"`
+	// RunID, when set, makes creation idempotent: a run-id footer is written
+	// into the item body and CreateWorkItem searches for an existing item with
+	// that marker before POSTing, so a policy retry after a timed-out-but-
+	// committed create returns the original rather than filing a duplicate
+	// (#140). Optional — empty keeps the plain, non-idempotent create.
+	RunID string `json:"runId,omitempty"`
 }
 
 // UpdateWorkItemStatusRequest describes a processing-status mirror update.

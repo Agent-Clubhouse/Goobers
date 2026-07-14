@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/providers"
@@ -32,30 +33,53 @@ type backend struct {
 // claimed status label, with a milestone (hierarchy parent).
 func newGitHubBackend(t *testing.T) (backend, func()) {
 	t.Helper()
-	issue := map[string]interface{}{
-		"id": 123, "number": 7, "title": "Fix API", "body": "do it", "state": "open",
-		"html_url": "https://github.com/acme/app/issues/7",
-		"labels": []map[string]string{
-			{"name": "route/backend"},
-			{"name": "goobers/status:claimed"},
-		},
-		"assignees": []map[string]string{{"login": "mona"}},
-		"milestone": map[string]interface{}{"number": 2, "title": "v1", "html_url": "https://github.com/acme/app/milestone/2"},
+	// labels is the live label set; the status write-back now swaps only the
+	// status label via the label sub-API (add/remove), so GET must reflect the
+	// mutation for the re-read to observe in-progress (#140).
+	labels := []string{"route/backend", "goobers/status:claimed"}
+	labelObjs := func() []map[string]string {
+		out := make([]map[string]string, 0, len(labels))
+		for _, l := range labels {
+			out = append(out, map[string]string{"name": l})
+		}
+		return out
 	}
-	updated := map[string]interface{}{
-		"id": 123, "number": 7, "title": "Fix API", "state": "open",
-		"labels": []map[string]string{{"name": "route/backend"}, {"name": "goobers/status:in-progress"}},
+	issue := func() map[string]interface{} {
+		return map[string]interface{}{
+			"id": 123, "number": 7, "title": "Fix API", "body": "do it", "state": "open",
+			"html_url":  "https://github.com/acme/app/issues/7",
+			"labels":    labelObjs(),
+			"assignees": []map[string]string{{"login": "mona"}},
+			"milestone": map[string]interface{}{"number": 2, "title": "v1", "html_url": "https://github.com/acme/app/milestone/2"},
+		}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, []map[string]interface{}{issue})
+		writeJSON(t, w, []map[string]interface{}{issue()})
+	})
+	mux.HandleFunc("/repos/acme/app/issues/7/labels", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Labels []string `json:"labels"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode label add: %v", err)
+		}
+		labels = append(labels, body.Labels...)
+		writeJSON(t, w, labelObjs())
+	})
+	mux.HandleFunc("/repos/acme/app/issues/7/labels/", func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/repos/acme/app/issues/7/labels/")
+		var kept []string
+		for _, l := range labels {
+			if l != name {
+				kept = append(kept, l)
+			}
+		}
+		labels = kept
+		writeJSON(t, w, labelObjs())
 	})
 	mux.HandleFunc("/repos/acme/app/issues/7", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPatch {
-			writeJSON(t, w, updated)
-			return
-		}
-		writeJSON(t, w, issue)
+		writeJSON(t, w, issue())
 	})
 	srv := httptest.NewServer(mux)
 	p := providers.NewGitHubProvider("token", func(p *providers.GitHubProvider) { p.BaseURL = srv.URL })
