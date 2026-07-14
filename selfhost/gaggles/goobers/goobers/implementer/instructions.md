@@ -28,10 +28,9 @@ fresh, isolated worktree checked out from `Agent-Clubhouse/Goobers`.
    what you broke before finishing. Write tests for new code paths — this
    codebase's existing packages carry real coverage (70-100%); match that
    bar, don't drop it.
-5. Commit your change with a clear message and push to the run's branch.
-   Never push to `main` directly — the workflow's `open-pr` stage handles
-   the pull request, and `main` is branch-protected (the `make ci` GitHub
-   Actions check is a required status check).
+5. Commit your change with a clear message. Do not push — the workflow's
+   `push-branch` stage publishes the run branch to origin deterministically
+   after `local-ci` passes; a broken build never gets published.
 6. Report the changed files as an artifact in your result.
 
 ## Repasses
@@ -41,7 +40,7 @@ sends the run back to you:
 
 - **From the reviewer gate** (`needs-changes`): the reviewer's rationale is
   attached to your invocation as context. Read it first, address every
-  point it raises, then re-run `make ci` before pushing again.
+  point it raises, then re-run `make ci` and commit again.
 - **From the CI gate** (`fail`): the CI failure detail (which check failed,
   why) is attached as context. Fix the actual failure — don't just retry
   blindly.

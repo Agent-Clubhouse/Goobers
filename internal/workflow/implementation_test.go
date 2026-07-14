@@ -106,7 +106,9 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 
 	// #239: ci-gate gained a "timeout" branch (routes a ci-poll timeout to
 	// @escalate instead of the "fail" branch's implement repass).
-	const wantDigest = "sha256:3b05b23f3e34bf3b1da8686f721c278200c225aa913af619d75d2ae8607afd71"
+	// #237: a deterministic push-branch stage was inserted between
+	// local-gate and open-pr (the implementer commits but no longer pushes).
+	const wantDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

@@ -46,6 +46,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runJournal(args[1:], stdout, stderr)
 	case "backlog-query":
 		return runBacklogQuery(args[1:], stdout, stderr)
+	case "push-branch":
+		return runPushBranch(args[1:], stdout, stderr)
 	case "open-pr":
 		return runOpenPR(args[1:], stdout, stderr)
 	case "issue-close-out":
@@ -75,6 +77,7 @@ Usage:
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
+  goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
   goobers telemetry-query [--window <d>] emit telemetry signals JSON over a window (a workflow stage)
@@ -82,12 +85,13 @@ Usage:
 path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
 business errors, 2 = usage/IO error.
 
-backlog-query/open-pr/issue-close-out are the built-in provider-chain stage
-kinds (ARCHITECTURE.md §7, issues #12/#13/#27): invoked by the runner as a
-deterministic stage's shell command, not typically run by hand. They read
-their run context (instance root, run id, workflow, declared Task.Inputs,
-and injected credentials) from GOOBERS_* environment variables the runner
-sets — see internal/executor/env.go — falling back to an optional trailing
-[path] argument (default ".") for standalone/manual invocation.
+backlog-query/push-branch/open-pr/issue-close-out are the built-in
+provider-chain stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#237):
+invoked by the runner as a deterministic stage's shell command, not
+typically run by hand. They read their run context (instance root, run id,
+workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
+environment variables the runner sets — see internal/executor/env.go —
+falling back to an optional trailing [path] argument (default ".") for
+standalone/manual invocation.
 `)
 }
