@@ -264,7 +264,7 @@ func snapshotDB(t *testing.T, db *DB) string {
 // (defense in depth with #8/#14): a canary secret embedded in an error
 // message and in a runner.* annotation must never land in the rollup.
 func TestCanarySecretRedactedInRollup(t *testing.T) {
-	const canary = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+	const canary = "ghp_0123456789abcdefghijklmnopqrstuvwxyz" // realistic ghp_+36 (journal net threshold, #117)
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")
 	runID := fixtureRunID

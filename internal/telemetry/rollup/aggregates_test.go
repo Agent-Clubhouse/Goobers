@@ -229,7 +229,7 @@ func TestProviderMutationCountsGroupsByShape(t *testing.T) {
 // this proves the aggregate query layer doesn't reintroduce a leak by
 // surfacing a field that skipped that pass.
 func TestAggregateQueriesRedactCanary(t *testing.T) {
-	const canary = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+	const canary = "ghp_0123456789abcdefghijklmnopqrstuvwxyz" // realistic ghp_+36 (journal net threshold, #117)
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")
 	dir := filepath.Join(runsDir, fixtureRunID)

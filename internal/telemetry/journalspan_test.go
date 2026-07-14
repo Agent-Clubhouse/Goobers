@@ -134,7 +134,9 @@ func TestJournalSpanExporterRedactsSecrets(t *testing.T) {
 	dir := t.TempDir()
 	client, runID := newTestClient(t, dir)
 
-	const canary = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+	// A realistic GitHub token shape: ghp_ + 36 chars (journal's canonical net,
+	// now shared by this package, matches the real 36+ length — #117).
+	const canary = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
 	ctx, run, err := client.StartRun(context.Background(), RunAttributes{
 		Gaggle: "web", WorkflowID: "wf", WorkflowVersion: "1", RunID: runID,
 	})
