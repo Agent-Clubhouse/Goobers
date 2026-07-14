@@ -357,6 +357,95 @@ func TestExecutorInvokeFailsClosedOnMissingDeclaredArtifactFile(t *testing.T) {
 	}
 }
 
+// TestExecutorInvokeFailsClosedOnArtifactFilePathTraversal is the regression
+// test for #120: a declared InputArtifactFile that lexically escapes the
+// workspace (via "..") must fail the stage closed, never lift the escaped
+// file's content into a recorded artifact — even when the harness itself
+// claims success.
+func TestExecutorInvokeFailsClosedOnArtifactFilePathTraversal(t *testing.T) {
+	parent := t.TempDir()
+	workspace := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte("leaked-secret-content")
+	if err := os.WriteFile(filepath.Join(parent, "secret.txt"), secret, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &fakeRecorder{}
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	env := testEnvelope(workspace)
+	env.Inputs = map[string]interface{}{InputArtifactFile: "../secret.txt"}
+	result, err := exec.Invoke(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure {
+		t.Fatalf("Status = %q, want failure", result.Status)
+	}
+	if result.Error == nil || result.Error.Code != "declared_artifact_path_escape" {
+		t.Fatalf("Error = %+v, want code declared_artifact_path_escape", result.Error)
+	}
+	if len(rec.artifacts) != 0 {
+		t.Fatalf("expected no artifact recorded, got %+v", rec.artifacts)
+	}
+}
+
+// TestExecutorInvokeFailsClosedOnArtifactFileSymlinkEscape is the symlink
+// half of #120: a declared InputArtifactFile name that is lexically
+// contained but is itself a symlink to a file outside the workspace must
+// also fail the stage closed.
+func TestExecutorInvokeFailsClosedOnArtifactFileSymlinkEscape(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	secret := []byte("leaked-secret-content")
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), secret, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(workspace, "artifact.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &fakeRecorder{}
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	env := testEnvelope(workspace)
+	env.Inputs = map[string]interface{}{InputArtifactFile: "artifact.txt"}
+	result, err := exec.Invoke(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure {
+		t.Fatalf("Status = %q, want failure", result.Status)
+	}
+	if result.Error == nil || result.Error.Code != "declared_artifact_path_escape" {
+		t.Fatalf("Error = %+v, want code declared_artifact_path_escape", result.Error)
+	}
+	if len(rec.artifacts) != 0 {
+		t.Fatalf("expected no artifact recorded, got %+v", rec.artifacts)
+	}
+}
+
 func TestExecutorReviewLiftsDeclaredArtifactFileAsEvidence(t *testing.T) {
 	const relPath = "evidence/test.log"
 	const content = "all tests passed\n"

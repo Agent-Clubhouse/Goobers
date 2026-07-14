@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -184,15 +183,32 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	result.Metrics["exitCode"] = float64(exitCode)
 
 	if resultFile != "" {
-		data, rerr := os.ReadFile(filepath.Join(env.Workspace, resultFile))
+		full, perr := apiv1.ResolveContainedPath(env.Workspace, resultFile)
 		switch {
-		case rerr == nil:
-			ref, aerr := e.Journal.RecordArtifact(env.TaskID+"/result", scrubber.Scrub(data))
-			if aerr != nil {
-				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
+		case perr == nil:
+			data, rerr := os.ReadFile(full)
+			switch {
+			case rerr == nil:
+				ref, aerr := e.Journal.RecordArtifact(env.TaskID+"/result", scrubber.Scrub(data))
+				if aerr != nil {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
+				}
+				result.Artifacts = append(result.Artifacts, refToPointer(ref, mediaTypeFor(resultFile)))
+			case os.IsNotExist(rerr):
+				result.Status = apiv1.ResultFailure
+				result.Error = &apiv1.ErrorInfo{
+					Code:      "missing_result_file",
+					Message:   fmt.Sprintf("declared result file %q was not produced", resultFile),
+					Retryable: false,
+				}
+				result.Summary = "declared result file missing"
+				return result, nil
+			default:
+				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: read result file %q: %w", resultFile, rerr)
 			}
-			result.Artifacts = append(result.Artifacts, refToPointer(ref, mediaTypeFor(resultFile)))
-		case os.IsNotExist(rerr):
+		case errors.Is(perr, os.ErrNotExist):
+			// A missing component in the declared path resolves the same way
+			// EvalSymlinks reports a plain missing file — same UX as above.
 			result.Status = apiv1.ResultFailure
 			result.Error = &apiv1.ErrorInfo{
 				Code:      "missing_result_file",
@@ -201,8 +217,19 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			}
 			result.Summary = "declared result file missing"
 			return result, nil
+		case errors.Is(perr, apiv1.ErrPathEscape), errors.Is(perr, apiv1.ErrSymlinkEscape):
+			// Untrusted declared path (#120): escapes the workspace lexically
+			// or via a symlink. Fail the stage closed, never follow it.
+			result.Status = apiv1.ResultFailure
+			result.Error = &apiv1.ErrorInfo{
+				Code:      "result_file_path_escape",
+				Message:   fmt.Sprintf("declared result file %q escapes the workspace: %v", resultFile, perr),
+				Retryable: false,
+			}
+			result.Summary = "declared result file path escapes the workspace"
+			return result, nil
 		default:
-			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: read result file %q: %w", resultFile, rerr)
+			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: resolve result file %q: %w", resultFile, perr)
 		}
 	}
 

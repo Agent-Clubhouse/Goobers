@@ -65,6 +65,65 @@ func TestArtifactPathContainment(t *testing.T) {
 	}
 }
 
+// TestArtifactResolveRefusesSymlinkEscape is the regression test for #120: a
+// pointer's Path can be lexically contained (no ".." or absolute component)
+// while still naming a symlink whose target escapes root entirely. Resolve
+// must refuse to follow it rather than faithfully return the outside file's
+// bytes as if they were an in-journal artifact.
+func TestArtifactResolveRefusesSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	secret := []byte("outside-the-journal-root\n")
+	secretPath := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secretPath, secret, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	linkPath := filepath.Join(root, "artifacts", "evil-link")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secretPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// The digest matches the escaped target's real content (not a mismatch by
+	// coincidence) so a passing test proves the escape check caught this, not
+	// ErrDigestMismatch catching it by accident.
+	ptr := ArtifactPointer{Path: "artifacts/evil-link", Digest: Digest(secret)}
+	if _, err := ptr.Resolve(root); !errors.Is(err, ErrSymlinkEscape) {
+		t.Fatalf("Resolve via symlink escape: got %v, want ErrSymlinkEscape", err)
+	}
+}
+
+// TestArtifactResolveAllowsSymlinkWithinRoot proves the #120 fix isn't
+// overly restrictive: a symlink whose target legitimately stays inside root
+// still resolves normally.
+func TestArtifactResolveAllowsSymlinkWithinRoot(t *testing.T) {
+	root := t.TempDir()
+	content := []byte("real artifact content\n")
+	realPath := filepath.Join(root, "artifacts", "real.txt")
+	if err := os.MkdirAll(filepath.Dir(realPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(realPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(root, "artifacts", "alias.txt")
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	ptr := ArtifactPointer{Path: "artifacts/alias.txt", Digest: Digest(content)}
+	got, err := ptr.Resolve(root)
+	if err != nil {
+		t.Fatalf("Resolve via in-root symlink: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("resolved %q, want %q", got, content)
+	}
+}
+
 func TestContextPointerValidate(t *testing.T) {
 	good := Digest([]byte("x"))
 	cases := []struct {
