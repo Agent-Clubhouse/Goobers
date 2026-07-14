@@ -41,6 +41,10 @@ spec:
         trustLabel: "goobers:approved"
         requireLabels: "goobers:ready"
         maxItems: "1"
+        # Lifts the claimed item into a journal artifact (executor.go's
+        # InputResultFile convention) — the "implement" goober reads it as
+        # context via its ContextPointers, not via Task.Inputs/InputsFrom.
+        resultFile: "claimed-item.json"
       capabilities:
         - github:issues:write
       expectedOutputs:
@@ -90,12 +94,16 @@ spec:
         # #13) is stable across repasses, so a second call here updates the
         # existing PR rather than opening a duplicate.
         runIdFooter: "true"
+        # Lifts prNumber/pull-request-url into ResultEnvelope.Outputs (not
+        # just an artifact) so ci-poll's inputsFrom below can reference them
+        # (executor.go's InputResultFile doc: a flat JSON result file also
+        # merges into Outputs).
+        resultFile: "pr-result.json"
       capabilities:
         - github:pr:write
       expectedOutputs:
         - pull-request-url
-        # Well-known handoff key for ci-poll's inputs.prNumber below — the
-        # runner threads this task's output into the next task's Inputs.
+        # Well-known handoff key for ci-poll's inputsFrom below.
         - prNumber
       next: ci-poll
 
@@ -103,17 +111,21 @@ spec:
       type: deterministic
       goal: Poll the PR's CI checks and review state until they conclude.
       run:
-        # internal/executor.TaskExecutor (#18) dispatches this built-in stage
-        # kind via inputs.kind — it never shells out `command` for
+        # internal/executor.TaskExecutor (#18, #132) dispatches this built-in
+        # stage kind via inputs.kind — it never shells out `command` for
         # kind=ci-poll (CIPollExecutor calls the PR provider directly).
         # `command` stays a placeholder because DeterministicRun.Command is a
         # required field in schema v0.
         command: ["goobers", "ci-poll"]
       inputs:
         kind: "ci-poll"
-        # prOwner/prRepo default from RepoRef when unset (they match here);
-        # prNumber arrives via the open-pr -> ci-poll output/input threading
-        # noted above, not a static value.
+        # prOwner/prRepo default from RepoRef when unset (they match here).
+      inputsFrom:
+        # prNumber arrives via open-pr's declared Outputs, threaded by the
+        # runner per this explicit mapping (Task.InputsFrom, #132) — not a
+        # static value, and not blanket-propagated the way a gate's Inputs
+        # flatten every upstream Output automatically.
+        prNumber: prNumber
       capabilities:
         - github:pr:write
       expectedOutputs:

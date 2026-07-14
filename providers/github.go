@@ -222,10 +222,22 @@ func (p *GitHubProvider) Commit(ctx context.Context, req CommitRequest) (CommitR
 	return result, nil
 }
 
-// OpenPullRequest opens a GitHub pull request.
+// OpenPullRequest opens a GitHub pull request — idempotent on repass (#132):
+// a workflow's open-pr stage reuses the same stable run branch
+// (providers.BranchName) on every repass through it, so a second call here
+// must find and update the PR it already opened rather than attempting a
+// duplicate POST (which GitHub 422s on, since a PR already exists for that
+// head/base). Checking first, rather than POSTing and catching the 422, also
+// sidesteps this package's lack of a typed HTTP-status error to match against
+// (doStatus's non-2xx path returns a plain fmt.Errorf).
 func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return PullRequestResult{}, err
+	}
+	if existing, ok, err := p.FindPullRequestByBranch(ctx, req.Repository, req.Head, req.Base); err != nil {
+		return PullRequestResult{}, err
+	} else if ok {
+		return p.updatePullRequest(ctx, req, existing.Number)
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
 	if err != nil {
@@ -248,6 +260,65 @@ func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestReq
 		Ref:       issueRef(req.Repository, strconv.Itoa(out.Number)),
 		URL:       out.HTMLURL,
 		Operation: "open",
+		RunID:     req.RunID,
+		Fields: map[string]FieldDigest{
+			"title": {After: digestString(req.Title)},
+			"body":  {After: digestString(prBody)},
+		},
+	})
+	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
+}
+
+// FindPullRequestByBranch looks up an open PR for head/base, returning
+// ok=false (not an error) if none exists. Exported (not just OpenPullRequest's
+// internal idempotency check) so a caller that already knows a run's stable
+// branch name (providers.BranchName) but has no other way to recover that
+// run's PR — e.g. `goobers issue-close-out` (#132), which runs as its own
+// process several stages after open-pr, with no threaded reference to the PR
+// it opened — can rediscover it directly from the provider instead.
+func (p *GitHubProvider) FindPullRequestByBranch(ctx context.Context, repo RepositoryRef, head, base string) (PullRequestResult, bool, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls")
+	if err != nil {
+		return PullRequestResult{}, false, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{
+		"head":  []string{repo.Owner + ":" + head},
+		"base":  []string{base},
+		"state": []string{"open"},
+	})
+	if err != nil {
+		return PullRequestResult{}, false, err
+	}
+	var out []githubPullRequest
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
+		return PullRequestResult{}, false, err
+	}
+	if len(out) == 0 {
+		return PullRequestResult{}, false, nil
+	}
+	pr := out[0]
+	return PullRequestResult{ID: strconv.Itoa(pr.Number), Number: pr.Number, URL: pr.HTMLURL}, true, nil
+}
+
+// updatePullRequest applies title/body edits to an already-open PR (its
+// number found by FindPullRequestByBranch) — the repass path: the same run
+// branch already has an open PR, so this call updates it in place instead of
+// opening a duplicate.
+func (p *GitHubProvider) updatePullRequest(ctx context.Context, req PullRequestRequest, existingNumber int) (PullRequestResult, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", strconv.Itoa(existingNumber))
+	if err != nil {
+		return PullRequestResult{}, err
+	}
+	prBody := withRunIDFooter(req.Body, req.RunID)
+	var out githubPullRequest
+	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"title": req.Title, "body": prBody}, &out); err != nil {
+		return PullRequestResult{}, err
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, strconv.Itoa(out.Number)),
+		URL:       out.HTMLURL,
+		Operation: "update",
 		RunID:     req.RunID,
 		Fields: map[string]FieldDigest{
 			"title": {After: digestString(req.Title)},

@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // buildTelemetryClient constructs the OTel client that spans the runner walk
@@ -73,6 +74,14 @@ var repoCloneURL func(apiv1.RepoRef) (string, error)
 // CopilotAdapter.
 var newAgenticAdapter func(gooberName string, envCaps map[string]string) harness.Adapter
 
+// newPRPoller overrides how buildRunnerConfig constructs the ci-poll stage's
+// PRPoller when non-nil. Test seam mirroring repoCloneURL/newAgenticAdapter
+// above, so a CLI-level test can point ci-poll at a fake PR provider (an
+// httptest.Server, or a bespoke fake) instead of a real GitHub token/network
+// (#132). Production leaves it nil and buildRunnerConfig constructs a real
+// providers.GitHubProvider over the resolved repo token.
+var newPRPoller func(token string) executor.PRPoller
+
 // credentialGrantEnv is the environment variable the Copilot CLI reads a
 // credentialed capability's token from (internal/harness.CopilotAdapter's
 // EnvCapabilities convention — matches internal/harness/copilot_test.go's
@@ -115,6 +124,39 @@ func buildCredentials(cfg *instance.Config) (*credentials.Resolver, []credential
 	return resolver, grants, nil
 }
 
+// buildCIPollExecutor constructs the ci-poll stage's CIPollExecutor over a
+// PRPoller for the instance's configured (single, V0-simplification) target
+// repo. It returns a nil executor, not an error, when no repo is configured
+// or its token can't be resolved: NewDeterministic constructs a run's WHOLE
+// deterministic-executor stack lazily on the first deterministic task
+// dispatched (internal/runner's executors.deterministic()) — a workflow whose
+// first deterministic stage is a plain shell command with no PR involvement
+// at all (e.g. `make ci`) must not fail just because ci-poll's own
+// credential happens to be unresolvable; only a stage that actually declares
+// kind=ci-poll should fail, and TaskExecutor already fails closed on that
+// when CIPoll is nil (executor/dispatch.go's CIPoll doc). The resolved token,
+// when there is one, is registered with reg so it's scrubbed from anything a
+// later stage in this run writes, exactly like credentials.Injector's own
+// resolution path (executor/env.go's buildStageEnv).
+func buildCIPollExecutor(cfg *instance.Config, resolver *credentials.Resolver, reg runner.SecretRegistrar) (*executor.CIPollExecutor, error) {
+	if len(cfg.Repos) == 0 {
+		return nil, nil
+	}
+	ref := cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name
+	token, err := resolver.Resolve(context.Background(), ref)
+	if err != nil {
+		return nil, nil
+	}
+	reg.Register([]byte(token))
+	var poller executor.PRPoller
+	if newPRPoller != nil {
+		poller = newPRPoller(token)
+	} else {
+		poller = providers.NewGitHubProvider(token)
+	}
+	return executor.NewCIPollExecutor(poller)
+}
+
 // instructionsPath resolves a goober's Instructions field to an absolute
 // file path. Instructions is documented as "relative to the goober
 // definition directory" (api/v1alpha1.GooberSpec), which config-as-code
@@ -141,6 +183,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if err != nil {
 		return runner.Config{}, err
 	}
+	instanceRoot, err := filepath.Abs(l.Root)
+	if err != nil {
+		return runner.Config{}, fmt.Errorf("resolve instance root: %w", err)
+	}
 
 	envCaps := make(map[string]string, len(credentialedCapabilities))
 	for _, c := range credentialedCapabilities {
@@ -153,7 +199,21 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if err != nil {
 				return nil, err
 			}
-			return executor.NewShellExecutor(injector, rec)
+			shell, err := executor.NewShellExecutor(injector, rec)
+			if err != nil {
+				return nil, err
+			}
+			// GOOBERS_INSTANCE_ROOT — the only way a `goobers` CLI subcommand
+			// invoked as a stage's shell command (its cwd is the stage's
+			// worktree, not the instance root) locates instance.yaml/config/
+			// scheduler (#131/#132's backlog-query/open-pr/issue-close-out).
+			shell.InstanceRoot = instanceRoot
+
+			ciPoll, err := buildCIPollExecutor(cfg, resolver, reg)
+			if err != nil {
+				return nil, err
+			}
+			return executor.NewTaskExecutor(shell, ciPoll)
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			spec, ok := goobers[gooberName]

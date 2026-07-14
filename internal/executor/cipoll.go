@@ -11,20 +11,30 @@ import (
 )
 
 // OutputCIStatus is the ResultEnvelope.Outputs key CIPollExecutor sets to the
-// polled PR's terminal check state, as a string matching apiv1.ResultStatus
-// ("success"/"failure") — the contract internal/gate's "ci-status" check
-// (#20) reads to branch the repass loop. ci-poll's own ResultEnvelope.Status
-// reflects whether it *successfully determined* an outcome, not the outcome
-// itself: a failing CI check is still a successful poll.
+// polled PR's terminal check state, as a string matching providers.CheckState
+// ("passing"/"failing") — the contract internal/gate's "ci-status" check
+// (#20) reads to branch the repass loop. This is the providers vocabulary
+// (the raw check state PollPullRequestResult.CheckState already carries),
+// not apiv1.ResultStatus's "success"/"failure" — the two were previously
+// conflated (#132), which left ci-status unable to ever match a gate
+// declaring params.equals: "passing" (providers' own vocabulary, and what
+// both shipped implementation.yaml workflows declare). ci-poll's own
+// ResultEnvelope.Status reflects whether it *successfully determined* an
+// outcome, not the outcome itself: a failing CI check is still a successful
+// poll.
 const OutputCIStatus = "ciStatus"
 
 // Well-known Task.Inputs keys a ci-poll stage may declare (see
 // ConfigFromEnvelope/CIPollConfigFromEnvelope and doc.go's note on how the PR
 // locator gets there).
 const (
-	InputPROwner            = "prOwner"
-	InputPRRepo             = "prRepo"
-	InputPRNumber           = "prNumber"
+	InputPROwner  = "prOwner"
+	InputPRRepo   = "prRepo"
+	InputPRNumber = "prNumber"
+	// InputPollIntervalSec/InputPollMaxIntervalSec/InputPollTimeoutSec are
+	// time.ParseDuration strings (e.g. "15s", "5m") despite the "Sec"
+	// suffix — matching shell.go's InputTimeout convention, not a bare
+	// integer count of seconds.
 	InputPollIntervalSec    = "pollIntervalSeconds"
 	InputPollMaxIntervalSec = "pollMaxIntervalSeconds"
 	InputPollTimeoutSec     = "pollTimeoutSeconds"
@@ -74,22 +84,36 @@ func CIPollConfigFromEnvelope(env apiv1.InvocationEnvelope) (CIPollConfig, error
 	if cfg.Owner == "" || cfg.Repo == "" || cfg.PullID == "" {
 		return CIPollConfig{}, errors.New("executor: ci-poll requires owner/repo (or env.repoRef) and " + InputPRNumber)
 	}
-	cfg.Interval = durationInputSeconds(env, InputPollIntervalSec)
-	cfg.MaxInterval = durationInputSeconds(env, InputPollMaxIntervalSec)
-	cfg.Timeout = durationInputSeconds(env, InputPollTimeoutSec)
+	var err error
+	if cfg.Interval, err = durationInput(env, InputPollIntervalSec); err != nil {
+		return CIPollConfig{}, err
+	}
+	if cfg.MaxInterval, err = durationInput(env, InputPollMaxIntervalSec); err != nil {
+		return CIPollConfig{}, err
+	}
+	if cfg.Timeout, err = durationInput(env, InputPollTimeoutSec); err != nil {
+		return CIPollConfig{}, err
+	}
 	return cfg, nil
 }
 
-func durationInputSeconds(env apiv1.InvocationEnvelope, key string) time.Duration {
+// durationInput parses key's declared value as a time.ParseDuration string
+// (e.g. "15s", "5m"), mirroring shell.go's timeoutFor: an unset key returns
+// the zero Duration (the caller's own default applies), but a SET, malformed
+// value fails closed with a real error rather than silently defaulting to
+// zero — the previous behavior here (appending "s" unconditionally, e.g.
+// turning a "5m" typo into 5 milliseconds, and swallowing ParseDuration's
+// error entirely) let a misconfigured poll cadence corrupt silently (#132).
+func durationInput(env apiv1.InvocationEnvelope, key string) (time.Duration, error) {
 	s := stringInput(env, key)
 	if s == "" {
-		return 0
+		return 0, nil
 	}
-	d, err := time.ParseDuration(s + "s")
+	d, err := time.ParseDuration(s)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("executor: invalid %s input %q: %w", key, s, err)
 	}
-	return d
+	return d, nil
 }
 
 // CIPollExecutor implements the ci-poll built-in deterministic-stage kind: it
@@ -173,9 +197,9 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		}
 		switch result.CheckState {
 		case providers.CheckStatePassing:
-			return ciPollOutcome(apiv1.ResultSuccess, "ci-poll: checks passing"), nil
+			return ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing"), nil
 		case providers.CheckStateFailing:
-			return ciPollOutcome(apiv1.ResultFailure, "ci-poll: checks failing"), nil
+			return ciPollOutcome(providers.CheckStateFailing, "ci-poll: checks failing"), nil
 		}
 		if now().After(deadline) {
 			return apiv1.ResultEnvelope{
@@ -196,11 +220,12 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 
 // ciPollOutcome builds the ResultEnvelope for a poll that reached a terminal
 // state: the stage itself always succeeded (it determined an outcome); the
-// outcome is carried in Outputs[OutputCIStatus].
-func ciPollOutcome(ciStatus apiv1.ResultStatus, summary string) apiv1.ResultEnvelope {
+// outcome is carried in Outputs[OutputCIStatus] using the providers.CheckState
+// vocabulary ("passing"/"failing"), not apiv1.ResultStatus.
+func ciPollOutcome(checkState providers.CheckState, summary string) apiv1.ResultEnvelope {
 	return apiv1.ResultEnvelope{
 		Status:  apiv1.ResultSuccess,
-		Outputs: map[string]interface{}{OutputCIStatus: string(ciStatus)},
+		Outputs: map[string]interface{}{OutputCIStatus: string(checkState)},
 		Summary: summary,
 	}
 }

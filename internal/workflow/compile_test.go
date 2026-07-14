@@ -196,6 +196,50 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 	}
 }
 
+// TestCompileRejectsGateVocabMismatch proves the #132 compile-time check-param
+// validation hook: a gate declaring params.equals against the wrong output
+// vocabulary for its check now fails Compile instead of compiling clean and
+// silently never matching at runtime (the ci-gate bug: ci-poll emits
+// providers.CheckState's "passing"/"failing", never apiv1.ResultStatus's
+// "success"/"failure").
+func TestCompileRejectsGateVocabMismatch(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "poll",
+		Tasks: []apiv1.Task{
+			{Name: "poll", Type: apiv1.TaskDeterministic, Goal: "poll ci", Next: "ci-gate",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "ci-gate",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "ci-status", Params: map[string]string{"equals": "success"}},
+				Branches:  map[string]string{"pass": TerminalComplete, "fail": "poll"},
+			},
+		},
+	}
+	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `check "ci-status" params.equals "success" is not one of`) {
+		t.Fatalf("expected a gate-vocabulary-mismatch error, got %v", err)
+	}
+
+	// The correct vocabulary for ci-status compiles clean.
+	spec.Gates[0].Automated.Params["equals"] = "passing"
+	if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("correct ci-status vocabulary should compile, got %v", err)
+	}
+
+	// status-equals uses the opposite (apiv1.ResultStatus) vocabulary —
+	// "passing" is invalid there too.
+	spec.Gates[0].Automated.Check = "status-equals"
+	spec.Gates[0].Automated.Params["equals"] = "passing"
+	_, err = Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `check "status-equals" params.equals "passing" is not one of`) {
+		t.Fatalf("expected a gate-vocabulary-mismatch error for status-equals, got %v", err)
+	}
+}
+
 func TestCompileAdmissionUnknownCapabilityGranted(t *testing.T) {
 	spec := linearSpec()
 	goobers := map[string]apiv1.GooberSpec{

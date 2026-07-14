@@ -101,6 +101,20 @@ type Task struct {
 	// ExpectedOutputs are postconditions downstream gates can validate (TSK-003).
 	// +optional
 	ExpectedOutputs []string `json:"expectedOutputs,omitempty" yaml:"expectedOutputs,omitempty"`
+	// InputsFrom declares an explicit, small output->input handoff from the
+	// immediately preceding task's ResultEnvelope.Outputs into this task's
+	// Inputs: InputsFrom[inputKey] = outputKey. Unlike a gate (which receives
+	// every upstream Output key flattened automatically, per
+	// internal/gate/automated.go's runner-contract convention — a gate never
+	// mutates run state, so a wide-open read is safe), a task-to-task handoff
+	// can feed a stage's actual behavior, so it requires an explicit
+	// declaration per key rather than blanket propagation — an auditable,
+	// named data-flow edge in the DSL instead of an implicit wide-open
+	// channel between arbitrary tasks. A declared outputKey missing from the
+	// preceding task's Outputs fails the stage closed (the declaration is a
+	// contract, not a hint).
+	// +optional
+	InputsFrom map[string]string `json:"inputsFrom,omitempty" yaml:"inputsFrom,omitempty"`
 	// Next is the name of the next state (task or gate). Empty means terminal.
 	// +optional
 	Next string `json:"next,omitempty" yaml:"next,omitempty"`

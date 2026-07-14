@@ -318,6 +318,90 @@ func TestShellExecutor_ResultFileSymlinkEscapeIsRejected(t *testing.T) {
 	}
 }
 
+// TestShellExecutor_ResultFileJSONMergedIntoOutputs proves the #132
+// prNumber-handoff mechanism: a declared result file whose bytes parse as a
+// flat JSON object has its string/number/bool fields merged into
+// ResultEnvelope.Outputs, in addition to the file still being recorded as an
+// artifact (TestShellExecutor_ResultFileLiftedToArtifact already covers
+// that half).
+func TestShellExecutor_ResultFileJSONMergedIntoOutputs(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputResultFile: "pr-result.json"}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `echo '{"prNumber":"42","pull-request-url":"https://example/pr/42","draft":false}' > pr-result.json`},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if result.Outputs["prNumber"] != "42" {
+		t.Fatalf("outputs[prNumber] = %v, want \"42\"", result.Outputs["prNumber"])
+	}
+	if result.Outputs["pull-request-url"] != "https://example/pr/42" {
+		t.Fatalf("outputs[pull-request-url] = %v", result.Outputs["pull-request-url"])
+	}
+	if result.Outputs["draft"] != false {
+		t.Fatalf("outputs[draft] = %v, want false", result.Outputs["draft"])
+	}
+}
+
+// TestShellExecutor_ResultFileNonJSONIsNotAnError proves a declared result
+// file that isn't JSON (or isn't a flat object) still satisfies the
+// artifact/presence-check contract unchanged — merging Outputs is additive,
+// never a new failure mode.
+func TestShellExecutor_ResultFileNonJSONIsNotAnError(t *testing.T) {
+	exec, rec := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputResultFile: "out.txt"}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `echo 'not json' > out.txt`},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if !strings.Contains(string(rec.recorded["task-1/result"]), "not json") {
+		t.Fatalf("result artifact missing expected content: %v", rec.recorded["task-1/result"])
+	}
+}
+
+// TestShellExecutor_RunContextEnvVars proves the stage process receives
+// GOOBERS_RUN_ID/GOOBERS_WORKFLOW always, GOOBERS_INSTANCE_ROOT only when
+// ShellExecutor.InstanceRoot is set, and one GOOBERS_INPUT_* var per declared
+// Task.Inputs string entry — the only way a `goobers` CLI subcommand
+// invoked as a stage's shell command (its cwd is the stage's worktree, not
+// the instance root) learns its run context and configured inputs (#131/#132).
+func TestShellExecutor_RunContextEnvVars(t *testing.T) {
+	exec, rec := newTestExecutor(t, nil)
+	exec.InstanceRoot = "/instances/demo"
+	env := baseEnvelope(t)
+	env.RunID = "run-123"
+	env.WorkflowID = "implementation"
+	env.Inputs = map[string]interface{}{"trustLabel": "goobers:approved"}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `echo "run=$GOOBERS_RUN_ID wf=$GOOBERS_WORKFLOW root=$GOOBERS_INSTANCE_ROOT input=$GOOBERS_INPUT_TRUSTLABEL"`},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	got := string(rec.recorded["task-1/stdout.log"])
+	want := "run=run-123 wf=implementation root=/instances/demo input=goobers:approved\n"
+	if got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
 func TestShellExecutor_OutputTruncation(t *testing.T) {
 	exec, rec := newTestExecutor(t, nil)
 	exec.DefaultMaxOutputBytes = 8

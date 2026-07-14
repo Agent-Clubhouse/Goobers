@@ -379,7 +379,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				startAttempt = int32(resume.attempt) + 1
 				resume = nil
 			}
-			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, startAttempt)
+			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt)
 			if err != nil {
 				return r.failTerminal(jr, t.Name, steps, err)
 			}
@@ -509,7 +509,12 @@ func (r *Runner) finish(jr *journal.Run, phase journal.RunPhase, finalState stri
 // passes the next attempt number instead, so the attempts a crash already
 // consumed still count against the task's own MaxAttempts budget — a crash
 // must never grant a task more attempts than its declared policy allows.
-func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, startAttempt int32) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+//
+// upstreamResult is the immediately preceding stage's ResultEnvelope (the
+// zero value for the run's first task) — dispatchTask threads its Outputs
+// into this task's Inputs per t.InputsFrom (#132), the task-to-task analog
+// of evaluateGate's unconditional Outputs flatten.
+func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	ctx, span := r.startTaskSpan(ctx, in, t)
 	defer span.End()
 
@@ -557,7 +562,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
-		result, dispatchErr := r.dispatchTask(attemptCtx, in, ex, t, upstream)
+		result, dispatchErr := r.dispatchTask(attemptCtx, in, ex, t, upstream, upstreamResult)
 		if dispatchErr != nil {
 			lastErr = dispatchErr
 			// A journal that cannot be written stops the run (§2.6): this
@@ -628,12 +633,28 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task)
 // dispatchTask provisions one attempt's worktree and invokes the task's
 // executor. It never journals — runTask owns attempt/retry journaling so a
 // retried attempt is never mistaken for the run's overall outcome.
-func (r *Runner) dispatchTask(ctx context.Context, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer) (apiv1.ResultEnvelope, error) {
+//
+// After buildEnvelope, t.InputsFrom is applied on top of the static declared
+// Inputs: for each inputKey/outputKey pair, upstreamResult.Outputs[outputKey]
+// overlays env.Inputs[inputKey] (#132) — a declared outputKey missing from
+// upstreamResult.Outputs fails the stage closed, since InputsFrom is a
+// contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
+// which is safe precisely because a gate never mutates run state on a wide-
+// open read).
+func (r *Runner) dispatchTask(ctx context.Context, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope) (apiv1.ResultEnvelope, error) {
 	env, wt, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("prepare stage %q: %w", t.Name, err)
 	}
 	defer func() { _ = wt.Remove(ctx, worktree.RemoveOptions{}) }()
+
+	for inputKey, outputKey := range t.InputsFrom {
+		v, ok := upstreamResult.Outputs[outputKey]
+		if !ok {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found", t.Name, inputKey, outputKey)
+		}
+		env.Inputs[inputKey] = v
+	}
 
 	switch t.Type {
 	case apiv1.TaskDeterministic:

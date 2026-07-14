@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -34,6 +35,14 @@ const (
 	// InputResultFile is a path, relative to the workspace, whose bytes (once
 	// the command exits) become an artifact. If declared, the file's presence
 	// is also a success criterion: a zero exit with no such file is a failure.
+	// If those bytes also parse as a flat JSON object, its string/number/bool
+	// fields are additionally merged into ResultEnvelope.Outputs (in addition
+	// to, not instead of, recording the raw bytes as an artifact) — this is
+	// how a shell subcommand (a real OS subprocess, not an in-process
+	// invoke.Deterministic) reports structured handoff data a downstream
+	// task's Task.InputsFrom can reference, e.g. `goobers open-pr`'s prNumber
+	// (#132). Not JSON, or not a flat object, is not an error: the artifact/
+	// presence-check contract holds regardless.
 	InputResultFile = "resultFile"
 	// InputMaxOutputBytes is a decimal integer overriding the per-stream
 	// output cap.
@@ -60,6 +69,13 @@ type ShellExecutor struct {
 	// DefaultMaxOutputBytes overrides the package DefaultMaxOutputBytes when
 	// positive.
 	DefaultMaxOutputBytes int64
+	// InstanceRoot, if set, is passed to every stage process as
+	// GOOBERS_INSTANCE_ROOT — the only way a `goobers` CLI subcommand invoked
+	// as a stage's command (its cwd is the stage's worktree, not the instance
+	// root) can locate instance.yaml/config/scheduler (#131/#132). Empty by
+	// default: a caller that never sets it (e.g. an existing test) gets
+	// unchanged behavior — no such var is set.
+	InstanceRoot string
 }
 
 // NewShellExecutor builds a ShellExecutor. injector and journal must not be
@@ -104,7 +120,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	resultFile := stringInput(env, InputResultFile)
 
 	registry, scrubber := journal.DefaultScrubber()
-	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry)
+	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.WorkflowID, e.InstanceRoot, env.Inputs)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: resolve credentials: %w", err)
 	}
@@ -194,6 +210,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 				}
 				result.Artifacts = append(result.Artifacts, refToPointer(ref, mediaTypeFor(resultFile)))
+				mergeResultFileOutputs(&result, data)
 			case os.IsNotExist(rerr):
 				result.Status = apiv1.ResultFailure
 				result.Error = &apiv1.ErrorInfo{
@@ -283,6 +300,25 @@ func stringInput(env apiv1.InvocationEnvelope, key string) string {
 	}
 	s, _ := v.(string)
 	return s
+}
+
+// mergeResultFileOutputs best-effort-parses a declared result file's bytes as
+// a flat JSON object and merges its string/number/bool fields into
+// result.Outputs — see InputResultFile's doc comment. data that isn't JSON,
+// or isn't a flat object, is silently left alone: the artifact/presence-check
+// contract InputResultFile already provides holds either way, and not every
+// declared result file is meant to carry structured outputs.
+func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) {
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return
+	}
+	for k, v := range m {
+		switch v.(type) {
+		case string, float64, bool:
+			result.Outputs[k] = v
+		}
+	}
 }
 
 func exitCodeOf(err error) int {

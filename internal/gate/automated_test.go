@@ -87,7 +87,12 @@ func TestOutputNumericGTEErrorsOnBadInput(t *testing.T) {
 }
 
 func TestCIStatusCheck(t *testing.T) {
-	out, err := evalCheck(t, "ci-status", nil, map[string]interface{}{"ciStatus": "success"})
+	// Default vocabulary is providers.CheckState ("passing"/"failing"/
+	// "pending" — internal/gate does not import providers, see
+	// checkEqualsVocab's doc comment), not apiv1.ResultStatus's "success"
+	// (#132: a ci-poll stage emits "passing"/"failing", so the check must
+	// default to matching that, not the unrelated ResultStatus vocabulary).
+	out, err := evalCheck(t, "ci-status", nil, map[string]interface{}{"ciStatus": "passing"})
 	if err != nil || out != OutcomePass {
 		t.Fatalf("got %q, %v; want pass", out, err)
 	}
