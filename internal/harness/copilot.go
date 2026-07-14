@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // defaultPromptFlag is the flag CopilotAdapter passes before the rendered
@@ -152,23 +153,53 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 // passthroughVars are the only ambient daemon-process env vars carried into
 // the harness subprocess — never the full os.Environ(). PATH/HOME/TMPDIR let
 // the CLI (and its own signed-in session storage, which lives under HOME)
-// and anything it shells out to find their toolchain; none carries secret
-// material. Mirrors internal/executor's identical SEC-045 allowlist so both
-// executors give the same guarantee: no ambient credential a stage didn't
-// declare ever reaches a stage's process, even if the daemon's own
-// environment happens to hold one (e.g. a resolver-sourced token env var
-// from instance.yaml). Verified against the real Copilot CLI: it functions
-// correctly under exactly this allowlist plus its own auth env var.
-var passthroughVars = []string{"PATH", "HOME", "TMPDIR"}
+// and anything it shells out to find their toolchain; the rest (#75) are
+// well-known, non-secret environment conventions diverse tier-1 hosts rely
+// on for the CLI (and anything it shells out to) to behave correctly:
+// XDG_CONFIG_HOME/XDG_DATA_HOME (XDG base-directory tools), LANG (locale),
+// SSL_CERT_FILE (custom CA bundles, e.g. behind a corporate proxy), and the
+// HTTP_PROXY/HTTPS_PROXY/NO_PROXY proxy trio. None of these carries secret
+// material — the allowlist stays default-deny (SEC-045, GBO-052): no ambient
+// credential a stage didn't declare ever reaches a stage's process, even if
+// the daemon's own environment happens to hold one (e.g. a resolver-sourced
+// token env var from instance.yaml). Mirrors internal/executor's identical
+// allowlist pattern.
+var passthroughVars = []string{
+	"PATH", "HOME", "TMPDIR",
+	"XDG_CONFIG_HOME", "XDG_DATA_HOME",
+	"LANG",
+	"SSL_CERT_FILE",
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+}
+
+// passthroughPrefixes are ambient env var name prefixes carried through as a
+// family rather than one name at a time — LC_* (POSIX locale category
+// overrides: LC_ALL, LC_CTYPE, LC_COLLATE, LC_MESSAGES, LC_NUMERIC, LC_TIME,
+// LC_MONETARY, ...) is the only one (#75). Still default-deny: a var must
+// actually start with one of these prefixes, not merely share a substring
+// (e.g. "LC_TOKEN" passes; "LOCALE_TOKEN" does not).
+var passthroughPrefixes = []string{"LC_"}
 
 // baseEnv returns the minimal, explicit env every harness process starts
-// with: the passthrough allowlist carried forward from the daemon process,
-// and nothing else.
+// with: the passthrough allowlist (exact names, plus the LC_* family)
+// carried forward from the daemon process, and nothing else.
 func baseEnv() []string {
 	env := make([]string, 0, len(passthroughVars))
 	for _, name := range passthroughVars {
 		if v, ok := os.LookupEnv(name); ok {
 			env = append(env, name+"="+v)
+		}
+	}
+	for _, kv := range os.Environ() {
+		name, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		for _, prefix := range passthroughPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				env = append(env, kv)
+				break
+			}
 		}
 	}
 	return env
