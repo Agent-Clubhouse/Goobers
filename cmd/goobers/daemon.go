@@ -9,11 +9,111 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 )
+
+// schedulerSetup bundles everything both `up` and `run` need to build a
+// localscheduler.Scheduler over an instance's config: the shared runner, the
+// telemetry client both the runner and the scheduler span through, its
+// instance log, and one WorkflowEntry per configured workflow. Factored out
+// so both commands construct it identically (issue #134: `run` used to
+// build its own bare *runner.Runner and skip the scheduler/conditions/
+// journal/lock entirely — the two commands must agree on this construction,
+// not maintain two divergent copies of it). The caller owns calling
+// Telemetry.Shutdown once it's done driving runs, exactly as it did before
+// this seam existed.
+type schedulerSetup struct {
+	Runner      *runner.Runner
+	Telemetry   *telemetry.Client
+	InstanceLog *journal.InstanceLog
+	Entries     []localscheduler.WorkflowEntry
+	Machines    map[string]*workflow.Machine
+	RepoRefs    map[string]apiv1.RepoRef
+}
+
+// buildSchedulerSetup loads an instance's config, compiles its workflows,
+// resolves their RepoRefs, constructs the shared runner and telemetry
+// client, and builds one localscheduler.WorkflowEntry per workflow —
+// everything localscheduler.New needs. wg is threaded into every entry's
+// trackedStarter so a caller (up's daemon loop, or run's single foreground
+// trigger) can track dispatched runs uniformly.
+func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGroup) (*schedulerSetup, error) {
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		return nil, err
+	}
+	set, _, err := instance.LoadConfigDir(l.ConfigDir())
+	if err != nil {
+		return nil, fmt.Errorf("config directory invalid: %w", err)
+	}
+
+	goobers := goobersByName(set)
+	machines, err := compiledMachines(set, goobers)
+	if err != nil {
+		return nil, err
+	}
+	repoRefs, err := repoRefsByWorkflow(set)
+	if err != nil {
+		return nil, err
+	}
+
+	tel, err := buildTelemetryClient(ctx, l)
+	if err != nil {
+		return nil, err
+	}
+
+	runnerCfg, err := buildRunnerConfig(l, cfg, goobers, tel)
+	if err != nil {
+		return nil, err
+	}
+	rn, err := runner.New(runnerCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		return nil, fmt.Errorf("open instance log: %w", err)
+	}
+
+	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
+	for i := range set.Workflows {
+		wf := &set.Workflows[i]
+		var sched localscheduler.Schedule
+		for _, tr := range wf.Spec.Triggers {
+			if tr.Type == apiv1.TriggerSchedule && tr.Schedule != "" {
+				s, err := localscheduler.ParseSchedule(tr.Schedule)
+				if err != nil {
+					return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
+				}
+				sched = s
+				break
+			}
+		}
+		entries = append(entries, localscheduler.WorkflowEntry{
+			Workflow:  wf.Name,
+			Gaggle:    wf.Spec.Gaggle,
+			Readiness: wf.Spec.Readiness,
+			Schedule:  sched,
+			Starter:   &trackedStarter{r: rn, machine: machines[wf.Name], wg: wg},
+			RepoRef:   repoRefs[wf.Name],
+		})
+	}
+
+	return &schedulerSetup{
+		Runner:      rn,
+		Telemetry:   tel,
+		InstanceLog: instanceLog,
+		Entries:     entries,
+		Machines:    machines,
+		RepoRefs:    repoRefs,
+	}, nil
+}
 
 // trackedStarter adapts a *runner.Runner + its compiled Machine into a
 // localscheduler.Starter — one per workflow, per that seam's doc comment

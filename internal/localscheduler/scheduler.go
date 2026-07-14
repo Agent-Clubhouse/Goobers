@@ -183,40 +183,57 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		if !res.Fire {
 			continue
 		}
-		s.dispatch(ctx, entry, now, res)
+		s.dispatch(ctx, entry, now, res, journal.TriggerSchedule)
 	}
 }
 
 // Trigger manually fires workflow now, bypassing its cron schedule but still
-// honoring run conditions (SCH-002/#23's `goobers run <workflow>` CLI wiring
-// calls this). Returns an error only if the workflow is unknown; a
-// conditions-driven skip is not an error, it's journaled like any other skip.
-func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time) error {
+// honoring run conditions (SCH-002; `goobers run <workflow>` CLI wiring calls
+// this — issue #134). Returns the dispatched run's id once conditions admit
+// it — before the run itself completes, since dispatch always continues
+// asynchronously (see dispatch's goroutine) — so a caller that wants to
+// observe the run to completion polls that id's own journal, the same way
+// `goobers status`/`trace` do. Returns an error if the workflow is unknown or
+// run conditions rejected the trigger (a conditions-driven skip is NOT a
+// silent no-op here, unlike a cron Tick's skip, since a human explicitly
+// asked for this run and deserves to know why it didn't start).
+func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time) (runID string, err error) {
 	s.mu.Lock()
 	entry, ok := s.workflows[workflow]
 	s.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("localscheduler: unknown workflow %q", workflow)
+		return "", fmt.Errorf("localscheduler: unknown workflow %q", workflow)
 	}
-	s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now})
-	return nil
+	runID, admitted, skipReason := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerManual)
+	if !admitted {
+		return "", fmt.Errorf("localscheduler: run conditions rejected the trigger for %q: %s", workflow, skipReason)
+	}
+	return runID, nil
 }
 
-// dispatch admits and starts (or skips) one due firing of entry. The
-// telemetry span it opens covers only the decision (trigger -> admit/skip ->
-// run-id mint), not the run itself: entry.Starter.Start runs in its own
+// dispatch admits and starts (or skips) one due firing of entry. kind tags
+// both the trigger.fired reason (journal.TriggerManual renders as "manual",
+// never "scheduled" — issue #134's fireReason mislabeling fix) and the
+// dispatched run's own journal.Trigger.Kind, previously hardcoded to
+// TriggerSchedule even for a manual Scheduler.Trigger call. Returns the
+// dispatched run's id (empty if skipped), whether it was admitted, and — when
+// not admitted — the run-conditions skip reason, so Trigger can surface it to
+// a human caller instead of silently doing nothing.
+//
+// The telemetry span it opens covers only the decision (trigger -> admit/skip
+// -> run-id mint), not the run itself: entry.Starter.Start runs in its own
 // goroutine below and outlives dispatch's return, so the run gets its own
 // root span (via runner.Runner.startRunSpan) on its own trace rather than a
 // child of a span that already ended — same rationale as
 // internal/scheduler.Scheduler.startSpan omitting RunID.
-func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, tick TickResult) {
-	span := s.startSpan(ctx, entry, tick)
+func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, tick TickResult, kind journal.TriggerKind) (runID string, admitted bool, skipReason string) {
+	span := s.startSpan(ctx, entry, tick, kind)
 	defer span.End()
 
 	s.journalEvent(journal.Event{
 		Type:     journal.EventTriggerFired,
 		Workflow: entry.Workflow,
-		Reason:   fireReason(tick),
+		Reason:   fireReason(tick, kind),
 	})
 
 	ok, reason := s.conditions.Admit(entry.Workflow, entry.Readiness, now)
@@ -227,19 +244,20 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 			Reason:   reason,
 		})
 		span.Succeed("skipped: " + reason)
-		return
+		return "", false, reason
 	}
 
 	runID, err := newRunID()
 	if err != nil {
 		s.conditions.Release(entry.Workflow)
+		reason := "run-id generation failed: " + err.Error()
 		s.journalEvent(journal.Event{
 			Type:     journal.EventTickSkipped,
 			Workflow: entry.Workflow,
-			Reason:   "run-id generation failed: " + err.Error(),
+			Reason:   reason,
 		})
 		span.Fail(err)
-		return
+		return "", false, reason
 	}
 
 	s.journalEvent(journal.Event{
@@ -254,7 +272,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		result, startErr := entry.Starter.Start(ctx, StartRequest{
 			RunID:   runID,
 			Gaggle:  entry.Gaggle,
-			Trigger: journal.Trigger{Kind: journal.TriggerSchedule, Ref: entry.Workflow},
+			Trigger: journal.Trigger{Kind: kind, Ref: entry.Workflow},
 			RepoRef: entry.RepoRef,
 		})
 		status := string(result.Phase)
@@ -268,12 +286,13 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 			Status:   status,
 		})
 	}()
+	return runID, true, ""
 }
 
 // startSpan opens a scheduler decision span for entry's dispatch, if
 // telemetry is configured. A zero telemetry.Span is safe to use (its methods
 // no-op), so callers need no nil checks.
-func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, tick TickResult) telemetry.Span {
+func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, tick TickResult, kind journal.TriggerKind) telemetry.Span {
 	if s.telemetry == nil {
 		return telemetry.Span{}
 	}
@@ -281,7 +300,7 @@ func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, tick Tic
 		Gaggle:     entry.Gaggle,
 		WorkflowID: entry.Workflow,
 		Action:     "dispatch",
-		Reason:     fireReason(tick),
+		Reason:     fireReason(tick, kind),
 	}
 	_, span, err := s.telemetry.StartSchedulerSpan(ctx, attrs)
 	if err != nil {
@@ -290,8 +309,14 @@ func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, tick Tic
 	return span
 }
 
-// fireReason renders a stable reason string for a trigger.fired event.
-func fireReason(tick TickResult) string {
+// fireReason renders a stable reason string for a trigger.fired event. A
+// manual trigger (issue #23's `goobers run`/#134) always renders "manual",
+// distinct from a cron tick's "scheduled"/"catch-up (missed N)" — a manual
+// fire has no TickResult.CatchUp concept of its own, so kind takes priority.
+func fireReason(tick TickResult, kind journal.TriggerKind) string {
+	if kind == journal.TriggerManual {
+		return "manual"
+	}
 	if tick.CatchUp {
 		return fmt.Sprintf("catch-up (missed %d)", tick.MissedTicks)
 	}

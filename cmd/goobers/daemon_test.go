@@ -214,3 +214,123 @@ func TestUpResumesInterruptedRun(t *testing.T) {
 
 // The single-instance lock itself (#23 AC3) is unaffected by the daemon-loop
 // rewrite and already covered by lock_test.go's TestUpFailsFastOnSecondInstance.
+
+// TestRunFailsFastWhenLockHeld is issue #134's lock half: `goobers run` used
+// to skip the instance lock entirely, so two concurrent processes (or a
+// manual run against a live `up` daemon) could mutate scheduler/run-condition
+// state and the shared workcopies/ tree at once. Now it takes the same lock
+// `up` does and fails fast, mirroring TestUpFailsFastOnSecondInstance.
+func TestRunFailsFastWhenLockHeld(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+
+	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer release()
+
+	code, _, stderr := runArgs(t, "run", "default-implement", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "already holds the lock") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+// TestRunAppearsInInstanceJournalAsManual is issue #134's other acceptance
+// criterion: a manual `goobers run` must be visible in the instance journal
+// (scheduler/events.jsonl) — previously it called Runner.Start directly and
+// left no trace there at all — tagged "manual", never "scheduled" (the
+// fireReason mislabeling bug the issue also calls out).
+func TestRunAppearsInInstanceJournalAsManual(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+
+	code, stdout, stderr := runArgs(t, "run", "default-implement", root)
+	if code != 0 {
+		t.Fatalf("run: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "phase=completed") {
+		t.Fatalf("run stdout = %q", stdout)
+	}
+
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawManualFire, sawRunStarted bool
+	for _, ev := range events {
+		if ev.Workflow != "default-implement" {
+			continue
+		}
+		if ev.Type == journal.EventTriggerFired && ev.Reason == "manual" {
+			sawManualFire = true
+		}
+		if ev.Type == journal.EventRunStarted {
+			sawRunStarted = true
+		}
+	}
+	if !sawManualFire {
+		t.Fatalf("expected a trigger.fired(reason=manual) event in the instance journal: %+v", events)
+	}
+	if !sawRunStarted {
+		t.Fatalf("expected a run.started event in the instance journal: %+v", events)
+	}
+}
+
+// TestRunRejectedOverMaxConcurrentRuns is issue #134's admission-limit
+// acceptance criterion at the CLI level: with maxConcurrentRuns already
+// exhausted by a run the scheduler's own Conditions tracks as active (seeded
+// via Reconcile from a hand-built in-flight run, mirroring
+// TestUpResumesInterruptedRun's fixture style), a second manual `goobers run`
+// for the same workflow must be rejected, not silently dispatch alongside it.
+func TestRunRejectedOverMaxConcurrentRuns(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+
+	set, _, err := instance.LoadConfigDir(l.ConfigDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf *apiv1.Workflow
+	for i := range set.Workflows {
+		if set.Workflows[i].Name == "default-implement" {
+			wf = &set.Workflows[i]
+		}
+	}
+	if wf == nil {
+		t.Fatal("default-implement workflow not found in fixture config")
+	}
+	// maxConcurrentRuns defaults to 1 when unset (localscheduler.Conditions.Admit).
+	machine, err := workflow.Compile(workflow.Definition{Name: wf.Name, Version: 1, Spec: wf.Spec})
+	if err != nil {
+		t.Fatalf("compile fixture workflow: %v", err)
+	}
+	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+		RunID: "already-running-1", Workflow: wf.Name, WorkflowVersion: 1,
+		WorkflowDigest: machine.Digest(), Gaggle: wf.Spec.Gaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("hand-construct in-flight run journal: %v", err)
+	}
+	jr.SetMachineState("local-ci")
+	if err := jr.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Left at PhaseRunning (no run.finished appended) — ActiveRunCounts and
+	// Scheduler.Reconcile both treat this as an active run for the workflow.
+
+	code, _, stderr := runArgs(t, "run", "default-implement", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "run conditions rejected") {
+		t.Fatalf("stderr = %q, want it to mention run conditions rejecting the trigger", stderr)
+	}
+}
