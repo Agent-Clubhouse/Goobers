@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,12 +37,18 @@ func initBareOrigin(t *testing.T) string {
 
 func runGitT(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	runGitOutputT(t, dir, args...)
+}
+
+func runGitOutputT(t *testing.T, dir string, args ...string) string {
+	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v (dir=%s): %v: %s", args, dir, err, out)
 	}
+	return string(out)
 }
 
 // branchExistsOnOrigin reports whether branch has a ref in the bare repo at
@@ -103,29 +110,54 @@ func TestPushBranchPushesWorktreeBranchToOrigin(t *testing.T) {
 
 	// #237 acceptance: the token never lands on disk in the worktree's own
 	// git config — it was injected per-invocation via GIT_CONFIG_* env vars,
-	// not written with `git config`.
-	cmd := exec.Command("git", "config", "--list")
-	cmd.Dir = wt.Path
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git config --list: %v", err)
+	// not written with `git config`. Checks both the raw config FILE bytes
+	// (not just `git config --list`'s resolved view, which a future change
+	// piping credentials through some other mechanism might not surface the
+	// same way) and every shape the credential takes on the wire: the raw
+	// token, its base64(x-access-token:token) form (what actually crosses
+	// the wire as the header value), and the header name/scheme literals —
+	// a regression that persisted the auth via `git config
+	// http.extraheader` instead of the env-var injection would leak a
+	// reversible credential to disk without ever containing the raw token
+	// string.
+	gitCommonDir := strings.TrimSpace(runGitOutputT(t, wt.Path, "rev-parse", "--git-common-dir"))
+	if !filepath.IsAbs(gitCommonDir) {
+		gitCommonDir = filepath.Join(wt.Path, gitCommonDir)
 	}
-	if strings.Contains(string(out), canaryToken) {
-		t.Fatalf("token leaked into worktree git config: %s", out)
+	configBytes, err := os.ReadFile(filepath.Join(gitCommonDir, "config"))
+	if err != nil {
+		t.Fatalf("read git config file: %v", err)
+	}
+	authHeaderValue := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + canaryToken))
+	for _, leak := range []string{canaryToken, authHeaderValue, "extraheader", "AUTHORIZATION"} {
+		if strings.Contains(string(configBytes), leak) {
+			t.Fatalf("credential material (%q) leaked into git config file %s: %s", leak, filepath.Join(gitCommonDir, "config"), configBytes)
+		}
 	}
 }
 
 // TestPushBranchWorksWithNoAmbientGitIdentity is #237's acceptance criterion
 // for a host with no ambient GitHub git credentials and no global git
-// identity: HOME points at an empty temp dir (no ~/.gitconfig, no credential
-// helper) and GIT_CONFIG_GLOBAL points at a file that doesn't exist. The
-// worktree's commit succeeds because worktree.Manager.Create sets a local
-// (not --global) bot identity (#237's Create fix), and the push succeeds
-// because the credential comes from the runner-injected env var, never from
-// a host-level git credential store.
+// identity: HOME points at an empty temp dir, GIT_CONFIG_SYSTEM points at
+// /dev/null (no /etc/gitconfig fallback), and GIT_CONFIG_GLOBAL sets
+// user.useConfigOnly=true — the setting that makes git refuse to
+// auto-derive an identity from the OS user/hostname (git >= 2.50 does this
+// by default when no identity is configured anywhere, which would let this
+// test pass even if worktree.Manager.Create set no local identity at all;
+// useConfigOnly closes that gap so a missing Create fix fails the commit
+// here, not just in TestManager_Create_SetsLocalBotIdentity's direct
+// config-value assertion). The worktree's commit succeeds because Create
+// sets a local (not --global) bot identity, and the push succeeds because
+// the credential comes from the runner-injected env var, never from a
+// host-level git credential store.
 func TestPushBranchWorksWithNoAmbientGitIdentity(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "does-not-exist.gitconfig"))
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	globalConfig := filepath.Join(t.TempDir(), "global.gitconfig")
+	if err := os.WriteFile(globalConfig, []byte("[user]\n\tuseConfigOnly = true\n"), 0o644); err != nil {
+		t.Fatalf("write global gitconfig: %v", err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
 
 	origin := initBareOrigin(t)
 	mgr, err := worktree.NewManager(t.TempDir())
