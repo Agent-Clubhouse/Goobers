@@ -29,6 +29,13 @@ type FakeAdapter struct {
 	Act func(ctx context.Context, req RunRequest) error
 	// Transcript is returned verbatim as the session's captured transcript.
 	Transcript []byte
+	// TranscriptTruncated, if set, is returned verbatim on Outcome — lets
+	// tests simulate a real subprocess-based adapter's transcript cap (#245)
+	// without generating enough output to actually hit it.
+	TranscriptTruncated bool
+	// TranscriptDroppedBytes is returned verbatim on Outcome alongside
+	// TranscriptTruncated.
+	TranscriptDroppedBytes int64
 	// PreflightErr, if set, is returned by Preflight — lets tests simulate a
 	// harness that isn't installed/signed in.
 	PreflightErr error
@@ -50,16 +57,18 @@ func (f *FakeAdapter) Preflight(ctx context.Context) error {
 // Run simulates one harness session: invoke Act (if set) against the
 // workspace, then read back whatever completion file resulted.
 func (f *FakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	out := Outcome{Transcript: f.Transcript, TranscriptTruncated: f.TranscriptTruncated, TranscriptDroppedBytes: f.TranscriptDroppedBytes}
 	if f.Act != nil {
 		if err := f.Act(ctx, req); err != nil {
-			return Outcome{Transcript: f.Transcript}, err
+			return out, err
 		}
 	}
 	payload, err := readCompletion(req.Workspace, req.CompletionPath)
 	if err != nil {
-		return Outcome{Transcript: f.Transcript}, err
+		return out, err
 	}
-	return Outcome{Payload: payload, Transcript: f.Transcript}, nil
+	out.Payload = payload
+	return out, nil
 }
 
 // WriteCompletion marshals v as JSON and writes it to workspace/relPath,

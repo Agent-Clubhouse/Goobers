@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -515,6 +516,160 @@ func TestExecProcessRunnerCapturesTranscript(t *testing.T) {
 	}
 	if res.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d, want 0", res.ExitCode)
+	}
+}
+
+// TestExecProcessRunnerBoundsTranscript is #245's headline regression: an
+// unbounded syncBuffer let a chatty/looping agentic session balloon daemon
+// memory and write a multi-hundred-MB span into the journal. A command
+// emitting well past MaxTranscriptBytes must yield a Transcript bounded at
+// ~the cap (plus the short marker), not one proportional to actual output.
+func TestExecProcessRunnerBoundsTranscript(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	const capBytes = 1024
+	const totalWritten = capBytes * 50 // comfortably past the cap
+
+	runner := ExecProcessRunner{}
+	res, err := runner.Run(context.Background(), ProcessRequest{
+		Command:            []string{"sh", "-c", "yes x | head -c " + strconv.Itoa(totalWritten)},
+		MaxTranscriptBytes: capBytes,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.TranscriptTruncated {
+		t.Fatal("TranscriptTruncated = false, want true")
+	}
+	if res.TranscriptDroppedBytes <= 0 {
+		t.Fatalf("TranscriptDroppedBytes = %d, want > 0", res.TranscriptDroppedBytes)
+	}
+	if got := int64(totalWritten) - res.TranscriptDroppedBytes; got != capBytes {
+		t.Fatalf("retained bytes = %d (total %d - dropped %d), want exactly the cap %d", got, totalWritten, res.TranscriptDroppedBytes, capBytes)
+	}
+	// Peak retained bytes: the marker adds a small, fixed overhead on top of
+	// the cap, nowhere near proportional to totalWritten.
+	if len(res.Transcript) > capBytes+128 {
+		t.Fatalf("Transcript length = %d, want at most cap (%d) + a small marker overhead", len(res.Transcript), capBytes)
+	}
+	if !strings.Contains(string(res.Transcript), "transcript truncated") {
+		t.Fatalf("Transcript missing truncation marker: %q", res.Transcript[max(0, len(res.Transcript)-80):])
+	}
+}
+
+// TestExecProcessRunnerUnboundedTranscriptStaysUntruncated is the negative
+// control for TestExecProcessRunnerBoundsTranscript: output comfortably under
+// the cap must round-trip untouched, with no marker appended and
+// TranscriptTruncated left false.
+func TestExecProcessRunnerUnboundedTranscriptStaysUntruncated(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	runner := ExecProcessRunner{}
+	res, err := runner.Run(context.Background(), ProcessRequest{
+		Command:            []string{"sh", "-c", "echo small-output"},
+		MaxTranscriptBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.TranscriptTruncated {
+		t.Fatal("TranscriptTruncated = true, want false for output well under the cap")
+	}
+	if res.TranscriptDroppedBytes != 0 {
+		t.Fatalf("TranscriptDroppedBytes = %d, want 0", res.TranscriptDroppedBytes)
+	}
+	if strings.Contains(string(res.Transcript), "truncated") {
+		t.Fatalf("Transcript unexpectedly carries a truncation marker: %q", res.Transcript)
+	}
+}
+
+// TestExecProcessRunnerDefaultTranscriptCap confirms a caller that never sets
+// MaxTranscriptBytes still gets a bounded transcript (DefaultMaxTranscriptBytes),
+// not the pre-#245 unbounded behavior.
+func TestExecProcessRunnerDefaultTranscriptCap(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	runner := ExecProcessRunner{}
+	overCap := DefaultMaxTranscriptBytes + 1<<16
+	res, err := runner.Run(context.Background(), ProcessRequest{
+		Command: []string{"sh", "-c", "yes x | head -c " + strconv.Itoa(int(overCap))},
+		// MaxTranscriptBytes deliberately left unset.
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.TranscriptTruncated {
+		t.Fatal("TranscriptTruncated = false, want true under the default cap")
+	}
+}
+
+// TestCopilotAdapterRun_LargeTranscriptDoesNotAffectCompletionDetection is
+// #245's fail-safe acceptance criterion: truncation must never eat the
+// completion signal — the adapter keys success/failure off the completion
+// file at CompletionPath, never off the transcript, so a session that floods
+// stdout/stderr well past the cap must still round-trip its result payload
+// correctly.
+func TestCopilotAdapterRun_LargeTranscriptDoesNotAffectCompletionDetection(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	workspace := t.TempDir()
+	adapter := &CopilotAdapter{
+		Command: []string{"sh", "-c", `
+			yes chatty-agent-output | head -c 65536
+			mkdir -p "$(dirname "$1")"
+			printf '%s' "$2" > "$1"
+		`, "sh", filepath.Join(workspace, DefaultResultPath), `{"status":"success","summary":"done"}`},
+	}
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Workspace:          workspace,
+		CompletionPath:     DefaultResultPath,
+		MaxTranscriptBytes: 1024,
+		Timeout:            5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !out.TranscriptTruncated {
+		t.Fatal("TranscriptTruncated = false, want true")
+	}
+	if len(out.Payload) == 0 {
+		t.Fatal("expected a non-empty result payload despite the truncated transcript")
+	}
+	if !strings.Contains(string(out.Payload), "success") {
+		t.Fatalf("Payload = %q, want the completion file's actual content, unaffected by transcript truncation", out.Payload)
+	}
+}
+
+// TestCopilotAdapterRun_PassesMaxTranscriptBytesThrough confirms
+// RunRequest.MaxTranscriptBytes reaches the underlying ProcessRequest, and
+// Outcome carries back whatever the ProcessRunner reported — the plumbing
+// #245 threads between the two layers.
+func TestCopilotAdapterRun_PassesMaxTranscriptBytesThrough(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{TranscriptTruncated: true, TranscriptDroppedBytes: 42},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Workspace:          workspace,
+		CompletionPath:     DefaultResultPath,
+		MaxTranscriptBytes: 2048,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runner.lastReq.MaxTranscriptBytes != 2048 {
+		t.Fatalf("ProcessRequest.MaxTranscriptBytes = %d, want 2048", runner.lastReq.MaxTranscriptBytes)
+	}
+	if !out.TranscriptTruncated || out.TranscriptDroppedBytes != 42 {
+		t.Fatalf("Outcome = {%v, %d}, want {true, 42}", out.TranscriptTruncated, out.TranscriptDroppedBytes)
 	}
 }
 

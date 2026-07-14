@@ -165,12 +165,17 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	}
 
 	result, err := c.runner().Run(ctx, ProcessRequest{
-		Command: argv,
-		Dir:     req.Workspace,
-		Env:     env,
-		Timeout: req.Timeout,
+		Command:            argv,
+		Dir:                req.Workspace,
+		Env:                env,
+		Timeout:            req.Timeout,
+		MaxTranscriptBytes: req.MaxTranscriptBytes,
 	})
-	out := Outcome{Transcript: result.Transcript}
+	out := Outcome{
+		Transcript:             result.Transcript,
+		TranscriptTruncated:    result.TranscriptTruncated,
+		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
+	}
 	if err != nil {
 		return out, err
 	}

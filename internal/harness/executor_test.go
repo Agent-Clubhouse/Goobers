@@ -294,6 +294,39 @@ func TestExecutorRecordsRedactedTranscript(t *testing.T) {
 	}
 }
 
+// TestExecutorInvokeSurfacesTranscriptTruncation is #245's Executor-level
+// regression: when the Adapter reports its transcript was capped, Invoke
+// surfaces that as a scalar ResultEnvelope output (mirroring
+// internal/executor.ShellExecutor's stdoutTruncated/stderrTruncated), not
+// just silently inside the recorded span.
+func TestExecutorInvokeSurfacesTranscriptTruncation(t *testing.T) {
+	adapter := &FakeAdapter{
+		Transcript:             []byte("...\n[transcript truncated: 999 bytes dropped]\n"),
+		TranscriptTruncated:    true,
+		TranscriptDroppedBytes: 999,
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	injector := testInjector(t, "REPO_TOKEN_ENV", "unused", noopRegistrar{})
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir(), "repo:read"))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if truncated, _ := result.Outputs["transcriptTruncated"].(bool); !truncated {
+		t.Fatalf("Outputs[transcriptTruncated] = %v, want true", result.Outputs["transcriptTruncated"])
+	}
+	if dropped, _ := result.Outputs["transcriptDroppedBytes"].(float64); dropped != 999 {
+		t.Fatalf("Outputs[transcriptDroppedBytes] = %v, want 999", result.Outputs["transcriptDroppedBytes"])
+	}
+}
+
 func TestExecutorInvokeLiftsDeclaredArtifactFile(t *testing.T) {
 	const relPath = "output/diff.patch"
 	const content = "--- a/file\n+++ b/file\n"

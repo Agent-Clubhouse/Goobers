@@ -32,26 +32,80 @@ const DefaultTimeout = 30 * time.Minute
 // unconditional way to guarantee its death.
 const groupKillWaitDelay = 5 * time.Second
 
-// syncBuffer is a mutex-guarded bytes.Buffer. Run gives up waiting on
-// cmd.Wait() after groupKillWaitDelay if a descendant escaped the process
+// DefaultMaxTranscriptBytes caps the combined stdout+stderr transcript a
+// harness subprocess accumulates in memory (each of stdout/stderr can write
+// into it) when ProcessRequest.MaxTranscriptBytes is unset (#245). Unlike
+// internal/executor's ShellExecutor (1 MiB, deterministic commands with
+// disciplined output), an agentic harness session's output is chattier and
+// harder to predict, so the default sits at the upper end of the 1–4 MiB
+// range the issue calls for.
+const DefaultMaxTranscriptBytes int64 = 4 << 20 // 4 MiB
+
+// syncBuffer is a mutex-guarded, size-capped byte sink. Run gives up waiting
+// on cmd.Wait() after groupKillWaitDelay if a descendant escaped the process
 // group and is still holding a pipe open — at that point os/exec's own
 // stdout/stderr-copying goroutines may still be writing to this buffer, so
-// reading its contents (Bytes) must not race with those writes.
+// both the cap and reading its contents (Bytes) must happen under the same
+// mutex those goroutines write through, never racing them.
+//
+// Past limit, Write keeps returning len(p) (never blocks or errors the
+// producing process — os/exec's copy goroutine must always be able to drain
+// the pipe) but stops retaining bytes, only counting how many were dropped;
+// Bytes appends a stable in-band marker once truncation occurred, so a
+// chatty or looping agentic session can never balloon daemon memory or write
+// an unbounded blob into the journal (#245).
 type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	limit   int64
+	dropped int64
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.buf.Write(p)
+	n := len(p)
+	remaining := b.limit - int64(b.buf.Len())
+	switch {
+	case remaining <= 0:
+		b.dropped += int64(n)
+	case int64(n) > remaining:
+		b.buf.Write(p[:remaining])
+		b.dropped += int64(n) - remaining
+	default:
+		b.buf.Write(p)
+	}
+	return n, nil
 }
 
+// Bytes returns a snapshot of what's been captured so far, with a trailing
+// "[transcript truncated: N bytes dropped]" marker appended if the cap was
+// hit. Safe to call concurrently with Write (see the type doc for why that
+// matters here).
 func (b *syncBuffer) Bytes() []byte {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return append([]byte(nil), b.buf.Bytes()...)
+	out := append([]byte(nil), b.buf.Bytes()...)
+	if b.dropped > 0 {
+		out = append(out, fmt.Sprintf("\n[transcript truncated: %d bytes dropped]\n", b.dropped)...)
+	}
+	return out
+}
+
+// Truncated reports whether the cap was hit. Safe to call concurrently with
+// Write, for the same reason as Bytes.
+func (b *syncBuffer) Truncated() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.dropped > 0
+}
+
+// Dropped returns the number of bytes discarded past the cap. Safe to call
+// concurrently with Write, for the same reason as Bytes.
+func (b *syncBuffer) Dropped() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.dropped
 }
 
 // ProcessRequest describes one harness subprocess execution.
@@ -71,15 +125,25 @@ type ProcessRequest struct {
 	Env []string
 	// Timeout bounds the process; zero means no timeout.
 	Timeout time.Duration
+	// MaxTranscriptBytes caps the combined stdout+stderr transcript retained
+	// in memory; non-positive means DefaultMaxTranscriptBytes (#245).
+	MaxTranscriptBytes int64
 }
 
 // ProcessResult is what a harness subprocess produced.
 type ProcessResult struct {
-	// Transcript is combined stdout+stderr.
+	// Transcript is combined stdout+stderr, bounded at MaxTranscriptBytes —
+	// a truncated transcript carries a trailing marker (#245), never a
+	// silently cut-off blob.
 	Transcript []byte
 	// ExitCode is the process's exit code (0 on success; -1 if it never
 	// started or was killed by a signal).
 	ExitCode int
+	// TranscriptTruncated reports whether Transcript was capped.
+	TranscriptTruncated bool
+	// TranscriptDroppedBytes is how many transcript bytes were discarded past
+	// the cap (0 if TranscriptTruncated is false).
+	TranscriptDroppedBytes int64
 }
 
 // ProcessRunner runs the concrete harness subprocess — the seam that lets
@@ -125,7 +189,11 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	var buf syncBuffer
+	limit := req.MaxTranscriptBytes
+	if limit <= 0 {
+		limit = DefaultMaxTranscriptBytes
+	}
+	buf := syncBuffer{limit: limit}
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 
@@ -154,7 +222,12 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 		}
 	}
 
-	result := ProcessResult{Transcript: buf.Bytes(), ExitCode: -1}
+	result := ProcessResult{
+		Transcript:             buf.Bytes(),
+		ExitCode:               -1,
+		TranscriptTruncated:    buf.Truncated(),
+		TranscriptDroppedBytes: buf.Dropped(),
+	}
 	var exitErr *exec.ExitError
 	switch {
 	case err == nil && !timedOut:
