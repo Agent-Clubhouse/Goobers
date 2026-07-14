@@ -69,11 +69,12 @@ spec:
     # Agentic authoring: reads the analyst's finding (via ContextPointers,
     # not a fresh telemetry/journal read of its own — narrowest capability
     # footprint that can still cite the same evidence) and drafts the
-    # config change in this run's worktree, committing + pushing to the
-    # run's branch. Never opens the PR itself (open-pr below does). The
-    # config-only write boundary (T4, #104) is enforced structurally by
-    # open-pr's confineToConfigRoot check below (#223) — this stage's own
-    # scope discipline (instructions.md) and CODEOWNERS/branch-protection
+    # config change in this run's worktree, committing to the run's branch
+    # (push is the separate deterministic push-branch stage below, #237).
+    # Never opens the PR itself (open-pr below does). The config-only write
+    # boundary (T4, #104) is enforced structurally by open-pr's
+    # confineToConfigRoot check below (#223) — this stage's own scope
+    # discipline (instructions.md) and CODEOWNERS/branch-protection
     # governance back it up, but the hard backstop is open-pr refusing to
     # open a PR at all if this stage's diff ever escapes the config root. A
     # credential that structurally cannot push platform changes in the first
@@ -83,12 +84,21 @@ spec:
       goober: config-author
       goal: >-
         Read the analyst's finding, make exactly the config change it
-        recommends (and nothing else), and commit + push to the run's
-        branch.
+        recommends (and nothing else), and commit to the run's branch.
       capabilities:
         - repo:push
       expectedOutputs:
         - changed-files
+      next: push-branch
+
+    # Deterministic branch push (#237) — same gap and fix as implementation.yaml.
+    - name: push-branch
+      type: deterministic
+      goal: Push the run's branch to origin.
+      run:
+        command: ["goobers", "push-branch"]
+      capabilities:
+        - repo:push
       next: open-pr
 
     - name: open-pr

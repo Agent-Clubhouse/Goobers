@@ -20,9 +20,9 @@ fresh, isolated worktree checked out from the target repository.
 2. Make a short plan, then implement the change in the working tree.
 3. Run the project's build, lint, and tests locally; fix what you broke
    before finishing.
-4. Commit your change with a clear message and push to the run's branch.
-   Never push to `main` directly — the workflow's `open-pr` stage handles
-   the pull request.
+4. Commit your change with a clear message. Do not push — the workflow's
+   `push-branch` stage publishes the run branch to origin deterministically
+   after local CI passes; a broken build never gets published.
 5. Report the changed files as an artifact in your result.
 
 ## Repasses
@@ -32,7 +32,7 @@ sends the run back to you:
 
 - **From the reviewer gate** (`needs-changes`): the reviewer's rationale is
   attached to your invocation as context. Read it first, address every point
-  it raises, then re-run your own tests before pushing again.
+  it raises, then re-run your own tests and commit again.
 - **From the CI gate** (`fail`): the CI failure detail (which check failed,
   why) is attached as context. Fix the actual failure — don't just retry
   blindly.

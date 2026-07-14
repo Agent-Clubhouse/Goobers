@@ -134,6 +134,40 @@ func TestManager_Create_Branch(t *testing.T) {
 	}
 }
 
+// TestManager_Create_SetsLocalBotIdentity is #237's fix: an implementer
+// stage commits inside its worktree, and that commit must not depend on the
+// daemon host's own ambient git config (HOME/global gitconfig) — Create sets
+// user.name/user.email local to the worktree's own config so `git commit`
+// succeeds even with no global identity configured anywhere.
+func TestManager_Create_SetsLocalBotIdentity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no ~/.gitconfig — proves the identity is local, not inherited
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "does-not-exist.gitconfig"))
+
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "run-1", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	gotName := strings.TrimSpace(runTestGit(t, wt.Path, "config", "user.name"))
+	if gotName != botGitUserName {
+		t.Fatalf("user.name = %q, want %q", gotName, botGitUserName)
+	}
+	gotEmail := strings.TrimSpace(runTestGit(t, wt.Path, "config", "user.email"))
+	if gotEmail != botGitUserEmail {
+		t.Fatalf("user.email = %q, want %q", gotEmail, botGitUserEmail)
+	}
+
+	// Prove it's actually usable: a commit succeeds with no ambient identity.
+	if err := os.WriteFile(filepath.Join(wt.Path, "change.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, wt.Path, "add", "change.txt")
+	runTestGit(t, wt.Path, "commit", "-m", "no ambient identity needed")
+}
+
 // TestManager_Create_AdoptsAndResetsExistingKey is issue #136's fix: a
 // leftover worktree at the same key (a never-torn-down previous attempt of
 // the same run+stage — a crash mid-attempt, or a same-process retry whose

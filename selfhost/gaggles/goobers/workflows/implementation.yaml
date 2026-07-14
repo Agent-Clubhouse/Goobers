@@ -62,7 +62,8 @@ spec:
       goal: >-
         Implement the claimed issue end to end: read the issue and its
         acceptance criteria, plan, implement, run the project's tests
-        locally, and commit + push to the run's branch. On a repass, first
+        locally, and commit to the run's branch (push is a separate
+        deterministic stage — see push-branch below). On a repass, first
         read the reviewer rationale or CI failure evidence attached as
         context and address it before making further changes.
       capabilities:
@@ -83,6 +84,20 @@ spec:
       retry:
         maxAttempts: 1
       next: local-gate
+
+    # Deterministic branch push (#237): the implementer commits but never
+    # pushes (no configured auth/identity for an agentic session to do so
+    # reliably) — this stage publishes the run branch to origin through the
+    # credential seam (#14), authenticated per-invocation, never persisted to
+    # disk. Runs after local-ci passes so a broken build is never published.
+    - name: push-branch
+      type: deterministic
+      goal: Push the run's branch to origin.
+      run:
+        command: ["goobers", "push-branch"]
+      capabilities:
+        - repo:push
+      next: open-pr
 
     - name: open-pr
       type: deterministic
@@ -177,7 +192,7 @@ spec:
       automated:
         check: status-equals
       branches:
-        pass: open-pr
+        pass: push-branch
         fail: implement
 
     # ci-poll sets Outputs[ciStatus] to the normalized providers.CheckState

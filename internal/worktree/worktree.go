@@ -8,6 +8,18 @@ import (
 	"time"
 )
 
+// botGitUserName/botGitUserEmail are the commit identity Create sets local
+// to every worktree it provisions (#237) — an agentic implementer stage
+// commits inside the worktree, and that commit must not depend on the
+// daemon host's own ambient git config (which V0's isolation story
+// otherwise never relies on: worktrees, credential injection, and env
+// allowlisting all exist precisely so a stage's behavior doesn't depend on
+// host dotfiles).
+const (
+	botGitUserName  = "goobers-bot"
+	botGitUserEmail = "goobers-bot@users.noreply.github.com"
+)
+
 // CreateOptions configures a single per-run worktree.
 type CreateOptions struct {
 	// RepoURL identifies the target repo; fed to Manager.WorkingCopy.
@@ -128,6 +140,17 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	}
 	if err := runGit(ctx, repoDir, args...); err != nil {
 		return nil, fmt.Errorf("worktree: create for run %s: %w", opts.RunID, err)
+	}
+
+	// A bot identity local to THIS worktree's own .git/config (`git config`
+	// with no --global, so it never touches the managed working copy or the
+	// host's ambient git config) — an agentic stage's commit must not depend
+	// on the daemon host happening to have user.name/user.email set (#237).
+	if err := runGit(ctx, path, "config", "user.name", botGitUserName); err != nil {
+		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
+	}
+	if err := runGit(ctx, path, "config", "user.email", botGitUserEmail); err != nil {
+		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
 
 	mk := marker{RunID: opts.RunID, PID: os.Getpid(), CreatedAt: time.Now(), Status: statusActive}
