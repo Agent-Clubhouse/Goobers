@@ -24,11 +24,15 @@ func writeRaw(workspace, relPath, content string) error {
 	return os.WriteFile(full, []byte(content), 0o644)
 }
 
-// fakeRecorder is an in-memory SpanRecorder + ArtifactRecorder double — mirrors
-// production, where the same *journal.Run satisfies both structurally.
+// fakeRecorder is an in-memory SpanRecorder + ArtifactRecorder +
+// ContextResolver double — mirrors production, where the same *journal.Run
+// satisfies all three structurally. dir backs ContextResolver's Dir(); tests
+// that never populate ContextPointers can leave it empty, since
+// materializeContext never calls Dir() when there's nothing to resolve.
 type fakeRecorder struct {
 	spans     []recordedSpan
 	artifacts []recordedArtifact
+	dir       string
 	err       error
 }
 
@@ -57,6 +61,8 @@ func (f *fakeRecorder) RecordArtifact(name string, data []byte) (journal.Ref, er
 	f.artifacts = append(f.artifacts, recordedArtifact{name: name, data: append([]byte(nil), data...)})
 	return journal.Ref{Path: "artifacts/fake/" + name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
 }
+
+func (f *fakeRecorder) Dir() string { return f.dir }
 
 func testInjector(t *testing.T, tokenEnv, envVal string, registrar credentials.SecretRegistrar) *credentials.Injector {
 	t.Helper()
@@ -105,7 +111,7 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 		},
 	}
 	injector := testInjector(t, "", "", noopRegistrar{})
-	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "be a good coder")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "be a good coder")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -136,7 +142,7 @@ func TestExecutorInvokeFailsClosedOnMissingCompletion(t *testing.T) {
 	adapter := &FakeAdapter{} // Act is nil: writes nothing
 	injector := testInjector(t, "", "", noopRegistrar{})
 	rec := &fakeRecorder{}
-	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -156,7 +162,7 @@ func TestExecutorInvokeFailsClosedOnInvalidCompletion(t *testing.T) {
 	}
 	injector := testInjector(t, "", "", noopRegistrar{})
 	rec := &fakeRecorder{}
-	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -175,7 +181,7 @@ func TestExecutorInvokeFailsClosedOnMalformedJSON(t *testing.T) {
 	}
 	injector := testInjector(t, "", "", noopRegistrar{})
 	rec := &fakeRecorder{}
-	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -196,7 +202,7 @@ func TestExecutorCapabilityEnforcement(t *testing.T) {
 	}
 	injector := testInjector(t, "REPO_TOKEN_ENV", "s3cr3t-token-value", noopRegistrar{})
 	rec := &fakeRecorder{}
-	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -225,7 +231,7 @@ func TestExecutorMaterializesDeclaredCapability(t *testing.T) {
 	}
 	injector := testInjector(t, "REPO_TOKEN_ENV", "s3cr3t-token-value", noopRegistrar{})
 	rec := &fakeRecorder{}
-	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -260,7 +266,7 @@ func TestExecutorRecordsRedactedTranscript(t *testing.T) {
 	}
 	injector := testInjector(t, "REPO_TOKEN_ENV", secret, reg)
 	rec := &fakeRecorder{}
-	exec, err := NewExecutor(adapter, injector, rec, rec, scrub, "")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, scrub, "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -297,7 +303,7 @@ func TestExecutorInvokeLiftsDeclaredArtifactFile(t *testing.T) {
 		},
 	}
 	injector := testInjector(t, "", "", noopRegistrar{})
-	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -335,7 +341,7 @@ func TestExecutorInvokeFailsClosedOnMissingDeclaredArtifactFile(t *testing.T) {
 		},
 	}
 	injector := testInjector(t, "", "", noopRegistrar{})
-	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -380,7 +386,7 @@ func TestExecutorInvokeFailsClosedOnArtifactFilePathTraversal(t *testing.T) {
 		},
 	}
 	injector := testInjector(t, "", "", noopRegistrar{})
-	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -424,7 +430,7 @@ func TestExecutorInvokeFailsClosedOnArtifactFileSymlinkEscape(t *testing.T) {
 		},
 	}
 	injector := testInjector(t, "", "", noopRegistrar{})
-	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -463,7 +469,7 @@ func TestExecutorReviewLiftsDeclaredArtifactFileAsEvidence(t *testing.T) {
 		},
 	}
 	injector := testInjector(t, "", "", noopRegistrar{})
-	exec, err := NewExecutor(adapter, injector, rec, rec, journal.NewPatternScrubber(), "")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -508,7 +514,7 @@ func TestExecutorScrubsDeclaredArtifactFileBeforeRecording(t *testing.T) {
 		},
 	}
 	injector := testInjector(t, "REPO_TOKEN_ENV", secret, reg)
-	exec, err := NewExecutor(adapter, injector, rec, rec, scrub, "")
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, scrub, "")
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -526,6 +532,82 @@ func TestExecutorScrubsDeclaredArtifactFileBeforeRecording(t *testing.T) {
 	}
 	if !strings.Contains(string(rec.artifacts[0].data), journal.Redacted) {
 		t.Fatalf("recorded artifact missing redaction placeholder: %q", rec.artifacts[0].data)
+	}
+}
+
+// TestExecutorMaterializesContextArtifactIntoWorkspace is the regression
+// test for #121: a declared ContextPointer's in-journal artifact must be
+// resolved into the stage's workspace before the harness session runs, so
+// the harness's own tools can actually read it — not just see an opaque
+// pointer name.
+func TestExecutorMaterializesContextArtifactIntoWorkspace(t *testing.T) {
+	journalRoot := t.TempDir()
+	content := []byte("upstream diff content\n")
+	ptr, err := apiv1.WriteArtifact(journalRoot, "artifacts/impl/diff.patch", content, "text/x-patch")
+	if err != nil {
+		t.Fatalf("WriteArtifact: %v", err)
+	}
+
+	var gotBytes []byte
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			gotPath, ok := req.ContextPaths["implement.artifact[0]"]
+			if !ok {
+				return errors.New("context path not resolved")
+			}
+			data, rerr := os.ReadFile(filepath.Join(req.Workspace, gotPath))
+			if rerr != nil {
+				return rerr
+			}
+			gotBytes = data
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	rec := &fakeRecorder{dir: journalRoot}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	env := testEnvelope(t.TempDir())
+	env.ContextPointers = []apiv1.ContextPointer{{Name: "implement.artifact[0]", Artifact: &ptr}}
+	result, err := exec.Invoke(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("Status = %q, want success", result.Status)
+	}
+	if string(gotBytes) != string(content) {
+		t.Fatalf("materialized context bytes = %q, want %q", gotBytes, content)
+	}
+}
+
+// TestExecutorFailsHardWhenContextArtifactCannotBeResolved covers the
+// integrity-fault path: an upstream artifact this stage was promised is
+// missing from the journal. That is not a normal stage failure the way a
+// missing declared output file is — it propagates as a hard executor error.
+func TestExecutorFailsHardWhenContextArtifactCannotBeResolved(t *testing.T) {
+	journalRoot := t.TempDir() // nothing written — the pointer resolves to nothing
+	badPtr := apiv1.ArtifactPointer{Path: "artifacts/missing", Digest: apiv1.Digest([]byte("x"))}
+
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	rec := &fakeRecorder{dir: journalRoot}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	env := testEnvelope(t.TempDir())
+	env.ContextPointers = []apiv1.ContextPointer{{Name: "implement.artifact[0]", Artifact: &badPtr}}
+	if _, err := exec.Invoke(context.Background(), env); err == nil {
+		t.Fatal("expected a hard error when an upstream context artifact cannot be resolved")
 	}
 }
 

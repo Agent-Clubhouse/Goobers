@@ -175,6 +175,13 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 			if !ok {
 				return nil, fmt.Errorf("test double %T does not implement harness.SpanRecorder", rec)
 			}
+			// rec is this run's own *journal.Run, which also satisfies
+			// harness.ContextResolver structurally (same Dir method) —
+			// resolving declared ContextPointers into the workspace (#121).
+			contextResolver, ok := rec.(harness.ContextResolver)
+			if !ok {
+				return nil, fmt.Errorf("test double %T does not implement harness.ContextResolver", rec)
+			}
 			// reg is this run's own *journal.RegistryScrubber (#66) — it also
 			// implements journal.Scrubber, so chaining it with the pattern
 			// net gives the harness executor the SAME per-run scrubbing the
@@ -188,7 +195,7 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 			// harness.ArtifactRecorder structurally (same RecordArtifact
 			// method as runner.ArtifactRecorder) — passed straight through,
 			// same as recorder above.
-			return harness.NewExecutor(adapter, injector, recorder, rec, scrubber, "you are the "+gooberName+" fixture goober")
+			return harness.NewExecutor(adapter, injector, recorder, rec, contextResolver, scrubber, "you are the "+gooberName+" fixture goober")
 		},
 		Automated: gate.NewAutomatedEvaluator(),
 		Worktrees: wtMgr,

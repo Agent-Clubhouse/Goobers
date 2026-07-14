@@ -23,6 +23,14 @@ func renderPrompt(req RunRequest) string {
 	if len(req.Envelope.ContextPointers) > 0 {
 		b.WriteString("## Context\n\n")
 		for _, cp := range req.Envelope.ContextPointers {
+			// An Artifact pointer resolved into the workspace (#121) is
+			// actionable: point the harness at the actual file it can read.
+			// Anything else (External, or an Artifact that for some reason
+			// wasn't resolved) falls back to the bare name, unchanged.
+			if path, ok := req.ContextPaths[cp.Name]; ok {
+				fmt.Fprintf(&b, "- %s: available at `%s`\n", cp.Name, path)
+				continue
+			}
 			fmt.Fprintf(&b, "- %s\n", cp.Name)
 		}
 		b.WriteString("\n")

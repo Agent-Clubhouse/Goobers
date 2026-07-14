@@ -69,16 +69,17 @@ const InputArtifactFile = "artifactFile"
 // Executor is constructed per Goober (Instructions is goober-level, not
 // per-invocation) and reused across its stage invocations.
 type Executor struct {
-	adapter      Adapter
-	injector     *credentials.Injector
-	recorder     SpanRecorder
-	artifacts    ArtifactRecorder
-	scrubber     journal.Scrubber
-	validator    *validate.Validator
-	instructions string
-	resultPath   string
-	verdictPath  string
-	timeout      time.Duration
+	adapter         Adapter
+	injector        *credentials.Injector
+	recorder        SpanRecorder
+	artifacts       ArtifactRecorder
+	contextResolver ContextResolver
+	scrubber        journal.Scrubber
+	validator       *validate.Validator
+	instructions    string
+	resultPath      string
+	verdictPath     string
+	timeout         time.Duration
 }
 
 // Option configures an Executor at construction.
@@ -99,10 +100,11 @@ func WithTimeout(d time.Duration) Option { return func(e *Executor) { e.timeout 
 // drive, injector resolves credentials scoped per invocation's declared
 // capabilities, recorder captures the (scrubbed) transcript as a journal
 // span, artifacts lifts a stage's declared InputArtifactFile (if any) into a
-// content-addressed journal artifact, scrubber redacts transcript/artifact
-// bytes before they are recorded, and instructions is the goober's resolved
-// instructions.md body.
-func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanRecorder, artifacts ArtifactRecorder, scrubber journal.Scrubber, instructions string, opts ...Option) (*Executor, error) {
+// content-addressed journal artifact, contextResolver resolves declared
+// ContextPointers' in-journal artifacts into the workspace before invocation
+// (#121), scrubber redacts transcript/artifact bytes before they are
+// recorded, and instructions is the goober's resolved instructions.md body.
+func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanRecorder, artifacts ArtifactRecorder, contextResolver ContextResolver, scrubber journal.Scrubber, instructions string, opts ...Option) (*Executor, error) {
 	if adapter == nil {
 		return nil, fmt.Errorf("harness: executor requires a non-nil adapter")
 	}
@@ -115,6 +117,9 @@ func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanR
 	if artifacts == nil {
 		return nil, fmt.Errorf("harness: executor requires a non-nil artifact recorder")
 	}
+	if contextResolver == nil {
+		return nil, fmt.Errorf("harness: executor requires a non-nil context resolver")
+	}
 	if scrubber == nil {
 		return nil, fmt.Errorf("harness: executor requires a non-nil scrubber")
 	}
@@ -123,15 +128,16 @@ func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanR
 		return nil, fmt.Errorf("harness: init validator: %w", err)
 	}
 	e := &Executor{
-		adapter:      adapter,
-		injector:     injector,
-		recorder:     recorder,
-		artifacts:    artifacts,
-		scrubber:     scrubber,
-		validator:    v,
-		instructions: instructions,
-		resultPath:   DefaultResultPath,
-		verdictPath:  DefaultVerdictPath,
+		adapter:         adapter,
+		injector:        injector,
+		recorder:        recorder,
+		artifacts:       artifacts,
+		contextResolver: contextResolver,
+		scrubber:        scrubber,
+		validator:       v,
+		instructions:    instructions,
+		resultPath:      DefaultResultPath,
+		verdictPath:     DefaultVerdictPath,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -225,6 +231,10 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: materialize credentials: %w", err)
 	}
+	contextPaths, err := e.materializeContext(env)
+	if err != nil {
+		return Outcome{}, err
+	}
 	req := RunRequest{
 		Mode:           mode,
 		Envelope:       env,
@@ -232,6 +242,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		Workspace:      env.Workspace,
 		CompletionPath: completionPath,
 		Credentials:    creds,
+		ContextPaths:   contextPaths,
 		Timeout:        e.timeout,
 	}
 

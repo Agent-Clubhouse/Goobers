@@ -273,12 +273,16 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if !ok {
 				return nil, fmt.Errorf("runner artifact recorder does not implement harness.ArtifactRecorder")
 			}
+			contextResolver, ok := rec.(harness.ContextResolver)
+			if !ok {
+				return nil, fmt.Errorf("runner artifact recorder does not implement harness.ContextResolver")
+			}
 			registryScrubber, ok := reg.(journal.Scrubber)
 			if !ok {
 				return nil, fmt.Errorf("runner secret registrar does not implement journal.Scrubber")
 			}
 			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
-			return harness.NewExecutor(adapter, injector, recorder, artifacts, scrubber, string(instructions))
+			return harness.NewExecutor(adapter, injector, recorder, artifacts, contextResolver, scrubber, string(instructions))
 		},
 		Automated:    gate.NewAutomatedEvaluator(),
 		Worktrees:    wtMgr,
