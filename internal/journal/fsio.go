@@ -23,8 +23,16 @@ func writeContent(dir, relPath string, data []byte, scrubber Scrubber) (Ref, err
 func writeContentScrubbed(dir, relPath string, scrubbed []byte, digest string) (Ref, error) {
 	full := filepath.Join(dir, relPath)
 	ref := Ref{Path: relPath, Digest: digest, Size: int64(len(scrubbed))}
+	// Skip the write only when the blob already at rest genuinely has this
+	// content address. A size match alone is NOT sufficient: a same-size blob
+	// with different content — e.g. a redaction that replaces a secret with the
+	// equal-length placeholder — would otherwise be treated as already stored and
+	// the leaked bytes would survive on disk (SEC-041). Verify the digest before
+	// skipping.
 	if fi, err := os.Stat(full); err == nil && fi.Size() == ref.Size {
-		return ref, nil // already stored (content-addressed dedup)
+		if existing, rerr := os.ReadFile(full); rerr == nil && Digest(existing) == digest {
+			return ref, nil // already stored (content-addressed dedup)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return Ref{}, err
