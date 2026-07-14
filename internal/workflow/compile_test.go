@@ -249,7 +249,7 @@ func TestCompileRejectsGateVocabMismatch(t *testing.T) {
 				Name:      "ci-gate",
 				Evaluator: apiv1.EvaluatorAutomated,
 				Automated: &apiv1.AutomatedGate{Check: "ci-status", Params: map[string]string{"equals": "success"}},
-				Branches:  map[string]string{"pass": TerminalComplete, "fail": "poll"},
+				Branches:  map[string]string{"pass": TerminalComplete, "fail": "poll", "timeout": TargetEscalate},
 			},
 		},
 	}

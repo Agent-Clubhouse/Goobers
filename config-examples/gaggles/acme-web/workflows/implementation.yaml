@@ -185,3 +185,8 @@ spec:
         # (checks/failure detail) attached as context by the runner, the
         # same evidence-pointer mechanism the reviewer gate uses.
         fail: implement
+        # A poll timeout (#239) is not evidence CI failed — just that it
+        # didn't finish in time — so it escalates for a human decision
+        # instead of spending an agentic repass re-implementing a change
+        # that was never actually reviewed as failing.
+        timeout: "@escalate"

@@ -24,6 +24,15 @@ import (
 // poll.
 const OutputCIStatus = "ciStatus"
 
+// CIStatusTimeout is the OutputCIStatus value CIPollExecutor sets when it
+// gives up waiting for a terminal check state before the overall Timeout
+// expires — deliberately distinct from providers.CheckStatePassing/
+// CheckStateFailing (#239) so a downstream ci-status gate check can route a
+// stalled/slow CI queue to escalation instead of the "fail" branch's
+// implement repass, which was the worst possible response to CI merely being
+// slow: re-implementing a change that was never actually reviewed as failing.
+const CIStatusTimeout = "timeout"
+
 // Well-known Task.Inputs keys a ci-poll stage may declare (see
 // ConfigFromEnvelope/CIPollConfigFromEnvelope and doc.go's note on how the PR
 // locator gets there).
@@ -49,6 +58,15 @@ const (
 	DefaultMaxPollInterval = 2 * time.Minute
 	DefaultPollTimeout     = 30 * time.Minute
 )
+
+// DefaultMaxConsecutivePollErrors bounds how many transient poll errors
+// (providers.IsTransientError) CIPollExecutor absorbs back-to-back before
+// giving up — without this bound, a poller that fails transiently forever
+// (e.g. a PR whose CI checks were permanently misconfigured to 503) would
+// poll until the overall Timeout regardless, silently burning the full 30
+// minutes on every attempt instead of failing fast once it's clear the
+// errors aren't clearing.
+const DefaultMaxConsecutivePollErrors = 5
 
 // PRPoller is the narrow slice of providers.RepoProvider CIPollExecutor
 // depends on, so it can be driven by a fake in tests instead of a real
@@ -127,6 +145,10 @@ type CIPollExecutor struct {
 	Interval    time.Duration
 	MaxInterval time.Duration
 	Timeout     time.Duration
+	// MaxConsecutivePollErrors bounds back-to-back transient poll errors
+	// before Run gives up early rather than waiting out the full Timeout.
+	// Defaults to DefaultMaxConsecutivePollErrors when <= 0.
+	MaxConsecutivePollErrors int
 	// Now and Sleep are injectable for deterministic tests; nil defaults to
 	// the real wall clock.
 	Now   func() time.Time
@@ -174,6 +196,10 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 	if timeout <= 0 {
 		timeout = DefaultPollTimeout
 	}
+	maxConsecutiveErrors := e.MaxConsecutivePollErrors
+	if maxConsecutiveErrors <= 0 {
+		maxConsecutiveErrors = DefaultMaxConsecutivePollErrors
+	}
 
 	now := e.Now
 	if now == nil {
@@ -190,11 +216,26 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		PullID:     cfg.PullID,
 	}
 
+	consecutiveErrors := 0
 	for attempt := 0; ; attempt++ {
 		result, err := e.Poller.PollPullRequest(ctx, req)
 		if err != nil {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", err)
+			if !providers.IsTransientError(err) {
+				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", err)
+			}
+			consecutiveErrors++
+			if consecutiveErrors > maxConsecutiveErrors {
+				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %d consecutive transient errors, giving up: %w", consecutiveErrors, err)
+			}
+			if now().After(deadline) {
+				return ciPollTimeoutOutcome(timeout), nil
+			}
+			if serr := sleep(ctx, backoff(interval, maxInterval, attempt)); serr != nil {
+				return apiv1.ResultEnvelope{}, serr
+			}
+			continue
 		}
+		consecutiveErrors = 0
 		switch result.CheckState {
 		case providers.CheckStatePassing:
 			return ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing"), nil
@@ -202,19 +243,31 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 			return ciPollOutcome(providers.CheckStateFailing, "ci-poll: checks failing"), nil
 		}
 		if now().After(deadline) {
-			return apiv1.ResultEnvelope{
-				Status: apiv1.ResultFailure,
-				Error: &apiv1.ErrorInfo{
-					Code:      "poll_timeout",
-					Message:   fmt.Sprintf("ci-poll timed out after %s waiting for a terminal check state", timeout),
-					Retryable: true,
-				},
-				Summary: "ci-poll timed out while still pending",
-			}, nil
+			return ciPollTimeoutOutcome(timeout), nil
 		}
 		if err := sleep(ctx, backoff(interval, maxInterval, attempt)); err != nil {
 			return apiv1.ResultEnvelope{}, err
 		}
+	}
+}
+
+// ciPollTimeoutOutcome builds the ResultEnvelope for a poll that exhausted
+// its Timeout while still pending. Outputs[OutputCIStatus] is set to
+// CIStatusTimeout — distinct from "passing"/"failing" — so a downstream
+// ci-status gate check can route it to escalation rather than the "fail"
+// branch's implement repass (#239): CI merely being slow is not the same
+// evidence as CI having actually failed, and re-implementing in response
+// wastes an agentic attempt on the worst possible diagnosis.
+func ciPollTimeoutOutcome(timeout time.Duration) apiv1.ResultEnvelope {
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultFailure,
+		Outputs: map[string]interface{}{OutputCIStatus: CIStatusTimeout},
+		Error: &apiv1.ErrorInfo{
+			Code:      "poll_timeout",
+			Message:   fmt.Sprintf("ci-poll timed out after %s waiting for a terminal check state", timeout),
+			Retryable: true,
+		},
+		Summary: "ci-poll timed out while still pending",
 	}
 }
 

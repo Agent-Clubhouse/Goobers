@@ -311,14 +311,27 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec) []st
 // decisions is fully known at compile time (#124).
 var agenticOutcomes = []string{"pass", "fail", "needs-changes"}
 
-// automatedBuiltinOutcomes is every outcome internal/gate.DefaultChecks can
-// produce — V0 ships no mechanism for a config-defined gate to select a
-// custom CheckFunc with a different outcome set (AutomatedGate.Check always
-// resolves against that fixed registry in production), so this is exhaustive
-// for every gate a real config can express today. If a custom, non-boolean
-// check registry is ever wired into config, this assumption is the first
-// thing to revisit.
+// automatedBuiltinOutcomes is the default outcome set for a check in
+// internal/gate.DefaultChecks — every check is boolean (pass/fail) except
+// the exceptions listed in automatedCheckOutcomes. V0 ships no mechanism for
+// a config-defined gate to select a custom CheckFunc with a different
+// outcome set (AutomatedGate.Check always resolves against that fixed
+// registry in production), so these two tables are exhaustive for every
+// gate a real config can express today. If a custom, non-boolean check
+// registry is ever wired into config, this assumption is the first thing to
+// revisit.
 var automatedBuiltinOutcomes = []string{"pass", "fail"}
+
+// automatedCheckOutcomes overrides automatedBuiltinOutcomes for a specific
+// check name. "ci-status" is the one exception (#239): a ci-poll timeout
+// surfaces as OutcomeTimeout ("timeout"), distinct from pass/fail, so a
+// workflow's ci-gate can route it to escalation instead of the "fail"
+// branch's implement repass — that third outcome must be just as
+// compile-time-checkable (a branch declared for it resolves; a missing
+// branch fails closed) as pass/fail already are.
+var automatedCheckOutcomes = map[string][]string{
+	"ci-status": {"pass", "fail", "timeout"},
+}
 
 // gateOutcomeProblems reports two distinct defect classes per gate (#124):
 //   - a branch key that is not one of the evaluator's producible outcomes —
@@ -343,8 +356,13 @@ func gateOutcomeProblems(def Definition, knownChecks map[string]bool) []string {
 			producible = agenticOutcomes
 		case apiv1.EvaluatorAutomated:
 			producible = automatedBuiltinOutcomes
-			if knownChecks != nil && g.Automated != nil && g.Automated.Check != "" && !knownChecks[g.Automated.Check] {
-				problems = append(problems, fmt.Sprintf("gate %q: unknown automated check %q", g.Name, g.Automated.Check))
+			if g.Automated != nil {
+				if custom, ok := automatedCheckOutcomes[g.Automated.Check]; ok {
+					producible = custom
+				}
+				if knownChecks != nil && g.Automated.Check != "" && !knownChecks[g.Automated.Check] {
+					problems = append(problems, fmt.Sprintf("gate %q: unknown automated check %q", g.Name, g.Automated.Check))
+				}
 			}
 		default:
 			continue
