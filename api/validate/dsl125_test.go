@@ -36,7 +36,12 @@ func TestContextPointerRunIDValidatesAgainstSchema(t *testing.T) {
 // artifact-pointer schema previously rejected only a leading '/', deferring '..'
 // containment to resolve time. It now rejects '..' path components too, so a
 // foreign-authored envelope that would escape the journal fails at validate
-// time — matching the Go ResolveContainedPath check.
+// time. The schema guard is a conservative *superset* of the Go
+// ResolveContainedPath check, not an exact match: it rejects every '..' segment,
+// including the contained '..' that filepath.Clean collapses and
+// ResolveContainedPath would accept (e.g. "a/../b" -> "a/b"). The divergence is
+// always in the safe direction — validate is stricter than resolve, never more
+// lenient — so no traversal that resolve rejects can pass validation.
 func TestArtifactPointerRejectsTraversalAtValidateTime(t *testing.T) {
 	v, err := New()
 	if err != nil {
@@ -48,6 +53,10 @@ func TestArtifactPointerRejectsTraversalAtValidateTime(t *testing.T) {
 		"..",
 		"findings/..",
 		"/absolute/path.json",
+		// filepath.Clean collapses "a/../b" -> "a/b", so Go's ResolveContainedPath
+		// accepts it; the schema rejects any '..' segment outright. This documents
+		// the intentional stricter-than-Go behavior (safe direction).
+		"a/../b",
 	}
 	for _, p := range bad {
 		doc := `{"path": "` + p + `", "digest": "` + fakeDigest + `"}`
