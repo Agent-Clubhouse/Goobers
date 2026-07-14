@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -117,5 +118,64 @@ func TestValidateCheckHarnessFlagWiring(t *testing.T) {
 	code, stdout, _ = runArgs(t, "validate", "--check-harness", root)
 	if code != 1 {
 		t.Fatalf("code = %d, want 1 on a failed harness preflight; stdout=%q", code, stdout)
+	}
+}
+
+// authProbeFakeRunner scripts a CopilotAdapter's two preflight subprocesses
+// separately: the --version check vs the -p auth probe (identified by the "-p"
+// flag AuthCheckArgs carries), so a signed-out CLI (version OK, auth fails) can
+// be simulated without a real copilot binary.
+type authProbeFakeRunner struct {
+	versionExit, authExit int
+	authInvoked           *bool
+}
+
+func (r *authProbeFakeRunner) Run(_ context.Context, req harness.ProcessRequest) (harness.ProcessResult, error) {
+	for _, a := range req.Command {
+		if a == "-p" { // the auth probe (copilotAuthCheckArgs starts with -p)
+			if r.authInvoked != nil {
+				*r.authInvoked = true
+			}
+			return harness.ProcessResult{ExitCode: r.authExit}, nil
+		}
+	}
+	return harness.ProcessResult{ExitCode: r.versionExit}, nil // the --version check
+}
+
+// TestCheckHarnessesRunsAuthProbe is the #284/#271 control: --check-harness
+// probes authentication, so a CLI that passes --version but fails the auth probe
+// (a signed-out / mis-scoped token) fails closed, and a fully-authenticated one
+// passes. Command "echo" is on PATH so LookPath succeeds and the scripted runner
+// governs the result.
+func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
+	goobers := []apiv1.Goober{{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}}}
+
+	// Signed out: version OK, auth probe fails → check fails, and the probe ran.
+	authInvoked := false
+	withHarnessAdapter(t, func(apiv1.Harness) (harness.Adapter, error) {
+		return &harness.CopilotAdapter{
+			Command: []string{"echo"},
+			Runner:  &authProbeFakeRunner{versionExit: 0, authExit: 1, authInvoked: &authInvoked},
+		}, nil
+	})
+	var out, errOut strings.Builder
+	if checkHarnesses(goobers, &out, &errOut) {
+		t.Fatal("checkHarnesses returned true; a signed-out CLI (version OK, auth probe fails) must fail closed")
+	}
+	if !authInvoked {
+		t.Fatal("the auth probe (-p) was never invoked — AuthCheckArgs not wired into --check-harness")
+	}
+
+	// Fully authenticated: both succeed → check passes.
+	withHarnessAdapter(t, func(apiv1.Harness) (harness.Adapter, error) {
+		return &harness.CopilotAdapter{
+			Command: []string{"echo"},
+			Runner:  &authProbeFakeRunner{versionExit: 0, authExit: 0},
+		}, nil
+	})
+	out.Reset()
+	errOut.Reset()
+	if !checkHarnesses(goobers, &out, &errOut) {
+		t.Fatalf("checkHarnesses returned false for a healthy signed-in CLI; stdout=%q", out.String())
 	}
 }

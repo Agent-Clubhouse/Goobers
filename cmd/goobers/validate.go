@@ -6,11 +6,33 @@ import (
 	"flag"
 	"io"
 	"os"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 )
+
+// copilotAuthCheckArgs is the confirmed non-interactive Copilot authentication
+// probe (#284/#271). The Copilot CLI has no auth-status subcommand, and
+// `--version` succeeds even when signed out, so authentication is verified by a
+// minimal, tool-disabled prompt: it exits 0 when the token is valid AND has the
+// "Copilot Requests" fine-grained permission, and non-zero with an actionable
+// auth error otherwise. `--available-tools=` (empty allowlist) disables every
+// tool so the probe can never touch the filesystem or run shell commands;
+// `--allow-all-tools` is still required to enable non-interactive mode.
+//
+// This runs ONLY in the deliberate, operator-invoked `goobers validate
+// --check-harness` — not the automatic daemon-startup preflight — because it
+// costs a real Copilot request (~a few AI credits) and takes a couple of
+// seconds; surprising an operator with that on every `goobers up`/`run` startup
+// would be worse than the version-only check the daemon preflight already does.
+var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all-tools", "--available-tools="}
+
+// harnessPreflightTimeout bounds a single harness preflight (its version check
+// plus, under --check-harness, the auth probe's real API round-trip) so a hung
+// CLI or network can't hang `goobers validate`.
+const harnessPreflightTimeout = 90 * time.Second
 
 func runValidate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
@@ -108,7 +130,19 @@ func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer) bool {
 			ok = false
 			continue
 		}
-		if err := adapter.Preflight(context.Background()); err != nil {
+		// --check-harness is the deliberate, pre-live-run setup check, so it
+		// additionally probes authentication (not just CLI presence): a
+		// fine-grained PAT lacking the "Copilot Requests" permission (#284)
+		// passes --version but fails this probe. Configured here rather than in
+		// adapterFor so the automatic daemon-startup preflight stays free/
+		// version-only (see copilotAuthCheckArgs).
+		if ca, isCopilot := adapter.(*harness.CopilotAdapter); isCopilot {
+			ca.AuthCheckArgs = copilotAuthCheckArgs
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
+		err = adapter.Preflight(ctx)
+		cancel()
+		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
 			ok = false
 			continue
