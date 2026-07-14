@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -17,6 +19,17 @@ import (
 // DefaultMaxSteps bounds the state walk against a runaway machine (carried over
 // from the Temporal engine core, ARCHITECTURE §3.1).
 const DefaultMaxSteps = 10000
+
+// SpanStarter is the slice of the telemetry client the runner needs to open
+// run/task/gate spans (issue #126). *telemetry.Client satisfies it
+// structurally, mirroring internal/scheduler.SpanStarter's narrow-interface
+// pattern for the same reason: no import cycle, and the runner never depends
+// on telemetry's full surface.
+type SpanStarter interface {
+	StartRun(ctx context.Context, attrs telemetry.RunAttributes) (context.Context, telemetry.Span, error)
+	StartTask(ctx context.Context, attrs telemetry.TaskAttributes) (context.Context, telemetry.Span, error)
+	StartGate(ctx context.Context, attrs telemetry.GateAttributes) (context.Context, telemetry.Span, error)
+}
 
 // Config wires a Runner's dependencies: the daemon-wide singletons (worktree
 // provisioning, gate evaluation) and the per-run executor factories
@@ -54,6 +67,11 @@ type Config struct {
 	// RepoRef. Defaults to defaultRepoCloneURL (github.com over HTTPS). Tests
 	// override this to point at a local fixture repo without network access.
 	RepoCloneURL func(apiv1.RepoRef) (string, error)
+	// Telemetry optionally spans the run/task/gate walk (issue #126). Nil
+	// disables span emission — every telemetry.Span zero-value method no-ops,
+	// so call sites below need no nil checks beyond the one guard in each
+	// start*Span helper.
+	Telemetry SpanStarter
 }
 
 // Runner advances a compiled workflow.Machine stage-by-stage, durably
@@ -161,7 +179,43 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	}
 	defer func() { _ = jr.Close() }()
 
-	return r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, registrar)
+	ctx, span := r.startRunSpan(ctx, in)
+	defer span.End()
+
+	result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, registrar)
+	if err != nil {
+		span.Fail(err)
+		return result, err
+	}
+	span.Succeed(string(result.Phase))
+	return result, nil
+}
+
+// startRunSpan opens the run's root span, if telemetry is configured. A zero
+// telemetry.Span is safe to use (its methods no-op), so callers need no nil
+// checks — mirrors internal/scheduler.Scheduler.startSpan. The returned ctx
+// carries the run's trace id (RunID, per telemetry.Client.StartRun) so every
+// task/gate span opened while walking this run joins the same trace.
+func (r *Runner) startRunSpan(ctx context.Context, in StartInput) (context.Context, telemetry.Span) {
+	if r.cfg.Telemetry == nil {
+		return ctx, telemetry.Span{}
+	}
+	attrs := telemetry.RunAttributes{
+		Gaggle:          in.Gaggle,
+		WorkflowID:      in.Machine.Def.Name,
+		WorkflowVersion: strconv.Itoa(in.Machine.Def.Version),
+		RunID:           in.RunID,
+		Trigger:         string(in.Trigger.Kind),
+	}
+	if in.Item != nil {
+		attrs.ItemID = in.Item.ID
+		attrs.ItemProvider = string(in.Item.Provider)
+	}
+	ctx, span, err := r.cfg.Telemetry.StartRun(ctx, attrs)
+	if err != nil {
+		return ctx, telemetry.Span{}
+	}
+	return ctx, span
 }
 
 // executors holds the per-run invoke.* instances, constructed lazily on first
@@ -375,6 +429,9 @@ func (r *Runner) finish(jr *journal.Run, phase journal.RunPhase, finalState stri
 // consumed still count against the task's own MaxAttempts budget — a crash
 // must never grant a task more attempts than its declared policy allows.
 func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, startAttempt int32) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+	ctx, span := r.startTaskSpan(ctx, in, t)
+	defer span.End()
+
 	attemptCtx := context.WithoutCancel(ctx)
 
 	maxAttempts := int32(1)
@@ -386,7 +443,9 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		backoff = time.Duration(t.Retry.BackoffSeconds) * time.Second
 	}
 	if startAttempt > maxAttempts {
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: task %q has no attempts left after resume (interrupted attempt already exhausted its %d-attempt budget)", t.Name, maxAttempts)
+		err := fmt.Errorf("runner: task %q has no attempts left after resume (interrupted attempt already exhausted its %d-attempt budget)", t.Name, maxAttempts)
+		span.Fail(err)
+		return apiv1.ResultEnvelope{}, nil, err
 	}
 
 	var lastErr error
@@ -400,7 +459,9 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			class = journal.AttemptPolicy
 		}
 		if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: t.Name, Attempt: int(attempt), AttemptClass: class}); err != nil {
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
+			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
+			span.Fail(err)
+			return apiv1.ResultEnvelope{}, nil, err
 		}
 
 		result, dispatchErr := r.dispatchTask(attemptCtx, in, ex, t, upstream)
@@ -416,20 +477,53 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 				}
 				continue
 			}
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, attempt, maxAttempts)
+			err := fmt.Errorf("runner: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, attempt, maxAttempts)
+			span.Fail(err)
+			return apiv1.ResultEnvelope{}, nil, err
 		}
 
 		if err := jr.Append(journal.Event{
 			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 			Status: string(result.Status), Error: errorDetailFrom(result.Error),
 		}); err != nil {
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal stage.finished for %q: %w", t.Name, err)
+			err = fmt.Errorf("runner: journal stage.finished for %q: %w", t.Name, err)
+			span.Fail(err)
+			return apiv1.ResultEnvelope{}, nil, err
 		}
+		span.Succeed(string(result.Status))
 		return result, contextPointersFor(t.Name, result.Artifacts), nil
 	}
 	// Unreachable: maxAttempts >= 1 always executes the loop body at least
 	// once, and every path inside either returns or continues.
-	return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
+	err := fmt.Errorf("runner: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
+	span.Fail(err)
+	return apiv1.ResultEnvelope{}, nil, err
+}
+
+// startTaskSpan opens a task span under the run's trace, if telemetry is
+// configured. A zero telemetry.Span is safe to use (its methods no-op).
+func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task) (context.Context, telemetry.Span) {
+	if r.cfg.Telemetry == nil {
+		return ctx, telemetry.Span{}
+	}
+	attrs := telemetry.TaskAttributes{
+		Gaggle:          in.Gaggle,
+		WorkflowID:      in.Machine.Def.Name,
+		WorkflowVersion: strconv.Itoa(in.Machine.Def.Version),
+		RunID:           in.RunID,
+		TaskID:          t.Name,
+		TaskType:        string(t.Type),
+		GooberID:        t.Goober,
+	}
+	if in.Item != nil {
+		attrs.ItemID = in.Item.ID
+		attrs.ItemProvider = string(in.Item.Provider)
+	}
+	ctx, span, err := r.cfg.Telemetry.StartTask(ctx, attrs)
+	if err != nil {
+		return ctx, telemetry.Span{}
+	}
+	return ctx, span
 }
 
 // dispatchTask provisions one attempt's worktree and invokes the task's
@@ -491,9 +585,18 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	// SIGTERM cancels the run-level ctx finishes and journals cleanly.
 	ctx = context.WithoutCancel(ctx)
 
+	gooberName := ""
+	if g.Evaluator == apiv1.EvaluatorAgentic && g.Agentic != nil {
+		gooberName = g.Agentic.Goober
+	}
+	ctx, span := r.startGateSpan(ctx, in, g, gooberName)
+	defer span.End()
+
 	env, wt, err := r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, nil, upstream)
 	if err != nil {
-		return gate.Result{}, fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
+		err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
+		span.Fail(err)
+		return gate.Result{}, err
 	}
 	defer func() { _ = wt.Remove(ctx, worktree.RemoveOptions{}) }()
 
@@ -507,13 +610,11 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 			env.Inputs[k] = v
 		}
 	case apiv1.EvaluatorAgentic:
-		gooberName := ""
-		if g.Agentic != nil {
-			gooberName = g.Agentic.Goober
-		}
 		ag, aerr := ex.agentic(gooberName)
 		if aerr != nil {
-			return gate.Result{}, fmt.Errorf("runner: gate %q: %w", g.Name, aerr)
+			err := fmt.Errorf("runner: gate %q: %w", g.Name, aerr)
+			span.Fail(err)
+			return gate.Result{}, err
 		}
 		// Rebound per gate evaluated, not shared across gateEval's lifetime:
 		// different agentic gates in the same run may target different
@@ -524,9 +625,38 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 
 	result, err := gateEval.Evaluate(ctx, g, env, subjectStage, subjectResult)
 	if err != nil {
-		return gate.Result{}, fmt.Errorf("runner: evaluate gate %q: %w", g.Name, err)
+		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, err)
+		span.Fail(err)
+		return gate.Result{}, err
 	}
+	span.Succeed(result.Outcome)
 	return result, nil
+}
+
+// startGateSpan opens a gate span under the run's trace, if telemetry is
+// configured. A zero telemetry.Span is safe to use (its methods no-op).
+func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate, gooberName string) (context.Context, telemetry.Span) {
+	if r.cfg.Telemetry == nil {
+		return ctx, telemetry.Span{}
+	}
+	attrs := telemetry.GateAttributes{
+		Gaggle:          in.Gaggle,
+		WorkflowID:      in.Machine.Def.Name,
+		WorkflowVersion: strconv.Itoa(in.Machine.Def.Version),
+		RunID:           in.RunID,
+		GateID:          g.Name,
+		Evaluator:       string(g.Evaluator),
+		GooberID:        gooberName,
+	}
+	if in.Item != nil {
+		attrs.ItemID = in.Item.ID
+		attrs.ItemProvider = string(in.Item.Provider)
+	}
+	ctx, span, err := r.cfg.Telemetry.StartGate(ctx, attrs)
+	if err != nil {
+		return ctx, telemetry.Span{}
+	}
+	return ctx, span
 }
 
 // buildEnvelope provisions the isolated worktree and builds the invocation

@@ -121,7 +121,17 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		RepoRef: in.RepoRef,
 		Item:    item,
 	}
-	return r.walk(ctx, jr, startIn, st.MachineState, resume, gateRepassSeed(events), registrar)
+
+	ctx, span := r.startRunSpan(ctx, startIn)
+	defer span.End()
+
+	result, err := r.walk(ctx, jr, startIn, st.MachineState, resume, gateRepassSeed(events), registrar)
+	if err != nil {
+		span.Fail(err)
+		return result, err
+	}
+	span.Succeed(string(result.Phase))
+	return result, nil
 }
 
 // gateRepassSeed reconstructs internal/gate.Evaluator.Attempts from the

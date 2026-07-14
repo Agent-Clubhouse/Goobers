@@ -33,6 +33,14 @@ const minPoll = time.Second
 // newRunID is the run-id generator; swappable in tests for determinism.
 var newRunID = telemetry.NewRunID
 
+// SpanStarter is the slice of the telemetry client the local scheduler needs
+// to open a decision span per dispatch (issue #126). *telemetry.Client
+// satisfies it structurally, mirroring internal/scheduler.SpanStarter's
+// narrow-interface pattern for the tier-3 scheduler.
+type SpanStarter interface {
+	StartSchedulerSpan(ctx context.Context, attrs telemetry.SchedulerAttributes) (context.Context, telemetry.Span, error)
+}
+
 // Scheduler is the embedded scheduler daemon (§7, SCH-001): it ties cron
 // evaluation, run conditions, and the Starter seam together into one
 // idle-between-ticks loop, journaling every decision to the instance journal.
@@ -42,6 +50,7 @@ type Scheduler struct {
 	log        *journal.InstanceLog
 	now        func() time.Time
 	after      func(d time.Duration) <-chan time.Time
+	telemetry  SpanStarter
 
 	mu       sync.Mutex
 	triggers map[string]TriggerState
@@ -56,6 +65,14 @@ func WithClock(now func() time.Time, after func(time.Duration) <-chan time.Time)
 	return func(s *Scheduler) {
 		s.now = now
 		s.after = after
+	}
+}
+
+// WithTelemetry records a scheduler decision span per dispatch (issue #126).
+// Optional — nil (the default) emits no spans.
+func WithTelemetry(t SpanStarter) Option {
+	return func(s *Scheduler) {
+		s.telemetry = t
 	}
 }
 
@@ -185,8 +202,17 @@ func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time)
 	return nil
 }
 
-// dispatch admits and starts (or skips) one due firing of entry.
+// dispatch admits and starts (or skips) one due firing of entry. The
+// telemetry span it opens covers only the decision (trigger -> admit/skip ->
+// run-id mint), not the run itself: entry.Starter.Start runs in its own
+// goroutine below and outlives dispatch's return, so the run gets its own
+// root span (via runner.Runner.startRunSpan) on its own trace rather than a
+// child of a span that already ended — same rationale as
+// internal/scheduler.Scheduler.startSpan omitting RunID.
 func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, tick TickResult) {
+	span := s.startSpan(ctx, entry, tick)
+	defer span.End()
+
 	s.journalEvent(journal.Event{
 		Type:     journal.EventTriggerFired,
 		Workflow: entry.Workflow,
@@ -200,6 +226,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 			Workflow: entry.Workflow,
 			Reason:   reason,
 		})
+		span.Succeed("skipped: " + reason)
 		return
 	}
 
@@ -211,6 +238,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 			Workflow: entry.Workflow,
 			Reason:   "run-id generation failed: " + err.Error(),
 		})
+		span.Fail(err)
 		return
 	}
 
@@ -219,6 +247,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		Workflow: entry.Workflow,
 		RunID:    runID,
 	})
+	span.Succeed("started: " + runID)
 
 	go func() {
 		defer s.conditions.Release(entry.Workflow)
@@ -239,6 +268,26 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 			Status:   status,
 		})
 	}()
+}
+
+// startSpan opens a scheduler decision span for entry's dispatch, if
+// telemetry is configured. A zero telemetry.Span is safe to use (its methods
+// no-op), so callers need no nil checks.
+func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, tick TickResult) telemetry.Span {
+	if s.telemetry == nil {
+		return telemetry.Span{}
+	}
+	attrs := telemetry.SchedulerAttributes{
+		Gaggle:     entry.Gaggle,
+		WorkflowID: entry.Workflow,
+		Action:     "dispatch",
+		Reason:     fireReason(tick),
+	}
+	_, span, err := s.telemetry.StartSchedulerSpan(ctx, attrs)
+	if err != nil {
+		return telemetry.Span{}
+	}
+	return span
 }
 
 // fireReason renders a stable reason string for a trigger.fired event.

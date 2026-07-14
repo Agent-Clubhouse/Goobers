@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,9 +16,26 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
+
+// buildTelemetryClient constructs the OTel client that spans the runner walk
+// (run/task/gate) and scheduler decisions, writing completed spans under
+// RunsDir via JournalSpanExporter (issue #126) — the same run journal
+// layout goobers trace/telemetry read back through the rollup. Shared by
+// up.go/run.go exactly like buildRunnerConfig; each caller owns calling
+// Shutdown on the returned client once it's done driving runs.
+func buildTelemetryClient(ctx context.Context, l instance.Layout) (*telemetry.Client, error) {
+	return telemetry.New(ctx, telemetry.Config{
+		ServiceName:    "goobers",
+		ServiceVersion: version.Get().Version,
+		SpanExporter:   telemetry.NewJournalSpanExporter(l.RunsDir()),
+		Batch:          true,
+	})
+}
 
 // repoCloneURL overrides runner.Config.RepoCloneURL when non-nil. It exists
 // purely as a test seam (mirrors internal/localscheduler's swappable newRunID)
@@ -95,7 +113,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // shell executor, credentials scoped to instance.yaml's configured repo(s).
 // One Config serves every workflow/run — runner.Runner is not bound to a
 // single compiled machine.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec) (runner.Config, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client) (runner.Config, error) {
 	wtMgr, err := worktree.NewManager(l.WorkcopiesDir())
 	if err != nil {
 		return runner.Config{}, fmt.Errorf("new worktree manager: %w", err)
@@ -154,6 +172,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		Worktrees:    wtMgr,
 		RunsDir:      l.RunsDir(),
 		RepoCloneURL: repoCloneURL,
+		Telemetry:    tel,
 	}, nil
 }
 

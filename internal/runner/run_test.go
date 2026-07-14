@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,9 +16,39 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
+
+// fakeSpanStarter records every span opened, mirroring runner.SpanStarter's
+// three methods (issue #126). Returns the zero telemetry.Span throughout, so
+// its End/Succeed/Fail calls no-op exactly like a nil Telemetry would.
+type fakeSpanStarter struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeSpanStarter) record(s string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, s)
+}
+
+func (f *fakeSpanStarter) StartRun(ctx context.Context, attrs telemetry.RunAttributes) (context.Context, telemetry.Span, error) {
+	f.record("run:" + attrs.RunID)
+	return ctx, telemetry.Span{}, nil
+}
+
+func (f *fakeSpanStarter) StartTask(ctx context.Context, attrs telemetry.TaskAttributes) (context.Context, telemetry.Span, error) {
+	f.record("task:" + attrs.TaskID)
+	return ctx, telemetry.Span{}, nil
+}
+
+func (f *fakeSpanStarter) StartGate(ctx context.Context, attrs telemetry.GateAttributes) (context.Context, telemetry.Span, error) {
+	f.record("gate:" + attrs.GateID)
+	return ctx, telemetry.Span{}, nil
+}
 
 // --- stub executors (the "stub stage effects" issue #17 asks for), built
 // against the real invoke.Deterministic/invoke.Goober interfaces #18/#19
@@ -872,6 +904,58 @@ func TestRunnerResumeRestoresGateRepassCounter(t *testing.T) {
 	}
 	if gateEvals != 2 {
 		t.Fatalf("gate.evaluated count = %d, want 2 (1 pre-crash + exactly 1 post-resume before escalating) — a broken repass seed would allow extra passes before escalating", gateEvals)
+	}
+}
+
+// TestRunnerEmitsRunTaskAndGateSpans is issue #126's runner-level acceptance:
+// when Config.Telemetry is set, Start opens a run span before walking and a
+// task/gate span for each stage dispatched, in walk order. Before this fix,
+// Config had no Telemetry field at all and none of these were ever called.
+func TestRunnerEmitsRunTaskAndGateSpans(t *testing.T) {
+	machine := fixtureMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-span:implement": {status: apiv1.ResultSuccess},
+	}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	runsDir := filepath.Join(instanceRoot, "runs")
+	fixtureRepo := newFixtureRepo(t)
+
+	spans := &fakeSpanStarter{}
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: byTask}, nil
+		},
+		Automated:    gate.NewAutomatedEvaluator(),
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		Telemetry:    spans,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-span",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+
+	want := []string{"run:run-span", "task:implement", "gate:review"}
+	if !reflect.DeepEqual(spans.calls, want) {
+		t.Fatalf("span calls = %v, want %v", spans.calls, want)
 	}
 }
 

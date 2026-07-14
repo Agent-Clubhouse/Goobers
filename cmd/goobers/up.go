@@ -98,7 +98,14 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return 1
 	}
 
-	runnerCfg, err := buildRunnerConfig(l, cfg, goobers)
+	tel, err := buildTelemetryClient(ctx, l)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	defer func() { _ = tel.Shutdown(context.Background()) }()
+
+	runnerCfg, err := buildRunnerConfig(l, cfg, goobers, tel)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -154,7 +161,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		})
 	}
 
-	sched := localscheduler.New(entries, instanceLog)
+	sched := localscheduler.New(entries, instanceLog, localscheduler.WithTelemetry(tel))
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
