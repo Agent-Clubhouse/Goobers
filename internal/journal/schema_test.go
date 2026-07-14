@@ -37,6 +37,15 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 	for _, ev := range []Event{
 		{Type: EventStageStarted, Stage: "impl", Attempt: 1},
 		{Type: EventStageFinished, Stage: "impl", Attempt: 2, AttemptClass: AttemptPolicy, Status: "success"},
+		// Outputs/Artifacts populated (#107/#108's resume reconstruction) —
+		// proves the schema's declared "outputs"/"artifacts" properties stay
+		// in sync with the Go Event type, not just the zero-value (omitted)
+		// case above.
+		{
+			Type: EventStageFinished, Stage: "impl", Attempt: 3, Status: "success",
+			Outputs:   map[string]any{"ciStatus": "success", "coverage": 81.2},
+			Artifacts: []Ref{{Path: art.Path, Digest: art.Digest, Size: art.Size}},
+		},
 		{Type: EventGateEvaluated, Gate: "review", Verdict: "pass"},
 		{Type: EventRefTouched, ExternalRef: &ExternalRef{Provider: "github", Kind: "pr", ID: "9"}},
 		{Type: EventError, Error: &ErrorDetail{Code: "boom", Message: "detail"}},
@@ -46,7 +55,6 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 			t.Fatalf("Append %s: %v", ev.Type, err)
 		}
 	}
-	_ = art
 	_ = run.Close()
 
 	dir := filepath.Join(root, testIdentity().RunID)

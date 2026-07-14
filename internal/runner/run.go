@@ -182,7 +182,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	ctx, span := r.startRunSpan(ctx, in)
 	defer span.End()
 
-	result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, registrar)
+	result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, registrar, walkSeed{})
 	if err != nil {
 		span.Fail(err)
 		return result, err
@@ -280,20 +280,34 @@ type resumeContext struct {
 	attempt int
 }
 
+// walkSeed carries the walk-local state a resumed run must NOT start empty —
+// Start's fresh walk always begins with the zero value. pointers is the
+// upstream ContextPointers every already-finished stage produced (#107);
+// lastStage/lastResult is the subject a resumed gate evaluates against
+// (#108) — both reconstructed from the journal by Resume (see
+// lastFinishedSubject, reconstructPointers in resume.go), since walk's own
+// in-memory accumulation of them is exactly what a crash wipes.
+type walkSeed struct {
+	pointers   []apiv1.ContextPointer
+	lastStage  string
+	lastResult apiv1.ResultEnvelope
+}
+
 // walk advances the machine from startState to a terminal state (or a
 // human-gate/drain pause), journaling every stage/gate attempt and every
 // artifact produced along the way. Gate dispatch (bounded repass, escalation,
 // gate.evaluated journaling) is entirely owned by the gate.Evaluator
 // constructed once here — it MUST NOT be shared across runs (its repass
 // counters are run-scoped state), so a fresh one is built per walk. Start
-// always begins at the machine's declared start state with resume=nil and
-// gateAttempts=nil; Resume (resume.go) begins at the journal's checkpointed
-// state, optionally with a resumeContext for an interrupted task attempt and
-// gateAttempts seeded from each gate's last gate.evaluated event, so a
-// resumed run's repass budget continues rather than resetting (#89). reg is
-// the run's SecretRegistrar (see Start), threaded to every executor
+// always begins at the machine's declared start state with resume=nil,
+// gateAttempts=nil, and a zero-value seed; Resume (resume.go) begins at the
+// journal's checkpointed state, optionally with a resumeContext for an
+// interrupted task attempt, gateAttempts seeded from each gate's last
+// gate.evaluated event so a resumed run's repass budget continues rather than
+// resetting (#89), and seed reconstructed from the journal (#107/#108). reg
+// is the run's SecretRegistrar (see Start), threaded to every executor
 // constructed here.
-func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, gateAttempts map[string]int, reg SecretRegistrar) (Result, error) {
+func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, gateAttempts map[string]int, reg SecretRegistrar, seed walkSeed) (Result, error) {
 	ex := newExecutors(r.cfg, jr, reg)
 	gateEval := &gate.Evaluator{
 		Automated:   r.cfg.Automated,
@@ -303,9 +317,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	}
 
 	state := startState
-	var pointers []apiv1.ContextPointer
-	var lastStage string
-	var lastResult apiv1.ResultEnvelope
+	pointers := append([]apiv1.ContextPointer(nil), seed.pointers...)
+	lastStage := seed.lastStage
+	lastResult := seed.lastResult
 	steps := 0
 
 	for {
@@ -355,34 +369,14 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			pointers = append(pointers, produced...)
 			lastStage, lastResult = t.Name, result
 
-			switch result.Status {
-			case apiv1.ResultBlocked:
-				// Halt pending external intervention, at any position — a
-				// resumable pause like a human gate's (ruling #110). The
-				// stage.finished event's Append already checkpointed
-				// state.json at t.Name (SetMachineState above ran before
-				// dispatch and hasn't changed since), so no extra Checkpoint
-				// call is needed here.
-				return Result{Phase: journal.PhaseRunning, FinalState: t.Name, Steps: steps}, nil
-			case apiv1.ResultFailure:
-				if _, isGate := in.Machine.Gate(t.Next); t.Next != "" && isGate {
-					// A downstream gate branches on the failure — the
-					// shipped reviewer-gate pattern (docs/stage-contract.md).
-					// Advance; do not terminalize here.
-					state = t.Next
-					continue
-				}
-				// Next is empty, a task, or a reserved terminal target: no
-				// gate to branch on the failure. Never dispatch downstream
-				// stages on a failed result, never silently complete
-				// (ruling #110).
-				return r.finish(jr, journal.PhaseFailed, t.Name, steps)
+			next, res, advance, oerr := r.taskOutcome(jr, in.Machine, t, result, steps)
+			if oerr != nil {
+				return Result{}, oerr
 			}
-
-			if t.Next == "" {
-				return r.finish(jr, journal.PhaseCompleted, t.Name, steps)
+			if !advance {
+				return res, nil
 			}
-			state = t.Next
+			state = next
 			continue
 		}
 
@@ -437,6 +431,36 @@ func (r *Runner) failTerminal(jr *journal.Run, finalState string, steps int, ori
 		return Result{}, fmt.Errorf("%w (additionally failed to journal terminal failure: %w)", origErr, ferr)
 	}
 	return Result{Phase: journal.PhaseFailed, FinalState: finalState, Steps: steps}, origErr
+}
+
+// taskOutcome applies the #110 stage-status ruling to a finished task's
+// result: success advances to Next; failure advances only if Next is a gate
+// (which branches on it), otherwise ends the run PhaseFailed; blocked halts
+// as a resumable pause. advance=true means continue the walk at next;
+// advance=false means the walk is over — return res (already appended its
+// own terminal event, if any).
+//
+// Factored out of walk's live dispatch path so Resume (resume.go) can apply
+// the IDENTICAL transition when it finds the checkpointed task's last
+// attempt already finished, not interrupted — the walk must not re-dispatch
+// it (#107), just pick up the same decision a live walk would have made
+// right after runTask returned.
+func (r *Runner) taskOutcome(jr *journal.Run, machine *workflow.Machine, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
+	switch result.Status {
+	case apiv1.ResultBlocked:
+		return "", Result{Phase: journal.PhaseRunning, FinalState: t.Name, Steps: steps}, false, nil
+	case apiv1.ResultFailure:
+		if _, isGate := machine.Gate(t.Next); t.Next != "" && isGate {
+			return t.Next, Result{}, true, nil
+		}
+		res, err = r.finish(jr, journal.PhaseFailed, t.Name, steps)
+		return "", res, false, err
+	}
+	if t.Next == "" {
+		res, err = r.finish(jr, journal.PhaseCompleted, t.Name, steps)
+		return "", res, false, err
+	}
+	return t.Next, Result{}, true, nil
 }
 
 // finish appends the run's terminal run.finished event and returns its Result.
@@ -530,6 +554,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		if err := jr.Append(journal.Event{
 			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 			Status: string(result.Status), Error: errorDetailFrom(result.Error),
+			Outputs: result.Outputs, Artifacts: refsFrom(result.Artifacts),
 		}); err != nil {
 			err = fmt.Errorf("runner: journal stage.finished for %q: %w", t.Name, err)
 			span.Fail(err)
@@ -759,6 +784,36 @@ func contextPointersFor(stageName string, artifacts []apiv1.ArtifactPointer) []a
 	for i := range artifacts {
 		a := artifacts[i]
 		out = append(out, apiv1.ContextPointer{Name: fmt.Sprintf("%s.artifact[%d]", stageName, i), Artifact: &a})
+	}
+	return out
+}
+
+// refsFrom converts a ResultEnvelope's wire ArtifactPointers into their
+// journal.Ref production form (journal.Ref's doc comment: same fields, 1:1),
+// for journaling on stage.finished (#107/#108's subject/pointer
+// reconstruction).
+func refsFrom(artifacts []apiv1.ArtifactPointer) []journal.Ref {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	out := make([]journal.Ref, len(artifacts))
+	for i, a := range artifacts {
+		out[i] = journal.Ref{Path: a.Path, Digest: a.Digest, Size: a.Size, MediaType: a.MediaType}
+	}
+	return out
+}
+
+// artifactPointersFrom is refsFrom's inverse — converting a journaled
+// stage.finished event's Artifacts back into wire ArtifactPointers, e.g. to
+// rebuild a resumed run's ContextPointers (contextPointersFor) or a resumed
+// gate's subject ResultEnvelope from the journal.
+func artifactPointersFrom(refs []journal.Ref) []apiv1.ArtifactPointer {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]apiv1.ArtifactPointer, len(refs))
+	for i, ref := range refs {
+		out[i] = apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: ref.MediaType}
 	}
 	return out
 }

@@ -1243,6 +1243,302 @@ func TestRunnerResumeRestoresGateRepassCounter(t *testing.T) {
 	}
 }
 
+// countingDeterministic records how many times it was dispatched — for
+// proving a stage was NOT re-dispatched (#107): an already-finished stage
+// resumed at must never re-invoke its executor.
+type countingDeterministic struct{ calls int }
+
+func (c *countingDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	c.calls++
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+// capturingDeterministic records the invocation envelope of its last call —
+// for asserting a downstream stage's ContextPointers after a resume (#107's
+// pointer-visibility scenario).
+type capturingDeterministic struct {
+	calls   int
+	lastEnv apiv1.InvocationEnvelope
+}
+
+func (c *capturingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	c.calls++
+	c.lastEnv = env
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+// chainedThroughGateMachine is implement -> review (gate, pass->deploy) ->
+// deploy — for proving a resumed run's ContextPointers still carry an
+// artifact a stage produced before the crash (#107), once it flows through
+// a gate rather than directly to the next task.
+func chainedThroughGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "review"},
+			{Name: "deploy", Type: apiv1.TaskDeterministic, Goal: "ship it", Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "review",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+				Branches:  map[string]string{"pass": "deploy", "fail": workflow.TargetAbort},
+			},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "chained-through-gate", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile chained-through-gate machine: %v", err)
+	}
+	return m
+}
+
+// newTestRunnerEnv builds the worktree manager, runs directory, and fixture
+// repo a hand-built-journal resume test needs, without a byTask stub map
+// (the crash-simulation tests dispatch through custom invoke.Deterministic
+// implementations instead of stubDeterministic).
+func newTestRunnerEnv(t *testing.T) (runsDir, fixtureRepo string, wtMgr *worktree.Manager) {
+	t.Helper()
+	instanceRoot := t.TempDir()
+	mgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	return filepath.Join(instanceRoot, "runs"), newFixtureRepo(t), mgr
+}
+
+// TestRunnerResumeAdvancesPastFinishedTaskWithoutRedispatch is #107's core
+// acceptance scenario: a crash right after a task's stage.finished is
+// journaled, before the machine advances past it (state.json's
+// machineState still names the task — walk's SetMachineState timing).
+// Resume's only pre-#107 guard, interruptedAttempt, reports "not
+// interrupted" here (started == finished) — the exact gap that used to
+// re-dispatch the completed stage from attempt 1, re-running its side
+// effects.
+func TestRunnerResumeAdvancesPastFinishedTaskWithoutRedispatch(t *testing.T) {
+	machine := fixtureMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-finished-crash", Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("implement")
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatalf("append stage.started: %v", err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)}); err != nil {
+		t.Fatalf("append stage.finished: %v", err)
+	}
+	// No further events: the crash lands here, before walk's next loop
+	// iteration ever reassigns state to "review".
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	counting := &countingDeterministic{}
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return counting, nil },
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-finished-crash",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if counting.calls != 0 {
+		t.Fatalf("implement was re-dispatched %d times after resume, want 0 — an already-finished stage must never re-run its side effects", counting.calls)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-finished-crash"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var starts int
+	for _, e := range events {
+		if e.Type == journal.EventStageStarted && e.Stage == "implement" {
+			starts++
+		}
+	}
+	if starts != 1 {
+		t.Fatalf("stage.started(implement) count = %d, want 1 (the pre-crash one only — no re-dispatch)", starts)
+	}
+}
+
+// TestRunnerResumeReconstructsUpstreamPointersForDownstreamStage is #107's
+// pointer-visibility scenario: a stage that finished (and produced an
+// artifact) before the crash must still be visible to a downstream stage as
+// a ContextPointer after resume, even though resume advances past it
+// without re-dispatching it (so there is no live in-process
+// `pointers = append(pointers, produced...)` to rebuild it from).
+func TestRunnerResumeReconstructsUpstreamPointersForDownstreamStage(t *testing.T) {
+	machine := chainedThroughGateMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-ptr-crash", Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("implement")
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatalf("append stage.started: %v", err)
+	}
+	artRef, err := jr.RecordArtifact("diff", []byte("--- a\n+++ b\n"))
+	if err != nil {
+		t.Fatalf("RecordArtifact: %v", err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess),
+		Artifacts: []journal.Ref{{Path: artRef.Path, Digest: artRef.Digest, Size: artRef.Size}},
+	}); err != nil {
+		t.Fatalf("append stage.finished: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	capturing := &capturingDeterministic{}
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return capturing, nil },
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-ptr-crash",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if capturing.calls != 1 {
+		t.Fatalf("deploy dispatched %d times, want exactly 1", capturing.calls)
+	}
+
+	var found bool
+	for _, cp := range capturing.lastEnv.ContextPointers {
+		if cp.Name == "implement.artifact[0]" && cp.Artifact != nil && cp.Artifact.Digest == artRef.Digest {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("deploy's ContextPointers = %+v, want implement.artifact[0] pointing at digest %q (the pre-crash artifact, reconstructed from the journal)", capturing.lastEnv.ContextPointers, artRef.Digest)
+	}
+}
+
+// TestRunnerResumeAtGateEvaluatesRealSubject is #108's core acceptance
+// scenario: a crash after a task finishes but before its downstream gate
+// ever evaluates leaves state.json pointing at the gate with no
+// gate.evaluated event at all. Resume must reconstruct the finished task's
+// REAL result as the gate's subject (status/outputs/artifacts, now
+// journaled on stage.finished for exactly this) — not evaluate against a
+// zero-value ResultEnvelope, which would make an automated status-equals
+// check read status="" and always fail closed, wrongly aborting a run whose
+// subject stage actually succeeded.
+func TestRunnerResumeAtGateEvaluatesRealSubject(t *testing.T) {
+	machine := fixtureMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-gate-crash", Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("implement")
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatalf("append stage.started: %v", err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)}); err != nil {
+		t.Fatalf("append stage.finished: %v", err)
+	}
+	// walk's next loop iteration reaches the gate and checkpoints there
+	// (SetMachineState("review")) before crashing — no gate.evaluated event
+	// exists yet.
+	jr.SetMachineState("review")
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Deliberately no canned output for "implement" — if resume ever
+	// re-dispatches it (a #107 regression), stubDeterministic errors and
+	// this test's phase assertion fails.
+	det := &stubDeterministic{byTask: map[string]stubTaskResult{}}
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-gate-crash",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed — the automated gate must see the real success status reconstructed from the journal, not a zero-value subject that always evaluates to fail", res.Phase)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-gate-crash"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == journal.EventGateEvaluated && e.Verdict != gate.OutcomePass {
+			t.Fatalf("gate.evaluated verdict = %q, want %q", e.Verdict, gate.OutcomePass)
+		}
+	}
+}
+
 // TestRunnerEmitsRunTaskAndGateSpans is issue #126's runner-level acceptance:
 // when Config.Telemetry is set, Start opens a run span before walking and a
 // task/gate span for each stage dispatched, in walk order. Before this fix,

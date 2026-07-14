@@ -90,6 +90,17 @@
       "type": "string",
       "x-conformance": "normative"
     },
+    "outputs": {
+      "description": "Small, named scalar values a stage.finished's ResultEnvelope.Outputs carried (docs/stage-contract.md) — journaled so a resumed run can reconstruct a finished stage's result (its lastStage/lastResult, or a resumed gate's subject) without it having lived only in the runner's process memory.",
+      "type": "object",
+      "x-conformance": "normative"
+    },
+    "artifacts": {
+      "description": "A stage.finished's ResultEnvelope.Artifacts — the pointers this attempt produced — for the same reconstruction reason as outputs.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/ref" },
+      "x-conformance": "conditional: each entry's digest is normative, path/size/mediaType are not"
+    },
     "name": {
       "description": "Label for a Ref (artifact/input name) or the redaction target.",
       "type": "string",
