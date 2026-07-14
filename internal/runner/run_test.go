@@ -323,6 +323,7 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	}
 	want := []journal.EventType{
 		journal.EventRunStarted,
+		journal.EventRefTouched, // the run branch, journaled up front (#133)
 		journal.EventStageStarted,
 		journal.EventArtifactRecorded,
 		journal.EventStageFinished,

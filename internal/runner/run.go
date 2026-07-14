@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // DefaultMaxSteps bounds the state walk against a runaway machine (carried over
@@ -181,6 +182,22 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 
 	ctx, span := r.startRunSpan(ctx, in)
 	defer span.End()
+
+	// Record the run's branch up front (providers.BranchName): every stage's
+	// worktree checks it out and the implementer pushes it, so it is the run's
+	// primary external ref for traceability (#133). Deterministic from
+	// (workflow, run id), so it is conformance-stable across runners.
+	if err := jr.Append(journal.Event{
+		Type: journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{
+			Provider: string(in.RepoRef.Provider),
+			Kind:     "branch",
+			ID:       providers.BranchName(in.Machine.Def.Name, in.RunID),
+		},
+	}); err != nil {
+		span.Fail(err)
+		return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
+	}
 
 	result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, registrar)
 	if err != nil {
@@ -718,10 +735,17 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 	if baseRef == "" {
 		baseRef = "main"
 	}
+	// Every stage of a run checks out the run's shared branch in its own fresh
+	// worktree: the first mutating stage creates it off baseRef, later stages
+	// inherit the prior stages' commits. Without this, each stage's worktree
+	// detached at baseRef and local-ci/reviewer gates evaluated a pristine tree
+	// instead of the run's actual diff (#133). Branch is keyed on the run id,
+	// not the per-stage worktree key, so all stages share the one branch.
 	wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
 		RepoURL: repoURL,
 		RunID:   in.RunID + "-" + stageName,
 		BaseRef: baseRef,
+		Branch:  providers.BranchName(in.Machine.Def.Name, in.RunID),
 	})
 	if err != nil {
 		return apiv1.InvocationEnvelope{}, nil, fmt.Errorf("create worktree: %w", err)

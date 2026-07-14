@@ -72,12 +72,25 @@ func (m *Manager) lockFor(key string) *sync.Mutex {
 	return l
 }
 
+// runBranchNamespace is the refs/heads/ prefix under which a run's own branch
+// lives — providers.BranchName produces "goobers/<workflow>/<run-id>". These
+// branches exist only in the managed clone (a run commits to them locally;
+// they are never on origin), so WorkingCopy's mirror prune must exclude this
+// namespace or it would delete a run's branch between the run's stages and
+// silently break run-branch continuity (#133). Kept in sync with
+// providers.BranchName's prefix by convention rather than an import, to avoid
+// a worktree -> providers dependency for one string.
+const runBranchNamespace = "goobers/"
+
 // WorkingCopy ensures a managed mirror clone of repoURL exists and is up to
 // date under Root, cloning on first use and fetching thereafter. A mirror
 // clone has no working tree of its own — worktrees created via Create are the
 // only mutable views onto it — and its fetch refspec covers every ref, so a
 // pinned base ref (branch, tag, or sha) reachable on the remote is always
-// available to branch a worktree from after WorkingCopy returns.
+// available to branch a worktree from after WorkingCopy returns. The one
+// exception is the run-branch namespace (runBranchNamespace), which the fetch
+// deliberately excludes from its prune so a run's local-only branch survives
+// across the run's stages (#133).
 //
 // Concurrent calls for the same repo URL serialize on the clone/fetch step;
 // calls for different repos proceed independently.
@@ -102,7 +115,13 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 		return "", fmt.Errorf("worktree: stat workcopy for %s: %w", repoURL, err)
 	}
 
-	if err := runGit(ctx, dir, "fetch", "--prune", "origin"); err != nil {
+	// Refresh origin and prune refs it deleted, but exclude the run-branch
+	// namespace: those branches live only here, never on origin, so a plain
+	// mirror prune (+refs/*:refs/*) would delete a run's branch mid-run and
+	// silently revert its stages to a pristine base (#133). The explicit
+	// refspec restates the mirror's default and appends the exclusion.
+	if err := runGit(ctx, dir, "fetch", "--prune", "origin",
+		"+refs/*:refs/*", "^refs/heads/"+runBranchNamespace+"*"); err != nil {
 		return "", fmt.Errorf("worktree: fetch %s: %w", repoURL, err)
 	}
 	return dir, nil
@@ -121,4 +140,16 @@ func runGit(ctx context.Context, dir string, args ...string) error {
 		return fmt.Errorf("git %v: %w: %s", args, err, out)
 	}
 	return nil
+}
+
+// branchExists reports whether a local branch of the given name exists in the
+// repo at repoDir. `show-ref --verify --quiet` exits 0 iff the ref exists and
+// prints nothing, so non-existence is an ordinary false, not an error — this
+// is a boolean probe, distinct from runGit's must-succeed contract. Used by
+// Create to decide whether to create the run branch or check out the existing
+// one (#133).
+func branchExists(ctx context.Context, repoDir, branch string) bool {
+	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	cmd.Dir = repoDir
+	return cmd.Run() == nil
 }
