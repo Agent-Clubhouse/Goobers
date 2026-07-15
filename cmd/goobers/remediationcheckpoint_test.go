@@ -139,32 +139,50 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 	return server
 }
 
-// initRemediationCheckpointRepo builds a local (no-remote-needed — diffDigest
-// only reads local history) git repo with a base commit and one further
-// commit on top, mirroring the diff a real pr-remediation push would have
-// produced. Returns the base commit's SHA; HEAD is the tip. t.Chdir's the
-// test into it.
-func initRemediationCheckpointRepo(t *testing.T) (baseSHA string) {
+// initRemediationCheckpointRepo builds a bare origin seeded with a base
+// commit on main and a PR branch carrying one further commit (pushed to
+// origin), then t.Chdir's the test into a THIRD, separate clone checked out
+// at main — simulating the fresh worktree remediation-checkpoint's own
+// stage gets (internal/runner's buildEnvelope: continuity is keyed on the
+// run's own shared branch, not on whatever an earlier stage — gather-pr-
+// context, rebase-pr — locally checked out). Proves the stage's own
+// re-checkout (checkoutExistingBranch) is what puts it on the PR's actual
+// branch, not an accident of the test's working directory already being
+// there. Returns the PR branch's base and head SHAs.
+func initRemediationCheckpointRepo(t *testing.T, prBranch string) (baseSHA, headSHA string) {
 	t.Helper()
-	dir := t.TempDir()
-	runGitT(t, dir, "init", "-b", "main")
-	runGitT(t, dir, "config", "user.name", "seed")
-	runGitT(t, dir, "config", "user.email", "seed@example.com")
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("seed\n"), 0o644); err != nil {
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	runGitT(t, root, "init", "--bare", "-b", "main", origin)
+
+	work := filepath.Join(root, "work")
+	runGitT(t, root, "clone", origin, work)
+	runGitT(t, work, "config", "user.name", "seed")
+	runGitT(t, work, "config", "user.email", "seed@example.com")
+	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("seed\n"), 0o644); err != nil {
 		t.Fatalf("write seed file: %v", err)
 	}
-	runGitT(t, dir, "add", "README.md")
-	runGitT(t, dir, "commit", "-m", "seed")
-	baseSHA = strings.TrimSpace(runGitOutputT(t, dir, "rev-parse", "HEAD"))
+	runGitT(t, work, "add", "README.md")
+	runGitT(t, work, "commit", "-m", "seed")
+	runGitT(t, work, "push", "origin", "main")
+	baseSHA = strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD"))
 
-	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("pr work\n"), 0o644); err != nil {
+	runGitT(t, work, "checkout", "-b", prBranch)
+	if err := os.WriteFile(filepath.Join(work, "feature.txt"), []byte("pr work\n"), 0o644); err != nil {
 		t.Fatalf("write feature file: %v", err)
 	}
-	runGitT(t, dir, "add", "feature.txt")
-	runGitT(t, dir, "commit", "-m", "pr work")
+	runGitT(t, work, "add", "feature.txt")
+	runGitT(t, work, "commit", "-m", "pr work")
+	runGitT(t, work, "push", "origin", prBranch)
+	headSHA = strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD"))
 
-	t.Chdir(dir)
-	return baseSHA
+	// The stage's own fresh worktree: a separate clone, checked out at
+	// main — nowhere near prBranch — so a passing test proves the stage's
+	// own re-checkout logic, not the test's incidental working directory.
+	fresh := filepath.Join(root, "fresh-worktree")
+	runGitT(t, root, "clone", origin, fresh)
+	t.Chdir(fresh)
+	return baseSHA, headSHA
 }
 
 func remediationCheckpointEnv(t *testing.T, serverURL string, withoutCapability bool) (instanceRoot string) {
@@ -178,6 +196,7 @@ func remediationCheckpointEnv(t *testing.T, serverURL string, withoutCapability 
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	if !withoutCapability {
 		t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+		t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
 	}
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "77")
 	return instanceRoot
@@ -188,8 +207,8 @@ func remediationCheckpointEnv(t *testing.T, serverURL string, withoutCapability 
 // sticky comment, and is NOT escalated (1 cycle is nowhere near the
 // liberal default budget).
 func TestRemediationCheckpointRecordsFirstCycle(t *testing.T) {
-	baseSHA := initRemediationCheckpointRepo(t)
-	st := &remediationCheckpointServerState{number: 77, headSHA: "head-sha-1", baseSHA: baseSHA, labels: []string{"goobers:needs-remediation"}}
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	st := &remediationCheckpointServerState{number: 77, headSHA: headSHA, baseSHA: baseSHA, labels: []string{"goobers:needs-remediation"}}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
@@ -222,13 +241,13 @@ func TestRemediationCheckpointRecordsFirstCycle(t *testing.T) {
 // escalates (goobers:merge-escalated added, needs-remediation removed)
 // rather than recording yet another cycle.
 func TestRemediationCheckpointEscalatesOnBudgetExhaustion(t *testing.T) {
-	baseSHA := initRemediationCheckpointRepo(t)
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
 	priorComment, err := remediationStateComment(remediationState{Cycles: 1, LastDiffDigest: "sha256:stale-digest-from-a-different-diff"})
 	if err != nil {
 		t.Fatalf("remediationStateComment: %v", err)
 	}
 	st := &remediationCheckpointServerState{
-		number: 77, headSHA: "head-sha-2", baseSHA: baseSHA,
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
 		labels:   []string{"goobers:needs-remediation"},
 		comments: []string{priorComment},
 	}
@@ -264,8 +283,8 @@ func TestRemediationCheckpointEscalatesOnBudgetExhaustion(t *testing.T) {
 // immediately, independent of the (liberal, unexhausted) budget — mirroring
 // #316's in-run same-diff short-circuit.
 func TestRemediationCheckpointEscalatesOnSameDiff(t *testing.T) {
-	baseSHA := initRemediationCheckpointRepo(t)
-	st := &remediationCheckpointServerState{number: 77, headSHA: "head-sha-3", baseSHA: baseSHA, labels: []string{"goobers:needs-remediation"}}
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	st := &remediationCheckpointServerState{number: 77, headSHA: headSHA, baseSHA: baseSHA, labels: []string{"goobers:needs-remediation"}}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
 
@@ -302,7 +321,7 @@ func TestRemediationCheckpointEscalatesOnSameDiff(t *testing.T) {
 // merged between selection and this stage running is a normal no-op (exit
 // 0), not an error — mirrors apply-verdict's own D6 void-verdict shape.
 func TestRemediationCheckpointPRNoLongerOpenIsMoot(t *testing.T) {
-	initRemediationCheckpointRepo(t)
+	initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
 	st := &remediationCheckpointServerState{number: 999} // no PR #77 in the list
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
@@ -329,6 +348,25 @@ func TestRemediationCheckpointRefusesWithoutCapability(t *testing.T) {
 	code, _, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 1 {
 		t.Fatalf("code = %d, stderr = %q, want 1 (fail closed on missing capability)", code, stderr)
+	}
+}
+
+// TestRemediationCheckpointRefusesWithoutRepoPushCapability proves
+// remediation-checkpoint also fails closed when repo:push is absent — it
+// re-checks-out the PR's branch itself (this stage's own fresh worktree),
+// which needs the same push-scoped fetch credential checkoutExistingBranch
+// uses elsewhere.
+func TestRemediationCheckpointRefusesWithoutRepoPushCapability(t *testing.T) {
+	instanceRoot := initDemo(t)
+	t.Setenv("GOOBERS_RUN_ID", "run-364-norepopush")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "77")
+	// Deliberately no GOOBERS_CRED_REPO_PUSH set.
+
+	code, _, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q, want 1 (fail closed on missing repo:push capability)", code, stderr)
 	}
 }
 
