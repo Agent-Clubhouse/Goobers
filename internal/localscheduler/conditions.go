@@ -14,7 +14,20 @@ const (
 	ReasonInstanceMaxParallel = "conditions: instance max-parallel"
 	ReasonBudget              = "conditions: budget"
 	ReasonDailyBudget         = "conditions: daily-budget"
+	ReasonOpenPRCap           = "conditions: open-pr-cap"
 )
+
+// OpenPRCounter reports the most recently polled count of the loop's own
+// un-merged PRs (those under the goobers/ run-branch namespace). Admit reads it
+// synchronously (a cheap in-memory read) to enforce ReadinessConditions.
+// MaxOpenPRs (#353) without making a network call under the tick loop's lock —
+// the count is refreshed on a separate background interval (openprcount.go).
+// known is false on cold start (no poll completed yet) or after a poll error;
+// Admit fails OPEN in that case — a transient GitHub hiccup must not stall
+// dispatch, matching every other condition's "never fails a tick" contract.
+type OpenPRCounter interface {
+	OpenPRCount() (n int, known bool)
+}
 
 // budgetWindow is the rolling window MaxRunsPerHour is measured over.
 const budgetWindow = time.Hour
@@ -52,6 +65,11 @@ type Conditions struct {
 	// workflowBudgets's precedence over the workflow's own spec'd
 	// MaxRunsPerDay.
 	dayBudgets map[string]int
+	// openPRs backs the MaxOpenPRs cap (#353) with a cached count refreshed
+	// off-tick; nil means no counter is wired, so the cap is never enforced
+	// (fail-open). Read under c.mu in Admit, but its own OpenPRCount is a cheap
+	// in-memory read with its own lock — no network call ever runs under c.mu.
+	openPRs OpenPRCounter
 }
 
 // NewConditions returns an empty Conditions tracker.
@@ -72,6 +90,15 @@ func (c *Conditions) SetInstanceLimits(maxParallelRuns int, workflowBudgets map[
 	c.instanceMaxParallel = maxParallelRuns
 	c.workflowBudgets = workflowBudgets
 	c.dayBudgets = dayBudgets
+}
+
+// SetOpenPRCounter wires the cached open-PR counter that backs the MaxOpenPRs
+// cap (#353). Call once at setup, before Admit is first used. Nil (the default)
+// leaves the cap unenforced.
+func (c *Conditions) SetOpenPRCounter(counter OpenPRCounter) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.openPRs = counter
 }
 
 // Reconcile sets the initial active-run counts after a restart (Conditions'
@@ -129,6 +156,18 @@ func (c *Conditions) Admit(workflow string, r apiv1.ReadinessConditions, now tim
 	}
 	if c.instanceMaxParallel > 0 && c.totalActive >= c.instanceMaxParallel {
 		return false, ReasonInstanceMaxParallel
+	}
+
+	// Open-PR cap (#353): a workflow that opts in (MaxOpenPRs > 0) is throttled
+	// once its own un-merged PRs reach the cap, so a loop outrunning human (or
+	// V0.5 auto-) merge cadence can't accrete mutually-un-mergeable siblings.
+	// A cheap in-memory read of the off-tick-refreshed count; fail-open when the
+	// count is unknown (cold start / poll error) so a GitHub hiccup never stalls
+	// a tick. Cross-PR rebase/conflict resolution stays V0.5's (epic #357).
+	if r.MaxOpenPRs > 0 && c.openPRs != nil {
+		if n, known := c.openPRs.OpenPRCount(); known && n >= int(r.MaxOpenPRs) {
+			return false, ReasonOpenPRCap
+		}
 	}
 
 	maxRunsPerHour := r.MaxRunsPerHour
