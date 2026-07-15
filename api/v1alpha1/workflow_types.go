@@ -67,6 +67,19 @@ type ReadinessConditions struct {
 	// MaxChainDepth bounds how deep signal-triggered chains may go (WF-015).
 	// +optional
 	MaxChainDepth int32 `json:"maxChainDepth,omitempty" yaml:"maxChainDepth,omitempty"`
+	// MaxOpenPRs caps how many un-merged PRs this workflow's runs may leave open
+	// at once (#353). A looped implementation workflow branches every run off
+	// origin/main; once several unmerged sibling PRs touch overlapping files they
+	// become mutually un-mergeable as a set (the V0.3 ladder hit this). Gating
+	// dispatch on the count of the workflow's own open PRs keeps the loop
+	// merge-paced and the open set integrable, WITHOUT the runner doing cross-PR
+	// rebase/conflict resolution — that is V0.5's merge-review/pr-remediation
+	// layer (epic #357). Enforced as a readiness condition at admit time. 0 (the
+	// default) disables the cap, so it is opt-in: only a PR-producing workflow
+	// (implementation) sets it — capping curation/nomination, which open no PRs,
+	// would wrongly block them on an unrelated open implementation PR.
+	// +optional
+	MaxOpenPRs int32 `json:"maxOpenPRs,omitempty" yaml:"maxOpenPRs,omitempty"`
 }
 
 // TaskType is the execution kind of a task: code-driven or goober-executed.
