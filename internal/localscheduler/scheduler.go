@@ -137,6 +137,18 @@ func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 	var fired []TriggerFiredRecord
 	starts := map[string][]time.Time{}
 	budgetCutoff := now.Add(-budgetWindow)
+	// A narrow rate-limit reset (#315: `goobers reset-rate-limit`) raises the
+	// window floor to the reset moment: run.started events at or before it stop
+	// counting toward MaxRunsPerHour, so an operator can "run again now" without
+	// the old `rm -rf <instance>` workaround that also destroyed runs/ (the
+	// durable run journals). It only ever moves the floor forward — a reset older
+	// than the rolling window is a natural no-op, since the window has already
+	// advanced past it.
+	if resetAt, ok, rerr := ReadRateReset(s.log.Dir()); rerr != nil {
+		return fmt.Errorf("localscheduler: read rate-limit reset: %w", rerr)
+	} else if ok && resetAt.After(budgetCutoff) {
+		budgetCutoff = resetAt
+	}
 	for _, ev := range events {
 		if ev.Type == journal.EventTriggerFired {
 			fired = append(fired, TriggerFiredRecord{Workflow: ev.Workflow, Time: ev.Time})
