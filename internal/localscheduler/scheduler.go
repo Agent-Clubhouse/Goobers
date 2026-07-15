@@ -12,15 +12,18 @@ import (
 )
 
 // WorkflowEntry is one workflow the scheduler manages: its readiness
-// conditions, its schedule trigger (nil for a manual-only workflow — V0 acts
-// only on schedule-type triggers per §7; backlog-item consumption is itself a
-// cron-triggered workflow whose first stage claims items), the Starter that
-// dispatches a run, and the repo every run's stages branch worktrees from.
+// conditions, its schedule triggers (empty for a manual-only workflow — V0
+// acts only on schedule-type triggers per §7; backlog-item consumption is
+// itself a cron-triggered workflow whose first stage claims items), the
+// Starter that dispatches a run, and the repo every run's stages branch
+// worktrees from. A workflow may declare more than one schedule trigger
+// (#341) — Tick fires if any of them is due, sharing one LastEval baseline
+// per workflow rather than tracking each schedule independently.
 type WorkflowEntry struct {
 	Workflow  string
 	Gaggle    string
 	Readiness apiv1.ReadinessConditions
-	Schedule  Schedule
+	Schedules []Schedule
 	Starter   Starter
 	RepoRef   apiv1.RepoRef
 }
@@ -106,7 +109,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 	}
 	for _, e := range entries {
 		s.workflows[e.Workflow] = e
-		ts := TriggerState{Workflow: e.Workflow, Schedule: e.Schedule, LastEval: s.now()}
+		ts := TriggerState{Workflow: e.Workflow, Schedules: e.Schedules, LastEval: s.now()}
 		s.triggers[e.Workflow] = ts
 	}
 	return s
@@ -219,7 +222,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.mu.Unlock()
 
 	for _, entry := range entries {
-		if entry.Schedule == nil {
+		if len(entry.Schedules) == 0 {
 			continue // manual-only workflow: not cron-managed
 		}
 		// Read, evaluate, and write the trigger state under a single lock
@@ -231,7 +234,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		s.mu.Lock()
 		ts := s.triggers[entry.Workflow]
 		res := Tick(ts, now)
-		s.triggers[entry.Workflow] = TriggerState{Workflow: entry.Workflow, Schedule: entry.Schedule, LastEval: res.LastEval}
+		s.triggers[entry.Workflow] = TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: res.LastEval}
 		s.mu.Unlock()
 		if !res.Fire {
 			continue
@@ -401,13 +404,15 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 
 	var earliest time.Time
 	for name, entry := range s.workflows {
-		if entry.Schedule == nil {
+		if len(entry.Schedules) == 0 {
 			continue
 		}
 		ts := s.triggers[name]
-		next := entry.Schedule.Next(ts.LastEval)
-		if earliest.IsZero() || next.Before(earliest) {
-			earliest = next
+		for _, sched := range entry.Schedules {
+			next := sched.Next(ts.LastEval)
+			if earliest.IsZero() || next.Before(earliest) {
+				earliest = next
+			}
 		}
 	}
 	if earliest.IsZero() {

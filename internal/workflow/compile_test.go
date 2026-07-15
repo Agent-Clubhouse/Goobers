@@ -172,19 +172,35 @@ func TestValidSchedulesAccepted(t *testing.T) {
 	}
 }
 
-// TestCompileRejectsMultipleScheduleTriggers is issue #142: the runtime
-// scheduler honors only the first schedule trigger and silently drops the
-// rest, so a second one must fail at compile time rather than compiling
-// clean and simply never firing.
-func TestCompileRejectsMultipleScheduleTriggers(t *testing.T) {
+// TestCompileAllowsMultipleScheduleTriggers is #341's compile-time half:
+// issue #142 originally made a second schedule trigger a hard compile error
+// because the runtime scheduler at the time only ever honored the first one.
+// #341 gave the runtime real multi-schedule support (Scheduler.Tick fires if
+// any of a workflow's schedules is due), so a workflow declaring more than
+// one schedule trigger must compile clean now, not fail.
+func TestCompileAllowsMultipleScheduleTriggers(t *testing.T) {
 	spec := linearSpec()
 	spec.Triggers = []apiv1.Trigger{
 		{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"},
 		{Type: apiv1.TriggerSchedule, Schedule: "0 9 * * *"},
 	}
+	if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("multiple schedule triggers should compile clean, got %v", err)
+	}
+}
+
+// TestCompileRejectsMalformedScheduleAmongMultiple proves each schedule
+// trigger is still validated individually even when there's more than one —
+// #341 removed the multiplicity rejection, not the per-expression check.
+func TestCompileRejectsMalformedScheduleAmongMultiple(t *testing.T) {
+	spec := linearSpec()
+	spec.Triggers = []apiv1.Trigger{
+		{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"},
+		{Type: apiv1.TriggerSchedule, Schedule: "not-a-cron-expression"},
+	}
 	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
-	if err == nil || !strings.Contains(err.Error(), "only one schedule trigger per workflow") {
-		t.Fatalf("expected a multiple-schedule-trigger error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "invalid schedule") {
+		t.Fatalf("expected an invalid-schedule error, got %v", err)
 	}
 }
 

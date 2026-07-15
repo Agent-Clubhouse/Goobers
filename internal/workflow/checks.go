@@ -137,19 +137,21 @@ func triggerFieldProblems(def Definition) []string {
 }
 
 // scheduleProblems validates the schedule expression of every schedule
-// trigger, and rejects more than one schedule trigger on a single workflow:
-// the runtime scheduler (localscheduler's buildSchedulerSetup) honors only
-// the first and silently drops the rest, so a second schedule trigger would
-// otherwise compile cleanly and simply never fire — a fail-closed compile
-// error here catches that at authoring time instead (issue #142).
+// trigger. A workflow may declare more than one schedule trigger (#341 —
+// e.g. a weekday cadence and a separate weekend one): the runtime scheduler
+// (localscheduler.Scheduler.Tick) evaluates every one of them and fires if
+// any is due, so multiple schedule triggers is not itself a problem; only a
+// malformed or empty individual expression is. (issue #142 originally made
+// more than one schedule trigger a hard compile error, since the runtime at
+// the time only ever honored the first — #341 replaced that runtime
+// limitation with real multi-schedule support, so the compile-time rejection
+// is no longer needed.)
 func scheduleProblems(def Definition) []string {
 	var problems []string
-	scheduleTriggers := 0
 	for i, tr := range def.Spec.Triggers {
 		if tr.Type != apiv1.TriggerSchedule {
 			continue
 		}
-		scheduleTriggers++
 		if strings.TrimSpace(tr.Schedule) == "" {
 			problems = append(problems, fmt.Sprintf("trigger[%d] type=schedule requires a schedule expression", i))
 			continue
@@ -157,9 +159,6 @@ func scheduleProblems(def Definition) []string {
 		if err := validateSchedule(tr.Schedule); err != nil {
 			problems = append(problems, fmt.Sprintf("trigger[%d] invalid schedule %q: %v", i, tr.Schedule, err))
 		}
-	}
-	if scheduleTriggers > 1 {
-		problems = append(problems, fmt.Sprintf("only one schedule trigger per workflow is supported, found %d — the runtime scheduler uses only the first and silently ignores the rest", scheduleTriggers))
 	}
 	return problems
 }

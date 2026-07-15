@@ -13,7 +13,7 @@ import (
 
 // scheduleTriggeredWorkflowYAML is deterministicWorkflowYAML's sibling with a
 // schedule trigger instead of a backlog-item one, so a test can inspect the
-// resulting localscheduler.WorkflowEntry.Schedule directly.
+// resulting localscheduler.WorkflowEntry.Schedules directly.
 const scheduleTriggeredWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 metadata:
@@ -72,12 +72,12 @@ func TestBuildSchedulerSetupWiresConfiguredTimezone(t *testing.T) {
 		Next(time.Time) time.Time
 	}
 	for _, e := range setup.Entries {
-		if e.Workflow == "default-implement" {
-			sched = e.Schedule
+		if e.Workflow == "default-implement" && len(e.Schedules) > 0 {
+			sched = e.Schedules[0]
 		}
 	}
 	if sched == nil {
-		t.Fatal("expected default-implement's WorkflowEntry to have a non-nil Schedule")
+		t.Fatal("expected default-implement's WorkflowEntry to have a non-empty Schedules")
 	}
 
 	// A bare UTC instant fed into the wired schedule must resolve "30 1 * * *"
@@ -95,5 +95,77 @@ func TestBuildSchedulerSetupWiresConfiguredTimezone(t *testing.T) {
 	inLoc := next.In(loc)
 	if inLoc.Hour() != 1 || inLoc.Minute() != 30 {
 		t.Fatalf("next fire = %v (America/New_York wall clock %02d:%02d), want 01:30 in that zone — Timezone config was not wired through", next, inLoc.Hour(), inLoc.Minute())
+	}
+}
+
+// multiScheduleWorkflowYAML declares two schedule triggers on the same
+// workflow — #341's fixture.
+const multiScheduleWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "0 8 * * *"
+    - type: schedule
+      schedule: "0 14 * * *"
+  start: local-ci
+  tasks:
+    - name: local-ci
+      type: deterministic
+      goal: run a no-op local command
+      run:
+        command: ["true"]
+`
+
+// TestBuildSchedulerSetupWiresAllScheduleTriggers is #341's regression:
+// buildSchedulerSetup previously stopped at the first schedule-type trigger
+// (a `break` inside the loop) — a second one compiled fine (once #142's
+// compile-time reject was in place, it was actually a hard error; #341
+// replaced that reject with real support) but the runtime scheduler would
+// still only ever have wired the first. This proves both configured
+// schedules land in WorkflowEntry.Schedules, not just one.
+func TestBuildSchedulerSetupWiresAllScheduleTriggers(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	if err := os.WriteFile(workflowPath, []byte(multiScheduleWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	if err != nil {
+		t.Fatalf("buildSchedulerSetup: %v", err)
+	}
+
+	var got []time.Time
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	for _, e := range setup.Entries {
+		if e.Workflow != "default-implement" {
+			continue
+		}
+		if len(e.Schedules) != 2 {
+			t.Fatalf("Schedules = %d entries, want 2 (both configured triggers)", len(e.Schedules))
+		}
+		for _, sched := range e.Schedules {
+			got = append(got, sched.Next(base))
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected exactly one default-implement WorkflowEntry with 2 schedules, got %d schedule evaluations", len(got))
+	}
+	wantHours := map[int]bool{8: true, 14: true}
+	for _, next := range got {
+		if !wantHours[next.Hour()] {
+			t.Errorf("unexpected next-fire hour %d (from %v) — want 8 or 14", next.Hour(), next)
+		}
+		delete(wantHours, next.Hour())
+	}
+	if len(wantHours) != 0 {
+		t.Errorf("missing expected fire hours: %v", wantHours)
 	}
 }

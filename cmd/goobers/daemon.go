@@ -139,22 +139,25 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
-		var sched localscheduler.Schedule
+		// #341: a workflow may declare more than one schedule-type trigger
+		// (e.g. a weekday cadence and a separate weekend one) — collect all
+		// of them rather than stopping at the first; Scheduler.Tick fires if
+		// any is due.
+		var scheds []localscheduler.Schedule
 		for _, tr := range wf.Spec.Triggers {
 			if tr.Type == apiv1.TriggerSchedule && tr.Schedule != "" {
 				s, err := localscheduler.ParseSchedule(tr.Schedule)
 				if err != nil {
 					return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
 				}
-				sched = localscheduler.InLocation(s, loc)
-				break
+				scheds = append(scheds, localscheduler.InLocation(s, loc))
 			}
 		}
 		entries = append(entries, localscheduler.WorkflowEntry{
 			Workflow:  wf.Name,
 			Gaggle:    wf.Spec.Gaggle,
 			Readiness: wf.Spec.Readiness,
-			Schedule:  sched,
+			Schedules: scheds,
 			Starter:   &trackedStarter{r: rn, machine: machines[wf.Name], wg: wg, l: l, tel: tel, rollupDB: rollupDB, log: instanceLog},
 			RepoRef:   repoRefs[wf.Name],
 		})
