@@ -148,10 +148,36 @@ var newPRPoller func(token string) executor.PRPoller
 // {"repo:push": "GH_TOKEN"} fixture).
 const credentialGrantEnv = "GH_TOKEN"
 
+// copilotModelEnv is the environment variable the Copilot CLI reads its
+// model-backend token from. The CLI prefers COPILOT_GITHUB_TOKEN over GH_TOKEN
+// for model auth (§3.3), so mapping agent:model to a DISTINCT env var from
+// credentialGrantEnv lets one agentic subprocess carry a personal "Copilot
+// Requests" PAT for the model (agent:model → COPILOT_GITHUB_TOKEN) AND the
+// org-repo token for the github tool (credentialedCapabilities → GH_TOKEN) at
+// once — credentialEnv appends both, and because the vars differ neither
+// clobbers the other (#288, multi-token credentials 2/3).
+const copilotModelEnv = "COPILOT_GITHUB_TOKEN"
+
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
 	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubPRWrite,
+}
+
+// buildEnvCapabilities maps each capability the Copilot adapter injects to the
+// environment variable the CLI reads its token from: the org-repo capabilities
+// to GH_TOKEN (the github tool's var) and agent:model to COPILOT_GITHUB_TOKEN
+// (the model backend's var, #288, §3.3). The two vars are distinct on purpose —
+// credentialEnv appends one entry per declared capability, so a stage declaring
+// both agent:model and an org-repo capability carries both tokens in a single
+// subprocess with neither clobbering the other.
+func buildEnvCapabilities() map[string]string {
+	envCaps := make(map[string]string, len(credentialedCapabilities)+1)
+	for _, c := range credentialedCapabilities {
+		envCaps[string(c)] = credentialGrantEnv
+	}
+	envCaps[string(capability.AgentModel)] = copilotModelEnv
+	return envCaps
 }
 
 // buildCredentials builds a Resolver and the capability->ref Grants from
@@ -302,10 +328,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		return runner.Config{}, nil, fmt.Errorf("resolve goobers binary path: %w", err)
 	}
 
-	envCaps := make(map[string]string, len(credentialedCapabilities))
-	for _, c := range credentialedCapabilities {
-		envCaps[string(c)] = credentialGrantEnv
-	}
+	envCaps := buildEnvCapabilities()
 
 	rc := runner.Config{
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {

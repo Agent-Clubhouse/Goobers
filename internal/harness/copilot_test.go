@@ -58,6 +58,86 @@ func pushCredentials(t *testing.T, capability, token string) *credentials.Set {
 	return set
 }
 
+// twoTokenCredentials materializes a *credentials.Set granting two distinct
+// capabilities from two distinct token refs — the multi-token case #288 wires,
+// where a stage holds a personal Copilot-Requests PAT for the model alongside
+// an org-repo token for the github tool.
+func twoTokenCredentials(t *testing.T, capA, tokA, capB, tokB string) *credentials.Set {
+	t.Helper()
+	t.Setenv("TOK_A_ENV", tokA)
+	t.Setenv("TOK_B_ENV", tokB)
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{
+		{Name: "ref-a", Env: "TOK_A_ENV"},
+		{Name: "ref-b", Env: "TOK_B_ENV"},
+	})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{
+		{Capability: capA, Ref: "ref-a"},
+		{Capability: capB, Ref: "ref-b"},
+	}, noopRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	set, err := injector.Materialize(context.Background(), []string{capA, capB})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	return set
+}
+
+// TestCopilotAdapterInjectsModelAndGitHubTokensTogether is #288's core property
+// (§3.3): a stage declaring both agent:model and an org-repo capability carries
+// BOTH tokens into one subprocess under DISTINCT env vars — the model token as
+// COPILOT_GITHUB_TOKEN (which the Copilot CLI prefers for model auth) and the
+// github-tool token as GH_TOKEN — so neither clobbers the other. This is the
+// two-tokens-one-subprocess case the agentic curate stage needs at #30.
+func TestCopilotAdapterInjectsModelAndGitHubTokensTogether(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		Runner:  runner,
+		EnvCapabilities: map[string]string{
+			"agent:model":         "COPILOT_GITHUB_TOKEN",
+			"github:issues:write": "GH_TOKEN",
+		},
+	}
+	creds := twoTokenCredentials(t, "agent:model", "copilot-pat", "github:issues:write", "org-repo-token")
+	req := RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model", "github:issues:write"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	}
+	if _, err := adapter.Run(context.Background(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	gotModel, gotGitHub := false, false
+	for _, kv := range runner.lastReq.Env {
+		switch kv {
+		case "COPILOT_GITHUB_TOKEN=copilot-pat":
+			gotModel = true
+		case "GH_TOKEN=org-repo-token":
+			gotGitHub = true
+		}
+	}
+	if !gotModel || !gotGitHub {
+		t.Fatalf("expected both COPILOT_GITHUB_TOKEN=copilot-pat and GH_TOKEN=org-repo-token in one subprocess env, got %v", runner.lastReq.Env)
+	}
+	for _, arg := range runner.lastReq.Command {
+		if strings.Contains(arg, "copilot-pat") || strings.Contains(arg, "org-repo-token") {
+			t.Fatalf("token leaked into argv: %v", runner.lastReq.Command)
+		}
+	}
+}
+
 func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 	workspace := t.TempDir()
 	runner := &fakeProcessRunner{
