@@ -85,10 +85,11 @@ func WithTelemetry(t SpanStarter) Option {
 // maxParallelRuns/workflowBudgets were parsed and scaffolded but enforced
 // nowhere (issue #142). maxParallelRuns caps total concurrent runs across
 // every workflow in the instance (0/unset = unlimited); workflowBudgets
-// overrides a named workflow's runs-per-hour budget.
-func WithInstanceRunConditions(maxParallelRuns int, workflowBudgets map[string]int) Option {
+// overrides a named workflow's runs-per-hour budget; dayBudgets overrides a
+// named workflow's runs-per-day budget (#340).
+func WithInstanceRunConditions(maxParallelRuns int, workflowBudgets map[string]int, dayBudgets map[string]int) Option {
 	return func(s *Scheduler) {
-		s.conditions.SetInstanceLimits(maxParallelRuns, workflowBudgets)
+		s.conditions.SetInstanceLimits(maxParallelRuns, workflowBudgets, dayBudgets)
 	}
 }
 
@@ -139,24 +140,28 @@ func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 	}
 	var fired []TriggerFiredRecord
 	starts := map[string][]time.Time{}
-	budgetCutoff := now.Add(-budgetWindow)
+	// dayWindow, not budgetWindow (#340): Conditions retains one starts
+	// history per workflow at dayWindow width to serve both the hourly and
+	// the daily budget check, so the history seeded here after a restart
+	// must be at least as wide or the daily check would under-count.
+	startsCutoff := now.Add(-dayWindow)
 	// A narrow rate-limit reset (#315: `goobers reset-rate-limit`) raises the
 	// window floor to the reset moment: run.started events at or before it stop
-	// counting toward MaxRunsPerHour, so an operator can "run again now" without
-	// the old `rm -rf <instance>` workaround that also destroyed runs/ (the
-	// durable run journals). It only ever moves the floor forward — a reset older
-	// than the rolling window is a natural no-op, since the window has already
-	// advanced past it.
+	// counting toward MaxRunsPerHour (or MaxRunsPerDay), so an operator can
+	// "run again now" without the old `rm -rf <instance>` workaround that also
+	// destroyed runs/ (the durable run journals). It only ever moves the floor
+	// forward — a reset older than the rolling window is a natural no-op,
+	// since the window has already advanced past it.
 	if resetAt, ok, rerr := ReadRateReset(s.log.Dir()); rerr != nil {
 		return fmt.Errorf("localscheduler: read rate-limit reset: %w", rerr)
-	} else if ok && resetAt.After(budgetCutoff) {
-		budgetCutoff = resetAt
+	} else if ok && resetAt.After(startsCutoff) {
+		startsCutoff = resetAt
 	}
 	for _, ev := range events {
 		if ev.Type == journal.EventTriggerFired {
 			fired = append(fired, TriggerFiredRecord{Workflow: ev.Workflow, Time: ev.Time})
 		}
-		if ev.Type == journal.EventRunStarted && ev.Time.After(budgetCutoff) {
+		if ev.Type == journal.EventRunStarted && ev.Time.After(startsCutoff) {
 			starts[ev.Workflow] = append(starts[ev.Workflow], ev.Time)
 		}
 	}

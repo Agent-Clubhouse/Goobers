@@ -28,6 +28,7 @@
           "properties": {
             "maxConcurrentRuns": { "type": "integer", "minimum": 1 },
             "maxRunsPerHour": { "type": "integer", "minimum": 0 },
+            "maxRunsPerDay": { "type": "integer", "minimum": 0 },
             "maxChainDepth": { "type": "integer", "minimum": 0 }
           }
         },

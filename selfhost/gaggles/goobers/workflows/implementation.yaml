@@ -13,9 +13,12 @@ spec:
   #
   # DOGFOOD GUARDRAIL: fires twice daily (08:17/20:17 local) with
   # maxRunsPerHour 1 — cadence x hourly-cap together give a hard ceiling of
-  # exactly 2 runs/day (WorkflowSpec has no native per-day budget field). This
-  # instance never merges (no merge stage below, by design) — branch
-  # protection + a human review are the only path to `main`.
+  # exactly 2 runs/day. (A native maxRunsPerDay field exists now, #340 — kept
+  # to this cadence x hourly-cap combination here since it already expresses
+  # the intended ceiling and this dogfood instance's own explicit low values
+  # are deliberate, not something to migrate just because a more direct knob
+  # exists.) This instance never merges (no merge stage below, by design) —
+  # branch protection + a human review are the only path to `main`.
   triggers:
     - type: schedule
       schedule: "17 8,20 * * *"

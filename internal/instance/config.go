@@ -95,6 +95,9 @@ type TelemetryConfig struct {
 type RunConditions struct {
 	MaxParallelRuns int            `json:"maxParallelRuns,omitempty" yaml:"maxParallelRuns,omitempty"`
 	WorkflowBudgets map[string]int `json:"workflowBudgets,omitempty" yaml:"workflowBudgets,omitempty"`
+	// WorkflowDailyBudgets overrides a named workflow's runs-per-day budget
+	// (#340), mirroring WorkflowBudgets' per-hour override.
+	WorkflowDailyBudgets map[string]int `json:"workflowDailyBudgets,omitempty" yaml:"workflowDailyBudgets,omitempty"`
 }
 
 // TelemetryEnabled reports whether the local rollup store is enabled

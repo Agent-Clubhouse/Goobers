@@ -9,8 +9,10 @@ spec:
   # trigger wakes this workflow; its own first stage queries + claims eligible
   # items rather than being routed to by the scheduler's backlog-item trigger.
   # 3x/day, spread across the day (03:22/11:22/19:22 local) — readiness adds a
-  # hard per-hour ceiling as a runaway guard (WorkflowSpec has no native
-  # per-day budget field, so cadence + hourly cap together express it).
+  # hard per-hour ceiling as a runaway guard (cadence + hourly cap together
+  # express the intended 3/day; a native maxRunsPerDay field exists too,
+  # #340, but this dogfood instance's own explicit low values are deliberate
+  # and don't need migrating just because a more direct knob now exists).
   triggers:
     - type: schedule
       schedule: "22 3,11,19 * * *"
