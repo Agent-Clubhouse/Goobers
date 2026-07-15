@@ -15,6 +15,26 @@ func runArgs(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	return code, out.String(), errOut.String()
 }
 
+// unsetRunID clears any ambient GOOBERS_RUN_ID for the test's duration, with
+// restore. A test exercising the genuinely-unset (fail-closed) path must not be
+// defeated by an ID leaking in from the parent process — which is exactly what
+// happens under a live `local-ci` stage: internal/executor.buildStageEnv injects
+// the run's real GOOBERS_RUN_ID, and `make ci`'s `go test ./...` inherits it, so
+// these tests saw an ambient ID, skipped the fail-closed branch, and failed on
+// every run regardless of the implementer's diff (#321). t.Setenv can only set,
+// never unset, so this is explicit os.Unsetenv + os.Setenv restore.
+func unsetRunID(t *testing.T) {
+	t.Helper()
+	orig, ok := os.LookupEnv("GOOBERS_RUN_ID")
+	if !ok {
+		return
+	}
+	if err := os.Unsetenv("GOOBERS_RUN_ID"); err != nil {
+		t.Fatalf("unset GOOBERS_RUN_ID: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Setenv("GOOBERS_RUN_ID", orig) })
+}
+
 func TestRunNoArgs(t *testing.T) {
 	code, _, stderr := runArgs(t)
 	if code != 2 {
