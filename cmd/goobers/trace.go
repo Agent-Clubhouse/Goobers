@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -22,7 +23,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers trace <run-id> [path]\n\n"+
 			"Show a run's journal events and, if the telemetry rollup has ingested it,\n"+
-			"its trace spans (default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
+			"its trace spans (default path \".\"). Exit codes: 0 = OK, 1 = run not found, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -46,6 +47,15 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 
 	l := instance.NewLayout(root)
 	runDir := filepath.Join(l.RunsDir(), runID)
+	runInfo, err := os.Stat(runDir)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && !runInfo.IsDir()) {
+		pf(stderr, "error: no run %q found in %s; list runs with 'goobers status'\n", runID, root)
+		return 1
+	}
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
