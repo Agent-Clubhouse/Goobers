@@ -300,6 +300,35 @@ func (p *GitHubProvider) FindPullRequestByBranch(ctx context.Context, repo Repos
 	return PullRequestResult{ID: strconv.Itoa(pr.Number), Number: pr.Number, URL: pr.HTMLURL}, true, nil
 }
 
+// ListOpenPullRequestHeads returns the head-branch ref of every open PR on the
+// repo. Used by the scheduler's open-PR-count throttle (#353) to count the
+// loop's own un-merged sibling PRs (those under the goobers/ run-branch
+// namespace) so it can pace dispatch. Single page of up to 100 — ample for a
+// dogfood loop; a full paginator is a follow-up if a repo ever carries >100
+// open PRs (at which point the cap has long since engaged anyway).
+func (p *GitHubProvider) ListOpenPullRequestHeads(ctx context.Context, repo RepositoryRef) ([]string, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls")
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{
+		"state":    []string{"open"},
+		"per_page": []string{"100"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []githubPullRequest
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
+		return nil, err
+	}
+	heads := make([]string, 0, len(out))
+	for _, pr := range out {
+		heads = append(heads, pr.Head.Ref)
+	}
+	return heads, nil
+}
+
 // updatePullRequest applies title/body edits to an already-open PR (its
 // number found by FindPullRequestByBranch) — the repass path: the same run
 // branch already has an open PR, so this call updates it in place instead of
@@ -1280,6 +1309,9 @@ type githubPullRequest struct {
 	ID      int    `json:"id"`
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
+	Head    struct {
+		Ref string `json:"ref"`
+	} `json:"head"`
 }
 
 type githubPullRequestDetail struct {

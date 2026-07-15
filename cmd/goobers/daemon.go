@@ -41,6 +41,10 @@ type schedulerSetup struct {
 	Machines      map[string]*workflow.Machine
 	RepoRefs      map[string]apiv1.RepoRef
 	RunConditions instance.RunConditions
+	// OpenPRRefresher backs the #353 MaxOpenPRs cap; nil when no workflow opts
+	// in (or no repo is configured). Only the `up` daemon starts its Run loop
+	// and wires it as a scheduler option — see up.go.
+	OpenPRRefresher *localscheduler.OpenPRRefresher
 }
 
 // buildSchedulerSetup loads an instance's config, compiles its workflows,
@@ -119,6 +123,14 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		return nil, err
 	}
 
+	// #353: the open-PR-count refresher backing the MaxOpenPRs cap, when any
+	// workflow opts in. Built here (has cfg + the compiled workflows); the `up`
+	// daemon starts its Run loop and wires it as a scheduler option.
+	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, sharedReg)
+	if err != nil {
+		return nil, err
+	}
+
 	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber))
 	if err != nil {
 		return nil, fmt.Errorf("open instance log: %w", err)
@@ -172,15 +184,16 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	}
 
 	return &schedulerSetup{
-		Runner:        rn,
-		Telemetry:     tel,
-		RollupDB:      rollupDB,
-		Worktrees:     wtMgr,
-		InstanceLog:   instanceLog,
-		Entries:       entries,
-		Machines:      machines,
-		RepoRefs:      repoRefs,
-		RunConditions: cfg.RunConditions,
+		Runner:          rn,
+		Telemetry:       tel,
+		RollupDB:        rollupDB,
+		Worktrees:       wtMgr,
+		InstanceLog:     instanceLog,
+		Entries:         entries,
+		Machines:        machines,
+		RepoRefs:        repoRefs,
+		RunConditions:   cfg.RunConditions,
+		OpenPRRefresher: openPRRefresher,
 	}, nil
 }
 

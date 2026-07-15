@@ -29,7 +29,8 @@
             "maxConcurrentRuns": { "type": "integer", "minimum": 1 },
             "maxRunsPerHour": { "type": "integer", "minimum": 0 },
             "maxRunsPerDay": { "type": "integer", "minimum": 0 },
-            "maxChainDepth": { "type": "integer", "minimum": 0 }
+            "maxChainDepth": { "type": "integer", "minimum": 0 },
+            "maxOpenPRs": { "type": "integer", "minimum": 0 }
           }
         },
         "start": { "type": "string", "minLength": 1 },

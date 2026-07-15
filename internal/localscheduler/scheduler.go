@@ -96,6 +96,17 @@ func WithInstanceRunConditions(maxParallelRuns int, workflowBudgets map[string]i
 	}
 }
 
+// WithOpenPRCounter wires the cached open-PR counter that backs the MaxOpenPRs
+// readiness cap (#353). Optional — nil/unset leaves the cap unenforced, so a
+// workflow that sets MaxOpenPRs without a counter wired simply isn't throttled.
+func WithOpenPRCounter(counter OpenPRCounter) Option {
+	return func(s *Scheduler) {
+		if counter != nil {
+			s.conditions.SetOpenPRCounter(counter)
+		}
+	}
+}
+
 // New builds a Scheduler over the given workflow entries. Call Reconcile
 // before Run to seed run-condition and trigger state from durable state after
 // a restart; a freshly-created instance can skip it (everything starts empty).

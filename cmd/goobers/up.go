@@ -149,6 +149,19 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// resume scan's Releases race Reconcile's blind Conditions.Reconcile
 	// overwrite and land before the slot even exists.
 	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets, setup.RunConditions.WorkflowDailyBudgets))
+	// #353: start the open-PR-count refresher and wire it as the MaxOpenPRs cap's
+	// counter. Runs on its own interval/context under the daemon's WaitGroup, so
+	// Admit reads a cached count (never a network call under the tick lock) and
+	// shutdown drains it with every other background loop. Nil when no workflow
+	// opts into the cap.
+	if setup.OpenPRRefresher != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			setup.OpenPRRefresher.Run(ctx)
+		}()
+		opts = append(opts, localscheduler.WithOpenPRCounter(setup.OpenPRRefresher))
+	}
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
