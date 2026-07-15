@@ -151,11 +151,16 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 	goobers := []apiv1.Goober{{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}}}
 
 	// Signed out: version OK, auth probe fails → check fails, and the probe ran.
+	// AuthCheckArgs is set on the fake because the real adapterFor now wires it
+	// (#238) — this test substitutes harnessAdapterFor, bypassing adapterFor, so
+	// it mirrors what adapterFor produces. (That adapterFor sets it is proven
+	// directly by TestAdapterForConfiguresAuthProbe.)
 	authInvoked := false
 	withHarnessAdapter(t, func(apiv1.Harness) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
-			Command: []string{"echo"},
-			Runner:  &authProbeFakeRunner{versionExit: 0, authExit: 1, authInvoked: &authInvoked},
+			Command:       []string{"echo"},
+			AuthCheckArgs: copilotAuthCheckArgs,
+			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 1, authInvoked: &authInvoked},
 		}, nil
 	})
 	var out, errOut strings.Builder
@@ -163,14 +168,15 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 		t.Fatal("checkHarnesses returned true; a signed-out CLI (version OK, auth probe fails) must fail closed")
 	}
 	if !authInvoked {
-		t.Fatal("the auth probe (-p) was never invoked — AuthCheckArgs not wired into --check-harness")
+		t.Fatal("the auth probe (-p) was never invoked — checkHarnesses did not run the adapter's configured auth probe")
 	}
 
 	// Fully authenticated: both succeed → check passes.
 	withHarnessAdapter(t, func(apiv1.Harness) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
-			Command: []string{"echo"},
-			Runner:  &authProbeFakeRunner{versionExit: 0, authExit: 0},
+			Command:       []string{"echo"},
+			AuthCheckArgs: copilotAuthCheckArgs,
+			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 0},
 		}, nil
 	})
 	out.Reset()
