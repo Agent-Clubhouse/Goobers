@@ -150,7 +150,8 @@ func TestVerdictEnvelopeFindingContract(t *testing.T) {
 		{"needs-changes with a valid finding validates", `{"decision":"needs-changes","rationale":"gaps","findings":[{"severity":"error","message":"path-handling bug","location":"foo.go:10"}]}`, false},
 		{"out-of-enum severity rejected (the #304 bug)", `{"decision":"needs-changes","findings":[{"severity":"Medium","message":"x"}]}`, true},
 		{"extra per-finding field rejected (additionalProperties:false)", `{"decision":"needs-changes","findings":[{"severity":"error","message":"x","evidence":"y"}]}`, true},
-		{"pass with no findings validates", `{"decision":"pass","rationale":"lgtm"}`, false},
+		{"top-level evidence as a bare string rejected (the #310 bug)", `{"decision":"pass","rationale":"lgtm","evidence":["review/reviewer-diff.patch"]}`, true},
+		{"pass with no evidence validates (the #310 fix target)", `{"decision":"pass","rationale":"lgtm"}`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
