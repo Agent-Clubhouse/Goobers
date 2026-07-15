@@ -612,3 +612,64 @@ func deadPID(t *testing.T) int {
 	}
 	return cmd.Process.Pid
 }
+
+// TestWorktree_Diff is #301: Worktree.Diff returns the unified diff of the run
+// branch against its base, computed from the actual commits — the runner-owned
+// evidence the reviewer gate judges (no model self-reporting). A branch with no
+// commits vs. base diffs empty.
+func TestWorktree_Diff(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-diff", BaseRef: "main", Branch: "goobers/impl/run-diff",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// No commits on the branch yet → empty diff vs. base.
+	empty, err := wt.Diff(ctx, "main")
+	if err != nil {
+		t.Fatalf("Diff (no commits): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected an empty diff before any commit, got:\n%s", empty)
+	}
+
+	// Commit a real change on the run branch (Create already set a local bot
+	// identity, so a plain commit works).
+	mustWriteFile(t, filepath.Join(wt.Path, "feature.go"), "package feature\n\nfunc Added() {}\n")
+	runTestGit(t, wt.Path, "add", "-A")
+	runTestGit(t, wt.Path, "commit", "-m", "add feature")
+
+	diff, err := wt.Diff(ctx, "main")
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	got := string(diff)
+	if !strings.Contains(got, "feature.go") {
+		t.Fatalf("diff missing the changed file path:\n%s", got)
+	}
+	if !strings.Contains(got, "func Added()") {
+		t.Fatalf("diff missing the added content:\n%s", got)
+	}
+	if !strings.Contains(got, "+package feature") {
+		t.Fatalf("diff is not a unified add diff:\n%s", got)
+	}
+}
+
+// TestWorktree_Diff_RequiresBaseRef guards the empty-baseRef fail-closed path.
+func TestWorktree_Diff_RequiresBaseRef(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "run-nobase", BaseRef: "main", Branch: "goobers/impl/run-nobase"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := wt.Diff(ctx, ""); err == nil {
+		t.Fatal("expected an error for an empty baseRef, got nil")
+	}
+}

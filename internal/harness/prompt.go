@@ -50,14 +50,17 @@ func renderPrompt(req RunRequest) string {
 	return b.String()
 }
 
-// resultShapeHint deliberately omits "error" from the base shape: it is
-// required only on a "failure"/"blocked" status, and an empty error object on a
-// successful result fails the schema's errorInfo minLength:1 check — a
-// well-behaved model that fills every field shown here would then be journaled
-// as a false-negative failure despite doing the work correctly (#297). The
-// error field is described as conditional instead of shown inline.
-const resultShapeHint = `{"status": "success"|"failure"|"blocked", "outputs": {...}, "artifacts": [...], "summary": "...", "metrics": {...}}
+// resultShapeHint deliberately omits both "error" and "artifacts" from the base
+// shape. "error" is required only on a "failure"/"blocked" status, and an empty
+// error object on a successful result fails the schema's errorInfo minLength:1
+// check (#297). "artifacts" must be digested ArtifactPointer objects — a model
+// cannot reliably self-report a content digest, and no harness step resolves a
+// model-declared path into one, so a model that fills the field produces an
+// invalid completion (#301); stage evidence (e.g. a reviewer's diff) is recorded
+// and digested by the runner, never self-reported here. Both fields are
+// described conditionally/out-of-band instead of shown inline.
+const resultShapeHint = `{"status": "success"|"failure"|"blocked", "outputs": {...}, "summary": "...", "metrics": {...}}
 
-On a "failure" or "blocked" status, also include an "error" object: {"code": "...", "message": "..."} (both non-empty). Omit "error" entirely on success.`
+On a "failure" or "blocked" status, also include an "error" object: {"code": "...", "message": "..."} (both non-empty). Omit "error" entirely on success. Do not populate "artifacts" — the runner records and digests any stage artifacts.`
 
 const verdictShapeHint = `{"decision": "pass"|"fail"|"needs-changes", "rationale": "...", "findings": [{"severity": "...", "message": "...", "location": "..."}], "summary": "..."}`
