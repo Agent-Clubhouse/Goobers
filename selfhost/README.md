@@ -50,10 +50,10 @@ config itself, not left to operator discretion:
   `enforce_admins=true`) plus a human review are the only path to `main`.
 - **Budgets are low by default.** `implementation` fires twice daily
   (`readiness.maxConcurrentRuns: 1`, `maxRunsPerHour: 1`, cadence 2x/day) — a
-  hard ceiling of exactly 2 runs/day, since `WorkflowSpec` has no native
-  per-day budget field (cadence × hourly cap together express it, the same
-  pattern `config-examples/gaggles/acme-web` documents). Curation and
-  nomination run 3x/day and 1x/day respectively, each capped at
+  hard ceiling of exactly 2 runs/day, via cadence × hourly cap (the same
+  pattern `config-examples/gaggles/acme-web` documents; `WorkflowSpec` also
+  has a native `maxRunsPerDay` field, #340, as a more direct alternative).
+  Curation and nomination run 3x/day and 1x/day respectively, each capped at
   `maxRunsPerHour: 1`.
 - **Capability grants are minimal per goober** and checked at validate time
   (fail-closed on mismatch — a workflow task using a capability its goober

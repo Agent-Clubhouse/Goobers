@@ -45,8 +45,25 @@ type ReadinessConditions struct {
 	// +optional
 	MaxConcurrentRuns int32 `json:"maxConcurrentRuns,omitempty" yaml:"maxConcurrentRuns,omitempty"`
 	// MaxRunsPerHour is a run budget that bounds emergent chains (WF-015).
+	// Unset falls back to a spec default of 10 (internal/localscheduler's
+	// Conditions.Admit), not "unenforced" — every workflow gets some
+	// guardrail against a runaway chain out of the box (#339).
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=10
 	// +optional
 	MaxRunsPerHour int32 `json:"maxRunsPerHour,omitempty" yaml:"maxRunsPerHour,omitempty"`
+	// MaxRunsPerDay is a native daily run budget (#340), enforced the same
+	// way as MaxRunsPerHour over a rolling 24h window. Before this field
+	// existed, a daily ceiling could only be faked by combining a specific
+	// cron cadence with MaxRunsPerHour (e.g. 2x/day cadence x
+	// maxRunsPerHour:1 = a ceiling of 2/day) — fragile and impossible to
+	// reason about without mentally multiplying schedule-fires-per-day by
+	// the hourly cap. Unset (0) means no daily cap — unlike MaxRunsPerHour,
+	// this has no non-zero spec default, since MaxRunsPerHour's own default
+	// already provides a baseline guardrail.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxRunsPerDay int32 `json:"maxRunsPerDay,omitempty" yaml:"maxRunsPerDay,omitempty"`
 	// MaxChainDepth bounds how deep signal-triggered chains may go (WF-015).
 	// +optional
 	MaxChainDepth int32 `json:"maxChainDepth,omitempty" yaml:"maxChainDepth,omitempty"`

@@ -13,10 +13,17 @@ const (
 	ReasonMaxParallel         = "conditions: max-parallel"
 	ReasonInstanceMaxParallel = "conditions: instance max-parallel"
 	ReasonBudget              = "conditions: budget"
+	ReasonDailyBudget         = "conditions: daily-budget"
 )
 
 // budgetWindow is the rolling window MaxRunsPerHour is measured over.
 const budgetWindow = time.Hour
+
+// dayWindow is the rolling window MaxRunsPerDay is measured over (#340).
+// Also the width Admit retains starts to: it's a strict superset of
+// budgetWindow, so one starts-per-workflow history serves both the hourly
+// and the daily check without a second tracked slice.
+const dayWindow = 24 * time.Hour
 
 // Conditions enforces run conditions (SCH-003) before a run starts: max
 // concurrent runs per workflow, and a per-workflow run budget over a rolling
@@ -40,6 +47,11 @@ type Conditions struct {
 	// from instance.yaml's runConditions.workflowBudgets, taking precedence
 	// over that workflow's own spec'd MaxRunsPerHour when set.
 	workflowBudgets map[string]int
+	// dayBudgets overrides a specific workflow's runs-per-day budget from
+	// instance.yaml's runConditions.workflowDailyBudgets (#340), mirroring
+	// workflowBudgets's precedence over the workflow's own spec'd
+	// MaxRunsPerDay.
+	dayBudgets map[string]int
 }
 
 // NewConditions returns an empty Conditions tracker.
@@ -51,13 +63,15 @@ func NewConditions() *Conditions {
 // runConditions, §7/SCH-003) on top of each workflow's own per-workflow
 // conditions: maxParallelRuns caps total concurrent runs across every
 // workflow in the instance (0 = unlimited); workflowBudgets overrides a named
-// workflow's runs-per-hour budget. Call once, before Admit is first used —
-// it does not itself re-check already-admitted slots.
-func (c *Conditions) SetInstanceLimits(maxParallelRuns int, workflowBudgets map[string]int) {
+// workflow's runs-per-hour budget; dayBudgets overrides a named workflow's
+// runs-per-day budget (#340). Call once, before Admit is first used — it
+// does not itself re-check already-admitted slots.
+func (c *Conditions) SetInstanceLimits(maxParallelRuns int, workflowBudgets map[string]int, dayBudgets map[string]int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.instanceMaxParallel = maxParallelRuns
 	c.workflowBudgets = workflowBudgets
+	c.dayBudgets = dayBudgets
 }
 
 // Reconcile sets the initial active-run counts after a restart (Conditions'
@@ -79,14 +93,15 @@ func (c *Conditions) Reconcile(active map[string]int) {
 	c.totalActive = total
 }
 
-// ReconcileBudget seeds each workflow's rolling MaxRunsPerHour window from
-// admitted-run start times read from durable history (the instance
-// journal's run.started events) — issue #135's "budget amnesia": without
-// this, Admit's in-memory starts map begins empty on every restart, so a
-// crash-looping daemon admits one extra catch-up fire per restart, silently
-// exceeding MaxRunsPerHour. Only entries within budgetWindow of now matter;
-// Admit's own pruneStarts drops the rest lazily on first use, but callers
-// may filter before calling this too.
+// ReconcileBudget seeds each workflow's rolling MaxRunsPerHour/MaxRunsPerDay
+// window from admitted-run start times read from durable history (the
+// instance journal's run.started events) — issue #135's "budget amnesia":
+// without this, Admit's in-memory starts map begins empty on every restart,
+// so a crash-looping daemon admits one extra catch-up fire per restart,
+// silently exceeding the budget. Only entries within dayWindow of now
+// matter (#340: widened from budgetWindow so the daily check also survives
+// a restart) — Admit's own pruneStarts drops the rest lazily on first use,
+// but callers may filter before calling this too.
 func (c *Conditions) ReconcileBudget(starts map[string][]time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -119,19 +134,36 @@ func (c *Conditions) Admit(workflow string, r apiv1.ReadinessConditions, now tim
 	maxRunsPerHour := r.MaxRunsPerHour
 	if override, ok := c.workflowBudgets[workflow]; ok && override > 0 {
 		maxRunsPerHour = int32(override)
+	} else if maxRunsPerHour <= 0 {
+		// spec default (ReadinessConditions.MaxRunsPerHour, #339): unset used
+		// to mean "no hourly budget enforced at all" — a silent WF-015 gap,
+		// since a workflow that never declares this field got zero
+		// protection against a runaway emergent chain. 10/hour mirrors
+		// MaxConcurrentRuns's own <= 0 fallback just above: a sane, non-zero
+		// guardrail out of the box, generous enough that a single clean run
+		// (completes in well under 10 minutes) doesn't get throttled the way
+		// a hand-authored maxRunsPerHour: 1 did during dogfooding.
+		maxRunsPerHour = 10
 	}
-	if maxRunsPerHour > 0 {
-		starts := pruneStarts(c.starts[workflow], now)
-		if len(starts) >= int(maxRunsPerHour) {
-			c.starts[workflow] = starts
-			return false, ReasonBudget
-		}
-		c.starts[workflow] = append(starts, now)
+	maxRunsPerDay := r.MaxRunsPerDay
+	if override, ok := c.dayBudgets[workflow]; ok && override > 0 {
+		maxRunsPerDay = int32(override)
 	}
-	// A workflow with no effective budget never has c.starts[workflow]
-	// touched, so it can't accumulate unboundedly (e.g. ~1,440 entries/day
-	// for an `@every 1m` schedule) — nothing ever reads that map without a
-	// budget check, so there's no reason to record starts for it.
+
+	// Retained at dayWindow width (a strict superset of budgetWindow) so one
+	// starts history serves both checks (#340) — hourlyCount is a sub-count
+	// of the same slice, not a second tracked list.
+	starts := pruneStarts(c.starts[workflow], now, dayWindow)
+	hourlyCount := countSince(starts, now.Add(-budgetWindow))
+	if hourlyCount >= int(maxRunsPerHour) {
+		c.starts[workflow] = starts
+		return false, ReasonBudget
+	}
+	if maxRunsPerDay > 0 && len(starts) >= int(maxRunsPerDay) {
+		c.starts[workflow] = starts
+		return false, ReasonDailyBudget
+	}
+	c.starts[workflow] = append(starts, now)
 
 	c.active[workflow]++
 	c.totalActive++
@@ -155,9 +187,11 @@ func (c *Conditions) Active(workflow string) int {
 	return c.active[workflow]
 }
 
-// pruneStarts drops start times older than budgetWindow before now.
-func pruneStarts(starts []time.Time, now time.Time) []time.Time {
-	cutoff := now.Add(-budgetWindow)
+// pruneStarts drops start times older than window before now. starts is
+// assumed sorted ascending (Admit only ever appends now, which advances
+// monotonically call to call), so the retained tail is already sorted too.
+func pruneStarts(starts []time.Time, now time.Time, window time.Duration) []time.Time {
+	cutoff := now.Add(-window)
 	i := 0
 	for i < len(starts) && starts[i].Before(cutoff) {
 		i++
@@ -166,4 +200,19 @@ func pruneStarts(starts []time.Time, now time.Time) []time.Time {
 		return starts
 	}
 	return append([]time.Time(nil), starts[i:]...)
+}
+
+// countSince counts the tail of a sorted-ascending starts slice at or after
+// cutoff — a narrower sub-window over the same slice pruneStarts already
+// retained at a wider width (#340: one starts history serves both the
+// hourly and the daily check without tracking a second slice).
+func countSince(starts []time.Time, cutoff time.Time) int {
+	n := 0
+	for i := len(starts) - 1; i >= 0; i-- {
+		if starts[i].Before(cutoff) {
+			break
+		}
+		n++
+	}
+	return n
 }

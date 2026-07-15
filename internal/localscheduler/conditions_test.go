@@ -101,30 +101,121 @@ func TestAdmitBudgetWindow(t *testing.T) {
 	}
 }
 
-// TestAdmitWithoutBudgetDoesNotAccumulateStarts is issue #138's unbounded-
-// growth fix: a workflow with no MaxRunsPerHour configured must never grow
-// Conditions' starts map, since nothing ever prunes it for that workflow
-// (Admit's own prune only runs inside the MaxRunsPerHour>0 branch) — before
-// this fix, a schedule like `@every 1m` with no budget set would accumulate
-// ~1,440 unpruned entries per day for the life of the daemon.
-func TestAdmitWithoutBudgetDoesNotAccumulateStarts(t *testing.T) {
+// TestAdmitDailyBudgetCapsBelowHourlyBudget is #340's acceptance scenario:
+// a workflow with MaxRunsPerHour:20, MaxRunsPerDay:2 admits at most 2 runs
+// across 24h even though the hourly budget alone would allow far more —
+// before this field existed, a daily ceiling could only be faked by
+// combining a specific cron cadence with the hourly cap.
+func TestAdmitDailyBudgetCapsBelowHourlyBudget(t *testing.T) {
+	c := NewConditions()
+	r := apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 20, MaxRunsPerDay: 2}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	ok, _ := c.Admit("wf", r, base)
+	if !ok {
+		t.Fatal("1st run should admit under the daily budget of 2")
+	}
+	c.Release("wf")
+	// An hour later: well within the hourly budget of 20, still within the
+	// daily budget of 2.
+	ok, _ = c.Admit("wf", r, base.Add(time.Hour))
+	if !ok {
+		t.Fatal("2nd run (1h later) should admit under the daily budget of 2")
+	}
+	c.Release("wf")
+	// Another hour later: the hourly budget (20) has plenty of headroom,
+	// but the daily budget (2) is exhausted.
+	ok, reason := c.Admit("wf", r, base.Add(2*time.Hour))
+	if ok || reason != ReasonDailyBudget {
+		t.Fatalf("3rd run should be refused by the daily budget despite hourly headroom: ok=%v reason=%s", ok, reason)
+	}
+
+	// Outside the rolling 24h window, the daily budget resets.
+	ok, reason = c.Admit("wf", r, base.Add(25*time.Hour))
+	if !ok {
+		t.Fatalf("run outside the rolling daily window should admit: %s", reason)
+	}
+}
+
+// TestWorkflowDailyBudgetOverridesPerWorkflowSpec mirrors
+// TestWorkflowBudgetOverridesPerWorkflowSpec for the daily override
+// (#340): instance.yaml's runConditions.workflowDailyBudgets overrides a
+// specific workflow's runs-per-day budget without editing its own spec.
+func TestWorkflowDailyBudgetOverridesPerWorkflowSpec(t *testing.T) {
+	c := NewConditions()
+	c.SetInstanceLimits(0, nil, map[string]int{"wf": 1})
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	r := apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 100, MaxRunsPerDay: 10} // spec allows 10/day
+
+	ok, _ := c.Admit("wf", r, base)
+	if !ok {
+		t.Fatal("1st run should admit under the override daily budget of 1")
+	}
+	c.Release("wf")
+	ok, reason := c.Admit("wf", r, base.Add(time.Minute))
+	if ok || reason != ReasonDailyBudget {
+		t.Fatalf("2nd run should be refused by the instance override (1/day), not the spec's 10/day: ok=%v reason=%s", ok, reason)
+	}
+}
+
+// TestAdmitNoDailyBudgetMeansUncapped confirms MaxRunsPerDay's zero value
+// has no non-zero spec default (unlike MaxRunsPerHour's #339 fallback) —
+// a workflow that never sets it is bounded only by its (defaulted) hourly
+// budget, not silently capped per day too.
+func TestAdmitNoDailyBudgetMeansUncapped(t *testing.T) {
+	c := NewConditions()
+	r := apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 5} // no MaxRunsPerDay
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	admitted := 0
+	for h := 0; h < 30; h++ { // 30 separate hourly windows, well over a day
+		ok, _ := c.Admit("wf", r, base.Add(time.Duration(h)*time.Hour))
+		if ok {
+			admitted++
+			c.Release("wf")
+		}
+	}
+	if admitted != 30 {
+		t.Fatalf("admitted = %d across 30 separate hourly windows, want 30 (no daily cap should apply)", admitted)
+	}
+}
+
+// TestAdmitWithoutBudgetDefaultsToBoundedRate is #339's spec-default fix
+// (a workflow with no MaxRunsPerHour configured now falls back to a sane
+// default — 10/hour, see Admit — rather than "no budget enforced at all")
+// applied to issue #138's original unbounded-growth concern: since Admit
+// now always has an effective non-zero budget, it refuses once that budget
+// is hit, which keeps Conditions' starts map bounded by construction —
+// before #138's own fix (and still true after #339 changed what "no
+// configured budget" defaults to), a schedule like `@every 1m` with no
+// budget set could accumulate ~1,440 unpruned entries per day for the life
+// of the daemon.
+func TestAdmitWithoutBudgetDefaultsToBoundedRate(t *testing.T) {
 	c := NewConditions()
 	r := apiv1.ReadinessConditions{MaxConcurrentRuns: 1000} // no MaxRunsPerHour
 	now := time.Now()
 
+	admitted := 0
 	for i := 0; i < 50; i++ {
 		ok, reason := c.Admit("wf", r, now)
-		if !ok {
-			t.Fatalf("admit %d should succeed: %s", i, reason)
+		if ok {
+			admitted++
+			c.Release("wf")
+			continue
 		}
-		c.Release("wf")
+		if reason != ReasonBudget {
+			t.Fatalf("admit %d refused for %q, want budget", i, reason)
+		}
+	}
+	if admitted != 10 {
+		t.Fatalf("admitted = %d, want exactly 10 (the new spec default)", admitted)
 	}
 
 	c.mu.Lock()
 	got := len(c.starts["wf"])
 	c.mu.Unlock()
-	if got != 0 {
-		t.Fatalf("starts[wf] = %d entries, want 0 — a workflow with no MaxRunsPerHour must never accumulate starts", got)
+	if got != 10 {
+		t.Fatalf("starts[wf] = %d entries, want exactly 10 — bounded by the default budget, not unbounded", got)
 	}
 }
 
@@ -136,7 +227,7 @@ func TestAdmitWithoutBudgetDoesNotAccumulateStarts(t *testing.T) {
 // workflow/instance").
 func TestInstanceMaxParallelCapsAcrossWorkflows(t *testing.T) {
 	c := NewConditions()
-	c.SetInstanceLimits(2, nil)
+	c.SetInstanceLimits(2, nil, nil)
 	now := time.Now()
 	r := apiv1.ReadinessConditions{MaxConcurrentRuns: 5} // generous per-workflow limit
 
@@ -166,7 +257,7 @@ func TestInstanceMaxParallelCapsAcrossWorkflows(t *testing.T) {
 // previously parsed and scaffolded but never consulted by Admit.
 func TestWorkflowBudgetOverridesPerWorkflowSpec(t *testing.T) {
 	c := NewConditions()
-	c.SetInstanceLimits(0, map[string]int{"wf": 1})
+	c.SetInstanceLimits(0, map[string]int{"wf": 1}, nil)
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	r := apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 10} // spec allows 10/hr
 
