@@ -1,13 +1,32 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
+
+func writeStatusRun(t *testing.T, root, runID, workflow, gaggle string, startedAt time.Time) {
+	t.Helper()
+	run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
+		RunID:     runID,
+		Workflow:  workflow,
+		Gaggle:    gaggle,
+		StartedAt: startedAt,
+	}, nil)
+	if err != nil {
+		t.Fatalf("create status fixture run: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close status fixture run: %v", err)
+	}
+}
 
 // TestStatusRejectsNonInstanceRoot is issue #142: a typo'd or otherwise
 // nonexistent path used to fall through to listRuns finding no runs/ dir,
@@ -39,6 +58,26 @@ func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
 	}
 }
 
+func TestStatusJSON(t *testing.T) {
+	root := initDemo(t)
+	oldStartedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
+	newStartedAt := oldStartedAt.Add(time.Hour)
+	writeStatusRun(t, root, "a-new", "new-workflow", "new-gaggle", newStartedAt)
+	writeStatusRun(t, root, "z-old", "old-workflow", "old-gaggle", oldStartedAt)
+
+	code, stdout, stderr := runArgs(t, "status", "--json", root)
+	if code != 0 {
+		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
+	}
+	want := fmt.Sprintf(
+		`[{"runId":"z-old","workflow":"old-workflow","gaggle":"old-gaggle","phase":"running","startedAt":%q},{"runId":"a-new","workflow":"new-workflow","gaggle":"new-gaggle","phase":"running","startedAt":%q}]`+"\n",
+		oldStartedAt.Format(time.RFC3339), newStartedAt.Format(time.RFC3339),
+	)
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
 func TestListRunsSkipsNonRunEntry(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
@@ -56,5 +95,35 @@ func TestListRunsSkipsNonRunEntry(t *testing.T) {
 	}
 	if got := runs[0]; got.RunID != "valid-run" || got.Workflow != "default-implement" || got.Gaggle != "example" || got.Phase != "running" {
 		t.Fatalf("listRuns returned %+v, want the valid run summary", got)
+	}
+}
+
+func TestStatusJSONEmptyInstance(t *testing.T) {
+	root := initDemo(t)
+	code, stdout, stderr := runArgs(t, "status", "--json", root)
+	if code != 0 {
+		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
+	}
+	if stdout != "[]\n" {
+		t.Fatalf("stdout = %q, want %q", stdout, "[]\n")
+	}
+}
+
+func TestStatusDefaultTableOutputUnchanged(t *testing.T) {
+	root := initDemo(t)
+	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
+	writeStatusRun(t, root, "fixture-run", "fixture-workflow", "fixture", startedAt)
+
+	code, stdout, stderr := runArgs(t, "status", root)
+	if code != 0 {
+		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
+	}
+	want := fmt.Sprintf(
+		"%-34s  %-24s  %-10s  %-10s  %s\n%-34s  %-24s  %-10s  %-10s  %s\n",
+		"RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED",
+		"fixture-run", "fixture-workflow", "fixture", "running", startedAt.Format(time.RFC3339),
+	)
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
 }

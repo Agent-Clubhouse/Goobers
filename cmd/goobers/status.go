@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"io"
 	"os"
@@ -10,11 +11,20 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
+type statusJSONSummary struct {
+	RunID     string    `json:"runId"`
+	Workflow  string    `json:"workflow"`
+	Gaggle    string    `json:"gaggle"`
+	Phase     string    `json:"phase"`
+	StartedAt time.Time `json:"startedAt"`
+}
+
 func runStatus(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	jsonOutput := fs.Bool("json", false, "emit run summaries as JSON")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers status [path]\n\n"+
+		pf(stderr, "Usage: goobers status [--json] [path]\n\n"+
 			"List runs under an instance's runs/ directory with their current phase\n"+
 			"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
 	}
@@ -40,11 +50,28 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].StartedAt.Before(runs[j].StartedAt) })
+	if *jsonOutput {
+		summaries := make([]statusJSONSummary, len(runs))
+		for i, r := range runs {
+			summaries[i] = statusJSONSummary{
+				RunID:     r.RunID,
+				Workflow:  r.Workflow,
+				Gaggle:    r.Gaggle,
+				Phase:     string(r.Phase),
+				StartedAt: r.StartedAt,
+			}
+		}
+		if err := json.NewEncoder(stdout).Encode(summaries); err != nil {
+			pf(stderr, "error: encode status: %v\n", err)
+			return 2
+		}
+		return 0
+	}
 	if len(runs) == 0 {
 		pln(stdout, "no runs found — trigger one with 'goobers run <workflow>'")
 		return 0
 	}
-	sort.Slice(runs, func(i, j int) bool { return runs[i].StartedAt.Before(runs[j].StartedAt) })
 
 	pf(stdout, "%-34s  %-24s  %-10s  %-10s  %s\n", "RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED")
 	for _, r := range runs {
