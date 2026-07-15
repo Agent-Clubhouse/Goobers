@@ -1,0 +1,110 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const workflowShowFixture = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: backlog-item
+      selector:
+        goobers: "true"
+  start: prepare
+  tasks:
+    - name: prepare
+      type: deterministic
+      goal: Prepare the change.
+      run:
+        command: ["true"]
+      next: review
+    - name: finish
+      type: agentic
+      goober: coder
+      goal: Finish the change.
+  gates:
+    - name: review
+      evaluator: human
+      human: {}
+      branches:
+        pass: finish
+        fail: prepare
+`
+
+func TestWorkflowShowPrintsTextDAG(t *testing.T) {
+	root := initDemo(t)
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	if err := os.WriteFile(workflowPath, []byte(workflowShowFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "workflow", "show", "default-implement", root)
+	if code != 0 {
+		t.Fatalf("workflow show: code = %d, stderr = %q", code, stderr)
+	}
+
+	want := `workflow: default-implement
+start: prepare
+stages:
+  prepare (kind: deterministic) -> review
+  finish (kind: agentic) -> <complete>
+  review (kind: gate, evaluator: human)
+    pass target: finish
+    fail target: prepare
+`
+	if stdout != want {
+		t.Fatalf("workflow show stdout:\n%s\nwant:\n%s", stdout, want)
+	}
+}
+
+func TestWorkflowShowUnknownWorkflow(t *testing.T) {
+	root := initDemo(t)
+	code, _, stderr := runArgs(t, "workflow", "show", "no-such-workflow", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, `no workflow named "no-such-workflow"`) {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestWorkflowUsage(t *testing.T) {
+	code, _, stderr := runArgs(t, "workflow")
+	if code != 2 {
+		t.Fatalf("code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr, "Usage: goobers workflow show <name> [path]") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+
+	code, stdout, _ := runArgs(t, "workflow", "help")
+	if code != 0 {
+		t.Fatalf("workflow help code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "Usage: goobers workflow show <name> [path]") {
+		t.Fatalf("workflow help stdout = %q", stdout)
+	}
+
+	code, _, stderr = runArgs(t, "workflow", "bogus")
+	if code != 2 {
+		t.Fatalf("unknown subcommand code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr, `unknown subcommand "bogus"`) {
+		t.Fatalf("unknown subcommand stderr = %q", stderr)
+	}
+
+	code, stdout, _ = runArgs(t, "help")
+	if code != 0 {
+		t.Fatalf("help code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "goobers workflow show <name> [path]") {
+		t.Fatalf("help stdout = %q", stdout)
+	}
+}
