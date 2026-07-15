@@ -126,7 +126,14 @@ func TestIssueCloseOutMissingRunIDFailsClosed(t *testing.T) {
 	newGitHubProvider = server.newGitHubProvider
 	t.Cleanup(func() { newGitHubProvider = prev })
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
-	// Deliberately no GOOBERS_RUN_ID/GOOBERS_WORKFLOW.
+	// #321: a live local-ci `go test ./...` inherits the run's real
+	// GOOBERS_RUN_ID/GOOBERS_WORKFLOW from buildStageEnv, defeating this
+	// fail-closed test. Simulate the parent-process leak, then clear it —
+	// genuinely exercises the missing-run-context path and regression-guards the
+	// fix under normal CI.
+	t.Setenv("GOOBERS_RUN_ID", "ambient-parent-leak")
+	t.Setenv("GOOBERS_WORKFLOW", "ambient-parent-leak")
+	unsetRunContext(t)
 	t.Chdir(t.TempDir())
 
 	code, _, stderr := runArgs(t, "issue-close-out", root)
