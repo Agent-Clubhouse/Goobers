@@ -253,13 +253,14 @@ func TestBacklogQueryMissingRunIDFailsClosed(t *testing.T) {
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
 	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
 	// #321: a live local-ci `go test ./...` inherits the run's real
-	// GOOBERS_RUN_ID from internal/executor.buildStageEnv, which silently
-	// defeated this fail-closed test on every run. Simulate that parent-process
-	// leak, then clear it — so the test genuinely exercises the missing-run-id
-	// path AND regression-guards the fix under normal CI (which has no ambient
-	// GOOBERS_RUN_ID of its own to reproduce the leak).
+	// GOOBERS_RUN_ID/GOOBERS_WORKFLOW from internal/executor.buildStageEnv, which
+	// silently defeated this fail-closed test on every run. Simulate that
+	// parent-process leak, then clear it — so the test genuinely exercises the
+	// missing-run-context path AND regression-guards the fix under normal CI
+	// (which has no ambient run context of its own to reproduce the leak).
 	t.Setenv("GOOBERS_RUN_ID", "ambient-parent-leak")
-	unsetRunID(t)
+	t.Setenv("GOOBERS_WORKFLOW", "ambient-parent-leak")
+	unsetRunContext(t)
 	t.Chdir(t.TempDir())
 
 	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)

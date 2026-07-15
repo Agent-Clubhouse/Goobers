@@ -15,24 +15,30 @@ func runArgs(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	return code, out.String(), errOut.String()
 }
 
-// unsetRunID clears any ambient GOOBERS_RUN_ID for the test's duration, with
-// restore. A test exercising the genuinely-unset (fail-closed) path must not be
-// defeated by an ID leaking in from the parent process — which is exactly what
-// happens under a live `local-ci` stage: internal/executor.buildStageEnv injects
-// the run's real GOOBERS_RUN_ID, and `make ci`'s `go test ./...` inherits it, so
-// these tests saw an ambient ID, skipped the fail-closed branch, and failed on
-// every run regardless of the implementer's diff (#321). t.Setenv can only set,
-// never unset, so this is explicit os.Unsetenv + os.Setenv restore.
-func unsetRunID(t *testing.T) {
+// unsetRunContext clears any ambient GOOBERS_RUN_ID and GOOBERS_WORKFLOW for the
+// test's duration, with restore. A test exercising the genuinely-unset
+// (fail-closed) run-context path must not be defeated by these leaking in from
+// the parent process — which is exactly what happens under a live `local-ci`
+// stage: internal/executor.buildStageEnv injects both the run's real
+// GOOBERS_RUN_ID and GOOBERS_WORKFLOW (env.go:65), and `make ci`'s
+// `go test ./...` inherits them, so these tests saw ambient values, skipped the
+// fail-closed branch, and failed on every run regardless of the implementer's
+// diff (#321). Both are cleared because the tests' stated precondition is that
+// both are absent. t.Setenv can only set, never unset, so this is explicit
+// os.Unsetenv + os.Setenv restore.
+func unsetRunContext(t *testing.T) {
 	t.Helper()
-	orig, ok := os.LookupEnv("GOOBERS_RUN_ID")
-	if !ok {
-		return
+	for _, key := range []string{"GOOBERS_RUN_ID", "GOOBERS_WORKFLOW"} {
+		orig, ok := os.LookupEnv(key)
+		if !ok {
+			continue
+		}
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
+		key := key
+		t.Cleanup(func() { _ = os.Setenv(key, orig) })
 	}
-	if err := os.Unsetenv("GOOBERS_RUN_ID"); err != nil {
-		t.Fatalf("unset GOOBERS_RUN_ID: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Setenv("GOOBERS_RUN_ID", orig) })
 }
 
 func TestRunNoArgs(t *testing.T) {
