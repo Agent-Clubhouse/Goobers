@@ -2,11 +2,14 @@ package localscheduler
 
 import "time"
 
-// TriggerState tracks one workflow's cron evaluation state: the schedule and
-// the last instant it was evaluated, so a tick can decide whether it's due.
+// TriggerState tracks one workflow's cron evaluation state: its schedules
+// (#341 — a workflow may declare more than one) and the last instant it was
+// evaluated, so a tick can decide whether any of them is due. All schedules
+// for a workflow share one LastEval baseline rather than being tracked
+// independently — see Tick's doc comment for why.
 type TriggerState struct {
-	Workflow string
-	Schedule Schedule
+	Workflow  string
+	Schedules []Schedule
 	// LastEval is the last instant this trigger was evaluated (fired or not).
 	// It must be initialized explicitly — by the daemon's start time for a
 	// trigger never seen before, or by the timestamp of its most recent
@@ -34,28 +37,40 @@ type TickResult struct {
 // very long daemon outage against a fine-grained schedule) can't spin.
 const maxMissedTickCount = 10_000
 
-// Tick evaluates whether t is due at now and returns the decision plus the
-// LastEval to record afterward. The missed-tick policy is "fire at most one
-// catch-up": however many scheduled fires fell inside [LastEval, now), Tick
-// fires the workflow once and advances LastEval to now — never to the next
-// unfired tick — so no backlog of stale fires replays.
+// Tick evaluates whether any of t.Schedules is due at now and returns the
+// decision plus the LastEval to record afterward. The missed-tick policy is
+// "fire at most one catch-up": however many scheduled fires fell inside
+// [LastEval, now) — across every one of t.Schedules combined — Tick fires
+// the workflow once and advances LastEval to now — never to the next unfired
+// tick — so no backlog of stale fires replays. An empty t.Schedules never
+// fires (a manual-only trigger state).
 func Tick(t TriggerState, now time.Time) TickResult {
-	next := t.Schedule.Next(t.LastEval)
-	if next.After(now) {
+	due := false
+	for _, sched := range t.Schedules {
+		if !sched.Next(t.LastEval).After(now) {
+			due = true
+			break
+		}
+	}
+	if !due {
 		return TickResult{Fire: false, LastEval: t.LastEval}
 	}
 
-	// Due. Count how many fires this collapses (bounded) purely for the
-	// observability of the catch-up reason; the decision itself is already made.
-	missed := 1
-	cursor := next
-	for missed < maxMissedTickCount {
-		n := t.Schedule.Next(cursor)
-		if n.After(now) {
-			break
+	// Due. Count how many fires this collapses across every schedule
+	// (bounded per schedule) purely for the observability of the catch-up
+	// reason; the decision itself is already made. A single schedule's count
+	// is identical to the pre-#341 single-schedule behavior.
+	missed := 0
+	for _, sched := range t.Schedules {
+		cursor := t.LastEval
+		for i := 0; i < maxMissedTickCount; i++ {
+			n := sched.Next(cursor)
+			if n.After(now) {
+				break
+			}
+			cursor = n
+			missed++
 		}
-		cursor = n
-		missed++
 	}
 
 	return TickResult{

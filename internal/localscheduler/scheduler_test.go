@@ -76,7 +76,7 @@ func TestTickDispatchesDueWorkflow(t *testing.T) {
 	sched, dir := newTestScheduler(t, []WorkflowEntry{{
 		Workflow:  "implement",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
-		Schedule:  fakeSchedule{d: time.Hour},
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
 		Starter:   starter,
 	}})
 
@@ -109,7 +109,7 @@ func TestTickSkipsWhenConditionsExhausted(t *testing.T) {
 	sched, dir := newTestScheduler(t, []WorkflowEntry{{
 		Workflow:  "implement",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
-		Schedule:  fakeSchedule{d: time.Hour},
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
 		Starter:   starter,
 	}})
 
@@ -152,7 +152,7 @@ func TestCronRunHoldsSlotThenManualTriggerRejected(t *testing.T) {
 	sched, _ := newTestScheduler(t, []WorkflowEntry{{
 		Workflow:  "implement",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
-		Schedule:  fakeSchedule{d: time.Hour},
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
 		Starter:   starter,
 	}})
 
@@ -177,7 +177,7 @@ func TestManualTriggerBypassesCronButHonorsConditions(t *testing.T) {
 	sched, _ := newTestScheduler(t, []WorkflowEntry{{
 		Workflow:  "curate",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
-		Schedule:  nil, // manual-only: Tick alone would never fire this
+		Schedules: nil, // manual-only: Tick alone would never fire this
 		Starter:   starter,
 	}})
 
@@ -360,7 +360,7 @@ func TestTickSkipsOnBudgetExhaustion(t *testing.T) {
 	sched, dir := newTestScheduler(t, []WorkflowEntry{{
 		Workflow:  "curate",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 1},
-		Schedule:  fakeSchedule{d: time.Hour},
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
 		Starter:   starter,
 	}})
 
@@ -397,7 +397,7 @@ func TestMissedTickCatchUpJournaled(t *testing.T) {
 	sched, dir := newTestScheduler(t, []WorkflowEntry{{
 		Workflow:  "nominate",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
-		Schedule:  fakeSchedule{d: time.Hour},
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
 		Starter:   starter,
 	}})
 
@@ -449,7 +449,7 @@ func TestRunDoesNotBusyPoll(t *testing.T) {
 	sched := New([]WorkflowEntry{{
 		Workflow:  "wf",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100},
-		Schedule:  fakeSchedule{d: time.Hour},
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
 		Starter:   starter,
 	}}, log, WithClock(fc.Now, fc.After))
 
@@ -509,7 +509,7 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 		Workflow:  "implement",
 		Gaggle:    "acme-web",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
-		Schedule:  fakeSchedule{d: time.Hour},
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
 		Starter:   starter,
 	}}, log, WithTelemetry(spans))
 
@@ -540,7 +540,7 @@ func TestConcurrentTickDoesNotDoubleDispatch(t *testing.T) {
 	sched, _ := newTestScheduler(t, []WorkflowEntry{{
 		Workflow:  "implement",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1000},
-		Schedule:  fakeSchedule{d: time.Hour},
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
 		Starter:   starter,
 	}})
 

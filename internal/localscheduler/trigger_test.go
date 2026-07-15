@@ -15,7 +15,7 @@ func (f fakeSchedule) Next(after time.Time) time.Time {
 func TestTickFiresWhenDue(t *testing.T) {
 	sched := fakeSchedule{d: time.Hour}
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	ts := TriggerState{Workflow: "wf", Schedule: sched, LastEval: base}
+	ts := TriggerState{Workflow: "wf", Schedules: []Schedule{sched}, LastEval: base}
 
 	res := Tick(ts, base.Add(30*time.Minute))
 	if res.Fire {
@@ -41,7 +41,7 @@ func TestTickFiresWhenDue(t *testing.T) {
 func TestTickCollapsesMissedTicksToOne(t *testing.T) {
 	sched := fakeSchedule{d: time.Hour}
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	ts := TriggerState{Workflow: "wf", Schedule: sched, LastEval: base}
+	ts := TriggerState{Workflow: "wf", Schedules: []Schedule{sched}, LastEval: base}
 
 	// Daemon was down for 5 hours' worth of ticks.
 	now := base.Add(5 * time.Hour)
@@ -67,11 +67,71 @@ func TestTickCollapsesMissedTicksToOne(t *testing.T) {
 func TestTickHandlesExactlyOneMissedTick(t *testing.T) {
 	sched := fakeSchedule{d: time.Hour}
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	ts := TriggerState{Workflow: "wf", Schedule: sched, LastEval: base}
+	ts := TriggerState{Workflow: "wf", Schedules: []Schedule{sched}, LastEval: base}
 
 	res := Tick(ts, base.Add(time.Hour+time.Second))
 	if !res.Fire || res.CatchUp {
 		t.Fatalf("a single due tick evaluated slightly late is on-time, not catch-up: %+v", res)
+	}
+}
+
+// TestTickFiresIfAnyScheduleIsDue is #341's core regression: a workflow with
+// two schedules fires as soon as EITHER is due, not just the first one
+// declared — the whole point of supporting more than one.
+func TestTickFiresIfAnyScheduleIsDue(t *testing.T) {
+	fast := fakeSchedule{d: 15 * time.Minute}
+	slow := fakeSchedule{d: 24 * time.Hour}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ts := TriggerState{Workflow: "wf", Schedules: []Schedule{slow, fast}, LastEval: base}
+
+	// Not due yet by either schedule.
+	res := Tick(ts, base.Add(5*time.Minute))
+	if res.Fire {
+		t.Fatalf("should not be due yet: %+v", res)
+	}
+
+	// Due by the fast schedule (15m) even though the slow one (24h) isn't.
+	res = Tick(ts, base.Add(15*time.Minute))
+	if !res.Fire {
+		t.Fatal("expected a fire once the fast schedule is due, even though the slow one isn't")
+	}
+	if res.LastEval != base.Add(15*time.Minute) {
+		t.Errorf("LastEval = %v, want the tick time", res.LastEval)
+	}
+}
+
+// TestTickEmptySchedulesNeverFires proves a manual-only trigger state (no
+// schedules) never fires from Tick — the same behavior Scheduler's own
+// len(entry.Schedules)==0 skip relies on, tested at the Tick level directly.
+func TestTickEmptySchedulesNeverFires(t *testing.T) {
+	ts := TriggerState{Workflow: "wf", Schedules: nil, LastEval: time.Now()}
+	if res := Tick(ts, time.Now().Add(365*24*time.Hour)); res.Fire {
+		t.Fatalf("a trigger state with no schedules must never fire: %+v", res)
+	}
+}
+
+// TestTickMultiScheduleMissedTicksCombineAcrossSchedules proves the
+// catch-up missed-tick count sums fires across every schedule combined (not
+// just the one that happened to be due first) — still collapsing to exactly
+// one dispatched run and advancing LastEval to now, same policy as a single
+// schedule.
+func TestTickMultiScheduleMissedTicksCombineAcrossSchedules(t *testing.T) {
+	a := fakeSchedule{d: time.Hour}     // fires hourly
+	b := fakeSchedule{d: 2 * time.Hour} // fires every 2h
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ts := TriggerState{Workflow: "wf", Schedules: []Schedule{a, b}, LastEval: base}
+
+	// 4 hours elapsed: schedule a missed 4 fires, schedule b missed 2 — 6 combined.
+	now := base.Add(4 * time.Hour)
+	res := Tick(ts, now)
+	if !res.Fire || !res.CatchUp {
+		t.Fatalf("expected a catch-up fire: %+v", res)
+	}
+	if res.MissedTicks != 6 {
+		t.Errorf("MissedTicks = %d, want 6 (4 from the hourly schedule + 2 from the 2-hourly)", res.MissedTicks)
+	}
+	if res.LastEval != now {
+		t.Fatalf("LastEval should collapse to now, got %v want %v", res.LastEval, now)
 	}
 }
 
