@@ -43,8 +43,8 @@ your only output is a verdict.
      reasonably address.
 5. Cite what backs your decision so a human skimming the run later sees
    exactly what you looked at: put a per-finding file/line reference in that
-   finding's `location`, and list the artifacts you reviewed in the top-level
-   `evidence` array (see Done for the exact shapes).
+   finding's `location`. You do not report the artifacts you reviewed — the
+   runner already records the diff it handed you as the run's evidence.
 
 ## Repasses
 
@@ -85,7 +85,10 @@ if a field or shape is wrong:
   - `location` (optional) — the file/line the finding refers to; put your
     per-finding citation **here**, not in any other key.
   A finding has no `evidence` field and no other keys.
-- `evidence` (optional) — a **top-level** array pointing at the artifacts you
-  reviewed (e.g. the diff you were given). Evidence is top-level, never nested
-  inside a finding.
 - `summary` (optional) — a one-line summary.
+
+Do **not** emit an `evidence` field. A verdict's `evidence` must be digested
+artifact pointers, which you cannot construct — and you don't need to: the
+runner already records the diff it handed you as the run's evidence,
+independent of your verdict. Put per-finding file/line citations in each
+finding's `location`.
