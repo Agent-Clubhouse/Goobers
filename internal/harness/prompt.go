@@ -63,4 +63,11 @@ const resultShapeHint = `{"status": "success"|"failure"|"blocked", "outputs": {.
 
 On a "failure" or "blocked" status, also include an "error" object: {"code": "...", "message": "..."} (both non-empty). Omit "error" entirely on success. Do not populate "artifacts" — the runner records and digests any stage artifacts.`
 
-const verdictShapeHint = `{"decision": "pass"|"fail"|"needs-changes", "rationale": "...", "findings": [{"severity": "...", "message": "...", "location": "..."}], "summary": "..."}`
+// verdictShapeHint shows finding.severity as an explicit enum: the schema's
+// finding is additionalProperties:false with severity ∈
+// {info,warning,error,critical}, so an unconstrained "severity": "..." let a
+// model guess an out-of-enum value ("Medium") and add extra per-finding fields,
+// failing validation with no journaled explanation (#304, same shape-gap class
+// as #297). A finding carries only severity/message/location — evidence is a
+// separate top-level array of artifact pointers, not per-finding.
+const verdictShapeHint = `{"decision": "pass"|"fail"|"needs-changes", "rationale": "...", "findings": [{"severity": "info"|"warning"|"error"|"critical", "message": "...", "location": "..."}], "summary": "..."}`
