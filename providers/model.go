@@ -227,12 +227,18 @@ type PullRequestPollRequest struct {
 
 // PullRequestPollResult is the deterministic stage-output envelope a repass gate
 // branches on: mergeability, review decision, combined check state + failure
-// detail refs, and comments since the last poll (BL-031).
+// detail refs, and comments since the last poll (BL-031). Draft/HeadSHA/BaseSHA
+// (issue #360) are the live signal a conjunctive auto-merge action re-checks
+// against a previously-computed verdict's SHA-pin before acting on it — never
+// trust a caller-supplied "still valid" claim, always re-poll (design doc D6).
 type PullRequestPollResult struct {
 	Number           int                  `json:"number"`
 	State            string               `json:"state"`
 	Merged           bool                 `json:"merged"`
 	Mergeable        *bool                `json:"mergeable,omitempty"`
+	Draft            bool                 `json:"draft"`
+	HeadSHA          string               `json:"headSha,omitempty"`
+	BaseSHA          string               `json:"baseSha,omitempty"`
 	ReviewDecision   ReviewDecision       `json:"reviewDecision"`
 	RequestedChanges int                  `json:"requestedChanges"`
 	CheckState       CheckState           `json:"checkState"`
@@ -254,6 +260,37 @@ type ClosePullRequestResult struct {
 	Number int    `json:"number"`
 	Merged bool   `json:"merged"`
 	State  string `json:"state"`
+}
+
+// MergePullRequestRequest describes merging a pull request (issue #360). The
+// caller (a conjunctive auto-merge action) is responsible for verifying every
+// merge conjunct BEFORE calling this — MergePullRequest itself performs no
+// policy check; it is the provider-level primitive the policy sits in front
+// of, mirroring how CreateBranch/Commit are pure git-remote operations with
+// no workflow-level judgment of their own.
+type MergePullRequestRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	PullID     string        `json:"pullId"`
+	// ExpectedHeadSHA, if set, is passed to GitHub's merge API as its own
+	// optimistic-concurrency guard (the `sha` merge-body field): the merge is
+	// refused server-side if the PR's actual current head has moved past it
+	// since the caller last checked — belt-and-suspenders alongside the
+	// caller's own SHA-pin re-check (D6).
+	ExpectedHeadSHA string `json:"expectedHeadSha,omitempty"`
+	// CommitMessage, if set, overrides GitHub's default merge-commit message.
+	CommitMessage string `json:"commitMessage,omitempty"`
+}
+
+// MergePullRequestResult reports the outcome of a merge attempt. Merged=false
+// with a nil error never happens for GitHub (a refused merge — sha mismatch,
+// not mergeable, merge blocked by branch protection — is always a non-2xx
+// response, surfaced as an error) but the field exists for provider-neutral
+// callers that might report a soft refusal instead.
+type MergePullRequestResult struct {
+	Number   int    `json:"number"`
+	Merged   bool   `json:"merged"`
+	MergeSHA string `json:"mergeSha,omitempty"`
+	Message  string `json:"message,omitempty"`
 }
 
 // ListWorkItemsRequest filters backlog items for scheduler admission.

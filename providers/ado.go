@@ -218,6 +218,11 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 	return ClosePullRequestResult{}, fmt.Errorf("ado: pull request close lands in V1 parity (BL-033)")
 }
 
+// MergePullRequest is not yet implemented for Azure DevOps: see PollPullRequest.
+func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequestRequest) (MergePullRequestResult, error) {
+	return MergePullRequestResult{}, fmt.Errorf("ado: pull request merge lands in V1 parity (BL-033)")
+}
+
 // ListWorkItems lists Azure Boards work items as unified work items.
 func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequest) ([]WorkItem, error) {
 	project := p.project(req.Repository)

@@ -58,6 +58,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runIssueCloseOut(args[1:], stdout, stderr)
 	case "reset-rate-limit":
 		return runResetRateLimit(args[1:], stdout, stderr)
+	case "merge-pr":
+		return runMergePR(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0
@@ -89,13 +91,14 @@ Usage:
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
+  goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid (a workflow stage)
   goobers telemetry-query [--window <d>] emit telemetry signals JSON over a window (a workflow stage)
 
 path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
 business errors, 2 = usage/IO error.
 
-backlog-query/push-branch/open-pr/issue-close-out are the built-in
-provider-chain stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#237):
+backlog-query/push-branch/open-pr/issue-close-out/merge-pr are the built-in
+provider-chain stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#237/#360):
 invoked by the runner as a deterministic stage's shell command, not
 typically run by hand. They read their run context (instance root, run id,
 workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*

@@ -42,6 +42,13 @@ const (
 	// GitHubPRWrite grants GitHub PR open/poll/close (the implementation
 	// workflow's open-pr and ci-poll stages).
 	GitHubPRWrite Capability = "github:pr:write"
+	// GitHubPRMerge grants GitHub PR merge (issue #360) — deliberately
+	// separate from GitHubPRWrite so it can be granted narrowly to
+	// `merge-review` alone: `implementation` and `pr-remediation` push
+	// code and open/update PRs, but must never be able to merge one
+	// (docs/design/v0/pr-lifecycle-loop.md §7, "capability isolation, the
+	// clinching reason" a decider and an executor stay separate workflows).
+	GitHubPRMerge Capability = "github:pr:merge"
 	// TelemetryRead grants read access to the local telemetry rollup
 	// (stats/errors/spans) — internal/telemetry/query's gate.
 	TelemetryRead Capability = "telemetry:read"
@@ -69,7 +76,7 @@ const (
 
 // All returns every canonical capability, in declaration order.
 func All() []Capability {
-	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubPRWrite, TelemetryRead, JournalRead, AgentModel}
+	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubPRWrite, GitHubPRMerge, TelemetryRead, JournalRead, AgentModel}
 }
 
 // Known reports whether s is a canonical capability string.
