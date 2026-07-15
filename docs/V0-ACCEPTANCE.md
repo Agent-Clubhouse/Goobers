@@ -1,28 +1,30 @@
 # V0 Acceptance Runbook
 
-> Status: **All code dependencies shipped; live execution pending.** This is
-> the verification artifact for issue #30, the V0 milestone gate, and — per
-> epic #130 — the closing acceptance criterion for the V0.1 last-mile
-> integration remediation wave. As of `e739bd0` (2026-07-14): all 20 V0
-> bullets below are shipped, `#17`/`#23`/`#26`/`#29` (the last four holdouts
-> at the previous revision of this doc) are complete, and epic #130's own
-> remediation (real subcommands, live `CIPollExecutor`, live `GitHubProvider`
-> construction, worktree branch continuity, `prNumber` handoff, ci-gate
-> vocabulary symmetry, the Tutor wave T1–T5) is merged and independently
-> re-verified (`make ci` green, `-race`, 0 lint; static code-path audit —
-> see the epic-#130 remediation checklist below). **One known gap surfaced by
-> that audit:** `ref.touched` journal events for real provider mutations
-> (PR/issue/claim) never fire in production — `providers.WithMutationRecorder`
-> is wired in tests only; only a single per-run branch-touch event reaches the
-> journal. Tracked as a known limitation below, not yet filed as its own
-> issue. The milestone closes only once someone other than the runner's
-> primary implementer executes this runbook clean, end to end, on a real
-> target repo, and the [Execution record](#execution-record) appendix is
-> filled in with real journal excerpts and PR links (issue #30's acceptance
-> criteria) — **that live execution has not happened yet** as of this
-> revision; target-repo and credential provisioning are pending explicit
-> human confirmation (see #mission-conformance-acceptance, 2026-07-14).
-> Owner: Goobers-Dev-5.
+> Status: **Live execution complete — clean end-to-end pass recorded.** This
+> is the verification artifact for issue #30, the V0 milestone gate, and —
+> per epic #130 — the closing acceptance criterion for the V0.1 last-mile
+> integration remediation wave. As of `4a83970` (2026-07-15): all 20 V0
+> bullets below are shipped, epic #130's own remediation (real subcommands,
+> live `CIPollExecutor`, live `GitHubProvider` construction, worktree branch
+> continuity, `prNumber` handoff, ci-gate vocabulary symmetry, the Tutor wave
+> T1–T5) is merged and independently re-verified, and — new as of this
+> revision — the `implementation` workflow has now executed live against the
+> real target repo (`Agent-Clubhouse/Goobers`) end to end, from a claimed
+> backlog issue through a real, CI-green, human-mergeable PR (`#324`). This
+> pass was manually triggered (`goobers run implementation`), not cron-fired
+> — see the precision note in the epic #130 remediation checklist below for
+> why that still exercises this criterion's code path. See the
+> [Execution record](#execution-record) appendix below for the full journal
+> evidence, including a companion failing run that demonstrates the
+> repass/escalation path. **One known gap surfaced by the
+> pre-execution audit and still real:** `ref.touched` journal events for real
+> provider mutations (PR/issue/claim) never fire in production —
+> `providers.WithMutationRecorder` is wired in tests only; only a single
+> per-run branch-touch event reaches the journal. This did **not** block the
+> live run (the mutations themselves — the claim, the push, the opened PR —
+> all happened for real) but the per-mutation journal traceability epic #130
+> called out remains incomplete; tracked as #228, not overstated as fixed by
+> this run. Owner: Goobers-Dev-5.
 
 ## Purpose
 
@@ -223,10 +225,10 @@ reflects `main` as of this writing, not the eventual acceptance run.
 
 **All 20 bullets shipped as of `e739bd0`.** The last four holdouts (#17
 Deliverable B, #23 daemon loop, #26, #29 crash-resume) landed
-2026-07-13/14. This runbook's mechanics are ready to execute for real —
-what remains is the live execution itself (see status banner above) plus
-epic #130's own remediation checklist below, which this same live run also
-serves as the acceptance evidence for.
+2026-07-13/14. This runbook's mechanics have since been exercised for real
+(see status banner and [Execution record](#execution-record) below) —
+the same live run also serves as the acceptance evidence for epic #130's
+own remediation checklist below.
 
 ## Epic #130 remediation checklist (V0.1 last-mile integration)
 
@@ -258,9 +260,19 @@ on `e739bd0` (2026-07-14, ahead of the live run):
 
 **Static verification (2026-07-14, ahead of the live run):** `make ci` green
 on `e739bd0` (independent reproduction), `goobers validate` clean against
-`selfhost/`. Live execution — the actual cron-fired pass this table's own
-acceptance bar requires — is pending target-repo and credential
-confirmation; see status banner.
+`selfhost/`. **Live verification (2026-07-15):** the `implementation`
+workflow executed end to end against `Agent-Clubhouse/Goobers`, claiming a
+real backlog issue and opening a real, CI-green PR (`#324`); see
+[Execution record](#execution-record) below for the full journal evidence.
+**Precision note:** this pass was dispatched via `goobers run implementation`
+(a manual trigger), not an actual cron firing — epic #130's own criterion
+says "cron-fired." `run`'s manual trigger and a cron tick dispatch through
+the identical scheduler + runner code path (only `Trigger.Kind` differs; see
+#23/#96/#134/#135/#197/#200's daemon-lifecycle/scheduler-routing
+remediation, already covering this symmetry), so this run exercises the same
+downstream mechanics a cron-fired pass would. A literal cron-fired
+end-to-end pass has not separately been recorded in this session; that gap
+is real, not claimed as closed here.
 
 ## Known limitations (V0 → later)
 
@@ -321,7 +333,118 @@ decision for a bug:
 
 ## Execution record
 
-*(Empty until a clean, recorded execution happens — see the acceptance
-criteria in issue #30. This section will hold: the date, operator, seed
-issues filed, journal excerpts for at least one clean pass and one
-repass-triggering pass, and links to the resulting merged PR(s).)*
+**Date:** 2026-07-15. **Operator:** Goobers-Dev-5, running this exact
+runbook (§1–§3) against the real target repo `Agent-Clubhouse/Goobers` —
+this repo itself, per the self-hosting dogfood config (#28). **Seed issues:**
+`#317` (the run that reached a clean terminal pass, below) preceded by
+`#279`/`#280`/`#281` as prior-context seed issues used earlier in the same
+acceptance effort — `#280` and `#281` each independently exercised the
+repass→escalation path (4 and 5 genuine `needs-changes` review cycles
+respectively, both correctly routing to `@escalate` on repass-budget
+exhaustion — see #321's diagnostic thread on `#mission-v02-gate`,
+2026-07-15, for full journal detail on those two). `#317` was deliberately
+authored as a minimal, scope-creep-proof docs-only change specifically to
+isolate the mechanical pipeline from implementer-quality variance once
+#319 (implementer scope discipline) shipped.
+
+### Clean pass: run `924e2b3d4d4236521259bf2ea66fbe11`
+
+Triggered via `goobers run implementation .` against a freshly re-synced
+instance root (post-#323, the fix for #321 — see the repass-pass section
+below for why that fix was necessary). Claimed `#317`, ran the full
+workflow to completion in 505.7s wall time:
+
+```
+run:      924e2b3d4d4236521259bf2ea66fbe11
+workflow: implementation (v1)
+trigger:  manual implementation
+phase:    completed (machineState="", lastSeq=39)
+
+[3-8]   stage query-backlog  → success (claimed issue #317)
+[9-11]  stage implement      → success
+[15]    gate  review         → verdict=pass  target=local-ci
+[16-19] stage local-ci       → success
+[20]    gate  local-gate     → verdict=pass  target=push-branch
+[21-24] stage push-branch    → success
+[25-30] stage open-pr        → success  → ref.touched kind=pr id=324
+                                url=https://github.com/Agent-Clubhouse/Goobers/pull/324
+[31-32] stage ci-poll        → success  (real GitHub Actions `make ci`
+                                green, job 87304277074)
+[33]    gate  ci-gate        → verdict=pass  target=close-out
+[34-38] stage close-out      → success (issue #317 closed out)
+[39]    run.finished         → status=completed
+```
+
+Resulting PR: **[#324](https://github.com/Agent-Clubhouse/Goobers/pull/324)**
+— "docs(quickstart): add a one-line 'See also' pointer to
+V0-ACCEPTANCE.md", `Fixes #317`, branch
+`goobers/implementation/924e2b3d4d4236521259bf2ea66fbe11`, diff `+1/-0` in
+`docs/guides/quickstart.md` only (zero scope creep — matches #317's
+acceptance criteria exactly), state=OPEN/MERGEABLE at time of writing,
+pending the manual human merge the no-self-merge DoD requires (#30's
+acceptance criteria; see [Known limitations](#known-limitations-v0--later))
+— no agent merges to this repo autonomously, so this PR is left for Mason
+to merge directly rather than merged by the operator who opened this
+record.
+
+### Repass/escalation-triggering pass: run `1c93168e95c0a8fe17d63bf0259671e5`
+
+The immediately-prior run of the **same seed issue** (`#317`), on the
+**same implementer/reviewer instructions** (post-#319), differing only in
+that it ran *before* #321/#323 landed. Included here specifically because it
+isolates a single variable against the clean pass above — same issue, same
+correct 1-line diff, only the environment fix differs — making it a precise
+before/after demonstration of both the repass mechanism and the bug it was
+driven by:
+
+```
+run:      1c93168e95c0a8fe17d63bf0259671e5
+workflow: implementation (v1)
+trigger:  manual implementation
+phase:    escalated (machineState="", lastSeq=57)
+
+cycle 1: implement → success | review → pass  | local-ci → FAILURE (exit 2)
+         gate local-gate → verdict=fail, target=implement, repassAttempt=1
+cycle 2: implement → success | review → pass  | local-ci → FAILURE (exit 2)
+         gate local-gate → verdict=fail, target=implement, repassAttempt=2
+cycle 3: implement → success | review → pass  | local-ci → FAILURE (exit 2)
+         gate local-gate → verdict=fail, target=implement, repassAttempt=3
+cycle 4: implement → FAILURE (implementer itself returned status:failure,
+         correctly declining to "fix" tests outside the issue's scope)
+         review → pass (diff unchanged, still correct) | local-ci → FAILURE
+         gate local-gate → verdict=fail, target=@escalate
+run.finished → status=escalated
+```
+
+All 4 `local-ci` failures were byte-identical:
+`TestBacklogQueryMissingRunIDFailsClosed`,
+`TestIssueCloseOutMissingRunIDFailsClosed`,
+`TestOpenPRMissingRunIDFailsClosed`, all `code = 0, want 1 (fail closed on
+missing GOOBERS_RUN_ID)`. Root cause: `internal/executor/env.go`'s
+`buildStageEnv` correctly injects the run's real `GOOBERS_RUN_ID` into every
+stage's exec environment (needed by `backlog-query`/`open-pr`/
+`issue-close-out`), but `local-ci`'s `make ci` → `go test ./...` inherited
+that same environment, leaking the live run's real ID into the 3 tests above
+that assert fail-closed behavior on a *genuinely absent* `GOOBERS_RUN_ID` —
+deterministic on every attempt, since the leaked value never changes within
+a run's lifetime. Filed as **#321**, fixed by **#323** (`unsetRunContext`
+test helper: explicit `os.Unsetenv`/`os.LookupEnv`-restore, not
+`t.Setenv("", …)` — the latter re-triggers the distinct empty-vs-unset trap
+`#314` had already found). `review` passed clean on all 4 cycles of this
+run — zero implementer-attributable failures; 100% of the escalation signal
+was this one infrastructure bug, confirming #319's implementer
+scope-discipline fix held under live fire even while repeatedly hitting an
+unrelated failure it correctly could not "fix." Full raw trace pasted to
+`#mission-v02-gate` (2026-07-15) before the instance holding it was reset,
+per this project's standing evidence-preservation practice.
+
+### Prior repass evidence: `#280`/`#281`
+
+Two earlier seed issues in the same acceptance effort each independently
+exercised the repass→escalation path for **genuine implementer-quality**
+reasons (not infrastructure), validating the bounded-repass-then-escalate
+design on its own terms: `#281` escalated after 4 real `needs-changes`
+review cycles, `#280` after 5 (across separate attempts) — every cycle a
+correct, distinct reviewer rejection of a real implementer mistake, not a
+flake or a false rejection. Full journal/verdict detail for both is in
+`#mission-v02-gate`'s history (2026-07-15).
