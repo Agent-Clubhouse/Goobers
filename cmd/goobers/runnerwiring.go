@@ -385,6 +385,75 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 	return localscheduler.NewOpenPRRefresher(lister, repoRef, localscheduler.DefaultOpenPRRefreshInterval), nil
 }
 
+// backlogCounter adapts a provider + repo + label selector into a
+// localscheduler.BacklogCounter (#344) — resolves its token per call (like
+// escalationCommenter above), honoring credentials.Resolver's re-read-on-
+// resolve rotation contract rather than capturing one at daemon startup.
+type backlogCounter struct {
+	ref      string
+	repo     providers.RepositoryRef
+	labels   []string
+	resolver *credentials.Resolver
+	reg      runner.SecretRegistrar
+}
+
+func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
+	token, err := b.resolver.Resolve(ctx, b.ref)
+	if err != nil {
+		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
+	}
+	b.reg.Register([]byte(token))
+	items, err := newGitHubProvider(token).ListWorkItems(ctx, providers.ListWorkItemsRequest{
+		Repository: b.repo, Labels: b.labels, State: "open", Limit: 100,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(items), nil
+}
+
+// buildBacklogCounter wires a localscheduler.BacklogCounter for wf's
+// declared type=backlog-item trigger, if it has one (#344) — the daemon-
+// side fan-out counter, independent of and never dispatched through
+// `goobers backlog-query`'s own per-run claim (that stays the actual
+// claiming mechanism; this only estimates how many runs a Tick should fan
+// out to). Trigger.Selector (already declared in the schema, never
+// implemented until now — #342's own survey found it, like Signal, entirely
+// unwired) is a flat map; only its KEYS are used as required GitHub labels
+// — values are ignored, since GitHub issue labels are plain strings with no
+// key=value structure to match against, unlike a true k8s label selector.
+// Returns nil (not error) when wf declares no backlog-item trigger, or when
+// no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
+// "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
+func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver *credentials.Resolver, reg runner.SecretRegistrar) localscheduler.BacklogCounter {
+	if len(cfg.Repos) == 0 {
+		return nil
+	}
+	var selector map[string]string
+	found := false
+	for _, tr := range wf.Spec.Triggers {
+		if tr.Type == apiv1.TriggerBacklogItem {
+			selector = tr.Selector
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	labels := make([]string, 0, len(selector))
+	for k := range selector {
+		labels = append(labels, k)
+	}
+	return &backlogCounter{
+		ref:      cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
+		repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		labels:   labels,
+		resolver: resolver,
+		reg:      reg,
+	}
+}
+
 // instructionsPath resolves a goober's Instructions field to an absolute
 // file path. Instructions is documented as "relative to the goober
 // definition directory" (api/v1alpha1.GooberSpec), which config-as-code

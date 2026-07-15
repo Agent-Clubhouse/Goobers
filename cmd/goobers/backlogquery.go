@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -164,6 +165,18 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		}
 		eligible = append(eligible, item)
 	}
+	// Claim order was an accident of whichever sort order the provider's
+	// List endpoint happens to default to (#350) — GitHub's is undocumented
+	// desc-by-created (newest-first), the exact opposite of the README's
+	// assumed "natural claim order is ~ascending issue #". Sorting
+	// client-side, provider-independent, pins a deterministic FIFO default
+	// (oldest-filed-first, the starvation-safe choice) so a future provider
+	// API change — or a provider whose own default happens to differ from
+	// GitHub's — can't silently flip claim order again. A fuller
+	// configurable priority mechanism (native-field or label-list ranking,
+	// configurable tie-break) is tracked separately; this is the
+	// unconditional baseline every claim order now starts from.
+	sortEligibleFIFO(eligible)
 
 	if !*claim {
 		if len(eligible) == 0 {
@@ -288,6 +301,30 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "claimed %d items\n", len(claimed))
 	}
 	return 0
+}
+
+// sortEligibleFIFO orders items ascending by numeric ID in place — both
+// GitHubProvider and ADOProvider mint WorkItem.ID as strconv.Itoa of the
+// issue/work-item number, which is monotonically increasing with creation
+// order, so this is exactly "oldest filed first" without needing a
+// dedicated CreatedAt field or per-provider sort-parameter wiring (#350).
+// A non-numeric ID (a future provider whose IDs don't work this way) falls
+// back to a stable lexical compare rather than leaving that item's relative
+// position to whatever order the provider happened to return it in.
+func sortEligibleFIFO(items []providers.WorkItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		ni, iOK := parseWorkItemID(items[i].ID)
+		nj, jOK := parseWorkItemID(items[j].ID)
+		if iOK && jOK {
+			return ni < nj
+		}
+		return items[i].ID < items[j].ID
+	})
+}
+
+func parseWorkItemID(id string) (int64, bool) {
+	n, err := strconv.ParseInt(id, 10, 64)
+	return n, err == nil
 }
 
 // runBacklogQueryRelease implements `backlog-query --release` (issue #234):
