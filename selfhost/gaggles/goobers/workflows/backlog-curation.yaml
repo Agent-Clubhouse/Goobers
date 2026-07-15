@@ -72,6 +72,7 @@ spec:
         goobers:needs-human. Explain every action in a comment on the item.
       capabilities:
         - github:issues:write
+        - agent:model
       expectedOutputs:
         - curation-summary
       next: release-claim

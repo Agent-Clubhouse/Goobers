@@ -10,9 +10,12 @@ spec:
   harness: copilot
   # Implement-only: this stage never opens the PR or touches issues directly
   # (those are separate deterministic stages in the implementation
-  # workflow) — repo:push is the whole grant.
+  # workflow) — repo:push covers the git side. agent:model sources the Copilot
+  # model token (COPILOT_GITHUB_TOKEN), distinct from repo:push's GH_TOKEN
+  # (issue #289 / multi-token creds §3.3).
   capabilities:
     - repo:push
+    - agent:model
   skills:
     - implement
     - run-tests
