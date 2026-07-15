@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -83,6 +84,87 @@ func TestVerdictRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(in, out) {
 		t.Errorf("round-trip mismatch:\n in: %#v\nout: %#v", in, out)
+	}
+}
+
+// TestPRLifecycleVerdictRoundTrip is issue #358's test plan: a needs-changes
+// Verdict with mixed finding classes deserializes with each class + the
+// SHA-pin (HeadSHA/BaseSHA) intact — the merge-review -> pr-remediation
+// handoff artifact (design doc §4/§6 D6), reusing the exact same Verdict/
+// Finding types the in-run gate Verdict already round-trips above.
+func TestPRLifecycleVerdictRoundTrip(t *testing.T) {
+	in := Verdict{
+		Decision:  VerdictNeedsChanges,
+		Rationale: "base advanced and one cross-PR conflict found",
+		Evidence:  []ArtifactPointer{{Path: "artifacts/merge-review/sibling-diff.patch", Digest: Digest([]byte("sibling"))}},
+		Findings: []Finding{
+			{Severity: SeverityWarning, Message: "base advanced 3 commits", Class: FindingRebaseNeeded},
+			{Severity: SeverityError, Message: "touches internal/runner/run.go also touched by PR #237", Location: "internal/runner/run.go", Class: FindingSubstantive},
+			{Severity: SeverityInfo, Message: "should land after PR #350 per ordering policy", Class: FindingCrossPRBlocked},
+		},
+		Summary: "rebase needed; one substantive cross-PR finding; ordering dependency",
+		HeadSHA: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+		BaseSHA: "0123456789abcdef0123456789abcdef01234567",
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out Verdict
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(in, out) {
+		t.Errorf("round-trip mismatch:\n in: %#v\nout: %#v", in, out)
+	}
+	if out.HeadSHA == "" || out.BaseSHA == "" {
+		t.Fatal("SHA pin did not survive round-trip")
+	}
+	wantClasses := []FindingClass{FindingRebaseNeeded, FindingSubstantive, FindingCrossPRBlocked}
+	for i, f := range out.Findings {
+		if f.Class != wantClasses[i] {
+			t.Errorf("finding[%d].Class = %q, want %q", i, f.Class, wantClasses[i])
+		}
+	}
+}
+
+// TestOrdinaryGateVerdictHasNoPRLifecycleFields proves the two altitudes stay
+// distinguishable through the shared type: an in-run gate Verdict/Finding
+// (no PR to pin against, no finding class) round-trips with those fields
+// empty, not defaulted to some PR-lifecycle-looking value.
+func TestOrdinaryGateVerdictHasNoPRLifecycleFields(t *testing.T) {
+	in := Verdict{
+		Decision: VerdictPass,
+		Findings: []Finding{{Severity: SeverityInfo, Message: "looks good"}},
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(data)
+	if strings.Contains(s, "headSha") || strings.Contains(s, "baseSha") || strings.Contains(s, "class") {
+		t.Fatalf("expected omitempty to drop unset PR-lifecycle fields, got %s", data)
+	}
+	var out Verdict
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.HeadSHA != "" || out.BaseSHA != "" || out.Findings[0].Class != "" {
+		t.Fatalf("expected PR-lifecycle fields to stay empty on an ordinary gate verdict, got %+v", out)
+	}
+}
+
+func TestFindingClassValidity(t *testing.T) {
+	for _, c := range []FindingClass{FindingRebaseNeeded, FindingConflict, FindingSubstantive, FindingCrossPRBlocked} {
+		if !c.IsValid() {
+			t.Errorf("expected %q to be a valid finding class", c)
+		}
+	}
+	if FindingClass("").IsValid() {
+		t.Error("expected the zero value to be invalid")
+	}
+	if FindingClass("bogus-class").IsValid() {
+		t.Error("expected an unknown class to be invalid")
 	}
 }
 
