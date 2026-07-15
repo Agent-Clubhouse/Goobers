@@ -183,7 +183,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	// Without this, diffDigest would diff against whatever this fresh
 	// worktree defaulted to (the run's own untouched base checkout), not
 	// the PR's actual just-pushed content.
-	if err := checkoutExistingBranch(".", current.Head, pushToken); err != nil {
+	if _, err := checkoutExistingBranch(".", current.Head, pushToken); err != nil {
 		pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selectedNumber, current.Head, err)
 		return 1
 	}

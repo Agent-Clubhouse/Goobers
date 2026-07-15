@@ -75,13 +75,15 @@ spec:
     #     which uses the PR's CURRENT diff (whatever rebase-pr left pushed,
     #     unchanged on this path) to detect a stuck PR.
     #
-    # selectedNumber/head are echoed forward in this stage's own result
+    # selectedNumber is echoed forward in this stage's own result
     # (writeRebaseResult) alongside needsAgent/conflict: a gate never
     # updates Task.InputsFrom's upstream-Outputs chain (only a task does —
     # see apply-verdict's own doc comment for the established convention),
-    # so remediation-checkpoint (after rebase-gate) can only read them if
-    # THIS stage re-emits them, same as gather-sibling-context re-emitting
-    # pr-select's selectedNumber two hops ahead of apply-verdict.
+    # so remediation-checkpoint (after rebase-gate) can only read it if
+    # THIS stage re-emits it, same as gather-sibling-context re-emitting
+    # pr-select's selectedNumber two hops ahead of apply-verdict. head is
+    # echoed too but not currently consumed downstream — remediation-
+    # checkpoint (#393) re-lists PRs itself and reads Head from there.
     - name: rebase-pr
       type: deterministic
       goal: Rebase the selected PR onto its base; force-push and clear the label if clean, else defer to agentic remediation.
@@ -119,7 +121,6 @@ spec:
         command: ["goobers", "remediation-checkpoint"]
       inputsFrom:
         selectedNumber: selectedNumber
-        head: head
       capabilities:
         - github:pr:write
         - github:issues:write
