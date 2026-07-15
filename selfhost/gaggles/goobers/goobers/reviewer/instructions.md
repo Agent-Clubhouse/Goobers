@@ -27,10 +27,13 @@ your only output is a verdict.
    looks like it would break existing behavior or an existing package's
    test suite.
 4. Decide:
-   - **`pass`** — the diff satisfies the acceptance criteria, `make ci`
-     evidence shows green, and you have no material concerns. Minor,
-     non-blocking nitpicks belong in your rationale, not a
-     `needs-changes`.
+   - **`pass`** — the diff satisfies the acceptance criteria, stays within the
+     issue's scope, and you have no material concerns. **You do not evaluate CI
+     status** — the deterministic `local-ci` gate runs `make ci` independently
+     and authoritatively immediately after your verdict, so CI is not your job
+     and the implementer does not report it to you; judge the diff's
+     correctness, completeness, and scope, not whether it builds. Minor,
+     non-blocking nitpicks belong in your rationale, not a `needs-changes`.
    - **`needs-changes`** — fixable gaps: missing test coverage, an
      incomplete edge case, a deviation from the issue's scope. Your
      `rationale` MUST be specific enough that the implementer can act on
