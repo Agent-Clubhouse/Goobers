@@ -34,9 +34,11 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 			"Trigger a run of a config/ workflow manually, through the same scheduler\n"+
 			"(run conditions, instance journal, single-instance lock) a live `goobers up`\n"+
 			"daemon uses, then wait for it to reach a terminal state or pause (default\n"+
-			"path \".\"). Exit codes: 0 = run created and dispatched, 1 = business error\n"+
-			"(unknown workflow, invalid config, run conditions rejected the trigger, a\n"+
-			"daemon already holds this instance's lock), 2 = usage/IO error.\n"+
+			"path \".\"). If a live `goobers up` daemon already holds the instance lock,\n"+
+			"delegates the trigger to it instead of failing (#343) — dispatched through\n"+
+			"the same Scheduler.Trigger path either way. Exit codes: 0 = run created and\n"+
+			"dispatched, 1 = business error (unknown workflow, invalid config, run\n"+
+			"conditions rejected the trigger), 2 = usage/IO error.\n"+
 			"`run abort` marks a stuck non-terminal run aborted directly in its own\n"+
 			"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n")
 	}
@@ -59,31 +61,25 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	ctx, stop := signals.SetupSignalContext()
+	defer stop()
+
 	// Take the same single-instance lock `up` does (issue #134): a manual run
 	// must not mutate scheduler/run-condition/claim-ledger state, or the
-	// shared workcopies/ tree, concurrently with a live daemon. Handing off to
-	// an already-running daemon (rather than failing here) is a known
-	// follow-up — no IPC/API surface exists yet for a short-lived `run`
-	// process to delegate to a long-running `up` process.
+	// shared workcopies/ tree, concurrently with a live daemon. When a live
+	// daemon already holds the lock, delegate through the file-based
+	// protocol in rundelegate.go instead of failing (#343 — #231 only fixed
+	// the error text; this is the actual behavior fix) rather than requiring
+	// the daemon stopped first.
 	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
 	if err != nil {
-		// #231: don't imply a delegation capability that doesn't exist yet —
-		// `goobers up` has no live workflow-trigger delegation (see this
-		// function's own doc comment above), so "stop it first" is the only
-		// real option today.
-		pf(stderr, "error: %v (a running `goobers up` daemon holds this instance's lock — "+
-			"stop it first; `goobers up` has no live workflow-trigger delegation yet, "+
-			"see the doc comment on cmd/goobers/run.go's lock-acquire step)\n", err)
-		return 1
+		return runDelegatedTrigger(ctx, l, name, root, stdout, stderr)
 	}
 	defer release()
-
-	ctx, stop := signals.SetupSignalContext()
-	defer stop()
 
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(ctx, l, &wg)
@@ -136,6 +132,39 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	// this run's rollup rows without needing a separate --rebuild.
 	wg.Wait()
 
+	pf(stdout, "finished: phase=%s\n", phase)
+	pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
+	return 0
+}
+
+// runDelegatedTrigger is #343's actual fix: called when acquireInstanceLock
+// finds a live `goobers up` daemon already holding this instance's lock — it
+// no longer just reports that and gives up (#231's fix stopped there). It
+// writes a delegation request (rundelegate.go) the daemon's own periodic
+// sweep picks up and dispatches through the identical Scheduler.Trigger path
+// this process would have called itself, then waits for a response and the
+// dispatched run's terminal state exactly like the non-delegated path above
+// — from the caller's perspective the two paths are indistinguishable except
+// for which process actually held the scheduler.
+func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root string, stdout, stderr io.Writer) int {
+	requestID, err := writeTriggerRequest(l.SchedulerDir(), name)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+
+	runID, err := pollTriggerResponse(ctx, l.SchedulerDir(), requestID, triggerDelegationTimeout)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pf(stdout, "created run %s (workflow=%s, dispatched via live daemon)\n", runID, name)
+
+	phase, err := waitForRunTerminal(ctx, l.RunsDir(), runID)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	pf(stdout, "finished: phase=%s\n", phase)
 	pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
 	return 0

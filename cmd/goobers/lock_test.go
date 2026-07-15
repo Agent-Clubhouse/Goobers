@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -61,15 +62,19 @@ func TestUpFailsFastOnSecondInstance(t *testing.T) {
 	}
 }
 
-// TestRunLockConflictDoesNotImplyNonexistentDelegation is #231's regression:
-// the lock-conflict error `goobers run` surfaces while a `goobers up` daemon
-// holds the instance lock must not imply a workflow-trigger delegation
-// capability that doesn't actually exist yet (cmd/goobers/run.go's own doc
-// comment: "no IPC/API surface exists yet for a short-lived `run` process to
-// delegate to a long-running `up` process") — the only real option today is
-// to stop the daemon first, so the message should say that plainly instead of
-// dangling a nonexistent "trigger workflows through it" option.
-func TestRunLockConflictDoesNotImplyNonexistentDelegation(t *testing.T) {
+// TestRunLockConflictDelegatesRatherThanFailingImmediately is #343's
+// supersession of #231: `goobers run` no longer fails the instant it finds
+// the lock held (#231's stopgap fix only reworded that immediate error) — it
+// now attempts delegation (rundelegate.go) instead. This test's lock holder
+// is NOT a real daemon sweeping requests (nothing ever answers), so
+// delegation must still fail eventually — but via a bounded, actionable
+// timeout, not the old instant "stop it first" message. TestRunDelegatesToLiveDaemon
+// (rundelegate_test.go) proves the success path against a real daemon.
+func TestRunLockConflictDelegatesRatherThanFailingImmediately(t *testing.T) {
+	prevTimeout := triggerDelegationTimeout
+	triggerDelegationTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { triggerDelegationTimeout = prevTimeout })
+
 	root := initDemo(t)
 	l := instance.NewLayout(root)
 
@@ -83,13 +88,10 @@ func TestRunLockConflictDoesNotImplyNonexistentDelegation(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
-	if !strings.Contains(stderr, "already holds the lock") {
-		t.Fatalf("stderr = %q, want it to mention the lock conflict", stderr)
+	if !strings.Contains(stderr, "timed out") {
+		t.Fatalf("stderr = %q, want a delegation timeout (no real daemon is sweeping this lock holder's requests)", stderr)
 	}
-	if !strings.Contains(stderr, "stop it first") {
-		t.Fatalf("stderr = %q, want actionable advice to stop the daemon", stderr)
-	}
-	if strings.Contains(stderr, "trigger workflows through it") {
-		t.Fatalf("stderr = %q, still implies a delegation capability that does not exist (#231)", stderr)
+	if strings.Contains(stderr, "already holds the lock") {
+		t.Fatalf("stderr = %q, should no longer report the old immediate lock-conflict error (#343 supersedes #231's stopgap)", stderr)
 	}
 }

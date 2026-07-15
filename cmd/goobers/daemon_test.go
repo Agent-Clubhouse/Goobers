@@ -215,12 +215,21 @@ func TestUpResumesInterruptedRun(t *testing.T) {
 // The single-instance lock itself (#23 AC3) is unaffected by the daemon-loop
 // rewrite and already covered by lock_test.go's TestUpFailsFastOnSecondInstance.
 
-// TestRunFailsFastWhenLockHeld is issue #134's lock half: `goobers run` used
-// to skip the instance lock entirely, so two concurrent processes (or a
-// manual run against a live `up` daemon) could mutate scheduler/run-condition
-// state and the shared workcopies/ tree at once. Now it takes the same lock
-// `up` does and fails fast, mirroring TestUpFailsFastOnSecondInstance.
-func TestRunFailsFastWhenLockHeld(t *testing.T) {
+// TestRunTakesSameLockAsUp is issue #134's lock half: `goobers run` used to
+// skip the instance lock entirely, so two concurrent processes (or a manual
+// run against a live `up` daemon) could mutate scheduler/run-condition state
+// and the shared workcopies/ tree at once. Now it takes the same lock `up`
+// does — this test's lock holder isn't a real daemon sweeping delegation
+// requests, so the attempt still surfaces as a failure, just via #343's
+// delegation timeout rather than the pre-#343 immediate lock-conflict error
+// (see TestRunLockConflictDelegatesRatherThanFailingImmediately in
+// lock_test.go for that distinction, and TestRunDelegatesToLiveDaemon in
+// rundelegate_test.go for the real success path against a live daemon).
+func TestRunTakesSameLockAsUp(t *testing.T) {
+	prevTimeout := triggerDelegationTimeout
+	triggerDelegationTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { triggerDelegationTimeout = prevTimeout })
+
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
 
@@ -234,8 +243,8 @@ func TestRunFailsFastWhenLockHeld(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("code = %d, want 1, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stderr, "already holds the lock") {
-		t.Fatalf("stderr = %q", stderr)
+	if !strings.Contains(stderr, "timed out") {
+		t.Fatalf("stderr = %q, want a delegation timeout", stderr)
 	}
 }
 
