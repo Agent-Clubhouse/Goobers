@@ -1848,6 +1848,49 @@ func TestRunnerResumeRestoresGateRepassCounter(t *testing.T) {
 	}
 }
 
+// TestGateDiffSeedReconstructsFromJournal is #316's resume-side counterpart
+// to TestRunnerResumeRestoresGateRepassCounter above: gateDiffSeed must
+// reconstruct Evaluator.LastDiffDigest from a run's journaled gate.evaluated
+// events exactly the way gateRepassSeed reconstructs Attempts, or a crash
+// mid-repass-loop would silently forget the prior attempt's digest and let a
+// resumed run re-invoke the reviewer for a diff it already judged.
+func TestGateDiffSeedReconstructsFromJournal(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: "implement",
+			Runner: map[string]any{"repassAttempt": 1.0, "escalated": false, "duplicateDiff": false, "diffDigest": "sha256:aaaa"}},
+		// A later evaluation of a DIFFERENT gate must not clobber "review"'s
+		// entry, and one with no diffDigest at all (e.g. an automated gate)
+		// must leave the prior seed for its own name untouched.
+		{Type: journal.EventGateEvaluated, Gate: "autogate", Verdict: "pass", Target: "",
+			Runner: map[string]any{"repassAttempt": 0.0, "escalated": false}},
+		// "review" evaluated again — the LAST event per gate wins.
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: "implement",
+			Runner: map[string]any{"repassAttempt": 2.0, "escalated": false, "duplicateDiff": false, "diffDigest": "sha256:bbbb"}},
+		{Type: journal.EventStageStarted, Stage: "implement"},
+	}
+	seed := gateDiffSeed(events)
+	if got := seed["review"]; got != "sha256:bbbb" {
+		t.Fatalf("seed[review] = %q, want sha256:bbbb (the last journaled digest for that gate)", got)
+	}
+	if _, ok := seed["autogate"]; ok {
+		t.Fatalf("seed[autogate] = %q, want absent (that event carried no diffDigest)", seed["autogate"])
+	}
+}
+
+// TestGateDiffSeedNilForNoGateEvents proves the nil-safe zero value a fresh
+// run needs: a journal with no gate.evaluated events at all (or none
+// carrying a diffDigest) yields a nil map, matching Evaluator.LastDiffDigest's
+// own nil-safe contract.
+func TestGateDiffSeedNilForNoGateEvents(t *testing.T) {
+	if seed := gateDiffSeed(nil); seed != nil {
+		t.Fatalf("gateDiffSeed(nil) = %v, want nil", seed)
+	}
+	events := []journal.Event{{Type: journal.EventStageStarted, Stage: "implement"}}
+	if seed := gateDiffSeed(events); seed != nil {
+		t.Fatalf("gateDiffSeed with no gate.evaluated events = %v, want nil", seed)
+	}
+}
+
 // countingDeterministic records how many times it was dispatched — for
 // proving a stage was NOT re-dispatched (#107): an already-finished stage
 // resumed at must never re-invoke its executor.
@@ -2583,6 +2626,111 @@ func TestRunnerAgenticGateAttachesReviewerDiffEvidence(t *testing.T) {
 	}
 	if diffPtr.Artifact == nil || diffPtr.Artifact.Digest == "" {
 		t.Fatalf("diff evidence pointer has no digested artifact: %+v", diffPtr)
+	}
+}
+
+// alwaysNeedsChangesReviewer always requests changes and counts how many
+// times it was actually invoked (#316's key observation point: a detected
+// duplicate diff must skip the reviewer call entirely, not merely override
+// its result afterward).
+type alwaysNeedsChangesReviewer struct{ calls int }
+
+func (r *alwaysNeedsChangesReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (r *alwaysNeedsChangesReviewer) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	r.calls++
+	return apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "please fix X"}, nil
+}
+
+// repeatingDeterministic commits the exact same file content on every
+// invocation, using --allow-empty once the tree is already unchanged from
+// the prior attempt — reproducing #316's non-convergent-implementer failure
+// mode (byte-identical diffs attempt after attempt) without a real stuck
+// model.
+type repeatingDeterministic struct{ t *testing.T }
+
+func (c *repeatingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	c.t.Helper()
+	if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte("real implementation change\n"), 0o644); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	runGit(c.t, env.Workspace, "add", "-A")
+	runGit(c.t, env.Workspace, "commit", "--allow-empty", "-m", "impl change")
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "implemented"}, nil
+}
+
+// TestRunnerEscalatesOnDuplicateRepassDiff is issue #316's end-to-end
+// acceptance, driven through a real Start(): an implementer stuck producing
+// the exact same diff attempt after attempt must escalate on the very first
+// repeat, not after burning the full repass budget (MaxRepasses:3 here, so
+// escalating after only 2 gate evaluations can only be explained by the
+// duplicate-diff detection), and the reviewer must not be re-invoked for a
+// diff it already judged.
+func TestRunnerEscalatesOnDuplicateRepassDiff(t *testing.T) {
+	reviewer := &alwaysNeedsChangesReviewer{}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	runsDir := filepath.Join(instanceRoot, "runs")
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return &repeatingDeterministic{t: t}, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return reviewer, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		MaxRepasses:  3,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-duplicate-diff",
+		Machine: agenticGateMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated (2nd identical-diff repass must escalate immediately)", res.Phase)
+	}
+	if reviewer.calls != 1 {
+		t.Fatalf("reviewer.calls = %d, want 1 (must not be re-invoked on a detected duplicate diff)", reviewer.calls)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-duplicate-diff"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var gateEvents []journal.Event
+	for _, e := range events {
+		if e.Type == journal.EventGateEvaluated {
+			gateEvents = append(gateEvents, e)
+		}
+	}
+	if len(gateEvents) != 2 {
+		t.Fatalf("journaled gate.evaluated events = %d, want 2 (1st real review, 2nd detected duplicate)", len(gateEvents))
+	}
+	if dup, _ := gateEvents[1].Runner["duplicateDiff"].(bool); !dup {
+		t.Fatalf("2nd gate.evaluated event Runner[duplicateDiff] = %v, want true", gateEvents[1].Runner["duplicateDiff"])
+	}
+	if gateEvents[1].Target != workflow.TargetEscalate {
+		t.Fatalf("2nd gate.evaluated event target = %q, want %q", gateEvents[1].Target, workflow.TargetEscalate)
 	}
 }
 

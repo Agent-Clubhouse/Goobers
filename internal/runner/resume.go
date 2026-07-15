@@ -202,7 +202,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	ctx, span := r.startRunSpan(ctx, startIn)
 	defer span.End()
 
-	result, err := r.walk(ctx, jr, startIn, startState, resume, gateRepassSeed(events), registrar, seed)
+	result, err := r.walk(ctx, jr, startIn, startState, resume, gateRepassSeed(events), gateDiffSeed(events), registrar, seed)
 	if err != nil {
 		span.Fail(err)
 		return result, err
@@ -281,6 +281,36 @@ func gateRepassSeed(events []journal.Event) map[string]int {
 			seed = make(map[string]int)
 		}
 		seed[e.Gate] = int(n)
+	}
+	return seed
+}
+
+// gateDiffSeed reconstructs internal/gate.Evaluator.LastDiffDigest from the
+// journal's event log (issue #316), the same way gateRepassSeed reconstructs
+// Attempts: each gate.evaluated event's Runner["diffDigest"] (recordVerdict,
+// internal/gate/journal.go — only present when that attempt carried a
+// non-empty diff) is that gate's last-known digest as of the moment it was
+// journaled, so the LAST such event per gate name is the digest a resumed
+// run must compare its next attempt against. A gate's events that carried no
+// diff (automated/human gates, or an agentic gate with no committed change)
+// have no "diffDigest" key and leave the prior seed entry untouched, exactly
+// mirroring Evaluate's own "" -> no-op behavior on the live path. Returns nil
+// (Evaluator's own nil-safe zero value) if the run never evaluated an
+// agentic gate with a non-empty diff.
+func gateDiffSeed(events []journal.Event) map[string]string {
+	var seed map[string]string
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated {
+			continue
+		}
+		digest, ok := e.Runner["diffDigest"].(string)
+		if !ok || digest == "" {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]string)
+		}
+		seed[e.Gate] = digest
 	}
 	return seed
 }

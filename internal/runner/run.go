@@ -213,7 +213,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
 	}
 
-	result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, registrar, walkSeed{})
+	result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, registrar, walkSeed{})
 	if err != nil {
 		span.Fail(err)
 		return result, err
@@ -331,20 +331,23 @@ type walkSeed struct {
 // constructed once here — it MUST NOT be shared across runs (its repass
 // counters are run-scoped state), so a fresh one is built per walk. Start
 // always begins at the machine's declared start state with resume=nil,
-// gateAttempts=nil, and a zero-value seed; Resume (resume.go) begins at the
-// journal's checkpointed state, optionally with a resumeContext for an
-// interrupted task attempt, gateAttempts seeded from each gate's last
-// gate.evaluated event so a resumed run's repass budget continues rather than
-// resetting (#89), and seed reconstructed from the journal (#107/#108). reg
-// is the run's SecretRegistrar (see Start), threaded to every executor
-// constructed here.
-func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, gateAttempts map[string]int, reg SecretRegistrar, seed walkSeed) (Result, error) {
+// gateAttempts=nil, gateDiffDigests=nil, and a zero-value seed; Resume
+// (resume.go) begins at the journal's checkpointed state, optionally with a
+// resumeContext for an interrupted task attempt, gateAttempts seeded from
+// each gate's last gate.evaluated event so a resumed run's repass budget
+// continues rather than resetting (#89), gateDiffDigests likewise seeded
+// (gateDiffSeed) so a resumed run's non-convergence detection continues too
+// (#316), and seed reconstructed from the journal (#107/#108). reg is the
+// run's SecretRegistrar (see Start), threaded to every executor constructed
+// here.
+func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, gateAttempts map[string]int, gateDiffDigests map[string]string, reg SecretRegistrar, seed walkSeed) (Result, error) {
 	ex := newExecutors(r.cfg, jr, reg)
 	gateEval := &gate.Evaluator{
-		Automated:   r.cfg.Automated,
-		Journal:     jr,
-		MaxRepasses: r.cfg.MaxRepasses,
-		Attempts:    gateAttempts,
+		Automated:      r.cfg.Automated,
+		Journal:        jr,
+		MaxRepasses:    r.cfg.MaxRepasses,
+		Attempts:       gateAttempts,
+		LastDiffDigest: gateDiffDigests,
 	}
 
 	state := startState
@@ -453,7 +456,14 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				// comment un-posted, and a later resume re-evaluating the
 				// same escalated gate would fire NotifyEscalated again,
 				// duplicating it (#112).
-				if err := r.cfg.Escalation.NotifyEscalated(context.WithoutCancel(ctx), in.Item.ID, gr, "repass budget exhausted"); err != nil {
+				reason := "repass budget exhausted"
+				if gr.DuplicateDiff {
+					// #316: escalated on the very first repeat, not on
+					// exhausting the budget — say so, or the notified human
+					// wrongly assumes MaxRepasses attempts actually ran.
+					reason = "repass produced a diff identical to the immediately prior attempt"
+				}
+				if err := r.cfg.Escalation.NotifyEscalated(context.WithoutCancel(ctx), in.Item.ID, gr, reason); err != nil {
 					return r.failTerminal(jr, g.Name, steps, fmt.Errorf("runner: notify escalation for gate %q: %w", g.Name, err))
 				}
 			}
@@ -926,6 +936,11 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	ctx, span := r.startGateSpan(ctx, in, g, gooberName)
 	defer span.End()
 
+	// diffDigest (issue #316) is only ever set below for an agentic gate
+	// whose branch carries a non-empty diff — an automated/human gate, or an
+	// agentic gate with no committed change, passes "" through to Evaluate,
+	// which treats that as "no digest to compare" and never short-circuits.
+	var diffDigest string
 	var env apiv1.InvocationEnvelope
 	if g.Evaluator == apiv1.EvaluatorAutomated {
 		env = apiv1.InvocationEnvelope{
@@ -972,6 +987,9 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 			}
 			if ptr != nil {
 				env.ContextPointers = append(env.ContextPointers, *ptr)
+				if ptr.Artifact != nil {
+					diffDigest = ptr.Artifact.Digest
+				}
 			}
 		}
 	}
@@ -997,7 +1015,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: ag}
 	}
 
-	result, err = gateEval.Evaluate(ctx, g, env, subjectStage, subjectResult)
+	result, err = gateEval.Evaluate(ctx, g, env, subjectStage, subjectResult, diffDigest)
 	if err != nil {
 		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, err)
 		span.Fail(err)

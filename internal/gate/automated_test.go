@@ -138,7 +138,7 @@ func TestCIGateRoutesTimeoutOutcomeToEscalate(t *testing.T) {
 	e := &Evaluator{Automated: NewAutomatedEvaluator()}
 	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{"ciStatus": executor.CIStatusTimeout}}
 
-	result, err := e.Evaluate(context.Background(), g, env, "ci-poll", apiv1.ResultEnvelope{Status: apiv1.ResultFailure})
+	result, err := e.Evaluate(context.Background(), g, env, "ci-poll", apiv1.ResultEnvelope{Status: apiv1.ResultFailure}, "")
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}

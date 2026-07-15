@@ -23,16 +23,26 @@ type Journal interface {
 // full Verdict (decision, rationale, evidence, findings) is recorded as an
 // artifact so its detail survives for the Tutor without bloating the flat
 // event stream, and the event's Ref points at it.
-func recordVerdict(j Journal, r Result) error {
+//
+// duplicateDiff (issue #316) is likewise a Runner-namespace annotation. The
+// digest itself is only journaled when non-empty, mirroring repassAttempt's
+// seeding contract: internal/runner/resume.go's gateDiffSeed reconstructs
+// Evaluator.LastDiffDigest from each gate's last such event on resume, the
+// same way gateRepassSeed reconstructs Attempts.
+func recordVerdict(j Journal, r Result, diffDigest string) error {
 	if j == nil {
 		return nil
+	}
+	runner := map[string]any{"repassAttempt": r.Attempt, "escalated": r.Escalated, "duplicateDiff": r.DuplicateDiff}
+	if diffDigest != "" {
+		runner["diffDigest"] = diffDigest
 	}
 	ev := journal.Event{
 		Type:    journal.EventGateEvaluated,
 		Gate:    r.Gate,
 		Verdict: r.Outcome,
 		Target:  r.Target,
-		Runner:  map[string]any{"repassAttempt": r.Attempt, "escalated": r.Escalated},
+		Runner:  runner,
 	}
 	if r.Verdict != nil {
 		data, err := json.Marshal(r.Verdict)
