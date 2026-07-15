@@ -23,14 +23,15 @@ func TestStatusRejectsNonInstanceRoot(t *testing.T) {
 
 // TestStatusOnRealInstanceWithNoRunsSucceeds proves the fix didn't regress
 // the legitimate case: a real instance root that simply has no runs yet
-// still reports "no runs found" at exit 0.
+// still reports actionable no-runs guidance at exit 0.
 func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
 	root := initDemo(t)
 	code, stdout, stderr := runArgs(t, "status", root)
 	if code != 0 {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stdout, "no runs found") {
-		t.Fatalf("expected 'no runs found', got stdout = %q", stdout)
+	const want = "no runs found — trigger one with 'goobers run <workflow>'\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
 }
