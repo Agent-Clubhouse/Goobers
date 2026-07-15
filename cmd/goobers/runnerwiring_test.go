@@ -6,10 +6,12 @@ import (
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/providers"
 )
@@ -266,6 +268,92 @@ func TestEscalationCommenterResolvesTokenPerCall(t *testing.T) {
 	var registered bool
 	for _, s := range reg.registered {
 		if string(s) == "escalation-token-value" {
+			registered = true
+		}
+	}
+	if !registered {
+		t.Fatalf("resolved token not registered for scrubbing; registered=%v", reg.registered)
+	}
+}
+
+// --- #353: open-PR-count refresher wiring ---
+
+func cappedWorkflows() []apiv1.Workflow {
+	return []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 1}}}}
+}
+
+func repoConfig() *instance.Config {
+	return &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "OPENPR_TOK"}},
+	}}
+}
+
+// TestBuildOpenPRRefresher is #353: the refresher is built only when a repo is
+// configured AND some workflow opts into the MaxOpenPRs cap — so an instance
+// that doesn't use the cap grows no GitHub poller.
+func TestBuildOpenPRRefresher(t *testing.T) {
+	t.Run("nil for a repo-less instance", func(t *testing.T) {
+		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), &escTestRegistrar{})
+		if err != nil || r != nil {
+			t.Fatalf("want nil,nil; got %v,%v", r, err)
+		}
+	})
+	t.Run("nil when no workflow opts into the cap", func(t *testing.T) {
+		wfs := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}}}}
+		r, err := buildOpenPRRefresher(repoConfig(), wfs, &escTestRegistrar{})
+		if err != nil || r != nil {
+			t.Fatalf("want nil,nil; got %v,%v", r, err)
+		}
+	})
+	t.Run("built when a repo and a capped workflow are present", func(t *testing.T) {
+		r, err := buildOpenPRRefresher(repoConfig(), cappedWorkflows(), &escTestRegistrar{})
+		if err != nil {
+			t.Fatalf("buildOpenPRRefresher: %v", err)
+		}
+		if r == nil {
+			t.Fatal("expected a non-nil refresher for a repo-backed, capped instance")
+		}
+	})
+}
+
+type fakeHeadLister struct{ heads []string }
+
+func (f *fakeHeadLister) ListOpenPullRequestHeads(context.Context, providers.RepositoryRef) ([]string, error) {
+	return f.heads, nil
+}
+
+// TestResolvingOpenPRListerResolvesTokenPerCall is #353's rotation-safety +
+// scrubbing property: the lister resolves the org-repo token on each poll (not
+// captured at startup), registers it for scrubbing, and lists through a freshly
+// authenticated provider.
+func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
+	t.Setenv("OPENPR_TOK", "list-token-value")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "OPENPR_TOK"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	reg := &escTestRegistrar{}
+
+	fake := &fakeHeadLister{heads: []string{"goobers/implementation/run-1"}}
+	var gotToken string
+	prev := newOpenPRProvider
+	newOpenPRProvider = func(token string) localscheduler.OpenPRLister { gotToken = token; return fake }
+	t.Cleanup(func() { newOpenPRProvider = prev })
+
+	l := &resolvingOpenPRLister{ref: "acme/web", resolver: resolver, reg: reg}
+	heads, err := l.ListOpenPullRequestHeads(context.Background(), providers.RepositoryRef{Owner: "acme", Name: "web"})
+	if err != nil {
+		t.Fatalf("ListOpenPullRequestHeads: %v", err)
+	}
+	if gotToken != "list-token-value" {
+		t.Fatalf("provider built with token %q, want the resolved token", gotToken)
+	}
+	if len(heads) != 1 || heads[0] != "goobers/implementation/run-1" {
+		t.Fatalf("heads = %v", heads)
+	}
+	var registered bool
+	for _, s := range reg.registered {
+		if string(s) == "list-token-value" {
 			registered = true
 		}
 	}

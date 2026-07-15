@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -325,6 +326,63 @@ func buildEscalationNotifier(cfg *instance.Config, resolver *credentials.Resolve
 		},
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name},
 	}
+}
+
+// newOpenPRProvider builds the GitHub client the open-PR lister polls; a package
+// var so tests substitute a fake (mirrors newPRPoller / newEscalationPoster).
+var newOpenPRProvider = func(token string) localscheduler.OpenPRLister {
+	return providers.NewGitHubProvider(token)
+}
+
+// resolvingOpenPRLister resolves the org-repo token per poll — honoring
+// credentials.Resolver's re-read-on-resolve rotation contract, matching
+// buildCIPollExecutor / the escalation notifier — registers it for scrubbing,
+// and lists open PR heads through a freshly-authenticated provider. It is the
+// OpenPRLister the #353 open-PR-count refresher polls off-tick.
+type resolvingOpenPRLister struct {
+	ref      string
+	resolver *credentials.Resolver
+	reg      runner.SecretRegistrar
+}
+
+func (l *resolvingOpenPRLister) ListOpenPullRequestHeads(ctx context.Context, repo providers.RepositoryRef) ([]string, error) {
+	token, err := l.resolver.Resolve(ctx, l.ref)
+	if err != nil {
+		return nil, fmt.Errorf("resolve open-pr-list token for %s: %w", l.ref, err)
+	}
+	l.reg.Register([]byte(token))
+	return newOpenPRProvider(token).ListOpenPullRequestHeads(ctx, repo)
+}
+
+// buildOpenPRRefresher constructs the #353 open-PR-count refresher only when the
+// instance actually needs it — a repo is configured AND some workflow opts into
+// the MaxOpenPRs cap — so an instance that doesn't use the cap grows no GitHub
+// poller and needs no token for it. Returns nil otherwise. Only the `up` daemon
+// starts/wires the returned refresher; a single `goobers run` has no accretion
+// to throttle. resolver is a fresh credential resolver over cfg (buildCredentials
+// is read-only and idempotent), used only to authenticate the poll.
+func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar) (*localscheduler.OpenPRRefresher, error) {
+	if len(cfg.Repos) == 0 {
+		return nil, nil
+	}
+	capped := false
+	for i := range workflows {
+		if workflows[i].Spec.Readiness.MaxOpenPRs > 0 {
+			capped = true
+			break
+		}
+	}
+	if !capped {
+		return nil, nil
+	}
+	resolver, _, err := buildCredentials(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
+	}
+	repo := cfg.Repos[0]
+	lister := &resolvingOpenPRLister{ref: repo.Owner + "/" + repo.Name, resolver: resolver, reg: reg}
+	repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
+	return localscheduler.NewOpenPRRefresher(lister, repoRef, localscheduler.DefaultOpenPRRefreshInterval), nil
 }
 
 // instructionsPath resolves a goober's Instructions field to an absolute

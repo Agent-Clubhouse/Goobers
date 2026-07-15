@@ -29,6 +29,15 @@ spec:
     # safety floor — raise only with a maintainer's explicit sign-off.
     maxConcurrentRuns: 1
     maxRunsPerHour: 1
+    # Open-PR cap (#353): don't dispatch a new run while this workflow already
+    # has an un-merged goobers/implementation/* PR open. Looped runs branch
+    # every PR off origin/main, so once several unmerged siblings touch
+    # overlapping files they become mutually un-mergeable as a set (the V0.3
+    # ladder hit this). Capping at 1 keeps the loop merge-paced and the open set
+    # integrable; raise it once V0.5's auto-merge drains PRs without a human.
+    # The runner does NOT rebase/resolve cross-PR conflicts here — that's V0.5's
+    # merge-review/pr-remediation layer (epic #357).
+    maxOpenPRs: 1
   start: query-backlog
   tasks:
     # Built-in backlog-query stage kind (WF-055/SCH-041): claims exactly one
