@@ -72,8 +72,10 @@ spec:
       retry:
         maxAttempts: 2
         backoffSeconds: 15
-      expectedOutputs:
-        - changed-files
+      # No model-reported artifacts (#301): the implementer's deliverable is its
+      # committed diff on the run branch, which the runner captures and digests
+      # as the reviewer's evidence. A model cannot correctly self-report digested
+      # ArtifactPointers, so the result is status + scalar summary only.
       next: review
 
     # `make ci`-equivalent, run in the same worktree the implementer used.
@@ -163,8 +165,10 @@ spec:
   gates:
     # Agentic gate: the reviewer invocation IS the evaluator (gate.md's
     # "Agentic" evaluator kind) — there is no separate preceding review task.
-    # The runner attaches the preceding task's ("implement") artifacts as
-    # evidence context pointers before invoking the reviewer
+    # Before invoking the reviewer, the runner computes a deterministic diff of
+    # the run branch (git diff base...HEAD), digests it, and attaches it as an
+    # evidence context pointer (#301) — the reviewer judges the actual committed
+    # change, runner-produced, never a model-self-reported artifact
     # (internal/gate.ReviewerInvocation, #20). Verdict decisions map directly
     # to branches (GT-002: never a silent pass): "needs-changes" repasses to
     # implement with the rationale as evidence; "fail" aborts outright

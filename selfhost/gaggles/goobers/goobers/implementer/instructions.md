@@ -31,7 +31,10 @@ fresh, isolated worktree checked out from `Agent-Clubhouse/Goobers`.
 5. Commit your change with a clear message. Do not push — the workflow's
    `push-branch` stage publishes the run branch to origin deterministically
    after `local-ci` passes; a broken build never gets published.
-6. Report the changed files as an artifact in your result.
+
+Your committed diff on the run branch **is** your deliverable. You do **not**
+report changed files or artifacts yourself — the runner captures and digests
+your committed diff automatically and hands it to the reviewer as evidence.
 
 ## Repasses
 
@@ -68,5 +71,7 @@ not a fresh start.
 ## Done
 
 Signal completion via the designated completion tool with a `result`
-envelope: `status`, a one-paragraph `summary` of what you changed, and the
-changed files under `artifacts`.
+envelope: `status` and a one-paragraph `summary` of what you changed. Do not
+populate `artifacts` — the runner records your committed diff as the reviewer's
+evidence; the model does not report artifacts (a result's artifacts must be
+digested pointers, which only the runner produces).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -162,6 +163,26 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	}
 
 	return &Worktree{RunID: opts.RunID, Path: path, Branch: opts.Branch, manager: m, key: key}, nil
+}
+
+// Diff returns the unified diff of this worktree's branch against baseRef
+// (`git diff baseRef...HEAD`) — the cumulative change the run's stages have
+// committed on top of the base, computed from the actual commits rather than
+// self-reported by any stage. Used to produce a deterministic, digested
+// evidence artifact for the reviewer gate (#301). Raw bytes (not trimmed) so
+// the artifact digest is a faithful hash of the diff. An empty result (no
+// committed changes vs. base) returns an empty slice, no error.
+func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
+	if baseRef == "" {
+		return nil, fmt.Errorf("worktree: Diff requires a baseRef")
+	}
+	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs([]string{"diff", baseRef + "...HEAD"})...)
+	cmd.Dir = wt.Path
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("worktree: git diff %s...HEAD for run %s: %w", baseRef, wt.RunID, err)
+	}
+	return out, nil
 }
 
 // forceClear tears down whatever is left at path from a previous, never-torn-

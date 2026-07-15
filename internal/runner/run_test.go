@@ -2382,8 +2382,9 @@ func eventTypesEqual(got, want []journal.EventType) bool {
 // gate's envelope (#294). An agentic gate has no stage-level capabilities of
 // its own, so this is the only observation point for the sourcing behavior.
 type capturingReviewer struct {
-	gotCaps []string
-	called  bool
+	gotCaps     []string
+	gotPointers []apiv1.ContextPointer
+	called      bool
 }
 
 func (c *capturingReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
@@ -2393,7 +2394,23 @@ func (c *capturingReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (a
 func (c *capturingReviewer) Review(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
 	c.called = true
 	c.gotCaps = env.Capabilities
+	c.gotPointers = env.ContextPointers
 	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+// committingDeterministic is a deterministic stub that commits a real change on
+// the run branch in its worktree — so a downstream agentic gate's runner-produced
+// diff evidence (#301) is non-empty.
+type committingDeterministic struct{ t *testing.T }
+
+func (c *committingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	c.t.Helper()
+	if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte("real implementation change\n"), 0o644); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	runGit(c.t, env.Workspace, "add", "-A")
+	runGit(c.t, env.Workspace, "commit", "-m", "impl change")
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "implemented"}, nil
 }
 
 // agenticGateMachine mirrors fixtureMachine but with an AGENTIC reviewer gate
@@ -2503,4 +2520,114 @@ func TestRunnerAgenticGateSourcesGooberCapabilities(t *testing.T) {
 			t.Fatalf("gate envelope capabilities = %v, want none (fail-closed, no silent default)", reviewer.gotCaps)
 		}
 	})
+}
+
+// TestRunnerAgenticGateAttachesReviewerDiffEvidence is #301: before invoking an
+// agentic reviewer gate, the runner computes a diff of the run branch and
+// attaches it as a digested evidence context pointer — so the reviewer judges
+// the actual committed change, not a model-self-reported artifact.
+func TestRunnerAgenticGateAttachesReviewerDiffEvidence(t *testing.T) {
+	reviewer := &capturingReviewer{}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return &committingDeterministic{t: t}, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return reviewer, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-diff-evidence",
+		Machine: agenticGateMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if !reviewer.called {
+		t.Fatal("reviewer was never invoked")
+	}
+
+	var diffPtr *apiv1.ContextPointer
+	for i := range reviewer.gotPointers {
+		if reviewer.gotPointers[i].Name == "review.diff" {
+			diffPtr = &reviewer.gotPointers[i]
+		}
+	}
+	if diffPtr == nil {
+		t.Fatalf("reviewer got no runner-produced diff evidence pointer; pointers = %+v", reviewer.gotPointers)
+	}
+	if diffPtr.Artifact == nil || diffPtr.Artifact.Digest == "" {
+		t.Fatalf("diff evidence pointer has no digested artifact: %+v", diffPtr)
+	}
+}
+
+// capturingAutomated records the envelope it evaluates, so a test can assert an
+// automated gate never receives runner-produced reviewer-diff evidence (#301).
+type capturingAutomated struct{ gotPointers []apiv1.ContextPointer }
+
+func (c *capturingAutomated) Evaluate(_ context.Context, _ apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
+	c.gotPointers = env.ContextPointers
+	return "pass", nil
+}
+
+// TestRunnerAutomatedGateGetsNoDiffEvidence pins #301's agentic-only guard: the
+// runner-produced diff evidence is attached ONLY for an agentic reviewer gate.
+// An automated gate (which runs no goober and needs no evidence) never receives
+// it — even directly after a stage that committed a real change. Same seam
+// discipline as #294's credential guard.
+func TestRunnerAutomatedGateGetsNoDiffEvidence(t *testing.T) {
+	automated := &capturingAutomated{}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return &committingDeterministic{t: t}, nil
+		},
+		Automated:    automated,
+		Worktrees:    wtMgr,
+		RunsDir:      filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-automated-nodiff",
+		Machine: fixtureMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	for _, p := range automated.gotPointers {
+		if p.Name == "review.diff" {
+			t.Fatalf("automated gate must not receive runner diff evidence, got pointer %q", p.Name)
+		}
+	}
 }

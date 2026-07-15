@@ -937,6 +937,25 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 			return gate.Result{}, err, nil
 		}
 		defer func() { removeErr = wt.Remove(ctx, worktree.RemoveOptions{}) }()
+
+		// #301: give an agentic reviewer gate a runner-produced, digested diff
+		// of the run branch (git diff base...HEAD) as evidence, so it judges the
+		// actual committed change rather than a model-self-reported artifact —
+		// the implementer's model cannot correctly report digested ArtifactPointers,
+		// and its true deliverable is the committed branch. Attached via the #20
+		// evidence-pointer mechanism (env.ContextPointers), resolved into the
+		// reviewer's workspace like any other evidence pointer.
+		if g.Evaluator == apiv1.EvaluatorAgentic {
+			ptr, derr := r.recordReviewerDiff(ctx, ex, in, g.Name, wt)
+			if derr != nil {
+				err = fmt.Errorf("runner: gate %q: reviewer diff evidence: %w", g.Name, derr)
+				span.Fail(err)
+				return gate.Result{}, err, nil
+			}
+			if ptr != nil {
+				env.ContextPointers = append(env.ContextPointers, *ptr)
+			}
+		}
 	}
 
 	switch g.Evaluator {
@@ -968,6 +987,40 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	}
 	span.Succeed(result.Outcome)
 	return result, nil, nil
+}
+
+// recordReviewerDiff produces an agentic reviewer gate's evidence (#301): the
+// unified diff of the run branch against its base, recorded as a digested
+// artifact and returned as a context pointer for the reviewer's envelope. The
+// diff is computed by the runner from the actual commits — never self-reported
+// by the implementer's model — so the reviewer judges the real change with the
+// same content-addressed integrity as any other artifact. Returns (nil, nil)
+// when the branch carries no change vs. base (nothing to attach).
+func (r *Runner) recordReviewerDiff(ctx context.Context, ex *executors, in StartInput, gateName string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
+	baseRef := in.RepoRef.Branch
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	diff, err := wt.Diff(ctx, baseRef)
+	if err != nil {
+		return nil, err
+	}
+	if len(diff) == 0 {
+		return nil, nil
+	}
+	// Defense-in-depth: scrub any registered secret a stage's commit might have
+	// captured before the diff lands in the journal, mirroring the harness's own
+	// artifact scrubbing (internal/harness.Executor.liftArtifactFile). The run's
+	// SecretRegistrar is the RegistryScrubber that also implements journal.Scrubber.
+	if s, ok := ex.reg.(journal.Scrubber); ok {
+		diff = s.Scrub(diff)
+	}
+	ref, err := ex.rec.RecordArtifact(in.RunID+":"+gateName+"/reviewer-diff.patch", diff)
+	if err != nil {
+		return nil, fmt.Errorf("record reviewer diff artifact: %w", err)
+	}
+	ptr := apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: "text/x-diff"}
+	return &apiv1.ContextPointer{Name: gateName + ".diff", Artifact: &ptr}, nil
 }
 
 // startGateSpan opens a gate span under the run's trace, if telemetry is
