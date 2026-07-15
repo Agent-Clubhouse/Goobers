@@ -50,6 +50,14 @@ func renderPrompt(req RunRequest) string {
 	return b.String()
 }
 
-const resultShapeHint = `{"status": "success"|"failure"|"blocked", "outputs": {...}, "artifacts": [...], "summary": "...", "metrics": {...}, "error": {"code": "...", "message": "..."}}`
+// resultShapeHint deliberately omits "error" from the base shape: it is
+// required only on a "failure"/"blocked" status, and an empty error object on a
+// successful result fails the schema's errorInfo minLength:1 check — a
+// well-behaved model that fills every field shown here would then be journaled
+// as a false-negative failure despite doing the work correctly (#297). The
+// error field is described as conditional instead of shown inline.
+const resultShapeHint = `{"status": "success"|"failure"|"blocked", "outputs": {...}, "artifacts": [...], "summary": "...", "metrics": {...}}
+
+On a "failure" or "blocked" status, also include an "error" object: {"code": "...", "message": "..."} (both non-empty). Omit "error" entirely on success.`
 
 const verdictShapeHint = `{"decision": "pass"|"fail"|"needs-changes", "rationale": "...", "findings": [{"severity": "...", "message": "...", "location": "..."}], "summary": "..."}`
