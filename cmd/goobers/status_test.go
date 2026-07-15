@@ -1,9 +1,12 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 // TestStatusRejectsNonInstanceRoot is issue #142: a typo'd or otherwise
@@ -32,5 +35,25 @@ func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "no runs found") {
 		t.Fatalf("expected 'no runs found', got stdout = %q", stdout)
+	}
+}
+
+func TestListRunsSkipsNonRunEntry(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	newStuckRun(t, layout, "valid-run", "default-implement")
+	if err := os.WriteFile(filepath.Join(layout.RunsDir(), "notes.txt"), []byte("not a run"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runs, err := listRuns(layout.RunsDir())
+	if err != nil {
+		t.Fatalf("listRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("listRuns returned %d runs, want 1: %+v", len(runs), runs)
+	}
+	if got := runs[0]; got.RunID != "valid-run" || got.Workflow != "default-implement" || got.Gaggle != "example" || got.Phase != "running" {
+		t.Fatalf("listRuns returned %+v, want the valid run summary", got)
 	}
 }
