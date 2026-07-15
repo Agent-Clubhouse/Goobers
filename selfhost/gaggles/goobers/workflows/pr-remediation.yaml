@@ -1,0 +1,51 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: pr-remediation
+spec:
+  gaggle: goobers
+  displayName: PR remediation (rebase + finding-driven rework)
+  # The second executor at the whole-open-PR-set altitude (V0.5,
+  # docs/design/v0/pr-lifecycle-loop.md §2/§5): re-enters on an EXISTING PR
+  # merge-review flagged goobers:needs-remediation, rather than opening a new
+  # one. gather-pr-context (issue #362) is the entrypoint — it replaces
+  # implementation's query-backlog head. The rebase-first, finding-driven
+  # routing (#363) and the durable per-PR repass budget + same-diff
+  # escalation (#364) land as later stages; until then this workflow ends
+  # after loading context, which is a complete, useful increment on its own
+  # (the label stays set, so nothing is lost — the next run just re-gathers).
+  #
+  # DOGFOOD GUARDRAIL: hourly, off a different minute than merge-review (#25
+  # past) so the two decider/executor cycles don't contend for the same PR
+  # mid-read; this instance's open-PR volume is low, so hourly is ample.
+  triggers:
+    - type: schedule
+      schedule: "37 * * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 2
+  start: gather-pr-context
+  tasks:
+    # Entrypoint (issue #362, design doc §5): select one open, goober-
+    # authored PR labeled needs-remediation, check out ITS branch into this
+    # run's worktree (replacing whatever branch the runner's worktree
+    # provisioning defaulted to), and load the merge-review Verdict + PR-
+    # thread comments + whether the base has advanced as context for the
+    # rebase + finding-driven routing stage that follows (#363).
+    - name: gather-pr-context
+      type: deterministic
+      goal: Select a needs-remediation PR, check out its branch, and load review context.
+      run:
+        command: ["goobers", "gather-pr-context"]
+      inputs:
+        resultFile: "pr-context.json"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+        - repo:push
+      expectedOutputs:
+        - selectedNumber
+        - head
+        - isBehindBase
+      # Terminal for now: #363 adds the rebase (force-with-lease) +
+      # finding-driven routing to implement/review/local-ci as `next` here.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strconv"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -193,7 +194,13 @@ func readLatestGateVerdict(runsDir, runID, gateName string) (*apiv1.Verdict, err
 // renderVerdictComment is the prose PR comment — a human-readable
 // projection of the same Verdict artifact (design doc §4: "one source of
 // truth, so comment and fix cannot drift"), never a separately-authored
-// message.
+// message. It also embeds the SAME Verdict as a machine-readable payload
+// (verdictJSONComment) in an HTML comment appended to the end — invisible
+// when GitHub renders the comment, but readable by `gather-pr-context`
+// (issue #362), which runs in a different workflow's run and so has no
+// journal/runID relationship to this run's own artifact. This keeps the
+// prose and the machine payload as ONE posted comment (still a single
+// source of truth) rather than growing a second, driftable channel.
 func renderVerdictComment(v apiv1.Verdict) string {
 	s := fmt.Sprintf("**merge-review verdict: %s**\n\n%s", v.Decision, v.Summary)
 	if v.Rationale != "" {
@@ -209,5 +216,40 @@ func renderVerdictComment(v apiv1.Verdict) string {
 		}
 		s += line
 	}
+	if payload, err := verdictJSONComment(v); err == nil {
+		s += "\n\n" + payload
+	}
 	return s
+}
+
+// verdictJSONPattern matches the machine-readable payload
+// renderVerdictComment appends to its posted comment.
+var verdictJSONPattern = regexp.MustCompile(`(?s)<!-- verdict-json: (.*?) -->`)
+
+// verdictJSONComment marshals v into the HTML-comment payload
+// renderVerdictComment appends to the prose comment.
+func verdictJSONComment(v apiv1.Verdict) (string, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("marshal verdict payload: %w", err)
+	}
+	return fmt.Sprintf("<!-- verdict-json: %s -->", data), nil
+}
+
+// parseVerdictComment recovers the Verdict a merge-review apply-verdict run
+// embedded in a PR comment via verdictJSONComment — the handoff
+// pr-remediation's gather-pr-context (issue #362) uses to read merge-review's
+// structured verdict back from a DIFFERENT run's own journal (which has no
+// artifact for it). Returns ok=false if body has no embedded payload (an
+// older comment, or one not posted by apply-verdict at all) — that is a
+// normal "no verdict recorded yet" outcome, not a parse error.
+func parseVerdictComment(body string) (v apiv1.Verdict, ok bool) {
+	m := verdictJSONPattern.FindStringSubmatch(body)
+	if m == nil {
+		return apiv1.Verdict{}, false
+	}
+	if err := json.Unmarshal([]byte(m[1]), &v); err != nil {
+		return apiv1.Verdict{}, false
+	}
+	return v, true
 }
