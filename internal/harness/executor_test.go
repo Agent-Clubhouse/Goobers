@@ -834,3 +834,60 @@ func TestExecutorRefusesCrossRunDigestMismatch(t *testing.T) {
 type noopRegistrar struct{}
 
 func (noopRegistrar) Register(secret []byte) {}
+
+// agentModelInjector grants exactly agent:model from a real env-var token ref —
+// the reviewer-gate credential shape #294 introduces.
+func agentModelInjector(t *testing.T, token string) *credentials.Injector {
+	t.Helper()
+	t.Setenv("MODEL_TOKEN_ENV", token)
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "model-token", Env: "MODEL_TOKEN_ENV"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{Capability: "agent:model", Ref: "model-token"}}, noopRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	return injector
+}
+
+// TestExecutorReviewMaterializesAgentModel is #294's Review-path proof: the
+// reviewer runs through Executor.Review (ModeReview), and its declared
+// agent:model capability is materialized and handed to the adapter — so the
+// reviewer subprocess can authenticate the Copilot model exactly like a task
+// stage. Complements the runner test (the gate ENVELOPE now carries the cap)
+// and #288's adapter test (the cap becomes COPILOT_GITHUB_TOKEN in the env).
+func TestExecutorReviewMaterializesAgentModel(t *testing.T) {
+	var gotToken string
+	var gotMode Mode
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			gotMode = req.Mode
+			var err error
+			gotToken, err = req.Credentials.Token(ctx, "agent:model")
+			if err != nil {
+				return err
+			}
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "ok"})
+		},
+	}
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(adapter, agentModelInjector(t, "copilot-model-token"), rec, rec, rec, journal.NewPatternScrubber(), "review it")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	verdict, err := exec.Review(context.Background(), testEnvelope(t.TempDir(), "agent:model"))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if verdict.Decision != apiv1.VerdictPass {
+		t.Fatalf("decision = %q, want pass", verdict.Decision)
+	}
+	if gotMode != ModeReview {
+		t.Fatalf("adapter mode = %q, want review", gotMode)
+	}
+	if gotToken != "copilot-model-token" {
+		t.Fatalf("agent:model token = %q, want copilot-model-token", gotToken)
+	}
+}

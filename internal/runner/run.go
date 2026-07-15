@@ -59,6 +59,18 @@ type Config struct {
 	// Escalation notifies the driving backlog item's provider when a run
 	// escalates (internal/gate.EscalationNotifier). Optional — nil is a no-op.
 	Escalation *gate.EscalationNotifier
+	// GateGooberCapabilities resolves an agentic gate's reviewer goober name to
+	// the capabilities its definition declares. An agentic GATE has no
+	// stage-level capabilities of its own (apiv1.AgenticGate is just a Goober
+	// reference), yet its reviewer runs a real goober subprocess that needs its
+	// capability-scoped credentials — e.g. agent:model for Copilot model auth
+	// (#294). Consulted ONLY for evaluator=agentic gates; automated and human
+	// gates run no goober and must never receive credentials. A goober absent
+	// here (or a nil map) sources no capabilities — exactly the prior behavior,
+	// so a gate is never silently over-credentialed. Sourcing a goober's OWN
+	// declared grants can never exceed them, so this needs no separate admission
+	// check (the compiler already validated the goober's grants, #74).
+	GateGooberCapabilities map[string][]string
 	// Worktrees provisions the fresh, isolated, disposable working copy each
 	// stage attempt runs in (§5).
 	Worktrees *worktree.Manager
@@ -909,7 +921,16 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		}
 	} else {
 		var wt *worktree.Worktree
-		env, wt, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, nil, upstream)
+		// An agentic gate's reviewer runs a real goober subprocess, so — unlike
+		// an automated/human gate — it needs its capability-scoped credentials
+		// (agent:model for Copilot model auth, #294). AgenticGate carries no
+		// stage-level capabilities, so source them from the reviewer goober's
+		// own definition; automated/human gates stay uncredentialed (nil caps).
+		var gateCaps []string
+		if g.Evaluator == apiv1.EvaluatorAgentic {
+			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
+		}
+		env, wt, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, upstream)
 		if err != nil {
 			err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
 			span.Fail(err)

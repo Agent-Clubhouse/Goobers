@@ -2373,3 +2373,134 @@ func eventTypesEqual(got, want []journal.EventType) bool {
 	}
 	return true
 }
+
+// --- #294: an agentic gate sources its reviewer goober's capabilities ---
+
+// capturingReviewer is a fake invoke.Goober (agentic reviewer) that records the
+// invocation envelope it was handed and returns a fixed pass verdict — so a
+// test can assert exactly which capabilities the runner sourced into an agentic
+// gate's envelope (#294). An agentic gate has no stage-level capabilities of
+// its own, so this is the only observation point for the sourcing behavior.
+type capturingReviewer struct {
+	gotCaps []string
+	called  bool
+}
+
+func (c *capturingReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (c *capturingReviewer) Review(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	c.called = true
+	c.gotCaps = env.Capabilities
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+// agenticGateMachine mirrors fixtureMachine but with an AGENTIC reviewer gate
+// (goober "reviewer") instead of an automated one, for exercising #294's
+// gate-envelope capability sourcing.
+func agenticGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "review"},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "review",
+				Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{
+					"pass":          workflow.TerminalComplete,
+					"needs-changes": "implement",
+					"fail":          workflow.TargetAbort,
+				},
+			},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "agentic-gate-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile agentic gate machine: %v", err)
+	}
+	return m
+}
+
+// newAgenticGateRunner mirrors newTestRunnerWithDeterministic but wires a fake
+// agentic reviewer and a GateGooberCapabilities map, for #294's gate-envelope
+// capability sourcing.
+func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, reviewer invoke.Goober, gateCaps map[string][]string) *Runner {
+	t.Helper()
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: byTask}, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return reviewer, nil
+		},
+		GateGooberCapabilities: gateCaps,
+		Worktrees:              wtMgr,
+		RunsDir:                filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL:           func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return r
+}
+
+// TestRunnerAgenticGateSourcesGooberCapabilities is #294: an agentic gate
+// (AgenticGate carries no stage-level capabilities) must source them from its
+// reviewer goober's definition into the gate envelope — the only path by which
+// the reviewer subprocess can be handed agent:model. A goober absent from the
+// map sources nothing (fail-closed, no silent default).
+func TestRunnerAgenticGateSourcesGooberCapabilities(t *testing.T) {
+	byTask := map[string]stubTaskResult{"run-agentic-gate:implement": {status: apiv1.ResultSuccess}}
+	start := func(t *testing.T, r *Runner) Result {
+		t.Helper()
+		res, err := r.Start(context.Background(), StartInput{
+			RunID:   "run-agentic-gate",
+			Machine: agenticGateMachine(t),
+			Gaggle:  "acme-web",
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		return res
+	}
+
+	t.Run("sources the reviewer goober's declared capabilities", func(t *testing.T) {
+		reviewer := &capturingReviewer{}
+		r := newAgenticGateRunner(t, byTask, reviewer, map[string][]string{"reviewer": {"agent:model"}})
+		if res := start(t, r); res.Phase != journal.PhaseCompleted {
+			t.Fatalf("phase = %q, want completed", res.Phase)
+		}
+		if !reviewer.called {
+			t.Fatal("reviewer was never invoked")
+		}
+		if got := reviewer.gotCaps; len(got) != 1 || got[0] != "agent:model" {
+			t.Fatalf("gate envelope capabilities = %v, want [agent:model]", got)
+		}
+	})
+
+	t.Run("no mapping means no capabilities (fail-closed)", func(t *testing.T) {
+		reviewer := &capturingReviewer{}
+		r := newAgenticGateRunner(t, byTask, reviewer, nil)
+		_ = start(t, r)
+		if !reviewer.called {
+			t.Fatal("reviewer was never invoked")
+		}
+		if len(reviewer.gotCaps) != 0 {
+			t.Fatalf("gate envelope capabilities = %v, want none (fail-closed, no silent default)", reviewer.gotCaps)
+		}
+	})
+}
