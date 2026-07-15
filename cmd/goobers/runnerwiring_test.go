@@ -7,9 +7,11 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/providers"
 )
 
 // resolveGrants materializes each grant's ref through the resolver, returning a
@@ -187,4 +189,87 @@ func TestIngestRunTelemetryNilLogDoesNotPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 	ingestRunTelemetry(nil, db, l, "run-nil-log", nil)
+}
+
+// --- #312: escalation-notifier wiring ---
+
+type escTestRegistrar struct{ registered [][]byte }
+
+func (r *escTestRegistrar) Register(secret []byte) {
+	r.registered = append(r.registered, append([]byte(nil), secret...))
+}
+
+type escFakeCommenter struct {
+	gotReq providers.UpdateWorkItemRequest
+}
+
+func (f *escFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	f.gotReq = req
+	return providers.WorkItem{}, nil
+}
+
+// TestBuildEscalationNotifier is #312: the notifier is wired at the composition
+// root for a repo-backed instance (so runner.Config.Escalation is no longer
+// always nil), and nil for a repo-less instance (nothing to comment on).
+func TestBuildEscalationNotifier(t *testing.T) {
+	t.Run("nil for a repo-less instance", func(t *testing.T) {
+		if n := buildEscalationNotifier(&instance.Config{}, nil, nil); n != nil {
+			t.Fatalf("expected a nil notifier for no repos, got %+v", n)
+		}
+	})
+	t.Run("wired with the target repo", func(t *testing.T) {
+		cfg := &instance.Config{Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "ESC_TOK"}},
+		}}
+		resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "ESC_TOK"}})
+		if err != nil {
+			t.Fatalf("NewResolver: %v", err)
+		}
+		n := buildEscalationNotifier(cfg, resolver, &escTestRegistrar{})
+		if n == nil {
+			t.Fatal("expected a non-nil notifier for a repo-backed instance")
+		}
+		if n.Repository.Provider != providers.ProviderGitHub || n.Repository.Owner != "acme" || n.Repository.Name != "web" {
+			t.Fatalf("unexpected Repository: %+v", n.Repository)
+		}
+	})
+}
+
+// TestEscalationCommenterResolvesTokenPerCall is #312's rotation-safety +
+// scrubbing property: the commenter resolves the org-repo token on each call
+// (not captured at startup), registers it for scrubbing, and posts through a
+// freshly-authenticated provider.
+func TestEscalationCommenterResolvesTokenPerCall(t *testing.T) {
+	t.Setenv("ESC_TOK", "escalation-token-value")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "ESC_TOK"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	reg := &escTestRegistrar{}
+
+	fake := &escFakeCommenter{}
+	var gotToken string
+	prev := newEscalationPoster
+	newEscalationPoster = func(token string) gate.Commenter { gotToken = token; return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	c := &escalationCommenter{ref: "acme/web", resolver: resolver, reg: reg}
+	if _, err := c.UpdateWorkItem(context.Background(), providers.UpdateWorkItemRequest{ID: "281", Comment: "escalated"}); err != nil {
+		t.Fatalf("UpdateWorkItem: %v", err)
+	}
+	if gotToken != "escalation-token-value" {
+		t.Fatalf("poster built with token %q, want the resolved token", gotToken)
+	}
+	if fake.gotReq.ID != "281" || fake.gotReq.Comment != "escalated" {
+		t.Fatalf("posted request = %+v", fake.gotReq)
+	}
+	var registered bool
+	for _, s := range reg.registered {
+		if string(s) == "escalation-token-value" {
+			registered = true
+		}
+	}
+	if !registered {
+		t.Fatalf("resolved token not registered for scrubbing; registered=%v", reg.registered)
+	}
 }
