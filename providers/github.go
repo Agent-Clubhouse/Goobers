@@ -367,6 +367,9 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		State:            pr.State,
 		Merged:           pr.Merged,
 		Mergeable:        pr.Mergeable,
+		Draft:            pr.Draft,
+		HeadSHA:          pr.Head.SHA,
+		BaseSHA:          pr.Base.SHA,
 		ReviewDecision:   decision,
 		RequestedChanges: requestedChanges,
 		CheckState:       checkState,
@@ -420,6 +423,49 @@ func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequ
 		Fields:    fields,
 	})
 	return ClosePullRequestResult{Number: out.Number, Merged: out.Merged, State: state}, nil
+}
+
+// MergePullRequest merges a GitHub pull request (issue #360) via the
+// dedicated merge endpoint (PUT .../pulls/{number}/merge) — distinct from
+// ClosePullRequest's PATCH state=closed, which merely closes without
+// merging. GitHub refuses the request server-side (non-2xx, surfaced as an
+// error by p.do) if req.ExpectedHeadSHA is set and no longer matches the
+// PR's actual current head (405/409), or if the PR is not mergeable at all
+// (draft, blocked by branch protection, merge conflict) — this method
+// performs no policy check of its own; see MergePullRequestRequest's doc.
+func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequestRequest) (MergePullRequestResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return MergePullRequestResult{}, err
+	}
+	if req.PullID == "" {
+		return MergePullRequestResult{}, fmt.Errorf("pull id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "merge")
+	if err != nil {
+		return MergePullRequestResult{}, err
+	}
+	body := map[string]interface{}{}
+	if req.ExpectedHeadSHA != "" {
+		body["sha"] = req.ExpectedHeadSHA
+	}
+	if req.CommitMessage != "" {
+		body["commit_message"] = req.CommitMessage
+	}
+	var out githubMergeResult
+	if err := p.do(ctx, http.MethodPut, endpoint, body, &out); err != nil {
+		return MergePullRequestResult{}, err
+	}
+	number, convErr := strconv.Atoi(req.PullID)
+	if convErr != nil {
+		number = 0
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, req.PullID),
+		Operation: "merge",
+		Fields:    map[string]FieldDigest{"state": {After: digestString("merged")}},
+	})
+	return MergePullRequestResult{Number: number, Merged: out.Merged, MergeSHA: out.SHA, Message: out.Message}, nil
 }
 
 // reviewDecision aggregates a PR's review list into a single decision: the
@@ -1142,10 +1188,20 @@ type githubPullRequestDetail struct {
 	State     string `json:"state"`
 	Merged    bool   `json:"merged"`
 	Mergeable *bool  `json:"mergeable"`
+	Draft     bool   `json:"draft"`
 	HTMLURL   string `json:"html_url"`
 	Head      struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
+	Base struct {
+		SHA string `json:"sha"`
+	} `json:"base"`
+}
+
+type githubMergeResult struct {
+	SHA     string `json:"sha"`
+	Merged  bool   `json:"merged"`
+	Message string `json:"message"`
 }
 
 type githubReview struct {

@@ -25,6 +25,10 @@ type RepoProvider interface {
 	PollPullRequest(context.Context, PullRequestPollRequest) (PullRequestPollResult, error)
 	// ClosePullRequest closes a pull request, detecting merged-vs-closed (BL-031).
 	ClosePullRequest(context.Context, ClosePullRequestRequest) (ClosePullRequestResult, error)
+	// MergePullRequest merges a pull request (issue #360) — the provider-level
+	// primitive a conjunctive auto-merge action calls only after independently
+	// verifying every merge conjunct; see MergePullRequestRequest's doc.
+	MergePullRequest(context.Context, MergePullRequestRequest) (MergePullRequestResult, error)
 }
 
 // BranchName returns the run-scoped branch-name convention the repo provider

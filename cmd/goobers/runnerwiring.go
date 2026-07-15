@@ -161,7 +161,7 @@ const copilotModelEnv = "COPILOT_GITHUB_TOKEN"
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
-	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubPRWrite,
+	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubPRWrite, capability.GitHubPRMerge,
 }
 
 // buildEnvCapabilities maps each capability the Copilot adapter injects to the

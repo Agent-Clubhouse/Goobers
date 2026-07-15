@@ -690,6 +690,112 @@ func TestGitHubProviderClosePullRequestRecordsMergeVsClose(t *testing.T) {
 	}
 }
 
+func TestGitHubProviderMergePullRequestSucceeds(t *testing.T) {
+	mux := http.NewServeMux()
+	var gotBody map[string]interface{}
+	mux.HandleFunc("/repos/acme/app/pulls/9/merge", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPut)
+		decodeJSON(t, r, &gotBody)
+		writeJSON(t, w, map[string]interface{}{"sha": "abc123", "merged": true, "message": "Pull Request successfully merged"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	rec := &recordingRecorder{}
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL }, WithMutationRecorder(rec))
+	result, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
+		ExpectedHeadSHA: "deadbeef", CommitMessage: "merged by merge-review",
+	})
+	if err != nil {
+		t.Fatalf("MergePullRequest returned error: %v", err)
+	}
+	if !result.Merged || result.MergeSHA != "abc123" || result.Number != 9 {
+		t.Fatalf("result = %#v", result)
+	}
+	if gotBody["sha"] != "deadbeef" {
+		t.Fatalf("request body sha = %v, want deadbeef (the SHA-pin optimistic-concurrency guard)", gotBody["sha"])
+	}
+	if gotBody["commit_message"] != "merged by merge-review" {
+		t.Fatalf("request body commit_message = %v", gotBody["commit_message"])
+	}
+	ref, ok := rec.last()
+	if !ok {
+		t.Fatalf("expected a recorded external ref")
+	}
+	if ref.Operation != "merge" {
+		t.Fatalf("Operation = %q, want merge", ref.Operation)
+	}
+}
+
+// TestGitHubProviderMergePullRequestRefusedOnSHAMismatch proves a stale
+// SHA-pin is refused server-side (GitHub's own optimistic-concurrency guard,
+// belt-and-suspenders alongside the caller's own D6 re-check) — surfaced as
+// an error, never a silent Merged=false.
+func TestGitHubProviderMergePullRequestRefusedOnSHAMismatch(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/9/merge", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Head branch was modified"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	_, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9", ExpectedHeadSHA: "stale-sha",
+	})
+	if err == nil {
+		t.Fatal("expected an error for a stale SHA-pin (409), got nil")
+	}
+}
+
+// TestGitHubProviderPollPullRequestSurfacesDraftAndSHAs is #360's regression:
+// a conjunctive auto-merge action re-checks not-draft and the SHA-pin (D6)
+// against PollPullRequest's live result — these fields must actually reach
+// the caller, not just exist unpopulated on the struct.
+func TestGitHubProviderPollPullRequestSurfacesDraftAndSHAs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"number": 9, "state": "open", "draft": true, "html_url": "https://github.com/acme/app/pull/9",
+			"head": map[string]interface{}{"sha": "headsha123"},
+			"base": map[string]interface{}{"sha": "basesha456"},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/pulls/9/reviews", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/headsha123/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"state": "success", "statuses": []map[string]interface{}{}})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/headsha123/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
+	})
+	mux.HandleFunc("/repos/acme/app/issues/9/comments", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
+	})
+	if err != nil {
+		t.Fatalf("PollPullRequest returned error: %v", err)
+	}
+	if !result.Draft {
+		t.Fatal("Draft = false, want true")
+	}
+	if result.HeadSHA != "headsha123" {
+		t.Fatalf("HeadSHA = %q, want headsha123", result.HeadSHA)
+	}
+	if result.BaseSHA != "basesha456" {
+		t.Fatalf("BaseSHA = %q, want basesha456", result.BaseSHA)
+	}
+}
+
 func writeJSON(t *testing.T, w http.ResponseWriter, value interface{}) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")

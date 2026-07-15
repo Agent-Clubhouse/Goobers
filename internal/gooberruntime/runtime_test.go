@@ -276,6 +276,10 @@ func (f *fakeRepoProvider) ClosePullRequest(context.Context, providers.ClosePull
 	return providers.ClosePullRequestResult{}, nil
 }
 
+func (f *fakeRepoProvider) MergePullRequest(context.Context, providers.MergePullRequestRequest) (providers.MergePullRequestResult, error) {
+	return providers.MergePullRequestResult{}, nil
+}
+
 func TestInProcessPreparerClonesRepoAndBuildsEnv(t *testing.T) {
 	repo := &fakeRepoProvider{}
 	preparer := InProcessPreparer{
