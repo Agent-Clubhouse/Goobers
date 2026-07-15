@@ -33,37 +33,79 @@ in `instance.yaml`:
 | `github:pr:write` | Pull requests: Read and write, Contents: Read and write | Only for stages that open/update PRs. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
 | `repo:clone` (read-only stages) | Contents: Read-only | Curation/analysis stages that never push. |
+| `agent:model` | *(Account permissions)* Copilot Requests: Read-only — **not** a repository permission | Copilot model authentication for any agentic (`copilot`-harness) stage. Sourced from its **own** token (a personal fine-grained PAT), injected as `COPILOT_GITHUB_TOKEN`; needs no repo/issue/PR access. See ["the `agent:model` token"](#agentic-copilot-harness-stages-the-agentmodel-token) below. |
 
 Repository access: select **Only select repositories** and list exactly the
 gaggle's target repo(s) — never "All repositories".
 
-### Agentic (Copilot-harness) stages also need "Copilot Requests"
+### Agentic (Copilot-harness) stages: the `agent:model` token
 
 The permissions above cover the ordinary GitHub API — issues, pull requests,
 contents. They are **not** sufficient for an **agentic** stage (any stage whose
 goober uses the `copilot` harness — curator, implementer, reviewer, nominator,
 analyst, config-author in the shipped gaggle). The GitHub Copilot CLI
-authenticates to Copilot itself using the same PAT (via `GH_TOKEN` /
-`COPILOT_GITHUB_TOKEN`, injected per capability), and Copilot requires its own
+authenticates to its **model backend** with a token, and that requires a
 **separate fine-grained permission — "Copilot Requests" (Account permissions →
-Copilot Requests: Read-only)** — which is unrelated to any repo/issue/PR access.
+Copilot Requests: Read-only)** — unrelated to any repo/issue/PR access. A PAT
+without it authenticates fine for deterministic stages (`backlog-query`,
+`open-pr`, `issue-close-out`) but **fails immediately at the first agentic
+stage** with `Authentication failed … ensure it has the 'Copilot Requests'
+permission` (#284) — even though claims, comments, and PRs all work.
 
-A PAT minted with only the repo/issue/PR permissions above authenticates fine
-for deterministic stages (`backlog-query`, `open-pr`, `issue-close-out`) but
-**fails immediately at the first agentic stage** with `Authentication failed …
-ensure it has the 'Copilot Requests' permission` (#284) — every coder/reviewer
-goober is blocked, even though claims, comments, and PRs all work. So:
+Goobers models model authentication as its own capability, **`agent:model`**,
+sourced from its **own** token and injected into the agentic subprocess as
+**`COPILOT_GITHUB_TOKEN`** (which the Copilot CLI prefers over `GH_TOKEN` for
+model auth). This is the multi-token model (#287–#289): one agentic stage can
+hold *two* tokens at once — `agent:model → COPILOT_GITHUB_TOKEN` for the model,
+and its repo/issue/PR grants → `GH_TOKEN` for the `github` tool — because they
+are distinct env vars that never clobber each other. Classic PATs (`ghp_`) are
+**not** accepted by the Copilot CLI at all; agentic stages require a
+fine-grained (v2) PAT regardless.
 
-- On **any** fine-grained PAT backing a capability that an agentic stage
-  declares (typically `repo:push` / `github:pr:write` for the implementer, and
-  whatever the other Copilot goobers use), also enable **Copilot Requests:
-  Read-only** under *Account permissions* — it is an account-level permission,
-  not a repository one, so it appears in a different section of the PAT form.
-- Classic PATs (`ghp_`) are **not** accepted by the Copilot CLI at all; agentic
-  stages require a fine-grained (v2) PAT regardless of the above.
-- Verify before a live run: `goobers validate --check-harness` preflights the
-  Copilot CLI (and, when `AuthCheckArgs` is configured, its authentication) so a
-  mis-scoped token fails fast at validation rather than mid-run.
+**Cross-org reality — why it must be a separate token.** "Copilot Requests" is
+an **account-level** permission: it can only be granted on a **personal**
+fine-grained PAT, never on a token scoped to an organization's repositories. So
+when your target repo lives in an org, `agent:model`'s token is necessarily a
+**different token** from the repo credential:
+
+- **`agent:model` token** — a *personal* fine-grained PAT with **Copilot
+  Requests: Read-only** and **no repository access at all** (it authenticates
+  the model, nothing else).
+- **repo/issue/PR token** — the org-scoped fine-grained PAT with the
+  Contents/Issues/Pull-requests permissions from the table above. An org owner
+  must **approve** a personal fine-grained PAT before it can access org repos
+  (org *Settings → Third-party Access → Personal access tokens*), so budget for
+  that approval step on the repo credential.
+
+(For a target repo under your **personal** account, one personal PAT carrying
+both the repo permissions *and* Copilot Requests can back both capabilities —
+point `agent:model` and the repo grants at the same ref. The two-token split is
+mandatory only across the org boundary above.)
+
+Wire the tokens with a `credentials:` block in `instance.yaml`: the repo token
+stays on the repo's `token:` ref, and `agent:model` gets its own ref.
+
+```yaml
+repos:
+  - provider: github
+    owner: your-org
+    name: your-repo
+    token:
+      env: GOOBERS_GITHUB_TOKEN      # org repo PAT → GH_TOKEN (github tool, repo/issue/PR)
+credentials:
+  - capability: agent:model
+    token:
+      env: GOOBERS_COPILOT_TOKEN     # personal "Copilot Requests" PAT → COPILOT_GITHUB_TOKEN
+```
+
+Each `credentials:` entry sources one capability from its own token ref; an
+entry for a capability the repo token would otherwise back **overrides** it (so
+`repo:push` can be pointed at a distinct token too, if ever needed). Values are
+never inline — `token.env` or `token.file` only (`CFG-009`/`SEC-010`).
+
+Verify before a live run: `goobers validate --check-harness` preflights the
+Copilot CLI (and, when `AuthCheckArgs` is configured, its authentication) so a
+mis-scoped token fails fast at validation rather than mid-run.
 
 ## Least privilege per workflow
 
