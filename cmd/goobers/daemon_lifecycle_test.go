@@ -110,10 +110,20 @@ func TestResumeReleasesReconciledSlotForFollowUpTrigger(t *testing.T) {
 	// dispatch's own goroutine calls trackedStarter.Start (and its wg.Add)
 	// from within itself, so wg.Wait() right after Trigger returns has the
 	// same tiny race window trackedStarter's own doc comment already
-	// documents — poll the run's own journal instead of relying on wg here,
-	// so the test doesn't tear down its TempDir while that goroutine (and
-	// its worktree cleanup) is still in flight.
+	// documents — poll the run's own journal first instead of relying on wg
+	// immediately.
 	waitForRunPhase(t, l.RunsDir(), runID, journal.PhaseCompleted)
+	// By the time the journal shows PhaseCompleted, wg.Add(1) has
+	// unconditionally already run (it's the first line of Start, in the
+	// same goroutine that later journals the terminal phase via s.r.Start)
+	// — so the Add-race above no longer applies and this Wait is safe.
+	// It's still necessary: trackedStarter.Start calls ingestRunTelemetry
+	// (rollup DB writes under l.RunsDir()/l.SchedulerDir()) AFTER s.r.Start
+	// returns but BEFORE the deferred wg.Done() fires (issue #320) — without
+	// this Wait, the test can return and let t.TempDir()'s cleanup race that
+	// still-in-flight ingest, producing the observed "directory not empty"
+	// flake.
+	wg.Wait()
 }
 
 // waitForRunPhase polls runID's journal until it reaches want, failing the
@@ -233,6 +243,15 @@ func TestResumePastOrphanedWorktreeAtSameKey(t *testing.T) {
 		t.Fatalf("resumed = %v, want [%s]", resumed, runID)
 	}
 	waitForRunPhase(t, l.RunsDir(), runID, journal.PhaseCompleted)
+	// resumeInterruptedRuns' wg.Add(1) runs synchronously in its own loop,
+	// before the resume goroutine launches (#320's fix comment above has the
+	// full analysis for the Trigger-dispatch case) — no Add-race here, but
+	// this Wait is still needed: the goroutine's ingestRunTelemetry call
+	// (rollup DB writes under l.RunsDir()/l.SchedulerDir()) runs after the
+	// journal already shows PhaseCompleted, so returning right after
+	// waitForRunPhase can let t.TempDir()'s cleanup race that still-in-flight
+	// write.
+	wg.Wait()
 }
 
 // TestUpSkipsUnresolvableWorkflowWithWarningNotFatal is issue #135 point 2's
