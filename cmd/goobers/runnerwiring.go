@@ -275,6 +275,58 @@ func buildCIPollExecutor(cfg *instance.Config, resolver *credentials.Resolver, r
 	return executor.NewCIPollExecutor(poller)
 }
 
+// newEscalationPoster constructs the provider the escalation notifier posts
+// through — a package var so tests substitute a fake without a real GitHub
+// client (mirrors newPRPoller).
+var newEscalationPoster = func(token string) gate.Commenter { return providers.NewGitHubProvider(token) }
+
+// escalationCommenter is the gate.Commenter the runner posts escalation
+// comments through (#312). Like buildCIPollExecutor it resolves the org-repo
+// token per call — honoring credentials.Resolver's re-read-on-resolve rotation
+// contract rather than capturing a token once at daemon startup — registers it
+// for scrubbing, then posts through a freshly-authenticated provider.
+type escalationCommenter struct {
+	ref      string
+	resolver *credentials.Resolver
+	reg      runner.SecretRegistrar
+}
+
+func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	token, err := c.resolver.Resolve(ctx, c.ref)
+	if err != nil {
+		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", c.ref, err)
+	}
+	c.reg.Register([]byte(token))
+	return newEscalationPoster(token).UpdateWorkItem(ctx, req)
+}
+
+// buildEscalationNotifier wires the gate.EscalationNotifier (#20) at the
+// composition root — a complete, tested implementation that was never
+// constructed, so runner.Config.Escalation stayed nil and a repass-budget
+// escalation posted nothing to the driving issue (#312, the same "real seam,
+// zero production callers" shape as epic #130). Returns nil when no repo is
+// configured — a schedule-only producer instance has no driving issue to
+// comment on, and NotifyEscalated only fires when in.Item is non-nil anyway.
+// Comment-only by deliberate design: the Commenter/UpdateWorkItem seam was
+// chosen specifically so escalation never touches the item's status label
+// (#63); #20's escalation surfacing is a provider comment on the driving issue,
+// not a label change (the goobers:needs-human marker is the curator's output,
+// a distinct flow).
+func buildEscalationNotifier(cfg *instance.Config, resolver *credentials.Resolver, reg runner.SecretRegistrar) *gate.EscalationNotifier {
+	if len(cfg.Repos) == 0 {
+		return nil
+	}
+	repo := cfg.Repos[0]
+	return &gate.EscalationNotifier{
+		Poster: &escalationCommenter{
+			ref:      repo.Owner + "/" + repo.Name,
+			resolver: resolver,
+			reg:      reg,
+		},
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name},
+	}
+}
+
 // instructionsPath resolves a goober's Instructions field to an absolute
 // file path. Instructions is documented as "relative to the goober
 // definition directory" (api/v1alpha1.GooberSpec), which config-as-code
@@ -422,6 +474,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		RunsDir:                l.RunsDir(),
 		RepoCloneURL:           repoCloneURL,
 		GateGooberCapabilities: gateGooberCaps,
+		// Wire the escalation notifier (#312) so a repass-budget escalation
+		// actually comments on the driving issue; nil for a repo-less instance.
+		Escalation: buildEscalationNotifier(cfg, resolver, sharedReg),
 	}
 	if tel != nil {
 		rc.Telemetry = tel
