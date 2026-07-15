@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1195,17 +1196,23 @@ func TestRunnerExhaustsRetriesAndFails(t *testing.T) {
 	if eerr != nil {
 		t.Fatalf("Events: %v", eerr)
 	}
-	var starts, errs int
+	var starts, errs, runFailed int
 	for _, e := range events {
 		if e.Type == journal.EventStageStarted {
 			starts++
 		}
 		if e.Type == journal.EventError {
 			errs++
+			if e.Error != nil && e.Error.Code == "run_failed" {
+				runFailed++
+			}
 		}
 	}
-	if starts != 2 || errs != 2 {
-		t.Fatalf("stage.started=%d error=%d, want 2 and 2", starts, errs)
+	// 2 stage.started (the retry budget) and 2 per-attempt stage errors, plus the
+	// single run-level run_failed cause failTerminal now journals so the walk-level
+	// failure is visible in the journal / goobers trace (#305).
+	if starts != 2 || errs != 3 || runFailed != 1 {
+		t.Fatalf("stage.started=%d error=%d run_failed=%d, want 2, 3, 1", starts, errs, runFailed)
 	}
 }
 
@@ -2629,5 +2636,55 @@ func TestRunnerAutomatedGateGetsNoDiffEvidence(t *testing.T) {
 		if p.Name == "review.diff" {
 			t.Fatalf("automated gate must not receive runner diff evidence, got pointer %q", p.Name)
 		}
+	}
+}
+
+// erroringAutomated is an invoke.Automated whose evaluation returns a Go error
+// (not a business outcome), driving the runner's gate-eval error path into
+// failTerminal — for #305's journaled-cause guard.
+type erroringAutomated struct{}
+
+func (erroringAutomated) Evaluate(context.Context, apiv1.AutomatedGate, apiv1.InvocationEnvelope) (string, error) {
+	return "", fmt.Errorf("boom: evaluator exploded")
+}
+
+// TestRunnerFailTerminalJournalsCause is #305: a walk-level failure (here a gate
+// evaluator that errors) must journal an error event carrying the actual cause,
+// not just the bare run.finished{failed} marker — otherwise the run dies with
+// zero explanation reachable via the journal or `goobers trace`.
+func TestRunnerFailTerminalJournalsCause(t *testing.T) {
+	byTask := map[string]stubTaskResult{"run-failterm:implement": {status: apiv1.ResultSuccess}}
+	r, runsDir := newTestRunner(t, byTask, erroringAutomated{})
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-failterm",
+		Machine: fixtureMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil {
+		t.Fatal("expected the gate-eval error to surface up the call stack")
+	}
+	if res.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, want failed", res.Phase)
+	}
+
+	rd, oerr := journal.OpenRead(filepath.Join(runsDir, "run-failterm"))
+	if oerr != nil {
+		t.Fatalf("OpenRead: %v", oerr)
+	}
+	events, eerr := rd.Events()
+	if eerr != nil {
+		t.Fatalf("Events: %v", eerr)
+	}
+	var found bool
+	for _, e := range events {
+		if e.Type == journal.EventError && e.Error != nil && e.Error.Code == "run_failed" &&
+			strings.Contains(e.Error.Message, "boom: evaluator exploded") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a run_failed error event carrying the cause, got events: %+v", events)
 	}
 }
