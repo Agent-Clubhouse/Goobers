@@ -83,15 +83,8 @@ func currentBranch(dir string) (string, error) {
 	return branch, nil
 }
 
-// gitPushBranch pushes branch to origin, authenticated with token injected
-// per-invocation via GIT_CONFIG_COUNT/GIT_CONFIG_KEY_0/GIT_CONFIG_VALUE_0
-// (git 2.31+'s environment-based config): unlike a URL-embedded credential
-// or a command-line -c flag, an env var never appears in argv (visible to
-// any other user via `ps`) and is never written to any file, satisfying
-// #237's "token never lands on disk" requirement without a persistent
-// credential helper. GitHub's HTTPS token convention is basic auth with the
-// token as the password and any non-empty username; "x-access-token" is
-// GitHub's own documented placeholder for that username.
+// gitPushBranch pushes branch to origin, authenticated via gitAuthEnv (#237's
+// "token never lands on disk" requirement).
 //
 // Pushes to origin's resolved URL, not "origin" by name: worktree.Manager's
 // managed working copy is a `git clone --mirror`, which sets
@@ -104,19 +97,32 @@ func gitPushBranch(dir, branch, token string) error {
 	if err != nil {
 		return err
 	}
-	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	cmd := exec.Command("git", "push", url, branch+":"+branch)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=http.extraheader",
-		"GIT_CONFIG_VALUE_0=AUTHORIZATION: basic "+auth,
-	)
+	cmd.Env = gitAuthEnv(token)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// gitAuthEnv builds the env-var-injected git credential (shared by every git
+// subprocess this binary spawns against origin: gitPushBranch,
+// checkoutExistingBranch, attemptRebase, forcePushWithLease) — per-invocation
+// via GIT_CONFIG_COUNT/GIT_CONFIG_KEY_0/GIT_CONFIG_VALUE_0 (git 2.31+'s
+// environment-based config), never a URL-embedded credential or a
+// command-line -c flag, so the token never appears in argv (visible via
+// `ps`) and is never written to any file. GitHub's HTTPS token convention is
+// basic auth with the token as the password and any non-empty username;
+// "x-access-token" is GitHub's own documented placeholder for that username.
+func gitAuthEnv(token string) []string {
+	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	return append(os.Environ(),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.extraheader",
+		"GIT_CONFIG_VALUE_0=AUTHORIZATION: basic "+auth,
+	)
 }
 
 // originURL resolves the worktree's "origin" remote to its configured URL.

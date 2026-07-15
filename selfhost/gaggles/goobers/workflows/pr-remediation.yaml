@@ -9,20 +9,20 @@ spec:
   # docs/design/v0/pr-lifecycle-loop.md §2/§5): re-enters on an EXISTING PR
   # merge-review flagged goobers:needs-remediation, rather than opening a new
   # one. gather-pr-context (issue #362) is the entrypoint — it replaces
-  # implementation's query-backlog head. The rebase-first, finding-driven
-  # routing (#363) lands as a later stage; until then this workflow ends
-  # after loading context, which is a complete, useful increment on its own
-  # (the label stays set, so nothing is lost — the next run just re-gathers).
-  #
-  # `goobers remediation-checkpoint` (issue #364, design doc §6 D4/D5) is
-  # implemented and unit-tested (remediationcheckpoint.go) but NOT YET wired
-  # in below: it must run as the LAST stage each cycle, immediately after
-  # whatever stage #363 adds that actually pushes the remediated branch
-  # (force-with-lease) — wiring it any earlier would compare a diff that
-  # hasn't been pushed yet against the prior cycle's, corrupting D5's
-  # same-diff check. Add it to `tasks:` and point #363's terminal push
-  # stage's `next:` at it once that stage lands (whoever lands second does
-  # the wiring — same shape as gather-pr-context shipping ahead of #363).
+  # implementation's query-backlog head; rebase-pr (issue #363, design doc §5
+  # D3) rebases and routes on the combination of rebase outcome + verdict
+  # findings; remediation-checkpoint (issue #364, design doc §6 D4/D5) runs
+  # on the "needs agent" branch to detect a stuck PR (same diff pushed twice,
+  # or the liberal repass budget exhausted) and escalate. The agentic
+  # implement/review/local-ci chain implementation.yaml already has is NOT
+  # YET wired here (design doc §10: "share the goober, copy the stage
+  # wiring") — every one of those stages would ALSO need the per-stage
+  # re-checkout fix gather-pr-context/rebase-pr/remediation-checkpoint each
+  # solve for themselves (this workflow's per-stage-attempt worktree
+  # provisioning defaults every fresh stage to this workflow's own run
+  # branch, never the PR's actual branch). Flagged to the team as a
+  # follow-up rather than rushed; a PR on that branch is simply
+  # re-evaluated next cycle, a correct, lossless no-op, not a broken state.
   #
   # DOGFOOD GUARDRAIL: hourly, off a different minute than merge-review (#25
   # past) so the two decider/executor cycles don't contend for the same PR
@@ -55,6 +55,92 @@ spec:
       expectedOutputs:
         - selectedNumber
         - head
+        - base
         - isBehindBase
-      # Terminal for now: #363 adds the rebase (force-with-lease) +
-      # finding-driven routing to implement/review/local-ci as `next` here.
+        - hasSubstantiveFindings
+      next: rebase-pr
+
+    # Rebase-first, finding-driven routing (issue #363, design doc §5 D3): a
+    # clean rebase never suppresses a known substantive finding, and a rebase
+    # conflict is itself substantive. Re-checks out the SAME PR branch
+    # gather-pr-context selected (each stage gets its own fresh worktree —
+    # see the file's own doc comment) before attempting anything.
+    #
+    #   rebase clean, no substantive finding -> force-with-lease push, clear
+    #     the label, done (back to merge-review next cycle) — rebase-gate's
+    #     "pass" branch is terminal; nothing more to check.
+    #   rebase conflict, OR a substantive finding is present -> needs the
+    #     agentic chain (not yet wired, see this file's own top comment) —
+    #     rebase-gate's "fail" branch routes to remediation-checkpoint,
+    #     which uses the PR's CURRENT diff (whatever rebase-pr left pushed,
+    #     unchanged on this path) to detect a stuck PR.
+    #
+    # selectedNumber is echoed forward in this stage's own result
+    # (writeRebaseResult) alongside needsAgent/conflict: a gate never
+    # updates Task.InputsFrom's upstream-Outputs chain (only a task does —
+    # see apply-verdict's own doc comment for the established convention),
+    # so remediation-checkpoint (after rebase-gate) can only read it if
+    # THIS stage re-emits it, same as gather-sibling-context re-emitting
+    # pr-select's selectedNumber two hops ahead of apply-verdict. head is
+    # echoed too but not currently consumed downstream — remediation-
+    # checkpoint (#393) re-lists PRs itself and reads Head from there.
+    - name: rebase-pr
+      type: deterministic
+      goal: Rebase the selected PR onto its base; force-push and clear the label if clean, else defer to agentic remediation.
+      run:
+        command: ["goobers", "rebase-pr"]
+      inputsFrom:
+        selectedNumber: selectedNumber
+        head: head
+        base: base
+        hasSubstantiveFindings: hasSubstantiveFindings
+      inputs:
+        resultFile: "rebase-result.json"
+      capabilities:
+        - repo:push
+        - github:issues:write
+      expectedOutputs:
+        - selectedNumber
+        - head
+        - needsAgent
+      next: rebase-gate
+
+    # D4/D5 loop-control (issue #364, design doc §6): runs only when
+    # rebase-pr couldn't finish the PR itself this cycle (rebase-gate's
+    # "fail" branch — conflict or a substantive finding). Checks out the
+    # PR's branch itself (its own fresh worktree, same reason as every
+    # other stage here), computes its current diff against base, and
+    # escalates (goobers:merge-escalated, clearing needs-remediation) if
+    # that diff is byte-identical to the immediately prior recorded cycle's
+    # (stuck, no progress) or the liberal repass budget is exhausted;
+    # otherwise records the advanced cycle state as a new sticky comment.
+    - name: remediation-checkpoint
+      type: deterministic
+      goal: Detect a stuck PR (no-progress repeat or budget exhaustion) and escalate, or record the advanced cycle state.
+      run:
+        command: ["goobers", "remediation-checkpoint"]
+      inputsFrom:
+        selectedNumber: selectedNumber
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+        - repo:push
+      # Terminal: escalating or recording a cycle are both normal
+      # end-of-run outcomes here; a human (escalation) or the next
+      # scheduled cycle (recorded state) takes it from here.
+
+  gates:
+    # Automated branch on rebase-pr's own needsAgent output (internal/
+    # gate's generic "output-equals" check — Inputs[params.key] compared to
+    # params.equals; no new check needed, this already existed for exactly
+    # this shape of custom-output branching).
+    - name: rebase-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: needsAgent
+          equals: "false"
+      branches:
+        pass: ""
+        fail: remediation-checkpoint

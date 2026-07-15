@@ -177,10 +177,11 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 		t.Fatalf("read pr-context.json: %v", err)
 	}
 	var got struct {
-		SelectedNumber int    `json:"selectedNumber"`
-		Head           string `json:"head"`
-		IsBehindBase   bool   `json:"isBehindBase"`
-		Verdict        struct {
+		SelectedNumber         string `json:"selectedNumber"`
+		Head                   string `json:"head"`
+		IsBehindBase           bool   `json:"isBehindBase"`
+		HasSubstantiveFindings string `json:"hasSubstantiveFindings"`
+		Verdict                struct {
 			Decision string `json:"decision"`
 			Findings []struct {
 				Class string `json:"class"`
@@ -194,14 +195,17 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal pr-context.json: %v (data=%s)", err, data)
 	}
-	if got.SelectedNumber != 55 || got.Head != prBranch {
-		t.Fatalf("got = %+v, want selectedNumber=55 head=%q", got, prBranch)
+	if got.SelectedNumber != "55" || got.Head != prBranch {
+		t.Fatalf("got = %+v, want selectedNumber=\"55\" head=%q", got, prBranch)
 	}
 	if !got.IsBehindBase {
 		t.Fatal("isBehindBase = false, want true — main advanced past the PR's branch point")
 	}
 	if got.Verdict.Decision != "needs-changes" || len(got.Verdict.Findings) != 1 || got.Verdict.Findings[0].Class != "substantive" {
 		t.Fatalf("verdict = %+v, want the embedded needs-changes verdict recovered from the comment thread", got.Verdict)
+	}
+	if got.HasSubstantiveFindings != "true" {
+		t.Fatalf("hasSubstantiveFindings = %q, want \"true\" (the embedded verdict has a substantive finding)", got.HasSubstantiveFindings)
 	}
 	if len(got.Comments) != 2 {
 		t.Fatalf("comments = %+v, want both thread comments surfaced", got.Comments)
