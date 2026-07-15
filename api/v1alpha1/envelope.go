@@ -196,9 +196,53 @@ const (
 	SeverityCritical Severity = "critical"
 )
 
-// Verdict is the structured result a gate evaluator produces. The gate maps the
-// decision to a branch. Evidence points at journal artifacts (e.g. a diff, a
-// test log) that back the decision — pointers, never inlined state.
+// FindingClass routes a merge-review Finding to the right pr-remediation
+// action (issue #358, design docs/design/v0/pr-lifecycle-loop.md §4 D1).
+// Empty on an ordinary in-run gate Finding (implementation's reviewer gate,
+// etc.) — classes are a PR-lifecycle-altitude concept only merge-review
+// populates.
+type FindingClass string
+
+const (
+	// FindingRebaseNeeded means the PR's base has advanced; a (possibly
+	// clean) rebase is required before anything else.
+	FindingRebaseNeeded FindingClass = "rebase-needed"
+	// FindingConflict means a rebase does not apply cleanly and needs
+	// resolution — this alone makes the finding substantive (D3: routing is
+	// finding-driven, never rebase-driven).
+	FindingConflict FindingClass = "conflict"
+	// FindingSubstantive means a real code change is required: cross-PR
+	// drift, a regression, a human/other-agent review comment, or a genuine
+	// defect the holistic review caught.
+	FindingSubstantive FindingClass = "substantive"
+	// FindingCrossPRBlocked means the PR is correct in isolation but must
+	// wait behind another PR (§7 serialization/ordering).
+	FindingCrossPRBlocked FindingClass = "cross-pr-blocked"
+)
+
+// IsValid reports whether c is a known finding class. The zero value ""
+// is deliberately NOT valid here — call sites that care whether a class was
+// actually set (vs. an ordinary in-run Finding that never populates one)
+// check for empty separately; IsValid is for validating a class that claims
+// to be set.
+func (c FindingClass) IsValid() bool {
+	switch c {
+	case FindingRebaseNeeded, FindingConflict, FindingSubstantive, FindingCrossPRBlocked:
+		return true
+	}
+	return false
+}
+
+// Verdict is the structured result a gate evaluator — or, at PR altitude,
+// the merge-review workflow (issue #358) — produces. An in-run gate maps
+// Decision to a branch; merge-review maps it to a label
+// (merge-ready/needs-remediation/merge-escalated) and a checklist
+// pr-remediation must clear entirely. Reusing this one type for both
+// altitudes is deliberate (design doc §4): pr-remediation consumes a
+// merge-review verdict through the exact same evidence-pointer/artifact
+// mechanism the in-run reviewer already uses to feed `implement`, with zero
+// new plumbing. HeadSHA/BaseSHA are PR-altitude-only (empty on an in-run
+// gate Verdict) — see their own doc comments.
 type Verdict struct {
 	// Decision is the evaluator's outcome; the gate maps it to a branch.
 	Decision VerdictDecision `json:"decision"`
@@ -210,6 +254,18 @@ type Verdict struct {
 	Findings []Finding `json:"findings,omitempty"`
 	// Summary is a human-readable summary of the review.
 	Summary string `json:"summary,omitempty"`
+	// HeadSHA is the PR head commit this verdict was computed against
+	// (design doc §6 D6, SHA-pinning) — empty for an in-run gate Verdict,
+	// which has no PR of its own to pin against. Before acting on a
+	// merge-ready verdict, the current head/base MUST be re-checked against
+	// this pin; a mismatch voids the verdict (it was computed against a
+	// state that no longer exists) and forces re-review rather than merging
+	// something reviewed against a stale diff.
+	HeadSHA string `json:"headSha,omitempty"`
+	// BaseSHA is the base branch commit this verdict was computed against —
+	// see HeadSHA's doc comment; both pin together, since a PR can go stale
+	// via either its own new commits or the base moving.
+	BaseSHA string `json:"baseSha,omitempty"`
 }
 
 // Finding is a single issue raised by an evaluator.
@@ -220,6 +276,11 @@ type Finding struct {
 	Message string `json:"message"`
 	// Location optionally points at where the issue is (e.g. "path/to/file:42").
 	Location string `json:"location,omitempty"`
+	// Class routes a merge-review finding to the right pr-remediation action
+	// (issue #358) — empty on an ordinary in-run gate Finding. The verdict is
+	// a checklist: pr-remediation must clear every classed finding, and
+	// merge-review re-verifies every one (SHA-pinned) before merge-ready.
+	Class FindingClass `json:"class,omitempty"`
 }
 
 // IsValid reports whether s is a known result status.

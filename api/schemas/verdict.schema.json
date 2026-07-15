@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://goobers.dev/schemas/verdict.schema.json",
   "title": "Verdict",
-  "description": "The structured result a gate evaluator produces (ARCHITECTURE.md §5). The gate maps decision to a branch; evidence points at journal artifacts, never inlined state.",
+  "description": "The structured result a gate evaluator produces (ARCHITECTURE.md §5), reused at PR altitude by merge-review (issue #358, docs/design/v0/pr-lifecycle-loop.md §4/§6). The gate maps decision to a branch; merge-review maps it to a label and a checklist pr-remediation must clear. Evidence points at journal artifacts, never inlined state. headSha/baseSha and a finding's class are PR-lifecycle-only — absent on an in-run gate Verdict.",
   "type": "object",
   "additionalProperties": false,
   "required": ["decision"],
@@ -17,7 +17,15 @@
       "type": "array",
       "items": { "$ref": "#/$defs/finding" }
     },
-    "summary": { "type": "string" }
+    "summary": { "type": "string" },
+    "headSha": {
+      "type": "string",
+      "description": "PR-lifecycle only (#358): the PR head commit this verdict was computed against. Re-checked before acting on merge-ready; a mismatch voids the verdict."
+    },
+    "baseSha": {
+      "type": "string",
+      "description": "PR-lifecycle only (#358): the base branch commit this verdict was computed against — pins together with headSha."
+    }
   },
   "$defs": {
     "finding": {
@@ -27,7 +35,12 @@
       "properties": {
         "severity": { "type": "string", "enum": ["info", "warning", "error", "critical"] },
         "message": { "type": "string", "minLength": 1 },
-        "location": { "type": "string" }
+        "location": { "type": "string" },
+        "class": {
+          "type": "string",
+          "enum": ["rebase-needed", "conflict", "substantive", "cross-pr-blocked"],
+          "description": "PR-lifecycle only (#358): routes this finding to the right pr-remediation action. Absent on an ordinary in-run gate finding."
+        }
       }
     }
   }
