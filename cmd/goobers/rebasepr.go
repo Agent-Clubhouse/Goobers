@@ -115,7 +115,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: clear %s from PR #%s: %v\n", needsRemediationLabel, selectedNumber, err)
 			return 1
 		}
-		if err := writeRebaseResult(resultFile, false, false); err != nil {
+		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
@@ -123,7 +123,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	if err := writeRebaseResult(resultFile, conflict, needsAgent); err != nil {
+	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, needsAgent); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -131,10 +131,20 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func writeRebaseResult(resultFile string, conflict, needsAgent bool) error {
+// writeRebaseResult echoes selectedNumber/head forward alongside this
+// stage's own needsAgent/conflict outcome — Task.InputsFrom resolves
+// against the immediately preceding TASK's own Outputs (a gate never
+// updates that chain; the gate this stage feeds is proof: apply-verdict's
+// own doc comment establishes the same convention), so remediation-
+// checkpoint (after rebase-gate) can only read selectedNumber/head if THIS
+// stage re-emits them, exactly like gather-sibling-context re-emits
+// pr-select's selectedNumber for apply-verdict two hops later.
+func writeRebaseResult(resultFile, selectedNumber, head string, conflict, needsAgent bool) error {
 	data, err := json.Marshal(map[string]string{
-		"needsAgent": strconv.FormatBool(needsAgent),
-		"conflict":   strconv.FormatBool(conflict),
+		"selectedNumber": selectedNumber,
+		"head":           head,
+		"needsAgent":     strconv.FormatBool(needsAgent),
+		"conflict":       strconv.FormatBool(conflict),
 	})
 	if err != nil {
 		return fmt.Errorf("marshal rebase result: %w", err)
