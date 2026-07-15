@@ -482,8 +482,26 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 // (ruling #110). If the terminal append itself fails, both errors are
 // reported rather than one silently swallowing the other.
 func (r *Runner) failTerminal(jr *journal.Run, finalState string, steps int, origErr error) (Result, error) {
+	// Record the actual cause as an error event before the bare terminal marker
+	// (#305). finish() below journals only run.finished{PhaseFailed}; origErr was
+	// otherwise merely returned up the Go call stack — which `goobers run` never
+	// surfaces (it polls the journal for the terminal phase) and `goobers trace`
+	// couldn't show either. So a walk-level failure (a gate-eval error, an
+	// escalation-notify failure, max-steps, an unknown state) died with zero
+	// recorded explanation anywhere an operator can reach. This is a run-level
+	// failure, so the event carries no stage/gate attribution; origErr's message
+	// already names the failing state. Best-effort: the terminal marker must
+	// still be written even if this diagnostic append fails (#110), and a journal
+	// write failure of either is reported alongside origErr, never swallowing it.
+	appendErr := jr.Append(journal.Event{
+		Type:  journal.EventError,
+		Error: &journal.ErrorDetail{Code: "run_failed", Message: origErr.Error()},
+	})
 	if _, ferr := r.finish(jr, journal.PhaseFailed, finalState, steps); ferr != nil {
 		return Result{}, fmt.Errorf("%w (additionally failed to journal terminal failure: %w)", origErr, ferr)
+	}
+	if appendErr != nil {
+		return Result{}, fmt.Errorf("%w (additionally failed to journal the failure cause: %w)", origErr, appendErr)
 	}
 	return Result{Phase: journal.PhaseFailed, FinalState: finalState, Steps: steps}, origErr
 }
