@@ -1,16 +1,19 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
@@ -54,6 +57,27 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	st, stateErr := reader.State()
+	phase, err := reader.Phase()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	events, err := reader.Events()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+
+	if phase == journal.PhaseEscalated {
+		summary, err := readEscalationSummary(reader, events)
+		if err != nil {
+			pf(stderr, "error: escalation summary: %v\n", err)
+			return 2
+		}
+		printEscalationSummary(stdout, summary)
+	}
+
 	pf(stdout, "run:      %s\n", id.RunID)
 	pf(stdout, "workflow: %s (v%d)\n", id.Workflow, id.WorkflowVersion)
 	if id.WorkflowDigest != "" {
@@ -62,15 +86,10 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	pf(stdout, "gaggle:   %s\n", id.Gaggle)
 	pf(stdout, "trigger:  %s %s\n", id.Trigger.Kind, id.Trigger.Ref)
 	pf(stdout, "started:  %s\n", id.StartedAt.Format("2006-01-02T15:04:05Z07:00"))
-	if st, err := reader.State(); err == nil {
+	if stateErr == nil {
 		pf(stdout, "phase:    %s (machineState=%q, lastSeq=%d)\n", st.Phase, st.MachineState, st.LastSeq)
 	}
 
-	events, err := reader.Events()
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
 	pln(stdout, "\nevents:")
 	for _, ev := range events {
 		pln(stdout, "  "+formatEvent(ev))
@@ -78,6 +97,124 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 
 	printSpans(stdout, l.TelemetryDB(), id.RunID)
 	return 0
+}
+
+type escalationSummary struct {
+	stage       string
+	gate        string
+	repassCount int
+	reason      string
+}
+
+func readEscalationSummary(reader *journal.Reader, events []journal.Event) (escalationSummary, error) {
+	const notRecorded = "(not recorded)"
+	summary := escalationSummary{stage: notRecorded, gate: notRecorded, reason: notRecorded}
+
+	gateIndex := -1
+	for i := len(events) - 1; i >= 0; i-- {
+		ev := events[i]
+		if ev.Type == journal.EventGateEvaluated && ev.Target == workflow.TargetEscalate {
+			gateIndex = i
+			summary.gate = ev.Gate
+			break
+		}
+	}
+	if gateIndex < 0 {
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].Type == journal.EventStageFinished {
+				summary.stage = events[i].Stage
+				break
+			}
+		}
+		return summary, nil
+	}
+
+	for i := gateIndex - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventStageFinished {
+			summary.stage = events[i].Stage
+			break
+		}
+	}
+
+	repassCount, err := gateRepassCount(events, gateIndex)
+	if err != nil {
+		return escalationSummary{}, err
+	}
+	summary.repassCount = repassCount
+
+	for i := gateIndex; i >= 0; i-- {
+		ev := events[i]
+		if ev.Type != journal.EventGateEvaluated ||
+			ev.Gate != summary.gate ||
+			ev.Verdict != string(apiv1.VerdictNeedsChanges) {
+			continue
+		}
+		if ev.Ref == nil {
+			break
+		}
+		data, err := reader.ArtifactBytes(*ev.Ref)
+		if err != nil {
+			return escalationSummary{}, fmt.Errorf("read verdict for gate %q: %w", summary.gate, err)
+		}
+		var verdict apiv1.Verdict
+		if err := json.Unmarshal(data, &verdict); err != nil {
+			return escalationSummary{}, fmt.Errorf("parse verdict for gate %q: %w", summary.gate, err)
+		}
+		if verdict.Decision != apiv1.VerdictNeedsChanges {
+			return escalationSummary{}, fmt.Errorf(
+				"verdict artifact for gate %q has decision %q, want %q",
+				summary.gate, verdict.Decision, apiv1.VerdictNeedsChanges,
+			)
+		}
+		summary.reason = strings.TrimSpace(verdict.Rationale)
+		if summary.reason == "" {
+			summary.reason = strings.TrimSpace(verdict.Summary)
+		}
+		if summary.reason == "" {
+			summary.reason = notRecorded
+		}
+		break
+	}
+	return summary, nil
+}
+
+func gateRepassCount(events []journal.Event, gateIndex int) (int, error) {
+	if raw, ok := events[gateIndex].Runner["repassAttempt"]; ok {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return 0, fmt.Errorf("marshal repass count for gate %q: %w", events[gateIndex].Gate, err)
+		}
+		var count int
+		if err := json.Unmarshal(data, &count); err != nil {
+			return 0, fmt.Errorf("parse repass count for gate %q: %w", events[gateIndex].Gate, err)
+		}
+		if count < 0 {
+			return 0, fmt.Errorf("invalid repass count %d for gate %q", count, events[gateIndex].Gate)
+		}
+		return count, nil
+	}
+
+	count := 0
+	for _, ev := range events[:gateIndex+1] {
+		if ev.Type != journal.EventGateEvaluated || ev.Gate != events[gateIndex].Gate {
+			continue
+		}
+		if ev.Verdict == string(apiv1.VerdictPass) {
+			count = 0
+		} else {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func printEscalationSummary(stdout io.Writer, summary escalationSummary) {
+	reason := strings.ReplaceAll(summary.reason, "\n", "\n    ")
+	pf(stdout, "⚠ ESCALATED\n")
+	pf(stdout, "  stage: %s\n", summary.stage)
+	pf(stdout, "  gate: %s\n", summary.gate)
+	pf(stdout, "  repass count: %d\n", summary.repassCount)
+	pf(stdout, "  last needs-changes reason: %s\n\n", reason)
 }
 
 // formatEvent renders one journal event as a single debug line, matching the
