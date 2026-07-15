@@ -2,15 +2,95 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
 
-// runSummary is the flat, journal-derived row goobers status prints per run.
+func runRuns(args []string, stdout, stderr io.Writer) int {
+	usage := func(w io.Writer) {
+		pf(w, "Usage: goobers runs <command> [flags] [path]\n\n"+
+			"Commands:\n"+
+			"  list    list runs, most-recent first\n")
+	}
+	if len(args) == 0 {
+		usage(stderr)
+		return 2
+	}
+	switch args[0] {
+	case "list":
+		return runRunsList(args[1:], stdout, stderr)
+	case "-h", "--help", "help":
+		usage(stdout)
+		return 0
+	default:
+		pf(stderr, "goobers runs: unknown subcommand %q\n\n", args[0])
+		usage(stderr)
+		return 2
+	}
+}
+
+func runRunsList(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("runs list", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	limit := fs.Int("limit", 0, "maximum number of runs to show (default: all)")
+	fs.Usage = func() {
+		pf(stderr, "Usage: goobers runs list [--limit=N] [path]\n\n"+
+			"List runs under an instance's runs/ directory, most-recent first\n"+
+			"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *limit < 0 || fs.NArg() > 1 {
+		fs.Usage()
+		return 2
+	}
+
+	root := "."
+	if fs.NArg() == 1 {
+		root = fs.Arg(0)
+	}
+	l := instance.NewLayout(root)
+	if _, err := os.Stat(l.ConfigFile()); err != nil {
+		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
+		return 2
+	}
+	runs, err := listRuns(l.RunsDir())
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if len(runs) == 0 {
+		pln(stdout, "no runs found")
+		return 0
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].StartedAt.Equal(runs[j].StartedAt) {
+			return runs[i].RunID < runs[j].RunID
+		}
+		return runs[i].StartedAt.After(runs[j].StartedAt)
+	})
+	if *limit > 0 && len(runs) > *limit {
+		runs = runs[:*limit]
+	}
+
+	pf(stdout, "%-34s  %-24s  %-10s  %-10s  %s\n", "RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED")
+	for _, r := range runs {
+		pf(stdout, "%-34s  %-24s  %-10s  %-10s  %s\n",
+			r.RunID, r.Workflow, r.Gaggle, r.Phase, r.StartedAt.Format(time.RFC3339))
+	}
+	return 0
+}
+
+// runSummary is the flat, journal-derived row the run-listing commands print.
 type runSummary struct {
 	RunID     string
 	Workflow  string
@@ -23,7 +103,7 @@ type runSummary struct {
 // summarizes each via the journal reader. A missing runs/ directory yields an
 // empty list, not an error (a freshly-init'd instance has none yet); an entry
 // that isn't a readable run directory is skipped rather than failing the whole
-// listing — status is best-effort over what's actually there.
+// listing — run listings are best-effort over what's actually there.
 func listRuns(runsDir string) ([]runSummary, error) {
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {

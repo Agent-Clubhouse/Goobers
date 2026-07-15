@@ -36,6 +36,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runRun(args[1:], stdout, stderr)
 	case "workflow":
 		return runWorkflow(args[1:], stdout, stderr)
+	case "runs":
+		return runRuns(args[1:], stdout, stderr)
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
 	case "trace":
@@ -74,6 +76,7 @@ Usage:
   goobers run <workflow> [path] trigger a run manually (still honors run conditions)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
   goobers workflow show <name> [path]  show a workflow as a text DAG
+  goobers runs list [--limit=N] [path]  list runs, most-recent first
   goobers status [path]         list runs and their current phase
   goobers trace <run-id> [path] show a run's journal events (+ spans if rolled up)
   goobers telemetry stats|errors [path]  success rate/duration or recent-error aggregates
