@@ -30,7 +30,9 @@ type RepoProvider interface {
 	// verifying every merge conjunct; see MergePullRequestRequest's doc.
 	MergePullRequest(context.Context, MergePullRequestRequest) (MergePullRequestResult, error)
 	// ListPullRequests lists open pull requests matching req — merge-review's
-	// selection stage and sibling-set context gathering (issue #359).
+	// selection stage and sibling-set context gathering (issue #359), and
+	// #361's post-merge fan-out (find every other open PR targeting the
+	// merged PR's base branch).
 	ListPullRequests(context.Context, ListPullRequestsRequest) ([]PullRequestSummary, error)
 	// PullRequestFiles lists the files a pull request touches — merge-review's
 	// sibling-set context gathering (issue #359): what does the OTHER open PR

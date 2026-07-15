@@ -52,6 +52,13 @@ spec:
       inputs:
         trustLabel: "goobers:approved"
         requireLabels: "goobers:ready"
+        # Issue #361/#355: close-out now sets status=in-review at PR-open
+        # time instead of closing the issue outright, so an issue with a PR
+        # still cycling through merge-review stays open (not closed) and
+        # would otherwise remain eligible here. The durable GitHub label
+        # (not the claim ledger, whose lease is sized for one run, not a
+        # multi-day review cycle) is what excludes it from re-claim.
+        excludeLabels: "goobers/status:in-review"
         maxItems: "1"
         # Lifts the claimed item into a journal artifact (executor.go's
         # InputResultFile convention) — the "implement" goober reads it as
@@ -164,9 +171,17 @@ spec:
 
     - name: close-out
       type: deterministic
-      goal: Comment on the originating issue linking the merged/open PR and mark it complete.
+      goal: >-
+        Comment on the originating issue linking the open PR and mark it
+        in-review — issue #361/#355: the work isn't done until the PR
+        merges, so this no longer closes the issue outright. The actual
+        close happens at the merge event (`goobers post-merge`, run by the
+        separate merge-review workflow once its verdict + CI + SHA-pin
+        conjuncts all hold, issue #360).
       run:
         command: ["goobers", "issue-close-out"]
+      inputs:
+        status: "in-review"
       capabilities:
         - github:issues:write
       # Terminal: no `next`. The core loop's product — issue in, PR out — is

@@ -399,6 +399,8 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		Draft:            pr.Draft,
 		HeadSHA:          pr.Head.SHA,
 		BaseSHA:          pr.Base.SHA,
+		BaseBranch:       pr.Base.Ref,
+		Body:             pr.Body,
 		ReviewDecision:   decision,
 		RequestedChanges: requestedChanges,
 		CheckState:       checkState,
@@ -500,10 +502,12 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 // ListPullRequests lists open pull requests targeting req.Base, filtered
 // client-side to those whose head branch starts with req.HeadPrefix —
 // merge-review's selection stage and sibling-set context gathering (issue
-// #359). GitHub's pulls-list API has no server-side prefix match on head
-// (only an exact head=owner:branch filter, which FindPullRequestByBranch
-// already uses for the single-branch case), so the prefix filter is applied
-// here instead. A read, so it does not emit a mutation event.
+// #359), and #361's post-merge fan-out (find every other open PR targeting
+// the branch a just-merged PR targeted). GitHub's pulls-list API has no
+// server-side prefix match on head (only an exact head=owner:branch filter,
+// which FindPullRequestByBranch already uses for the single-branch case), so
+// the prefix filter is applied here instead. A read, so it does not emit a
+// mutation event.
 func (p *GitHubProvider) ListPullRequests(ctx context.Context, req ListPullRequestsRequest) ([]PullRequestSummary, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return nil, err
@@ -1321,6 +1325,7 @@ type githubPullRequestDetail struct {
 	Merged    bool          `json:"merged"`
 	Mergeable *bool         `json:"mergeable"`
 	Draft     bool          `json:"draft"`
+	Body      string        `json:"body"`
 	HTMLURL   string        `json:"html_url"`
 	Labels    []githubLabel `json:"labels"`
 	UpdatedAt time.Time     `json:"updated_at"`

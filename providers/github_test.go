@@ -850,8 +850,9 @@ func TestGitHubProviderPollPullRequestSurfacesDraftAndSHAs(t *testing.T) {
 	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, map[string]interface{}{
 			"number": 9, "state": "open", "draft": true, "html_url": "https://github.com/acme/app/pull/9",
+			"body": "Implements the thing.\n\nFixes #42",
 			"head": map[string]interface{}{"sha": "headsha123"},
-			"base": map[string]interface{}{"sha": "basesha456"},
+			"base": map[string]interface{}{"sha": "basesha456", "ref": "main"},
 		})
 	})
 	mux.HandleFunc("/repos/acme/app/pulls/9/reviews", func(w http.ResponseWriter, r *http.Request) {
@@ -884,6 +885,47 @@ func TestGitHubProviderPollPullRequestSurfacesDraftAndSHAs(t *testing.T) {
 	}
 	if result.BaseSHA != "basesha456" {
 		t.Fatalf("BaseSHA = %q, want basesha456", result.BaseSHA)
+	}
+	if result.BaseBranch != "main" {
+		t.Fatalf("BaseBranch = %q, want main", result.BaseBranch)
+	}
+	if result.Body != "Implements the thing.\n\nFixes #42" {
+		t.Fatalf("Body = %q", result.Body)
+	}
+}
+
+// TestGitHubProviderListPullRequestsFiltersByBase is #361's regression: the
+// post-merge fan-out needs every OTHER open PR targeting the same base
+// branch as a just-merged PR.
+func TestGitHubProviderListPullRequestsFiltersByBase(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("state"); got != "open" {
+			t.Fatalf("state query = %q, want open", got)
+		}
+		if got := r.URL.Query().Get("base"); got != "main" {
+			t.Fatalf("base query = %q, want main", got)
+		}
+		writeJSON(t, w, []map[string]interface{}{
+			{"number": 10, "html_url": "https://github.com/acme/app/pull/10", "head": map[string]interface{}{"ref": "goobers/impl/run-a"}, "base": map[string]interface{}{"ref": "main"}},
+			{"number": 11, "html_url": "https://github.com/acme/app/pull/11", "head": map[string]interface{}{"ref": "goobers/impl/run-b"}, "base": map[string]interface{}{"ref": "main"}},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, Base: "main",
+	})
+	if err != nil {
+		t.Fatalf("ListPullRequests returned error: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2: %#v", len(result), result)
+	}
+	if result[0].Number != 10 || result[0].Head != "goobers/impl/run-a" || result[0].Base != "main" {
+		t.Fatalf("result[0] = %#v", result[0])
 	}
 }
 
