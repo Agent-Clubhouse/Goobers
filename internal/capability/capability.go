@@ -54,11 +54,22 @@ const (
 	// journal is, so crossing it is capability-gated and fails closed when
 	// undeclared (internal/harness's materializeContext).
 	JournalRead Capability = "journal:read"
+	// AgentModel grants the agentic harness authentication for its model
+	// backend — harness-neutral, exactly as RepoPush is a capability while
+	// GH_TOKEN is the copilot adapter's chosen env var for it. The copilot
+	// adapter maps it to COPILOT_GITHUB_TOKEN (issue #288), which the Copilot
+	// CLI prefers over GH_TOKEN for model auth, so an agentic stage can carry a
+	// personal "Copilot Requests" PAT for the model AND an org-repo token for
+	// the github tool at once (issue #287, multi-token credentials). It is
+	// deliberately NOT in the runner's auto-granted credentialedCapabilities set
+	// — it must be sourced explicitly via instance.yaml's credentials: block, so
+	// it never silently defaults to the repo token.
+	AgentModel Capability = "agent:model"
 )
 
 // All returns every canonical capability, in declaration order.
 func All() []Capability {
-	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubPRWrite, TelemetryRead, JournalRead}
+	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubPRWrite, TelemetryRead, JournalRead, AgentModel}
 }
 
 // Known reports whether s is a canonical capability string.

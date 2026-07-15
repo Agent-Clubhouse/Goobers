@@ -155,14 +155,15 @@ var credentialedCapabilities = []capability.Capability{
 }
 
 // buildCredentials builds a Resolver and the capability->ref Grants from
-// instance.yaml's configured repos. V0 assumes a single target repo per
-// instance (ARCHITECTURE.md §6, gaggle.Spec.Project is singular); the first
-// configured repo's token backs every credentialed capability. Multiple
-// configured repos with different tokens per capability is a known
-// simplification — no existing convention maps a capability to a specific
-// repo among several, so this is honest about that rather than guessing.
+// instance.yaml. By default the first configured repo's token backs every
+// credentialed capability (V0 single-target-repo simplification, ARCHITECTURE.md
+// §6). instance.yaml's credentials: block then sources individual capabilities
+// from their own token refs (#287): a new capability (e.g. agent:model) gains a
+// grant, and one the repo token already backs is overridden — so an agentic
+// stage can hold a personal Copilot-Requests PAT for the model alongside the
+// org-repo token for the github tool, both fail-closed per capability admission.
 func buildCredentials(cfg *instance.Config) (*credentials.Resolver, []credentials.Grant, error) {
-	refs := make([]credentials.TokenRef, 0, len(cfg.Repos))
+	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	for _, r := range cfg.Repos {
 		refs = append(refs, credentials.TokenRef{
 			Name: r.Owner + "/" + r.Name,
@@ -170,19 +171,50 @@ func buildCredentials(cfg *instance.Config) (*credentials.Resolver, []credential
 			File: r.Token.File,
 		})
 	}
+	// Per-capability credential refs (#287): each sources one capability from
+	// its own token, named distinctly so it never collides with a repo ref.
+	for _, cg := range cfg.Credentials {
+		refs = append(refs, credentials.TokenRef{
+			Name: credentialRefName(cg.Capability),
+			Env:  cg.Token.Env,
+			File: cg.Token.File,
+		})
+	}
 	resolver, err := credentials.NewResolver(refs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build credential resolver: %w", err)
 	}
-	var grants []credentials.Grant
+
+	// Default: the first repo's token backs every credentialed capability.
+	grantRef := make(map[string]string, len(credentialedCapabilities)+len(cfg.Credentials))
+	var order []string // deterministic grant order: defaults first, then extras
 	if len(cfg.Repos) > 0 {
-		ref := cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name
+		repoRef := cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name
 		for _, c := range credentialedCapabilities {
-			grants = append(grants, credentials.Grant{Capability: string(c), Ref: ref})
+			grantRef[string(c)] = repoRef
+			order = append(order, string(c))
 		}
+	}
+	// instance.yaml credentials: entries source a capability from its own token
+	// (#287) — a new capability (e.g. agent:model) is added, and a capability
+	// the repo token already backs is OVERRIDDEN to point at its distinct ref.
+	for _, cg := range cfg.Credentials {
+		if _, exists := grantRef[cg.Capability]; !exists {
+			order = append(order, cg.Capability)
+		}
+		grantRef[cg.Capability] = credentialRefName(cg.Capability)
+	}
+
+	grants := make([]credentials.Grant, 0, len(order))
+	for _, cap := range order {
+		grants = append(grants, credentials.Grant{Capability: cap, Ref: grantRef[cap]})
 	}
 	return resolver, grants, nil
 }
+
+// credentialRefName is the resolver ref name for a per-capability credentials:
+// entry (#287) — namespaced so it can never collide with a repo ref (owner/name).
+func credentialRefName(cap string) string { return "credential:" + cap }
 
 // buildCIPollExecutor constructs the ci-poll stage's CIPollExecutor over a
 // PRPoller for the instance's configured (single, V0-simplification) target
