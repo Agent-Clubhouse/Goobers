@@ -83,20 +83,24 @@ func parseRemediationStateComment(body string) (remediationState, bool) {
 // internal/gate/evaluate.go's Evaluator) and same-diff escalation (#316,
 // LastDiffDigest) to PR altitude (design doc §6 D4/D5). Meant to run as
 // pr-remediation's last stage each cycle, immediately after whichever
-// stage(s) push the remediated branch (#363) — it reads the PR's most
-// recently recorded cycle count + diff digest back from a sticky PR
-// comment, compares this cycle's actual diff against it, and either
-// escalates (goobers:merge-escalated, clearing needs-remediation so the
-// machine stops selecting it) on budget exhaustion or a byte-identical
-// repeat, or records the advanced state for next cycle.
+// stage(s) push the remediated branch (#363) — it re-checks-out the PR's
+// own branch itself (this stage gets its own fresh worktree; an earlier
+// stage's checkout does not survive to here, same reason gather-pr-context
+// and rebase-pr each do their own), reads the PR's most recently recorded
+// cycle count + diff digest back from a sticky PR comment, compares this
+// cycle's actual diff against it, and either escalates
+// (goobers:merge-escalated, clearing needs-remediation so the machine stops
+// selecting it) on budget exhaustion or a byte-identical repeat, or records
+// the advanced state for next cycle.
 func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("remediation-checkpoint", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers remediation-checkpoint [--budget N] [path]\n\n"+
-			"Read pr-remediation's durable per-PR cycle counter + last diff digest\n"+
-			"back from a sticky PR comment, compare this cycle's actual diff (git\n"+
-			"diff base...HEAD in the current worktree) against it, and either\n"+
+			"Re-checkout the PR's own branch (this stage gets its own fresh\n"+
+			"worktree), read pr-remediation's durable per-PR cycle counter + last\n"+
+			"diff digest back from a sticky PR comment, compare this cycle's\n"+
+			"actual diff (git diff base...HEAD) against it, and either\n"+
 			"escalate (goobers:merge-escalated, clearing needs-remediation) on\n"+
 			"budget exhaustion or a byte-identical repeat, or record the advanced\n"+
 			"state as a new sticky comment. Requires selectedNumber (inputsFrom\n"+
@@ -139,6 +143,14 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// repo:push is not for writing here — it's the same credential
+	// checkoutExistingBranch uses to fetch the PR's branch (see the
+	// re-checkout comment below).
+	pushToken, err := providerToken(capability.RepoPush)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	provider := newGitHubProvider(token)
 
 	base := providerInput("base", "main")
@@ -161,6 +173,19 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	if current == nil {
 		pln(stdout, "PR is no longer open (merged/closed since selection) — checkpoint moot, nothing to record")
 		return 0
+	}
+
+	// Re-checkout the PR's own branch: this stage gets its OWN fresh
+	// worktree (internal/runner's buildEnvelope keys worktree continuity on
+	// the run's shared branch, not on whatever an earlier stage locally
+	// checked out — #133/#363's own re-checkout for the same reason), so
+	// gather-pr-context's or rebase-pr's checkout does not survive to here.
+	// Without this, diffDigest would diff against whatever this fresh
+	// worktree defaulted to (the run's own untouched base checkout), not
+	// the PR's actual just-pushed content.
+	if err := checkoutExistingBranch(".", current.Head, pushToken); err != nil {
+		pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selectedNumber, current.Head, err)
+		return 1
 	}
 
 	digest, err := diffDigest(".", current.BaseSHA)
