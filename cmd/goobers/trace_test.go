@@ -109,6 +109,65 @@ func TestTraceOmitsEscalationSummaryForCompletedRun(t *testing.T) {
 	}
 }
 
+// TestTraceRepassCountsAreConsistentAcrossMultipleGates is #354: the header
+// `repasses:` line and the ESCALATED block's `repass count:` used to be two
+// independently-hardcoded computations that could silently disagree. They
+// now share one repassCount helper (gate == "" for the whole-run header,
+// gate == <name> for the escalation block's per-gate streak) — this fixture
+// deliberately has two DIFFERENT gates repass so the two numbers come out
+// genuinely different (3 vs 2), proving each is correctly, independently
+// derived from the shared rule rather than the fix trivially forcing them
+// equal.
+func TestTraceRepassCountsAreConsistentAcrossMultipleGates(t *testing.T) {
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	const runID = "multi-gate-escalated-run"
+
+	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "goobers",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range []journal.Event{
+		// local-gate repasses once — contributes to the whole-run header
+		// total but is not part of review's own streak.
+		{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: string(apiv1.VerdictNeedsChanges), Target: "implement"},
+		// review repasses, passes once (resetting its streak), then
+		// repasses twice more, the second time escalating.
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: string(apiv1.VerdictNeedsChanges), Target: "implement"},
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: string(apiv1.VerdictPass), Target: "local-ci"},
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: string(apiv1.VerdictNeedsChanges), Target: "implement"},
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: string(apiv1.VerdictNeedsChanges), Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	} {
+		if err := jr.Append(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", runID, root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	// Whole-run header: 3 events targeted "implement" (local-gate once,
+	// review twice — review's pass at position 3 isn't implement-targeted
+	// so it doesn't count, and the final escalating verdict targets
+	// "escalate" not "implement" so it doesn't count either).
+	if !strings.Contains(stdout, "\nrepasses: 3\n") {
+		t.Fatalf("trace stdout missing whole-run header repasses=3: %q", stdout)
+	}
+	// Escalation block: review's own streak since its last pass is 2 (the
+	// pre-pass needs-changes doesn't count; the two after the reset do).
+	if !strings.Contains(stdout, "  repass count: 2\n") {
+		t.Fatalf("trace stdout missing escalation-block repass count=2: %q", stdout)
+	}
+}
+
 func TestFormatEvent(t *testing.T) {
 	tests := []struct {
 		name  string

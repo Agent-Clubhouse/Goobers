@@ -100,11 +100,10 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "phase:    %s (machineState=%q, lastSeq=%d)\n", st.Phase, st.MachineState, st.LastSeq)
 	}
 
-	repasses := 0
-	for _, ev := range events {
-		if ev.Type == journal.EventGateEvaluated && ev.Target == "implement" {
-			repasses++
-		}
+	repasses, err := repassCount(events, "")
+	if err != nil {
+		pf(stderr, "error: repass count: %v\n", err)
+		return 2
 	}
 	pf(stdout, "repasses: %d\n", repasses)
 	pln(stdout, "\nevents:")
@@ -153,11 +152,11 @@ func readEscalationSummary(reader *journal.Reader, events []journal.Event) (esca
 		}
 	}
 
-	repassCount, err := gateRepassCount(events, gateIndex)
+	count, err := repassCount(events[:gateIndex+1], summary.gate)
 	if err != nil {
 		return escalationSummary{}, err
 	}
-	summary.repassCount = repassCount
+	summary.repassCount = count
 
 	for i := gateIndex; i >= 0; i-- {
 		ev := events[i]
@@ -195,25 +194,62 @@ func readEscalationSummary(reader *journal.Reader, events []journal.Event) (esca
 	return summary, nil
 }
 
-func gateRepassCount(events []journal.Event, gateIndex int) (int, error) {
-	if raw, ok := events[gateIndex].Runner["repassAttempt"]; ok {
+// repassTargetStage is the stage a gate's non-pass verdict routes back to
+// for another implementation attempt. Hardcoded rather than derived from the
+// workflow definition — trace.go reads only the run's journal, never the
+// workflow config, and every V0 workflow on the repass path today names its
+// retry stage "implement". Revisit if a future workflow gives its repass
+// target a different name (#354).
+const repassTargetStage = "implement"
+
+// repassCount is the single source of truth for "how many times has this
+// run repassed," used both for the whole-run header line (gate == "") and
+// the escalation-block per-gate count (gate == the escalating gate's name),
+// so the two numbers are computed by one rule instead of two independently
+// maintained implementations that could silently disagree (#354).
+//
+// gate == "": a whole-run total — every gate.evaluated event, from any gate,
+// whose Target routes back to repassTargetStage. This can exceed a single
+// gate's own count when more than one gate repassed during the run.
+//
+// gate != "": scoped to one gate, restricted to the given events (callers
+// pass the prefix up to and including that gate's terminal evaluation).
+// Prefers the terminal event's Runner["repassAttempt"] when present — the
+// runner's own authoritative count — else counts that gate's own
+// needs-changes verdicts sequentially, resetting to 0 on a pass (a streak
+// since the last pass, not a running total).
+func repassCount(events []journal.Event, gate string) (int, error) {
+	if gate == "" {
+		count := 0
+		for _, ev := range events {
+			if ev.Type == journal.EventGateEvaluated && ev.Target == repassTargetStage {
+				count++
+			}
+		}
+		return count, nil
+	}
+
+	if len(events) == 0 {
+		return 0, fmt.Errorf("repass count for gate %q: no events", gate)
+	}
+	if raw, ok := events[len(events)-1].Runner["repassAttempt"]; ok {
 		data, err := json.Marshal(raw)
 		if err != nil {
-			return 0, fmt.Errorf("marshal repass count for gate %q: %w", events[gateIndex].Gate, err)
+			return 0, fmt.Errorf("marshal repass count for gate %q: %w", gate, err)
 		}
 		var count int
 		if err := json.Unmarshal(data, &count); err != nil {
-			return 0, fmt.Errorf("parse repass count for gate %q: %w", events[gateIndex].Gate, err)
+			return 0, fmt.Errorf("parse repass count for gate %q: %w", gate, err)
 		}
 		if count < 0 {
-			return 0, fmt.Errorf("invalid repass count %d for gate %q", count, events[gateIndex].Gate)
+			return 0, fmt.Errorf("invalid repass count %d for gate %q", count, gate)
 		}
 		return count, nil
 	}
 
 	count := 0
-	for _, ev := range events[:gateIndex+1] {
-		if ev.Type != journal.EventGateEvaluated || ev.Gate != events[gateIndex].Gate {
+	for _, ev := range events {
+		if ev.Type != journal.EventGateEvaluated || ev.Gate != gate {
 			continue
 		}
 		if ev.Verdict == string(apiv1.VerdictPass) {
