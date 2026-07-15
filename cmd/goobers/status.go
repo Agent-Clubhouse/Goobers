@@ -41,7 +41,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if len(runs) == 0 {
-		pln(stdout, "no runs found")
+		pln(stdout, "no runs found — trigger one with 'goobers run <workflow>'")
 		return 0
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].StartedAt.Before(runs[j].StartedAt) })
