@@ -100,6 +100,13 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "phase:    %s (machineState=%q, lastSeq=%d)\n", st.Phase, st.MachineState, st.LastSeq)
 	}
 
+	repasses := 0
+	for _, ev := range events {
+		if ev.Type == journal.EventGateEvaluated && ev.Target == "implement" {
+			repasses++
+		}
+	}
+	pf(stdout, "repasses: %d\n", repasses)
 	pln(stdout, "\nevents:")
 	for _, ev := range events {
 		pln(stdout, "  "+formatEvent(ev))

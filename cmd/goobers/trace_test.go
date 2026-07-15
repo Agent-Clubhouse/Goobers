@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -234,6 +235,67 @@ func TestFormatEvent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := formatEvent(tt.event); got != tt.want {
 				t.Errorf("formatEvent() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTraceShowsRepassCount(t *testing.T) {
+	tests := []struct {
+		name   string
+		events []journal.Event
+		want   string
+	}{
+		{
+			name: "repasses",
+			events: []journal.Event{
+				{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Target: "implement", Runner: map[string]any{"repassAttempt": 1}},
+				{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "pass", Target: "local-ci", Runner: map[string]any{"repassAttempt": 0}},
+				{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: "fail", Target: "implement", Runner: map[string]any{"repassAttempt": 1}},
+			},
+			want: "repasses: 2\n",
+		},
+		{
+			name: "single pass",
+			events: []journal.Event{
+				{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "pass", Target: "local-ci", Runner: map[string]any{"repassAttempt": 0}},
+			},
+			want: "repasses: 0\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			runID := "trace-" + strings.ReplaceAll(tt.name, " ", "-")
+			run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
+				RunID:           runID,
+				Workflow:        "implementation",
+				WorkflowVersion: 1,
+				Gaggle:          "goobers",
+				Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+			}, nil)
+			if err != nil {
+				t.Fatalf("create fixture run: %v", err)
+			}
+			for _, ev := range tt.events {
+				if err := run.Append(ev); err != nil {
+					t.Fatalf("append fixture event: %v", err)
+				}
+			}
+			if err := run.Close(); err != nil {
+				t.Fatalf("close fixture run: %v", err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			if code := runTrace([]string{runID, root}, &stdout, &stderr); code != 0 {
+				t.Fatalf("trace code = %d, stderr = %q", code, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "phase:    running (machineState=\"\", lastSeq=") {
+				t.Fatalf("trace stdout missing phase header: %q", stdout.String())
+			}
+			if !strings.Contains(stdout.String(), "\n"+tt.want+"\nevents:") {
+				t.Fatalf("trace stdout missing repass header %q after phase: %q", tt.want, stdout.String())
 			}
 		})
 	}
