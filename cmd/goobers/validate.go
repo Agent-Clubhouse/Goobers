@@ -22,16 +22,19 @@ import (
 // tool so the probe can never touch the filesystem or run shell commands;
 // `--allow-all-tools` is still required to enable non-interactive mode.
 //
-// This runs ONLY in the deliberate, operator-invoked `goobers validate
-// --check-harness` — not the automatic daemon-startup preflight — because it
-// costs a real Copilot request (~a few AI credits) and takes a couple of
-// seconds; surprising an operator with that on every `goobers up`/`run` startup
-// would be worse than the version-only check the daemon preflight already does.
+// This runs in BOTH the operator-invoked `goobers validate --check-harness` and
+// the automatic daemon-startup preflight (adapterFor wires it into every
+// CopilotAdapter, so preflightAgenticHarnesses picks it up too — #238). It costs
+// a real Copilot request (~a few AI credits, a couple of seconds), but
+// preflightAgenticHarnesses runs once per process lifetime (once per `up` daemon
+// boot, once per `run`), only for harnesses an agentic stage actually
+// references — trivial next to the ~30-minute burned live-run a signed-out
+// harness causes when the failure surfaces mid-run instead (the #284 incident).
 var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all-tools", "--available-tools="}
 
 // harnessPreflightTimeout bounds a single harness preflight (its version check
-// plus, under --check-harness, the auth probe's real API round-trip) so a hung
-// CLI or network can't hang `goobers validate`.
+// plus the auth probe's real API round-trip) so a hung CLI or network can't
+// hang `goobers validate` or `goobers up`/`run` startup.
 const harnessPreflightTimeout = 90 * time.Second
 
 func runValidate(args []string, stdout, stderr io.Writer) int {
@@ -130,15 +133,10 @@ func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer) bool {
 			ok = false
 			continue
 		}
-		// --check-harness is the deliberate, pre-live-run setup check, so it
-		// additionally probes authentication (not just CLI presence): a
-		// fine-grained PAT lacking the "Copilot Requests" permission (#284)
-		// passes --version but fails this probe. Configured here rather than in
-		// adapterFor so the automatic daemon-startup preflight stays free/
-		// version-only (see copilotAuthCheckArgs).
-		if ca, isCopilot := adapter.(*harness.CopilotAdapter); isCopilot {
-			ca.AuthCheckArgs = copilotAuthCheckArgs
-		}
+		// The auth probe is wired into adapterFor itself (#238), so both this
+		// check and the automatic daemon-startup preflight verify sign-in, not
+		// just CLI presence — a fine-grained PAT lacking the "Copilot Requests"
+		// permission (#284) passes --version but fails the probe.
 		ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
 		err = adapter.Preflight(ctx)
 		cancel()
@@ -154,10 +152,17 @@ func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer) bool {
 
 // adapterFor returns the default adapter for a goober-declared harness kind.
 // v1/V0 supports only the GitHub Copilot CLI (GBO-040).
+//
+// The CopilotAdapter carries copilotAuthCheckArgs so every preflight — the
+// operator-invoked `validate --check-harness` AND the automatic daemon-startup
+// preflight (preflightAgenticHarnesses) — verifies sign-in, not just CLI
+// presence (#238). Both look the harness up through here, so wiring the probe
+// once here is what closes #238's "catch a signed-out harness at startup, not
+// mid-run" criterion.
 func adapterFor(h apiv1.Harness) (harness.Adapter, error) {
 	switch h {
 	case apiv1.HarnessCopilot:
-		return &harness.CopilotAdapter{Command: []string{"copilot"}}, nil
+		return &harness.CopilotAdapter{Command: []string{"copilot"}, AuthCheckArgs: copilotAuthCheckArgs}, nil
 	default:
 		return nil, errUnknownHarness(h)
 	}
