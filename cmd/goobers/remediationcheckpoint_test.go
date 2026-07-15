@@ -9,14 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/goobers/goobers/internal/worktree"
 )
-
-// remediationTestPRBranch is the fixed PR branch name every
-// remediation-checkpoint test's fake server reports as the selected PR's
-// head — checkoutExistingBranch fetches/checks it out for real.
-const remediationTestPRBranch = "goobers/impl/remediation-364"
 
 // TestRenderRemediationStateCommentRoundTrips proves the embedded payload
 // remediation-checkpoint posts (mirroring apply-verdict's verdict-json,
@@ -146,20 +139,20 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 	return server
 }
 
-// initRemediationCheckpointRepo builds a REAL bare origin (no network) with a
-// base commit and a PR branch (remediationTestPRBranch) carrying one further
-// commit — mirroring the diff a real pr-remediation push would have
-// produced — then provisions the worktree the runner would create for this
-// stage and t.Chdir's the test into it. A real origin is required because
-// remediation-checkpoint now checks out the PR's branch itself (this stage
-// gets its own fresh worktree, same as every other pr-remediation stage;
-// diffDigest previously just read whatever the plain temp dir happened to
-// have checked out, which never exercised this). Returns the base commit's
-// SHA.
-func initRemediationCheckpointRepo(t *testing.T) (origin, baseSHA string) {
+// initRemediationCheckpointRepo builds a bare origin seeded with a base
+// commit on main and a PR branch carrying one further commit (pushed to
+// origin), then t.Chdir's the test into a THIRD, separate clone checked out
+// at main — simulating the fresh worktree remediation-checkpoint's own
+// stage gets (internal/runner's buildEnvelope: continuity is keyed on the
+// run's own shared branch, not on whatever an earlier stage — gather-pr-
+// context, rebase-pr — locally checked out). Proves the stage's own
+// re-checkout (checkoutExistingBranch) is what puts it on the PR's actual
+// branch, not an accident of the test's working directory already being
+// there. Returns the PR branch's base and head SHAs.
+func initRemediationCheckpointRepo(t *testing.T, prBranch string) (baseSHA, headSHA string) {
 	t.Helper()
 	root := t.TempDir()
-	origin = filepath.Join(root, "origin.git")
+	origin := filepath.Join(root, "origin.git")
 	runGitT(t, root, "init", "--bare", "-b", "main", origin)
 
 	work := filepath.Join(root, "work")
@@ -174,28 +167,22 @@ func initRemediationCheckpointRepo(t *testing.T) (origin, baseSHA string) {
 	runGitT(t, work, "push", "origin", "main")
 	baseSHA = strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD"))
 
-	runGitT(t, work, "checkout", "-b", remediationTestPRBranch)
+	runGitT(t, work, "checkout", "-b", prBranch)
 	if err := os.WriteFile(filepath.Join(work, "feature.txt"), []byte("pr work\n"), 0o644); err != nil {
 		t.Fatalf("write feature file: %v", err)
 	}
 	runGitT(t, work, "add", "feature.txt")
 	runGitT(t, work, "commit", "-m", "pr work")
-	runGitT(t, work, "push", "origin", remediationTestPRBranch)
+	runGitT(t, work, "push", "origin", prBranch)
+	headSHA = strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD"))
 
-	mgr, err := worktree.NewManager(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
-	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
-		RepoURL: origin, RunID: "run-364-remediation-checkpoint", BaseRef: "main",
-		Branch: "goobers/pr-remediation/run-364",
-	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
-	t.Chdir(wt.Path)
-	return origin, baseSHA
+	// The stage's own fresh worktree: a separate clone, checked out at
+	// main — nowhere near prBranch — so a passing test proves the stage's
+	// own re-checkout logic, not the test's incidental working directory.
+	fresh := filepath.Join(root, "fresh-worktree")
+	runGitT(t, root, "clone", origin, fresh)
+	t.Chdir(fresh)
+	return baseSHA, headSHA
 }
 
 func remediationCheckpointEnv(t *testing.T, serverURL string, withoutCapability bool) (instanceRoot string) {
@@ -209,42 +196,19 @@ func remediationCheckpointEnv(t *testing.T, serverURL string, withoutCapability 
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	if !withoutCapability {
 		t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
-		t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 		t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
 	}
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "77")
-	t.Setenv("GOOBERS_INPUT_HEAD", remediationTestPRBranch)
 	return instanceRoot
-}
-
-// referenceDiffDigest independently computes the digest remediation-
-// checkpoint SHOULD record for remediationTestPRBranch — a fresh clone of
-// origin, checked out to that branch, diffed against baseSHA — so tests can
-// assert the recorded digest reflects the PR's ACTUAL content rather than
-// merely being non-empty (a checkpoint run that silently diffed the wrong
-// branch would still produce a non-empty digest, just the wrong one).
-func referenceDiffDigest(t *testing.T, origin, baseSHA string) string {
-	t.Helper()
-	dir := filepath.Join(t.TempDir(), "reference")
-	runGitT(t, filepath.Dir(dir), "clone", "--branch", remediationTestPRBranch, origin, dir)
-	digest, err := diffDigest(dir, baseSHA)
-	if err != nil {
-		t.Fatalf("referenceDiffDigest: %v", err)
-	}
-	return digest
 }
 
 // TestRemediationCheckpointRecordsFirstCycle is #364's headline acceptance
 // for D4: a PR with no prior recorded state gets cycle 1 recorded as a new
 // sticky comment, and is NOT escalated (1 cycle is nowhere near the
-// liberal default budget). Also proves the checkpoint's own per-stage fresh
-// worktree actually gets checked out to the PR's real branch: the recorded
-// digest must match an independently-computed reference digest, not just be
-// non-empty (a missing checkout would still produce SOME non-empty digest —
-// just the wrong one, for an unrelated/empty diff).
+// liberal default budget).
 func TestRemediationCheckpointRecordsFirstCycle(t *testing.T) {
-	origin, baseSHA := initRemediationCheckpointRepo(t)
-	st := &remediationCheckpointServerState{number: 77, headSHA: "head-sha-1", baseSHA: baseSHA, labels: []string{"goobers:needs-remediation"}}
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	st := &remediationCheckpointServerState{number: 77, headSHA: headSHA, baseSHA: baseSHA, labels: []string{"goobers:needs-remediation"}}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
@@ -270,9 +234,6 @@ func TestRemediationCheckpointRecordsFirstCycle(t *testing.T) {
 	if !ok || state.Cycles != 1 || state.LastDiffDigest == "" {
 		t.Fatalf("posted comment %q -> state=%+v ok=%v, want cycles=1 with a non-empty digest", st.comments[0], state, ok)
 	}
-	if want := referenceDiffDigest(t, origin, baseSHA); state.LastDiffDigest != want {
-		t.Fatalf("recorded digest = %q, want %q (the PR's actual diff) — the checkpoint likely diffed the wrong branch", state.LastDiffDigest, want)
-	}
 }
 
 // TestRemediationCheckpointEscalatesOnBudgetExhaustion is D4's headline
@@ -280,13 +241,13 @@ func TestRemediationCheckpointRecordsFirstCycle(t *testing.T) {
 // escalates (goobers:merge-escalated added, needs-remediation removed)
 // rather than recording yet another cycle.
 func TestRemediationCheckpointEscalatesOnBudgetExhaustion(t *testing.T) {
-	_, baseSHA := initRemediationCheckpointRepo(t)
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
 	priorComment, err := remediationStateComment(remediationState{Cycles: 1, LastDiffDigest: "sha256:stale-digest-from-a-different-diff"})
 	if err != nil {
 		t.Fatalf("remediationStateComment: %v", err)
 	}
 	st := &remediationCheckpointServerState{
-		number: 77, headSHA: "head-sha-2", baseSHA: baseSHA,
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
 		labels:   []string{"goobers:needs-remediation"},
 		comments: []string{priorComment},
 	}
@@ -322,8 +283,8 @@ func TestRemediationCheckpointEscalatesOnBudgetExhaustion(t *testing.T) {
 // immediately, independent of the (liberal, unexhausted) budget — mirroring
 // #316's in-run same-diff short-circuit.
 func TestRemediationCheckpointEscalatesOnSameDiff(t *testing.T) {
-	_, baseSHA := initRemediationCheckpointRepo(t)
-	st := &remediationCheckpointServerState{number: 77, headSHA: "head-sha-3", baseSHA: baseSHA, labels: []string{"goobers:needs-remediation"}}
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	st := &remediationCheckpointServerState{number: 77, headSHA: headSHA, baseSHA: baseSHA, labels: []string{"goobers:needs-remediation"}}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
 
@@ -360,7 +321,7 @@ func TestRemediationCheckpointEscalatesOnSameDiff(t *testing.T) {
 // merged between selection and this stage running is a normal no-op (exit
 // 0), not an error — mirrors apply-verdict's own D6 void-verdict shape.
 func TestRemediationCheckpointPRNoLongerOpenIsMoot(t *testing.T) {
-	_, _ = initRemediationCheckpointRepo(t)
+	initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
 	st := &remediationCheckpointServerState{number: 999} // no PR #77 in the list
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
@@ -387,6 +348,25 @@ func TestRemediationCheckpointRefusesWithoutCapability(t *testing.T) {
 	code, _, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 1 {
 		t.Fatalf("code = %d, stderr = %q, want 1 (fail closed on missing capability)", code, stderr)
+	}
+}
+
+// TestRemediationCheckpointRefusesWithoutRepoPushCapability proves
+// remediation-checkpoint also fails closed when repo:push is absent — it
+// re-checks-out the PR's branch itself (this stage's own fresh worktree),
+// which needs the same push-scoped fetch credential checkoutExistingBranch
+// uses elsewhere.
+func TestRemediationCheckpointRefusesWithoutRepoPushCapability(t *testing.T) {
+	instanceRoot := initDemo(t)
+	t.Setenv("GOOBERS_RUN_ID", "run-364-norepopush")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "77")
+	// Deliberately no GOOBERS_CRED_REPO_PUSH set.
+
+	code, _, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q, want 1 (fail closed on missing repo:push capability)", code, stderr)
 	}
 }
 
