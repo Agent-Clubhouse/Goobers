@@ -43,11 +43,12 @@ func baseEnv() []string {
 
 // buildStageEnv resolves credentials for declared, and returns the full
 // process env for the stage: baseEnv() plus one GOOBERS_CRED_* var per
-// declared capability that has a materialized credential, plus
-// GOOBERS_RUN_ID/GOOBERS_WORKFLOW/GOOBERS_INSTANCE_ROOT (instanceRoot may be
-// empty — see ShellExecutor.InstanceRoot) and one GOOBERS_INPUT_* var per
-// entry in inputs. Every resolved token is also registered with registrar so
-// it can be scrubbed from anything the stage's process writes.
+// declared capability that has a materialized credential, plus — only when
+// injectRunContext is set — GOOBERS_RUN_ID/GOOBERS_WORKFLOW/
+// GOOBERS_INSTANCE_ROOT (instanceRoot may be empty — see
+// ShellExecutor.InstanceRoot), and one GOOBERS_INPUT_* var per entry in
+// inputs. Every resolved token is also registered with registrar so it can be
+// scrubbed from anything the stage's process writes.
 //
 // Inputs/RunID/WorkflowID/InstanceRoot are the only way a `goobers` CLI
 // subcommand invoked as a stage's command (e.g. backlog-query/open-pr/
@@ -56,15 +57,27 @@ func baseEnv() []string {
 // InvocationEnvelope is otherwise an in-process value never serialized to
 // the child.
 //
+// injectRunContext is false for a stage whose command is NOT the goobers CLI
+// (e.g. local-ci's `make ci`), so the runner's operational identity does not
+// leak into a stage that runs the project's own build/test suite (#322): a
+// self-hosting project's local-ci runs `go test ./...`, and any test that
+// reads a GOOBERS_* var would otherwise be silently perturbed by whatever the
+// live run set. Only goobers-CLI stages, which genuinely consume run context,
+// receive it — the least-privilege env boundary. The GOOBERS_INPUT_* vars are
+// unaffected: a stage's own declared inputs are its config, not the runner's
+// operational identity, so they flow to every stage kind regardless.
+//
 // A declared capability with no configured grant is silently skipped
 // (credentials.Injector's own contract — not every capability is
 // credentialed); resolution failure for a capability that IS granted fails
 // closed.
-func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, workflowID, instanceRoot string, inputs map[string]interface{}) ([]string, error) {
+func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, workflowID, instanceRoot string, injectRunContext bool, inputs map[string]interface{}) ([]string, error) {
 	env := baseEnv()
-	env = append(env, "GOOBERS_RUN_ID="+runID, "GOOBERS_WORKFLOW="+workflowID)
-	if instanceRoot != "" {
-		env = append(env, "GOOBERS_INSTANCE_ROOT="+instanceRoot)
+	if injectRunContext {
+		env = append(env, "GOOBERS_RUN_ID="+runID, "GOOBERS_WORKFLOW="+workflowID)
+		if instanceRoot != "" {
+			env = append(env, "GOOBERS_INSTANCE_ROOT="+instanceRoot)
+		}
 	}
 	for k, v := range inputs {
 		if s, ok := v.(string); ok {

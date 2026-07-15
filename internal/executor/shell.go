@@ -129,6 +129,17 @@ func NewShellExecutor(injector *credentials.Injector, rec ArtifactRecorder) (*Sh
 	return &ShellExecutor{Injector: injector, Journal: rec}, nil
 }
 
+// stageInvokesGoobersCLI reports whether a stage's command is the goobers CLI
+// itself (e.g. backlog-query/open-pr/ci-poll/issue-close-out) rather than an
+// external tool (make, go, git). It is the single discriminator for two
+// goobers-CLI-specific behaviors: substituting the daemon's own binary for the
+// bare "goobers" token (SelfBin, #229), and injecting the run's operational
+// identity into the stage env (#322). A stage that runs the project's own
+// build/test suite (`make ci`) is not a goobers-CLI stage on either axis.
+func stageInvokesGoobersCLI(command []string) bool {
+	return len(command) > 0 && command[0] == "goobers"
+}
+
 // Run implements invoke.Deterministic. It executes run.Command in
 // env.Workspace with a capability-scoped, non-ambient environment, enforces a
 // timeout by killing the whole process group, captures size-bounded and
@@ -163,7 +174,15 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	resultFile := stringInput(env, InputResultFile)
 
 	registry, scrubber := journal.DefaultScrubber()
-	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.WorkflowID, e.InstanceRoot, env.Inputs)
+	// Only a stage whose command IS the goobers CLI receives the run's
+	// operational identity (GOOBERS_RUN_ID etc.). A stage that runs the
+	// project's own build/test suite (local-ci's `make ci` → `go test ./...`)
+	// must not inherit it, or — in a self-hosting project — the runner's live
+	// run env leaks into its own test suite (#322). This is the same
+	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
+	// the goobers-CLI-stage-ness of a stage is what decides both.
+	injectRunContext := stageInvokesGoobersCLI(run.Command)
+	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.WorkflowID, e.InstanceRoot, injectRunContext, env.Inputs)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: resolve credentials: %w", err)
 	}
@@ -177,7 +196,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// the worktree — so it fails at exec (#229). SelfBin is byte-identical to the
 	// running daemon, avoiding version skew.
 	name := run.Command[0]
-	if e.SelfBin != "" && name == "goobers" {
+	if e.SelfBin != "" && stageInvokesGoobersCLI(run.Command) {
 		name = e.SelfBin
 	}
 	cmd := exec.Command(name, run.Command[1:]...)

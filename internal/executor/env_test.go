@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"testing"
@@ -91,4 +92,98 @@ func TestBaseEnvStillBlocksSecretShapedVars(t *testing.T) {
 	if !foundLang {
 		t.Fatalf("expected the exact allowlisted LANG to still pass through, got %v", env)
 	}
+}
+
+// TestBuildStageEnv_InjectsRunContextOnlyWhenRequested is #322's core: the
+// run's operational identity (GOOBERS_RUN_ID/GOOBERS_WORKFLOW/
+// GOOBERS_INSTANCE_ROOT) is injected only when injectRunContext is set — i.e.
+// only for a stage whose command is the goobers CLI. A stage that runs the
+// project's own build/test suite gets a clean env, closing the leak at the
+// source. Declared inputs (GOOBERS_INPUT_*) are the stage's own config and
+// flow to every stage kind regardless. injector is nil (no declared caps), so
+// buildStageEnv returns before the credential/registrar path.
+func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
+	inputs := map[string]interface{}{"trustLabel": "goobers:approved"}
+
+	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "/instances/demo", true, inputs)
+	if err != nil {
+		t.Fatalf("buildStageEnv(injectRunContext=true): %v", err)
+	}
+	for _, want := range []string{
+		"GOOBERS_RUN_ID=run-123",
+		"GOOBERS_WORKFLOW=implementation",
+		"GOOBERS_INSTANCE_ROOT=/instances/demo",
+		"GOOBERS_INPUT_TRUSTLABEL=goobers:approved",
+	} {
+		if !hasEnv(withCtx, want) {
+			t.Errorf("injectRunContext=true: missing %q in %v", want, withCtx)
+		}
+	}
+
+	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "/instances/demo", false, inputs)
+	if err != nil {
+		t.Fatalf("buildStageEnv(injectRunContext=false): %v", err)
+	}
+	for _, prefix := range []string{"GOOBERS_RUN_ID", "GOOBERS_WORKFLOW", "GOOBERS_INSTANCE_ROOT"} {
+		if hasEnvPrefix(noCtx, prefix) {
+			t.Errorf("injectRunContext=false: %s leaked into %v", prefix, noCtx)
+		}
+	}
+	// The declared input still flows — it's the stage's config, not run identity.
+	if !hasEnv(noCtx, "GOOBERS_INPUT_TRUSTLABEL=goobers:approved") {
+		t.Errorf("injectRunContext=false: declared input dropped, want it kept: %v", noCtx)
+	}
+
+	// Even when requested, GOOBERS_INSTANCE_ROOT is omitted if unset (empty
+	// instanceRoot — see ShellExecutor.InstanceRoot), preserving prior behavior.
+	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "", true, nil)
+	if err != nil {
+		t.Fatalf("buildStageEnv(empty instanceRoot): %v", err)
+	}
+	if hasEnvPrefix(emptyRoot, "GOOBERS_INSTANCE_ROOT") {
+		t.Errorf("empty instanceRoot should omit GOOBERS_INSTANCE_ROOT, got %v", emptyRoot)
+	}
+}
+
+// TestStageInvokesGoobersCLI pins the single discriminator that gates both
+// SelfBin substitution and run-context injection (#322): a goobers-CLI stage
+// vs an external-tool stage (make/go/git) — including the project's own
+// build/test stages, which must NOT be treated as goobers-CLI stages.
+func TestStageInvokesGoobersCLI(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  []string
+		want bool
+	}{
+		{"backlog-query", []string{"goobers", "backlog-query", "--claim"}, true},
+		{"open-pr", []string{"goobers", "open-pr"}, true},
+		{"ci-poll", []string{"goobers", "ci-poll", "--wait"}, true},
+		{"make ci", []string{"make", "ci"}, false},
+		{"make test", []string{"make", "test"}, false},
+		{"sh -c", []string{"sh", "-c", "echo hi"}, false},
+		{"empty", nil, false},
+	}
+	for _, c := range cases {
+		if got := stageInvokesGoobersCLI(c.cmd); got != c.want {
+			t.Errorf("%s: stageInvokesGoobersCLI(%v) = %v, want %v", c.name, c.cmd, got, c.want)
+		}
+	}
+}
+
+func hasEnv(env []string, kv string) bool {
+	for _, e := range env {
+		if e == kv {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEnvPrefix(env []string, name string) bool {
+	for _, e := range env {
+		if strings.HasPrefix(e, name+"=") {
+			return true
+		}
+	}
+	return false
 }
