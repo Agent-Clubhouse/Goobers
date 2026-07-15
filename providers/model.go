@@ -27,8 +27,15 @@ const (
 	WorkItemStatusOpen       WorkItemStatus = "open"
 	WorkItemStatusClaimed    WorkItemStatus = "claimed"
 	WorkItemStatusInProgress WorkItemStatus = "in-progress"
-	WorkItemStatusDone       WorkItemStatus = "done"
-	WorkItemStatusClosed     WorkItemStatus = "closed"
+	// WorkItemStatusInReview means a PR implementing this item is open and
+	// cycling through merge-review — the item is neither still being
+	// implemented (in-progress) nor actually done (issue #361/#355): the
+	// work isn't done until the PR merges. `implementation`'s close-out
+	// stage sets this at PR-open time instead of WorkItemStatusDone; only
+	// the merge event (`goobers post-merge`) advances it to done.
+	WorkItemStatusInReview WorkItemStatus = "in-review"
+	WorkItemStatusDone     WorkItemStatus = "done"
+	WorkItemStatusClosed   WorkItemStatus = "closed"
 )
 
 // WorkItemRef identifies a related work item without normalizing provider hierarchy.
@@ -232,13 +239,23 @@ type PullRequestPollRequest struct {
 // against a previously-computed verdict's SHA-pin before acting on it — never
 // trust a caller-supplied "still valid" claim, always re-poll (design doc D6).
 type PullRequestPollResult struct {
-	Number           int                  `json:"number"`
-	State            string               `json:"state"`
-	Merged           bool                 `json:"merged"`
-	Mergeable        *bool                `json:"mergeable,omitempty"`
-	Draft            bool                 `json:"draft"`
-	HeadSHA          string               `json:"headSha,omitempty"`
-	BaseSHA          string               `json:"baseSha,omitempty"`
+	Number    int    `json:"number"`
+	State     string `json:"state"`
+	Merged    bool   `json:"merged"`
+	Mergeable *bool  `json:"mergeable,omitempty"`
+	Draft     bool   `json:"draft"`
+	HeadSHA   string `json:"headSha,omitempty"`
+	BaseSHA   string `json:"baseSha,omitempty"`
+	// BaseBranch is the target branch name (e.g. "main") — distinct from
+	// BaseSHA (a pinned commit): issue #361's post-merge fan-out needs the
+	// branch name to find OTHER open PRs targeting the same base, not the
+	// commit the SHA-pin checks against.
+	BaseBranch string `json:"baseBranch,omitempty"`
+	// Body is the PR's description text — issue #361's post-merge close-out
+	// parses it for a GitHub closing keyword ("Fixes #N"/"Closes #N"/
+	// "Resolves #N", the same convention `goobers open-pr` writes) to find
+	// the backlog issue a merged PR belongs to.
+	Body             string               `json:"body,omitempty"`
 	ReviewDecision   ReviewDecision       `json:"reviewDecision"`
 	RequestedChanges int                  `json:"requestedChanges"`
 	CheckState       CheckState           `json:"checkState"`
@@ -295,7 +312,9 @@ type MergePullRequestResult struct {
 
 // ListPullRequestsRequest filters open pull requests for merge-review's
 // selection stage (issue #359) — the same declarative-selection model
-// backlog-query already uses for issues, applied to PRs.
+// backlog-query already uses for issues, applied to PRs. Reused as-is by
+// #361's post-merge fan-out (find every other open PR targeting the merged
+// PR's base branch, to label it needs-remediation).
 type ListPullRequestsRequest struct {
 	Repository RepositoryRef `json:"repository"`
 	// Base restricts to PRs targeting this branch (e.g. "main"); empty
@@ -310,7 +329,8 @@ type ListPullRequestsRequest struct {
 
 // PullRequestSummary is one open PR as merge-review's selection stage sees
 // it — enough to filter eligibility (draft, labels, CI) without a second
-// round-trip per candidate.
+// round-trip per candidate. Reused as-is by #361's post-merge fan-out, which
+// only reads Number.
 type PullRequestSummary struct {
 	ID         string     `json:"id"`
 	Number     int        `json:"number"`

@@ -108,7 +108,11 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// @escalate instead of the "fail" branch's implement repass).
 	// #237: a deterministic push-branch stage was inserted between
 	// local-gate and open-pr (the implementer commits but no longer pushes).
-	const wantDigest = "sha256:b7c9f6d19ee5cf5ff715320b9dd2a1fd98ab247ea9a6140385999e14c1a535c5"
+	// #361/#355: query-backlog gained excludeLabels (goobers/status:in-review)
+	// and close-out gained inputs.status="in-review" — the issue no longer
+	// closes on PR-open; only `goobers post-merge` (merge-review's stage,
+	// #360) advances it to done at the actual merge event.
+	const wantDigest = "sha256:8bddd6cec95f4cea29f3359b720c8d4bd7d363cfb639d345e83fababd5c0abcc"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

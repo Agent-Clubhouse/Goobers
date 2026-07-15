@@ -12,14 +12,34 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+// issueCloseOutStatus resolves the "status" Task.Input to the WorkItemStatus
+// this stage sets, defaulting to WorkItemStatusDone for backward
+// compatibility with any workflow that never declares it. Issue #361/#355:
+// under the merge-review loop, the work isn't done until the PR merges, so
+// `implementation`'s workflow now declares status=in-review here instead —
+// only `goobers post-merge` (run by merge-review, at the actual merge event)
+// advances the issue to done.
+func issueCloseOutStatus(raw string) (providers.WorkItemStatus, error) {
+	switch providers.WorkItemStatus(raw) {
+	case "":
+		return providers.WorkItemStatusDone, nil
+	case providers.WorkItemStatusDone, providers.WorkItemStatusInReview:
+		return providers.WorkItemStatus(raw), nil
+	default:
+		return "", fmt.Errorf("unsupported status %q (want %q or %q)", raw, providers.WorkItemStatusDone, providers.WorkItemStatusInReview)
+	}
+}
+
 func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("issue-close-out", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers issue-close-out [path]\n\n"+
-			"Comment on the issue this run claimed, linking its PR, mark it done, and\n"+
-			"release the claim ledger's lease early (rather than waiting for it to\n"+
-			"expire). Exit codes: 0 = done, 1 = business error, 2 = usage/IO error.\n")
+			"Comment on the issue this run claimed, linking its PR, mark it done (or,\n"+
+			"with status=in-review, mark it in-review without closing — issue #361:\n"+
+			"the work isn't done until the PR merges), and release the claim ledger's\n"+
+			"lease early (rather than waiting for it to expire). Exit codes: 0 = done,\n"+
+			"1 = business error, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -85,6 +105,12 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	status, err := issueCloseOutStatus(providerInput("status", ""))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
 	ctx := context.Background()
 	head := providerInput("head", providers.BranchName(workflow, runID))
 	base := providerInput("base", "main")
@@ -95,17 +121,20 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	}
 	comment := providerInput("comment", "")
 	if comment == "" {
-		if found {
-			comment = fmt.Sprintf("Implemented in %s.", pr.URL)
-		} else {
+		switch {
+		case !found:
 			comment = "Implementation complete."
+		case status == providers.WorkItemStatusInReview:
+			comment = fmt.Sprintf("Implementation complete: %s is open for merge-review.", pr.URL)
+		default:
+			comment = fmt.Sprintf("Implemented in %s.", pr.URL)
 		}
 	}
 
 	if _, err := provider.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
 		Repository: repo,
 		ID:         claim.ItemID,
-		Status:     providers.WorkItemStatusDone,
+		Status:     status,
 		Comment:    comment,
 	}); err != nil {
 		pf(stderr, "error: update work item status: %v\n", err)
@@ -126,6 +155,10 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "warning: release claim %s: %v\n", claim.ItemID, err)
 	}
 
-	pf(stdout, "closed out %s\n", claim.ItemID)
+	if status == providers.WorkItemStatusInReview {
+		pf(stdout, "marked %s in-review (open PR, awaiting merge-review)\n", claim.ItemID)
+	} else {
+		pf(stdout, "closed out %s\n", claim.ItemID)
+	}
 	return 0
 }
