@@ -113,3 +113,54 @@ func TestResultEnvelopeErrorContract(t *testing.T) {
 		})
 	}
 }
+
+// TestVerdictShapeHintShowsSeverityEnum is #304's prompt-regression guard: the
+// verdict hint must show finding.severity as the exact enum, not a bare "...",
+// so a model can't guess an out-of-enum value like "Medium".
+func TestVerdictShapeHintShowsSeverityEnum(t *testing.T) {
+	req := RunRequest{
+		Envelope:       apiv1.InvocationEnvelope{Goal: "review the change"},
+		CompletionPath: DefaultVerdictPath,
+		Mode:           ModeReview,
+	}
+	prompt := renderPrompt(req)
+	if !strings.Contains(prompt, `"severity": "info"|"warning"|"error"|"critical"`) {
+		t.Fatalf("verdict hint missing the severity enum (#304): %q", prompt)
+	}
+	if strings.Contains(prompt, `"severity": "..."`) {
+		t.Fatalf("verdict hint still shows an unconstrained severity (#304): %q", prompt)
+	}
+}
+
+// TestVerdictEnvelopeFindingContract pins the schema behavior the #304 producer
+// fix aligns the reviewer output to (fix the producer, keep the schema): a valid
+// finding (enum severity + optional location) validates; an out-of-enum severity
+// ("Medium", the live bug) and an extra per-finding field (additionalProperties:
+// false — the model's per-finding "Evidence") are both rejected.
+func TestVerdictEnvelopeFindingContract(t *testing.T) {
+	v, err := validate.New()
+	if err != nil {
+		t.Fatalf("validate.New: %v", err)
+	}
+	cases := []struct {
+		name    string
+		json    string
+		wantErr bool
+	}{
+		{"needs-changes with a valid finding validates", `{"decision":"needs-changes","rationale":"gaps","findings":[{"severity":"error","message":"path-handling bug","location":"foo.go:10"}]}`, false},
+		{"out-of-enum severity rejected (the #304 bug)", `{"decision":"needs-changes","findings":[{"severity":"Medium","message":"x"}]}`, true},
+		{"extra per-finding field rejected (additionalProperties:false)", `{"decision":"needs-changes","findings":[{"severity":"error","message":"x","evidence":"y"}]}`, true},
+		{"pass with no findings validates", `{"decision":"pass","rationale":"lgtm"}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := v.ValidateEnvelope("verdict", []byte(tc.json))
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected a validation error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}

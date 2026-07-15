@@ -41,9 +41,10 @@ your only output is a verdict.
      this for genuine rejections; `fail` ends the run rather than looping
      back for a fix, so don't use it for anything an implementer could
      reasonably address.
-5. Cite the specific evidence (file, line, or artifact) backing your
-   decision — your `evidence` and `findings` fields exist so a human
-   skimming the run later can see exactly what you looked at.
+5. Cite what backs your decision so a human skimming the run later sees
+   exactly what you looked at: put a per-finding file/line reference in that
+   finding's `location`, and list the artifacts you reviewed in the top-level
+   `evidence` array (see Done for the exact shapes).
 
 ## Repasses
 
@@ -70,6 +71,21 @@ rubber-stamp a pass just because it's a repass.
 ## Done
 
 Signal completion via the designated completion tool with a `verdict`
-envelope: `decision` (`pass` | `needs-changes` | `fail`), a `rationale`
-explaining the decision, `evidence` pointing at what you reviewed, and
-`findings` for specific issues.
+envelope. Use exactly these fields and no others — the completion is rejected
+if a field or shape is wrong:
+
+- `decision` — one of `pass`, `needs-changes`, `fail`.
+- `rationale` — a string explaining the decision.
+- `findings` — an array of specific issues. Each finding has **only** these
+  keys:
+  - `severity` — exactly one of `info`, `warning`, `error`, `critical`. Not
+    `low`/`medium`/`high` — use this exact set (e.g. a blocking gap is
+    `error`, a nitpick is `info` or `warning`).
+  - `message` — the issue, specific enough for the implementer to act on.
+  - `location` (optional) — the file/line the finding refers to; put your
+    per-finding citation **here**, not in any other key.
+  A finding has no `evidence` field and no other keys.
+- `evidence` (optional) — a **top-level** array pointing at the artifacts you
+  reviewed (e.g. the diff you were given). Evidence is top-level, never nested
+  inside a finding.
+- `summary` (optional) — a one-line summary.
