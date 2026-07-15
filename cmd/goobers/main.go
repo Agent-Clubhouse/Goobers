@@ -62,6 +62,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runResetRateLimit(args[1:], stdout, stderr)
 	case "merge-pr":
 		return runMergePR(args[1:], stdout, stderr)
+	case "pr-select":
+		return runPRSelect(args[1:], stdout, stderr)
+	case "gather-sibling-context":
+		return runGatherSiblingContext(args[1:], stdout, stderr)
+	case "apply-verdict":
+		return runApplyVerdict(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0
@@ -97,13 +103,17 @@ Usage:
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
   goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid (a workflow stage)
   goobers telemetry-query [--window <d>] emit telemetry signals JSON over a window (a workflow stage)
+  goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
+  goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
+  goobers apply-verdict                  apply a merge-review verdict's label + comment (a workflow stage)
 
 path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
 business errors, 2 = usage/IO error.
 
-backlog-query/push-branch/open-pr/issue-close-out/merge-pr are the built-in
-provider-chain stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#237/#360):
-invoked by the runner as a deterministic stage's shell command, not
+backlog-query/push-branch/open-pr/issue-close-out/merge-pr/pr-select/
+gather-sibling-context/apply-verdict are the built-in provider-chain stage
+kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#237/#359/#360): invoked by the
+runner as a deterministic stage's shell command, not
 typically run by hand. They read their run context (instance root, run id,
 workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
 environment variables the runner sets — see internal/executor/env.go —

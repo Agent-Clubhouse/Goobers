@@ -27,12 +27,27 @@ type fakeIssue struct {
 }
 
 type fakePR struct {
-	number int
-	title  string
-	body   string
-	head   string
-	base   string
-	state  string
+	number     int
+	title      string
+	body       string
+	head       string
+	base       string
+	headSHA    string
+	baseSHA    string
+	draft      bool
+	labels     []string
+	checkState string
+	files      []fakePRFile
+	state      string
+}
+
+// fakePRFile is one file a fakePR touches, for the /pulls/{id}/files endpoint
+// ListPullRequestFiles reads (issue #359's sibling-set context gathering).
+type fakePRFile struct {
+	path      string
+	status    string
+	additions int
+	deletions int
 }
 
 // fakeGitHubServer is a stateful httptest.Server standing in for GitHub's
@@ -57,6 +72,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/pulls", s.handlePullsCollection)
 	mux.HandleFunc(prefix+"/issues/", s.handleIssueItem)
 	mux.HandleFunc(prefix+"/pulls/", s.handlePullItem)
+	mux.HandleFunc(prefix+"/commits/", s.handleCommitItem)
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
 	return s
@@ -66,6 +82,27 @@ func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.issues[number] = &fakeIssue{number: number, title: title, labels: append([]string{}, labels...), state: "open"}
+}
+
+// addOpenPR seeds a fixture PR for ListPullRequests/PullRequestFiles (issue
+// #359) — distinct from handlePullsCollection's POST path (which models
+// open-pr opening a fresh PR), this stands in for a PR that's already open
+// when merge-review's selection stage runs. checkState defaults to "success"
+// (GitHub's own vocabulary, normalized by combinedCheckState) when empty.
+// Every fixture PR needs a matching addIssue with the same number too:
+// UpdateWorkItem (labels/comments) always addresses the issues API, since
+// GitHub PRs are issues under the hood.
+func (s *fakeGitHubServer) addOpenPR(number int, head, base, headSHA, baseSHA string, draft bool, labels []string, files []fakePRFile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number] = &fakePR{
+		number: number, head: head, base: base, headSHA: headSHA, baseSHA: baseSHA,
+		draft: draft, labels: append([]string{}, labels...), checkState: "success",
+		files: files, state: "open",
+	}
+	if number >= s.nextPR {
+		s.nextPR = number + 1
+	}
 }
 
 func (s *fakeGitHubServer) newGitHubProvider(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
@@ -169,12 +206,27 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 	case http.MethodGet:
 		head := r.URL.Query().Get("head")
 		base := r.URL.Query().Get("base")
-		wantHead := strings.TrimPrefix(head, s.owner+":")
+		if head != "" {
+			wantHead := strings.TrimPrefix(head, s.owner+":")
+			out := []map[string]interface{}{}
+			for _, num := range sortedPRKeys(s.prs) {
+				pr := s.prs[num]
+				if pr.state == "open" && pr.head == wantHead && (base == "" || pr.base == base) {
+					out = append(out, prJSON(pr))
+				}
+			}
+			writeFakeJSON(w, out)
+			return
+		}
+		// No head filter: the ListPullRequests shape (issue #359) — the
+		// provider applies its own client-side head-prefix filter, so this
+		// fake just returns every open PR's full detail (draft/labels/
+		// head+base sha), base-filtered.
 		out := []map[string]interface{}{}
 		for _, num := range sortedPRKeys(s.prs) {
 			pr := s.prs[num]
-			if pr.state == "open" && pr.head == wantHead && (base == "" || pr.base == base) {
-				out = append(out, prJSON(pr))
+			if pr.state == "open" && (base == "" || pr.base == base) {
+				out = append(out, prDetailJSON(pr))
 			}
 		}
 		writeFakeJSON(w, out)
@@ -197,7 +249,8 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 
 func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/repos/"+s.owner+"/"+s.repo+"/pulls/")
-	num, err := strconv.Atoi(rest)
+	parts := strings.Split(rest, "/")
+	num, err := strconv.Atoi(parts[0])
 	if err != nil {
 		http.Error(w, "bad pr number", http.StatusBadRequest)
 		return
@@ -209,22 +262,63 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	if r.Method != http.MethodPatch {
-		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+	switch {
+	case len(parts) == 2 && parts[1] == "files" && r.Method == http.MethodGet:
+		out := make([]map[string]interface{}, 0, len(pr.files))
+		for _, f := range pr.files {
+			out = append(out, map[string]interface{}{
+				"filename": f.path, "status": f.status, "additions": f.additions, "deletions": f.deletions,
+			})
+		}
+		writeFakeJSON(w, out)
+	case len(parts) == 1 && r.Method == http.MethodPatch:
+		var body struct {
+			Title string `json:"title"`
+			Body  string `json:"body"`
+		}
+		decodeFakeJSON(r, &body)
+		if body.Title != "" {
+			pr.title = body.Title
+		}
+		if body.Body != "" {
+			pr.body = body.Body
+		}
+		writeFakeJSON(w, prJSON(pr))
+	default:
+		http.Error(w, fmt.Sprintf("unhandled %s %s", r.Method, r.URL.Path), http.StatusNotImplemented)
+	}
+}
+
+// handleCommitItem serves the legacy combined-status + check-runs endpoints
+// GitHubProvider.combinedCheckState polls (BL-031), so ListPullRequests'
+// per-candidate check state resolves against whichever fixture PR owns ref —
+// looked up by matching headSHA since the fake has no separate commit store.
+func (s *fakeGitHubServer) handleCommitItem(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/repos/"+s.owner+"/"+s.repo+"/commits/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 {
+		http.Error(w, "bad commit path", http.StatusBadRequest)
 		return
 	}
-	var body struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
+	sha, kind := parts[0], parts[1]
+	s.mu.Lock()
+	state := "success"
+	for _, pr := range s.prs {
+		if pr.headSHA == sha && pr.checkState != "" {
+			state = pr.checkState
+		}
 	}
-	decodeFakeJSON(r, &body)
-	if body.Title != "" {
-		pr.title = body.Title
+	s.mu.Unlock()
+	switch kind {
+	case "status":
+		writeFakeJSON(w, map[string]interface{}{"state": state, "statuses": []map[string]interface{}{
+			{"context": "ci", "state": state, "target_url": "", "description": ""},
+		}})
+	case "check-runs":
+		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
+	default:
+		http.Error(w, fmt.Sprintf("unhandled commit path %s", r.URL.Path), http.StatusNotImplemented)
 	}
-	if body.Body != "" {
-		pr.body = body.Body
-	}
-	writeFakeJSON(w, prJSON(pr))
 }
 
 func issueJSON(issue *fakeIssue) map[string]interface{} {
@@ -243,6 +337,22 @@ func prJSON(pr *fakePR) map[string]interface{} {
 		"id": pr.number, "number": pr.number, "title": pr.title, "body": pr.body,
 		"state": pr.state, "merged": false,
 		"html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
+	}
+}
+
+// prDetailJSON is the ListPullRequests shape (issue #359): draft flag,
+// labels, and head/base ref+sha, none of which prJSON's open-pr shape needs.
+func prDetailJSON(pr *fakePR) map[string]interface{} {
+	labels := make([]map[string]string, 0, len(pr.labels))
+	for _, l := range pr.labels {
+		labels = append(labels, map[string]string{"name": l})
+	}
+	return map[string]interface{}{
+		"number": pr.number, "html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
+		"draft": pr.draft, "updated_at": "2026-07-15T00:00:00Z",
+		"head":   map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
+		"base":   map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA},
+		"labels": labels,
 	}
 }
 

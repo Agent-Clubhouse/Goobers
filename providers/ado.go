@@ -223,6 +223,17 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	return MergePullRequestResult{}, fmt.Errorf("ado: pull request merge lands in V1 parity (BL-033)")
 }
 
+// ListPullRequests is not yet implemented for Azure DevOps: merge-review
+// (issue #359) is scoped to the GitHub V0 workload, same as PollPullRequest.
+func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequestsRequest) ([]PullRequestSummary, error) {
+	return nil, fmt.Errorf("ado: pull request listing lands in V1 parity (BL-033)")
+}
+
+// PullRequestFiles is not yet implemented for Azure DevOps: see ListPullRequests.
+func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, pullID string) ([]ChangedFile, error) {
+	return nil, fmt.Errorf("ado: pull request file listing lands in V1 parity (BL-033)")
+}
+
 // ListWorkItems lists Azure Boards work items as unified work items.
 func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequest) ([]WorkItem, error) {
 	project := p.project(req.Repository)

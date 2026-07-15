@@ -468,6 +468,105 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 	return MergePullRequestResult{Number: number, Merged: out.Merged, MergeSHA: out.SHA, Message: out.Message}, nil
 }
 
+// ListPullRequests lists open pull requests targeting req.Base, filtered
+// client-side to those whose head branch starts with req.HeadPrefix —
+// merge-review's selection stage and sibling-set context gathering (issue
+// #359). GitHub's pulls-list API has no server-side prefix match on head
+// (only an exact head=owner:branch filter, which FindPullRequestByBranch
+// already uses for the single-branch case), so the prefix filter is applied
+// here instead. A read, so it does not emit a mutation event.
+func (p *GitHubProvider) ListPullRequests(ctx context.Context, req ListPullRequestsRequest) ([]PullRequestSummary, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return nil, err
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
+	if err != nil {
+		return nil, err
+	}
+	values := url.Values{"state": []string{"open"}}
+	if req.Base != "" {
+		values.Set("base", req.Base)
+	}
+	endpoint, err = addQuery(endpoint, values)
+	if err != nil {
+		return nil, err
+	}
+
+	var prs []githubPullRequestDetail
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageOut []githubPullRequestDetail
+		if err := json.Unmarshal(page, &pageOut); err != nil {
+			return fmt.Errorf("decode pulls page: %w", err)
+		}
+		prs = append(prs, pageOut...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	out := make([]PullRequestSummary, 0, len(prs))
+	for _, pr := range prs {
+		if req.HeadPrefix != "" && !strings.HasPrefix(pr.Head.Ref, req.HeadPrefix) {
+			continue
+		}
+		checkState, _, err := p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
+		if err != nil {
+			return nil, err
+		}
+		labels := make([]string, 0, len(pr.Labels))
+		for _, l := range pr.Labels {
+			labels = append(labels, l.Name)
+		}
+		out = append(out, PullRequestSummary{
+			ID:         strconv.Itoa(pr.Number),
+			Number:     pr.Number,
+			URL:        pr.HTMLURL,
+			Head:       pr.Head.Ref,
+			Base:       pr.Base.Ref,
+			HeadSHA:    pr.Head.SHA,
+			BaseSHA:    pr.Base.SHA,
+			Draft:      pr.Draft,
+			Labels:     labels,
+			CheckState: checkState,
+			UpdatedAt:  pr.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
+// PullRequestFiles lists the files pullID touches — merge-review's
+// sibling-set context gathering (issue #359): what does the OTHER open PR
+// change, for cross-PR conflict/drift detection. A read, so it does not
+// emit a mutation event.
+func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, pullID string) ([]ChangedFile, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if pullID == "" {
+		return nil, fmt.Errorf("pull id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "files")
+	if err != nil {
+		return nil, err
+	}
+	var files []githubPullRequestFile
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageOut []githubPullRequestFile
+		if err := json.Unmarshal(page, &pageOut); err != nil {
+			return fmt.Errorf("decode pull files page: %w", err)
+		}
+		files = append(files, pageOut...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	out := make([]ChangedFile, 0, len(files))
+	for _, f := range files {
+		out = append(out, ChangedFile{Path: f.Filename, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions})
+	}
+	return out, nil
+}
+
 // reviewDecision aggregates a PR's review list into a single decision: the
 // latest review per author wins, and any outstanding CHANGES_REQUESTED beats
 // any APPROVED (BL-031 review-decision normalization).
@@ -1184,16 +1283,21 @@ type githubPullRequest struct {
 }
 
 type githubPullRequestDetail struct {
-	Number    int    `json:"number"`
-	State     string `json:"state"`
-	Merged    bool   `json:"merged"`
-	Mergeable *bool  `json:"mergeable"`
-	Draft     bool   `json:"draft"`
-	HTMLURL   string `json:"html_url"`
+	ID        int64         `json:"id"`
+	Number    int           `json:"number"`
+	State     string        `json:"state"`
+	Merged    bool          `json:"merged"`
+	Mergeable *bool         `json:"mergeable"`
+	Draft     bool          `json:"draft"`
+	HTMLURL   string        `json:"html_url"`
+	Labels    []githubLabel `json:"labels"`
+	UpdatedAt time.Time     `json:"updated_at"`
 	Head      struct {
+		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"head"`
 	Base struct {
+		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"base"`
 }
@@ -1202,6 +1306,13 @@ type githubMergeResult struct {
 	SHA     string `json:"sha"`
 	Merged  bool   `json:"merged"`
 	Message string `json:"message"`
+}
+
+type githubPullRequestFile struct {
+	Filename  string `json:"filename"`
+	Status    string `json:"status"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
 }
 
 type githubReview struct {

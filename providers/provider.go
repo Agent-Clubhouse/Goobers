@@ -29,6 +29,13 @@ type RepoProvider interface {
 	// primitive a conjunctive auto-merge action calls only after independently
 	// verifying every merge conjunct; see MergePullRequestRequest's doc.
 	MergePullRequest(context.Context, MergePullRequestRequest) (MergePullRequestResult, error)
+	// ListPullRequests lists open pull requests matching req — merge-review's
+	// selection stage and sibling-set context gathering (issue #359).
+	ListPullRequests(context.Context, ListPullRequestsRequest) ([]PullRequestSummary, error)
+	// PullRequestFiles lists the files a pull request touches — merge-review's
+	// sibling-set context gathering (issue #359): what does the OTHER open PR
+	// change, for cross-PR conflict/drift detection.
+	PullRequestFiles(context.Context, RepositoryRef, string) ([]ChangedFile, error)
 }
 
 // BranchName returns the run-scoped branch-name convention the repo provider

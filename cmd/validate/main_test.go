@@ -36,7 +36,7 @@ func TestRunSelfhostDirExitsZero(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected exit 0 for the selfhost config, got %d\n%s", code, out)
 	}
-	if !strings.Contains(out, "checked 12 object(s) across 12 file(s): 0 error(s), 0 issue(s) total") {
+	if !strings.Contains(out, "checked 13 object(s) across 13 file(s): 0 error(s), 0 issue(s) total") {
 		t.Errorf("expected the full self-hosting object count, got:\n%s", out)
 	}
 }
