@@ -13,28 +13,57 @@ import (
 )
 
 // WorkflowEntry is one workflow the scheduler manages: its readiness
-// conditions, its schedule triggers (empty for a manual/signal-only
-// workflow; backlog-item consumption is itself a cron-triggered workflow
-// whose first stage claims items), the external signal names it's
-// subscribed to (#342 — type=signal triggers), the Starter that dispatches
-// a run, and the repo every run's stages branch worktrees from. A workflow
-// may declare more than one schedule trigger (#341) — Tick fires if any of
-// them is due, sharing one LastEval baseline per workflow rather than
-// tracking each schedule independently.
+// conditions, its schedule triggers (empty for a manual/signal/backlog-item-
+// only workflow), the external signal names it's subscribed to (#342 —
+// type=signal triggers), an optional BacklogCounter for a type=backlog-item
+// trigger (#344), the Starter that dispatches a run, and the repo every
+// run's stages branch worktrees from. A workflow may declare more than one
+// schedule trigger (#341) — Tick fires if any of them is due, sharing one
+// LastEval baseline per workflow rather than tracking each schedule
+// independently. Schedules, Signals, and BacklogCounter are independent —
+// Tick/signal delivery evaluates whichever are set, since nothing prevents
+// a workflow from declaring more than one trigger type.
 type WorkflowEntry struct {
 	Workflow  string
 	Gaggle    string
 	Readiness apiv1.ReadinessConditions
 	Schedules []Schedule
 	Signals   []string
-	Starter   Starter
-	RepoRef   apiv1.RepoRef
+	// BacklogCounter, when set, marks this workflow as backlog-item-triggered
+	// (#344): Tick polls it every backlogPollInterval instead of (or in
+	// addition to, if Schedules is also set) evaluating a cron schedule, and
+	// fans out up to that many runs at once — unlike a schedule trigger's
+	// fixed one-shot-per-fire model, a backlog-item trigger starts as many
+	// runs as there are ready items, bounded by run conditions.
+	BacklogCounter BacklogCounter
+	Starter        Starter
+	RepoRef        apiv1.RepoRef
+}
+
+// BacklogCounter reports how many eligible backlog items are ready for a
+// workflow whose trigger is type=backlog-item (#344). Tick calls this once
+// per backlogPollInterval instead of evaluating a cron Schedule, then
+// dispatches up to that many runs in the same evaluation (each still gated
+// by the ordinary run-conditions Admit check) — turning "one trigger firing
+// = at most one new run, always" (the bug #344 reports) into fan-out sized
+// to actual backlog readiness.
+type BacklogCounter interface {
+	EligibleCount(ctx context.Context) (int, error)
 }
 
 // minPoll floors the computed sleep-until-next-tick duration, so a schedule
 // that just fired (Next() a few nanoseconds out due to clock jitter) can't spin
 // the loop.
 const minPoll = time.Second
+
+// backlogPollInterval bounds how often a backlog-item-triggered workflow's
+// BacklogCounter is polled (#344) — a real provider call (ListWorkItems),
+// unlike a schedule trigger's free in-memory Next() check, so this must not
+// run on every minPoll-floored loop iteration the way cron evaluation does;
+// 30s balances promptness (a fan-out opportunity is noticed soon) against
+// API-rate-limit and log-noise cost of polling every ready backlog item's
+// count that often.
+const backlogPollInterval = 30 * time.Second
 
 // newRunID is the run-id generator; swappable in tests for determinism.
 var newRunID = telemetry.NewRunID
@@ -60,6 +89,14 @@ type Scheduler struct {
 
 	mu       sync.Mutex
 	triggers map[string]TriggerState
+	// backlogLastCheck tracks, per backlog-item-triggered workflow, when its
+	// BacklogCounter was last polled (#344) — separate from triggers'
+	// LastEval, which is cron-Schedule-specific bookkeeping a workflow with
+	// both trigger kinds must not have corrupted by backlog-check timing.
+	// Reset to empty on every restart (not reconciled from durable history):
+	// the worst case is one extra poll right after a restart, not a
+	// correctness bug, so it isn't worth the added Reconcile complexity.
+	backlogLastCheck map[string]time.Time
 }
 
 // Option configures a Scheduler.
@@ -112,12 +149,13 @@ func WithOpenPRCounter(counter OpenPRCounter) Option {
 // a restart; a freshly-created instance can skip it (everything starts empty).
 func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Scheduler {
 	s := &Scheduler{
-		workflows:  make(map[string]WorkflowEntry, len(entries)),
-		conditions: NewConditions(),
-		log:        log,
-		now:        time.Now,
-		after:      time.After,
-		triggers:   make(map[string]TriggerState),
+		workflows:        make(map[string]WorkflowEntry, len(entries)),
+		conditions:       NewConditions(),
+		log:              log,
+		now:              time.Now,
+		after:            time.After,
+		triggers:         make(map[string]TriggerState),
+		backlogLastCheck: make(map[string]time.Time),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -241,24 +279,63 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.mu.Unlock()
 
 	for _, entry := range entries {
-		if len(entry.Schedules) == 0 {
-			continue // manual-only workflow: not cron-managed
+		if len(entry.Schedules) > 0 {
+			// Read, evaluate, and write the trigger state under a single lock
+			// acquisition. Tick is exported so a manual trigger and concurrent
+			// Tick calls (e.g. overlapping Run-loop iterations) can race here;
+			// dropping the lock between the read and the write let two callers
+			// both read the same pre-fire TriggerState, both compute Fire=true,
+			// and both dispatch the same due firing.
+			s.mu.Lock()
+			ts := s.triggers[entry.Workflow]
+			res := Tick(ts, now)
+			s.triggers[entry.Workflow] = TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: res.LastEval}
+			s.mu.Unlock()
+			if res.Fire {
+				s.dispatch(ctx, entry, now, res, journal.TriggerSchedule)
+			}
 		}
-		// Read, evaluate, and write the trigger state under a single lock
-		// acquisition. Tick is exported so a manual trigger and concurrent
-		// Tick calls (e.g. overlapping Run-loop iterations) can race here;
-		// dropping the lock between the read and the write let two callers
-		// both read the same pre-fire TriggerState, both compute Fire=true,
-		// and both dispatch the same due firing.
-		s.mu.Lock()
-		ts := s.triggers[entry.Workflow]
-		res := Tick(ts, now)
-		s.triggers[entry.Workflow] = TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: res.LastEval}
-		s.mu.Unlock()
-		if !res.Fire {
-			continue
+		if entry.BacklogCounter != nil {
+			s.tickBacklog(ctx, entry, now)
 		}
-		s.dispatch(ctx, entry, now, res, journal.TriggerSchedule)
+	}
+}
+
+// tickBacklog polls entry's BacklogCounter at most once per
+// backlogPollInterval and fans out up to that many dispatches (#344) —
+// each still gated by the ordinary run-conditions Admit check inside
+// dispatch, so a workflow near its MaxConcurrentRuns/budget ceiling still
+// only starts as many runs as conditions actually allow, not the raw ready
+// count. dispatch's own Admit refusal is what bounds the fan-out to
+// min(ready, room) — this loop just stops as soon as one dispatch is
+// refused, since every subsequent attempt in the same evaluation would be
+// refused for the identical reason.
+func (s *Scheduler) tickBacklog(ctx context.Context, entry WorkflowEntry, now time.Time) {
+	s.mu.Lock()
+	last := s.backlogLastCheck[entry.Workflow]
+	due := last.IsZero() || !now.Before(last.Add(backlogPollInterval))
+	if due {
+		s.backlogLastCheck[entry.Workflow] = now
+	}
+	s.mu.Unlock()
+	if !due {
+		return
+	}
+
+	ready, err := entry.BacklogCounter.EligibleCount(ctx)
+	if err != nil {
+		s.journalEvent(journal.Event{
+			Type:     journal.EventError,
+			Workflow: entry.Workflow,
+			Error:    &journal.ErrorDetail{Code: "backlog_count_failed", Message: err.Error()},
+		})
+		return
+	}
+	for i := 0; i < ready; i++ {
+		_, admitted, _ := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerItem)
+		if !admitted {
+			break
+		}
 	}
 }
 
@@ -445,6 +522,8 @@ func fireReason(tick TickResult, kind journal.TriggerKind) string {
 		return "manual"
 	case journal.TriggerSignal:
 		return "signal"
+	case journal.TriggerItem:
+		return "backlog item ready"
 	}
 	if tick.CatchUp {
 		return fmt.Sprintf("catch-up (missed %d)", tick.MissedTicks)
@@ -453,25 +532,33 @@ func fireReason(tick TickResult, kind journal.TriggerKind) string {
 }
 
 // nextWakeup computes how long to sleep until the earliest workflow trigger is
-// next due, so Run idles instead of busy-polling. Workflows with no schedule
-// (manual-only) don't contribute; if none are cron-managed, it returns a
-// conservative default so the loop still wakes periodically for Reconcile-style
-// housekeeping rather than blocking forever.
+// next due, so Run idles instead of busy-polling. A workflow with neither a
+// schedule nor a BacklogCounter (manual-only) doesn't contribute; if none are
+// cron- or backlog-managed, it returns a conservative default so the loop
+// still wakes periodically for Reconcile-style housekeeping rather than
+// blocking forever.
 func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var earliest time.Time
-	for name, entry := range s.workflows {
-		if len(entry.Schedules) == 0 {
-			continue
+	consider := func(next time.Time) {
+		if earliest.IsZero() || next.Before(earliest) {
+			earliest = next
 		}
+	}
+	for name, entry := range s.workflows {
 		ts := s.triggers[name]
 		for _, sched := range entry.Schedules {
-			next := sched.Next(ts.LastEval)
-			if earliest.IsZero() || next.Before(earliest) {
-				earliest = next
-			}
+			consider(sched.Next(ts.LastEval))
+		}
+		if entry.BacklogCounter != nil {
+			// tickBacklog's own due check, mirrored here so the Run loop
+			// wakes in time to poll it (#344) — otherwise a mixed instance
+			// with both schedule- and backlog-item-triggered workflows
+			// could starve the latter's poll cadence down to whatever the
+			// LONGEST schedule gap happens to be.
+			consider(s.backlogLastCheck[name].Add(backlogPollInterval))
 		}
 	}
 	if earliest.IsZero() {

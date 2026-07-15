@@ -148,6 +148,16 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		return nil, err
 	}
 
+	// A second resolver instance, independent of buildRunnerConfig's own
+	// internal one (buildCredentials is pure/stateless over cfg — cheap to
+	// call twice rather than widen buildRunnerConfig's return just to share
+	// one) — backs backlog-item trigger fan-out counting (#344), the same
+	// way buildEscalationNotifier's own resolver backs escalation posting.
+	credResolver, _, err := buildCredentials(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
@@ -173,13 +183,14 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 			}
 		}
 		entries = append(entries, localscheduler.WorkflowEntry{
-			Workflow:  wf.Name,
-			Gaggle:    wf.Spec.Gaggle,
-			Readiness: wf.Spec.Readiness,
-			Schedules: scheds,
-			Signals:   sigs,
-			Starter:   &trackedStarter{r: rn, machine: machines[wf.Name], wg: wg, l: l, tel: tel, rollupDB: rollupDB, log: instanceLog},
-			RepoRef:   repoRefs[wf.Name],
+			Workflow:       wf.Name,
+			Gaggle:         wf.Spec.Gaggle,
+			Readiness:      wf.Spec.Readiness,
+			Schedules:      scheds,
+			Signals:        sigs,
+			BacklogCounter: buildBacklogCounter(cfg, wf, repoRefs[wf.Name], credResolver, sharedReg),
+			Starter:        &trackedStarter{r: rn, machine: machines[wf.Name], wg: wg, l: l, tel: tel, rollupDB: rollupDB, log: instanceLog},
+			RepoRef:        repoRefs[wf.Name],
 		})
 	}
 
