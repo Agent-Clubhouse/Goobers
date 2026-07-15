@@ -73,8 +73,9 @@ spec:
       capabilities:
         - github:issues:write
         - agent:model
-      expectedOutputs:
-        - curation-summary
+      # No structured output: per-item outcomes are posted as issue comments,
+      # and a result's `outputs` are scalar-only (#299). The scalar `summary`
+      # in the result envelope carries the run's counts.
       next: release-claim
     # Explicit release (issue #234): curation touches issues only — there is
     # no CI-poll or reviewer loop, and it never opens a PR or closes the
