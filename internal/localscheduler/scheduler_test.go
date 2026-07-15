@@ -266,6 +266,120 @@ func TestTriggerSkipRejectsWithReason(t *testing.T) {
 	}
 }
 
+// TestSignalDispatchesOnlySubscribedWorkflows is #342's core acceptance: a
+// signal fired by name dispatches every workflow subscribed to it and
+// leaves unrelated workflows (subscribed to a different name, or not
+// subscribed at all) untouched.
+func TestSignalDispatchesOnlySubscribedWorkflows(t *testing.T) {
+	subscribed := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	otherSignal := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	unsubscribed := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{
+		{Workflow: "wants-deploy", Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}, Signals: []string{"deploy"}, Starter: subscribed},
+		{Workflow: "wants-release", Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}, Signals: []string{"release"}, Starter: otherSignal},
+		{Workflow: "manual-only", Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}, Starter: unsubscribed},
+	})
+
+	runIDs := sched.Signal(context.Background(), "deploy", time.Now())
+	if len(runIDs) != 1 || runIDs[0] == "" {
+		t.Fatalf("runIDs = %v, want exactly one non-empty run id", runIDs)
+	}
+	waitForCount(t, func() int { return subscribed.count() }, 1)
+
+	if otherSignal.count() != 0 {
+		t.Fatalf("workflow subscribed to a different signal should not have fired: %d starts", otherSignal.count())
+	}
+	if unsubscribed.count() != 0 {
+		t.Fatalf("unsubscribed workflow should not have fired: %d starts", unsubscribed.count())
+	}
+}
+
+// TestSignalUnknownNameReturnsEmptyNotError proves an unmatched signal name
+// is a legitimate empty broadcast (zero subscribers), not an error — unlike
+// Trigger's unknown-workflow case, which names one specific workflow a human
+// explicitly asked for.
+func TestSignalUnknownNameReturnsEmptyNotError(t *testing.T) {
+	sched, _ := newTestScheduler(t, []WorkflowEntry{
+		{Workflow: "wants-deploy", Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}, Signals: []string{"deploy"}, Starter: &fakeStarter{}},
+	})
+	runIDs := sched.Signal(context.Background(), "no-such-signal", time.Now())
+	if len(runIDs) != 0 {
+		t.Fatalf("runIDs = %v, want empty for an unmatched signal name", runIDs)
+	}
+}
+
+// TestSignalRejectedSubscriberIsSkippedNotError is Signal's fan-out
+// semantics: unlike Trigger (one named workflow, conditions-driven rejection
+// is a caller-facing error), a signal with multiple subscribers must not let
+// one rejected subscriber abort the broadcast — the admitted ones still
+// fire, and Signal reports only the admitted run ids (no error return at
+// all).
+func TestSignalRejectedSubscriberIsSkippedNotError(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+	blocked := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
+	free := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{
+		{Workflow: "already-busy", Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}, Signals: []string{"deploy"}, Starter: blocked},
+		{Workflow: "has-room", Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}, Signals: []string{"deploy"}, Starter: free},
+	})
+
+	// Occupy already-busy's one slot first via a direct Trigger.
+	if _, err := sched.Trigger(context.Background(), "already-busy", time.Now()); err != nil {
+		t.Fatalf("seed Trigger: %v", err)
+	}
+	waitForCount(t, func() int { return blocked.count() }, 1)
+
+	runIDs := sched.Signal(context.Background(), "deploy", time.Now())
+	if len(runIDs) != 1 {
+		t.Fatalf("runIDs = %v, want exactly one admitted run (has-room only)", runIDs)
+	}
+	waitForCount(t, func() int { return free.count() }, 1)
+	if blocked.count() != 1 {
+		t.Fatalf("already-busy should still show only its one seeded start, got %d", blocked.count())
+	}
+}
+
+// TestSignalReasonIsSignalNotScheduled mirrors #134's manual-Trigger fix for
+// Signal: a signal-driven fire must journal trigger.fired with reason
+// "signal", not fall through to "scheduled" (fireReason's default branch).
+func TestSignalReasonIsSignalNotScheduled(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, dir := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "wants-deploy",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Signals:   []string{"deploy"},
+		Starter:   starter,
+	}})
+
+	runIDs := sched.Signal(context.Background(), "deploy", time.Now())
+	if len(runIDs) != 1 {
+		t.Fatalf("runIDs = %v, want exactly one", runIDs)
+	}
+	waitForCount(t, func() int { return starter.count() }, 1)
+
+	events, err := journal.ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reason string
+	var kind journal.TriggerKind
+	for _, ev := range events {
+		if ev.Type == journal.EventTriggerFired && ev.Workflow == "wants-deploy" {
+			reason = ev.Reason
+		}
+		if ev.Type == journal.EventRunStarted && ev.Workflow == "wants-deploy" {
+			kind = starter.starts[0].Trigger.Kind
+		}
+	}
+	if reason != "signal" {
+		t.Fatalf("trigger.fired reason = %q, want \"signal\"", reason)
+	}
+	if kind != journal.TriggerSignal {
+		t.Fatalf("dispatched run's Trigger.Kind = %q, want %q", kind, journal.TriggerSignal)
+	}
+}
+
 // TestDispatchRefusesWhenTriggerFiredJournalFails is issue #142/SCH-031: a
 // failed trigger.fired append used to be silently swallowed, so dispatch
 // would start a run whose firing was never durably recorded — on restart,

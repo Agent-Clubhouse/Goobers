@@ -34,6 +34,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runUp(args[1:], stdout, stderr)
 	case "run":
 		return runRun(args[1:], stdout, stderr)
+	case "signal":
+		return runSignal(args[1:], stdout, stderr)
 	case "workflow":
 		return runWorkflow(args[1:], stdout, stderr)
 	case "runs":
@@ -79,6 +81,8 @@ Usage:
   goobers up [path]             run the daemon (scheduler + runner)
   goobers run <workflow> [path] trigger a run manually (still honors run conditions)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
+  goobers signal <name> [path]  fire an external signal, dispatching every
+                                subscribed type=signal-trigger workflow
   goobers workflow show <name> [path]  show a workflow as a text DAG
   goobers runs list [--limit=N] [path]  list runs, most-recent first
   goobers status [path]         list runs and their current phase
