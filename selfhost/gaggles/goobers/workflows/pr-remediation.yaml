@@ -46,6 +46,46 @@ spec:
       expectedOutputs:
         - selectedNumber
         - head
+        - base
         - isBehindBase
-      # Terminal for now: #363 adds the rebase (force-with-lease) +
-      # finding-driven routing to implement/review/local-ci as `next` here.
+        - hasSubstantiveFindings
+      next: rebase-pr
+
+    # Rebase-first, finding-driven routing (issue #363, design doc §5 D3): a
+    # clean rebase never suppresses a known substantive finding, and a rebase
+    # conflict is itself substantive. Re-checks out the SAME PR branch
+    # gather-pr-context selected (each stage gets its own fresh worktree —
+    # see the file's own doc comment) before attempting anything.
+    #
+    #   rebase clean, no substantive finding -> force-with-lease push, clear
+    #     the label, done (back to merge-review next cycle).
+    #   rebase conflict, OR a substantive finding is present -> this needs
+    #     the agentic implement/review/local-ci chain implementation.yaml
+    #     already has (design doc §10: "share the goober, copy the stage
+    #     wiring"). NOT YET WIRED HERE: every one of those stages ALSO gets
+    #     its own fresh worktree defaulting to this workflow's OWN run
+    #     branch (providers.BranchName), not the PR's actual branch, the
+    #     same problem gather-pr-context/rebase-pr solve for themselves by
+    #     re-checking-out explicitly — copying the chain in naively would
+    #     silently operate on the wrong branch. Flagged to the team as a
+    #     follow-up rather than rushed; the PR stays needs-remediation-
+    #     labeled and is simply re-evaluated next cycle, which is a correct,
+    #     lossless no-op, not a broken state.
+    - name: rebase-pr
+      type: deterministic
+      goal: Rebase the selected PR onto its base; force-push and clear the label if clean, else defer to agentic remediation.
+      run:
+        command: ["goobers", "rebase-pr"]
+      inputsFrom:
+        selectedNumber: selectedNumber
+        head: head
+        base: base
+        hasSubstantiveFindings: hasSubstantiveFindings
+      inputs:
+        resultFile: "rebase-result.json"
+      capabilities:
+        - repo:push
+        - github:issues:write
+      expectedOutputs:
+        - needsAgent
+      # Terminal for now — see this task's own doc comment above.

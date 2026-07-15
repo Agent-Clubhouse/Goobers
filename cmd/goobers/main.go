@@ -72,6 +72,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPostMerge(args[1:], stdout, stderr)
 	case "gather-pr-context":
 		return runGatherPRContext(args[1:], stdout, stderr)
+	case "rebase-pr":
+		return runRebasePR(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0
@@ -112,14 +114,15 @@ Usage:
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
   goobers apply-verdict                  apply a merge-review verdict's label + comment (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
+  goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
 
 path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
 business errors, 2 = usage/IO error.
 
 backlog-query/push-branch/open-pr/issue-close-out/merge-pr/pr-select/
-gather-sibling-context/apply-verdict/post-merge/gather-pr-context are the
-built-in provider-chain stage kinds (ARCHITECTURE.md §7, issues
-#12/#13/#27/#237/#359/#360/#361/#362): invoked by the runner as a deterministic
+gather-sibling-context/apply-verdict/post-merge/gather-pr-context/rebase-pr
+are the built-in provider-chain stage kinds (ARCHITECTURE.md §7, issues
+#12/#13/#27/#237/#359/#360/#361/#362/#363): invoked by the runner as a deterministic
 stage's shell command, not
 typically run by hand. They read their run context (instance root, run id,
 workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
