@@ -236,12 +236,16 @@ func TestStatusEmptyInstance(t *testing.T) {
 
 func TestTraceUnknownRun(t *testing.T) {
 	root := initDemo(t)
-	code, _, stderr := runArgs(t, "trace", "bogus-run-id", root)
-	if code != 2 {
-		t.Fatalf("code = %d, want 2", code)
+	code, stdout, stderr := runArgs(t, "trace", "bogus-run-id", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
 	}
-	if stderr == "" {
-		t.Fatalf("expected an error message on stderr")
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	want := `error: no run "bogus-run-id" found in ` + root + "; list runs with 'goobers status'\n"
+	if stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
 }
 
