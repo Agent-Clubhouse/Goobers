@@ -31,6 +31,25 @@ func resolveGrants(t *testing.T, r *credentials.Resolver, grants []credentials.G
 	return out
 }
 
+// TestBuildEnvCapabilities is #288's wiring: the Copilot adapter's capability→
+// env-var map routes agent:model to COPILOT_GITHUB_TOKEN and every org-repo
+// capability to GH_TOKEN — two DISTINCT vars, so one subprocess can hold both
+// tokens (§3.3). A collision (agent:model sharing GH_TOKEN) would clobber one.
+func TestBuildEnvCapabilities(t *testing.T) {
+	envCaps := buildEnvCapabilities()
+	if got := envCaps["agent:model"]; got != "COPILOT_GITHUB_TOKEN" {
+		t.Fatalf("agent:model env = %q, want COPILOT_GITHUB_TOKEN", got)
+	}
+	for _, c := range credentialedCapabilities {
+		if got := envCaps[string(c)]; got != credentialGrantEnv {
+			t.Fatalf("capability %s env = %q, want %q", c, got, credentialGrantEnv)
+		}
+	}
+	if envCaps["agent:model"] == credentialGrantEnv {
+		t.Fatalf("agent:model must map to a var distinct from the github-tool var %q, else the two tokens collide", credentialGrantEnv)
+	}
+}
+
 // TestBuildCredentialsDefault: with no credentials: block, the first repo's
 // token backs every credentialed capability and agent:model is absent (it must
 // be sourced explicitly, never defaulted to the repo token).
