@@ -293,6 +293,48 @@ type MergePullRequestResult struct {
 	Message  string `json:"message,omitempty"`
 }
 
+// ListPullRequestsRequest filters open pull requests for merge-review's
+// selection stage (issue #359) — the same declarative-selection model
+// backlog-query already uses for issues, applied to PRs.
+type ListPullRequestsRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	// Base restricts to PRs targeting this branch (e.g. "main"); empty
+	// means unfiltered.
+	Base string `json:"base,omitempty"`
+	// HeadPrefix restricts to PRs whose head branch starts with this
+	// prefix (e.g. "goobers/", G1's goober-authored-repo assumption) —
+	// applied client-side: GitHub's pulls-list API has no server-side
+	// prefix match on head, only an exact head=owner:branch filter.
+	HeadPrefix string `json:"headPrefix,omitempty"`
+}
+
+// PullRequestSummary is one open PR as merge-review's selection stage sees
+// it — enough to filter eligibility (draft, labels, CI) without a second
+// round-trip per candidate.
+type PullRequestSummary struct {
+	ID         string     `json:"id"`
+	Number     int        `json:"number"`
+	URL        string     `json:"url"`
+	Head       string     `json:"head"`
+	Base       string     `json:"base"`
+	HeadSHA    string     `json:"headSha"`
+	BaseSHA    string     `json:"baseSha"`
+	Draft      bool       `json:"draft"`
+	Labels     []string   `json:"labels,omitempty"`
+	CheckState CheckState `json:"checkState"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
+}
+
+// ChangedFile is one file a pull request touches (issue #359's sibling-set
+// context: what does the OTHER open PR touch, for cross-PR conflict/drift
+// detection).
+type ChangedFile struct {
+	Path      string `json:"path"`
+	Status    string `json:"status"` // added|modified|removed|renamed
+	Additions int    `json:"additions,omitempty"`
+	Deletions int    `json:"deletions,omitempty"`
+}
+
 // ListWorkItemsRequest filters backlog items for scheduler admission.
 type ListWorkItemsRequest struct {
 	Repository RepositoryRef `json:"repository"`

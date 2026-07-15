@@ -24,3 +24,4 @@ spec:
   scaleFactor: 1
   workflows:
     - implementation
+    - merge-review

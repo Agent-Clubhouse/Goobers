@@ -1,0 +1,114 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: merge-review
+spec:
+  gaggle: goobers
+  displayName: Merge review (PR-lifecycle decider)
+  # The decider workflow at the whole-open-PR-set altitude (V0.5,
+  # docs/design/v0/pr-lifecycle-loop.md §2-4): holistically judges one
+  # eligible PR per run, with the OTHER open PRs' state as evidence, and
+  # emits a #358 Verdict — never repo:push, never merges (that's #360/#361's
+  # scope). Same one-per-run selection shape as work-nomination/
+  # implementation, not a batch pass over every open PR in one run.
+  #
+  # DOGFOOD GUARDRAIL: hourly, off the hour — this instance's PR volume is
+  # low (a handful of goober-authored PRs at a time), so hourly gives fast
+  # feedback on drift/conflicts without needing sub-hour cadence; a
+  # maxRunsPerHour ceiling still bounds it if the schedule and a manual
+  # `goobers run` both fire in the same window.
+  triggers:
+    - type: schedule
+      schedule: "23 * * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 2
+  start: pr-select
+  tasks:
+    # Selection (design doc §3's declarative-selection model, applied to
+    # PRs): one open, non-draft, green-CI goobers/* PR not already carrying
+    # a merge-review label. No claim ledger for V0.5 — see pr-select.go's
+    # own doc comment for why that's an accepted scope call, not an
+    # oversight.
+    - name: pr-select
+      type: deterministic
+      goal: Select one eligible open PR for holistic review.
+      run:
+        command: ["goobers", "pr-select"]
+      inputs:
+        resultFile: "selected-pr.json"
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        - number
+        - head
+        - base
+      next: gather-sibling-context
+
+    # The cross-PR value stage (design doc §3): "this is where the cross-PR
+    # value lives; without it the review degrades back to single-diff and
+    # catches nothing cross-cutting." Queries every OTHER open PR's touched
+    # files + state, regardless of ITS OWN eligibility (a draft or red
+    # sibling is still relevant evidence).
+    - name: gather-sibling-context
+      type: deterministic
+      goal: Load the other open PRs' touched files + state as review evidence.
+      run:
+        command: ["goobers", "gather-sibling-context"]
+      inputsFrom:
+        selectedNumber: number
+      inputs:
+        resultFile: "sibling-context.json"
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        - selectedHeadSha
+        - selectedBaseSha
+      next: review
+
+    - name: apply-verdict
+      type: deterministic
+      goal: Apply the review verdict's label + PR comment.
+      run:
+        command: ["goobers", "apply-verdict"]
+      inputsFrom:
+        # Threads through the review gate transparently: a gate never
+        # updates the walk's lastResult/InputsFrom chain (only a task
+        # does), so this still resolves against gather-sibling-context's
+        # own Outputs, not the gate's. apply-verdict reads the gate's own
+        # Verdict back from this run's journal directly (the mechanism
+        # #358's schema + internal/gate's existing recordVerdict already
+        # provide, not new plumbing) — see its own doc comment.
+        selectedNumber: selectedNumber
+      capabilities:
+        - github:pr:write
+      # Terminal: no next. This is the "decider" workflow — the actual
+      # merge action is #360/#361's auto-merge capability, and the actual
+      # rework is pr-remediation (#362+), both reading the label this stage
+      # just applied.
+
+  gates:
+    # Holistic review: reuses the shared `reviewer` goober (design doc §2's
+    # explicit reuse-over-new-goober call), evaluating gather-sibling-
+    # context's own Outputs (the selected PR's identity/SHAs + every
+    # sibling's files/state, all flattened into this gate's Inputs the same
+    # way local-gate reads local-ci's Status) — NOT a single implementer's
+    # diff, the in-run reviewer's usual subject. Emits the #358 Verdict
+    # (decision + classed findings + SHA pin), recorded as this gate's
+    # verdict artifact exactly like the in-run reviewer gate already does —
+    # zero new runner plumbing.
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: reviewer
+      branches:
+        # All three decisions route to the SAME next stage: apply-verdict
+        # reads the actual Decision back from the journal to choose the
+        # right label (merge-ready/needs-remediation/merge-escalated) —
+        # unlike implementation.yaml's reviewer gate, there is no separate
+        # "go implement more" branch here, since remediation is a whole
+        # other workflow (pr-remediation) selecting on the label, not a
+        # same-run repass.
+        pass: apply-verdict
+        needs-changes: apply-verdict
+        fail: apply-verdict

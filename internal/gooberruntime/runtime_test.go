@@ -280,6 +280,14 @@ func (f *fakeRepoProvider) MergePullRequest(context.Context, providers.MergePull
 	return providers.MergePullRequestResult{}, nil
 }
 
+func (f *fakeRepoProvider) ListPullRequests(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error) {
+	return nil, nil
+}
+
+func (f *fakeRepoProvider) PullRequestFiles(context.Context, providers.RepositoryRef, string) ([]providers.ChangedFile, error) {
+	return nil, nil
+}
+
 func TestInProcessPreparerClonesRepoAndBuildsEnv(t *testing.T) {
 	repo := &fakeRepoProvider{}
 	preparer := InProcessPreparer{

@@ -600,6 +600,97 @@ func TestGitHubProviderClosePullRequestDetectsMergedVsClosed(t *testing.T) {
 	}
 }
 
+// TestGitHubProviderListPullRequestsFiltersByHeadPrefixAndReportsCheckState
+// is issue #359's selection-stage acceptance: the pulls-list endpoint has no
+// server-side head-prefix filter, so the provider must apply it client-side,
+// and each returned candidate carries its own combined check state (queried
+// per-PR, same mechanism PollPullRequest already uses).
+func TestGitHubProviderListPullRequestsFiltersByHeadPrefixAndReportsCheckState(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		if got := r.URL.Query().Get("base"); got != "main" {
+			t.Fatalf("base query = %q, want main", got)
+		}
+		writeJSON(t, w, []map[string]interface{}{
+			{
+				"number": 10, "html_url": "https://github.com/acme/app/pull/10", "draft": false,
+				"updated_at": "2026-07-15T00:00:00Z",
+				"head":       map[string]interface{}{"ref": "goobers/implementation/run-1", "sha": "aaa111"},
+				"base":       map[string]interface{}{"ref": "main", "sha": "base111"},
+				"labels":     []map[string]string{{"name": "goobers:needs-remediation"}},
+			},
+			{
+				// A human-authored PR (no goobers/ prefix) must be excluded.
+				"number": 11, "html_url": "https://github.com/acme/app/pull/11", "draft": false,
+				"updated_at": "2026-07-15T00:00:00Z",
+				"head":       map[string]interface{}{"ref": "someone/manual-fix", "sha": "bbb222"},
+				"base":       map[string]interface{}{"ref": "main", "sha": "base111"},
+			},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/aaa111/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"state": "success", "statuses": []map[string]interface{}{
+			{"context": "ci", "state": "success"},
+		}})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/aaa111/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	out, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, Base: "main", HeadPrefix: "goobers/",
+	})
+	if err != nil {
+		t.Fatalf("ListPullRequests: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("len(out) = %d, want 1 (the human-authored PR must be excluded)", len(out))
+	}
+	pr := out[0]
+	if pr.Number != 10 || pr.Head != "goobers/implementation/run-1" || pr.Base != "main" ||
+		pr.HeadSHA != "aaa111" || pr.BaseSHA != "base111" || pr.Draft {
+		t.Fatalf("unexpected summary: %+v", pr)
+	}
+	if len(pr.Labels) != 1 || pr.Labels[0] != "goobers:needs-remediation" {
+		t.Fatalf("Labels = %v, want [goobers:needs-remediation]", pr.Labels)
+	}
+	if pr.CheckState != CheckStatePassing {
+		t.Fatalf("CheckState = %q, want passing", pr.CheckState)
+	}
+}
+
+// TestGitHubProviderPullRequestFilesListsTouchedFiles is issue #359's
+// sibling-set context gathering: given another open PR's number, list the
+// files it touches for cross-PR conflict/drift detection.
+func TestGitHubProviderPullRequestFilesListsTouchedFiles(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/12/files", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, []map[string]interface{}{
+			{"filename": "internal/runner/run.go", "status": "modified", "additions": 12, "deletions": 3},
+			{"filename": "cmd/goobers/new.go", "status": "added", "additions": 40, "deletions": 0},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	files, err := provider.PullRequestFiles(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "12")
+	if err != nil {
+		t.Fatalf("PullRequestFiles: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("len(files) = %d, want 2", len(files))
+	}
+	if files[0].Path != "internal/runner/run.go" || files[0].Status != "modified" || files[0].Additions != 12 || files[0].Deletions != 3 {
+		t.Fatalf("unexpected file[0]: %+v", files[0])
+	}
+}
+
 func TestGitHubProviderClosePullRequestUnmerged(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
