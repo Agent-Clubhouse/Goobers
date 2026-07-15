@@ -330,6 +330,17 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 
 	envCaps := buildEnvCapabilities()
 
+	// An agentic gate's reviewer has no stage-level capabilities of its own, so
+	// the runner sources them from the reviewer goober's definition (#294). Map
+	// each goober to its declared grants for that lookup; only agentic gates
+	// consult it (task stages carry their own stage-level capabilities).
+	gateGooberCaps := make(map[string][]string, len(goobers))
+	for name, spec := range goobers {
+		if len(spec.Capabilities) > 0 {
+			gateGooberCaps[name] = append([]string(nil), spec.Capabilities...)
+		}
+	}
+
 	rc := runner.Config{
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
 			// Register resolved secrets into the run's own registrar AND the
@@ -406,10 +417,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
 			return harness.NewExecutor(adapter, injector, recorder, artifacts, contextResolver, scrubber, string(instructions))
 		},
-		Automated:    gate.NewAutomatedEvaluator(),
-		Worktrees:    wtMgr,
-		RunsDir:      l.RunsDir(),
-		RepoCloneURL: repoCloneURL,
+		Automated:              gate.NewAutomatedEvaluator(),
+		Worktrees:              wtMgr,
+		RunsDir:                l.RunsDir(),
+		RepoCloneURL:           repoCloneURL,
+		GateGooberCapabilities: gateGooberCaps,
 	}
 	if tel != nil {
 		rc.Telemetry = tel
