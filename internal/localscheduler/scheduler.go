@@ -3,6 +3,7 @@ package localscheduler
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -12,18 +13,20 @@ import (
 )
 
 // WorkflowEntry is one workflow the scheduler manages: its readiness
-// conditions, its schedule triggers (empty for a manual-only workflow — V0
-// acts only on schedule-type triggers per §7; backlog-item consumption is
-// itself a cron-triggered workflow whose first stage claims items), the
-// Starter that dispatches a run, and the repo every run's stages branch
-// worktrees from. A workflow may declare more than one schedule trigger
-// (#341) — Tick fires if any of them is due, sharing one LastEval baseline
-// per workflow rather than tracking each schedule independently.
+// conditions, its schedule triggers (empty for a manual/signal-only
+// workflow; backlog-item consumption is itself a cron-triggered workflow
+// whose first stage claims items), the external signal names it's
+// subscribed to (#342 — type=signal triggers), the Starter that dispatches
+// a run, and the repo every run's stages branch worktrees from. A workflow
+// may declare more than one schedule trigger (#341) — Tick fires if any of
+// them is due, sharing one LastEval baseline per workflow rather than
+// tracking each schedule independently.
 type WorkflowEntry struct {
 	Workflow  string
 	Gaggle    string
 	Readiness apiv1.ReadinessConditions
 	Schedules []Schedule
+	Signals   []string
 	Starter   Starter
 	RepoRef   apiv1.RepoRef
 }
@@ -267,6 +270,41 @@ func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time)
 	return runID, nil
 }
 
+// Signal fires every workflow subscribed to the named external signal (WF-014,
+// #342: a type=signal trigger declares Signal: "<name>") — `goobers signal
+// <name>` CLI wiring calls this today; an HTTP/webhook sink (#169) is the
+// planned future caller, once the daemon has a write-capable API surface, but
+// this method itself has no delivery-mechanism opinion. Unlike Trigger (which
+// names exactly one workflow and reports why it didn't start), Signal
+// broadcasts to however many workflows are subscribed — zero, one, or many —
+// so a conditions-driven skip is silent per subscriber (best-effort, the same
+// semantics a cron Tick's skip has) rather than a caller-facing error; the
+// skip is still journaled via dispatch's own tick.skipped event. Returns the
+// run ids of every workflow actually admitted, in workflow-name order for
+// determinism.
+func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []string {
+	s.mu.Lock()
+	var subscribed []WorkflowEntry
+	for _, e := range s.workflows {
+		for _, sig := range e.Signals {
+			if sig == name {
+				subscribed = append(subscribed, e)
+				break
+			}
+		}
+	}
+	s.mu.Unlock()
+	sort.Slice(subscribed, func(i, j int) bool { return subscribed[i].Workflow < subscribed[j].Workflow })
+
+	var runIDs []string
+	for _, entry := range subscribed {
+		if runID, admitted, _ := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerSignal); admitted {
+			runIDs = append(runIDs, runID)
+		}
+	}
+	return runIDs
+}
+
 // dispatch admits and starts (or skips) one due firing of entry. kind tags
 // both the trigger.fired reason (journal.TriggerManual renders as "manual",
 // never "scheduled" — issue #134's fireReason mislabeling fix) and the
@@ -380,12 +418,17 @@ func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, tick Tic
 }
 
 // fireReason renders a stable reason string for a trigger.fired event. A
-// manual trigger (issue #23's `goobers run`/#134) always renders "manual",
-// distinct from a cron tick's "scheduled"/"catch-up (missed N)" — a manual
-// fire has no TickResult.CatchUp concept of its own, so kind takes priority.
+// manual trigger (issue #23's `goobers run`/#134) always renders "manual"
+// and a signal (#342's `Signal`/`goobers signal`) always renders "signal",
+// both distinct from a cron tick's "scheduled"/"catch-up (missed N)" —
+// neither has a TickResult.CatchUp concept of its own, so kind takes
+// priority over it.
 func fireReason(tick TickResult, kind journal.TriggerKind) string {
-	if kind == journal.TriggerManual {
+	switch kind {
+	case journal.TriggerManual:
 		return "manual"
+	case journal.TriggerSignal:
+		return "signal"
 	}
 	if tick.CatchUp {
 		return fmt.Sprintf("catch-up (missed %d)", tick.MissedTicks)
