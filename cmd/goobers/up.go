@@ -30,6 +30,14 @@ var drainGrace = 30 * time.Second
 // tests can shrink it rather than waiting out a real 5 minutes.
 var claimRecoverInterval = 5 * time.Minute
 
+// delegationSweepInterval bounds how often runUpContext checks for delegated
+// trigger requests (#343, rundelegate.go) from a `goobers run` invocation
+// that found this daemon already holding up.lock. Deliberately much shorter
+// than claimRecoverInterval — a human waiting on `goobers run` to return
+// expects it to feel responsive, not lag behind a background maintenance
+// cadence. Var, not const, so tests can shrink it further.
+var delegationSweepInterval = 2 * time.Second
+
 // reapStaleAfter bounds how long a Keep-on-failure worktree survives before
 // Manager.Reap sweeps it up too, on top of genuine crash orphans (issue
 // #136) — nothing in the runner sets RemoveOptions.Keep yet, so this only
@@ -212,15 +220,40 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		}
 	}()
 
+	// #343's daemon-side half: periodically sweep for delegated trigger
+	// requests a short-lived `goobers run` invocation dropped after finding
+	// this daemon already holding up.lock (rundelegate.go), and dispatch
+	// each through sched.Trigger — safe to call concurrently with sched.Run's
+	// own Tick loop below (Scheduler's internal mutex already makes
+	// Trigger/Tick safe to interleave, see scheduler.go's Tick doc comment;
+	// this is exactly that same sanctioned pattern, just from a second
+	// goroutine instead of a second process). Same never-write-to-stdout
+	// rationale as the claim-recovery goroutine above.
+	delegationTicker := time.NewTicker(delegationSweepInterval)
+	delegationTickerDone := make(chan struct{})
+	go func() {
+		defer close(delegationTickerDone)
+		defer delegationTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-delegationTicker.C:
+				sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now)
+			}
+		}
+	}()
+
 	pf(stdout, "daemon started at %s (%d workflow(s))\n", root, len(setup.Entries))
 	runErr := sched.Run(ctx) // blocks until ctx is cancelled
 
-	// Wait for the claim-recovery goroutine to fully stop BEFORE any further
-	// stdout/stderr writes below: both it and this goroutine react to the
-	// same ctx cancellation independently, so without this join a tick still
-	// in flight when sched.Run returns would race the writes below on the
-	// shared io.Writer (stdout/stderr are not safe for concurrent use).
+	// Wait for both background goroutines to fully stop BEFORE any further
+	// stdout/stderr writes below: each reacts to the same ctx cancellation
+	// independently, so without this join a tick still in flight when
+	// sched.Run returns would race the writes below on the shared io.Writer
+	// (stdout/stderr are not safe for concurrent use).
 	<-claimTickerDone
+	<-delegationTickerDone
 
 	if runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {
 		pf(stderr, "error: scheduler stopped: %v\n", runErr)
