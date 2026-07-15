@@ -589,13 +589,15 @@ func TestShellExecutor_ResultFileNonJSONIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestShellExecutor_RunContextEnvVars proves the stage process receives
-// GOOBERS_RUN_ID/GOOBERS_WORKFLOW always, GOOBERS_INSTANCE_ROOT only when
-// ShellExecutor.InstanceRoot is set, and one GOOBERS_INPUT_* var per declared
-// Task.Inputs string entry — the only way a `goobers` CLI subcommand
-// invoked as a stage's shell command (its cwd is the stage's worktree, not
-// the instance root) learns its run context and configured inputs (#131/#132).
-func TestShellExecutor_RunContextEnvVars(t *testing.T) {
+// TestShellExecutor_NonGoobersStageOmitsRunContext proves the #322 leak
+// closure at the integration level: a stage whose command is NOT the goobers
+// CLI (here `sh`, standing in for local-ci's `make ci` → `go test ./...`) does
+// NOT receive the run's operational identity (GOOBERS_RUN_ID/GOOBERS_WORKFLOW/
+// GOOBERS_INSTANCE_ROOT) in its exec env — so, in a self-hosting project, a
+// live run can't perturb its own test suite through those vars. The stage's
+// own declared Task.Inputs (GOOBERS_INPUT_*) are unaffected: they are the
+// stage's config, not the runner's identity, so they still flow.
+func TestShellExecutor_NonGoobersStageOmitsRunContext(t *testing.T) {
 	exec, rec := newTestExecutor(t, nil)
 	exec.InstanceRoot = "/instances/demo"
 	env := baseEnvelope(t)
@@ -613,7 +615,9 @@ func TestShellExecutor_RunContextEnvVars(t *testing.T) {
 		t.Fatalf("status = %v, want success", result.Status)
 	}
 	got := string(rec.recorded["task-1/stdout.log"])
-	want := "run=run-123 wf=implementation root=/instances/demo input=goobers:approved\n"
+	// Run-context vars empty (not injected for a non-goobers command); the
+	// declared input var still present.
+	want := "run= wf= root= input=goobers:approved\n"
 	if got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
