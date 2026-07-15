@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"sigs.k8s.io/yaml"
+
+	"github.com/goobers/goobers/internal/capability"
 )
 
 // APIVersion and Kind for instance.yaml. Mirrors the config-as-code
@@ -30,6 +32,14 @@ type Config struct {
 	Repos         []RepoRef       `json:"repos" yaml:"repos"`
 	Telemetry     TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	RunConditions RunConditions   `json:"runConditions,omitempty" yaml:"runConditions,omitempty"`
+	// Credentials sources individual capabilities from their own token refs,
+	// beyond the default of backing every credentialed capability with the
+	// first repo's token (#287, multi-token credentials). Each entry points one
+	// capability at a distinct token; an entry for a capability the runner would
+	// otherwise default-grant to the repo token OVERRIDES that grant. This is
+	// what lets an agentic stage carry a personal "Copilot Requests" PAT for the
+	// model (agent:model) alongside the org-repo token for the github tool.
+	Credentials []CredentialGrant `json:"credentials,omitempty" yaml:"credentials,omitempty"`
 	// Timezone is an IANA location name (e.g. "America/New_York") every
 	// workflow's cron schedule evaluates in. Empty defaults to UTC — a fixed,
 	// reproducible default independent of the host process's own local zone,
@@ -58,6 +68,19 @@ type TokenRef struct {
 	Env string `json:"env,omitempty" yaml:"env,omitempty"`
 	// File is a path to a file whose contents are the token.
 	File string `json:"file,omitempty" yaml:"file,omitempty"`
+}
+
+// CredentialGrant sources one capability from its own token ref (#287). It is
+// the config surface for holding more than one token at a time and routing each
+// to the capability that needs it — e.g. agent:model → a personal Copilot
+// Requests PAT, separate from the repo token backing repo/issue/PR access.
+type CredentialGrant struct {
+	// Capability is the canonical capability string (internal/capability) this
+	// token backs, e.g. "agent:model" or "repo:push" (to override the default).
+	Capability string `json:"capability" yaml:"capability"`
+	// Token is the source of the credential — exactly one of env or file, like
+	// a repo's token; inline secret values are never permitted.
+	Token TokenRef `json:"token" yaml:"token"`
 }
 
 // TelemetryConfig configures the local telemetry rollup store (§8).
@@ -146,6 +169,26 @@ func (c *Config) Validate() error {
 		if hasEnv == hasFile {
 			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env or file — "+
 				"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
+		}
+	}
+	seen := make(map[string]bool, len(c.Credentials))
+	for i, cg := range c.Credentials {
+		// Fail closed at load, not at the first stage that tries to resolve a
+		// bad grant (#287): an unknown capability is a typo the compiler would
+		// never see (credentials: isn't a workflow), and a token ref that names
+		// neither/both of env|file can never resolve.
+		if !capability.Known(cg.Capability) {
+			return fmt.Errorf("credentials[%d]: unknown capability %q", i, cg.Capability)
+		}
+		if seen[cg.Capability] {
+			return fmt.Errorf("credentials[%d]: capability %q is sourced more than once", i, cg.Capability)
+		}
+		seen[cg.Capability] = true
+		hasEnv := cg.Token.Env != ""
+		hasFile := cg.Token.File != ""
+		if hasEnv == hasFile {
+			return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env or file — "+
+				"inline secret values are never permitted (CFG-009, SEC-010)", i, cg.Capability)
 		}
 	}
 	return nil

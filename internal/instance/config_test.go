@@ -85,6 +85,69 @@ repos:
 	}
 }
 
+// TestLoadConfigCredentialsBlock is #287: instance.yaml's credentials: block
+// parses into per-capability CredentialGrants, so an agentic stage can source
+// agent:model from a personal Copilot-Requests PAT distinct from the repo token.
+func TestLoadConfigCredentialsBlock(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GH_TOKEN
+credentials:
+  - capability: agent:model
+    token:
+      env: COPILOT_GITHUB_TOKEN
+  - capability: repo:push
+    token:
+      file: /run/secrets/push-token
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.Credentials) != 2 {
+		t.Fatalf("expected 2 credentials, got %+v", cfg.Credentials)
+	}
+	if cfg.Credentials[0].Capability != "agent:model" || cfg.Credentials[0].Token.Env != "COPILOT_GITHUB_TOKEN" {
+		t.Fatalf("unexpected credentials[0]: %+v", cfg.Credentials[0])
+	}
+	if cfg.Credentials[1].Capability != "repo:push" || cfg.Credentials[1].Token.File != "/run/secrets/push-token" {
+		t.Fatalf("unexpected credentials[1]: %+v", cfg.Credentials[1])
+	}
+}
+
+// TestLoadConfigCredentialsRejectsInlineSecret is #287's fail-closed guard: an
+// inline value under a credentials token ref is an unknown field, rejected at
+// load like a repo token's would be (CFG-009/SEC-010).
+func TestLoadConfigCredentialsRejectsInlineSecret(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GH_TOKEN
+credentials:
+  - capability: agent:model
+    token:
+      value: ghp_inlinesecrettoken
+`)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected an error for an inline secret value, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("expected an unknown-field error, got: %v", err)
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -133,6 +196,47 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "valid timezone",
 			cfg:  Config{Timezone: "America/New_York"},
+		},
+		{
+			name: "credentials unknown capability",
+			cfg: Config{Credentials: []CredentialGrant{
+				{Capability: "agent:mdoel", Token: TokenRef{Env: "T"}},
+			}},
+			wantErr: `unknown capability "agent:mdoel"`,
+		},
+		{
+			name: "credentials duplicate capability",
+			cfg: Config{Credentials: []CredentialGrant{
+				{Capability: "agent:model", Token: TokenRef{Env: "A"}},
+				{Capability: "agent:model", Token: TokenRef{File: "/b"}},
+			}},
+			wantErr: "sourced more than once",
+		},
+		{
+			name: "credentials neither env nor file",
+			cfg: Config{Credentials: []CredentialGrant{
+				{Capability: "agent:model"},
+			}},
+			wantErr: "exactly one of env or file",
+		},
+		{
+			name: "credentials both env and file",
+			cfg: Config{Credentials: []CredentialGrant{
+				{Capability: "agent:model", Token: TokenRef{Env: "T", File: "/f"}},
+			}},
+			wantErr: "exactly one of env or file",
+		},
+		{
+			name: "credentials valid agent:model",
+			cfg: Config{Credentials: []CredentialGrant{
+				{Capability: "agent:model", Token: TokenRef{Env: "COPILOT_PAT"}},
+			}},
+		},
+		{
+			name: "credentials valid repo:push override",
+			cfg: Config{Credentials: []CredentialGrant{
+				{Capability: "repo:push", Token: TokenRef{File: "/run/secrets/push-token"}},
+			}},
 		},
 	}
 	for _, tc := range cases {
