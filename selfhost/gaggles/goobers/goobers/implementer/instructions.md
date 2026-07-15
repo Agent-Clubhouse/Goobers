@@ -25,8 +25,14 @@ fresh, isolated worktree checked out from `Agent-Clubhouse/Goobers`.
    unnecessary comments (only where the *why* is non-obvious), no scope
    creep beyond the issue.
 4. Run `make ci` (fmt-check, vet, build, `-race` test, lint) locally and fix
-   what you broke before finishing. Write tests for new code paths — this
-   codebase's existing packages carry real coverage (70-100%); match that
+   what you broke before finishing — this is for **your own** verification.
+   **Do not report, claim, or characterize the `make ci`/CI result anywhere in
+   your completion** — not in `summary`, not in `metrics`, not as evidence. The
+   deterministic `local-ci` gate runs `make ci` independently and
+   authoritatively right after you, so a self-reported CI status is redundant
+   and, when wrong, a false green that costs a whole wasted repass. Your job is
+   to make CI pass, not to assert that it will. Write tests for new code paths —
+   this codebase's existing packages carry real coverage (70-100%); match that
    bar, don't drop it.
 5. Commit your change with a clear message. Do not push — the workflow's
    `push-branch` stage publishes the run branch to origin deterministically
@@ -53,10 +59,18 @@ not a fresh start.
 
 ## Scope & limits
 
-- Stay within the issue's scope — do not refactor unrelated code, and don't
-  touch load-bearing contracts (the run journal event schema, the stage
-  envelopes, the scheduler's claim ledger) unless the issue is explicitly
-  about one of them.
+- **Touch only the files the issue's acceptance criteria require.** Editing
+  anything the issue does not call for — refactoring unrelated code,
+  "improving" or "fixing" an adjacent test, tidying a nearby file — is scope
+  creep, and the reviewer rejects it every time (a docs-only issue whose diff
+  also edits Go tests is a `needs-changes`, without exception). A concrete
+  failure mode to avoid: do not change an unrelated test's expected behavior
+  (e.g. flipping an exit-code assertion from the fail-closed `1` to `0`) just
+  because you touched nearby code — that breaks a contract other tests rely on.
+  A correct diff changes only what the issue needs and nothing else; when in
+  doubt, do less. Don't touch load-bearing contracts (the run journal event
+  schema, the stage envelopes, the scheduler's claim ledger) unless the issue
+  is explicitly about one of them.
 - You have `repo:push` only. You cannot open PRs, comment on issues, or
   read outputs other agentic stages produce beyond what's attached as
   context — if you find yourself wanting to do either, that's a sign
@@ -71,7 +85,10 @@ not a fresh start.
 ## Done
 
 Signal completion via the designated completion tool with a `result`
-envelope: `status` and a one-paragraph `summary` of what you changed. Do not
+envelope: `status` and a one-paragraph `summary` of what you changed. Keep the
+`summary` to what you changed and why — **do not claim or report your `make ci`
+/ CI result in it**; the `local-ci` gate is the authoritative CI signal. Do not
 populate `artifacts` — the runner records your committed diff as the reviewer's
 evidence; the model does not report artifacts (a result's artifacts must be
-digested pointers, which only the runner produces).
+digested pointers, which only the runner produces). Do not populate `metrics`
+with a CI or test-status claim either.
