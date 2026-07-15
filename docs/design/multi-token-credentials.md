@@ -78,15 +78,25 @@ credentials:                                       # NEW — per-capability toke
     token: { file: /path/to/copilot-requests-token }
 ```
 
-Semantics: each `credentials[]` entry registers an additional named `TokenRef` and appends
-a `Grant{Capability, Ref}` pointing the named capability at it. An entry whose capability is
-already default-granted to the repo token **overrides** that grant's ref. This is the exact
-config surface the token-scopes guide already assumes — and it generalizes: `repo:push`,
-`github:issues:write`, etc. can each be pointed at distinct tokens the same way, with no
-further wiring (that generalization is the strategic endpoint in §5).
+Semantics: each `credentials[]` entry registers an additional **uniquely-named** `TokenRef`
+and contributes a `Grant{Capability, Ref}` pointing the named capability at it. An entry
+whose capability is already default-granted to the repo token **replaces** that default
+grant — `buildCredentials` must **dedupe the grant set by capability** (the explicit entry
+wins), *not* append a second grant for the same capability. This is load-bearing:
+`credentials.NewInjector` **rejects duplicate grants for the same capability**
+(`internal/credentials/capability.go`: `"duplicate grant for capability %q"`), and
+`NewResolver` likewise rejects duplicate ref *names* (`source.go`) — so the wiring must build
+at most one grant per capability and one ref per name, or it fails closed at construction
+rather than overriding. `agent:model` never collides (it has no default grant); the
+`repo:push` override in AC3 is the case that exercises the dedupe. This generalizes:
+`repo:push`, `github:issues:write`, etc. can each be re-sourced the same way, with no further
+wiring (the strategic endpoint in §5).
 
-`buildCredentials` grows a loop over `cfg.Credentials`; validation rejects an entry naming an
-unknown capability or a missing token ref at config-load (fail-closed).
+`buildCredentials` grows a loop over `cfg.Credentials` that merges into the default grant
+set by capability (replace-on-conflict); validation rejects an entry naming an unknown
+capability or a missing token ref at config-load (fail-closed). Note: `instance.yaml` is
+Go-validated only (no JSON schema), so the new `credentials:` field carries no schema-parity
+obligation (cf. #125/#273).
 
 ### 3.3 Copilot adapter env mapping — two tokens, two env vars, one subprocess
 
@@ -120,8 +130,11 @@ scrubber.
 - **AC2 — fail-closed.** An agentic stage that does **not** declare `agent:model` has no
   `COPILOT_GITHUB_TOKEN` in its env. A `credentials:` entry naming an unknown capability, or
   a ref that resolves to nothing, is rejected at config-load.
-- **AC3 — override.** A `credentials:` entry for `repo:push` overrides the repo-token grant
-  for that capability (proves the mechanism generalizes beyond `agent:model`).
+- **AC3 — override (dedupe-by-capability).** A `credentials:` entry for `repo:push`
+  **replaces** the default repo-token grant for that capability — the resulting grant set
+  has exactly one `repo:push` grant (pointing at the override ref), so `NewInjector` accepts
+  it rather than erroring on a duplicate grant. Proves the mechanism generalizes beyond
+  `agent:model`.
 - **AC4 — redaction.** Both token values are registered with the scrubber and are redacted
   from journal/telemetry/log output.
 - **AC5 — docs.** `docs/guides/github-token-scopes.md` gains an `agent:model` row noting it
