@@ -2578,3 +2578,56 @@ func TestRunnerAgenticGateAttachesReviewerDiffEvidence(t *testing.T) {
 		t.Fatalf("diff evidence pointer has no digested artifact: %+v", diffPtr)
 	}
 }
+
+// capturingAutomated records the envelope it evaluates, so a test can assert an
+// automated gate never receives runner-produced reviewer-diff evidence (#301).
+type capturingAutomated struct{ gotPointers []apiv1.ContextPointer }
+
+func (c *capturingAutomated) Evaluate(_ context.Context, _ apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
+	c.gotPointers = env.ContextPointers
+	return "pass", nil
+}
+
+// TestRunnerAutomatedGateGetsNoDiffEvidence pins #301's agentic-only guard: the
+// runner-produced diff evidence is attached ONLY for an agentic reviewer gate.
+// An automated gate (which runs no goober and needs no evidence) never receives
+// it — even directly after a stage that committed a real change. Same seam
+// discipline as #294's credential guard.
+func TestRunnerAutomatedGateGetsNoDiffEvidence(t *testing.T) {
+	automated := &capturingAutomated{}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return &committingDeterministic{t: t}, nil
+		},
+		Automated:    automated,
+		Worktrees:    wtMgr,
+		RunsDir:      filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-automated-nodiff",
+		Machine: fixtureMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	for _, p := range automated.gotPointers {
+		if p.Name == "review.diff" {
+			t.Fatalf("automated gate must not receive runner diff evidence, got pointer %q", p.Name)
+		}
+	}
+}
