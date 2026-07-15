@@ -924,7 +924,7 @@ func TestGitHubProviderListPullRequestsFiltersByBase(t *testing.T) {
 	if len(result) != 2 {
 		t.Fatalf("len(result) = %d, want 2: %#v", len(result), result)
 	}
-	if result[0].Number != 10 || result[0].HeadBranch != "goobers/impl/run-a" || result[0].BaseBranch != "main" {
+	if result[0].Number != 10 || result[0].Head != "goobers/impl/run-a" || result[0].Base != "main" {
 		t.Fatalf("result[0] = %#v", result[0])
 	}
 }
