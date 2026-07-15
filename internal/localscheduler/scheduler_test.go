@@ -351,6 +351,106 @@ func TestReconcileRestoresBudgetWindowFromInstanceLog(t *testing.T) {
 	}
 }
 
+// TestReconcileRateResetClearsBudgetWindow is #315's core: a rate-limit reset
+// marker (written by `goobers reset-rate-limit`) raises the budget window's
+// floor to the reset moment, so run.started history at or before it stops
+// counting — letting an operator run again immediately without the old
+// `rm -rf <instance>` workaround that destroyed runs/. This is the mirror of
+// TestReconcileRestoresBudgetWindowFromInstanceLog: same spent-budget history,
+// but with a reset written after it, so the trigger is now ADMITTED.
+func TestReconcileRateResetClearsBudgetWindow(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	now := time.Now()
+
+	// A prior run admitted 10 minutes ago — within the 1-hour window, so
+	// without a reset the budget (MaxRunsPerHour: 1) is spent.
+	past, _, err := journal.OpenInstanceLog(dir, journal.WithClock(func() time.Time { return now.Add(-10 * time.Minute) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Append(journal.Event{Type: journal.EventRunStarted, Workflow: "curate", RunID: "prior-run"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Operator resets the rate window now — after that spent run.
+	if err := WriteRateReset(dir, now.Add(-time.Minute)); err != nil {
+		t.Fatalf("WriteRateReset: %v", err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched := New([]WorkflowEntry{{
+		Workflow:  "curate",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 1},
+		Starter:   starter,
+	}}, log)
+	if err := sched.Reconcile(filepath.Join(t.TempDir(), "runs"), now); err != nil {
+		t.Fatal(err)
+	}
+
+	// The reset floor is newer than the 10-min-ago run.started, so that history
+	// no longer counts — the trigger is admitted despite the pre-reset budget
+	// having been spent.
+	if _, err := sched.Trigger(context.Background(), "curate", now); err != nil {
+		t.Fatalf("expected the trigger to be admitted after a rate reset, got: %v", err)
+	}
+}
+
+// TestReconcileStaleRateResetIsNoOp proves a reset older than the rolling
+// window has no effect: the window has already advanced past it, so the normal
+// 1-hour cutoff governs and a still-in-window spent run keeps the budget spent.
+func TestReconcileStaleRateResetIsNoOp(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	now := time.Now()
+
+	past, _, err := journal.OpenInstanceLog(dir, journal.WithClock(func() time.Time { return now.Add(-10 * time.Minute) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Append(journal.Event{Type: journal.EventRunStarted, Workflow: "curate", RunID: "prior-run"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A reset from 2 hours ago — older than the budget window, so it must not
+	// resurrect budget for the still-in-window (10-min-ago) run.
+	if err := WriteRateReset(dir, now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched := New([]WorkflowEntry{{
+		Workflow:  "curate",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 1},
+		Starter:   starter,
+	}}, log)
+	if err := sched.Reconcile(filepath.Join(t.TempDir(), "runs"), now); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := sched.Trigger(context.Background(), "curate", now); err == nil {
+		t.Fatal("expected the trigger to be rejected: a stale reset must not resurrect a spent budget")
+	} else if !strings.Contains(err.Error(), ReasonBudget) {
+		t.Fatalf("err = %v, want it to mention %q", err, ReasonBudget)
+	}
+}
+
 // TestTickSkipsOnBudgetExhaustion is the budget half of the run-conditions
 // acceptance criterion (the max-parallel half is TestTickSkipsWhenConditions
 // Exhausted): once MaxRunsPerHour is spent, further due ticks skip and journal

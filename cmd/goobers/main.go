@@ -56,6 +56,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runOpenPR(args[1:], stdout, stderr)
 	case "issue-close-out":
 		return runIssueCloseOut(args[1:], stdout, stderr)
+	case "reset-rate-limit":
+		return runResetRateLimit(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0
@@ -78,6 +80,7 @@ Usage:
   goobers workflow show <name> [path]  show a workflow as a text DAG
   goobers runs list [--limit=N] [path]  list runs, most-recent first
   goobers status [path]         list runs and their current phase
+  goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
   goobers trace <run-id> [path] show a run's journal events (+ spans if rolled up)
   goobers telemetry stats|errors [path]  success rate/duration or recent-error aggregates
   goobers journal redact --run <id> --path <blob> --reason <text> [path]

@@ -105,6 +105,24 @@ in `internal/journal/README.md` use, just pre-formatted. If the telemetry
 rollup (`telemetry.db`, #22) has ingested the run, its trace spans print too;
 this is best-effort — an empty or not-yet-rebuilt rollup is not an error.
 
+## 9. `reset-rate-limit` — run again without losing history
+
+A workflow's `maxRunsPerHour` budget can leave you rate-limited when you want to
+trigger another run immediately (e.g. during acceptance testing). Reset just the
+hourly budget — **never** `rm -rf ./my-instance` to clear it:
+
+```sh
+bin/goobers reset-rate-limit ./my-instance
+```
+
+This writes a small marker under `scheduler/` that moves the rate window's floor
+to now, so the next `goobers up`/`goobers run` starts with a fresh budget. It
+**preserves `runs/`** — the append-only run journals that are the durable
+execution record (`trace` reads them). Wiping the instance root to reset the
+rate window destroys those journals as a side effect; this command doesn't.
+Stop the daemon first if one is running — the reset is applied when the
+scheduler next reconstructs its budget window at startup.
+
 ## Exit codes
 
 Every subcommand follows the same convention: `0` = OK, `1` = validation/
