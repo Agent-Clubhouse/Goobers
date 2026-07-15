@@ -16,15 +16,12 @@
 > why that still exercises this criterion's code path. See the
 > [Execution record](#execution-record) appendix below for the full journal
 > evidence, including a companion failing run that demonstrates the
-> repass/escalation path. **One known gap surfaced by the
-> pre-execution audit and still real:** `ref.touched` journal events for real
-> provider mutations (PR/issue/claim) never fire in production —
-> `providers.WithMutationRecorder` is wired in tests only; only a single
-> per-run branch-touch event reaches the journal. This did **not** block the
-> live run (the mutations themselves — the claim, the push, the opened PR —
-> all happened for real) but the per-mutation journal traceability epic #130
-> called out remains incomplete; tracked as #228, not overstated as fixed by
-> this run. Owner: Goobers-Dev-5.
+> repass/escalation path. **The `ref.touched`-for-provider-mutations gap the
+> pre-execution audit flagged is now closed** (#228, 2026-07-14) and this
+> run is live proof: `924e2b3d`'s journal recorded 4 `ref.touched` events —
+> the run branch, the issue #317 claim, the opened PR #324, and #317's
+> close-out — not just the single per-run branch-touch event the earlier
+> audit found. Owner: Goobers-Dev-5.
 
 ## Purpose
 
@@ -246,7 +243,7 @@ on `e739bd0` (2026-07-14, ahead of the live run):
 | Subcommands *existed and were declared* on the live path, but the static audit never live-*executed* one — a bare `goobers` command token can't resolve from a stage worktree (a fresh clone that never contains the gitignored, uncommitted binary; a bare name PATH-resolves against the *daemon's* PATH, not the worktree), so every deterministic stage failed at first exec | `ShellExecutor.SelfBin` (set once from `os.Executable()` at wiring) rewrites a `goobers` token to the running daemon's own binary — byte-identical, no version skew | ✅ fixed, `#229` (found by the first live run, not the static audit) |
 | `TaskExecutor`/`CIPollExecutor` registered but never wired to a real stage | `runnerwiring.go` constructs `CIPollExecutor` against the real `ci-poll` stage-kind | ✅ live, `#132` |
 | No `GitHubProvider` constructed on the live path | `providercmd.go`'s `newGitHubProvider` used by all three subcommands + ci-poll's poller | ✅ live, `#132`/`#139` |
-| `ref.touched` / claim ledger had zero production callers | Claim ledger: ✅ real (`backlogquery.go --claim`, `up.go`'s `RecoverExpired`). `ref.touched` for provider mutations: ❌ still gap, tracked as #228 | 🔶 partial, `#132`/`#228` |
+| `ref.touched` / claim ledger had zero production callers | Claim ledger: ✅ real (`backlogquery.go --claim`, `up.go`'s `RecoverExpired`). `ref.touched` for provider mutations: ✅ real, sidecar-facts→runner-projection redesign — confirmed live in run `924e2b3d` (claim, PR-open, close-out events) | ✅ fixed, `#132`/`#228` |
 | Stage worktrees detached at `main` every stage | `worktree.go` — first stage branches off `BaseRef`, later stages check out the existing run branch | ✅ fixed, `#133` |
 | `prNumber` output→input handoff didn't exist | `run.go`'s `InputsFrom` overlay, fail-closed on a missing declared output | ✅ real, `#132` |
 | ci-gate compared against a vocabulary ci-poll never emitted | Both use `"passing"`/`"failing"` (`cipoll.go`, `automated.go`) | ✅ symmetric, `#132` |
@@ -282,17 +279,6 @@ decision for a bug:
 - **No self-merge.** A human merges the PR the implementation workflow opens
   (`ARCHITECTURE.md` §12 roadmap). Full autonomy is out of scope at every
   tier documented so far.
-- **`ref.touched` journal events don't fire for real provider mutations.**
-  `providers.WithMutationRecorder` (`providers/github.go`/`seams.go`) exists
-  and is tested, but every production call site (`backlogquery.go`,
-  `openpr.go`, `issuecloseout.go`) constructs the provider without it — so
-  opening a PR, commenting on/closing an issue, or applying a claim marker
-  never gets journaled as `ref.touched`. Only one `ref.touched` event fires
-  per run in production, the run's own git branch (`runner/run.go`) —
-  functionally harmless (the mutations themselves still happen for real) but
-  the per-run "which issue/PR did this actually touch" journal traceability
-  epic #130 called out is incomplete. Found during 2026-07-14's static
-  verification for the #30/#130 closing gate; tracked as #228.
 - **No sandboxed stage execution / per-goober credential injection.**
   Isolation is worktree + process only at tier 1 (`ARCHITECTURE.md` §9);
   sandboxing is V1 (tracked as #35).
