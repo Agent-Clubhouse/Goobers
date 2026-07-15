@@ -112,7 +112,7 @@ func TestFullRepassFixture(t *testing.T) {
 	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: string(subject.Status)}}
 
 	// 1st automated evaluation: fail -> repass to implement.
-	r1, err := ev.Evaluate(context.Background(), autoGate, env, "implement", subject)
+	r1, err := ev.Evaluate(context.Background(), autoGate, env, "implement", subject, "")
 	if err != nil {
 		t.Fatalf("Evaluate #1: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestFullRepassFixture(t *testing.T) {
 
 	// "implement" repasses; this time it succeeds.
 	env.Inputs[InputKeyStatus] = string(apiv1.ResultSuccess)
-	r2, err := ev.Evaluate(context.Background(), autoGate, env, "implement", apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	r2, err := ev.Evaluate(context.Background(), autoGate, env, "implement", apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, "")
 	if err != nil {
 		t.Fatalf("Evaluate #2: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestFullRepassFixture(t *testing.T) {
 
 	// Reviewer gate: needs-changes -> repass to implement.
 	rev.reviewVerdict = apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "please fix X"}
-	r3, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{})
+	r3, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "")
 	if err != nil {
 		t.Fatalf("Evaluate #3: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestFullRepassFixture(t *testing.T) {
 
 	// Reviewer gate: approve -> complete.
 	rev.reviewVerdict = apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "looks good"}
-	r4, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{})
+	r4, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "")
 	if err != nil {
 		t.Fatalf("Evaluate #4: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestEvaluatorEscalatesOnRepassBudgetExhaustion(t *testing.T) {
 		{"implement", false},      // attempt 2 <= budget(2)
 		{wf.TargetEscalate, true}, // attempt 3 > budget(2)
 	} {
-		r, err := ev.Evaluate(context.Background(), g, env, "implement", subject)
+		r, err := ev.Evaluate(context.Background(), g, env, "implement", subject, "")
 		if err != nil {
 			t.Fatalf("Evaluate #%d: %v", i, err)
 		}
@@ -219,6 +219,108 @@ func TestEvaluatorEscalatesOnRepassBudgetExhaustion(t *testing.T) {
 	}
 	if events[2].Target != wf.TargetEscalate {
 		t.Fatalf("last journaled target = %q, want %q", events[2].Target, wf.TargetEscalate)
+	}
+}
+
+// TestEvaluatorEscalatesOnDuplicateDiffWithoutReReview is issue #316's core
+// acceptance: an implementer stuck in a non-convergent repass loop produces a
+// diff byte-identical to its immediately prior attempt. The second such
+// attempt must escalate on the spot — not after burning the rest of the
+// repass budget — and, critically, must never re-invoke the (real, costly)
+// reviewer for a diff it has already judged.
+func TestEvaluatorEscalatesOnDuplicateDiffWithoutReReview(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "reviewgate",
+		Evaluator: apiv1.EvaluatorAgentic,
+		Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+		Branches: map[string]string{
+			string(apiv1.VerdictPass):         wf.TerminalComplete,
+			string(apiv1.VerdictNeedsChanges): "implement",
+			string(apiv1.VerdictFail):         wf.TargetAbort,
+		},
+	}
+	rev := &fakeGoober{reviewVerdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "please fix X"}}
+	run := newTestJournal(t)
+	// MaxRepasses is generous (3) so escalation on the very next attempt can
+	// only be explained by the duplicate-diff detection, not budget exhaustion.
+	ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: rev}, MaxRepasses: 3, Journal: run}
+
+	// 1st attempt: a real diff, never seen before — reviewer is consulted.
+	r1, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:aaaa")
+	if err != nil {
+		t.Fatalf("Evaluate #1: %v", err)
+	}
+	if r1.Target != "implement" || r1.Attempt != 1 || r1.Escalated || r1.DuplicateDiff {
+		t.Fatalf("r1 = %+v, want target=implement attempt=1 escalated=false duplicateDiff=false", r1)
+	}
+	if rev.reviewCalls != 1 {
+		t.Fatalf("reviewCalls after #1 = %d, want 1", rev.reviewCalls)
+	}
+
+	// 2nd attempt: the implementer produced the exact same diff again (the
+	// #316 failure mode) — Evaluate must detect the repeat, escalate, and
+	// skip the reviewer call entirely.
+	r2, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:aaaa")
+	if err != nil {
+		t.Fatalf("Evaluate #2: %v", err)
+	}
+	if r2.Target != wf.TargetEscalate || !r2.Escalated || !r2.DuplicateDiff {
+		t.Fatalf("r2 = %+v, want target=%s escalated=true duplicateDiff=true", r2, wf.TargetEscalate)
+	}
+	if r2.Attempt != 2 {
+		t.Fatalf("r2.Attempt = %d, want 2 (well under the budget of 3 — escalation is from the duplicate, not the budget)", r2.Attempt)
+	}
+	if rev.reviewCalls != 1 {
+		t.Fatalf("reviewCalls after #2 = %d, want still 1 (the reviewer must not be re-invoked on a detected duplicate)", rev.reviewCalls)
+	}
+	if r2.Verdict == nil || r2.Verdict.Decision != apiv1.VerdictNeedsChanges {
+		t.Fatalf("r2.Verdict = %+v, want a synthesized needs-changes verdict explaining the escalation", r2.Verdict)
+	}
+
+	events := readGateEvents(t, run)
+	if len(events) != 2 {
+		t.Fatalf("journaled gate events = %d, want 2", len(events))
+	}
+	dup, ok := events[1].Runner["duplicateDiff"].(bool)
+	if !ok || !dup {
+		t.Fatalf("events[1].Runner[duplicateDiff] = %v, want true", events[1].Runner["duplicateDiff"])
+	}
+	if digest, _ := events[1].Runner["diffDigest"].(string); digest != "sha256:aaaa" {
+		t.Fatalf("events[1].Runner[diffDigest] = %q, want sha256:aaaa", digest)
+	}
+}
+
+// TestEvaluatorDoesNotEscalateOnDifferentDiff is the control for the
+// duplicate-diff test above: consecutive attempts with genuinely different
+// diffs are ordinary repass activity, not non-convergence, and must not
+// trip the #316 short-circuit — proving escalation above was caused by the
+// matching digest, not merely by two consecutive non-pass attempts.
+func TestEvaluatorDoesNotEscalateOnDifferentDiff(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "reviewgate",
+		Evaluator: apiv1.EvaluatorAgentic,
+		Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+		Branches: map[string]string{
+			string(apiv1.VerdictPass):         wf.TerminalComplete,
+			string(apiv1.VerdictNeedsChanges): "implement",
+			string(apiv1.VerdictFail):         wf.TargetAbort,
+		},
+	}
+	rev := &fakeGoober{reviewVerdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges}}
+	ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: rev}, MaxRepasses: 3, Journal: newTestJournal(t)}
+
+	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:aaaa"); err != nil {
+		t.Fatalf("Evaluate #1: %v", err)
+	}
+	r2, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:bbbb")
+	if err != nil {
+		t.Fatalf("Evaluate #2: %v", err)
+	}
+	if r2.Escalated || r2.DuplicateDiff || r2.Target != "implement" {
+		t.Fatalf("r2 = %+v, want target=implement escalated=false duplicateDiff=false (a genuinely new diff each time)", r2)
+	}
+	if rev.reviewCalls != 2 {
+		t.Fatalf("reviewCalls = %d, want 2 (reviewer consulted for every genuinely new diff)", rev.reviewCalls)
 	}
 }
 
@@ -246,7 +348,7 @@ func TestEvaluatorHonorsSeededRepassCount(t *testing.T) {
 	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}
 	subject := apiv1.ResultEnvelope{Status: apiv1.ResultFailure}
 
-	r, err := ev.Evaluate(context.Background(), g, env, "implement", subject)
+	r, err := ev.Evaluate(context.Background(), g, env, "implement", subject, "")
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -266,7 +368,7 @@ func TestEvaluatorHonorsSeededRepassCount(t *testing.T) {
 	// MaxRepasses or the fixture, is what drove the escalation.
 	freshAuto := &fakeAutomated{outcomes: []string{OutcomeFail}}
 	fresh := &Evaluator{Automated: freshAuto, MaxRepasses: 2, Journal: newTestJournal(t)}
-	fr, err := fresh.Evaluate(context.Background(), g, env, "implement", subject)
+	fr, err := fresh.Evaluate(context.Background(), g, env, "implement", subject, "")
 	if err != nil {
 		t.Fatalf("Evaluate (fresh): %v", err)
 	}
@@ -284,7 +386,7 @@ func TestEvaluatorNeverSilentlyPasses(t *testing.T) {
 	}
 	auto := &fakeAutomated{outcomes: []string{OutcomeFail}}
 	ev := &Evaluator{Automated: auto}
-	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}, "implement", apiv1.ResultEnvelope{}); err == nil {
+	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}, "implement", apiv1.ResultEnvelope{}, ""); err == nil {
 		t.Fatal("want error when the outcome has no defined branch (GT-002)")
 	}
 }
@@ -292,25 +394,25 @@ func TestEvaluatorNeverSilentlyPasses(t *testing.T) {
 func TestEvaluatorHumanGateNotSupportedAtV0(t *testing.T) {
 	g := apiv1.Gate{Name: "approve", Evaluator: apiv1.EvaluatorHuman, Human: &apiv1.HumanGate{}, Branches: map[string]string{"approved": "done"}}
 	ev := &Evaluator{}
-	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}); err == nil {
+	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, ""); err == nil {
 		t.Fatal("want error: human gates are not supported at V0")
 	}
 }
 
 func TestEvaluatorRequiresConfiguredDependency(t *testing.T) {
 	autoGate := apiv1.Gate{Name: "g", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "status-equals"}, Branches: map[string]string{OutcomePass: ""}}
-	if _, err := (&Evaluator{}).Evaluate(context.Background(), autoGate, apiv1.InvocationEnvelope{}, "s", apiv1.ResultEnvelope{}); err == nil {
+	if _, err := (&Evaluator{}).Evaluate(context.Background(), autoGate, apiv1.InvocationEnvelope{}, "s", apiv1.ResultEnvelope{}, ""); err == nil {
 		t.Fatal("want error when Automated is not configured")
 	}
 
 	agenticGate := apiv1.Gate{Name: "g", Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Goober: "r"}, Branches: map[string]string{"pass": ""}}
-	if _, err := (&Evaluator{}).Evaluate(context.Background(), agenticGate, apiv1.InvocationEnvelope{}, "s", apiv1.ResultEnvelope{}); err == nil {
+	if _, err := (&Evaluator{}).Evaluate(context.Background(), agenticGate, apiv1.InvocationEnvelope{}, "s", apiv1.ResultEnvelope{}, ""); err == nil {
 		t.Fatal("want error when Reviewer is not configured")
 	}
 }
 
 func TestRecordVerdictNilJournalIsNoop(t *testing.T) {
-	if err := recordVerdict(nil, Result{Gate: "g", Outcome: "pass", Target: ""}); err != nil {
+	if err := recordVerdict(nil, Result{Gate: "g", Outcome: "pass", Target: ""}, ""); err != nil {
 		t.Fatalf("recordVerdict with nil Journal: %v", err)
 	}
 }

@@ -36,6 +36,11 @@ type Result struct {
 	// Escalated is true when Target was overridden by the repass budget
 	// rather than resolved from the gate's own Branches.
 	Escalated bool
+	// DuplicateDiff is true when Escalated fired because this attempt's diff
+	// digest matched the immediately prior attempt's (issue #316), rather
+	// than because the repass budget was exhausted. The reviewer was never
+	// called for this attempt — Verdict is synthesized, not agent-produced.
+	DuplicateDiff bool
 	// Verdict is the full agentic-gate verdict (decision, rationale,
 	// evidence, findings). nil for automated gates.
 	Verdict *apiv1.Verdict
@@ -76,6 +81,23 @@ type Evaluator struct {
 	// use. Exported instead of a constructor because every other Evaluator
 	// field is already set via struct literal (see internal/runner/run.go).
 	Attempts map[string]int
+
+	// LastDiffDigest holds each agentic gate's most recently evaluated diff
+	// digest, keyed by gate name (issue #316: an implementer stuck in a
+	// non-convergent repass loop can produce byte-identical diffs attempt
+	// after attempt, burning the whole repass budget on reviewer calls that
+	// can only repeat their prior verdict). The caller (run.go's
+	// evaluateGate) passes each attempt's digest into Evaluate as
+	// diffDigest — the same content-addressed digest already computed for
+	// the reviewer's evidence artifact (recordReviewerDiff), never
+	// recomputed here. A match against the stored digest short-circuits the
+	// reviewer call and escalates immediately (Result.DuplicateDiff).
+	// Mirrors Attempts' seeding contract exactly: nil is the correct zero
+	// value for a fresh run, a resuming caller seeds it from the journal
+	// (Runner["diffDigest"] on each gate's last gate.evaluated event,
+	// internal/runner/resume.go's gateDiffSeed), and Evaluate mutates it in
+	// place as the live checkpoint source.
+	LastDiffDigest map[string]string
 }
 
 // Evaluate runs gate g's evaluator against env (already built by the caller,
@@ -85,9 +107,22 @@ type Evaluator struct {
 // (workflow.Compile already validated every branch target resolves to a real
 // state or a reserved terminal), enforces the repass budget, and journals the
 // result.
-func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope) (Result, error) {
+//
+// diffDigest is the content-addressed digest of this attempt's committed
+// diff (run.go's recordReviewerDiff — already computed for the reviewer's
+// own evidence artifact, never recomputed here), or "" when the caller has
+// none (automated/human gates, or an agentic gate whose branch carries no
+// diff at all). For an agentic gate, a non-empty diffDigest that matches the
+// gate's previously recorded digest (LastDiffDigest) means this attempt's
+// diff is byte-identical to the immediately prior one — the reviewer already
+// judged this exact change and a repeat call can only repeat that verdict,
+// so Evaluate skips the (real, costly) reviewer call and escalates
+// immediately instead of burning the rest of the repass budget on attempts
+// that cannot converge (issue #316).
+func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, diffDigest string) (Result, error) {
 	var outcome string
 	var verdict *apiv1.Verdict
+	duplicateDiff := false
 
 	switch g.Evaluator {
 	case apiv1.EvaluatorAutomated:
@@ -108,12 +143,21 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 		if e.Reviewer == nil {
 			return Result{}, fmt.Errorf("gate %q: agentic reviewer not configured", g.Name)
 		}
-		v, err := e.Reviewer.Review(ctx, env, subjectStage, subject)
-		if err != nil {
-			return Result{}, fmt.Errorf("gate %q: reviewer evaluation: %w", g.Name, err)
+		if diffDigest != "" && e.LastDiffDigest != nil && e.LastDiffDigest[g.Name] == diffDigest {
+			duplicateDiff = true
+			outcome = string(apiv1.VerdictNeedsChanges)
+			verdict = &apiv1.Verdict{
+				Decision:  apiv1.VerdictNeedsChanges,
+				Rationale: fmt.Sprintf("runner: this repass produced a diff identical to the immediately prior attempt (digest %s) — escalating without re-review, since an unchanged diff cannot yield a different verdict", diffDigest),
+			}
+		} else {
+			v, err := e.Reviewer.Review(ctx, env, subjectStage, subject)
+			if err != nil {
+				return Result{}, fmt.Errorf("gate %q: reviewer evaluation: %w", g.Name, err)
+			}
+			verdict = &v
+			outcome = string(v.Decision)
 		}
-		verdict = &v
-		outcome = string(v.Decision)
 
 	case apiv1.EvaluatorHuman:
 		return Result{}, fmt.Errorf("gate %q: human evaluator is not supported at V0 (GT-003, ships V1)", g.Name)
@@ -122,12 +166,20 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 		return Result{}, fmt.Errorf("gate %q: unknown evaluator %q", g.Name, g.Evaluator)
 	}
 
+	if diffDigest != "" {
+		if e.LastDiffDigest == nil {
+			e.LastDiffDigest = make(map[string]string)
+		}
+		e.LastDiffDigest[g.Name] = diffDigest
+	}
+
 	target, ok := wf.BranchTarget(g, outcome)
 	if !ok {
 		return Result{}, fmt.Errorf("gate %q: outcome %q has no defined branch (never a silent pass, GT-002)", g.Name, outcome)
 	}
 
-	attempt, escalated := e.trackRepass(g.Name, outcome)
+	attempt, exceeded := e.trackRepass(g.Name, outcome)
+	escalated := exceeded || duplicateDiff
 	if escalated {
 		target = wf.TargetEscalate
 	}
@@ -146,8 +198,8 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	// durable pre-dispatch marker pattern tasks have (a new journal event
 	// type + resume.go logic) — deferred to #263 rather than folded into this
 	// grouped hardening pass; see that issue for the full rationale.
-	r := Result{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated, Verdict: verdict}
-	if err := recordVerdict(e.Journal, r); err != nil {
+	r := Result{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated, DuplicateDiff: duplicateDiff, Verdict: verdict}
+	if err := recordVerdict(e.Journal, r, diffDigest); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal verdict: %w", g.Name, err)
 	}
 	return r, nil
