@@ -9,10 +9,13 @@ spec:
   instructions: instructions.md
   harness: copilot
   # Files issues from evidence only — never touches code or PRs. read-only on
-  # telemetry, write-only (issues) on the backlog.
+  # telemetry, write-only (issues) on the backlog. agent:model sources the
+  # Copilot model token (COPILOT_GITHUB_TOKEN) distinct from the github tool's
+  # GH_TOKEN (issue #289 / multi-token creds §3.3).
   capabilities:
     - github:issues:write
     - telemetry:read
+    - agent:model
   skills:
     - nomination
   tools:

@@ -10,9 +10,13 @@ spec:
   harness: copilot
   # Issues-only, no repo access (issue #25 scope) — enforced by capability
   # non-injection (SEC-042/SEC-045): credentials for github:pr/repo:* are
-  # simply never materialized into this goober's run environment.
+  # simply never materialized into this goober's run environment. agent:model
+  # sources the Copilot model token (COPILOT_GITHUB_TOKEN) distinct from the
+  # github tool's GH_TOKEN (issue #289 / multi-token creds §3.3), so the curate
+  # subprocess authenticates the model AND mutates issues at once.
   capabilities:
     - github:issues:write
+    - agent:model
   skills:
     - triage
   tools:

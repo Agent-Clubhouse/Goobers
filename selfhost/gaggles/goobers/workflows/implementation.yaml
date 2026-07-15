@@ -68,6 +68,7 @@ spec:
         context and address it before making further changes.
       capabilities:
         - repo:push
+        - agent:model
       retry:
         maxAttempts: 2
         backoffSeconds: 15

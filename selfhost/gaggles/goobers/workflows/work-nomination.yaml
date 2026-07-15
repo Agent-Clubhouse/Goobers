@@ -32,6 +32,7 @@ spec:
       capabilities:
         - telemetry:read
         - github:issues:write
+        - agent:model
       # Terminal: no `next`. Filed issues land unclaimed (no goobers:approved
       # label) — a maintainer approves before curation can touch them
       # (SEC-047: this is a public repo).
