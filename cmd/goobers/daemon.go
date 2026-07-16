@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -43,6 +44,7 @@ type schedulerSetup struct {
 	Machines      map[string]*workflow.Machine
 	RepoRefs      map[string]apiv1.RepoRef
 	RunConditions instance.RunConditions
+	Validation    *validate.Report
 	// OpenPRRefresher backs the #353 MaxOpenPRs cap; nil when no workflow opts
 	// in (or no repo is configured). Only the `up` daemon starts its Run loop
 	// and wires it as a scheduler option — see up.go.
@@ -63,15 +65,23 @@ type schedulerSetup struct {
 // workflow — everything localscheduler.New needs. wg is threaded into every
 // entry's trackedStarter so a caller (up's daemon loop, or run's single
 // foreground trigger) can track dispatched runs uniformly.
-func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGroup) (*schedulerSetup, error) {
+func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGroup) (_ *schedulerSetup, err error) {
 	cfg, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
 		return nil, err
 	}
-	set, _, err := instance.LoadConfigDir(l.ConfigDir())
+	set, report, err := loadConfigDirectory(l.ConfigDir())
 	if err != nil {
-		return nil, fmt.Errorf("config directory invalid: %w", err)
+		return nil, &configReportError{
+			report: report,
+			err:    fmt.Errorf("config directory invalid: %w", err),
+		}
 	}
+	defer func() {
+		if err != nil {
+			err = &configReportError{report: report, err: err}
+		}
+	}()
 
 	goobers := goobersByName(set)
 	machines, err := compiledMachines(set, goobers)
@@ -228,6 +238,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		Machines:        machines,
 		RepoRefs:        repoRefs,
 		RunConditions:   cfg.RunConditions,
+		Validation:      report,
 		OpenPRRefresher: openPRRefresher,
 		ProviderQuota:   providerQuota,
 	}, nil

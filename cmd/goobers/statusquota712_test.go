@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -145,8 +146,8 @@ func TestStatusOmitsProviderQuotaPauseAfterResume(t *testing.T) {
 }
 
 // TestStatusJSONOmitsProviderQuotaPause confirms --json mode's output stays
-// a plain run-summary array — the paused-state line is a plain-text-only
-// affordance, not a field grafted onto the JSON schema.
+// exactly {warnings, runs} (#696's schema) — the paused-state line is a
+// plain-text-only affordance, not a third field grafted onto the JSON shape.
 func TestStatusJSONOmitsProviderQuotaPause(t *testing.T) {
 	root := initDemo(t)
 	l := instance.NewLayout(root)
@@ -168,7 +169,11 @@ func TestStatusJSONOmitsProviderQuotaPause(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
 	}
-	if !strings.HasPrefix(stdout, "[") {
-		t.Fatalf("stdout = %q, want a plain JSON array with no paused-state line prepended", stdout)
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("unmarshal stdout %q: %v", stdout, err)
+	}
+	if len(got) != 2 || got["warnings"] == nil || got["runs"] == nil {
+		t.Fatalf("stdout = %q, want exactly {warnings, runs} with no paused-state field", stdout)
 	}
 }

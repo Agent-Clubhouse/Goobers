@@ -32,9 +32,10 @@ both depend on.
 - A per-workflow monotonic `Definition.Version int` exists (`internal/workflow/machine.go:43`) but
   is a *run-pinning* integer (WF-016), **not** a language version — and is hardcoded `Version: 1`
   today (`api/validate/validate.go:454`). Keep these two concepts strictly separate.
-- The validator already has a `Severity` (`Error`/`Warning`) + `Issue` model
-  (`api/validate/validate.go:27`), but **warnings are discarded** by the daemon
-  (`cmd/goobers/up.go:83` throws away the `*Report` with `_`) and are absent from `goobers status`.
+- The validator has a `Severity` (`Error`/`Warning`) + `Issue` model
+  (`api/validate/validate.go:27`). Coded warnings are retained and surfaced by
+  `goobers up` and `goobers status`; feature-registry and model-fallback warning
+  producers remain tracked by #428 and #150.
 - No release automation, changelog, or `--version` flag (#279). `cmd/` builds are `go build` only.
 
 ## 3. Design
@@ -92,6 +93,36 @@ the Dashboard milestone (#14).
   also re-run/read validation and show deprecation/preview/fallback notices).
 - Give warnings a stable, machine-readable code namespace (e.g. `VER001` deprecated-feature,
   `MODEL002` model-fallback) so the dashboard and logs can render them uniformly.
+
+The CLI warning codes are stable within their namespace:
+
+| Code | Meaning |
+|---|---|
+| `VER001` | Deprecated DSL feature |
+| `VER002` | Preview DSL feature |
+| `VER003` | Compatibility notice |
+| `MODEL002` | Model fallback |
+
+Human output from both commands is `WARNING <code> <scope>: <explanation>`.
+`goobers status --json` emits one object with `warnings` and `runs` arrays:
+
+```json
+{
+  "warnings": [
+    {
+      "code": "VER001",
+      "severity": "warning",
+      "scope": "gaggles/example/workflows/legacy.yaml Workflow/legacy",
+      "explanation": "feature x is deprecated; use feature y"
+    }
+  ],
+  "runs": []
+}
+```
+
+Warnings are ordered by `scope`, then `code`, then `explanation`; runs retain
+their existing chronological order. Warning-free configuration emits an empty
+`warnings` array and no human warning lines.
 
 ## 4. Issue breakdown (milestone #12)
 

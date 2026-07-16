@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -80,6 +82,11 @@ type statusJSONSummary struct {
 	StartedAt time.Time `json:"startedAt"`
 }
 
+type statusJSONOutput struct {
+	Warnings []validate.CodedWarning `json:"warnings"`
+	Runs     []statusJSONSummary     `json:"runs"`
+}
+
 func statusJSONSummaries(runs []runSummary) []statusJSONSummary {
 	summaries := make([]statusJSONSummary, len(runs))
 	for i, r := range runs {
@@ -103,7 +110,7 @@ type statusOptions struct {
 func runStatus(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	jsonOutput := fs.Bool("json", false, "emit run summaries as JSON")
+	jsonOutput := fs.Bool("json", false, "emit config warnings and run summaries as JSON")
 	phaseFilter := fs.String("phase", "", "filter by comma-separated run phases")
 	workflowFilter := fs.String("workflow", "", "filter by workflow name")
 	limit := fs.Int("limit", 0, "maximum number of runs to show (default: all)")
@@ -111,8 +118,9 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	interval := fs.Duration("interval", defaultStatusWatchInterval, "watch refresh interval")
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers status [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n"+
-			"List runs under an instance's runs/ directory with their current phase\n"+
-			"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
+			"Validate active config, show warnings, and list runs under an instance's\n"+
+			"runs/ directory with their current phase (default path \".\"). Exit codes:\n"+
+			"0 = OK, 1 = validation errors, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -162,6 +170,27 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return 2
 	}
+	if _, err := instance.LoadConfig(l.ConfigFile()); err != nil {
+		pf(stderr, "error: invalid instance.yaml: %v\n", err)
+		return 1
+	}
+	set, report, err := loadConfigDirectory(l.ConfigDir())
+	if err != nil {
+		printValidationIssues(stderr, report)
+		if errors.Is(err, instance.ErrInvalidConfig) {
+			pf(stderr, "error: config directory failed validation\n")
+			return 1
+		}
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	warnings := report.Warnings()
+	if _, err := compiledMachines(set, goobersByName(set)); err != nil {
+		printValidationWarnings(stderr, warnings)
+		pf(stderr, "error: invalid workflow: %v\n", err)
+		return 1
+	}
+
 	options := statusOptions{
 		phases:   phases,
 		workflow: *workflowFilter,
@@ -184,6 +213,10 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		return providerQuotaStatusLine(events, time.Now())
 	}
 	if *watch {
+		// Config warnings are a static, one-time-per-invocation check (unlike
+		// the provider-quota pause, which is live scheduler state) — printed
+		// once before entering the redraw loop, not re-shown every tick.
+		printValidationWarnings(stdout, warnings)
 		ctx, stop := signals.SetupSignalContext()
 		defer stop()
 		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, loadPauseLine); err != nil {
@@ -200,7 +233,11 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	runs = selectStatusRuns(runs, options)
 	if *jsonOutput {
-		if err := json.NewEncoder(stdout).Encode(statusJSONSummaries(runs)); err != nil {
+		output := statusJSONOutput{
+			Warnings: warnings,
+			Runs:     statusJSONSummaries(runs),
+		}
+		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			pf(stderr, "error: encode status: %v\n", err)
 			return 2
 		}
@@ -208,8 +245,9 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Skipped in --json mode (handled above, this point is unreached for
-	// it) since the JSON output's shape is a run-summary array, not an
-	// object with room for a side channel.
+	// it) since the JSON output's shape is a warnings+runs object, not an
+	// array with room for a plain-text side channel.
+	printValidationWarnings(stdout, warnings)
 	if line := loadPauseLine(); line != "" {
 		pf(stdout, "%s", line)
 	}
