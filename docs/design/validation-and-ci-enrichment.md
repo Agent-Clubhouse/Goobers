@@ -29,7 +29,8 @@ Live operation has produced a concrete catalog of ways green lied to us:
   merged into a non-compiling main twice (#377+#378; signature change + new caller in a
   different file = no textual conflict). Nothing builds "main + this PR + that PR."
 - **G5 — Discarded validation output.** The daemon throws away validator warnings
-  (`up.go:83` discards the `*Report`), and the shipped workflow once invoked a subcommand
+  (`cmd/goobers/daemon.go:61` and `cmd/goobers/workflow.go:67` discard the `*Report`;
+  only `validate.go` keeps it), and the shipped workflow once invoked a subcommand
   that didn't exist — nothing validated workflow definitions against the real CLI surface.
 
 Each workstream below names the gap it closes.
