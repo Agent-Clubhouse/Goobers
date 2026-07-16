@@ -1,0 +1,116 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: merge-review
+spec:
+  gaggle: acme-web
+  displayName: Merge review (PR-lifecycle decider)
+  # Review one eligible PR with all other open PRs as integration context.
+  # A pass enters the explicitly capability-gated merge/post-merge chain;
+  # other outcomes become PR feedback for remediation or a human.
+  triggers:
+    - type: schedule
+      schedule: "23 * * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 2
+  start: pr-select
+  tasks:
+    - name: pr-select
+      type: deterministic
+      goal: Select one eligible open PR for holistic review.
+      run:
+        command: ["goobers", "pr-select"]
+      inputs:
+        resultFile: "selected-pr.json"
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        - number
+        - head
+        - base
+      next: gather-sibling-context
+
+    - name: gather-sibling-context
+      type: deterministic
+      goal: Load the other open PRs' touched files + state as review evidence.
+      run:
+        command: ["goobers", "gather-sibling-context"]
+      inputsFrom:
+        selectedNumber: number
+      inputs:
+        resultFile: "sibling-context.json"
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        - selectedNumber
+        - selectedHeadSha
+        - selectedBaseSha
+      next: review
+
+    - name: apply-verdict
+      type: deterministic
+      goal: Apply the review verdict's label + PR comment.
+      run:
+        command: ["goobers", "apply-verdict"]
+      inputsFrom:
+        selectedNumber: selectedNumber
+      capabilities:
+        - github:pr:write
+
+    - name: merge-pr
+      type: deterministic
+      goal: Merge the selected PR only when every independent safety conjunct still holds.
+      run:
+        command: ["goobers", "merge-pr"]
+      inputsFrom:
+        pullNumber: selectedNumber
+        headSha: selectedHeadSha
+        baseSha: selectedBaseSha
+      inputs:
+        verdict: "pass"
+        # Mixed-company instances should set this to "true". The merge
+        # capability is still required because admission always fails closed.
+        advisoryMode: "false"
+        resultFile: "merge-result.json"
+      capabilities:
+        # INSTANCE OPT-IN: this per-workflow grant enables auto-merge. Without
+        # it, remove this three-stage chain and route review:pass directly to
+        # apply-verdict; merge-pr never acquires merge authority implicitly.
+        - github:pr:merge
+      expectedOutputs:
+        - selectedNumber
+        - merged
+      next: merge-gate
+
+    - name: post-merge
+      type: deterministic
+      goal: Close referenced issues and mark now-behind sibling PRs for remediation.
+      run:
+        command: ["goobers", "post-merge"]
+      inputsFrom:
+        pullNumber: selectedNumber
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: reviewer
+      branches:
+        pass: merge-pr
+        needs-changes: apply-verdict
+        fail: apply-verdict
+
+    - name: merge-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: merged
+          equals: "true"
+      branches:
+        pass: post-merge
+        fail: apply-verdict

@@ -1,3 +1,7 @@
+# INTENTIONAL LIVE DIVERGENCE:
+# The checked-in reference keeps the hourly :23 cadence,
+# maxConcurrentRuns=1, and maxRunsPerHour=2. Operator-tuned live cadence and
+# budget changes are deliberately not mirrored here.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 metadata:
@@ -8,9 +12,10 @@ spec:
   # The decider workflow at the whole-open-PR-set altitude (V0.5,
   # docs/design/v0/pr-lifecycle-loop.md §2-4): holistically judges one
   # eligible PR per run, with the OTHER open PRs' state as evidence, and
-  # emits a #358 Verdict — never repo:push, never merges (that's #360/#361's
-  # scope). Same one-per-run selection shape as work-nomination/
-  # implementation, not a batch pass over every open PR in one run.
+  # emits a #358 Verdict. A pass enters #360/#361's opt-in conjunctive
+  # merge/post-merge chain; other outcomes are applied as PR feedback. Same
+  # one-per-run selection shape as work-nomination/implementation, not a
+  # batch pass over every open PR in one run.
   #
   # DOGFOOD GUARDRAIL: hourly, off the hour — this instance's PR volume is
   # low (a handful of goober-authored PRs at a time), so hourly gives fast
@@ -87,10 +92,50 @@ spec:
         selectedNumber: selectedNumber
       capabilities:
         - github:pr:write
-      # Terminal: no next. This is the "decider" workflow — the actual
-      # merge action is #360/#361's auto-merge capability, and the actual
-      # rework is pr-remediation (#362+), both reading the label this stage
-      # just applied.
+      # Terminal: non-pass verdicts and advisory/refused merge outcomes end
+      # as PR feedback for pr-remediation or a human.
+
+    - name: merge-pr
+      type: deterministic
+      goal: Merge the selected PR only when every independent safety conjunct still holds.
+      run:
+        command: ["goobers", "merge-pr"]
+      inputsFrom:
+        pullNumber: selectedNumber
+        headSha: selectedHeadSha
+        baseSha: selectedBaseSha
+      inputs:
+        # Only review:pass reaches this stage, so the gate decision is a
+        # deterministic input rather than model-echoed data.
+        verdict: "pass"
+        # Set true to retain verdict comments/labels without attempting a
+        # merge. The github:pr:merge grant remains fail-closed either way.
+        advisoryMode: "false"
+        resultFile: "merge-result.json"
+      capabilities:
+        # INSTANCE OPT-IN: this per-workflow grant enables auto-merge for this
+        # instance. Without it, remove merge-pr/merge-gate/post-merge and route
+        # review:pass to apply-verdict; merge-pr refuses to run without the
+        # grant rather than silently acquiring merge authority.
+        - github:pr:merge
+      expectedOutputs:
+        - selectedNumber
+        - merged
+      next: merge-gate
+
+    - name: post-merge
+      type: deterministic
+      goal: Close referenced issues and mark now-behind sibling PRs for remediation.
+      run:
+        command: ["goobers", "post-merge"]
+      inputsFrom:
+        # merge-pr deliberately echoes this value because inputsFrom is a
+        # single-hop handoff and merge-gate is transparent to it (#479).
+        pullNumber: selectedNumber
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+      # Terminal after a successful merge.
 
   gates:
     # Holistic review: reuses the shared `reviewer` goober (design doc §2's
@@ -107,13 +152,22 @@ spec:
       agentic:
         goober: reviewer
       branches:
-        # All three decisions route to the SAME next stage: apply-verdict
-        # reads the actual Decision back from the journal to choose the
-        # right label (merge-ready/needs-remediation/merge-escalated) —
-        # unlike implementation.yaml's reviewer gate, there is no separate
-        # "go implement more" branch here, since remediation is a whole
-        # other workflow (pr-remediation) selecting on the label, not a
-        # same-run repass.
-        pass: apply-verdict
+        # A pass enters the independently re-polled merge action. Other
+        # decisions become labels/comments consumed by pr-remediation or a
+        # human, rather than a same-run implementation repass.
+        pass: merge-pr
         needs-changes: apply-verdict
+        fail: apply-verdict
+
+    - name: merge-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: merged
+          equals: "true"
+      branches:
+        pass: post-merge
+        # Advisory mode or a conjunct that changed after review falls back to
+        # the normal verdict comment/label path without post-merge effects.
         fail: apply-verdict

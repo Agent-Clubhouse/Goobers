@@ -110,9 +110,9 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// local-gate and open-pr (the implementer commits but no longer pushes).
 	// #361/#355: query-backlog gained excludeLabels (goobers/status:in-review)
 	// and close-out gained inputs.status="in-review" — the issue no longer
-	// closes on PR-open; only `goobers post-merge` (merge-review's stage,
-	// #360) advances it to done at the actual merge event.
-	const wantDigest = "sha256:47cfb6feaf4c5b74c80f5bc8a8d11ea5b1490d05c0e5a8d8deaa0c59be8acd29"
+	// closes on PR-open; only `goobers post-merge` (merge-review's opt-in
+	// stage, #360/#568) advances it to done at the actual merge event.
+	const wantDigest = "sha256:a1ce284f7ce15378d5bc88286bf5e81826314b91acd7295087e205a42b932c56"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

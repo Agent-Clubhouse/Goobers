@@ -1,3 +1,7 @@
+# INTENTIONAL LIVE DIVERGENCE:
+# The checked-in reference keeps the hourly :37 cadence,
+# maxConcurrentRuns=1, and maxRunsPerHour=2. Operator-tuned live cadence and
+# budget changes are deliberately not mirrored here.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 metadata:

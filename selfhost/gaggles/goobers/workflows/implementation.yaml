@@ -1,3 +1,7 @@
+# INTENTIONAL LIVE DIVERGENCE:
+# The checked-in reference keeps two runs/day, maxConcurrentRuns=1,
+# maxRunsPerHour=1, and maxOpenPRs=1. Operator-tuned live cadence and budget
+# changes are deliberately not mirrored here.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 metadata:
@@ -17,8 +21,8 @@ spec:
   # to this cadence x hourly-cap combination here since it already expresses
   # the intended ceiling and this dogfood instance's own explicit low values
   # are deliberate, not something to migrate just because a more direct knob
-  # exists.) This instance never merges (no merge stage below, by design) —
-  # branch protection + a human review are the only path to `main`.
+  # exists.) This workflow never merges directly; the separate merge-review
+  # workflow owns the explicitly opted-in, branch-protected merge path.
   triggers:
     - type: schedule
       schedule: "17 8,20 * * *"
@@ -183,8 +187,8 @@ spec:
         in-review — issue #361/#355: the work isn't done until the PR
         merges, so this no longer closes the issue outright. The actual
         close happens at the merge event (`goobers post-merge`, run by the
-        separate merge-review workflow once its verdict + CI + SHA-pin
-        conjuncts all hold, issue #360).
+        separate opt-in merge-review workflow after its verdict + CI +
+        SHA-pin conjuncts all hold, issue #360).
       run:
         command: ["goobers", "issue-close-out"]
       inputs:
@@ -193,8 +197,8 @@ spec:
         - github:issues:write
       # Terminal: no `next`. The core loop's product — issue in, PR out — is
       # complete once the issue carries the closing breadcrumb. There is no
-      # merge stage anywhere in this workflow: this instance never merges —
-      # a human does, behind this repo's branch protection.
+      # merge stage anywhere in this workflow: merge-review owns that
+      # separate, explicitly capability-gated path.
 
   gates:
     # Agentic gate: the reviewer invocation IS the evaluator (gate.md's
