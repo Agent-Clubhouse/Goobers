@@ -208,6 +208,23 @@ func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
 	}
 }
 
+func TestParseUnifiedDiffDistinguishesHeadersFromHunkLines(t *testing.T) {
+	diff := []byte("diff --git a/example.txt b/example.txt\n" +
+		"--- a/example.txt\n" +
+		"+++ b/example.txt\n" +
+		"@@ -1 +1 @@\n" +
+		"--- old\n" +
+		"+++ new\n")
+
+	changes := parseUnifiedDiff(diff)
+	if len(changes) != 1 {
+		t.Fatalf("changes = %+v, want one changed file", changes)
+	}
+	if got, want := changes[0], (prBodyChange{path: "example.txt", additions: 1, deletions: 1}); got != want {
+		t.Fatalf("change = %+v, want %+v", got, want)
+	}
+}
+
 func TestOpenPRFailsClosedOnMalformedExistingJournal(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")

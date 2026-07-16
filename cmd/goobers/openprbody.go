@@ -274,6 +274,7 @@ func parseUnifiedDiff(diff []byte) []prBodyChange {
 	var (
 		changes []prBodyChange
 		current *prBodyChange
+		inHunk  bool
 	)
 	flush := func() {
 		if current != nil {
@@ -285,21 +286,24 @@ func parseUnifiedDiff(diff []byte) []prBodyChange {
 		case strings.HasPrefix(line, "diff --git "):
 			flush()
 			current = &prBodyChange{path: diffGitPath(line)}
+			inHunk = false
 		case current == nil:
 			continue
-		case strings.HasPrefix(line, "rename to "):
+		case strings.HasPrefix(line, "@@"):
+			inHunk = true
+		case !inHunk && strings.HasPrefix(line, "rename to "):
 			current.path = strings.TrimSpace(strings.TrimPrefix(line, "rename to "))
-		case strings.HasPrefix(line, "--- "):
+		case !inHunk && strings.HasPrefix(line, "--- "):
 			if path := diffHeaderPath(strings.TrimPrefix(line, "--- ")); path != "/dev/null" {
 				current.path = path
 			}
-		case strings.HasPrefix(line, "+++ "):
+		case !inHunk && strings.HasPrefix(line, "+++ "):
 			if path := diffHeaderPath(strings.TrimPrefix(line, "+++ ")); path != "/dev/null" {
 				current.path = path
 			}
-		case strings.HasPrefix(line, "+"):
+		case inHunk && strings.HasPrefix(line, "+"):
 			current.additions++
-		case strings.HasPrefix(line, "-"):
+		case inHunk && strings.HasPrefix(line, "-"):
 			current.deletions++
 		}
 	}
