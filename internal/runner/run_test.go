@@ -2303,6 +2303,9 @@ func TestRunnerResumeAtGateEvaluatesRealSubject(t *testing.T) {
 // caller happens to pass — WF-016's whole point is that a changed
 // definition is refused, not reinterpreted, and an unpinned run is
 // indistinguishable from "we don't know if the definition changed."
+// Since #520 a refusal reports the canonical PhaseFailed terminal instead
+// of a bare error — resume_refusal_test.go covers that contract in depth;
+// here it's enough that the run was not walked.
 func TestRunnerResumeRefusesEmptyWorkflowDigest(t *testing.T) {
 	machine := fixtureMachine(t)
 	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
@@ -2320,23 +2323,31 @@ func TestRunnerResumeRefusesEmptyWorkflowDigest(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
+	det := &countingDeterministic{}
 	r, err := New(Config{
-		Automated:    gate.NewAutomatedEvaluator(),
-		Worktrees:    wtMgr,
-		RunsDir:      runsDir,
-		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
-	_, err = r.Resume(context.Background(), ResumeInput{
+	res, err := r.Resume(context.Background(), ResumeInput{
 		RunID:   "run-no-digest",
 		Machine: machine,
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 	})
-	if err == nil {
-		t.Fatal("Resume: want an error — an unpinned run must be refused, not silently resumed (WF-016)")
+	if err != nil {
+		t.Fatalf("Resume: %v — a refusal is handled terminally (#520), not surfaced as an error", err)
+	}
+	if res.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, want failed — an unpinned run must be refused terminally, not silently resumed (WF-016)", res.Phase)
+	}
+	if det.calls != 0 {
+		t.Fatalf("executor dispatched %d times, want 0 — a refused run must never be walked", det.calls)
 	}
 }
 
