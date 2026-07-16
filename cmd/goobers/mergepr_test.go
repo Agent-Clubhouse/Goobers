@@ -145,6 +145,9 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 	if result["mergeSha"] != "merge-commit-sha" {
 		t.Fatalf("result = %+v, want mergeSha set", result)
 	}
+	if result["selectedNumber"] != "9" {
+		t.Fatalf("result = %+v, want selectedNumber=%q", result, "9")
+	}
 }
 
 // TestMergePRRefusesOnUnmetConjunct proves a PR missing any ONE conjunct is
@@ -204,6 +207,9 @@ func TestMergePRRefusesOnUnmetConjunct(t *testing.T) {
 			reason, _ := result["reason"].(string)
 			if !strings.Contains(reason, tc.wantSub) {
 				t.Fatalf("reason = %q, want it to mention %q", reason, tc.wantSub)
+			}
+			if result["selectedNumber"] != "9" {
+				t.Fatalf("result = %+v, want selectedNumber=%q", result, "9")
 			}
 		})
 	}
