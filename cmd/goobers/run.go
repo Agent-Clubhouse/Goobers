@@ -35,16 +35,6 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-type runCompletionStarter struct {
-	localscheduler.Starter
-	done chan<- struct{}
-}
-
-func (s runCompletionStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
-	defer close(s.done)
-	return s.Starter.Start(ctx, req)
-}
-
 func runRun(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "abort" {
 		return runRunAbort(args[1:], stdout, stderr)
@@ -58,7 +48,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 			"       goobers run abort <run-id> [path]\n\n"+
 			"Trigger a run of a config/ workflow manually, through the same scheduler\n"+
 			"(run conditions, instance journal, single-instance lock) a live `goobers up`\n"+
-			"daemon uses, then wait for it to reach a terminal state or pause unless\n"+
+			"daemon uses, then wait for it to reach a terminal state unless\n"+
 			"--no-wait is set (default path \".\"). If a live `goobers up` daemon already\n"+
 			"holds the instance lock,\n"+
 			"delegates the trigger to it instead of failing (#343) — dispatched through\n"+
@@ -111,6 +101,13 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		release()
 		return runDetachedTrigger(ctx, l, name, root, stdout, stderr)
 	}
+	return runStandaloneTrigger(ctx, l, name, root, *noWait, false, release, stdout, stderr)
+}
+
+// runStandaloneTrigger owns the one-shot scheduler and instance lock. A real
+// detached worker stays alive until Starter.Start returns so paused runs
+// release those resources; in-process callers hand that cleanup to a goroutine.
+func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root string, noWait, worker bool, release func(), stdout, stderr io.Writer) int {
 	releaseOnReturn := true
 	defer func() {
 		if releaseOnReturn {
@@ -145,18 +142,6 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	var runDone <-chan struct{}
-	if *noWait {
-		done := make(chan struct{})
-		for i := range setup.Entries {
-			if setup.Entries[i].Workflow == name {
-				setup.Entries[i].Starter = runCompletionStarter{Starter: setup.Entries[i].Starter, done: done}
-				runDone = done
-				break
-			}
-		}
-	}
-
 	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets, setup.RunConditions.WorkflowDailyBudgets))
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
@@ -165,7 +150,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 
 	triggerCtx := ctx
-	if *noWait {
+	if noWait && !worker {
 		triggerCtx = context.WithoutCancel(ctx)
 	}
 	runID, err := sched.Trigger(triggerCtx, name, time.Now())
@@ -174,15 +159,20 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	pf(stdout, "created run %s (workflow=%s gaggle=%s)\n", runID, name, gaggle)
-	if *noWait {
+	if noWait {
 		shutdownOnReturn = false
 		releaseOnReturn = false
-		go func() {
-			<-runDone
+		cleanup := func() {
+			sched.Wait()
 			setup.Shutdown(context.Background())
 			release()
-		}()
+		}
 		pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
+		if worker {
+			cleanup()
+		} else {
+			go cleanup()
+		}
 		return 0
 	}
 

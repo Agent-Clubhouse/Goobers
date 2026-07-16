@@ -6,28 +6,33 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/signals"
 )
 
-const detachedRunPollInterval = 20 * time.Millisecond
+const (
+	detachedRunPollInterval  = 20 * time.Millisecond
+	detachedRunWorkerCommand = "_run-no-wait-worker"
+)
 
 var newDetachedRunCommand = func(name, root string) (*exec.Cmd, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(self, "run", name, root)
+	cmd := exec.Command(self, detachedRunWorkerCommand, name, root)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd, nil
 }
 
-// runDetachedTrigger starts a blocking `goobers run` child and returns once
-// that child reports its accepted run ID. The child owns the standalone
-// scheduler and keeps the run alive after this CLI process exits.
+// runDetachedTrigger starts a private worker and returns once that worker
+// reports its accepted run ID. The worker owns the standalone scheduler until
+// Starter.Start returns, including when the run pauses.
 func runDetachedTrigger(ctx context.Context, l instance.Layout, name, root string, stdout, stderr io.Writer) int {
 	output, err := os.CreateTemp(l.SchedulerDir(), ".run-no-wait-*.log")
 	if err != nil {
@@ -107,6 +112,35 @@ func runDetachedTrigger(ctx context.Context, l instance.Layout, name, root strin
 		case <-ticker.C:
 		}
 	}
+}
+
+func runDetachedWorker(args []string, stdout, stderr io.Writer) int {
+	ctx, stop := signals.SetupSignalContext()
+	defer stop()
+	return runDetachedWorkerContext(ctx, args, stdout, stderr)
+}
+
+func runDetachedWorkerContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) != 2 {
+		pln(stderr, "error: invalid detached run worker invocation")
+		return 2
+	}
+	name, root := args[0], args[1]
+	l := instance.NewLayout(root)
+	if _, err := os.Stat(l.ConfigFile()); err != nil {
+		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
+		return 2
+	}
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+
+	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		return runDelegatedTrigger(ctx, l, name, root, true, stdout, stderr)
+	}
+	return runStandaloneTrigger(ctx, l, name, root, true, true, release, stdout, stderr)
 }
 
 func detachedRunCreated(data []byte) (line, runID string, ok bool) {

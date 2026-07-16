@@ -14,6 +14,16 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
+const detachedRunWorkerTestRoot = "GOOBERS_TEST_DETACHED_RUN_WORKER_ROOT"
+
+func TestDetachedRunWorkerProcess(t *testing.T) {
+	root := os.Getenv(detachedRunWorkerTestRoot)
+	if root == "" {
+		return
+	}
+	os.Exit(run([]string{detachedRunWorkerCommand, "default-implement", root}, os.Stdout, os.Stderr))
+}
+
 func TestRunDetachedTriggerReturnsAtDispatchWhileChildContinues(t *testing.T) {
 	root := t.TempDir()
 	l := instance.NewLayout(root)
@@ -82,6 +92,20 @@ func TestRunDetachedTriggerPreservesPredispatchExitCodes(t *testing.T) {
 			t.Errorf("child exit %d: stderr = %q", wantCode, stderr.String())
 		}
 	}
+}
+
+// TestDetachedRunWorkerReleasesLockWhenRunPauses exercised the
+// pause-and-release-lock path via a human gate: hitting it made the runner
+// checkpoint and return early without holding up.lock, letting a detached
+// worker exit while genuinely still pending on an external actor. #706 made
+// human gates rejected at validation time, and no other gate type takes that
+// early-return branch (an agentic gate's Review call runs synchronously in
+// the same detached process and holds the lock for the duration), so the
+// capability this test covered has no remaining production path. Rewrite
+// once durable pause/resume (#168/#465) lands with whatever mechanism
+// replaces the removed human-gate branch in internal/runner/run.go.
+func TestDetachedRunWorkerReleasesLockWhenRunPauses(t *testing.T) {
+	t.Skip("pause-and-release-lock had no non-human-gate implementation after #706; rewrite against #168/#465's durable pause/resume mechanism")
 }
 
 func TestDetachedRunCreatedRequiresCompleteLine(t *testing.T) {

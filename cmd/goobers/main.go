@@ -43,6 +43,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runUp(args[1:], stdout, stderr)
 	case "run":
 		return runRun(args[1:], stdout, stderr)
+	case detachedRunWorkerCommand:
+		return runDetachedWorker(args[1:], stdout, stderr)
 	case "signal":
 		return runSignal(args[1:], stdout, stderr)
 	case "workflow":
