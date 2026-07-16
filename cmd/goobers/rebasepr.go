@@ -20,11 +20,10 @@ import (
 // rebase-driven: a clean rebase never suppresses a known substantive
 // finding, and a rebase conflict is itself substantive.
 //
-//	rebase result | substantive finding? | action
-//	clean         | none                 | force-with-lease push, clear label, done
-//	clean         | yes                  | needs the agentic chain (not yet wired, see pr-remediation.yaml)
-//	conflict      | none                 | needs the agentic chain (the conflict IS substantive)
-//	conflict      | yes                  | needs the agentic chain
+//	rebase result | finding or failing CI? | action
+//	clean         | no                     | force-with-lease push, clear label, done
+//	clean         | yes                    | needs the agentic chain (not yet wired, see pr-remediation.yaml)
+//	conflict      | either                 | needs the agentic chain (the conflict IS substantive)
 //
 // Re-checks out the PR's own branch first (checkoutExistingBranch, shared
 // with gather-pr-context): this stage gets its OWN fresh worktree — see
@@ -38,12 +37,12 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 			"Check out the selected PR's branch, attempt a rebase onto its base\n"+
 			"(force-with-lease is mandatory for the eventual push — never a bare\n"+
 			"push), and route on the result: a clean rebase with no substantive\n"+
-			"finding force-pushes and clears goobers:needs-remediation right here;\n"+
-			"anything else (a rebase conflict, or a substantive finding) needs the\n"+
+			"finding or failing CI force-pushes and clears goobers:needs-remediation;\n"+
+			"anything else (a conflict, substantive finding, or failing CI) needs the\n"+
 			"agentic remediation chain, reported via the needsAgent output for the\n"+
 			"workflow to route on. Requires selectedNumber/head/base\n"+
 			"(Task.InputsFrom gather-pr-context's own outputs) and\n"+
-			"hasSubstantiveFindings. Exit codes: 0 = routed (either branch), 1 =\n"+
+			"hasSubstantiveFindings/hasFailingCI. Exit codes: 0 = routed, 1 =\n"+
 			"business error, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
@@ -67,6 +66,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"
+	hasFailingCI := providerInput("hasFailingCI", "false") == "true"
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -95,14 +95,17 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	needsAgent := conflict || hasSubstantiveFindings
+	needsAgent := conflict || hasSubstantiveFindings || hasFailingCI
 	resultFile := providerInput("resultFile", "rebase-result.json")
 
-	if !needsAgent {
+	if !conflict && !hasSubstantiveFindings {
 		if err := forcePushWithLease(".", head, preRebaseSHA, pushToken); err != nil {
 			pf(stderr, "error: force-push rebased PR #%s branch %q: %v\n", selectedNumber, head, err)
 			return 1
 		}
+	}
+
+	if !needsAgent {
 		issuesToken, err := providerToken(capability.GitHubIssuesWrite)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
@@ -127,7 +130,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	pf(stdout, "PR #%s needs agentic remediation (conflict=%v, substantiveFindings=%v) — leaving %s set for the next cycle\n", selectedNumber, conflict, hasSubstantiveFindings, needsRemediationLabel)
+	pf(stdout, "PR #%s needs agentic remediation (conflict=%v, substantiveFindings=%v, failingCI=%v) — routing to remediation checkpoint\n", selectedNumber, conflict, hasSubstantiveFindings, hasFailingCI)
 	return 0
 }
 

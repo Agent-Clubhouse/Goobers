@@ -257,6 +257,42 @@ func TestRebasePRSubstantiveFindingDefersEvenWithCleanRebase(t *testing.T) {
 	}
 }
 
+func TestRebasePRFailingCIPushesCleanRebaseAndDefersToCheckpoint(t *testing.T) {
+	const prBranch = "goobers/impl/run-ci-red"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{}
+	server := st.start(t, "your-org", "your-repo", 58)
+
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "58",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+		"hasFailingCI":           "true",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"needsAgent":"true"`) || !strings.Contains(string(data), `"conflict":"false"`) {
+		t.Fatalf("rebase-result.json = %s, want needsAgent=true conflict=false", data)
+	}
+
+	verify := t.TempDir()
+	runGitT(t, verify, "clone", "--branch", prBranch, origin, filepath.Join(verify, "check"))
+	if _, err := os.Stat(filepath.Join(verify, "check", "unrelated.txt")); err != nil {
+		t.Fatalf("origin's branch missing clean rebase before checkpoint routing: %v", err)
+	}
+}
+
 // TestRebasePRConflictDefersAndLeavesCleanWorktree proves a rebase conflict
 // is itself treated as substantive (routes to needsAgent) AND that the
 // worktree is left in a clean, non-mid-rebase state — never a broken

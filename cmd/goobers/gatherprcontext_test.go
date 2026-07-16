@@ -190,6 +190,7 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 		Head                   string `json:"head"`
 		IsBehindBase           bool   `json:"isBehindBase"`
 		HasSubstantiveFindings string `json:"hasSubstantiveFindings"`
+		HasFailingCI           string `json:"hasFailingCI"`
 		Verdict                struct {
 			Decision string `json:"decision"`
 			Findings []struct {
@@ -215,6 +216,9 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 	}
 	if got.HasSubstantiveFindings != "true" {
 		t.Fatalf("hasSubstantiveFindings = %q, want \"true\" (the embedded verdict has a substantive finding)", got.HasSubstantiveFindings)
+	}
+	if got.HasFailingCI != "false" {
+		t.Fatalf("hasFailingCI = %q, want \"false\"", got.HasFailingCI)
 	}
 	if len(got.Comments) != 2 {
 		t.Fatalf("comments = %+v, want both thread comments surfaced", got.Comments)
@@ -273,12 +277,47 @@ func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 	var got struct {
 		SelectedNumber string `json:"selectedNumber"`
 		Head           string `json:"head"`
+		HasFailingCI   string `json:"hasFailingCI"`
 	}
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal pr-context.json: %v (data=%s)", err, data)
 	}
 	if got.SelectedNumber != "56" || got.Head != prBranch {
 		t.Fatalf("got = %+v, want selectedNumber=\"56\" head=%q", got, prBranch)
+	}
+	if got.HasFailingCI != "true" {
+		t.Fatalf("hasFailingCI = %q, want \"true\"", got.HasFailingCI)
+	}
+}
+
+func TestGatherPRContextDoesNotReselectEscalatedFailingPR(t *testing.T) {
+	srv := gatherPRContextServer{
+		owner: "your-org", repo: "your-repo",
+		prNumber: 57, head: "goobers/impl/escalated", base: "main",
+		headSHA: "deadbeef", baseSHA: "cafebabe",
+		checkState: "failure",
+		labels:     []string{remediationEscalatedLabel},
+	}
+	server := srv.start(t)
+
+	prev := newGitHubProvider
+	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	instanceRoot := initDemo(t)
+	t.Setenv("GOOBERS_RUN_ID", "run-ci-red-escalated")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("stdout = %q, want no work after terminal escalation", stdout)
 	}
 }
 

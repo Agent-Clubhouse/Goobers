@@ -108,8 +108,10 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 
 	var eligible []providers.PullRequestSummary
 	for _, pr := range prs {
-		if hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) ||
-			pr.CheckState == providers.CheckStateFailing {
+		needsRemediation := hasAnyLabel(pr.Labels, []string{needsRemediationLabel})
+		failingCI := pr.CheckState == providers.CheckStateFailing &&
+			!hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel})
+		if needsRemediation || failingCI {
 			eligible = append(eligible, pr)
 		}
 	}
@@ -179,6 +181,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
+	hasFailingCI := strconv.FormatBool(selected.CheckState == providers.CheckStateFailing)
 
 	resultFile := providerInput("resultFile", "pr-context.json")
 	data, err := json.MarshalIndent(map[string]interface{}{
@@ -189,6 +192,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		"baseSha":                selected.BaseSHA,
 		"isBehindBase":           behind,
 		"hasSubstantiveFindings": hasSubstantiveFindings,
+		"hasFailingCI":           hasFailingCI,
 		"verdict":                verdict,
 		"comments":               comments,
 	}, "", "  ")
