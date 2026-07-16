@@ -457,6 +457,9 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow) {
 	// schedule-expression validity, and capability/harness admission. These are
 	// checks the inline field-by-field pass above deliberately does not duplicate.
 	def := wf.Definition{Name: w.Name, Version: 1, Spec: w.Spec}
+	for _, msg := range wf.CheckWarnings(def) {
+		r.add(Warning, "", "Workflow", w.Name, "%s", msg)
+	}
 	for _, msg := range wf.CheckReachability(def) {
 		r.add(Error, "", "Workflow", w.Name, "%s", msg)
 	}

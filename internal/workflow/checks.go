@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +14,29 @@ import (
 // compiler's semantic analysis without duplicating it, while still reporting its
 // own per-field cross-reference messages. Each returns human-readable, self-
 // contained problem strings; an empty slice means the check passed.
+
+var backlogClaimPattern = regexp.MustCompile(`(?s)backlog-query.*--claim`)
+
+// CheckWarnings reports non-fatal workflow diagnostics.
+func CheckWarnings(def Definition) []string {
+	var warnings []string
+	for _, task := range def.Spec.Tasks {
+		if task.Type != apiv1.TaskDeterministic || task.Run == nil {
+			continue
+		}
+		if !backlogClaimPattern.MatchString(strings.Join(task.Run.Command, " ")) {
+			continue
+		}
+		if strings.TrimSpace(task.Inputs["resultFile"]) != "" {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			`task %q runs backlog-query --claim without inputs.resultFile; empty ticks will report success instead of no-work`,
+			task.Name,
+		))
+	}
+	return warnings
+}
 
 // CheckReachability reports unreachable states and loops with no exit. It is a
 // no-op on a structurally broken graph (missing start, dangling transition):

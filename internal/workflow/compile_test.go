@@ -50,6 +50,54 @@ func TestCompileValid(t *testing.T) {
 	}
 }
 
+func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
+	task := apiv1.Task{
+		Name: "query-backlog",
+		Type: apiv1.TaskDeterministic,
+		Goal: "claim one item",
+		Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+	}
+	cases := []struct {
+		name     string
+		command  []string
+		inputs   map[string]string
+		wantWarn bool
+	}{
+		{name: "missing result file", command: task.Run.Command, wantWarn: true},
+		{name: "empty result file", command: task.Run.Command, inputs: map[string]string{"resultFile": "  "}, wantWarn: true},
+		{name: "configured result file", command: task.Run.Command, inputs: map[string]string{"resultFile": "claimed-item.json"}},
+		{name: "read only query", command: []string{"goobers", "backlog-query"}},
+		{name: "unrelated claim flag", command: []string{"goobers", "pr-select", "--claim"}},
+		{name: "shell command", command: []string{"sh", "-c", "goobers backlog-query --claim"}, wantWarn: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := apiv1.WorkflowSpec{
+				Gaggle:   "web",
+				Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+				Start:    task.Name,
+				Tasks:    []apiv1.Task{task},
+			}
+			spec.Tasks[0].Run = &apiv1.DeterministicRun{Command: tc.command}
+			spec.Tasks[0].Inputs = tc.inputs
+			def := Definition{Name: "claim", Version: 1, Spec: spec}
+
+			if _, err := Compile(def); err != nil {
+				t.Fatalf("warning must not fail compilation: %v", err)
+			}
+			warnings := CheckWarnings(def)
+			if tc.wantWarn {
+				if len(warnings) != 1 || !strings.Contains(warnings[0], `task "query-backlog"`) ||
+					!strings.Contains(warnings[0], "inputs.resultFile") {
+					t.Fatalf("warnings = %v, want one actionable resultFile warning", warnings)
+				}
+			} else if len(warnings) != 0 {
+				t.Fatalf("warnings = %v, want none", warnings)
+			}
+		})
+	}
+}
+
 func TestCompileStructuralErrors(t *testing.T) {
 	cases := []struct {
 		name string
