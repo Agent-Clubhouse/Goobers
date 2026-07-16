@@ -216,7 +216,11 @@ func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int) boo
 		if finding.Class != apiv1.FindingSubstantive {
 			continue
 		}
-		for _, match := range prReferencePattern.FindAllStringSubmatch(finding.Location, -1) {
+		matches := prReferencePattern.FindAllStringSubmatch(finding.Location, -1)
+		if len(matches) == 0 {
+			return true
+		}
+		for _, match := range matches {
 			if match[1] == target {
 				return true
 			}

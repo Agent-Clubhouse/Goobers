@@ -240,6 +240,15 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 
 	verdict.Findings = append(verdict.Findings, apiv1.Finding{
 		Class:    apiv1.FindingSubstantive,
+		Location: "cmd/goobers/foo.go:42",
+	})
+	if !verdictHasSubstantiveFindingForPR(verdict, 485) {
+		t.Fatal("selected PR #485's file-scoped substantive finding was not counted")
+	}
+
+	verdict.Findings = verdict.Findings[:2]
+	verdict.Findings = append(verdict.Findings, apiv1.Finding{
+		Class:    apiv1.FindingSubstantive,
 		Location: "PR #485",
 	})
 	if !verdictHasSubstantiveFindingForPR(verdict, 485) {
