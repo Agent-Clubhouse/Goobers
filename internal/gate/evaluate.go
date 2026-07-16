@@ -129,7 +129,18 @@ type Evaluator struct {
 // so Evaluate skips the (real, costly) reviewer call and escalates
 // immediately instead of burning the rest of the repass budget on attempts
 // that cannot converge (issue #316).
-func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, diffDigest string) (Result, error) {
+// emptyDiff (issue #415, reviewer sibling of the non-retryable escalate
+// route) is true when an agentic gate's subject branch carries no committed
+// change at all — the caller (run.go's evaluateGate) knows this unambiguously
+// because recordReviewerDiff returns a nil pointer for a zero-length diff. An
+// empty diff offers the reviewer nothing to evaluate and a repass nothing to
+// iterate on, so Evaluate fast-`fail`s it on the first review (resolving the
+// gate's own `fail` branch) instead of spending real reviewer calls and repass
+// cycles that can only re-observe the same emptiness. Ignored for
+// automated/human gates. Distinct from diffDigest, which the tests set to ""
+// to mean "no digest supplied, still call the reviewer" — emptiness is an
+// explicit signal, never inferred from an empty digest.
+func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, diffDigest string, emptyDiff bool) (Result, error) {
 	var outcome string
 	var verdict *apiv1.Verdict
 	duplicateDiff := false
@@ -153,7 +164,20 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 		if e.Reviewer == nil {
 			return Result{}, fmt.Errorf("gate %q: agentic reviewer not configured", g.Name)
 		}
-		if diffDigest != "" && e.LastDiffDigest != nil && e.LastDiffDigest[g.Name] == diffDigest {
+		if emptyDiff {
+			// #415 sibling: the implement stage produced no committed change,
+			// so there is nothing for the reviewer to evaluate or a repass to
+			// iterate on. Fast-`fail` on the first review — resolving the
+			// gate's own `fail` branch (attempt 1, so no escalation) — instead
+			// of issuing needs-changes and burning repass cycles that can only
+			// re-observe the same empty diff. Mirrors the identical-diff guard
+			// below: both spare the repass budget a degenerate reviewer call.
+			outcome = string(apiv1.VerdictFail)
+			verdict = &apiv1.Verdict{
+				Decision:  apiv1.VerdictFail,
+				Rationale: "runner: the implement stage produced no committed changes — failing without review, since an empty diff offers nothing to evaluate and a repass can only reproduce it",
+			}
+		} else if diffDigest != "" && e.LastDiffDigest != nil && e.LastDiffDigest[g.Name] == diffDigest {
 			duplicateDiff = true
 			outcome = string(apiv1.VerdictNeedsChanges)
 			verdict = &apiv1.Verdict{
