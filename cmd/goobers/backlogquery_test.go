@@ -408,6 +408,52 @@ func TestBacklogQueryReleaseUnblocksAFollowUpClaim(t *testing.T) {
 	}
 }
 
+func TestBacklogQueryReleaseReleasesAllClaims(t *testing.T) {
+	root := initDemo(t)
+	ledgerPath := filepath.Join(root, "scheduler", claimLedgerFileName)
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, itemID := range []string{"7", "8", "9"} {
+		if ok, _, err := ledger.Claim(itemID, "curation-run", "backlog-curation", DefaultClaimLease); err != nil || !ok {
+			t.Fatalf("seed curation claim %s: ok=%v err=%v", itemID, ok, err)
+		}
+	}
+	if ok, _, err := ledger.Claim("10", "other-run", "implementation", DefaultClaimLease); err != nil || !ok {
+		t.Fatalf("seed other run claim: ok=%v err=%v", ok, err)
+	}
+
+	t.Setenv("GOOBERS_RUN_ID", "curation-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--release", root)
+	if code != 0 {
+		t.Fatalf("release: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if stdout != "released 7, 8, 9\n" {
+		t.Fatalf("stdout = %q, want every released item", stdout)
+	}
+
+	data, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatalf("read claim ledger: %v", err)
+	}
+	var entries map[string]localscheduler.ClaimEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatalf("unmarshal claim ledger: %v", err)
+	}
+	for itemID, entry := range entries {
+		if entry.RunID == "curation-run" {
+			t.Fatalf("claim %s leaked for curation-run: %+v", itemID, entry)
+		}
+	}
+	if len(entries) != 1 || entries["10"].RunID != "other-run" {
+		t.Fatalf("claim ledger = %+v, want only item 10 held by other-run", entries)
+	}
+}
+
 // TestBacklogQueryReleaseIsIdempotent is issue #234's crash-resume
 // acceptance criterion: releasing a claim the run does not hold (already
 // released, or a crash-resume of the release stage itself) is a no-op

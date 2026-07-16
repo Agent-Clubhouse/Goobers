@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
@@ -40,7 +41,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
-	release := fs.Bool("release", false, "release this run's claim ledger lease early (issue #234) — no provider access, pure ledger operation")
+	release := fs.Bool("release", false, "release this run's claim ledger leases early (issue #234) — no provider access, pure ledger operation")
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers backlog-query [--claim | --release] [path]\n\n"+
 			"Query the provider for eligible backlog items — labeled with both\n"+
@@ -50,11 +51,11 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 			"provider-visible marker, and writes it to the declared result file.\n"+
 			"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n"+
 			"a plain list (no --claim) does not require it.\n\n"+
-			"With --release, releases the claim this run holds in the local ledger\n"+
+			"With --release, releases every claim this run holds in the local ledger\n"+
 			"(issue #234: a workflow that only reads/labels an item, never opening a\n"+
 			"PR or closing the issue — e.g. backlog-curation — must release its own\n"+
 			"claim explicitly, since issue-close-out's release is reached only by the\n"+
-			"implementation workflow). Idempotent: releasing a claim this run does not\n"+
+			"implementation workflow). Idempotent: releasing claims this run does not\n"+
 			"hold (already released, e.g. re-run after a crash) is a no-op success, not\n"+
 			"an error. --claim and --release are mutually exclusive.\n\n"+
 			"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n"+
@@ -377,7 +378,7 @@ func parseWorkItemID(id string) (int64, bool) {
 }
 
 // runBacklogQueryRelease implements `backlog-query --release` (issue #234):
-// an explicit, deterministic-path release of the claim this run holds, for a
+// an explicit, deterministic-path release of every claim this run holds, for a
 // workflow whose consuming stage neither opens a PR nor closes the issue
 // (backlog-curation's curate: it triages/labels the item and stops) — the
 // only existing release path, issue-close-out, is reached solely by the
@@ -399,13 +400,13 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 
 	l := layoutFor(root)
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	var released string
+	var released []string
 	err = withClaimLock(lockPath, func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
 		}
-		// ForRun + Release, not a blind Release-by-guess: idempotency (issue
+		// ForRunAll + Release, not a blind Release-by-guess: idempotency (issue
 		// #234's acceptance criterion) requires distinguishing "this run
 		// holds nothing to release" (a no-op success — already released, or
 		// a crash-resume of this same stage) from an actual release, without
@@ -413,14 +414,12 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 		// already a no-op on an unheld item (its own doc comment), so this
 		// is belt-and-suspenders for the "nothing to report" stdout case
 		// below, not required for correctness.
-		entry, ok := ledger.ForRun(runID)
-		if !ok {
-			return nil
+		for _, entry := range ledger.ForRunAll(runID) {
+			if rerr := ledger.Release(entry.ItemID, runID); rerr != nil {
+				return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
+			}
+			released = append(released, entry.ItemID)
 		}
-		if rerr := ledger.Release(entry.ItemID, runID); rerr != nil {
-			return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
-		}
-		released = entry.ItemID
 		return nil
 	})
 	if err != nil {
@@ -428,11 +427,11 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if released == "" {
+	if len(released) == 0 {
 		pln(stdout, "nothing to release: run holds no claim")
 		return 0
 	}
-	pf(stdout, "released %s\n", released)
+	pf(stdout, "released %s\n", strings.Join(released, ", "))
 	return 0
 }
 
