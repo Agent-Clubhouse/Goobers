@@ -116,7 +116,8 @@ Usage:
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
-  goobers trace [--json] <run-id> [path] show a run's journal events (+ spans if rolled up)
+  goobers trace [--json] [--transcripts | --transcript=<stage>] <run-id> [path]
+                                show a run's journal events (+ spans if rolled up), or recorded agent transcripts
   goobers telemetry stats|errors [--json] [path]  success rate/duration or recent-error aggregates
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
