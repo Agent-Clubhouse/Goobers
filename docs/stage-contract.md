@@ -122,9 +122,9 @@ stage the run already dispatched (a repass — most commonly `needs-changes` →
 `contextPointer` on the repass invocation, named `<gate>.verdict`, via the
 same pointer-only mechanism "Artifact passing" above describes for any other
 upstream artifact — never the raw `ResultEnvelope`, never a schema change. A
-repassing stage that
-reads the reviewer's actual rationale/findings can address them directly,
-rather than re-inferring "something needs to change" from the diff alone.
+repassing stage that reads the reviewer's actual rationale/findings can
+address them directly, rather than re-inferring "something needs to change"
+from the diff alone.
 
 ## Versioning & unknown-field policy
 
