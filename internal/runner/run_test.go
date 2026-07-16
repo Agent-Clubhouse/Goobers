@@ -168,6 +168,19 @@ type infrastructureFlakyDeterministic struct {
 	cause     error
 }
 
+type sequencedDeterministic struct {
+	failures []error
+	calls    int
+}
+
+func (s *sequencedDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	s.calls++
+	if s.calls <= len(s.failures) {
+		return apiv1.ResultEnvelope{}, s.failures[s.calls-1]
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "eventually succeeded"}, nil
+}
+
 func (f *infrastructureFlakyDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	f.calls++
 	if f.calls <= f.failUntil {
@@ -1626,6 +1639,50 @@ func TestRunnerRetriesInfrastructureFailureAndRecovers(t *testing.T) {
 	}
 	if starts[0].AttemptClass != "" || starts[1].AttemptClass != journal.AttemptInfra {
 		t.Fatalf("attempt classes = [%q %q], want [empty infra]", starts[0].AttemptClass, starts[1].AttemptClass)
+	}
+}
+
+func TestRunnerInfrastructureRetryIsIndependentOfPolicyAttempts(t *testing.T) {
+	machine := retryFixtureMachine(t, 3)
+	deterministic := &sequencedDeterministic{failures: []error{
+		errors.New("policy dispatch failure"),
+		invoke.InfrastructureFailure(errors.New("status 503: provider unavailable")),
+	}}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return deterministic, nil
+	}, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-mixed-retries",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted || deterministic.calls != 3 {
+		t.Fatalf("result=%+v calls=%d, want completed after policy and infrastructure retries", res, deterministic.calls)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-mixed-retries"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var classes []journal.AttemptClass
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted {
+			classes = append(classes, event.AttemptClass)
+		}
+	}
+	want := []journal.AttemptClass{"", journal.AttemptPolicy, journal.AttemptInfra}
+	if !reflect.DeepEqual(classes, want) {
+		t.Fatalf("attempt classes = %q, want %q", classes, want)
 	}
 }
 

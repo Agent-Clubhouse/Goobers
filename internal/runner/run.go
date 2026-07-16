@@ -1066,10 +1066,9 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		}
 		backoff = time.Duration(t.Retry.BackoffSeconds) * time.Second
 	}
-	maxAttempts := policyMaxAttempts
-	if DefaultMaxInfrastructureAttempts > maxAttempts {
-		maxAttempts = DefaultMaxInfrastructureAttempts
-	}
+	// The infrastructure budget includes its triggering failure, so it can add
+	// at most MaxInfrastructureAttempts-1 dispatches to the policy budget.
+	maxAttempts := policyMaxAttempts + DefaultMaxInfrastructureAttempts - 1
 	if startAttempt > policyMaxAttempts {
 		err := fmt.Errorf("runner: task %q has no attempts left after resume (interrupted attempt already exhausted its %d-attempt budget)", t.Name, policyMaxAttempts)
 		span.Fail(err)
@@ -1078,6 +1077,8 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 
 	var lastErr error
 	nextRetryClass := journal.AttemptPolicy
+	policyAttempts := startAttempt - 1
+	var infrastructureFailures int32
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
 		// The initial attempt carries no class and is always conformance-
 		// normative. A retry within THIS dispatch uses the class selected by
@@ -1096,6 +1097,11 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			class = journal.AttemptInfra
 		case attempt > startAttempt:
 			class = nextRetryClass
+		}
+		// A crash-driven continuation is infra-tagged for conformance but still
+		// consumes policy budget; provider infrastructure retries do not.
+		if class != journal.AttemptInfra || attempt == startAttempt {
+			policyAttempts++
 		}
 		if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: t.Name, Attempt: int(attempt), AttemptClass: class}); err != nil {
 			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
@@ -1134,9 +1140,14 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		if dispatchErr != nil {
 			lastErr = dispatchErr
 			retryLimit := policyMaxAttempts
+			retryCount := policyAttempts
+			shouldRetry := policyAttempts < policyMaxAttempts
 			nextRetryClass = journal.AttemptPolicy
 			if invoke.IsInfrastructureFailure(dispatchErr) {
+				infrastructureFailures++
 				retryLimit = DefaultMaxInfrastructureAttempts
+				retryCount = infrastructureFailures
+				shouldRetry = infrastructureFailures < DefaultMaxInfrastructureAttempts
 				nextRetryClass = journal.AttemptInfra
 			}
 			// A journal that cannot be written stops the run (§2.6): this
@@ -1148,7 +1159,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			}); aerr != nil {
 				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal executor error for %q: %w", t.Name, aerr)
 			}
-			if attempt < retryLimit {
+			if shouldRetry {
 				if backoff > 0 {
 					// Wait on the run-level ctx (not attemptCtx, which never
 					// cancels — the drain contract for an in-flight
@@ -1169,7 +1180,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 				}
 				continue
 			}
-			err := fmt.Errorf("runner: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, attempt, retryLimit)
+			err := fmt.Errorf("runner: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, retryCount, retryLimit)
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
 		}

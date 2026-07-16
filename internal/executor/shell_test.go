@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -207,6 +208,28 @@ func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 	}
 	if result.Error == nil || result.Error.Code != "timeout" || !result.Error.Retryable {
 		t.Fatalf("error = %+v, want timeout, retryable", result.Error)
+	}
+}
+
+func TestShellExecutor_ProviderBuiltinTimeoutIsInfrastructureFailure(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "goobers")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, _ := newTestExecutor(t, nil)
+	exec.SelfBin = script
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputTimeout: "100ms"}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "backlog-query", "--claim"},
+	})
+	if !invoke.IsInfrastructureFailure(err) {
+		t.Fatalf("Run result=%+v err=%v, want infrastructure failure", result, err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error %q does not preserve deadline cause", err)
 	}
 }
 

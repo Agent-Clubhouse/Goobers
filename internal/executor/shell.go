@@ -318,6 +318,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 
 	if timedOut {
+		if stageInvokesProviderBuiltin(run.Command) {
+			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+				"executor: provider stage %q exceeded timeout %s: %w",
+				run.Command[1], timeout, context.DeadlineExceeded,
+			))
+		}
 		result.Status = apiv1.ResultFailure
 		result.Error = &apiv1.ErrorInfo{
 			Code:      "timeout",
