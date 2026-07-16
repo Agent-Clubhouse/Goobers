@@ -95,7 +95,6 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 	defer setup.Shutdown(context.Background())
 
 	var sched *localscheduler.Scheduler
-	releases := 0
 	for restart := 0; restart < 3; restart++ {
 		sched = localscheduler.New(setup.Entries, setup.InstanceLog)
 		if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
@@ -104,10 +103,7 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 		resumed, warned, err := resumeInterruptedRuns(
 			ctx, l, setup.Runner, setup.Machines, setup.RepoRefs,
 			setup.InstanceLog, setup.Telemetry, setup.RollupDB,
-			func(workflow string) {
-				releases++
-				sched.Release(workflow)
-			},
+			sched.ReleaseReconciled,
 			&wg,
 		)
 		if err != nil {
@@ -121,9 +117,6 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 		}
 	}
 	wg.Wait()
-	if releases != 3 {
-		t.Fatalf("terminal slot releases = %d, want one per restart", releases)
-	}
 
 	runID, err := sched.Trigger(ctx, "default-implement", time.Now())
 	if err != nil {
@@ -177,14 +170,10 @@ func TestResumeScanReleasesClaimsForAlreadyTerminalRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	releases := 0
 	resumed, warned, err := resumeInterruptedRuns(
 		context.Background(), l, setup.Runner, setup.Machines, setup.RepoRefs,
 		setup.InstanceLog, setup.Telemetry, setup.RollupDB,
-		func(workflow string) {
-			releases++
-			sched.Release(workflow)
-		},
+		sched.ReleaseReconciled,
 		&wg,
 	)
 	if err != nil {
@@ -194,9 +183,6 @@ func TestResumeScanReleasesClaimsForAlreadyTerminalRun(t *testing.T) {
 		t.Fatalf("resumed=%v warned=%v, want neither for terminal run", resumed, warned)
 	}
 	wg.Wait()
-	if releases != 1 {
-		t.Fatalf("terminal slot releases = %d, want 1", releases)
-	}
 
 	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
 	if err != nil {

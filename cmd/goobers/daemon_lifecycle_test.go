@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -85,7 +86,7 @@ func TestResumeReleasesReconciledSlotForFollowUpTrigger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg)
+	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +168,7 @@ func TestResumeJournalsActualPhaseNotHardcodedStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg); err != nil {
+	if _, _, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg); err != nil {
 		t.Fatal(err)
 	}
 	wg.Wait()
@@ -232,7 +233,7 @@ func TestResumePastOrphanedWorktreeAtSameKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed, warned, err := resumeInterruptedRuns(context.Background(), l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg)
+	resumed, warned, err := resumeInterruptedRuns(context.Background(), l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,6 +253,33 @@ func TestResumePastOrphanedWorktreeAtSameKey(t *testing.T) {
 	// waitForRunPhase can let t.TempDir()'s cleanup race that still-in-flight
 	// write.
 	wg.Wait()
+}
+
+func TestUpSurfacesUnreadableRunEventLog(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const runID = "corrupt-event-log"
+	newStuckRun(t, l, runID, "default-implement")
+
+	events, err := os.OpenFile(filepath.Join(l.RunsDir(), runID, "events.jsonl"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.WriteString("{invalid event}\n"); err != nil {
+		_ = events.Close()
+		t.Fatal(err)
+	}
+	if err := events.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runUpContext(context.Background(), []string{root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("code = %d, want 1; stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if got := stderr.String(); !strings.Contains(got, runID) || !strings.Contains(got, "event-log phase") {
+		t.Fatalf("stderr = %q, want run ID and event-log diagnostic", got)
+	}
 }
 
 // TestUpSkipsUnresolvableWorkflowWithWarningNotFatal is issue #135 point 2's

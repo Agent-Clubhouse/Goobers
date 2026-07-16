@@ -188,7 +188,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg)
+	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

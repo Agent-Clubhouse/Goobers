@@ -288,13 +288,14 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // are released idempotently to close a crash window between run.finished and
 // the runner's terminal finalizer.
 //
-// release is called for every terminal or resumed run. For a resumed run it is
-// called once Resume returns (success or error) — the counterpart to
-// Scheduler.Reconcile having already seeded that run's workflow into
-// Conditions' active count (issue #135). Terminal runs should not have a seeded
-// slot, but releasing defensively keeps the reconciliation and resume scans
-// from leaking one if their classification ever drifts.
-// Pass sched.Release; a plain func so this doesn't need a *Scheduler to test.
+// releaseReconciled is called with every terminal or resumed run ID. For a
+// resumed run it is called once Resume returns (success or error) — the
+// counterpart to Scheduler.Reconcile having already seeded that run into
+// Conditions' active count (issue #135). Scheduler.ReleaseReconciled ignores
+// terminal runs that own no slot, keeping this defensive release from consuming
+// a genuinely running run's workflow-wide slot.
+// Pass sched.ReleaseReconciled; a plain func so this doesn't need a *Scheduler
+// to test.
 //
 // A run whose workflow no longer resolves in the current config (renamed or
 // removed, issue #135 point 2) is skipped with a warning journaled to log,
@@ -312,7 +313,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // resumeInterruptedRuns errors when the scan itself cannot proceed or when
 // terminal-run cleanup fails; claim cleanup fails closed rather than silently
 // leaving a known terminal owner in the ledger.
-func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, releaseReconciled func(runID string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	runsDir := l.RunsDir()
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
@@ -340,15 +341,17 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 		// what decides whether this run is actually terminal — trusting
 		// the checkpoint directly here risks spinning up a resume
 		// goroutine for a run that already finished.
-		if phase, err := rd.Phase(); err == nil {
-			switch phase {
-			case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-				if err := releaseClaimsForRun(l, log, id.RunID); err != nil {
-					return resumed, warned, fmt.Errorf("release claims for terminal run %q: %w", id.RunID, err)
-				}
-				release(id.Workflow)
-				continue // terminal: nothing to resume
+		phase, err := rd.Phase()
+		if err != nil {
+			return resumed, warned, fmt.Errorf("read event-log phase for run %q: %w", id.RunID, err)
+		}
+		switch phase {
+		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+			if err := releaseClaimsForRun(l, log, id.RunID); err != nil {
+				return resumed, warned, fmt.Errorf("release claims for terminal run %q: %w", id.RunID, err)
 			}
+			releaseReconciled(id.RunID)
+			continue // terminal: nothing to resume
 		}
 
 		machine, ok := machines[id.Workflow]
@@ -371,7 +374,7 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 		wg.Add(1)
 		go func(runID, wfName string) {
 			defer wg.Done()
-			defer release(wfName)
+			defer releaseReconciled(runID)
 			result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, RepoRef: repoRef})
 			ingestRunTelemetry(tel, rollupDB, l, runID, log)
 			status := string(result.Phase)

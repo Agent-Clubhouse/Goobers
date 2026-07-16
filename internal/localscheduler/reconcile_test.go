@@ -3,7 +3,9 @@ package localscheduler
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -99,5 +101,86 @@ func TestActiveRunCountsUsesEventLogPhase(t *testing.T) {
 				t.Fatalf("active count = %d, want 0 for terminal event log", got)
 			}
 		})
+	}
+}
+
+func TestActiveRunCountsSurfacesUnreadableEventLog(t *testing.T) {
+	runsDir := t.TempDir()
+	const runID = "unreadable-events"
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: "implement", WorkflowVersion: 1, Gaggle: "g",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	eventsPath := filepath.Join(runsDir, runID, "events.jsonl")
+	events, err := os.OpenFile(eventsPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.WriteString("{invalid event}\n"); err != nil {
+		_ = events.Close()
+		t.Fatal(err)
+	}
+	if err := events.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ActiveRunCounts(runsDir); err == nil {
+		t.Fatal("ActiveRunCounts succeeded with an unreadable authoritative event log")
+	} else if !strings.Contains(err.Error(), runID) || !strings.Contains(err.Error(), "event-log phase") {
+		t.Fatalf("error = %q, want run ID and event-log diagnostic", err)
+	}
+}
+
+func TestReleaseReconciledDoesNotConsumeAnotherRunsSlot(t *testing.T) {
+	runsDir := t.TempDir()
+	newRun := func(runID string, terminal bool) {
+		t.Helper()
+		run, err := journal.Create(runsDir, journal.RunIdentity{
+			RunID: runID, Workflow: "implement", WorkflowVersion: 1, Gaggle: "g",
+			Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if terminal {
+			if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newRun("running-run", false)
+	newRun("terminal-run", true)
+
+	log, _, err := journal.OpenInstanceLog(filepath.Join(t.TempDir(), "scheduler"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	sched := New([]WorkflowEntry{{Workflow: "implement"}}, log)
+	if err := sched.Reconcile(runsDir, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := sched.conditions.Active("implement"); got != 1 {
+		t.Fatalf("active count after mixed reconciliation = %d, want 1", got)
+	}
+
+	sched.ReleaseReconciled("terminal-run")
+	sched.ReleaseReconciled("terminal-run")
+	if got := sched.conditions.Active("implement"); got != 1 {
+		t.Fatalf("terminal history released running-run's slot: active count = %d, want 1", got)
+	}
+
+	sched.ReleaseReconciled("running-run")
+	if got := sched.conditions.Active("implement"); got != 0 {
+		t.Fatalf("active count after releasing running-run = %d, want 0", got)
 	}
 }

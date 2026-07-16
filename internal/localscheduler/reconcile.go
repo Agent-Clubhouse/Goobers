@@ -1,6 +1,7 @@
 package localscheduler
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -12,13 +13,19 @@ import (
 // since Conditions' in-memory counters don't survive a restart. The event log
 // is authoritative because state.json can lag a crash-fsynced run.finished.
 func ActiveRunCounts(runsDir string) (map[string]int, error) {
+	counts, _, err := scanActiveRuns(runsDir)
+	return counts, err
+}
+
+func scanActiveRuns(runsDir string) (map[string]int, map[string]string, error) {
 	counts := map[string]int{}
+	runs := map[string]string{}
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return counts, nil
+			return counts, runs, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -35,11 +42,12 @@ func ActiveRunCounts(runsDir string) (map[string]int, error) {
 		}
 		phase, err := rd.Phase()
 		if err != nil {
-			continue
+			return nil, nil, fmt.Errorf("read event-log phase for run %q: %w", id.RunID, err)
 		}
 		if phase == journal.PhaseRunning {
 			counts[id.Workflow]++
+			runs[id.RunID] = id.Workflow
 		}
 	}
-	return counts, nil
+	return counts, runs, nil
 }
