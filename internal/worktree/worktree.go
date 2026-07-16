@@ -28,6 +28,9 @@ type CreateOptions struct {
 	// RunID uniquely identifies this run. It keys the worktree's path and
 	// marker, so it must be unique per Manager for the lifetime of the run.
 	RunID string
+	// OwnerRunID identifies the workflow run that owns this stage worktree.
+	// Empty defaults to RunID for direct package users.
+	OwnerRunID string
 	// BaseRef is the pinned ref (branch, tag, or commit sha) to branch or
 	// check out from. Required.
 	BaseRef string
@@ -79,6 +82,12 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	// it must never itself be able to escape those directories (#244).
 	if !validRunID(opts.RunID) {
 		return nil, fmt.Errorf("worktree: RunID %q must be a single path segment (no \"..\", no \"/\")", opts.RunID)
+	}
+	if opts.OwnerRunID == "" {
+		opts.OwnerRunID = opts.RunID
+	}
+	if !validRunID(opts.OwnerRunID) {
+		return nil, fmt.Errorf("worktree: OwnerRunID %q must be a single path segment (no \"..\", no \"/\")", opts.OwnerRunID)
 	}
 	if opts.BaseRef == "" {
 		return nil, fmt.Errorf("worktree: BaseRef is required")
@@ -154,7 +163,13 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
 
-	mk := marker{RunID: opts.RunID, PID: os.Getpid(), CreatedAt: time.Now(), Status: statusActive}
+	mk := marker{
+		RunID:      opts.RunID,
+		OwnerRunID: opts.OwnerRunID,
+		PID:        os.Getpid(),
+		CreatedAt:  time.Now(),
+		Status:     statusActive,
+	}
 	if err := writeMarker(m.markerPath(key, opts.RunID), mk); err != nil {
 		// Without a marker, Reap can never distinguish this worktree from an
 		// orphan, so don't leave it behind half-registered.

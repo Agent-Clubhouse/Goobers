@@ -1187,7 +1187,7 @@ func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 		got = o
 		return nil
 	}
-	r.cfg.FinalizeTerminal = func(runID string, phase journal.RunPhase) error {
+	r.cfg.FinalizeTerminal = func(runID string, phase journal.RunPhase, _ *journal.Run) error {
 		order = append(order, "finalize")
 		if runID != "run-blocked" || phase != journal.PhaseEscalated {
 			t.Errorf("FinalizeTerminal got (%q, %q), want (run-blocked, escalated)", runID, phase)

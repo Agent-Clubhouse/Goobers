@@ -52,7 +52,7 @@ func refusalTestRunner(t *testing.T, runsDir, fixtureRepo string, wtMgr *worktre
 		Worktrees:        wtMgr,
 		RunsDir:          runsDir,
 		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
-		FinalizeTerminal: func(_ string, phase journal.RunPhase) error {
+		FinalizeTerminal: func(_ string, phase journal.RunPhase, _ *journal.Run) error {
 			finalized = append(finalized, phase)
 			return nil
 		},

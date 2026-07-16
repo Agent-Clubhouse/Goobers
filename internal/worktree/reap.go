@@ -18,6 +18,9 @@ type ReapOptions struct {
 	// they age past this duration. Zero leaves kept worktrees alone
 	// indefinitely — Reap then only clears genuine crash orphans.
 	StaleAfter time.Duration
+	// IsRunTerminal reports whether a markerless, git-deregistered worktree
+	// belongs to a terminal run. Nil leaves that ambiguous shape untouched.
+	IsRunTerminal func(worktreeID string) (bool, error)
 }
 
 // ReapReason explains why Reap removed a worktree.
@@ -45,9 +48,8 @@ type ReapResult struct {
 	Reason ReapReason
 }
 
-// ReapWarning reports one marker Reap skipped rather than let abort the
-// whole pass (issue #136: one unreadable marker used to fail the entire
-// scan, leaving every other repo's genuine orphans uncleaned).
+// ReapWarning reports one worktree Reap skipped rather than let abort the
+// whole pass.
 type ReapWarning struct {
 	Path string
 	Err  error
@@ -55,12 +57,12 @@ type ReapWarning struct {
 
 // Reap scans every managed working copy under Root for worktrees whose
 // marker shows either a dead owning process (a crash orphan) or a
-// keep-on-failure worktree older than opts.StaleAfter, and removes them; it
-// also removes any worktree directory with no marker at all — a crash
-// between `git worktree add` and the marker write, otherwise invisible to
-// Reap forever (issue #136). Call it on daemon start, before resuming any
-// interrupted run, so a restart converges disk state after a crash without
-// operator intervention.
+// keep-on-failure worktree older than opts.StaleAfter, and removes them. It
+// also removes markerless directories still registered with git (a crash
+// between `git worktree add` and the marker write) and deregistered
+// markerless directories whose owning journal is terminal. Call it on daemon
+// start, before resuming any interrupted run, so a restart converges disk
+// state after a crash without operator intervention.
 //
 // A live run in progress is never touched: its marker's PID is the current
 // process (Manager.Create stamps os.Getpid()), which is always alive from
@@ -151,42 +153,60 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 		results = append(results, ReapResult{RunID: mk.RunID, Path: path, Reason: reason})
 	}
 
-	markerless, err := m.reapMarkerlessWorktrees(ctx, key, seen)
+	markerless, markerlessWarnings, err := m.reapMarkerlessWorktrees(ctx, key, seen, opts)
 	if err != nil {
 		return results, warnings, err
 	}
 	results = append(results, markerless...)
+	warnings = append(warnings, markerlessWarnings...)
 	return results, warnings, nil
 }
 
 // reapMarkerlessWorktrees diffs the actual worktree directories under key's
 // runs/ against the marker names already accounted for by reapRepo's own
-// scan, removing any worktree with no marker at all (issue #136: a crash
-// between `git worktree add` and Manager.Create's marker write leaves
-// exactly this shape, and the marker-driven scan alone can never find it).
-func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen map[string]bool) ([]ReapResult, error) {
+// scan. Registered entries are incomplete creates and are always safe to
+// remove; deregistered directories require a terminal owning journal.
+func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen map[string]bool, opts ReapOptions) ([]ReapResult, []ReapWarning, error) {
 	runsDir := m.runsDirForKey(key)
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("worktree: list runs for %s: %w", key, err)
+		return nil, nil, fmt.Errorf("worktree: list runs for %s: %w", key, err)
 	}
 
 	var results []ReapResult
+	var warnings []ReapWarning
 	for _, e := range entries {
 		if !e.IsDir() || seen[e.Name()] {
 			continue
 		}
 		path := filepath.Join(runsDir, e.Name())
+		registered, err := worktreeRegistered(ctx, m.repoDirForKey(key), path)
+		if err != nil {
+			return results, warnings, fmt.Errorf("worktree: inspect markerless run %s: %w", e.Name(), err)
+		}
+		if !registered {
+			if opts.IsRunTerminal == nil {
+				continue
+			}
+			terminal, err := opts.IsRunTerminal(e.Name())
+			if err != nil {
+				warnings = append(warnings, ReapWarning{Path: path, Err: err})
+				continue
+			}
+			if !terminal {
+				continue
+			}
+		}
 		markerPath := m.markerPath(key, e.Name())
 		if err := m.reapOne(ctx, key, path, markerPath); err != nil {
-			return results, fmt.Errorf("worktree: reap markerless run %s: %w", e.Name(), err)
+			return results, warnings, fmt.Errorf("worktree: reap markerless run %s: %w", e.Name(), err)
 		}
 		results = append(results, ReapResult{RunID: e.Name(), Path: path, Reason: ReapReasonMarkerless})
 	}
-	return results, nil
+	return results, warnings, nil
 }
 
 func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string) error {

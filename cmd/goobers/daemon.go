@@ -137,8 +137,8 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	if err != nil {
 		return nil, err
 	}
-	runnerCfg.FinalizeTerminal = func(runID string, _ journal.RunPhase) error {
-		return releaseClaimsForRun(l, instanceLog, runID)
+	runnerCfg.FinalizeTerminal = func(runID string, _ journal.RunPhase, jr *journal.Run) error {
+		return finalizeTerminalRun(l, instanceLog, wtMgr, jr, runID)
 	}
 	// #712: shared with the Scheduler via SchedulerOptions below — see
 	// schedulerSetup.ProviderQuota's doc comment for why a shared pointer,

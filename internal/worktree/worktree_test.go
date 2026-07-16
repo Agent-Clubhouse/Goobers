@@ -595,7 +595,11 @@ func TestManager_Reap_RemovesDeregisteredMarkerlessDirectory(t *testing.T) {
 		t.Fatalf("worktreeRegistered after deregistration = %v, %v; want false, nil", registered, err)
 	}
 
-	results, warnings, err := m.Reap(ctx, ReapOptions{})
+	results, warnings, err := m.Reap(ctx, ReapOptions{
+		IsRunTerminal: func(worktreeID string) (bool, error) {
+			return worktreeID == wt.RunID, nil
+		},
+	})
 	if err != nil {
 		t.Fatalf("Reap: %v", err)
 	}
@@ -612,6 +616,133 @@ func TestManager_Reap_RemovesDeregisteredMarkerlessDirectory(t *testing.T) {
 	results, warnings, err = m.Reap(ctx, ReapOptions{})
 	if err != nil || len(results) != 0 || len(warnings) != 0 {
 		t.Fatalf("second Reap should be a no-op, got %+v, warnings %+v, err %v", results, warnings, err)
+	}
+}
+
+func TestManager_Reap_LeavesDeregisteredMarkerlessNonterminalRun(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "still-running-stage", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.Remove(m.markerPath(wt.key, wt.RunID)); err != nil {
+		t.Fatalf("remove marker: %v", err)
+	}
+	if err := runGit(ctx, m.repoDirForKey(wt.key), "worktree", "remove", "--force", wt.Path); err != nil {
+		t.Fatalf("remove worktree registration: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(wt.Path, "leftover.txt"), "leftover")
+
+	results, warnings, err := m.Reap(ctx, ReapOptions{
+		IsRunTerminal: func(string) (bool, error) { return false, nil },
+	})
+	if err != nil || len(results) != 0 || len(warnings) != 0 {
+		t.Fatalf("Reap should leave nonterminal orphan alone, got %+v, warnings %+v, err %v", results, warnings, err)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("nonterminal orphan was removed: %v", err)
+	}
+}
+
+func TestManager_FinalizeRunRemovesOwnedWorktreesAndPreservesOthers(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	owned, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "terminal-run-implement", OwnerRunID: "terminal-run", BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create owned: %v", err)
+	}
+	other, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "other-run-implement", OwnerRunID: "other-run", BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+
+	results, err := m.FinalizeRun(ctx, "terminal-run")
+	if err != nil {
+		t.Fatalf("FinalizeRun: %v", err)
+	}
+	if len(results) != 1 || results[0].WorktreeID != owned.RunID || results[0].Kept {
+		t.Fatalf("FinalizeRun results = %+v", results)
+	}
+	if _, err := os.Stat(owned.Path); !os.IsNotExist(err) {
+		t.Fatalf("owned worktree still exists: %v", err)
+	}
+	if _, err := os.Stat(other.Path); err != nil {
+		t.Fatalf("other run's worktree was removed: %v", err)
+	}
+	if results, err := m.FinalizeRun(ctx, "terminal-run"); err != nil || len(results) != 0 {
+		t.Fatalf("second FinalizeRun = %+v, %v; want no-op", results, err)
+	}
+}
+
+func TestManager_FinalizeRunPreservesKeptWorktree(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "kept-run-implement", OwnerRunID: "kept-run", BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{Keep: true}); err != nil {
+		t.Fatalf("Remove(Keep): %v", err)
+	}
+
+	results, err := m.FinalizeRun(ctx, "kept-run")
+	if err != nil {
+		t.Fatalf("FinalizeRun: %v", err)
+	}
+	if len(results) != 1 || results[0].WorktreeID != wt.RunID || !results[0].Kept {
+		t.Fatalf("FinalizeRun results = %+v", results)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("kept worktree was removed: %v", err)
+	}
+}
+
+func TestManager_FinalizeRunContinuesPastCorruptOwnedMarker(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	corrupt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "terminal-run-corrupt", OwnerRunID: "terminal-run", BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create corrupt: %v", err)
+	}
+	healthy, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "terminal-run-healthy", OwnerRunID: "terminal-run", BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create healthy: %v", err)
+	}
+	if err := os.WriteFile(m.markerPath(corrupt.key, corrupt.RunID), []byte("{"), 0o644); err != nil {
+		t.Fatalf("corrupt marker: %v", err)
+	}
+
+	results, err := m.FinalizeRun(ctx, "terminal-run")
+	if err == nil {
+		t.Fatal("FinalizeRun returned nil error for corrupt marker")
+	}
+	if len(results) != 1 || results[0].WorktreeID != healthy.RunID {
+		t.Fatalf("FinalizeRun results = %+v, want healthy worktree removed", results)
+	}
+	if _, err := os.Stat(healthy.Path); !os.IsNotExist(err) {
+		t.Fatalf("healthy worktree survived corrupt sibling: %v", err)
+	}
+	if _, err := os.Stat(corrupt.Path); err != nil {
+		t.Fatalf("corrupt-marker worktree should be left for operator recovery: %v", err)
 	}
 }
 

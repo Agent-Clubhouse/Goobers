@@ -161,7 +161,8 @@ func TestConformanceViewExcludesContextManifestDigest(t *testing.T) {
 
 // TestConformanceViewSkipsExcludedEvents confirms ConformanceView filters
 // through IsConformanceNormative — infra-tagged attempts, gate.started,
-// span.recorded, and repaired events never appear in the projection.
+// span.recorded, repaired, and runner.annotation events never appear in the
+// projection.
 func TestConformanceViewSkipsExcludedEvents(t *testing.T) {
 	events := []Event{
 		{Type: EventStageStarted, Stage: "implement", Attempt: 1},
@@ -171,16 +172,17 @@ func TestConformanceViewSkipsExcludedEvents(t *testing.T) {
 		{Type: EventGateStarted, Gate: "review", Runner: map[string]any{"repassAttempt": 1}},
 		{Type: EventSpanRecorded, Ref: &Ref{Digest: "sha256:span"}},
 		{Type: EventRepaired},
+		{Type: EventRunnerAnnotation, Runner: map[string]any{"worktreeStatus": "kept"}},
 	}
 	view := ConformanceView(events)
 	if len(view) != 3 {
-		t.Fatalf("ConformanceView returned %d events, want 3 (infra attempt, gate start, span, repaired excluded): %+v", len(view), view)
+		t.Fatalf("ConformanceView returned %d events, want 3 (infra attempt, gate start, span, repaired, runner annotation excluded): %+v", len(view), view)
 	}
 	for _, ne := range view {
 		if ne.AttemptClass == AttemptInfra {
 			t.Errorf("infra-tagged event leaked through: %+v", ne)
 		}
-		if ne.Type == EventGateStarted || ne.Type == EventSpanRecorded || ne.Type == EventRepaired {
+		if ne.Type == EventGateStarted || ne.Type == EventSpanRecorded || ne.Type == EventRepaired || ne.Type == EventRunnerAnnotation {
 			t.Errorf("excluded event type leaked through: %+v", ne)
 		}
 	}
