@@ -581,7 +581,7 @@ func TestStatusDaemonDoesNotMistakeStaleIdentityForManualHolder(t *testing.T) {
 	root := initDemo(t)
 	l := instance.NewLayout(root)
 	identity := daemonIdentity{
-		PID:          1_000_000_000,
+		PID:          os.Getpid(),
 		StartedAt:    time.Date(2026, time.July, 16, 9, 0, 0, 0, time.UTC),
 		InstanceRoot: root,
 		Version:      "v0.3.0-test",
@@ -602,7 +602,7 @@ func TestStatusDaemonDoesNotMistakeStaleIdentityForManualHolder(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("status --daemon: code = %d, want 1; stderr = %q", code, stderr)
 	}
-	if !strings.HasPrefix(stdout, "daemon not running (last daemon: pid 1000000000, started ") {
+	if !strings.HasPrefix(stdout, fmt.Sprintf("daemon not running (last daemon: pid %d, started ", os.Getpid())) {
 		t.Fatalf("stdout = %q", stdout)
 	}
 }
