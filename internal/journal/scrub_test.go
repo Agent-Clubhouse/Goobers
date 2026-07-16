@@ -208,6 +208,21 @@ func TestPatternNetCatchesUnregistered(t *testing.T) {
 	}
 }
 
+func TestPatternNetRedactsBasicAuth(t *testing.T) {
+	encoded := "YnVpbGQtYWdlbnQ6YWRvLXBhdC0wMTIzNDU2Nzg5"
+	scrub := NewPatternScrubber()
+
+	header := []byte("Authorization: Basic " + encoded)
+	if got, want := scrub.Scrub(header), []byte("Authorization: "+Redacted); !bytes.Equal(got, want) {
+		t.Fatalf("scrubbed Basic authorization header = %q, want %q", got, want)
+	}
+
+	ordinary := []byte("artifact digest: " + encoded)
+	if got := scrub.Scrub(ordinary); !bytes.Equal(got, ordinary) {
+		t.Fatalf("ordinary base64-looking text was redacted: %q", got)
+	}
+}
+
 // TestRegistryLongestFirst ensures a secret containing a shorter registered
 // value is fully redacted (longest-match-first), not partially unmasked.
 func TestRegistryLongestFirst(t *testing.T) {
