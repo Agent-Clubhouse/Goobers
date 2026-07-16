@@ -49,13 +49,33 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	l := instance.NewLayout(root)
 	runDir := filepath.Join(l.RunsDir(), runID)
 	runInfo, err := os.Stat(runDir)
-	if errors.Is(err, os.ErrNotExist) || (err == nil && !runInfo.IsDir()) {
-		pf(stderr, "error: no run %q found in %s; list runs with 'goobers status'\n", runID, root)
-		return 1
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		pf(stderr, "error: %v\n", err)
 		return 2
+	}
+	if err != nil || !runInfo.IsDir() {
+		entries, readErr := os.ReadDir(l.RunsDir())
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			pf(stderr, "error: %v\n", readErr)
+			return 2
+		}
+		var matches []string
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), runID) {
+				matches = append(matches, entry.Name())
+			}
+		}
+		switch len(matches) {
+		case 0:
+			pf(stderr, "error: no run %q found in %s; list runs with 'goobers status'\n", runID, root)
+			return 1
+		case 1:
+			runID = matches[0]
+			runDir = filepath.Join(l.RunsDir(), runID)
+		default:
+			pf(stderr, "error: ambiguous prefix %q matches %d runs: %s\n", runID, len(matches), strings.Join(matches, ", "))
+			return 2
+		}
 	}
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
