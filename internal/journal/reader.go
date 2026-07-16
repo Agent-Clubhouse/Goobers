@@ -186,6 +186,7 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 		lock:     lock,
 		seq:      report.LastSeq,
 		phase:    reconstructPhase(events),
+		reason:   reconstructReason(events),
 	}
 	diskSt, diskErr := rd.State()
 	if diskErr == nil {
@@ -201,14 +202,16 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 	// catches this case — a cleanly-fsynced run.finished leaves no torn
 	// tail. A terminal reconstructed phase always implies MachineState
 	// should be empty (State's own documented invariant), so healing here
-	// clears it too. Only the terminal direction is healed: a non-terminal
-	// reconstructed phase can't tell us the correct MachineState (that
-	// requires the workflow Machine, which this package doesn't have), so
-	// a missing/corrupt checkpoint for a still-running run is left for the
-	// caller (Resume) to fall back on, not fabricated here.
+	// clears it too, and Reason is compared too (#520) so a crash-stranded
+	// refusal's WF-016 text still reaches state.json on the next open. Only
+	// the terminal direction is healed: a non-terminal reconstructed phase
+	// can't tell us the correct MachineState (that requires the workflow
+	// Machine, which this package doesn't have), so a missing/corrupt
+	// checkpoint for a still-running run is left for the caller (Resume) to
+	// fall back on, not fabricated here.
 	needsCheckpoint := tornBytes > 0
 	if r.phase != PhaseRunning {
-		if diskErr != nil || diskSt.Phase != r.phase || diskSt.MachineState != "" {
+		if diskErr != nil || diskSt.Phase != r.phase || diskSt.MachineState != "" || diskSt.Reason != r.reason {
 			r.machineState = ""
 			needsCheckpoint = true
 		}
@@ -244,6 +247,23 @@ func reconstructPhase(events []Event) RunPhase {
 		}
 	}
 	return PhaseRunning
+}
+
+// reconstructReason derives the terminal run's durable reason from the event
+// log (#520) — the last run.finished event's own Error.Message, if it
+// carried one (e.g. a WF-016 resume-refusal's digest-mismatch text). Empty
+// for a non-terminal run or an ordinary terminal with no attached error,
+// mirroring Run.Append's own reason tracking.
+func reconstructReason(events []Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == EventRunFinished {
+			if events[i].Error != nil {
+				return events[i].Error.Message
+			}
+			return ""
+		}
+	}
+	return ""
 }
 
 // readEvents parses events.jsonl, returning the durably-committed events and the

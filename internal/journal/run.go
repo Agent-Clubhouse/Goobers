@@ -31,6 +31,7 @@ type Run struct {
 	seq          uint64
 	phase        RunPhase
 	machineState string
+	reason       string
 	closed       bool
 }
 
@@ -234,9 +235,15 @@ func (r *Run) Append(ev Event) error {
 		return err
 	}
 	// Track terminal phase so Close/Checkpoint reflect the last run.finished.
+	// Reason mirrors the terminal event's own Error.Message, if any (#520) —
+	// empty for an ordinary business-outcome terminal that carries no error.
 	if ev.Type == EventRunFinished {
 		r.phase = phaseFromStatus(ev.Status)
 		r.machineState = ""
+		r.reason = ""
+		if ev.Error != nil {
+			r.reason = ev.Error.Message
+		}
 	}
 	return r.checkpoint()
 }
@@ -372,6 +379,7 @@ func (r *Run) checkpoint() error {
 		RunID:        r.id.RunID,
 		Phase:        r.phase,
 		MachineState: r.machineState,
+		Reason:       r.reason,
 		LastSeq:      r.seq,
 		UpdatedAt:    r.now(),
 	}
