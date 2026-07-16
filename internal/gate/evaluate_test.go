@@ -16,9 +16,13 @@ type fakeAutomated struct {
 	outcomes []string
 	i        int
 	err      error
+	onCall   func()
 }
 
 func (f *fakeAutomated) Evaluate(_ context.Context, _ apiv1.AutomatedGate, _ apiv1.InvocationEnvelope) (string, error) {
+	if f.onCall != nil {
+		f.onCall()
+	}
 	if f.err != nil {
 		return "", f.err
 	}
@@ -89,6 +93,39 @@ func readGateEvents(t *testing.T, run *journal.Run) []journal.Event {
 		}
 	}
 	return gates
+}
+
+func TestEvaluatorJournalsStartBeforeDispatch(t *testing.T) {
+	run := newTestJournal(t)
+	auto := &fakeAutomated{outcomes: []string{OutcomePass}}
+	auto.onCall = func() {
+		rd, err := journal.OpenRead(run.Dir())
+		if err != nil {
+			t.Fatalf("OpenRead during evaluator dispatch: %v", err)
+		}
+		events, err := rd.Events()
+		if err != nil {
+			t.Fatalf("Events during evaluator dispatch: %v", err)
+		}
+		last := events[len(events)-1]
+		if last.Type != journal.EventGateStarted || last.Gate != "autogate" {
+			t.Fatalf("last event at evaluator dispatch = %+v, want gate.started for autogate", last)
+		}
+		if got := int(last.Runner["repassAttempt"].(float64)); got != 1 {
+			t.Fatalf("gate.started repassAttempt = %d, want 1", got)
+		}
+	}
+	ev := &Evaluator{Automated: auto, Journal: run}
+	g := apiv1.Gate{
+		Name:      "autogate",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches:  map[string]string{OutcomePass: wf.TerminalComplete, OutcomeFail: "implement"},
+	}
+
+	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false); err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
 }
 
 // TestFullRepassFixture drives the exact acceptance-criteria scenario:
@@ -550,6 +587,41 @@ func TestEvaluatorHonorsSeededRepassCount(t *testing.T) {
 	}
 	if fr.Attempt != 1 || fr.Escalated {
 		t.Fatalf("Evaluate (fresh) = %+v, want attempt=1 escalated=false", fr)
+	}
+}
+
+func TestEvaluatorEscalatesRecoveredInterruptedBudgetWithoutDispatch(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "autogate",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches:  map[string]string{OutcomePass: wf.TerminalComplete, OutcomeFail: "implement"},
+	}
+	auto := &fakeAutomated{outcomes: []string{OutcomePass}}
+	run := newTestJournal(t)
+	ev := &Evaluator{
+		Automated:   auto,
+		Journal:     run,
+		MaxRepasses: 1,
+		Attempts:    map[string]int{"autogate": 2},
+	}
+
+	r, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if auto.i != 0 {
+		t.Fatalf("automated evaluator calls = %d, want 0 after interrupted attempts exhausted the budget", auto.i)
+	}
+	if !r.Interrupted || !r.Escalated || r.Attempt != 2 || r.Target != wf.TargetEscalate {
+		t.Fatalf("Evaluate = %+v, want interrupted escalation at recovered attempt 2", r)
+	}
+	events := readGateEvents(t, run)
+	if len(events) != 1 {
+		t.Fatalf("gate.evaluated events = %d, want 1 synthesized recovery verdict", len(events))
+	}
+	if interrupted, _ := events[0].Runner["interrupted"].(bool); !interrupted {
+		t.Fatalf("gate.evaluated Runner[interrupted] = %v, want true", events[0].Runner["interrupted"])
 	}
 }
 

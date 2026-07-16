@@ -22,8 +22,9 @@ const DefaultMaxRepasses = 3
 type Result struct {
 	// Gate is the evaluated gate's name.
 	Gate string
-	// Outcome is the raw evaluator outcome (a check's "pass"/"fail", or an
-	// agentic Verdict's Decision string).
+	// Outcome is the evaluator outcome (a check's "pass"/"fail", or an
+	// agentic Verdict's Decision string), or the synthesized fail-closed
+	// outcome for an interrupted-budget escalation.
 	Outcome string
 	// Target is the branch actually taken — the gate's configured branch for
 	// Outcome, unless the repass budget was exhausted, in which case it is
@@ -52,6 +53,10 @@ type Result struct {
 	// inputs are unchanged before ever setting CachedVerdict; Evaluate
 	// trusts that verification and never recomputes it).
 	CacheHit bool
+	// Interrupted is true when a recovered, dangling gate.started marker had
+	// already consumed enough repass slots to force escalation. The evaluator
+	// is not invoked again for this synthesized, fail-closed result.
+	Interrupted bool
 	// Verdict is the full agentic-gate verdict (decision, rationale,
 	// evidence, findings). nil for automated gates.
 	Verdict *apiv1.Verdict
@@ -92,11 +97,11 @@ type Evaluator struct {
 	// for a fresh run. A caller resuming an interrupted run seeds this on
 	// construction (Evaluator{Attempts: restored, ...}) so the repass budget
 	// continues rather than resetting to 0 — e.g. Runner.Resume (#89)
-	// reconstructing it from each gate's last gate.evaluated event
-	// (Runner["repassAttempt"], recordVerdict in journal.go), the same source
-	// state.json itself is always reconstructable from. Evaluate mutates this
-	// map in place, so it also serves as the live, inspectable checkpoint
-	// source for a caller that wants to persist it after each gate — read
+	// reconstructing it from each gate's last gate.started/gate.evaluated
+	// event (Runner["repassAttempt"], journal.go), the same source state.json
+	// itself is always reconstructable from. Evaluate mutates this map in
+	// place, so it also serves as the live, inspectable checkpoint source for
+	// a caller that wants to persist it after each gate — read
 	// Attempts[gateName], not Result.Attempt, if a pass may have reset it
 	// since the last read. Nil-safe: Evaluate lazily allocates it on first
 	// use. Exported instead of a constructor because every other Evaluator
@@ -169,6 +174,42 @@ type Evaluator struct {
 // to mean "no digest supplied, still call the reviewer" — emptiness is an
 // explicit signal, never inferred from an empty digest.
 func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, diffDigest string, emptyDiff bool) (Result, error) {
+	if attempt := e.Attempts[g.Name]; attempt > e.maxRepasses() {
+		r := Result{
+			Gate:        g.Name,
+			Outcome:     OutcomeFail,
+			Target:      wf.TargetEscalate,
+			Attempt:     attempt,
+			Escalated:   true,
+			Interrupted: true,
+		}
+		artifact, err := recordVerdict(e.Journal, r, diffDigest)
+		if err != nil {
+			return Result{}, fmt.Errorf("gate %q: journal interrupted escalation: %w", g.Name, err)
+		}
+		r.VerdictArtifact = artifact
+		return r, nil
+	}
+
+	switch g.Evaluator {
+	case apiv1.EvaluatorAutomated:
+		if e.Automated == nil {
+			return Result{}, fmt.Errorf("gate %q: automated evaluator not configured", g.Name)
+		}
+	case apiv1.EvaluatorAgentic:
+		if e.CachedVerdict == nil && e.Reviewer == nil {
+			return Result{}, fmt.Errorf("gate %q: agentic reviewer not configured", g.Name)
+		}
+	case apiv1.EvaluatorHuman:
+		return Result{}, fmt.Errorf("gate %q: human evaluator is not supported at V0 (GT-003, ships V1)", g.Name)
+	default:
+		return Result{}, fmt.Errorf("gate %q: unknown evaluator %q", g.Name, g.Evaluator)
+	}
+
+	if err := recordStart(e.Journal, g.Name, e.Attempts[g.Name]+1); err != nil {
+		return Result{}, fmt.Errorf("gate %q: journal evaluation start: %w", g.Name, err)
+	}
+
 	var outcome string
 	var verdict *apiv1.Verdict
 	duplicateDiff := false
@@ -176,9 +217,6 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 
 	switch g.Evaluator {
 	case apiv1.EvaluatorAutomated:
-		if e.Automated == nil {
-			return Result{}, fmt.Errorf("gate %q: automated evaluator not configured", g.Name)
-		}
 		conf := apiv1.AutomatedGate{}
 		if g.Automated != nil {
 			conf = *g.Automated
@@ -204,8 +242,6 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			cacheHit = true
 			verdict = e.CachedVerdict
 			outcome = string(verdict.Decision)
-		} else if e.Reviewer == nil {
-			return Result{}, fmt.Errorf("gate %q: agentic reviewer not configured", g.Name)
 		} else if emptyDiff {
 			// #415 sibling: the implement stage produced no committed change,
 			// so there is nothing for the reviewer to evaluate or a repass to
@@ -235,11 +271,6 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			outcome = string(v.Decision)
 		}
 
-	case apiv1.EvaluatorHuman:
-		return Result{}, fmt.Errorf("gate %q: human evaluator is not supported at V0 (GT-003, ships V1)", g.Name)
-
-	default:
-		return Result{}, fmt.Errorf("gate %q: unknown evaluator %q", g.Name, g.Evaluator)
 	}
 
 	if diffDigest != "" {
@@ -260,20 +291,6 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 		target = wf.TargetEscalate
 	}
 
-	// KNOWN GAP (#263, split out of #112): a crash between the evaluator
-	// returning above and this Append succeeding leaves no gate.evaluated
-	// event for this attempt at all — unlike a task (stage.started journaled
-	// BEFORE dispatch, letting resume.go's interruptedAttempt detect and
-	// terminally journal an in-flight crash, #89/#107/#111), a gate has no
-	// equivalent pre-dispatch marker, so Resume's gateRepassSeed reconstructs
-	// Attempts purely from journaled events and never learns this one
-	// happened. A single crash here is a one-off wasted (and, for an agentic
-	// gate, side-effecting) duplicate evaluation; a repeated crash-loop
-	// hitting this exact window would never actually exhaust the repass
-	// budget, defeating the escalation safety net. A real fix needs the same
-	// durable pre-dispatch marker pattern tasks have (a new journal event
-	// type + resume.go logic) — deferred to #263 rather than folded into this
-	// grouped hardening pass; see that issue for the full rationale.
 	r := Result{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated, DuplicateDiff: duplicateDiff, CacheHit: cacheHit, Verdict: verdict}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
@@ -297,9 +314,12 @@ func (e *Evaluator) trackRepass(gateName, outcome string) (attempt int, exceeded
 	}
 	e.Attempts[gateName]++
 	attempt = e.Attempts[gateName]
-	budget := e.MaxRepasses
-	if budget <= 0 {
-		budget = DefaultMaxRepasses
+	return attempt, attempt > e.maxRepasses()
+}
+
+func (e *Evaluator) maxRepasses() int {
+	if e.MaxRepasses > 0 {
+		return e.MaxRepasses
 	}
-	return attempt, attempt > budget
+	return DefaultMaxRepasses
 }

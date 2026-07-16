@@ -379,10 +379,10 @@ type walkSeed struct {
 // gateAttempts=nil, gateDiffDigests=nil, and a zero-value seed; Resume
 // (resume.go) begins at the journal's checkpointed state, optionally with a
 // resumeContext for an interrupted task attempt, gateAttempts seeded from
-// each gate's last gate.evaluated event so a resumed run's repass budget
-// continues rather than resetting (#89), gateDiffDigests likewise seeded
-// (gateDiffSeed) so a resumed run's non-convergence detection continues too
-// (#316), and seed reconstructed from the journal (#107/#108). reg is the
+// each gate's last gate.started/gate.evaluated event so a resumed run's repass
+// budget continues rather than resetting (#89/#263), gateDiffDigests likewise
+// seeded (gateDiffSeed) so a resumed run's non-convergence detection continues
+// too (#316), and seed reconstructed from the journal (#107/#108). reg is the
 // run's SecretRegistrar (see Start), threaded to every executor constructed
 // here.
 func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, gateAttempts map[string]int, gateDiffDigests map[string]string, reg SecretRegistrar, seed walkSeed) (Result, error) {

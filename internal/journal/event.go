@@ -17,6 +17,9 @@ const (
 	EventStageStarted EventType = "stage.started"
 	// EventStageFinished marks a stage attempt ending with a result.
 	EventStageFinished EventType = "stage.finished"
+	// EventGateStarted marks a gate evaluation beginning. It is recovery
+	// bookkeeping, excluded from cross-runner conformance.
+	EventGateStarted EventType = "gate.started"
 	// EventGateEvaluated records a gate verdict and the branch it selected.
 	EventGateEvaluated EventType = "gate.evaluated"
 	// EventArtifactRecorded records an artifact committed by content digest.
@@ -99,7 +102,8 @@ type Event struct {
 	Attempt int `json:"attempt,omitempty"`
 	// AttemptClass tags a retry attempt. Normative iff not "infra".
 	AttemptClass AttemptClass `json:"attemptClass,omitempty"`
-	// Gate is the gate name for gate.evaluated. Normative.
+	// Gate is the gate name for gate.* events. Normative on gate.evaluated;
+	// gate.started is excluded as recovery bookkeeping.
 	Gate string `json:"gate,omitempty"`
 	// Verdict is the gate decision for gate.evaluated. Normative.
 	Verdict string `json:"verdict,omitempty"`
@@ -186,8 +190,9 @@ func (e Event) IsConformanceNormative() bool {
 		return false
 	}
 	switch e.Type {
-	case EventRepaired:
-		// Torn-write repair is a durability mechanic, not orchestration.
+	case EventGateStarted, EventRepaired:
+		// Pre-dispatch gate markers and torn-write repair are durability
+		// mechanics, not orchestration outcomes.
 		return false
 	case EventSpanRecorded:
 		// Spans carry live-harness transcripts (LLM output); structural only

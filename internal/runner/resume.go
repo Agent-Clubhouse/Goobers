@@ -61,18 +61,15 @@ type ResumeInput struct {
 // the exact transition (taskOutcome) a live walk would have taken, so the
 // walk actually resumes at the RIGHT next state.
 //
-// A gate-state resume has no equivalent in-flight signal to detect (a gate
-// evaluation journals only its terminal gate.evaluated event, never a
-// started/finished pair) — it always just re-evaluates fresh, but now
-// against the REAL subject: lastFinishedSubject reconstructs the last
-// finished stage's full result (status, outputs, artifacts — journaled on
-// stage.finished for exactly this) instead of walk's in-memory-only
-// lastStage/lastResult defaulting to a zero value (#108). Its bounded-repass
-// counter (internal/gate.Evaluator.Attempts, #89) IS restored too:
-// gateRepassSeed reconstructs it from each gate's last gate.evaluated event
-// (Runner["repassAttempt"], recordVerdict in internal/gate/journal.go) — the
-// same event log state.json itself is always reconstructable from — so a
-// crash mid repass-loop cannot grant a gate extra passes beyond its budget.
+// A gate-state resume evaluates against the REAL subject:
+// lastFinishedSubject reconstructs the last finished stage's full result
+// (status, outputs, artifacts — journaled on stage.finished for exactly this)
+// instead of walk's in-memory-only lastStage/lastResult defaulting to a zero
+// value (#108). Its bounded-repass counter (internal/gate.Evaluator.Attempts,
+// #89) is restored from gate.evaluated outcomes and gate.started pre-dispatch
+// markers. A dangling start consumes its prospective repass slot; once
+// repeated interrupted evaluations exceed the budget, Evaluate escalates
+// without dispatching the side-effecting evaluator again (#263).
 func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
@@ -341,17 +338,16 @@ func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
 }
 
 // gateRepassSeed reconstructs internal/gate.Evaluator.Attempts from the
-// journal's event log: each gate.evaluated event's Runner["repassAttempt"]
-// (recordVerdict, internal/gate/journal.go) is exactly the count Attempts
-// held for that gate right after the event was journaled, so the LAST such
-// event per gate name is that gate's count as of the moment of interruption
-// — a later "pass" event's repassAttempt is already 0, so no separate reset
-// tracking is needed here. Returns nil (Evaluator's own nil-safe zero value)
-// if the run never evaluated a gate.
+// journal's event log. gate.started carries the prospective count before
+// dispatch, so a dangling marker charges a crash-interrupted evaluation to the
+// budget. A following gate.evaluated replaces it with the actual post-outcome
+// count (including a pass reset to 0). Thus the last marker or verdict per gate
+// is exactly the count at interruption. Returns nil (Evaluator's nil-safe zero
+// value) if the run never started a gate evaluation.
 func gateRepassSeed(events []journal.Event) map[string]int {
 	var seed map[string]int
 	for _, e := range events {
-		if e.Type != journal.EventGateEvaluated {
+		if e.Type != journal.EventGateStarted && e.Type != journal.EventGateEvaluated {
 			continue
 		}
 		n, ok := e.Runner["repassAttempt"].(float64)

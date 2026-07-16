@@ -46,6 +46,7 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 			Outputs:   map[string]any{"ciStatus": "success", "coverage": 81.2},
 			Artifacts: []Ref{{Path: art.Path, Digest: art.Digest, Size: art.Size}},
 		},
+		{Type: EventGateStarted, Gate: "review", Runner: map[string]any{"repassAttempt": 1}},
 		{Type: EventGateEvaluated, Gate: "review", Verdict: "pass"},
 		{Type: EventRefTouched, ExternalRef: &ExternalRef{Provider: "github", Kind: "pr", ID: "9"}},
 		{Type: EventError, Error: &ErrorDetail{Code: "boom", Message: "detail"}},
