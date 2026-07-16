@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
+import { DataList, DataRow } from "./components/DataList";
+import { GraphFrame, TopologyGraph } from "./components/GraphFrame";
+import { Icon } from "./components/Icon";
+import { AttemptInspector, StageDefinitionInspector } from "./components/Inspector";
+import { PortalShell } from "./components/PortalShell";
+import { StatusBadge } from "./components/Status";
+import { usePrefersReducedMotion } from "./hooks/usePrefersReducedMotion";
 import {
   instanceWarnings,
-  runStatusLabel,
   runs,
   workflowForRun,
   workflows,
   type NodeState,
   type Run,
   type RunEvent,
-  type StageAttempt,
   type Workflow,
-  type WorkflowStage,
 } from "./prototypeData";
 import {
   compressedIdleDelayMs,
@@ -21,321 +25,8 @@ import {
   replayTransition,
   type ReplaySpeed,
 } from "./replay";
-
-type Theme = "light" | "dark";
-type IconName =
-  | "alert"
-  | "arrow"
-  | "artifact"
-  | "check"
-  | "chevron"
-  | "clock"
-  | "close"
-  | "code"
-  | "gate"
-  | "moon"
-  | "overview"
-  | "pause"
-  | "play"
-  | "previous"
-  | "next"
-  | "run"
-  | "sun"
-  | "workflow";
-
-type Route =
-  | { page: "overview" }
-  | { page: "workflows" }
-  | { page: "runs" }
-  | { page: "workflow"; id: string }
-  | { page: "run"; id: string };
-
-function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
-  const paths: Record<IconName, React.ReactNode> = {
-    alert: (
-      <>
-        <path d="M12 3 2.8 19a1.4 1.4 0 0 0 1.2 2h16a1.4 1.4 0 0 0 1.2-2L12 3Z" />
-        <path d="M12 9v4" />
-        <path d="M12 17h.01" />
-      </>
-    ),
-    arrow: (
-      <>
-        <path d="M5 12h14" />
-        <path d="m13 6 6 6-6 6" />
-      </>
-    ),
-    artifact: (
-      <>
-        <path d="M7 3h7l4 4v14H7z" />
-        <path d="M14 3v5h5" />
-        <path d="M10 13h5" />
-        <path d="M10 17h5" />
-      </>
-    ),
-    check: <path d="m5 12 4 4L19 6" />,
-    chevron: <path d="m9 18 6-6-6-6" />,
-    clock: (
-      <>
-        <circle cx="12" cy="12" r="9" />
-        <path d="M12 7v5l3 2" />
-      </>
-    ),
-    close: (
-      <>
-        <path d="m6 6 12 12" />
-        <path d="m18 6-12 12" />
-      </>
-    ),
-    code: (
-      <>
-        <path d="m8 9-3 3 3 3" />
-        <path d="m16 9 3 3-3 3" />
-        <path d="m14 5-4 14" />
-      </>
-    ),
-    gate: (
-      <>
-        <path d="M5 4h14v16H5z" />
-        <path d="M9 4v16" />
-        <path d="m13 8 3 4-3 4" />
-      </>
-    ),
-    moon: <path d="M20 15.4A8.5 8.5 0 0 1 8.6 4 8.5 8.5 0 1 0 20 15.4Z" />,
-    overview: (
-      <>
-        <path d="M4 4h6v6H4z" />
-        <path d="M14 4h6v6h-6z" />
-        <path d="M4 14h6v6H4z" />
-        <path d="M14 14h6v6h-6z" />
-      </>
-    ),
-    pause: (
-      <>
-        <path d="M8 5v14" />
-        <path d="M16 5v14" />
-      </>
-    ),
-    play: <path d="m8 5 11 7-11 7Z" />,
-    previous: (
-      <>
-        <path d="M6 5v14" />
-        <path d="m18 6-8 6 8 6Z" />
-      </>
-    ),
-    next: (
-      <>
-        <path d="M18 5v14" />
-        <path d="m6 6 8 6-8 6Z" />
-      </>
-    ),
-    run: (
-      <>
-        <circle cx="12" cy="12" r="9" />
-        <path d="m10 8 6 4-6 4Z" />
-      </>
-    ),
-    sun: (
-      <>
-        <circle cx="12" cy="12" r="4" />
-        <path d="M12 2v2" />
-        <path d="M12 20v2" />
-        <path d="m4.9 4.9 1.4 1.4" />
-        <path d="m17.7 17.7 1.4 1.4" />
-        <path d="M2 12h2" />
-        <path d="M20 12h2" />
-        <path d="m4.9 19.1 1.4-1.4" />
-        <path d="m17.7 6.3 1.4-1.4" />
-      </>
-    ),
-    workflow: (
-      <>
-        <circle cx="5" cy="6" r="2" />
-        <circle cx="19" cy="6" r="2" />
-        <circle cx="12" cy="18" r="2" />
-        <path d="M7 6h10" />
-        <path d="m6.5 8 4.2 8" />
-        <path d="m17.5 8-4.2 8" />
-      </>
-    ),
-  };
-
-  return (
-    <svg aria-hidden="true" className="icon" fill="none" height={size} viewBox="0 0 24 24" width={size}>
-      <g stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8">
-        {paths[name]}
-      </g>
-    </svg>
-  );
-}
-
-function parseRoute(): Route {
-  const path = window.location.hash.replace(/^#\/?/, "");
-  const [area, id] = path.split("/");
-  if (area === "workflow" && id) {
-    return { page: "workflow", id };
-  }
-  if (area === "run" && id) {
-    return { page: "run", id };
-  }
-  if (area === "workflows") {
-    return { page: "workflows" };
-  }
-  if (area === "runs") {
-    return { page: "runs" };
-  }
-  return { page: "overview" };
-}
-
-function routeHash(route: Route): string {
-  if (route.page === "workflow" || route.page === "run") {
-    return `#/${route.page}/${route.id}`;
-  }
-  return `#/${route.page}`;
-}
-
-function storedTheme(): Theme {
-  try {
-    return window.localStorage?.getItem("goobers-theme") === "dark" ? "dark" : "light";
-  } catch {
-    return "light";
-  }
-}
-
-function persistTheme(theme: Theme) {
-  try {
-    window.localStorage?.setItem("goobers-theme", theme);
-  } catch {
-    // Storage can be unavailable in private or constrained browser contexts.
-  }
-}
-
-function activeArea(route: Route): "overview" | "workflows" | "runs" {
-  if (route.page === "workflow") {
-    return "workflows";
-  }
-  if (route.page === "run") {
-    return "runs";
-  }
-  return route.page;
-}
-
-function StatusBadge({ status }: { status: Run["status"] }) {
-  return (
-    <span className={`status-badge status-${status}`}>
-      <span className="status-dot" />
-      {runStatusLabel(status)}
-    </span>
-  );
-}
-
-function TopologyGraph({
-  workflow,
-  states,
-  activeEdges,
-  traversingEdge,
-  selectedStageId,
-  onSelectStage,
-}: {
-  workflow: Workflow;
-  states?: Record<string, NodeState>;
-  activeEdges?: ReadonlySet<string>;
-  traversingEdge?: string;
-  selectedStageId?: string;
-  onSelectStage: (stageId: string) => void;
-}) {
-  const stageById = useMemo(
-    () => new Map(workflow.stages.map((stage) => [stage.id, stage])),
-    [workflow.stages],
-  );
-
-  return (
-    <div className="graph-canvas" aria-label={`${workflow.name} execution graph`}>
-      <svg aria-hidden="true" className="graph-edges" preserveAspectRatio="none" viewBox="0 0 100 100">
-        {workflow.edges.map((edge) => {
-          const from = stageById.get(edge.from);
-          const to = stageById.get(edge.to);
-          if (!from || !to) {
-            return null;
-          }
-          const edgeKey = `${edge.from}->${edge.to}`;
-          const active = activeEdges?.has(edgeKey) ?? false;
-          const path = edge.repass
-            ? `M ${from.x} ${from.y + 9} C ${from.x} 88, ${to.x} 88, ${to.x} ${to.y + 9}`
-            : `M ${from.x + 5} ${from.y} L ${to.x - 5} ${to.y}`;
-          return (
-            <g key={`${edge.from}-${edge.to}-${edge.label ?? "next"}`}>
-              <path
-                className={[
-                  "graph-edge",
-                  active ? "graph-edge-active" : "",
-                  traversingEdge === edgeKey ? "graph-edge-traversing" : "",
-                ].filter(Boolean).join(" ")}
-                d={path}
-                data-edge={edgeKey}
-              />
-              {edge.label && (
-                <text className="graph-edge-label" x={(from.x + to.x) / 2} y={edge.repass ? 87 : from.y - 5}>
-                  {edge.label}
-                </text>
-              )}
-            </g>
-          );
-        })}
-      </svg>
-      {workflow.stages.map((stage) => {
-        const state = states?.[stage.id] ?? "pending";
-        return (
-          <button
-            aria-label={`${stage.name}, ${state}`}
-            className={`graph-node node-${stage.kind} node-${state} ${
-              selectedStageId === stage.id ? "graph-node-selected" : ""
-            }`}
-            key={stage.id}
-            onClick={() => onSelectStage(stage.id)}
-            style={{ left: `${stage.x}%`, top: `${stage.y}%` }}
-            type="button"
-          >
-            <span className="graph-node-kind">{stage.kind === "gate" ? "gate" : stage.kind}</span>
-            <strong>{stage.name}</strong>
-            {state !== "pending" && <span className="graph-node-state">{state}</span>}
-          </button>
-        );
-      })}
-      <ul className="sr-only">
-        {workflow.stages.map((stage) => {
-          const outgoing = workflow.edges
-            .filter((edge) => edge.from === stage.id)
-            .map((edge) => `${edge.label ?? "next"} to ${stageById.get(edge.to)?.name ?? edge.to}`);
-          return (
-            <li key={`topology-${stage.id}`}>
-              {stage.name}, {stage.kind}. {outgoing.length > 0 ? `Outgoing: ${outgoing.join("; ")}.` : "Terminal stage."}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
-
-function DataRow({
-  children,
-  onClick,
-  label,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button aria-label={label} className="data-row" onClick={onClick} type="button">
-      {children}
-      <span className="row-arrow">
-        <Icon name="chevron" size={16} />
-      </span>
-    </button>
-  );
-}
+import { activeArea, parseRoute, routeHash, type Route } from "./routes";
+import { ThemeProvider } from "./theme";
 
 function OverviewPage({ navigate }: { navigate: (route: Route) => void }) {
   const [warningVisible, setWarningVisible] = useState(true);
@@ -413,16 +104,14 @@ function OverviewPage({ navigate }: { navigate: (route: Route) => void }) {
             View all runs <Icon name="arrow" size={15} />
           </button>
         </div>
-        <div className="data-table">
-          <div className="data-header run-grid">
-            <span>Run</span>
-            <span>Workflow</span>
-            <span>Current stage</span>
-            <span>Elapsed</span>
-            <span />
-          </div>
+        <DataList headers={["Run", "Workflow", "Current stage", "Elapsed", ""]} layout="run-grid">
           {activeRuns.map((run) => (
-            <DataRow key={run.id} label={`Open run ${run.title}`} onClick={() => navigate({ page: "run", id: run.id })}>
+            <DataRow
+              key={run.id}
+              label={`Open run ${run.title}`}
+              layout="run-grid"
+              onClick={() => navigate({ page: "run", id: run.id })}
+            >
               <span className="row-primary">
                 <span className="row-title">{run.title}</span>
                 <span className="row-subtitle">
@@ -437,7 +126,7 @@ function OverviewPage({ navigate }: { navigate: (route: Route) => void }) {
               <span className="mono">{run.duration}</span>
             </DataRow>
           ))}
-        </div>
+        </DataList>
       </section>
 
       <section className="content-section">
@@ -447,16 +136,14 @@ function OverviewPage({ navigate }: { navigate: (route: Route) => void }) {
             <h2>Recent outcomes</h2>
           </div>
         </div>
-        <div className="data-table">
-          <div className="data-header outcome-grid">
-            <span>Run</span>
-            <span>Outcome</span>
-            <span>Workflow</span>
-            <span>Duration</span>
-            <span />
-          </div>
+        <DataList headers={["Run", "Outcome", "Workflow", "Duration", ""]} layout="outcome-grid">
           {recentRuns.map((run) => (
-            <DataRow key={run.id} label={`Open run ${run.title}`} onClick={() => navigate({ page: "run", id: run.id })}>
+            <DataRow
+              key={run.id}
+              label={`Open run ${run.title}`}
+              layout="outcome-grid"
+              onClick={() => navigate({ page: "run", id: run.id })}
+            >
               <span className="row-primary">
                 <span className="row-title">{run.title}</span>
                 <span className="row-subtitle">{run.issue}</span>
@@ -466,7 +153,7 @@ function OverviewPage({ navigate }: { navigate: (route: Route) => void }) {
               <span className="mono">{run.duration}</span>
             </DataRow>
           ))}
-        </div>
+        </DataList>
       </section>
 
       {warningVisible && instanceWarnings.map((warning) => (
@@ -506,18 +193,12 @@ function WorkflowsPage({ navigate }: { navigate: (route: Route) => void }) {
       </header>
 
       <section className="content-section">
-        <div className="data-table">
-          <div className="data-header workflow-grid">
-            <span>Workflow</span>
-            <span>Trigger</span>
-            <span>Concurrency</span>
-            <span>Last outcome</span>
-            <span />
-          </div>
+        <DataList headers={["Workflow", "Trigger", "Concurrency", "Last outcome", ""]} layout="workflow-grid">
           {workflows.map((workflow) => (
             <DataRow
               key={workflow.id}
               label={`Open workflow ${workflow.name}`}
+              layout="workflow-grid"
               onClick={() => navigate({ page: "workflow", id: workflow.id })}
             >
               <span className="row-primary">
@@ -534,7 +215,7 @@ function WorkflowsPage({ navigate }: { navigate: (route: Route) => void }) {
               </span>
             </DataRow>
           ))}
-        </div>
+        </DataList>
       </section>
     </>
   );
@@ -563,9 +244,10 @@ function RunsPage({ navigate }: { navigate: (route: Route) => void }) {
         <p>Every execution, ordered by the most recent journal activity.</p>
       </header>
 
-      <div className="filter-bar" aria-label="Filter runs">
+      <div className="filter-bar" aria-label="Filter runs" role="group">
         {(["all", "active", "attention", "complete"] as const).map((option) => (
           <button
+            aria-pressed={filter === option}
             className={filter === option ? "filter-button filter-button-active" : "filter-button"}
             key={option}
             onClick={() => setFilter(option)}
@@ -577,17 +259,17 @@ function RunsPage({ navigate }: { navigate: (route: Route) => void }) {
       </div>
 
       <section className="content-section">
-        <div className="data-table">
-          <div className="data-header all-runs-grid">
-            <span>Run</span>
-            <span>Status</span>
-            <span>Current stage</span>
-            <span>Started</span>
-            <span>Duration</span>
-            <span />
-          </div>
+        <DataList
+          headers={["Run", "Status", "Current stage", "Started", "Duration", ""]}
+          layout="all-runs-grid"
+        >
           {filteredRuns.map((run) => (
-            <DataRow key={run.id} label={`Open run ${run.title}`} onClick={() => navigate({ page: "run", id: run.id })}>
+            <DataRow
+              key={run.id}
+              label={`Open run ${run.title}`}
+              layout="all-runs-grid"
+              onClick={() => navigate({ page: "run", id: run.id })}
+            >
               <span className="row-primary">
                 <span className="row-title">{run.title}</span>
                 <span className="row-subtitle">
@@ -600,41 +282,9 @@ function RunsPage({ navigate }: { navigate: (route: Route) => void }) {
               <span className="mono">{run.duration}</span>
             </DataRow>
           ))}
-        </div>
+        </DataList>
       </section>
     </>
-  );
-}
-
-function StageDefinition({ stage }: { stage: WorkflowStage }) {
-  return (
-    <aside className="definition-panel">
-      <div className="inspector-heading">
-        <span className={`primitive-icon primitive-${stage.kind}`}>
-          <Icon name={stage.kind === "gate" ? "gate" : stage.kind === "agentic" ? "code" : "workflow"} size={17} />
-        </span>
-        <div>
-          <span>{stage.kind}</span>
-          <h3>{stage.name}</h3>
-        </div>
-      </div>
-      <p className="inspector-description">{stage.description}</p>
-      <dl className="property-list">
-        <div>
-          <dt>{stage.kind === "gate" ? "Evaluator" : "Goober"}</dt>
-          <dd>{stage.evaluator ?? stage.goober}</dd>
-        </div>
-        <div>
-          <dt>Policy</dt>
-          <dd>{stage.retry}</dd>
-        </div>
-      </dl>
-      <div className="code-heading">
-        <span>Definition</span>
-        <span>YAML</span>
-      </div>
-      <pre className="code-block">{stage.yaml}</pre>
-    </aside>
   );
 }
 
@@ -675,21 +325,14 @@ function WorkflowPage({ workflow, navigate }: { workflow: Workflow; navigate: (r
       </header>
 
       <section className="graph-layout">
-        <div className="graph-panel">
-          <div className="panel-heading-row">
-            <div>
-              <p className="section-kicker">Structure</p>
-              <h2>Execution graph</h2>
-            </div>
-            <span className="graph-legend">Select a stage to inspect it</span>
-          </div>
+        <GraphFrame hint="Select a stage to inspect it">
           <TopologyGraph
             onSelectStage={setSelectedStageId}
             selectedStageId={selectedStageId}
             workflow={workflow}
           />
-        </div>
-        {selectedStage && <StageDefinition stage={selectedStage} />}
+        </GraphFrame>
+        {selectedStage && <StageDefinitionInspector stage={selectedStage} />}
       </section>
 
       <section className="content-section">
@@ -699,9 +342,14 @@ function WorkflowPage({ workflow, navigate }: { workflow: Workflow; navigate: (r
             <h2>Recent runs</h2>
           </div>
         </div>
-        <div className="data-table">
+        <DataList layout="history-grid">
           {workflowRuns.map((run) => (
-            <DataRow key={run.id} label={`Open run ${run.title}`} onClick={() => navigate({ page: "run", id: run.id })}>
+            <DataRow
+              key={run.id}
+              label={`Open run ${run.title}`}
+              layout="history-grid"
+              onClick={() => navigate({ page: "run", id: run.id })}
+            >
               <span className="row-primary">
                 <span className="row-title">{run.title}</span>
                 <span className="row-subtitle">{run.issue} · {run.startedAt}</span>
@@ -711,7 +359,7 @@ function WorkflowPage({ workflow, navigate }: { workflow: Workflow; navigate: (r
               <span className="mono">{run.duration}</span>
             </DataRow>
           ))}
-        </div>
+        </DataList>
       </section>
     </>
   );
@@ -792,139 +440,6 @@ function traversalEdgeAtEvent(events: RunEvent[], index: number): string | undef
       : `${previous.stageId}->${current.stageId}`;
   }
   return undefined;
-}
-
-function visibleAttempts(run: Run, stageId: string, eventSeq: number): StageAttempt[] {
-  return run.attempts
-    .filter((attempt) => attempt.stageId === stageId && attempt.startedSeq <= eventSeq)
-    .map((attempt) => {
-      if (attempt.endedSeq !== undefined && attempt.endedSeq <= eventSeq) {
-        return attempt;
-      }
-      return {
-        ...attempt,
-        status: "running",
-        duration: "In progress",
-        output: undefined,
-        artifacts: [],
-      };
-    });
-}
-
-function AttemptInspector({
-  run,
-  stage,
-  eventSeq,
-}: {
-  run: Run;
-  stage: WorkflowStage;
-  eventSeq: number;
-}) {
-  const attempts = visibleAttempts(run, stage.id, eventSeq);
-  const [selectedAttemptNumber, setSelectedAttemptNumber] = useState<number>();
-  const selectedAttempt =
-    attempts.find((attempt) => attempt.number === selectedAttemptNumber) ?? attempts[attempts.length - 1];
-
-  useEffect(() => {
-    setSelectedAttemptNumber(undefined);
-  }, [stage.id, eventSeq]);
-
-  return (
-    <aside className="run-inspector">
-      <div className="inspector-heading">
-        <span className={`primitive-icon primitive-${stage.kind}`}>
-          <Icon name={stage.kind === "gate" ? "gate" : stage.kind === "agentic" ? "code" : "workflow"} size={17} />
-        </span>
-        <div>
-          <span>{stage.kind}</span>
-          <h3>{stage.name}</h3>
-        </div>
-      </div>
-
-      {attempts.length === 0 ? (
-        <div className="not-reached">
-          <span>Not reached at this point</span>
-          <small>Move the playhead forward to inspect this stage.</small>
-        </div>
-      ) : (
-        <>
-          <div className="attempt-switcher" aria-label="Stage attempts">
-            {attempts.map((attempt) => (
-              <button
-                className={selectedAttempt?.id === attempt.id ? "attempt-button attempt-button-active" : "attempt-button"}
-                key={attempt.id}
-                onClick={() => setSelectedAttemptNumber(attempt.number)}
-                type="button"
-              >
-                Attempt {attempt.number}
-              </button>
-            ))}
-          </div>
-          {selectedAttempt && (
-            <div className="attempt-content">
-              <div className="attempt-summary-row">
-                <span className={`attempt-state attempt-${selectedAttempt.status}`}>{selectedAttempt.status}</span>
-                <span className="mono">{selectedAttempt.duration}</span>
-                <span>{selectedAttempt.kind}</span>
-              </div>
-              <p>{selectedAttempt.summary}</p>
-              {selectedAttempt.output && (
-                <div className="output-line">
-                  <span>Output</span>
-                  <code>{selectedAttempt.output}</code>
-                </div>
-              )}
-              <div className="artifact-heading">
-                <span>Artifacts</span>
-                <span>{selectedAttempt.artifacts.length}</span>
-              </div>
-              {selectedAttempt.artifacts.length === 0 ? (
-                <p className="empty-detail">No artifacts recorded yet.</p>
-              ) : (
-                <div className="artifact-list">
-                  {selectedAttempt.artifacts.map((artifact) => (
-                    <div className="artifact-row" key={artifact.name}>
-                      <Icon name="artifact" size={17} />
-                      <span>
-                        <strong>{artifact.name}</strong>
-                        <small>{artifact.summary}</small>
-                      </span>
-                      <span className="artifact-size">{artifact.size}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </>
-      )}
-
-      <details className="definition-disclosure">
-        <summary>Stage definition</summary>
-        <p>{stage.description}</p>
-        <pre className="code-block">{stage.yaml}</pre>
-      </details>
-    </aside>
-  );
-}
-
-function usePrefersReducedMotion(): boolean {
-  const query = "(prefers-reduced-motion: reduce)";
-  const [reducedMotion, setReducedMotion] = useState(
-    () => typeof window.matchMedia === "function" && window.matchMedia(query).matches,
-  );
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") {
-      return;
-    }
-    const mediaQuery = window.matchMedia(query);
-    const onChange = (event: MediaQueryListEvent) => setReducedMotion(event.matches);
-    mediaQuery.addEventListener("change", onChange);
-    return () => mediaQuery.removeEventListener("change", onChange);
-  }, []);
-
-  return reducedMotion;
 }
 
 type ReplayMode = "live-follow" | "replay";
@@ -1094,12 +609,8 @@ function RunPage({ run, navigate }: { run: Run; navigate: (route: Route) => void
 
       <section className="run-workspace" data-replay-motion={reducedMotion ? "reduced" : "animated"}>
         <div className="run-primary">
-          <div className="graph-panel run-graph-panel">
-            <div className="panel-heading-row">
-              <div>
-                <p className="section-kicker">Structure</p>
-                <h2>Execution graph</h2>
-              </div>
+          <GraphFrame
+            action={
               <button
                 className="workflow-link"
                 onClick={() => navigate({ page: "workflow", id: workflow.id })}
@@ -1107,7 +618,9 @@ function RunPage({ run, navigate }: { run: Run; navigate: (route: Route) => void
               >
                 View definition <Icon name="arrow" size={14} />
               </button>
-            </div>
+            }
+            className="run-graph-panel"
+          >
             <TopologyGraph
               activeEdges={traversedEdges}
               onSelectStage={setSelectedStageId}
@@ -1120,7 +633,7 @@ function RunPage({ run, navigate }: { run: Run; navigate: (route: Route) => void
               }
               workflow={workflow}
             />
-          </div>
+          </GraphFrame>
 
           <section
             aria-label="Replay controls"
@@ -1199,7 +712,7 @@ function RunPage({ run, navigate }: { run: Run; navigate: (route: Route) => void
                 type="range"
                 value={replayIndex}
               />
-              <div className="speed-control" aria-label="Replay speed">
+              <div className="speed-control" aria-label="Replay speed" role="group">
                 {replaySpeeds.map((value) => (
                   <button
                     aria-pressed={speed === value}
@@ -1284,20 +797,14 @@ function RunPage({ run, navigate }: { run: Run; navigate: (route: Route) => void
   );
 }
 
-export function App() {
+function PortalApplication() {
   const [route, setRoute] = useState<Route>(() => parseRoute());
-  const [theme, setTheme] = useState<Theme>(() => storedTheme());
 
   useEffect(() => {
     const onHashChange = () => setRoute(parseRoute());
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    persistTheme(theme);
-  }, [theme]);
 
   const navigate = (nextRoute: Route) => {
     const nextHash = routeHash(nextRoute);
@@ -1314,89 +821,27 @@ export function App() {
     route.page === "workflow" ? workflows.find((candidate) => candidate.id === route.id) : undefined;
 
   return (
-    <div className="portal-frame">
-      <aside className="sidebar">
-        <button className="brand" onClick={() => navigate({ page: "overview" })} type="button">
-          <img alt="" src="/goober-mascot.png" />
-          <span>
-            <strong>goobers</strong>
-            <small>local operations</small>
-          </span>
-        </button>
+    <PortalShell
+      activeArea={area}
+      navigate={navigate}
+      runCount={runs.length}
+      workflowCount={workflows.length}
+    >
+      {route.page === "overview" && <OverviewPage navigate={navigate} />}
+      {route.page === "workflows" && <WorkflowsPage navigate={navigate} />}
+      {route.page === "runs" && <RunsPage navigate={navigate} />}
+      {route.page === "workflow" && workflow && <WorkflowPage navigate={navigate} workflow={workflow} />}
+      {route.page === "run" && run && <RunPage key={run.id} navigate={navigate} run={run} />}
+      {route.page === "workflow" && !workflow && <p>Workflow not found.</p>}
+      {route.page === "run" && !run && <p>Run not found.</p>}
+    </PortalShell>
+  );
+}
 
-        <nav className="primary-nav" aria-label="Primary">
-          <button
-            className={area === "overview" ? "nav-item nav-item-active" : "nav-item"}
-            onClick={() => navigate({ page: "overview" })}
-            type="button"
-          >
-            <Icon name="overview" />
-            Overview
-          </button>
-          <button
-            className={area === "workflows" ? "nav-item nav-item-active" : "nav-item"}
-            onClick={() => navigate({ page: "workflows" })}
-            type="button"
-          >
-            <Icon name="workflow" />
-            Workflows
-            <span className="nav-count">{workflows.length}</span>
-          </button>
-          <button
-            className={area === "runs" ? "nav-item nav-item-active" : "nav-item"}
-            onClick={() => navigate({ page: "runs" })}
-            type="button"
-          >
-            <Icon name="run" />
-            Runs
-            <span className="nav-count">{runs.length}</span>
-          </button>
-        </nav>
-
-        <div className="sidebar-status">
-          <div>
-            <span className="live-mark" />
-            <span>
-              <strong>local-dev</strong>
-              <small>127.0.0.1 · connected</small>
-            </span>
-          </div>
-          <span className="version">v0.6</span>
-        </div>
-      </aside>
-
-      <div className="portal-main">
-        <header className="topbar">
-          <div className="topbar-context">
-            <span className="scope-mark">G</span>
-            <span>
-              <strong>goobers</strong>
-              <small>1 gaggle · 4 goobers</small>
-            </span>
-          </div>
-          <div className="topbar-actions">
-            <span className="prototype-label">Interactive prototype</span>
-            <button
-              aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
-              className="theme-button"
-              onClick={() => setTheme((current) => (current === "light" ? "dark" : "light"))}
-              type="button"
-            >
-              <Icon name={theme === "light" ? "moon" : "sun"} size={17} />
-            </button>
-          </div>
-        </header>
-
-        <main className="page-content">
-          {route.page === "overview" && <OverviewPage navigate={navigate} />}
-          {route.page === "workflows" && <WorkflowsPage navigate={navigate} />}
-          {route.page === "runs" && <RunsPage navigate={navigate} />}
-          {route.page === "workflow" && workflow && <WorkflowPage navigate={navigate} workflow={workflow} />}
-          {route.page === "run" && run && <RunPage key={run.id} navigate={navigate} run={run} />}
-          {route.page === "workflow" && !workflow && <p>Workflow not found.</p>}
-          {route.page === "run" && !run && <p>Run not found.</p>}
-        </main>
-      </div>
-    </div>
+export function App() {
+  return (
+    <ThemeProvider>
+      <PortalApplication />
+    </ThemeProvider>
   );
 }

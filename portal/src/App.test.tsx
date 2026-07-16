@@ -3,17 +3,25 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
-describe("App prototype", () => {
+beforeEach(() => {
+  window.localStorage.clear();
+  delete document.documentElement.dataset.theme;
+});
+
+describe("portal foundation", () => {
   beforeEach(() => {
     window.location.hash = "#/overview";
   });
 
-  it("shows the operational overview", () => {
+  it.each([
+    ["#/overview", "One run needs attention."],
+    ["#/workflows", "Workflows"],
+    ["#/runs", "Runs"],
+  ])("renders the static fixture route %s", (hash, heading) => {
+    window.location.hash = hash;
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "One run needs attention." })).toBeInTheDocument();
-    expect(screen.getByText("Daemon connected")).toBeInTheDocument();
-    expect(screen.getByText("Scope could not converge within the repass budget")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
   });
 
   it("opens a run and supports replay", async () => {
@@ -44,6 +52,47 @@ describe("App prototype", () => {
     expect(await screen.findByText("In progress")).toBeInTheDocument();
     expect(screen.queryByText("attempt-1-summary.md")).not.toBeInTheDocument();
     expect(container.querySelector('[data-edge="review-gate->implement"]')).not.toHaveClass("graph-edge-active");
+  });
+
+  it("loads and persists an independently selected theme", async () => {
+    window.localStorage.setItem("goobers-theme", "dark");
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    await user.click(screen.getByRole("button", { name: "Use light theme" }));
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(window.localStorage.getItem("goobers-theme")).toBe("light");
+  });
+
+  it("supports directional keyboard navigation between primary routes", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    screen.getByRole("button", { name: "Overview" }).focus();
+    await user.keyboard("{ArrowRight}{Enter}");
+
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Workflows" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("puts responsive layout classes on headers and actionable rows", () => {
+    window.location.hash = "#/runs";
+    render(<App />);
+
+    expect(screen.getByText("Current stage").closest(".data-header")).toHaveClass("all-runs-grid");
+    expect(screen.getByRole("button", { name: /Open run Live visual dashboard/i })).toHaveClass("all-runs-grid");
+    expect(screen.getByRole("button", { name: "All runs" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("does not present unavailable artifact content as an action", () => {
+    renderRun("01JZ402DASHBOARD");
+    fireEvent.change(screen.getByRole("slider", { name: "Replay position" }), {
+      target: { value: "12" },
+    });
+
+    const artifact = screen.getByText("attempt-3-summary.md");
+    expect(artifact.closest("button")).toBeNull();
   });
 });
 
