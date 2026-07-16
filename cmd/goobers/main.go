@@ -57,6 +57,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runStats(args[1:], stdout, stderr)
 	case "trace":
 		return runTrace(args[1:], stdout, stderr)
+	case "completion":
+		return runCompletion(args[1:], stdout, stderr)
+	case "__complete":
+		return runCompletionCandidates(args[1:], stdout)
 	case "telemetry":
 		return runTelemetry(args[1:], stdout, stderr)
 	case "telemetry-query":
@@ -127,6 +131,7 @@ Usage:
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
   goobers trace [--json] [--transcripts | --transcript=<stage>] <run-id> [path]
                                 show a run's journal events (+ spans if rolled up), or recorded agent transcripts
+  goobers completion bash|zsh|fish  generate a shell completion script
   goobers telemetry stats|errors [--json] [path]  success rate/duration or recent-error aggregates
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)

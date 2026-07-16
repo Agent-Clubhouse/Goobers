@@ -1,0 +1,48 @@
+# fish completion for goobers
+function __goobers_completion_workflows
+    command goobers __complete workflows 2>/dev/null
+end
+
+function __goobers_completion_runs
+    command goobers __complete runs 2>/dev/null
+end
+
+complete -c goobers -e
+complete -c goobers -n '__fish_use_subcommand' -f -a 'init validate up run signal workflow runs status trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help'
+complete -c goobers -s h -l help -d 'Show help'
+complete -c goobers -l version -d 'Print the version'
+
+complete -c goobers -n '__fish_seen_subcommand_from completion; and test (count (commandline -opc)) -eq 2' -f -a 'bash zsh fish'
+
+complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (commandline -opc)) -eq 2' -f -k -a 'abort (__goobers_completion_workflows)'
+complete -c goobers -n '__fish_seen_subcommand_from run; and __fish_seen_subcommand_from abort; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_runs)'
+complete -c goobers -n '__fish_seen_subcommand_from trace; and test (count (commandline -opc)) -eq 2' -f -k -a '(__goobers_completion_runs)'
+
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and test (count (commandline -opc)) -eq 2' -f -a 'show'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -a '(__goobers_completion_workflows)'
+complete -c goobers -n '__fish_seen_subcommand_from runs; and test (count (commandline -opc)) -eq 2' -f -a 'list'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'stats errors'
+complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
+
+complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-harness -d 'Check agent harnesses'
+complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress liveness heartbeats'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show' -l dot -d 'Emit Graphviz DOT'
+complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcommand_from list' -l limit -r -d 'Maximum runs'
+complete -c goobers -n '__fish_seen_subcommand_from status' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from status' -l phase -r -d 'Filter by phase'
+complete -c goobers -n '__fish_seen_subcommand_from status' -l workflow -r -a '(__goobers_completion_workflows)' -d 'Filter by workflow'
+complete -c goobers -n '__fish_seen_subcommand_from status' -l limit -r -d 'Maximum runs'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from stats errors' -l workflow -r -a '(__goobers_completion_workflows)' -d 'Filter by workflow'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from stats errors' -l gaggle -r -d 'Filter by gaggle'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from errors' -l class -r -d 'Filter by error class'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from errors' -l limit -r -d 'Maximum errors'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from stats errors' -l rebuild -d 'Rebuild telemetry'
+complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l run -r -a '(__goobers_completion_runs)' -d 'Run id'
+complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l path -r -d 'Journal path'
+complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l reason -r -d 'Redaction reason'
+complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l secret-file -r -d 'Secret file'
+complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l claim -d 'Claim an item'
+complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l release -d 'Release a claim'
+complete -c goobers -n '__fish_seen_subcommand_from apply-verdict' -l gate -r -d 'Gate name'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l window -r -d 'Lookback window'
+complete -c goobers -n '__fish_seen_subcommand_from remediation-checkpoint' -l budget -r -d 'Repass budget'

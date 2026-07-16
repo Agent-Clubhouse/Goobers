@@ -1,0 +1,92 @@
+# bash completion for goobers
+_goobers_completion()
+{
+    local cur command candidates flags dynamic
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    dynamic=0
+
+    if (( COMP_CWORD == 1 )); then
+        candidates="init validate up run signal workflow runs status trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
+        COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
+        return
+    fi
+
+    command="${COMP_WORDS[1]}"
+    flags="-h --help"
+    case "${command}" in
+        validate) flags+=" --check-harness" ;;
+        up) flags+=" --quiet" ;;
+        workflow)
+            [[ "${COMP_WORDS[2]:-}" == "show" ]] && flags+=" --dot"
+            ;;
+        runs)
+            [[ "${COMP_WORDS[2]:-}" == "list" ]] && flags+=" --limit"
+            ;;
+        status) flags+=" --json --phase --workflow --limit" ;;
+        telemetry)
+            case "${COMP_WORDS[2]:-}" in
+                stats) flags+=" --workflow --gaggle --rebuild" ;;
+                errors) flags+=" --workflow --gaggle --class --limit --rebuild" ;;
+            esac
+            ;;
+        journal)
+            [[ "${COMP_WORDS[2]:-}" == "redact" ]] && flags+=" --run --path --reason --secret-file"
+            ;;
+        backlog-query) flags+=" --claim --release" ;;
+        apply-verdict) flags+=" --gate" ;;
+        telemetry-query) flags+=" --window" ;;
+        remediation-checkpoint) flags+=" --budget" ;;
+    esac
+    if [[ "${cur}" == -* ]]; then
+        COMPREPLY=( $(compgen -W "${flags}" -- "${cur}") )
+        return
+    fi
+
+    candidates=""
+    case "${command}" in
+        completion)
+            (( COMP_CWORD == 2 )) && candidates="bash zsh fish"
+            ;;
+        run)
+            if (( COMP_CWORD == 2 )); then
+                dynamic=1
+                candidates="abort $(command goobers __complete workflows 2>/dev/null)"
+            elif [[ "${COMP_WORDS[2]:-}" == "abort" ]] && (( COMP_CWORD == 3 )); then
+                dynamic=1
+                candidates="$(command goobers __complete runs 2>/dev/null)"
+            fi
+            ;;
+        trace)
+            if (( COMP_CWORD == 2 )); then
+                dynamic=1
+                candidates="$(command goobers __complete runs 2>/dev/null)"
+            fi
+            ;;
+        workflow)
+            if (( COMP_CWORD == 2 )); then
+                candidates="show"
+            elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
+                dynamic=1
+                candidates="$(command goobers __complete workflows 2>/dev/null)"
+            fi
+            ;;
+        runs)
+            (( COMP_CWORD == 2 )) && candidates="list"
+            ;;
+        telemetry)
+            (( COMP_CWORD == 2 )) && candidates="stats errors"
+            ;;
+        journal)
+            (( COMP_CWORD == 2 )) && candidates="redact"
+            ;;
+    esac
+
+    if (( dynamic == 1 )) || [[ -n "${candidates}" ]]; then
+        COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
+        return
+    fi
+
+    compopt -o default
+}
+
+complete -F _goobers_completion goobers
