@@ -21,6 +21,7 @@ type siblingPR struct {
 	Number     int      `json:"number"`
 	URL        string   `json:"url"`
 	Head       string   `json:"head"`
+	HeadSHA    string   `json:"headSha"`
 	Draft      bool     `json:"draft"`
 	Labels     []string `json:"labels,omitempty"`
 	CheckState string   `json:"checkState"`
@@ -47,18 +48,23 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("gather-sibling-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers gather-sibling-context [--no-cache] [path]\n\n"+
+		pf(stderr, "Usage: goobers gather-sibling-context [--no-cache] [--no-verdict-cache] [path]\n\n"+
 			"Load the other open goober-authored PRs' touched files + state as\n"+
 			"evidence for the holistic review (a workflow stage, follows\n"+
 			"pr-select). Requires selectedNumber/selectedHead/selectedBase inputs\n"+
 			"(Task.InputsFrom pr-select's own outputs). Sibling files/check state\n"+
 			"are memoized per head SHA under the instance scheduler dir; --no-cache\n"+
-			"bypasses the memo entirely (neither read nor written) to force a\n"+
-			"fully fresh gather. Exit codes: 0 = context gathered (possibly empty\n"+
-			"— no siblings is not an error), 1 = business error, 2 = usage/IO\n"+
-			"error.\n")
+			"bypasses that memo entirely (neither read nor written) to force a fully\n"+
+			"fresh gather. Separately, this stage also computes the selected PR's\n"+
+			"reviewDigest and checks the PR's own most recent verdict comment for a\n"+
+			"matching one (issue #523's verdict-level cache) — a match is emitted as\n"+
+			"cachedVerdictJson, letting the runner skip the reviewer gate's LLM call\n"+
+			"entirely; --no-verdict-cache skips that lookup, always forcing a fresh\n"+
+			"review. Exit codes: 0 = context gathered (possibly empty — no siblings\n"+
+			"is not an error), 1 = business error, 2 = usage/IO error.\n")
 	}
 	noCache := fs.Bool("no-cache", false, "bypass the sibling-context cache (debug/remediation escape hatch)")
+	noVerdictCache := fs.Bool("no-verdict-cache", false, "skip the verdict-cache lookup, always forcing a fresh review (debug/remediation escape hatch)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -159,7 +165,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		}
 		next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: checkState, Files: paths}
 		siblings = append(siblings, siblingPR{
-			Number: pr.Number, URL: pr.URL, Head: pr.Head, Draft: pr.Draft,
+			Number: pr.Number, URL: pr.URL, Head: pr.Head, HeadSHA: pr.HeadSHA, Draft: pr.Draft,
 			Labels: pr.Labels, CheckState: string(checkState), Files: paths,
 		})
 	}
@@ -178,8 +184,34 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "selected PR is no longer open")
 	}
 
+	// #523 verdict-level cache: compute this evaluation's digest from the
+	// exact inputs just gathered, then check the selected PR's own most
+	// recent verdict comment for a match. A match lets the runner skip the
+	// reviewer gate's LLM call entirely (internal/gate.Evaluator.
+	// CachedVerdict) — the expensive part the maintainer ruling targets
+	// (90-280s per call), distinct from --no-cache's fetch-level saving
+	// above.
+	reviewDigest := computeReviewDigest(selectedHeadSHA, selectedBaseSHA, siblings)
+	var cachedVerdictJSON string
+	if !*noVerdictCache {
+		cached, cerr := findCachedVerdict(ctx, provider, repo, selectedNumber, reviewDigest)
+		if cerr != nil {
+			// A failed lookup is an optimization loss, not a stage failure —
+			// same posture as loadSiblingCache's degrade-on-error: fall
+			// through to a real review rather than aborting the gather.
+			pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
+		} else if cached != nil {
+			data, merr := json.Marshal(cached)
+			if merr != nil {
+				pf(stderr, "warning: marshal cached verdict: %v\n", merr)
+			} else {
+				cachedVerdictJSON = string(data)
+			}
+		}
+	}
+
 	resultFile := providerInput("resultFile", "sibling-context.json")
-	data, err := json.MarshalIndent(map[string]interface{}{
+	out := map[string]interface{}{
 		// selectedNumber is emitted as a STRING (selectedNumberStr, not the
 		// parsed int), matching pr-select's "number":"403" and apply-verdict's
 		// strconv.Atoi consumer — one type end-to-end (#413). This is
@@ -192,8 +224,17 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		"selectedNumber":  selectedNumberStr,
 		"selectedHeadSha": selectedHeadSHA,
 		"selectedBaseSha": selectedBaseSHA,
+		"reviewDigest":    reviewDigest,
 		"siblings":        siblings,
-	}, "", "  ")
+	}
+	if cachedVerdictJSON != "" {
+		// A scalar string (not a nested object) so executor.
+		// mergeResultFileOutputs' flat-object merge actually lifts it into
+		// Outputs["cachedVerdictJson"] — the runner reads it there directly
+		// (evaluateGate), never through a declared inputsFrom edge.
+		out["cachedVerdictJson"] = cachedVerdictJSON
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		pf(stderr, "error: marshal sibling context: %v\n", err)
 		return 1
@@ -203,7 +244,11 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	pf(stdout, "gathered context for %d sibling PR(s) (%d reused from cache, %d fetched fresh)\n",
-		len(siblings), reused, len(siblings)-reused)
+	cacheNote := "no verdict cache hit"
+	if cachedVerdictJSON != "" {
+		cacheNote = "verdict cache HIT — reviewer call will be skipped"
+	}
+	pf(stdout, "gathered context for %d sibling PR(s) (%d reused from cache, %d fetched fresh); %s\n",
+		len(siblings), reused, len(siblings)-reused, cacheNote)
 	return 0
 }

@@ -74,6 +74,15 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        # reviewDigest (#523) is threaded to apply-verdict's inputsFrom too —
+        # apply-verdict stamps it onto a genuinely fresh verdict before
+        # posting, so the NEXT gather-sibling-context can find and reuse it.
+        # cachedVerdictJson (present only on a cache hit) is deliberately NOT
+        # listed here: the runner reads it straight from this stage's
+        # Outputs (evaluateGate), never through a declared inputsFrom edge,
+        # and it is conditional — listing a key that legitimately isn't
+        # always present would misstate this stage's actual postcondition.
+        - reviewDigest
       next: review
 
     - name: apply-verdict
@@ -90,6 +99,7 @@ spec:
         # #358's schema + internal/gate's existing recordVerdict already
         # provide, not new plumbing) — see its own doc comment.
         selectedNumber: selectedNumber
+        reviewDigest: reviewDigest
       capabilities:
         - github:pr:write
       # Terminal: non-pass verdicts end as PR feedback for pr-remediation or

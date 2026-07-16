@@ -3681,6 +3681,107 @@ func TestRunnerDeterministicSubjectEmptyDiffStillReviews(t *testing.T) {
 	}
 }
 
+// TestRunnerSkipsReviewerOnCachedVerdictOutput is issue #523's end-to-end
+// wiring proof: when the subject stage feeding an agentic review gate
+// emits a "cachedVerdictJson" output (merge-review's gather-sibling-context,
+// having already found a digest-matched prior verdict on the selected PR's
+// own comment thread), evaluateGate must decode it, set
+// gate.Evaluator.CachedVerdict, and never invoke the reviewer goober at
+// all — the actual mechanism the fetch-level cache test (cmd/goobers) and
+// the gate-level unit test (internal/gate) can each only prove one half of.
+// The journaled gate.evaluated event must carry the cached verdict's own
+// Digest/SourceRunID unchanged, so a human or `goobers trace` reading THIS
+// run's journal can still find which run originally produced it.
+func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
+	runID := "run-cached-verdict"
+	cached := apiv1.Verdict{
+		Decision: apiv1.VerdictPass, Summary: "reused from a prior run",
+		Digest: "sha256:cache-hit-digest", SourceRunID: "run-original-producer",
+	}
+	cachedJSON, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatalf("marshal cached verdict: %v", err)
+	}
+	byTask := map[string]stubTaskResult{
+		runID + ":implement": {
+			status: apiv1.ResultSuccess, summary: "gathered sibling context",
+			outputs: map[string]interface{}{"cachedVerdictJson": string(cachedJSON)},
+		},
+	}
+	reviewer := &capturingReviewer{}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: byTask}, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return reviewer, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: agenticGateMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed (the cached verdict's own pass decision resolves the gate's pass branch)", res.Phase)
+	}
+	if reviewer.called {
+		t.Fatal("reviewer WAS invoked — a cachedVerdictJson output must short-circuit the reviewer call entirely (#523)")
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(instanceRoot, "runs", runID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var gateEvent *journal.Event
+	for i := range events {
+		if events[i].Type == journal.EventGateEvaluated {
+			gateEvent = &events[i]
+		}
+	}
+	if gateEvent == nil {
+		t.Fatal("no gate.evaluated event journaled")
+	}
+	if hit, _ := gateEvent.Runner["verdictCacheHit"].(bool); !hit {
+		t.Fatalf("gate.evaluated Runner[verdictCacheHit] = %v, want true", gateEvent.Runner["verdictCacheHit"])
+	}
+	if gateEvent.Ref == nil {
+		t.Fatal("gate.evaluated has no journaled verdict artifact")
+	}
+	data, err := rd.ArtifactBytes(*gateEvent.Ref)
+	if err != nil {
+		t.Fatalf("read verdict artifact: %v", err)
+	}
+	var journaled apiv1.Verdict
+	if err := json.Unmarshal(data, &journaled); err != nil {
+		t.Fatalf("unmarshal verdict artifact: %v", err)
+	}
+	if journaled.Digest != cached.Digest || journaled.SourceRunID != cached.SourceRunID {
+		t.Fatalf("journaled verdict = %+v, want the cached verdict's Digest/SourceRunID preserved unchanged (%+v)", journaled, cached)
+	}
+}
+
 // capturingAutomated records the envelope it evaluates, so a test can assert an
 // automated gate never receives runner-produced reviewer-diff evidence (#301).
 type capturingAutomated struct{ gotPointers []apiv1.ContextPointer }

@@ -266,6 +266,26 @@ type Verdict struct {
 	// see HeadSHA's doc comment; both pin together, since a PR can go stale
 	// via either its own new commits or the base moving.
 	BaseSHA string `json:"baseSha,omitempty"`
+	// Digest is the reviewDigest (issue #523) this verdict was computed
+	// against — a content hash of every input the holistic reviewer saw:
+	// the selected PR's head/base SHAs plus the sorted sibling (PR#,
+	// headSHA) set plus the verdict-schema version. Empty for a Verdict
+	// that doesn't participate in cross-run digest caching (every gate but
+	// merge-review's holistic review, which is the only one whose subject
+	// evidence — the sibling set — persists identically across the
+	// independent runs a schedule-triggered workflow fires as). A later
+	// run computing the identical digest reuses this verdict verbatim
+	// instead of re-invoking the reviewer (gate.Evaluator.CachedVerdict).
+	Digest string `json:"digest,omitempty"`
+	// SourceRunID is the run whose reviewer evaluation ORIGINALLY produced
+	// this verdict — never touched by a cache hit, which reuses the
+	// verdict's content, including this field, unchanged. Set once by
+	// apply-verdict from its own GOOBERS_RUN_ID at the moment a genuinely
+	// fresh (non-cached) verdict is first posted, so a verdict handed back
+	// by the cache (whether read from a PR comment or a run's own journal)
+	// always still names the run a human or `goobers trace` would need to
+	// inspect to see the real reviewer reasoning behind it.
+	SourceRunID string `json:"sourceRunId,omitempty"`
 }
 
 // Finding is a single issue raised by an evaluator.

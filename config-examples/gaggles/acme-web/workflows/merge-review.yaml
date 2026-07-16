@@ -46,6 +46,7 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        - reviewDigest
       next: review
 
     - name: apply-verdict
@@ -55,6 +56,7 @@ spec:
         command: ["goobers", "apply-verdict"]
       inputsFrom:
         selectedNumber: selectedNumber
+        reviewDigest: reviewDigest
       capabilities:
         - github:pr:write
 

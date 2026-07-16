@@ -423,6 +423,16 @@ func (s *fakeGitHubServer) setPRClosed(number int) {
 	s.prs[number].state = "closed"
 }
 
+// addComment seeds a comment directly on issue/PR number's thread, bypassing
+// the POST endpoint — for tests that need a fixture PR to already carry a
+// prior run's posted verdict comment (#523's verdict-cache lookup) before
+// the stage under test ever runs.
+func (s *fakeGitHubServer) addComment(number int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[number].comments = append(s.issues[number].comments, body)
+}
+
 func hasAllLabels(have, want []string) bool {
 	for _, w := range want {
 		if w == "" {

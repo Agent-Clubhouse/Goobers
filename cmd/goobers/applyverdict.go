@@ -38,6 +38,15 @@ func verdictLabel(decision apiv1.VerdictDecision) string {
 // before acting (design doc §6 D6: a verdict computed against a state that
 // no longer exists is void, not actionable), then posts the prose-projection
 // comment and applies the decision label.
+//
+// Before posting, a verdict missing Digest/SourceRunID (issue #523: every
+// genuinely fresh, reviewer-produced verdict — a cache-hit verdict already
+// carries both, reused unchanged from whichever run originally posted it)
+// is stamped with reviewDigest (gather-sibling-context's own computed
+// input, threaded via inputsFrom) and this run's GOOBERS_RUN_ID. This is
+// what makes the verdict this comment posts findable and reusable by the
+// NEXT gather-sibling-context's cache lookup — the digest travels with the
+// verdict, not as separate state.
 func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("apply-verdict", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -140,8 +149,16 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	label := verdictLabel(verdict.Decision)
-	comment := renderVerdictComment(*verdict)
+	posted := *verdict
+	if posted.Digest == "" {
+		posted.Digest = providerInput("reviewDigest", "")
+	}
+	if posted.SourceRunID == "" {
+		posted.SourceRunID = runID
+	}
+
+	label := verdictLabel(posted.Decision)
+	comment := renderVerdictComment(posted)
 	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository: repo,
 		ID:         strconv.Itoa(selectedNumber),
