@@ -165,6 +165,33 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		}
 		eligible = append(eligible, item)
 	}
+
+	// Open-PR eligibility backstop (#414 design point 2): excludeLabels alone
+	// depends on a label write at PR-open time (implementation.yaml's
+	// goobers/status:in-review) that can be missed or, after close-out,
+	// removed without the issue ever actually closing (issue-close-out's
+	// status=in-review keeps the issue open until the merge event). Without
+	// this, a completed rung's issue can look eligible again and get
+	// re-claimed into a duplicate PR. Best-effort on capability: only runs
+	// when the stage actually declares github:pr:write (implementation.yaml
+	// and backlog-curation.yaml both do); a stage that hasn't opted in gets
+	// exactly the pre-#414 label-only behavior, not a hard failure — this is
+	// a backstop on top of the label check above, not a replacement for it.
+	if _, err := providerToken(capability.GitHubPRWrite); err == nil {
+		openIssues, err := openPRIssueNumbers(ctx, provider, repo)
+		if err != nil {
+			pf(stderr, "error: list open pull requests: %v\n", err)
+			return 1
+		}
+		backstopped := eligible[:0]
+		for _, item := range eligible {
+			if openIssues[item.ID] {
+				continue
+			}
+			backstopped = append(backstopped, item)
+		}
+		eligible = backstopped
+	}
 	// Claim order was an accident of whichever sort order the provider's
 	// List endpoint happens to default to (#350) — GitHub's is undocumented
 	// desc-by-created (newest-first), the exact opposite of the README's
@@ -301,6 +328,28 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "claimed %d items\n", len(claimed))
 	}
 	return 0
+}
+
+// openPRIssueNumbers returns the set of issue numbers already referenced by
+// an open goober-authored PR's closing keywords (Fixes/Closes/Resolves #N —
+// the same convention `goobers open-pr` writes and `goobers post-merge`
+// already parses at merge time via closingIssueNumbers, postmerge.go) — the
+// open-PR eligibility backstop (#414 design point 2). One ListPullRequests
+// call, not one per candidate: GitHub's list-pulls response already carries
+// each PR's body (PullRequestSummary.Body), so no second round-trip per PR
+// is needed either.
+func openPRIssueNumbers(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef) (map[string]bool, error) {
+	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: repo, HeadPrefix: "goobers/"})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(prs))
+	for _, pr := range prs {
+		for _, id := range closingIssueNumbers(pr.Body) {
+			out[id] = true
+		}
+	}
+	return out, nil
 }
 
 // sortEligibleFIFO orders items ascending by numeric ID in place — both

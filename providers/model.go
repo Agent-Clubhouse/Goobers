@@ -343,6 +343,14 @@ type PullRequestSummary struct {
 	Labels     []string   `json:"labels,omitempty"`
 	CheckState CheckState `json:"checkState"`
 	UpdatedAt  time.Time  `json:"updatedAt"`
+	// Body is the PR's description text — issue #414's open-PR eligibility
+	// backstop parses it for a GitHub closing keyword ("Fixes #N"/"Closes
+	// #N"/"Resolves #N", the same convention `goobers open-pr` writes and
+	// `goobers post-merge` already parses via PullRequestPollResult.Body) to
+	// tell whether a candidate backlog issue already has an open PR, without
+	// a second round-trip per candidate (GitHub's list-pulls response
+	// already carries the body).
+	Body string `json:"body,omitempty"`
 }
 
 // ChangedFile is one file a pull request touches (issue #359's sibling-set

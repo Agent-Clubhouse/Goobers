@@ -562,6 +562,7 @@ func (p *GitHubProvider) ListPullRequests(ctx context.Context, req ListPullReque
 			Labels:     labels,
 			CheckState: checkState,
 			UpdatedAt:  pr.UpdatedAt,
+			Body:       pr.Body,
 		})
 	}
 	return out, nil

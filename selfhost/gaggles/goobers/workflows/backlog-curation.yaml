@@ -59,6 +59,11 @@ spec:
         resultFile: "claimed-items.json"
       capabilities:
         - github:issues:write
+        # Same open-PR eligibility backstop as implementation.yaml's
+        # query-backlog (issue #414) — a candidate here is pre-triage and
+        # unlikely to already have an open PR, but the check is defense in
+        # depth, not conditional on caller.
+        - github:pr:write
       expectedOutputs:
         - claimed-items
       next: curate

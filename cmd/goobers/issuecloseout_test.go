@@ -79,6 +79,64 @@ func TestIssueCloseOutCommentsClosesAndReleasesClaim(t *testing.T) {
 	}
 }
 
+// TestIssueCloseOutReleasesClaimedLabel is #414's core acceptance: the
+// goobers:claimed label a prior backlog-query --claim call wrote must be
+// removed on the same close-out event that releases the ledger claim, not
+// left to survive indefinitely — UpdateWorkItemStatus only ever swaps
+// goobers/status:-prefixed labels, so without this fix the marker never
+// clears. Covers both the done and in-review status branches: the ledger
+// claim releases unconditionally in both, so the label must too.
+func TestIssueCloseOutReleasesClaimedLabel(t *testing.T) {
+	for _, status := range []string{"", "in-review"} {
+		t.Run("status="+status, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			server.addIssue(7, "Fix the bug", "goobers:approved", "goobers:ready", "goobers:claimed")
+
+			const runID = "run-1"
+			const workflow = "implementation"
+
+			schedulerDir := filepath.Join(root, "scheduler")
+			if err := (func() error {
+				ledger, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+				if err != nil {
+					return err
+				}
+				_, _, err = ledger.Claim("7", runID, workflow, time.Hour)
+				return err
+			})(); err != nil {
+				t.Fatalf("seed claim ledger: %v", err)
+			}
+
+			head := providers.BranchName(workflow, runID)
+			server.mu.Lock()
+			server.prs[1] = &fakePR{number: 1, title: "Implementation", head: head, base: "main", state: "open"}
+			server.nextPR = 2
+			server.mu.Unlock()
+
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
+			if status != "" {
+				t.Setenv("GOOBERS_INPUT_STATUS", status)
+			}
+			t.Chdir(t.TempDir())
+
+			code, _, stderr := runArgs(t, "issue-close-out", root)
+			if code != 0 {
+				t.Fatalf("issue-close-out: code = %d, stderr = %q", code, stderr)
+			}
+
+			server.mu.Lock()
+			labels := append([]string{}, server.issues[7].labels...)
+			server.mu.Unlock()
+			for _, l := range labels {
+				if l == "goobers:claimed" {
+					t.Fatalf("issue labels = %+v, want goobers:claimed removed", labels)
+				}
+			}
+		})
+	}
+}
+
 // TestIssueCloseOutInReviewStatusDoesNotClose is #361/#355's regression:
 // with status=in-review declared, close-out comments and applies the
 // goobers/status:in-review label same as before, but must NOT close the

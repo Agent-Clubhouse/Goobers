@@ -163,6 +163,66 @@ func TestBacklogQuerySecondRunLosesTheClaimRace(t *testing.T) {
 	assertNoWorkResultFile(t, workDir)
 }
 
+// TestBacklogQueryExcludesIssueWithOpenPR is #414's core acceptance: an item
+// that's otherwise eligible by label (goobers:approved + goobers:ready, no
+// exclude label present — simulating a missed or since-removed in-review/
+// claimed label write) must still be excluded once an open goober-authored
+// PR references it via a closing keyword, the same convention `goobers
+// open-pr` writes and `goobers post-merge` parses at merge time. Requires
+// the query-backlog stage to actually declare github:pr:write — the
+// backstop is opt-in per stage (see the next test for the ungranted case).
+func TestBacklogQueryExcludesIssueWithOpenPR(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Fix the bug", "goobers:approved", "goobers:ready")
+	server.addOpenPR(101, "goobers/implementation/prior-run", "main", "sha1", "sha2", false, nil, nil)
+	server.setPRBody(101, "Implements the fix.\n\nFixes #7")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (no eligible item is no-work, not a failure), stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("stdout = %q, want a clear no-work message — issue 7 should be excluded by the open-PR backstop", stdout)
+	}
+	assertNoWorkResultFile(t, workDir)
+}
+
+// TestBacklogQueryOpenPRBackstopSkippedWithoutCapability proves the backstop
+// is opt-in, not a hard requirement: a stage that never declared
+// github:pr:write gets exactly the pre-#414 label-only behavior (the item is
+// still eligible) rather than backlog-query failing closed on a capability
+// it was never granted — the label check above remains the primary
+// eligibility gate; this backstop only adds to it when available.
+func TestBacklogQueryOpenPRBackstopSkippedWithoutCapability(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Fix the bug", "goobers:approved", "goobers:ready")
+	server.addOpenPR(101, "goobers/implementation/prior-run", "main", "sha1", "sha2", false, nil, nil)
+	server.setPRBody(101, "Fixes #7")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	// Deliberately no GOOBERS_CRED_GITHUB_PR_WRITE.
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("stdout = %q, want item 7 claimed (backstop not active without the capability)", stdout)
+	}
+}
+
 // TestBacklogQueryListsWithoutClaiming proves the no-flag form is read-only:
 // it reports eligible items but does not touch the claim ledger.
 func TestBacklogQueryListsWithoutClaiming(t *testing.T) {
