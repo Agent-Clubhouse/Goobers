@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DataList, DataRow } from "../components/DataList";
+import { DataCell, DataList, DataRow } from "../components/DataList";
 import { StatusBadge } from "../components/StatusBadge";
 import type { Navigate } from "../foundation/navigation";
 import { runs, workflowForRun, workflows } from "../prototypeData";
@@ -31,18 +31,18 @@ export function WorkflowsPage({ navigate }: { navigate: Navigate }) {
               label={`Open workflow ${workflow.name}`}
               onClick={() => navigate({ page: "workflow", id: workflow.id })}
             >
-              <span className="row-primary">
+              <DataCell className="row-primary">
                 <span className="row-title">{workflow.name}</span>
                 <span className="row-subtitle">{workflow.description}</span>
-              </span>
-              <span>{workflow.trigger}</span>
-              <span>
+              </DataCell>
+              <DataCell>{workflow.trigger}</DataCell>
+              <DataCell>
                 {workflow.activeRuns} active / {workflow.maxConcurrency} max
-              </span>
-              <span className="outcome-cell">
+              </DataCell>
+              <DataCell className="outcome-cell">
                 <StatusBadge status={workflow.lastOutcome} />
                 <small>{workflow.lastRunAt}</small>
-              </span>
+              </DataCell>
             </DataRow>
           ))}
         </DataList>
@@ -96,16 +96,18 @@ export function RunsPage({ navigate }: { navigate: Navigate }) {
         >
           {filteredRuns.map((run) => (
             <DataRow key={run.id} label={`Open run ${run.title}`} onClick={() => navigate({ page: "run", id: run.id })}>
-              <span className="row-primary">
+              <DataCell className="row-primary">
                 <span className="row-title">{run.title}</span>
                 <span className="row-subtitle">
                   {run.issue} · {workflowForRun(run).name}
                 </span>
-              </span>
-              <StatusBadge status={run.status} />
-              <span>{run.currentStage}</span>
-              <span>{run.startedAt}</span>
-              <span className="mono">{run.duration}</span>
+              </DataCell>
+              <DataCell className="status-cell">
+                <StatusBadge status={run.status} />
+              </DataCell>
+              <DataCell>{run.currentStage}</DataCell>
+              <DataCell>{run.startedAt}</DataCell>
+              <DataCell className="mono">{run.duration}</DataCell>
             </DataRow>
           ))}
         </DataList>

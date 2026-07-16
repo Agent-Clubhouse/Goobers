@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DataList, DataRow } from "../components/DataList";
+import { DataCell, DataList, DataRow } from "../components/DataList";
 import { StatusBadge } from "../components/StatusBadge";
 import { Icon } from "../foundation/Icon";
 import type { Navigate } from "../foundation/navigation";
@@ -88,18 +88,18 @@ export function OverviewPage({ navigate }: { navigate: Navigate }) {
         >
           {activeRuns.map((run) => (
             <DataRow key={run.id} label={`Open run ${run.title}`} onClick={() => navigate({ page: "run", id: run.id })}>
-              <span className="row-primary">
+              <DataCell className="row-primary">
                 <span className="row-title">{run.title}</span>
                 <span className="row-subtitle">
                   {run.issue} · {run.shortId}
                 </span>
-              </span>
-              <span>{workflowForRun(run).name}</span>
-              <span className="stage-progress">
+              </DataCell>
+              <DataCell>{workflowForRun(run).name}</DataCell>
+              <DataCell className="stage-progress">
                 <span aria-hidden="true" className="stage-progress-mark" />
                 {run.currentStage}
-              </span>
-              <span className="mono">{run.duration}</span>
+              </DataCell>
+              <DataCell className="mono">{run.duration}</DataCell>
             </DataRow>
           ))}
         </DataList>
@@ -119,13 +119,15 @@ export function OverviewPage({ navigate }: { navigate: Navigate }) {
         >
           {recentRuns.map((run) => (
             <DataRow key={run.id} label={`Open run ${run.title}`} onClick={() => navigate({ page: "run", id: run.id })}>
-              <span className="row-primary">
+              <DataCell className="row-primary">
                 <span className="row-title">{run.title}</span>
                 <span className="row-subtitle">{run.issue}</span>
-              </span>
-              <StatusBadge status={run.status} />
-              <span>{workflowForRun(run).name}</span>
-              <span className="mono">{run.duration}</span>
+              </DataCell>
+              <DataCell className="status-cell">
+                <StatusBadge status={run.status} />
+              </DataCell>
+              <DataCell>{workflowForRun(run).name}</DataCell>
+              <DataCell className="mono">{run.duration}</DataCell>
             </DataRow>
           ))}
         </DataList>

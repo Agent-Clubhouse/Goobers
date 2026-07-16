@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DataList, DataRow } from "../components/DataList";
+import { DataCell, DataList, DataRow } from "../components/DataList";
 import { GraphFrame } from "../components/GraphFrame";
 import { StageDefinition } from "../components/Inspectors";
 import { StatusBadge } from "../components/StatusBadge";
@@ -59,16 +59,22 @@ export function WorkflowPage({ workflow, navigate }: { workflow: Workflow; navig
             <h2>Recent runs</h2>
           </div>
         </div>
-        <DataList ariaLabel={`${workflow.name} recent runs`}>
+        <DataList
+          ariaLabel={`${workflow.name} recent runs`}
+          headerClassName="workflow-runs-grid"
+          headings={["Run", "Status", "Current stage", "Duration", ""]}
+        >
           {workflowRuns.map((run) => (
             <DataRow key={run.id} label={`Open run ${run.title}`} onClick={() => navigate({ page: "run", id: run.id })}>
-              <span className="row-primary">
+              <DataCell className="row-primary">
                 <span className="row-title">{run.title}</span>
                 <span className="row-subtitle">{run.issue} · {run.startedAt}</span>
-              </span>
-              <StatusBadge status={run.status} />
-              <span>{run.currentStage}</span>
-              <span className="mono">{run.duration}</span>
+              </DataCell>
+              <DataCell className="status-cell">
+                <StatusBadge status={run.status} />
+              </DataCell>
+              <DataCell>{run.currentStage}</DataCell>
+              <DataCell className="mono">{run.duration}</DataCell>
             </DataRow>
           ))}
         </DataList>

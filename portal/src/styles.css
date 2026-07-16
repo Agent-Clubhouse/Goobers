@@ -510,6 +510,7 @@ summary:focus-visible {
   cursor: pointer;
   min-height: 66px;
   padding: 11px 13px;
+  position: relative;
   text-align: left;
   width: 100%;
 }
@@ -533,6 +534,7 @@ summary:focus-visible {
 }
 
 .outcome-grid,
+.outcome-grid ~ .data-row,
 .data-row:has(.outcome-cell) {
   grid-template-columns: minmax(270px, 1.7fr) 130px minmax(130px, 0.8fr) 80px 18px;
 }
@@ -545,6 +547,11 @@ summary:focus-visible {
 .all-runs-grid,
 .all-runs-grid ~ .data-row {
   grid-template-columns: minmax(250px, 1.6fr) 130px 110px 150px 80px 18px;
+}
+
+.workflow-runs-grid,
+.workflow-runs-grid ~ .data-row {
+  grid-template-columns: minmax(270px, 1.7fr) 130px minmax(130px, 0.8fr) 80px 18px;
 }
 
 .row-primary {
@@ -572,6 +579,22 @@ summary:focus-visible {
 .row-arrow {
   color: var(--muted);
   justify-self: end;
+}
+
+.data-row-action {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  padding: 1px;
+}
+
+.data-row-action::before {
+  content: "";
+  inset: 0;
+  position: absolute;
 }
 
 .stage-progress {
@@ -1593,7 +1616,16 @@ summary:focus-visible {
   }
 
   .data-header {
-    display: none;
+    border: 0;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    padding: 0;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
   }
 
   .data-row,
@@ -1605,7 +1637,7 @@ summary:focus-visible {
     grid-template-columns: 1fr auto;
   }
 
-  .data-row > *:not(.row-primary, .row-arrow, .status-badge, .outcome-cell) {
+  .data-row > *:not(.row-primary, .row-arrow, .status-cell, .outcome-cell) {
     display: none;
   }
 
@@ -1614,7 +1646,7 @@ summary:focus-visible {
     grid-row: 1;
   }
 
-  .status-badge,
+  .status-cell,
   .outcome-cell {
     grid-column: 1;
   }

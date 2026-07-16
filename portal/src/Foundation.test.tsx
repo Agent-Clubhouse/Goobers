@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { App } from "./App";
@@ -90,6 +90,35 @@ describe("portal foundations", () => {
     for (const button of screen.getAllByRole("button")) {
       expect(button).toHaveAccessibleName();
     }
+  });
+
+  it("exposes operational list headings and row metadata independently from actions", () => {
+    render(<App />);
+
+    const table = screen.getByRole("table", { name: "Active runs" });
+    expect(within(table).getAllByRole("columnheader").map((heading) => heading.textContent)).toEqual([
+      "Run",
+      "Workflow",
+      "Current stage",
+      "Elapsed",
+      "Actions",
+    ]);
+
+    const rows = within(table).getAllByRole("row");
+    const runRow = rows[1];
+    expect(runRow).toBeDefined();
+    if (!runRow) {
+      return;
+    }
+
+    const cells = within(runRow).getAllByRole("cell");
+    const title = cells[0]?.querySelector(".row-title")?.textContent;
+    expect(title).toBeTruthy();
+    expect(cells[0]).not.toBeEmptyDOMElement();
+    expect(cells[1]).not.toBeEmptyDOMElement();
+    expect(cells[2]).not.toBeEmptyDOMElement();
+    expect(cells[3]).not.toBeEmptyDOMElement();
+    expect(within(runRow).getByRole("button", { name: `Open run ${title}` })).toBeInTheDocument();
   });
 
   it("makes filters and dismiss controls perform their visible actions", async () => {
