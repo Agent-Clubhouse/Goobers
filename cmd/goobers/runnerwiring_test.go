@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
@@ -16,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/providers"
 )
@@ -456,5 +459,205 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 	}
 	if !registered {
 		t.Fatalf("resolved token not registered for scrubbing; registered=%v", reg.registered)
+	}
+}
+
+// blockedHandlerFakeCommenter records every UpdateWorkItem call (unlike
+// escFakeCommenter, which only keeps the last) — buildBlockedHandler's
+// multi-item fallback path needs every call visible.
+type blockedHandlerFakeCommenter struct {
+	calls []providers.UpdateWorkItemRequest
+}
+
+func (f *blockedHandlerFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	f.calls = append(f.calls, req)
+	return providers.WorkItem{}, nil
+}
+
+func blockedHandlerTestResolver(t *testing.T) *credentials.Resolver {
+	t.Helper()
+	t.Setenv("BLOCKED_TOK", "blocked-token-value")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BLOCKED_TOK"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	return resolver
+}
+
+// TestBuildBlockedHandlerNilForRepoLessInstance mirrors
+// TestBuildEscalationNotifier's repo-less case: no repo configured, no
+// driving issue to comment on.
+func TestBuildBlockedHandlerNilForRepoLessInstance(t *testing.T) {
+	if h := buildBlockedHandler(instance.NewLayout(t.TempDir()), &instance.Config{}, nil, nil); h != nil {
+		t.Fatalf("expected a nil handler for no repos, got %+v", h)
+	}
+}
+
+// TestBuildBlockedHandlerKnownBlockersRecordsAndComments is #552's recording
+// half: a BlockedOutcome carrying parsed blockers records blocked.json (for
+// backlog-query's skip/self-heal filter) and posts a comment — without
+// touching goobers:ready/needs-human labels, since a dependency block is not
+// a park-for-human disposition.
+func TestBuildBlockedHandlerKnownBlockersRecordsAndComments(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if h == nil {
+		t.Fatal("expected a non-nil handler for a repo-backed instance")
+	}
+
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-1", Stage: "implement", ItemID: "510",
+		Reason: "DEPENDENCY_NOT_MET: unmet prerequisite", Blockers: []string{"441", "442"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("comment calls = %d, want 1", len(fake.calls))
+	}
+	got := fake.calls[0]
+	if got.ID != "510" || len(got.AddLabels) != 0 || len(got.RemoveLabels) != 0 {
+		t.Fatalf("request = %+v, want ID 510 with no label changes (a dependency block self-heals, it doesn't park)", got)
+	}
+	if !strings.Contains(got.Comment, "#441") || !strings.Contains(got.Comment, "#442") {
+		t.Fatalf("comment = %q, want both blocker issue numbers", got.Comment)
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	rec, ok := recs["510"]
+	if !ok {
+		t.Fatal("expected a blocked.json record for item 510")
+	}
+	if len(rec.Blockers) != 2 || rec.RunID != "run-1" {
+		t.Fatalf("record = %+v, want blockers [441 442] from run-1", rec)
+	}
+}
+
+// TestBuildBlockedHandlerNoBlockersParksNeedsHuman is #544's park-on-fail-
+// attribution path: a blocked result with no parseable blockers gets no
+// blocked.json record (there's nothing for #552 to skip/self-heal on) — the
+// issue is parked goobers:needs-human instead, per the #539 convention.
+func TestBuildBlockedHandlerNoBlockersParksNeedsHuman(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-1", Stage: "implement", ItemID: "520",
+		Reason: "waiting on an external dependency",
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("comment calls = %d, want 1", len(fake.calls))
+	}
+	got := fake.calls[0]
+	if got.ID != "520" {
+		t.Fatalf("request ID = %q, want 520", got.ID)
+	}
+	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman {
+		t.Fatalf("AddLabels = %v, want [%s]", got.AddLabels, providers.LabelNeedsHuman)
+	}
+	if len(got.RemoveLabels) != 1 || got.RemoveLabels[0] != providers.LabelReady {
+		t.Fatalf("RemoveLabels = %v, want [%s]", got.RemoveLabels, providers.LabelReady)
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("blocked.json = %+v, want empty — nothing for #552 to skip/self-heal on an unattributed block", recs)
+	}
+}
+
+// TestBuildBlockedHandlerResolvesItemFromClaimLedgerWhenEmpty proves a run
+// started without StartInput.Item (scheduled/fan-out implementation runs
+// claim their item mid-run) still notifies the right issue: the handler
+// falls back to the claim ledger by RunID, since the run's claims are still
+// held at the point the handler runs (before FinalizeTerminal releases them).
+func TestBuildBlockedHandlerResolvesItemFromClaimLedgerWhenEmpty(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("530", "run-fanout", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err = h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-fanout", Stage: "implement", Reason: "blocked", Blockers: []string{"441"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(fake.calls) != 1 || fake.calls[0].ID != "530" {
+		t.Fatalf("calls = %+v, want exactly one call for item 530 (resolved via the claim ledger)", fake.calls)
+	}
+}
+
+// TestBuildBlockedHandlerNoClaimIsANoop proves a producer/schedule-triggered
+// run (no Item, no claim to resolve) is a clean no-op — the journaled
+// blocked_by_agent cause and escalated phase are the whole story; nothing to
+// notify.
+func TestBuildBlockedHandlerNoClaimIsANoop(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.BlockedOutcome{RunID: "run-producer", Stage: "curate", Reason: "blocked"})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("calls = %+v, want none (no driving item anywhere)", fake.calls)
 	}
 }

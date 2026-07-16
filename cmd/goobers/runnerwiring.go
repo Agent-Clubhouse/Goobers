@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
@@ -350,6 +352,125 @@ func buildEscalationNotifier(cfg *instance.Config, resolver *credentials.Resolve
 	}
 }
 
+// buildBlockedHandler wires runner.Config.Blocked (#544/#545/#552): the
+// instance-level consequences of a stage reporting status "blocked". Returns
+// nil when no repo is configured, mirroring buildEscalationNotifier. Two
+// dispositions, keyed on whether the stage referenced its blockers in
+// machine-readable form (the documented outputs.blockedBy convention):
+//
+//   - Known blockers: record the learned block in scheduler/blocked.json so
+//     backlog-query skips the item until every blocker closes (#552's
+//     self-healing skip — a dependency block needs time, not a human), and
+//     comment the same on the driving issue.
+//   - No parseable blockers: park the issue goobers:needs-human (swap off
+//     goobers:ready) per the #544 ruling / #539 convention — an agent saying
+//     "I can't proceed" with nothing selection can key off IS a
+//     human-attention signal, and without the label swap the freed claim
+//     would be re-claimed and re-blocked on the very next tick.
+//
+// The handler runs before FinalizeTerminal releases the run's claims, so a
+// run with no StartInput.Item (scheduled/fan-out implementation runs claim
+// their item mid-run) resolves its driving item(s) from the claim ledger by
+// run id. Best-effort per item: one item's provider failure doesn't skip the
+// rest; the joined error is journaled by the runner (blocked_handling_failed),
+// never fatal to the terminal transition.
+func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver *credentials.Resolver, reg runner.SecretRegistrar) runner.BlockedHandler {
+	if len(cfg.Repos) == 0 {
+		return nil
+	}
+	repo := cfg.Repos[0]
+	poster := &escalationCommenter{
+		ref:      repo.Owner + "/" + repo.Name,
+		resolver: resolver,
+		reg:      reg,
+	}
+	repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
+
+	return func(ctx context.Context, o runner.BlockedOutcome) error {
+		itemIDs := []string{o.ItemID}
+		if o.ItemID == "" {
+			ids, err := claimedItemIDsForRun(l, o.RunID)
+			if err != nil {
+				return err
+			}
+			if len(ids) == 0 {
+				// No driving item anywhere (a producer run) — nothing to
+				// record or park; the journaled blocked_by_agent cause and the
+				// escalated phase are the whole story.
+				return nil
+			}
+			itemIDs = ids
+		}
+
+		var errs []error
+		for _, itemID := range itemIDs {
+			req := providers.UpdateWorkItemRequest{Repository: repoRef, ID: itemID}
+			if len(o.Blockers) > 0 {
+				if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
+					recs[itemID] = blockedRecord{
+						Blockers:   o.Blockers,
+						RunID:      o.RunID,
+						Stage:      o.Stage,
+						Reason:     o.Reason,
+						RecordedAt: time.Now().UTC(),
+					}
+					return true
+				}); err != nil {
+					errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
+					continue
+				}
+				req.Comment = fmt.Sprintf(
+					"Goobers run %s: stage %q reported this issue blocked on %s — %s. The run finished escalated and released its claim. Backlog selection skips this issue until every blocking issue is closed, then it becomes eligible again automatically.",
+					o.RunID, o.Stage, issueRefList(o.Blockers), o.Reason,
+				)
+			} else {
+				req.Comment = fmt.Sprintf(
+					"Goobers run %s: stage %q reported this issue blocked without machine-readable blocking issues (`outputs.blockedBy`) — %s. The run finished escalated and released its claim; parking `%s` for a human decision.",
+					o.RunID, o.Stage, o.Reason, providers.LabelNeedsHuman,
+				)
+				req.AddLabels = []string{providers.LabelNeedsHuman}
+				req.RemoveLabels = []string{providers.LabelReady}
+			}
+			if _, err := poster.UpdateWorkItem(ctx, req); err != nil {
+				errs = append(errs, fmt.Errorf("notify blocked on %s#%s: %w", repoRef.Name, itemID, err))
+			}
+		}
+		return errors.Join(errs...)
+	}
+}
+
+// claimedItemIDsForRun resolves the backlog item(s) a run currently claims —
+// the driving-issue fallback for a run started without an Item snapshot. Read
+// under the claim lock like every other ledger access; the blocked handler
+// runs before FinalizeTerminal, so the claims are still held here.
+func claimedItemIDsForRun(l instance.Layout, runID string) ([]string, error) {
+	var ids []string
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
+		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+		if err != nil {
+			return fmt.Errorf("open claim ledger: %w", err)
+		}
+		for _, entry := range ledger.ForRunAll(runID) {
+			ids = append(ids, entry.ItemID)
+		}
+		return nil
+	})
+	return ids, err
+}
+
+// issueRefList renders issue numbers as "#441, #442" for provider comments.
+func issueRefList(numbers []string) string {
+	out := make([]byte, 0, len(numbers)*6)
+	for i, n := range numbers {
+		if i > 0 {
+			out = append(out, ", "...)
+		}
+		out = append(out, '#')
+		out = append(out, n...)
+	}
+	return string(out)
+}
+
 // newOpenPRProvider builds the GitHub client the open-PR lister polls; a package
 // var so tests substitute a fake (mirrors newPRPoller / newEscalationPoster).
 var newOpenPRProvider = func(token string) localscheduler.OpenPRLister {
@@ -626,6 +747,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// Wire the escalation notifier (#312) so a repass-budget escalation
 		// actually comments on the driving issue; nil for a repo-less instance.
 		Escalation: buildEscalationNotifier(cfg, resolver, sharedReg),
+		// Wire the blocked handler (#544/#552): record/park the driving issue
+		// when a stage reports blocked; nil for a repo-less instance.
+		Blocked: buildBlockedHandler(l, cfg, resolver, sharedReg),
 	}
 	if tel != nil {
 		rc.Telemetry = tel

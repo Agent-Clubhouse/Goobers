@@ -13,10 +13,14 @@ const (
 
 // Goobers marker labels applied to backlog items. The claim label mirrors the
 // runner's lease for human visibility (BL-032); the ready label is the curated
-// marker meaning an item is scoped and eligible for implementation.
+// marker meaning an item is scoped and eligible for implementation; the
+// needs-human label parks an item pending a human decision (the curator's
+// existing vocabulary — #539's convention; also applied when a stage reports
+// blocked without machine-readable blockers, #544).
 const (
-	LabelClaimed = "goobers:claimed"
-	LabelReady   = "goobers:ready"
+	LabelClaimed    = "goobers:claimed"
+	LabelReady      = "goobers:ready"
+	LabelNeedsHuman = "goobers:needs-human"
 )
 
 // WorkItemStatus is the Goobers processing status mirrored to backlog items.
