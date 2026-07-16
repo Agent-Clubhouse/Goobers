@@ -78,6 +78,119 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 	}
 }
 
+func TestBacklogQueryLabelLists(t *testing.T) {
+	tests := []struct {
+		name          string
+		requireLabels string
+		excludeLabels string
+		issueLabels   [][]string
+		wantIDs       string
+	}{
+		{
+			name:          "require single",
+			requireLabels: "a",
+			issueLabels:   [][]string{{"trusted", "a"}, {"trusted", "b"}},
+			wantIDs:       "7",
+		},
+		{
+			name:          "require multiple",
+			requireLabels: "a,b",
+			issueLabels:   [][]string{{"trusted", "a", "b"}, {"trusted", "a"}},
+			wantIDs:       "7",
+		},
+		{
+			name:          "require spaced",
+			requireLabels: "a, b",
+			issueLabels:   [][]string{{"trusted", "a", "b"}, {"trusted", "a"}},
+			wantIDs:       "7",
+		},
+		{
+			name:        "require empty",
+			issueLabels: [][]string{{"trusted"}},
+			wantIDs:     "7",
+		},
+		{
+			name:          "exclude single",
+			excludeLabels: "a",
+			issueLabels:   [][]string{{"trusted", "a"}, {"trusted", "b"}},
+			wantIDs:       "8",
+		},
+		{
+			name:          "exclude multiple",
+			excludeLabels: "a,b",
+			issueLabels:   [][]string{{"trusted", "a"}, {"trusted", "b"}, {"trusted", "c"}},
+			wantIDs:       "9",
+		},
+		{
+			name:          "exclude spaced",
+			excludeLabels: "a, b",
+			issueLabels:   [][]string{{"trusted", "a"}, {"trusted", "b"}, {"trusted", "c"}},
+			wantIDs:       "9",
+		},
+		{
+			name:        "exclude empty",
+			issueLabels: [][]string{{"trusted"}},
+			wantIDs:     "7",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			for i, labels := range tt.issueLabels {
+				server.addIssue(7+i, "Candidate", labels...)
+			}
+
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+			t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "trusted")
+			t.Setenv("GOOBERS_INPUT_REQUIRELABELS", tt.requireLabels)
+			t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", tt.excludeLabels)
+			t.Chdir(t.TempDir())
+
+			code, stdout, stderr := runArgs(t, "backlog-query", root)
+			if code != 0 {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+			var gotIDs []string
+			for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+				if id, _, ok := strings.Cut(line, "\t"); ok {
+					gotIDs = append(gotIDs, id)
+				}
+			}
+			if got := strings.Join(gotIDs, ","); got != tt.wantIDs {
+				t.Fatalf("eligible IDs = %q, want %q; stdout = %q", got, tt.wantIDs, stdout)
+			}
+		})
+	}
+}
+
+func TestBacklogQueryCurationExcludesReadyItem(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Already curated", "goobers:approved", "goobers:ready")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", "goobers:ready,goobers:needs-human")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", "20")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("stdout = %q, want ready-labeled item skipped as no work", stdout)
+	}
+	assertNoWorkResultFile(t, workDir)
+	if _, err := os.Stat(filepath.Join(root, "scheduler", "claims.json")); err == nil {
+		t.Fatal("curation should not claim an already-ready item")
+	}
+}
+
 // TestBacklogQueryUnlabeledItemNeverClaimed proves SEC-047 eligibility is
 // enforced in code, not just documented: an item missing the trust label is
 // never claimed even though it's otherwise ready. Also issue #233's core
