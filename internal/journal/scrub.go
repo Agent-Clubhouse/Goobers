@@ -161,6 +161,7 @@ var defaultSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`),
 	// Bearer/authorization header values with a long opaque token.
 	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+/-]{20,}=*`),
+	regexp.MustCompile(`(?i)basic\s+[A-Za-z0-9+/]{16,}=*`),
 }
 
 // PatternScrubber redacts secret-shaped substrings using a set of regexps.
