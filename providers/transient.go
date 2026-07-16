@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/url"
 	"regexp"
@@ -37,9 +38,12 @@ func IsTransientError(err error) bool {
 	if errors.As(err, &rl) {
 		return true
 	}
+	var urlErr *url.Error
 	if errors.Is(err, context.DeadlineExceeded) {
-		var urlErr *url.Error
 		return errors.As(err, &urlErr) && urlErr.Timeout()
+	}
+	if errors.As(err, &urlErr) && errors.Is(urlErr.Err, io.EOF) {
+		return true
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
@@ -54,6 +58,9 @@ func IsTransientError(err error) bool {
 		if code, convErr := strconv.Atoi(m[1]); convErr == nil {
 			return isTransientStatus(code, hasRateLimitRetryGuidance(message))
 		}
+	}
+	if strings.Contains(message, "send request:") && strings.HasSuffix(strings.TrimSpace(message), ": eof") {
+		return true
 	}
 	for _, fragment := range transientMessageFragments {
 		if strings.Contains(message, fragment) {

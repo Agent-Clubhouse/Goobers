@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"testing"
@@ -30,7 +31,9 @@ func TestIsTransientError(t *testing.T) {
 		{"typed rate-limit give-up", &RateLimitError{Endpoint: "/repos/acme/app/issues", Status: 403}, true},
 		{"wrapped typed rate-limit give-up", fmt.Errorf("list work items: %w", &RateLimitError{Endpoint: "/x", Status: 429}), true},
 		{"url client timeout", &url.Error{Op: "Get", URL: "https://api.github.com", Err: context.DeadlineExceeded}, true},
+		{"url transport eof", &url.Error{Op: "Get", URL: "https://api.github.com", Err: io.EOF}, true},
 		{"subprocess connection reset", errors.New("error: list work items: send request: read tcp: connection reset by peer"), true},
+		{"subprocess transport eof", errors.New(`error: list work items: send request: Get "https://api.github.com/issues": EOF`), true},
 		{"subprocess dns failure", errors.New("error: dial tcp: lookup api.github.com: no such host"), true},
 		{"subprocess tls timeout", errors.New("error: net/http: TLS handshake timeout"), true},
 		{"context canceled", context.Canceled, false},
@@ -40,6 +43,7 @@ func TestIsTransientError(t *testing.T) {
 		{"tls certificate failure", errors.New("tls: failed to verify certificate: x509: certificate signed by unknown authority"), false},
 		{"wrapped tls certificate failure", &url.Error{Op: "Get", URL: "https://api.github.com", Err: errors.New("tls: failed to verify certificate: x509: certificate signed by unknown authority")}, false},
 		{"wrapped deterministic url error", &url.Error{Op: "Get", URL: "://bad", Err: errors.New("unsupported protocol scheme")}, false},
+		{"decode eof", fmt.Errorf("decode provider response: %w", io.EOF), false},
 		{"opaque unrelated error", errors.New("boom"), false},
 	}
 	for _, tc := range cases {

@@ -2787,6 +2787,85 @@ func TestRunnerResumeAdvancesPastFinishedTaskWithoutRedispatch(t *testing.T) {
 	}
 }
 
+func TestRunnerResumePreservesSuccessfulInfrastructureRetry(t *testing.T) {
+	machine := chainedThroughGateMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-infra-retry-crash", Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("implement")
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatalf("append initial stage.started: %v", err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventError, Stage: "implement", Attempt: 1,
+		Error: &journal.ErrorDetail{Code: "executor_error", Message: "status 503: provider unavailable"},
+	}); err != nil {
+		t.Fatalf("append infrastructure error: %v", err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptInfra,
+	}); err != nil {
+		t.Fatalf("append retry stage.started: %v", err)
+	}
+	artRef, err := jr.RecordArtifact("diff", []byte("--- a\n+++ b\n"))
+	if err != nil {
+		t.Fatalf("RecordArtifact: %v", err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptInfra,
+		Status: string(apiv1.ResultSuccess), Outputs: map[string]any{"recovered": true},
+		Artifacts: []journal.Ref{{Path: artRef.Path, Digest: artRef.Digest, Size: artRef.Size}},
+	}); err != nil {
+		t.Fatalf("append retry stage.finished: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	capturing := &capturingDeterministic{}
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return capturing, nil },
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-infra-retry-crash",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if capturing.calls != 1 {
+		t.Fatalf("executor calls = %d, want only downstream deploy; successful infrastructure retry must not redispatch", capturing.calls)
+	}
+
+	var found bool
+	for _, cp := range capturing.lastEnv.ContextPointers {
+		if cp.Name == "implement.artifact[0]" && cp.Artifact != nil && cp.Artifact.Digest == artRef.Digest {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("deploy's ContextPointers = %+v, want artifact from successful infrastructure retry", capturing.lastEnv.ContextPointers)
+	}
+}
+
 // TestRunnerResumeReconstructsUpstreamPointersForDownstreamStage is #107's
 // pointer-visibility scenario: a stage that finished (and produced an
 // artifact) before the crash must still be visible to a downstream stage as

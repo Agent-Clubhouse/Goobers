@@ -275,8 +275,8 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 
 // lastFinishedSubject reconstructs the (stage, ResultEnvelope) pair a live
 // walk's lastStage/lastResult holds at the moment of a crash — the most
-// recent REAL stage.finished event in the journal (excluding the
-// infra-tagged interrupted-attempt marker Resume itself synthesizes, which
+// recent REAL stage.finished event in the journal (excluding the synthetic
+// interrupted-attempt marker Resume itself writes, which
 // is never a genuine subject: it always precedes a fresh attempt of the SAME
 // task that finishes for real later, so scanning from the end naturally
 // prefers that real finish once it exists). ok is false only for a run that
@@ -284,7 +284,7 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 func lastFinishedSubject(events []journal.Event) (stage string, result apiv1.ResultEnvelope, ok bool) {
 	for i := len(events) - 1; i >= 0; i-- {
 		e := events[i]
-		if e.Type != journal.EventStageFinished || e.AttemptClass == journal.AttemptInfra {
+		if e.Type != journal.EventStageFinished || isInterruptedAttemptMarker(e) {
 			continue
 		}
 		var errInfo *apiv1.ErrorInfo
@@ -309,8 +309,8 @@ func lastFinishedSubject(events []journal.Event) (stage string, result apiv1.Res
 // routed onward to a real stage with a journaled verdict artifact —
 // mirroring the live path's `pointers = append(pointers,
 // apiv1.ContextPointer{...gr.VerdictArtifact})` in walk (issue #412). The
-// infra-tagged interrupted-attempt marker is excluded — it never carries
-// real Artifacts (see lastFinishedSubject); a task revisited more than once
+// synthetic interrupted-attempt marker is excluded — it never carries real
+// Artifacts (see lastFinishedSubject); a task revisited more than once
 // (a gate looping back to it) contributes each visit's artifacts in order,
 // exactly as the live path would. Events are walked in their journaled
 // (chronological) order so a resumed run's pointers interleave stage
@@ -321,7 +321,7 @@ func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
 	for _, e := range events {
 		switch e.Type {
 		case journal.EventStageFinished:
-			if e.AttemptClass == journal.AttemptInfra {
+			if isInterruptedAttemptMarker(e) {
 				continue
 			}
 			out = append(out, contextPointersFor(e.Stage, artifactPointersFrom(e.Artifacts))...)
@@ -340,6 +340,13 @@ func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
 		}
 	}
 	return out
+}
+
+func isInterruptedAttemptMarker(e journal.Event) bool {
+	return e.Type == journal.EventStageFinished &&
+		e.AttemptClass == journal.AttemptInfra &&
+		e.Error != nil &&
+		e.Error.Code == interruptedAttemptErrorCode
 }
 
 // gateRepassSeed reconstructs internal/gate.Evaluator.Attempts from the

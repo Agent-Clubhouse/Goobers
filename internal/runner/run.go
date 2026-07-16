@@ -439,6 +439,8 @@ type resumeContext struct {
 	attempt int
 }
 
+const interruptedAttemptErrorCode = "interrupted"
+
 // walkSeed carries the walk-local state a resumed run must NOT start empty —
 // Start's fresh walk always begins with the zero value. pointers is the
 // upstream ContextPointers every already-finished stage produced (#107);
@@ -517,7 +519,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				if err := jr.Append(journal.Event{
 					Type: journal.EventStageFinished, Stage: t.Name, Attempt: resume.attempt, AttemptClass: journal.AttemptInfra,
 					Status: string(apiv1.ResultFailure),
-					Error:  &journal.ErrorDetail{Code: "interrupted", Message: "attempt was in flight when the runner was interrupted"},
+					Error:  &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"},
 				}); err != nil {
 					return Result{}, fmt.Errorf("runner: journal interrupted attempt for %q: %w", t.Name, err)
 				}
