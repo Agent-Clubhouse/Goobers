@@ -136,19 +136,60 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	q := r.URL.Query()
 	var wantLabels []string
-	if q := r.URL.Query().Get("labels"); q != "" {
-		wantLabels = strings.Split(q, ",")
+	if lq := q.Get("labels"); lq != "" {
+		wantLabels = strings.Split(lq, ",")
 	}
-	out := []map[string]interface{}{}
-	for _, num := range sortedIntKeys(s.issues) {
+	// Model api.github.com's real list behavior rather than an idealized one
+	// (#532): the issues list defaults to NEWEST-first (sort=created,
+	// direction=desc) and paginates (per_page default 30, cap 100) with a
+	// Link rel="next" header. The old fake returned everything, ascending, in
+	// one page — exactly the idealization that let the FIFO fetch-window
+	// starvation ship. Issue number stands in for created time (both fake and
+	// real numbers ascend with creation).
+	nums := sortedIntKeys(s.issues)
+	if q.Get("direction") != "asc" {
+		for i, j := 0, len(nums)-1; i < j; i, j = i+1, j-1 {
+			nums[i], nums[j] = nums[j], nums[i]
+		}
+	}
+	matched := []map[string]interface{}{}
+	for _, num := range nums {
 		issue := s.issues[num]
 		if !hasAllLabels(issue.labels, wantLabels) {
 			continue
 		}
-		out = append(out, issueJSON(issue))
+		matched = append(matched, issueJSON(issue))
 	}
-	writeFakeJSON(w, out)
+	perPage := 30
+	if pp, err := strconv.Atoi(q.Get("per_page")); err == nil && pp > 0 {
+		if pp > 100 {
+			pp = 100
+		}
+		perPage = pp
+	}
+	page := 1
+	if pg, err := strconv.Atoi(q.Get("page")); err == nil && pg > 0 {
+		page = pg
+	}
+	start := (page - 1) * perPage
+	if start > len(matched) {
+		start = len(matched)
+	}
+	end := start + perPage
+	if end > len(matched) {
+		end = len(matched)
+	}
+	if end < len(matched) {
+		next := *r.URL
+		nq := next.Query()
+		nq.Set("page", strconv.Itoa(page+1))
+		nq.Set("per_page", strconv.Itoa(perPage))
+		next.RawQuery = nq.Encode()
+		w.Header().Set("Link", fmt.Sprintf("<%s%s>; rel=%q", s.server.URL, next.String(), "next"))
+	}
+	writeFakeJSON(w, matched[start:end])
 }
 
 func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Request) {
