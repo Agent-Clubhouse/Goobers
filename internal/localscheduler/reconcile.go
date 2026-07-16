@@ -1,25 +1,32 @@
 package localscheduler
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/goobers/goobers/internal/journal"
 )
 
-// ActiveRunCounts scans runsDir for non-terminal runs and returns per-workflow
+// ActiveRunCounts scans runsDir for running runs and returns per-workflow
 // active counts — the daemon-startup reconciliation Conditions.Reconcile needs,
-// since Conditions' in-memory counters don't survive a restart. A run whose
-// state.json can't be read (e.g. mid-recovery) is conservatively counted as
-// active rather than dropped, so a restart never silently exceeds max-parallel.
+// since Conditions' in-memory counters don't survive a restart. Phase comes
+// from the event log, the durable source of truth; state.json can lag a
+// crash-fsynced run.finished event.
 func ActiveRunCounts(runsDir string) (map[string]int, error) {
+	counts, _, err := activeRuns(runsDir)
+	return counts, err
+}
+
+func activeRuns(runsDir string) (map[string]int, map[string]string, error) {
 	counts := map[string]int{}
+	runs := map[string]string{}
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return counts, nil
+			return counts, runs, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -34,14 +41,14 @@ func ActiveRunCounts(runsDir string) (map[string]int, error) {
 		if err != nil {
 			continue
 		}
-		st, err := rd.State()
+		phase, err := rd.Phase()
 		if err != nil {
-			counts[id.Workflow]++
-			continue
+			return nil, nil, fmt.Errorf("read phase for run %q: %w", id.RunID, err)
 		}
-		if st.Phase == journal.PhaseRunning {
+		if phase == journal.PhaseRunning {
 			counts[id.Workflow]++
+			runs[id.RunID] = id.Workflow
 		}
 	}
-	return counts, nil
+	return counts, runs, nil
 }

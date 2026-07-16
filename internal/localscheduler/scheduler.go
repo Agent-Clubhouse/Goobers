@@ -90,6 +90,10 @@ type Scheduler struct {
 	mu         sync.Mutex
 	triggers   map[string]TriggerState
 	dispatches sync.WaitGroup
+	// reconciledRuns identifies the pre-existing runs represented in
+	// Conditions' startup counts, so recovery releases cannot consume another
+	// run's workflow-level slot.
+	reconciledRuns map[string]string
 	// backlogLastCheck tracks, per backlog-item-triggered workflow, when its
 	// BacklogCounter was last polled (#344) — separate from triggers'
 	// LastEval, which is cron-Schedule-specific bookkeeping a workflow with
@@ -166,6 +170,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		now:              time.Now,
 		after:            time.After,
 		triggers:         make(map[string]TriggerState),
+		reconciledRuns:   make(map[string]string),
 		backlogLastCheck: make(map[string]time.Time),
 	}
 	for _, opt := range opts {
@@ -186,16 +191,19 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 // The active-run counts this seeds are a starting point, not a
 // self-releasing snapshot: whatever the caller does with those pre-existing
 // non-terminal runs (issue #135's daemon-startup recovery, e.g.
-// Runner.Resume) MUST call Release once each one's outcome is known, the
-// same reserve-then-Release contract Admit's own callers follow — otherwise
-// the seeded count never comes back down and the workflow starves for the
-// rest of the daemon's life. See Release below.
+// Runner.Resume) MUST call ReleaseReconciled once each one's outcome is known,
+// the same reserve-then-release contract Admit's own callers follow —
+// otherwise the seeded count never comes back down and the workflow starves
+// for the rest of the daemon's life.
 func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
-	active, err := ActiveRunCounts(runsDir)
+	active, runs, err := activeRuns(runsDir)
 	if err != nil {
 		return fmt.Errorf("localscheduler: reconcile active runs: %w", err)
 	}
 	s.conditions.Reconcile(active)
+	s.mu.Lock()
+	s.reconciledRuns = runs
+	s.mu.Unlock()
 
 	events, err := journal.ReadInstanceLog(s.log.Dir())
 	if err != nil {
@@ -246,15 +254,19 @@ func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 	return nil
 }
 
-// Release returns a workflow's held concurrency slot. Exported so a caller
-// resuming interrupted runs outside the normal Tick/Trigger dispatch path
-// (the daemon's startup recovery scan, issue #135) can release the slot
-// Reconcile seeded for it once that resumed run's outcome is known, exactly
-// as dispatch's own goroutine does for a newly-dispatched run — without
-// this, a reconciled slot for a run that predates this process has no
-// release path at all and starves its workflow for the daemon's lifetime.
-func (s *Scheduler) Release(workflow string) {
-	s.conditions.Release(workflow)
+// ReleaseReconciled returns the slot Reconcile seeded for runID, if any.
+// Matching by run prevents terminal cleanup from consuming another running
+// run's workflow-level slot when no slot was seeded for the terminal run.
+func (s *Scheduler) ReleaseReconciled(runID, workflow string) {
+	s.mu.Lock()
+	reconciledWorkflow, ok := s.reconciledRuns[runID]
+	if ok && reconciledWorkflow == workflow {
+		delete(s.reconciledRuns, runID)
+	}
+	s.mu.Unlock()
+	if ok && reconciledWorkflow == workflow {
+		s.conditions.Release(workflow)
+	}
 }
 
 // Wait blocks until every admitted dispatch has finished its Starter call and

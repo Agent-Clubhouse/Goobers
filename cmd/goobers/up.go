@@ -237,10 +237,8 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 	// Reconcile BEFORE the resume scan (issue #135): it seeds Conditions'
 	// active-run counts from the very same non-terminal runs the resume scan
-	// is about to act on, so each resumed run's Release call (below) has a
-	// reserved slot to actually release — reversing this order would let the
-	// resume scan's Releases race Reconcile's blind Conditions.Reconcile
-	// overwrite and land before the slot even exists.
+	// is about to act on, so each resumed run's ReleaseReconciled call (below)
+	// has a reserved slot to actually release.
 	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets, setup.RunConditions.WorkflowDailyBudgets))
 	// #353: start the open-PR-count refresher and wire it as the MaxOpenPRs cap's
 	// counter. Runs on its own interval/context under the daemon's WaitGroup, so
@@ -289,7 +287,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg)
+	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
