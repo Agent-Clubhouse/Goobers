@@ -62,6 +62,11 @@ spec:
       capabilities:
         - github:pr:write
       expectedOutputs:
+        # selectedNumber is threaded to apply-verdict's inputsFrom (#413) — its
+        # omission here left the declared postcondition out of sync with the
+        # stage's actual result JSON. (The load-bearing fix is emitting it as a
+        # string so buildStageEnv actually threads it; see prsiblingcontext.go.)
+        - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
       next: review

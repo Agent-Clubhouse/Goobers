@@ -116,7 +116,7 @@ func TestMergeReviewNamesCrossPRConflict(t *testing.T) {
 		t.Fatalf("read sibling-context.json: %v", err)
 	}
 	var ctx struct {
-		SelectedNumber  int    `json:"selectedNumber"`
+		SelectedNumber  string `json:"selectedNumber"` // string end-to-end (#413)
 		SelectedHeadSha string `json:"selectedHeadSha"`
 		SelectedBaseSha string `json:"selectedBaseSha"`
 		Siblings        []struct {
