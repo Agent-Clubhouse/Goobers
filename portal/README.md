@@ -1,10 +1,12 @@
-# Goobers dashboard prototype
+# Goobers portal foundation
 
-This directory contains the accepted V1 interaction and visual reference for
-the Dashboard / Portal milestone (#14, epic #440).
+This directory contains the production UI foundation for the Dashboard / Portal
+milestone (#14, epic #440).
 
-It is a real React/Vite click-through backed by static fixtures. It is design
-collateral, not the production daemon client.
+It is a React/Vite application backed by static fixtures. The reusable shell,
+navigation, dense lists, status, graph, inspector, theme, and motion modules are
+ready for later daemon-client integration, but this milestone does not connect
+to the daemon.
 
 ## Run it
 
@@ -20,7 +22,7 @@ npm --prefix portal test
 npm --prefix portal run build
 ```
 
-## Feedback paths
+## Fixture paths
 
 - **Overview**: attention-first operations view, active runs, recent outcomes,
   instance warning, and daemon freshness.
@@ -31,7 +33,7 @@ npm --prefix portal run build
   outputs, artifacts, and escalation cause.
 - **Theme**: independently tuned light and dark palettes.
 
-The `Live visual dashboard and workflow DAG` fixture is the richest review
+The `Live visual dashboard and workflow DAG` fixture is the richest diagnostic
 path. It contains three repasses and a terminal escalation.
 
 ## Accepted design decisions
@@ -49,16 +51,15 @@ path. It contains three repasses and a terminal escalation.
 The full product and architecture authority is
 [`docs/design/dashboard.md`](../docs/design/dashboard.md).
 
-## Prototype boundaries
+## Current boundaries
 
 - Data is static and intentionally shaped around representative runs.
 - The graph layout is fixture-specific, not a general layout engine.
-- Components are intentionally colocated for iteration speed and may be split
-  during productionization.
-- Artifact rows demonstrate hierarchy but do not open real journal content.
-- The responsive treatment is a baseline; production work will generalize graph
-  layout beyond the fixed prototype fixtures.
+- Artifact rows present fixture metadata without implying unavailable content
+  actions.
+- The responsive shell remains usable at 320 px; fixture graphs use a labeled
+  horizontal inspection surface at narrow widths.
 - Tier-1 is localhost-only and does not activate the future MSAL/OIDC scaffold.
 
-Production issues must preserve accepted behavior while replacing fixtures with
-the shared versioned daemon API.
+Future data issues will replace fixtures through the shared versioned daemon API
+without changing these presentation foundations.
