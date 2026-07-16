@@ -175,6 +175,44 @@ spec:
 	}
 }
 
+func TestValidateWarnsForClaimStageWithoutResultFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo")
+	if code, _, stderr := runArgs(t, "init", root); code != 0 {
+		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
+	}
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	workflow := `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "@hourly"
+  start: query-backlog
+  tasks:
+    - name: query-backlog
+      type: deterministic
+      goal: Claim one backlog item.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+`
+	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate warning should be non-fatal: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "WARNING") || !strings.Contains(stdout, `task "query-backlog"`) ||
+		!strings.Contains(stdout, "inputs.resultFile") {
+		t.Fatalf("validate stdout = %q, want an actionable resultFile warning", stdout)
+	}
+}
+
 // TestInitThenSelfhostValidates is issue #28's own acceptance criterion,
 // literally: `goobers init` + the self-hosting dogfood config ->
 // `goobers validate` passes, with every gaggle/goober/workflow resolving.
