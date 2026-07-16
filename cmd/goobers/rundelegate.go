@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
 
@@ -39,15 +40,17 @@ const pendingTriggersDir = "pending-triggers"
 // triggerRequest is one delegation request file's content: "please Trigger
 // this workflow on my behalf, I couldn't take the lock myself."
 type triggerRequest struct {
-	Workflow string `json:"workflow"`
+	Workflow  string    `json:"workflow"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // triggerResponse is what the daemon writes back once it has acted on a
 // triggerRequest — exactly one of RunID/Error is set (mirroring
 // Scheduler.Trigger's own (runID, err) return shape).
 type triggerResponse struct {
-	RunID string `json:"runId,omitempty"`
-	Error string `json:"error,omitempty"`
+	RunID     string    `json:"runId,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // requestSuffix/responseSuffix name a request/response file pair sharing one
@@ -73,7 +76,7 @@ func writeTriggerRequest(schedulerDir, workflow string) (requestID string, err e
 	}
 	defer func() { _ = f.Close() }()
 
-	data, err := json.Marshal(triggerRequest{Workflow: workflow})
+	data, err := json.Marshal(triggerRequest{Workflow: workflow, CreatedAt: time.Now().UTC()})
 	if err != nil {
 		return "", err
 	}
@@ -127,11 +130,13 @@ var delegationPollInterval = 100 * time.Millisecond
 var triggerDelegationTimeout = 30 * time.Second
 
 // sweepPendingTriggers is the daemon-side half of #343's delegation
-// protocol, called periodically from runUpContext's own sweep goroutine
-// (mirroring the existing claim-recovery ticker's shape). It dispatches
-// every pending request through sched — the exact same Scheduler.Trigger a
-// local `goobers run` invocation would call directly — and writes back a
-// response for pollTriggerResponse to consume.
+// protocol, called once at daemon startup and periodically from runUpContext's
+// own sweep goroutine (mirroring the existing claim-recovery ticker's shape).
+// It dispatches every fresh pending request through sched — the exact same
+// Scheduler.Trigger a local `goobers run` invocation would call directly — and
+// writes back a response for pollTriggerResponse to consume. Requests older
+// than triggerDelegationTimeout are refused without dispatch, and orphaned
+// responses older than that same bound are removed.
 //
 // A request file is removed BEFORE dispatch, not after: if the daemon
 // crashed mid-dispatch, a still-present request file would replay on the
@@ -141,14 +146,21 @@ var triggerDelegationTimeout = 30 * time.Second
 // run — the same "don't replay an ambiguous firing" principle Scheduler's
 // own trigger.fired-before-dispatch ordering already applies (see dispatch's
 // doc comment in scheduler.go).
-func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *localscheduler.Scheduler, now func() time.Time) {
+func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *localscheduler.Scheduler, log *journal.InstanceLog, now func() time.Time) {
 	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
 	entries, err := os.ReadDir(reqDir)
 	if err != nil {
 		return // no pending-triggers dir yet (no delegated request has ever been made) — nothing to do
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), requestSuffix) {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(e.Name(), responseSuffix) {
+			removeExpiredTriggerResponse(reqDir, e, now())
+			continue
+		}
+		if !strings.HasSuffix(e.Name(), requestSuffix) {
 			continue
 		}
 		requestID := strings.TrimSuffix(e.Name(), requestSuffix)
@@ -163,11 +175,18 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 		}
 
 		var req triggerRequest
-		resp := triggerResponse{}
+		requestTime := now()
+		resp := triggerResponse{CreatedAt: requestTime.UTC()}
 		if err := json.Unmarshal(data, &req); err != nil {
 			resp.Error = fmt.Sprintf("delegate: malformed trigger request: %v", err)
+		} else if req.CreatedAt.IsZero() {
+			resp.Error = "delegate: trigger request has no creation time and was not dispatched"
+			journalDelegationRefusal(log, req.Workflow, requestID, req.CreatedAt, "delegation: request missing creation time")
+		} else if requestTime.Sub(req.CreatedAt) > triggerDelegationTimeout {
+			resp.Error = fmt.Sprintf("delegate: trigger request expired after %s and was not dispatched", triggerDelegationTimeout)
+			journalDelegationRefusal(log, req.Workflow, requestID, req.CreatedAt, "delegation: request expired")
 		} else {
-			runID, terr := sched.Trigger(ctx, req.Workflow, now())
+			runID, terr := sched.Trigger(ctx, req.Workflow, requestTime)
 			if terr != nil {
 				resp.Error = terr.Error()
 			} else {
@@ -181,4 +200,43 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 		}
 		_ = os.WriteFile(filepath.Join(reqDir, requestID+responseSuffix), respData, 0o644)
 	}
+}
+
+func removeExpiredTriggerResponse(reqDir string, entry os.DirEntry, now time.Time) {
+	path := filepath.Join(reqDir, entry.Name())
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+
+	var resp triggerResponse
+	createdAt := time.Time{}
+	if json.Unmarshal(data, &resp) == nil {
+		createdAt = resp.CreatedAt
+	}
+	if createdAt.IsZero() {
+		info, err := entry.Info()
+		if err != nil {
+			return
+		}
+		createdAt = info.ModTime()
+	}
+	if now.Sub(createdAt) > triggerDelegationTimeout {
+		_ = os.Remove(path)
+	}
+}
+
+func journalDelegationRefusal(log *journal.InstanceLog, workflow, requestID string, createdAt time.Time, reason string) {
+	if log == nil {
+		return
+	}
+	_ = log.Append(journal.Event{
+		Type:     journal.EventTickSkipped,
+		Workflow: workflow,
+		Reason:   reason,
+		Runner: map[string]any{
+			"delegationRequestId":        requestID,
+			"delegationRequestCreatedAt": createdAt,
+		},
+	})
 }

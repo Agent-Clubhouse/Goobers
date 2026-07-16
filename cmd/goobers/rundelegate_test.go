@@ -3,9 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,13 +26,15 @@ import (
 type fakeDelegateStarter struct {
 	result localscheduler.StartResult
 	err    error
+	calls  atomic.Int32
 }
 
 func (f *fakeDelegateStarter) Start(context.Context, localscheduler.StartRequest) (localscheduler.StartResult, error) {
+	f.calls.Add(1)
 	return f.result, f.err
 }
 
-func newTestDelegateScheduler(t *testing.T, entries []localscheduler.WorkflowEntry) (*localscheduler.Scheduler, string) {
+func newTestDelegateScheduler(t *testing.T, entries []localscheduler.WorkflowEntry) (*localscheduler.Scheduler, *journal.InstanceLog, string) {
 	t.Helper()
 	dir := t.TempDir()
 	log, _, err := journal.OpenInstanceLog(dir)
@@ -36,7 +42,7 @@ func newTestDelegateScheduler(t *testing.T, entries []localscheduler.WorkflowEnt
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = log.Close() })
-	return localscheduler.New(entries, log), dir
+	return localscheduler.New(entries, log), log, dir
 }
 
 // TestSweepDispatchesPendingRequest is #343's core protocol acceptance: a
@@ -46,7 +52,7 @@ func newTestDelegateScheduler(t *testing.T, entries []localscheduler.WorkflowEnt
 // runDelegatedTrigger/runUpContext drive in the real CLI.
 func TestSweepDispatchesPendingRequest(t *testing.T) {
 	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
-	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+	sched, log, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
 		Workflow:  "implement",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
 		Starter:   starter,
@@ -56,8 +62,19 @@ func TestSweepDispatchesPendingRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
+	requestData, err := os.ReadFile(filepath.Join(schedulerDir, pendingTriggersDir, requestID+requestSuffix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req triggerRequest
+	if err := json.Unmarshal(requestData, &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.CreatedAt.IsZero() {
+		t.Fatal("request creation time was not stamped")
+	}
 
-	sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now)
+	sweepPendingTriggers(context.Background(), schedulerDir, sched, log, time.Now)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -70,12 +87,175 @@ func TestSweepDispatchesPendingRequest(t *testing.T) {
 	}
 }
 
+func TestSweepRefusesExpiredRequest(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, log, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Starter:   starter,
+	}})
+
+	requestID := "stale"
+	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(triggerRequest{
+		Workflow:  "implement",
+		CreatedAt: now.Add(-triggerDelegationTimeout - time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestPath := filepath.Join(reqDir, requestID+requestSuffix)
+	if err := os.WriteFile(requestPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sweepPendingTriggers(context.Background(), schedulerDir, sched, log, func() time.Time { return now })
+
+	if _, err := os.Stat(requestPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expired request still exists: %v", err)
+	}
+	_, err = pollTriggerResponse(context.Background(), schedulerDir, requestID, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("pollTriggerResponse error = %v, want expired refusal", err)
+	}
+	if calls := starter.calls.Load(); calls != 0 {
+		t.Fatalf("starter calls = %d, want 0", calls)
+	}
+
+	events, err := journal.ReadInstanceLog(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventTickSkipped &&
+			event.Workflow == "implement" &&
+			event.Reason == "delegation: request expired" {
+			return
+		}
+	}
+	t.Fatalf("expired request refusal was not journaled: %+v", events)
+}
+
+func TestDaemonStartupRefusesExpiredRequest(t *testing.T) {
+	prevInterval := delegationSweepInterval
+	delegationSweepInterval = time.Hour
+	t.Cleanup(func() { delegationSweepInterval = prevInterval })
+
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	reqDir := filepath.Join(l.SchedulerDir(), pendingTriggersDir)
+	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	requestID := "predates-daemon"
+	data, err := json.Marshal(triggerRequest{
+		Workflow:  "default-implement",
+		CreatedAt: time.Now().Add(-triggerDelegationTimeout - time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestPath := filepath.Join(reqDir, requestID+requestSuffix)
+	if err := os.WriteFile(requestPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	upStdout := &daemonStartedWriter{started: make(chan struct{})}
+	var upStderr bytes.Buffer
+	var upCode int
+	upDone := make(chan struct{})
+	go func() {
+		upCode = runUpContext(ctx, []string{root}, upStdout, &upStderr)
+		close(upDone)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-upDone:
+		case <-time.After(10 * time.Second):
+			t.Error("runUpContext did not shut down during cleanup")
+		}
+	})
+
+	select {
+	case <-upStdout.started:
+	case <-upDone:
+		t.Fatalf("runUpContext exited before startup: code = %d, stderr = %q", upCode, upStderr.String())
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for runUpContext to report daemon readiness")
+	}
+
+	if _, err := os.Stat(requestPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expired request still exists after startup sweep: %v", err)
+	}
+	_, err = pollTriggerResponse(context.Background(), l.SchedulerDir(), requestID, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("pollTriggerResponse error = %v, want expired refusal", err)
+	}
+
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawRefusal bool
+	for _, event := range events {
+		if event.Workflow != "default-implement" {
+			continue
+		}
+		if event.Type == journal.EventTriggerFired {
+			t.Fatalf("expired request was dispatched during daemon startup: %+v", events)
+		}
+		if event.Type == journal.EventTickSkipped && event.Reason == "delegation: request expired" {
+			sawRefusal = true
+		}
+	}
+	if !sawRefusal {
+		t.Fatalf("expired request refusal was not journaled during daemon startup: %+v", events)
+	}
+}
+
+func TestSweepGarbageCollectsOnlyExpiredResponses(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	sched, log, schedulerDir := newTestDelegateScheduler(t, nil)
+	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	responses := map[string]triggerResponse{
+		"orphan": {RunID: "old-run", CreatedAt: now.Add(-triggerDelegationTimeout - time.Second)},
+		"fresh":  {RunID: "new-run", CreatedAt: now},
+	}
+	for id, resp := range responses {
+		data, err := json.Marshal(resp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(reqDir, id+responseSuffix), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sweepPendingTriggers(context.Background(), schedulerDir, sched, log, func() time.Time { return now })
+
+	if _, err := os.Stat(filepath.Join(reqDir, "orphan"+responseSuffix)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expired response still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(reqDir, "fresh"+responseSuffix)); err != nil {
+		t.Fatalf("fresh response was removed: %v", err)
+	}
+}
+
 // TestSweepConsumesRequestFileOnce proves a request file is removed once
 // swept (dispatch's own "consume before dispatch" ordering, rundelegate.go's
 // doc comment) — a second sweep pass must not re-dispatch the same request.
 func TestSweepConsumesRequestFileOnce(t *testing.T) {
 	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
-	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+	sched, log, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
 		Workflow:  "implement",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
 		Starter:   starter,
@@ -84,8 +264,8 @@ func TestSweepConsumesRequestFileOnce(t *testing.T) {
 	if _, err := writeTriggerRequest(schedulerDir, "implement"); err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
-	sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now)
-	sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now) // must be a no-op
+	sweepPendingTriggers(context.Background(), schedulerDir, sched, log, time.Now)
+	sweepPendingTriggers(context.Background(), schedulerDir, sched, log, time.Now) // must be a no-op
 
 	entries, err := filepathGlobRequests(schedulerDir)
 	if err != nil {
@@ -105,13 +285,13 @@ func filepathGlobRequests(schedulerDir string) ([]string, error) {
 // Scheduler.Trigger itself returns — through the response file, not silently
 // dropped.
 func TestSweepUnknownWorkflowRespondsWithError(t *testing.T) {
-	sched, schedulerDir := newTestDelegateScheduler(t, nil)
+	sched, log, schedulerDir := newTestDelegateScheduler(t, nil)
 
 	requestID, err := writeTriggerRequest(schedulerDir, "no-such-workflow")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
-	sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now)
+	sweepPendingTriggers(context.Background(), schedulerDir, sched, log, time.Now)
 
 	_, err = pollTriggerResponse(context.Background(), schedulerDir, requestID, time.Second)
 	if err == nil {

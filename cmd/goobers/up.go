@@ -199,6 +199,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	for _, runID := range warned {
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
 	}
+	sweepPendingTriggers(ctx, l.SchedulerDir(), sched, setup.InstanceLog, time.Now)
 
 	// The periodic sweep runs on its own goroutine for the daemon's entire
 	// lifetime, concurrently with the main goroutine's own stdout/stderr
@@ -244,7 +245,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			case <-ctx.Done():
 				return
 			case <-delegationTicker.C:
-				sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now)
+				sweepPendingTriggers(ctx, l.SchedulerDir(), sched, setup.InstanceLog, time.Now)
 			}
 		}
 	}()
