@@ -250,9 +250,10 @@ spec:
                     type:
                       description: |-
                         TriggerType differentiates workflow archetypes without splitting the taxonomy:
-                        consumer workflows trigger on backlog items; producer workflows trigger on a
-                        schedule or external signal (WF-010, WF-013).
+                        workflows run manually, consume backlog items, or react to a schedule or
+                        external signal (WF-010, WF-013).
                       enum:
+                      - manual
                       - backlog-item
                       - schedule
                       - signal

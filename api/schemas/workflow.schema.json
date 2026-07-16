@@ -55,7 +55,7 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "type": "string", "enum": ["backlog-item", "schedule", "signal"] },
+        "type": { "type": "string", "enum": ["manual", "backlog-item", "schedule", "signal"] },
         "selector": { "type": "object", "additionalProperties": { "type": "string" } },
         "schedule": { "type": "string" },
         "signal": { "type": "string" }

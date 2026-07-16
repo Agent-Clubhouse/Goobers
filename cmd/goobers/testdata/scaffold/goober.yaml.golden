@@ -1,0 +1,25 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: reviewer2
+spec:
+  gaggle: example
+  role: reviewer2
+  displayName: reviewer2
+  instructions: instructions.md
+  harness: copilot
+  capabilities:
+    # Required for the Copilot harness to receive its model credential.
+    - agent:model
+    # Common grants; uncomment only what this goober needs.
+    # - repo:read
+    # - repo:push
+    # - github:issues:write
+    # - github:pr:write
+    # - telemetry:read
+    # - journal:read
+  skills:
+    - reviewer2
+  tools:
+    - shell
+  scaleFactor: 1

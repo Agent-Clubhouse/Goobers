@@ -30,6 +30,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "init":
 		return runInit(args[1:], stdout, stderr)
+	case "scaffold":
+		return runScaffold(args[1:], stdout, stderr)
 	case "validate":
 		return runValidate(args[1:], stdout, stderr)
 	case "up":
@@ -97,6 +99,8 @@ func usage(w io.Writer) {
 Usage:
   goobers --version             print build version, commit, and date
   goobers init [path]           scaffold an instance root
+  goobers scaffold goober|workflow [--force] <name> [path]
+                                scaffold a goober or workflow in a gaggle
   goobers validate [path]       validate an instance's instance.yaml + config/
   goobers up [--quiet] [path]   run the daemon (scheduler + runner)
   goobers run <workflow> [path] trigger a run manually (still honors run conditions)
