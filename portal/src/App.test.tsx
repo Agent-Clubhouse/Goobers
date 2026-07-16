@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { runs } from "./prototypeData";
 
 describe("App prototype", () => {
   beforeEach(() => {
@@ -14,6 +16,21 @@ describe("App prototype", () => {
     expect(screen.getByRole("heading", { name: "One run needs attention." })).toBeInTheDocument();
     expect(screen.getByText("Daemon connected")).toBeInTheDocument();
     expect(screen.getByText("Scope could not converge within the repass budget")).toBeInTheDocument();
+  });
+
+  it("only verifies artifact metadata backed by exact fixture bytes", () => {
+    const artifacts = runs.flatMap((run) => run.attempts.flatMap((attempt) => attempt.artifacts));
+
+    for (const artifact of artifacts) {
+      if (artifact.content === undefined) {
+        expect(artifact.digestVerified).toBe(false);
+        continue;
+      }
+
+      expect(artifact.digestVerified).toBe(true);
+      expect(artifact.size).toBe(`${Buffer.byteLength(artifact.content)} B`);
+      expect(artifact.digest).toBe(`sha256:${createHash("sha256").update(artifact.content).digest("hex")}`);
+    }
   });
 
   it("opens a run and supports replay", async () => {
@@ -46,7 +63,9 @@ describe("App prototype", () => {
     expect(screen.queryByText("Produced a partial API and portal client without a complete slice.")).not.toBeInTheDocument();
     expect(screen.queryByText("17 files, +812/-44")).not.toBeInTheDocument();
     expect(container.querySelector('[data-edge="review-gate->implement"]')).not.toHaveClass("graph-edge-active");
-
+    const attemptPanel = screen.getByRole("tabpanel");
+    expect(within(attemptPanel).getByText("From Implement · Attempt 1 · Started at seq 4")).toBeInTheDocument();
+    expect(within(attemptPanel).queryByText(/Seq 6/)).not.toBeInTheDocument();
   });
 
   it("orders attempt classes, follows the selected event, and supports keyboard switching", async () => {
@@ -60,7 +79,7 @@ describe("App prototype", () => {
 
     expect(attempts).toHaveLength(3);
     expect(attempts[0]).toHaveTextContent(/Attempt 1.*initial.*completed.*6m 47s/i);
-    expect(attempts[1]).toHaveTextContent(/Attempt 2.*infra.*completed.*6m 31s/i);
+    expect(attempts[1]).toHaveTextContent(/Attempt 2.*policy.*completed.*6m 31s/i);
     expect(attempts[2]).toHaveTextContent(/Attempt 3.*policy.*completed.*5m 33s/i);
     expect(attempts[2]).toHaveAttribute("aria-selected", "true");
 
@@ -71,8 +90,8 @@ describe("App prototype", () => {
     expect(attempts[1]).toHaveAttribute("aria-selected", "true");
     expect(attempts[1]).toHaveFocus();
 
-    await user.click(screen.getByRole("button", { name: "Select event 8: Implementation infrastructure retry" }));
-    const selectedEventAttempt = screen.getByRole("tab", { name: /Attempt 2.*infra.*running.*In progress/i });
+    await user.click(screen.getByRole("button", { name: "Select event 8: Implementation policy repass" }));
+    const selectedEventAttempt = screen.getByRole("tab", { name: /Attempt 2.*policy.*running.*In progress/i });
     expect(selectedEventAttempt).toHaveAttribute("aria-selected", "true");
     expect(within(screen.getByRole("tabpanel")).getByText("Outcome is not available at the selected event.")).toBeInTheDocument();
     expect(screen.queryByText("attempt-2-summary.md")).not.toBeInTheDocument();
@@ -81,7 +100,7 @@ describe("App prototype", () => {
   it("shows artifact provenance and safely handles content, errors, downloads, and focus return", async () => {
     const user = userEvent.setup();
     window.location.hash = "#/run/01JZ441DAEMONAPI";
-    render(<App />);
+    const { container } = render(<App />);
 
     fireEvent.change(screen.getByRole("slider", { name: "Replay position" }), {
       target: { value: "4" },
@@ -99,18 +118,26 @@ describe("App prototype", () => {
     const summaryRow = screen.getByText("implementation-summary.md").closest("article");
     expect(summaryRow).not.toBeNull();
     expect(within(summaryRow!).getByText("text/markdown")).toBeInTheDocument();
-    expect(within(summaryRow!).getByText("4.1 KB")).toBeInTheDocument();
+    expect(within(summaryRow!).getByText("75 B")).toBeInTheDocument();
     expect(within(summaryRow!).getByText("Attempt 1 · Seq 5")).toBeInTheDocument();
     expect(within(summaryRow!).getByText("Verified")).toBeInTheDocument();
     expect(within(summaryRow!).getByText(/^sha256:/)).toBeInTheDocument();
 
     const summaryButton = within(summaryRow!).getByRole("button", { name: "View content" });
     fireEvent.click(summaryButton);
+    expect(container).toHaveAttribute("inert");
     expect(screen.getByRole("status")).toHaveTextContent("Loading artifact content");
     expect(await screen.findByLabelText("implementation-summary.md content")).toHaveTextContent(
       "Added daemon read endpoints and fixture-backed coverage.",
     );
+    const closeButton = screen.getByRole("button", { name: "Close artifact viewer" });
+    expect(closeButton).toHaveFocus();
+    await user.tab();
+    expect(closeButton).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(closeButton).toHaveFocus();
     await user.click(screen.getByRole("button", { name: "Close artifact viewer" }));
+    expect(container).not.toHaveAttribute("inert");
     expect(summaryButton).toHaveFocus();
 
     const pullRequestRow = screen.getByText("pull-request.json").closest("article");
@@ -129,6 +156,7 @@ describe("App prototype", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Artifact content could not be loaded from the local journal.",
     );
+    expect(within(manifestRow!).getByText("Unverified")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close artifact viewer" }));
 
     const patchRow = screen.getByText("implementation.patch").closest("article");

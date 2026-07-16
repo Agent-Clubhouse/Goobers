@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   instanceWarnings,
   runStatusLabel,
@@ -806,6 +807,7 @@ function visibleAttempts(run: Run, stageId: string, eventSeq: number): StageAtte
         ...attempt,
         status: "running" as const,
         duration: "In progress",
+        endedSeq: undefined,
         summary: "Outcome is not available at the selected event.",
         outputs: undefined,
         artifacts: attempt.artifacts.filter((artifact) => artifact.recordedSeq <= eventSeq),
@@ -870,6 +872,8 @@ function ArtifactViewer({
   const [contentState, setContentState] = useState<
     { status: "loading" } | { status: "ready"; content: string } | { status: "error"; message: string }
   >({ status: "loading" });
+  const backdrop = useRef<HTMLDivElement>(null);
+  const dialog = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let current = true;
@@ -894,18 +898,61 @@ function ArtifactViewer({
     };
   }, [artifact, loadAttempt]);
 
-  return (
-    <div className="artifact-dialog-backdrop">
+  useEffect(() => {
+    const backgroundElements = Array.from(document.body.children).filter(
+      (element): element is HTMLElement => element instanceof HTMLElement && element !== backdrop.current,
+    );
+    const inertStates = backgroundElements.map((element) => element.hasAttribute("inert"));
+    backgroundElements.forEach((element) => element.setAttribute("inert", ""));
+
+    return () => {
+      backgroundElements.forEach((element, index) => {
+        if (!inertStates[index]) {
+          element.removeAttribute("inert");
+        }
+      });
+    };
+  }, []);
+
+  const onDialogKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") {
+      return;
+    }
+
+    const focusable = Array.from(
+      dialog.current?.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ) ?? [],
+    ).filter((element) => element.tabIndex >= 0);
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+
+    if (event.shiftKey && (document.activeElement === first || !dialog.current?.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !dialog.current?.contains(document.activeElement))) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  return createPortal(
+    <div className="artifact-dialog-backdrop" ref={backdrop}>
       <section
         aria-labelledby="artifact-dialog-title"
         aria-modal="true"
         className="artifact-dialog"
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            onClose();
-          }
-        }}
+        onKeyDown={onDialogKeyDown}
+        ref={dialog}
         role="dialog"
       >
         <header>
@@ -949,7 +996,8 @@ function ArtifactViewer({
           <pre aria-label={`${artifact.name} content`} className="artifact-content">{contentState.content}</pre>
         )}
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1004,9 +1052,14 @@ function AttemptInspector({
   };
 
   const closeArtifact = () => {
-    artifactTrigger.current?.focus();
     setSelectedArtifact(undefined);
   };
+
+  useEffect(() => {
+    if (!selectedArtifact) {
+      artifactTrigger.current?.focus();
+    }
+  }, [selectedArtifact]);
 
   return (
     <aside className="run-inspector">
