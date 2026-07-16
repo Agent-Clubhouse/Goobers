@@ -92,8 +92,8 @@ spec:
         selectedNumber: selectedNumber
       capabilities:
         - github:pr:write
-      # Terminal: non-pass verdicts and advisory/refused merge outcomes end
-      # as PR feedback for pr-remediation or a human.
+      # Terminal: non-pass verdicts end as PR feedback for pr-remediation or
+      # a human.
 
     - name: merge-pr
       type: deterministic
@@ -108,8 +108,8 @@ spec:
         # Only review:pass reaches this stage, so the gate decision is a
         # deterministic input rather than model-echoed data.
         verdict: "pass"
-        # Set true to retain verdict comments/labels without attempting a
-        # merge. The github:pr:merge grant remains fail-closed either way.
+        # Set true to evaluate without attempting a merge. The
+        # github:pr:merge grant remains fail-closed either way.
         advisoryMode: "false"
         resultFile: "merge-result.json"
       capabilities:
@@ -168,6 +168,6 @@ spec:
           equals: "true"
       branches:
         pass: post-merge
-        # Advisory mode or a conjunct that changed after review falls back to
-        # the normal verdict comment/label path without post-merge effects.
-        fail: apply-verdict
+        # A conjunct that changed after review leaves the PR unlabeled. Once
+        # CI/draft state recovers, pr-select can review and retry it.
+        fail: ""

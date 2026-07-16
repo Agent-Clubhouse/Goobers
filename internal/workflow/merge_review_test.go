@@ -113,9 +113,12 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				mergeGate.Automated.Params["equals"] != "true" {
 				t.Errorf("merge-gate check = %+v, want output-equals merged=true", mergeGate.Automated)
 			}
-			wantMergeBranches := map[string]string{"pass": "post-merge", "fail": "apply-verdict"}
+			wantMergeBranches := map[string]string{"pass": "post-merge", "fail": TerminalComplete}
 			if !reflect.DeepEqual(mergeGate.Branches, wantMergeBranches) {
 				t.Errorf("merge-gate branches = %v, want %v", mergeGate.Branches, wantMergeBranches)
+			}
+			if mergeGate.Branches["fail"] == "apply-verdict" {
+				t.Error("merge refusal must not apply the pass verdict label; the PR must remain retryable")
 			}
 
 			postMerge, ok := m.Task("post-merge")

@@ -69,8 +69,8 @@ spec:
         baseSha: selectedBaseSha
       inputs:
         verdict: "pass"
-        # Mixed-company instances should set this to "true". The merge
-        # capability is still required because admission always fails closed.
+        # Set true to evaluate without attempting a merge. The merge capability
+        # is still required because admission always fails closed.
         advisoryMode: "false"
         resultFile: "merge-result.json"
       capabilities:
@@ -113,4 +113,6 @@ spec:
           equals: "true"
       branches:
         pass: post-merge
-        fail: apply-verdict
+        # Keep changed CI/draft state unlabeled so a later run can retry after
+        # the PR becomes eligible again.
+        fail: ""
