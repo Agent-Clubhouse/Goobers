@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -29,9 +30,15 @@ type Journal interface {
 // seeding contract: internal/runner/resume.go's gateDiffSeed reconstructs
 // Evaluator.LastDiffDigest from each gate's last such event on resume, the
 // same way gateRepassSeed reconstructs Attempts.
-func recordVerdict(j Journal, r Result, diffDigest string) error {
+//
+// recordVerdict returns the verdict's journaled ArtifactPointer (nil when
+// r.Verdict is nil, or when j is nil) so the caller (Evaluate) can attach it
+// to Result.VerdictArtifact — the same artifact this function just recorded,
+// handed back rather than recomputed, for the runner to surface as a repass
+// ContextPointer (issue #412).
+func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPointer, error) {
 	if j == nil {
-		return nil
+		return nil, nil
 	}
 	runner := map[string]any{"repassAttempt": r.Attempt, "escalated": r.Escalated, "duplicateDiff": r.DuplicateDiff}
 	if diffDigest != "" {
@@ -44,18 +51,23 @@ func recordVerdict(j Journal, r Result, diffDigest string) error {
 		Target:  r.Target,
 		Runner:  runner,
 	}
+	var artifact *apiv1.ArtifactPointer
 	if r.Verdict != nil {
 		data, err := json.Marshal(r.Verdict)
 		if err != nil {
-			return fmt.Errorf("gate: marshal verdict for journal: %w", err)
+			return nil, fmt.Errorf("gate: marshal verdict for journal: %w", err)
 		}
 		name := fmt.Sprintf("verdict/%s-%d.json", r.Gate, r.Attempt)
 		ref, err := j.RecordArtifact(name, data)
 		if err != nil {
-			return fmt.Errorf("gate: record verdict artifact: %w", err)
+			return nil, fmt.Errorf("gate: record verdict artifact: %w", err)
 		}
 		ev.Name = name
 		ev.Ref = &ref
+		artifact = &apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: "application/json"}
 	}
-	return j.Append(ev)
+	if err := j.Append(ev); err != nil {
+		return nil, err
+	}
+	return artifact, nil
 }

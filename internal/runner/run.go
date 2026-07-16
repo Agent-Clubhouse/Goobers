@@ -475,6 +475,18 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			case workflow.TerminalComplete:
 				return r.finish(jr, journal.PhaseCompleted, g.Name, steps)
 			}
+			if gr.VerdictArtifact != nil {
+				// #412: the next dispatch — a repass back to the stage that
+				// produced the subject this gate just evaluated, most
+				// commonly — must actually receive the reviewer's verdict,
+				// not just infer "something needs to change" from git. The
+				// implementer's own instructions already promise it'll read
+				// "the reviewer rationale … attached as context"; before
+				// this, that promise was never kept, so a repass regenerated
+				// the same diff and tripped the #316 identical-diff guard
+				// for lack of anything new to act on.
+				pointers = append(pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact})
+			}
 			state = gr.Target
 			continue
 		}

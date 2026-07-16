@@ -47,15 +47,8 @@ The runner hands the stage an `InvocationEnvelope`:
     upstream outputs and input snapshots; or
   - an `external` ref (`kind` + `uri`) — e.g. the issue/PR URL. Content outside the
     journal is untrusted; fetching and trusting it is the stage's job.
-
-  > **Planned (V0.7 ladder remediation, L3 — `docs/design/v07-ladder-remediation.md`
-  > §3.1):** on a **repass** (a gate routing `needs-changes` back to a prior
-  > `implement` stage), the runner must include the gate's most-recent `Verdict`
-  > artifact (`verdict/<gate>-<attempt>.json`) among that stage's `contextPointers`.
-  > Today the gate path contributes no pointer, so the repass stage never receives
-  > the feedback the goal text tells it to read — the V0.6 ladder's headline
-  > non-convergence bug. The fix stays entirely within this `contextPointers`
-  > mechanism (no envelope reach-through, no schema change).
+  - on a **repass**, also the gate's most-recent `Verdict` artifact — see
+    "Repass context obligation" below.
 - `capabilities[]` — the capability grants the stage's definition declares (e.g.
   `github:issues:write`). **Capability admission fails closed**: credentials for a
   capability not listed here are never materialized (§5).
@@ -122,6 +115,16 @@ For gates, the evaluator returns a `Verdict` (`decision` ∈ `pass` / `fail` /
 `needs-changes`, plus `rationale`, `evidence[]` artifact pointers, and
 `findings[]`); the gate maps the decision to a branch. A gate outcome with no
 defined branch is an error, never a silent pass.
+
+**Repass context obligation (#412).** When a gate's branch routes back to a
+stage the run already dispatched (a repass — most commonly `needs-changes` →
+`implement`), the runner attaches that gate's just-recorded `Verdict` as a
+`contextPointer` on the repass invocation, named `<gate>.verdict`, via the
+same pointer-only mechanism "Artifact passing" above describes for any other
+upstream artifact — never the raw `ResultEnvelope`, never a schema change. A
+repassing stage that
+reads the reviewer's actual rationale/findings can address them directly,
+rather than re-inferring "something needs to change" from the diff alone.
 
 ## Versioning & unknown-field policy
 

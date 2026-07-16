@@ -180,6 +180,65 @@ func TestFullRepassFixture(t *testing.T) {
 	}
 }
 
+// TestEvaluateSetsVerdictArtifactForAgenticGate is issue #412's gate-side
+// acceptance: Result.VerdictArtifact must point at the SAME artifact
+// recordVerdict just journaled (not merely be present), so the runner's
+// repass ContextPointer resolves to real reviewer content, not a
+// placeholder — and must be absent wherever there is nothing to surface
+// (automated gates, and journal disabled).
+func TestEvaluateSetsVerdictArtifactForAgenticGate(t *testing.T) {
+	spec := fixtureSpec()
+	reviewGate := spec.Gates[1]
+	rev := &fakeGoober{reviewVerdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "please fix X"}}
+	run := newTestJournal(t)
+	ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: rev}, Journal: run}
+
+	r, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "")
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if r.VerdictArtifact == nil || r.VerdictArtifact.Digest == "" {
+		t.Fatalf("VerdictArtifact = %+v, want a digested artifact pointer", r.VerdictArtifact)
+	}
+
+	events := readGateEvents(t, run)
+	if len(events) != 1 || events[0].Ref == nil {
+		t.Fatalf("journaled events = %+v, want exactly 1 with a Ref", events)
+	}
+	if r.VerdictArtifact.Digest != events[0].Ref.Digest {
+		t.Fatalf("VerdictArtifact.Digest = %q, want the same digest journaled at events[0].Ref.Digest = %q", r.VerdictArtifact.Digest, events[0].Ref.Digest)
+	}
+
+	t.Run("nil for an automated gate (no Verdict to surface)", func(t *testing.T) {
+		g := apiv1.Gate{
+			Name: "autogate", Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches:  map[string]string{OutcomePass: "", OutcomeFail: "implement"},
+		}
+		auto := &fakeAutomated{outcomes: []string{OutcomeFail}}
+		ev := &Evaluator{Automated: auto, Journal: newTestJournal(t)}
+		r, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}, "implement", apiv1.ResultEnvelope{}, "")
+		if err != nil {
+			t.Fatalf("Evaluate: %v", err)
+		}
+		if r.VerdictArtifact != nil {
+			t.Fatalf("VerdictArtifact = %+v, want nil (automated gates have no Verdict)", r.VerdictArtifact)
+		}
+	})
+
+	t.Run("nil when journaling is disabled", func(t *testing.T) {
+		rev := &fakeGoober{reviewVerdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges}}
+		ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: rev}}
+		r, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "")
+		if err != nil {
+			t.Fatalf("Evaluate: %v", err)
+		}
+		if r.VerdictArtifact != nil {
+			t.Fatalf("VerdictArtifact = %+v, want nil (no Journal to record into)", r.VerdictArtifact)
+		}
+	})
+}
+
 // TestEvaluatorEscalatesOnRepassBudgetExhaustion proves loop budget exhaustion
 // routes to @escalate instead of infinitely looping.
 func TestEvaluatorEscalatesOnRepassBudgetExhaustion(t *testing.T) {
@@ -412,7 +471,11 @@ func TestEvaluatorRequiresConfiguredDependency(t *testing.T) {
 }
 
 func TestRecordVerdictNilJournalIsNoop(t *testing.T) {
-	if err := recordVerdict(nil, Result{Gate: "g", Outcome: "pass", Target: ""}, ""); err != nil {
+	artifact, err := recordVerdict(nil, Result{Gate: "g", Outcome: "pass", Target: ""}, "")
+	if err != nil {
 		t.Fatalf("recordVerdict with nil Journal: %v", err)
+	}
+	if artifact != nil {
+		t.Fatalf("recordVerdict with nil Journal returned artifact %+v, want nil", artifact)
 	}
 }

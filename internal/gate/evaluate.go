@@ -44,6 +44,16 @@ type Result struct {
 	// Verdict is the full agentic-gate verdict (decision, rationale,
 	// evidence, findings). nil for automated gates.
 	Verdict *apiv1.Verdict
+	// VerdictArtifact points at Verdict as journaled (recordVerdict,
+	// journal.go — the same "verdict/<gate>-<attempt>.json" artifact
+	// DuplicateDiff's synthesized verdict is also journaled as). nil
+	// whenever Verdict is nil, or when Journal is nil (journaling
+	// disabled). The runner surfaces this as a ContextPointer on a repass
+	// dispatch (issue #412) so the reimplementing stage actually receives
+	// the reviewer's rationale — the same content this gate itself already
+	// persisted — instead of re-inferring "something needs to change" from
+	// git alone.
+	VerdictArtifact *apiv1.ArtifactPointer
 }
 
 // Evaluator dispatches a gate to its configured evaluator (automated or
@@ -199,9 +209,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	// type + resume.go logic) — deferred to #263 rather than folded into this
 	// grouped hardening pass; see that issue for the full rationale.
 	r := Result{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated, DuplicateDiff: duplicateDiff, Verdict: verdict}
-	if err := recordVerdict(e.Journal, r, diffDigest); err != nil {
+	artifact, err := recordVerdict(e.Journal, r, diffDigest)
+	if err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal verdict: %w", g.Name, err)
 	}
+	r.VerdictArtifact = artifact
 	return r, nil
 }
 
