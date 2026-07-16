@@ -286,3 +286,73 @@ func TestUpJournalsDelegationSweepError(t *testing.T) {
 		t.Fatalf("trigger sweep error leaked to stderr: %q", stderr.String())
 	}
 }
+
+func TestRunNoWaitDelegatesToLiveDaemon(t *testing.T) {
+	prevInterval := delegationSweepInterval
+	delegationSweepInterval = 20 * time.Millisecond
+	t.Cleanup(func() { delegationSweepInterval = prevInterval })
+
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	upStdout := &daemonStartedWriter{started: make(chan struct{})}
+	var upStderr bytes.Buffer
+	var upCode int
+	upDone := make(chan struct{})
+	go func() {
+		upCode = runUpContext(ctx, []string{root}, upStdout, &upStderr)
+		close(upDone)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-upDone:
+		case <-time.After(10 * time.Second):
+			t.Error("runUpContext did not shut down during cleanup")
+		}
+	})
+
+	select {
+	case <-upStdout.started:
+	case <-upDone:
+		t.Fatalf("runUpContext exited before startup: code = %d, stderr = %q", upCode, upStderr.String())
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for runUpContext to report daemon readiness")
+	}
+
+	code, stdout, stderr := runArgs(t, "run", "default-implement", "--no-wait", root)
+	if code != 0 {
+		t.Fatalf("run --no-wait: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	runID := runIDFromRunStdout(t, stdout)
+	if !strings.Contains(stdout, "dispatched via live daemon") {
+		t.Fatalf("stdout = %q, want a mention of live-daemon delegation", stdout)
+	}
+	if !strings.Contains(stdout, "inspect with: goobers trace "+runID+" "+root) {
+		t.Fatalf("stdout = %q, want the trace hint", stdout)
+	}
+	if strings.Contains(stdout, "finished:") {
+		t.Fatalf("stdout = %q, --no-wait must not report a terminal phase", stdout)
+	}
+
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer waitCancel()
+	phase, err := waitForRunTerminal(waitCtx, l.RunsDir(), runID)
+	if err != nil {
+		t.Fatalf("wait for delegated run: %v", err)
+	}
+	if phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %s, want completed", phase)
+	}
+
+	code, statusOut, stderr := runArgs(t, "status", root)
+	if code != 0 || !strings.Contains(statusOut, runID) {
+		t.Fatalf("status: code = %d, stdout = %q, stderr = %q", code, statusOut, stderr)
+	}
+	code, traceOut, stderr := runArgs(t, "trace", runID, root)
+	if code != 0 || !strings.Contains(traceOut, "run.finished status=completed") {
+		t.Fatalf("trace: code = %d, stdout = %q, stderr = %q", code, traceOut, stderr)
+	}
+}

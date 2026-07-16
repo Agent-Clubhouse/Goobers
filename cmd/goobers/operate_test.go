@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -57,6 +61,55 @@ func TestRunCompletesDeterministicWorkflow(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("trace stdout missing %q: %q", want, stdout)
 		}
+	}
+}
+
+func TestRunNoWaitReturnsAfterStandaloneDispatch(t *testing.T) {
+	root := initDeterministicDemo(t)
+
+	code, stdout, stderr := runArgs(t, "run", "default-implement", "--no-wait", root)
+	if code != 0 {
+		t.Fatalf("run --no-wait: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	runID := runIDFromRunStdout(t, stdout)
+	if !strings.Contains(stdout, "inspect with: goobers trace "+runID+" "+root) {
+		t.Fatalf("stdout = %q, want the trace hint", stdout)
+	}
+	if strings.Contains(stdout, "finished:") {
+		t.Fatalf("stdout = %q, --no-wait must not report a terminal phase", stdout)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	phase, err := waitForRunTerminal(ctx, instance.NewLayout(root).RunsDir(), runID)
+	if err != nil {
+		t.Fatalf("wait for dispatched run: %v", err)
+	}
+	if phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %s, want completed", phase)
+	}
+
+	lockPath := filepath.Join(instance.NewLayout(root).SchedulerDir(), "up.lock")
+	for {
+		release, err := acquireInstanceLock(lockPath)
+		if err == nil {
+			release()
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("standalone run did not release its instance lock: %v", ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	code, statusOut, stderr := runArgs(t, "status", root)
+	if code != 0 || !strings.Contains(statusOut, runID) {
+		t.Fatalf("status: code = %d, stdout = %q, stderr = %q", code, statusOut, stderr)
+	}
+	code, traceOut, stderr := runArgs(t, "trace", runID, root)
+	if code != 0 || !strings.Contains(traceOut, "run.finished status=completed") {
+		t.Fatalf("trace: code = %d, stdout = %q, stderr = %q", code, traceOut, stderr)
 	}
 }
 
