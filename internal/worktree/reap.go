@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -201,14 +202,47 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string) err
 			if pruneErr := runGit(ctx, repoDir, "worktree", "prune"); pruneErr != nil {
 				return pruneErr
 			}
+		} else if statErr != nil {
+			return fmt.Errorf("worktree: stat %s after remove failed: %w", path, statErr)
 		} else {
-			return err
+			registered, inspectErr := worktreeRegistered(ctx, repoDir, path)
+			if inspectErr != nil {
+				return fmt.Errorf("worktree: inspect registration for %s after remove failed: %w", path, errors.Join(err, inspectErr))
+			}
+			if registered {
+				return err
+			}
+			if removeErr := os.RemoveAll(path); removeErr != nil {
+				return fmt.Errorf("worktree: remove unregistered directory %s: %w", path, removeErr)
+			}
 		}
 	}
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("worktree: remove marker %s: %w", markerPath, err)
 	}
 	return nil
+}
+
+func worktreeRegistered(ctx context.Context, repoDir, path string) (bool, error) {
+	out, err := gitOutput(ctx, repoDir, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return false, err
+	}
+	for _, field := range strings.Split(out, "\x00") {
+		if !strings.HasPrefix(field, "worktree ") {
+			continue
+		}
+		registeredPath := strings.TrimPrefix(field, "worktree ")
+		if filepath.Clean(registeredPath) == filepath.Clean(path) {
+			return true, nil
+		}
+		registeredInfo, registeredErr := os.Stat(registeredPath)
+		pathInfo, pathErr := os.Stat(path)
+		if registeredErr == nil && pathErr == nil && os.SameFile(registeredInfo, pathInfo) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // processAlive reports whether pid names a live process. Indirected through
