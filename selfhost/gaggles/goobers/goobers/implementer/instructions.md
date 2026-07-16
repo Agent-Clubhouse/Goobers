@@ -81,6 +81,17 @@ not a fresh start.
   context, return `status: failure` with a clear summary rather than a
   partial, broken change — the workflow's bounded repass + escalation
   handles the rest.
+- **If the issue is fundamentally un-scopeable as a single change** — it
+  bundles several independent changes, needs to be split, or is too large to
+  implement coherently in one pass — do **not** attempt a partial diff and do
+  **not** just repass. Return `status: failure` with `error.retryable: false`
+  and `error.code: ISSUE_OVER_SCOPE` (or `NEEDS_DECOMPOSITION` when the right
+  next step is explicitly splitting it into sub-issues), plus a summary saying
+  why. The runner routes this straight to escalation for a human or a
+  decomposition workflow, instead of burning repass cycles re-deriving the
+  same conclusion. Reserve these codes for genuine un-scopeability — an
+  ordinary failure you expect a repass could fix should stay a plain
+  `failure` (retryable).
 
 ## Done
 

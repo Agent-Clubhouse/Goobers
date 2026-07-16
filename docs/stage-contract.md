@@ -91,18 +91,31 @@ pipeline.
 | Status | Runner action |
 |---|---|
 | `success` | advance the state machine to the next stage/gate |
-| `failure` | if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern). Otherwise (a non-gate stage, terminal, or empty `Next`) the run ends `PhaseFailed`: never run downstream stages on a failed result, never silently complete. |
+| `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION`), route straight to `@escalate` (terminal `escalated`) after this one attempt — bypassing `Next` and any repass loop. Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
 | `blocked` | halt the run pending external intervention (human input, an unmet dependency) — a resumable pause, like a human gate's, at any position |
 
-> **Planned (V0.7 ladder remediation, L6 — `docs/design/v07-ladder-remediation.md`
-> §3.4):** a `failure` result carrying `error.retryable == false` **and** a
-> recognized escalate code (e.g. `ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION`) will
-> route straight to `@escalate` (terminal `escalated`) after one attempt — bypassing
-> the `Next` gate and the repass loop. Today `error.code`/`retryable` is recorded but
-> never routed on, so a permanent failure (e.g. an un-scopeable item) re-enters the
-> repass loop until the budget exhausts and terminates as `aborted`, not `escalated`
-> — the V0.6 ladder's over-scope-probe finding. This is a business-disposition route,
-> distinct from `Task.Retry` below (which is infra-only).
+> **Non-retryable escalate disposition (#415, V0.7 ladder remediation L6 —
+> `docs/design/v07-ladder-remediation.md` §3.4):** a `failure` result carrying
+> `error.retryable == false` **and** a recognized escalate code (`ISSUE_OVER_SCOPE`
+> / `NEEDS_DECOMPOSITION`) routes straight to `@escalate` (terminal `escalated`)
+> after one attempt — bypassing the `Next` gate and the repass loop. It is the
+> signal a human, or a future decomposition workflow, selects on. Without it an
+> un-scopeable item the stage correctly rejected on attempt 1 re-enters the repass
+> loop until the budget exhausts and terminates `aborted`, not `escalated` — the
+> V0.6 ladder's over-scope-probe finding. This is a business-disposition route,
+> distinct from `Task.Retry` below (which is infra-only). A recognized escalate
+> code with `retryable == true`, or a `failure` with an unrecognized/absent code,
+> follows the ordinary failure route above.
+>
+> **Reviewer sibling (#415):** at an agentic review gate whose subject is an
+> **agentic** stage, a run branch with **no committed change (an empty diff)**
+> fast-`fail`s on the first review — resolving the gate's own `fail` branch —
+> rather than issuing needs-changes and looping repasses that can only re-observe
+> the same emptiness. Mirrors the #316 identical-diff guard: both spare the
+> repass budget a degenerate reviewer call. Scoped to an agentic subject so a
+> deterministic subject that is not expected to commit to the run branch (e.g.
+> merge-review's reviewer, which judges PRs from its stage outputs) still gets a
+> real reviewer evaluation on an empty diff.
 
 `Task.Retry` (declared retry policy, attempt budget, backoff) governs only
 **dispatch/infra errors** — a Go error returned by the executor, not a
