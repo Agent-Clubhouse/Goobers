@@ -128,7 +128,16 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 
 	resultFile := providerInput("resultFile", "sibling-context.json")
 	data, err := json.MarshalIndent(map[string]interface{}{
-		"selectedNumber":  selectedNumber,
+		// selectedNumber is emitted as a STRING (selectedNumberStr, not the
+		// parsed int), matching pr-select's "number":"403" and apply-verdict's
+		// strconv.Atoi consumer — one type end-to-end (#413). This is
+		// load-bearing, not cosmetic: the runner threads a stage output to the
+		// next stage's env via executor.buildStageEnv, which only stringifies
+		// string-typed inputs (SEC-045). A numeric selectedNumber here is a
+		// float64 in the merged Outputs, so it was silently dropped and
+		// apply-verdict aborted with "selectedNumber is required" on every run —
+		// no PR ever received a merge-review label since #381.
+		"selectedNumber":  selectedNumberStr,
 		"selectedHeadSha": selectedHeadSHA,
 		"selectedBaseSha": selectedBaseSHA,
 		"siblings":        siblings,
