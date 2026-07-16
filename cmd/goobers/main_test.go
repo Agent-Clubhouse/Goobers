@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/version"
 )
 
 func runArgs(t *testing.T, args ...string) (code int, stdout, stderr string) {
@@ -68,6 +70,24 @@ func TestRunHelp(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "goobers init") {
 		t.Fatalf("expected help text, got %q", stdout)
+	}
+}
+
+func TestRunVersion(t *testing.T) {
+	want := "goobers " + version.Get().String() + "\n"
+	for _, arg := range []string{"--version", "version"} {
+		t.Run(arg, func(t *testing.T) {
+			code, stdout, stderr := runArgs(t, arg)
+			if code != 0 {
+				t.Fatalf("code = %d, want 0; stderr = %q", code, stderr)
+			}
+			if stdout != want {
+				t.Fatalf("stdout = %q, want %q", stdout, want)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+		})
 	}
 }
 

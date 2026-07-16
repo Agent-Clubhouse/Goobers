@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/goobers/goobers/internal/version"
 )
 
 func main() {
@@ -76,6 +78,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runRebasePR(args[1:], stdout, stderr)
 	case "remediation-checkpoint":
 		return runRemediationCheckpoint(args[1:], stdout, stderr)
+	case "--version", "version":
+		pf(stdout, "goobers %s\n", version.Get())
+		return 0
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0
@@ -90,6 +95,7 @@ func usage(w io.Writer) {
 	pf(w, `goobers — tier 1-2 local instance CLI
 
 Usage:
+  goobers --version             print build version, commit, and date
   goobers init [path]           scaffold an instance root
   goobers validate [path]       validate an instance's instance.yaml + config/
   goobers up [path]             run the daemon (scheduler + runner)
