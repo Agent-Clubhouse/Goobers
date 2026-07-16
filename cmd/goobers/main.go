@@ -105,7 +105,8 @@ Usage:
                                 subscribed type=signal-trigger workflow
   goobers workflow show <name> [path]  show a workflow as a text DAG
   goobers runs list [--limit=N] [path]  list runs, most-recent first
-  goobers status [path]         list runs and their current phase
+  goobers status [--json] [--phase=...] [--workflow=...] [--limit=N] [path]
+                                list runs and their current phase
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
   goobers trace <run-id> [path] show a run's journal events (+ spans if rolled up)
   goobers telemetry stats|errors [path]  success rate/duration or recent-error aggregates
