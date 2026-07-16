@@ -38,52 +38,8 @@ func loadCurationWorkflow(t *testing.T) apiv1.WorkflowSpec {
 	return w.Spec
 }
 
-// fixtureBacklogItem is a minimal stand-in for a claimed GitHub issue, covering
-// the scenarios issue #25's acceptance criteria calls out: a duplicate pair, a
-// stale item, and an oversized epic to split.
-type fixtureBacklogItem struct {
-	id          string
-	title       string
-	ageDays     int
-	duplicateOf string
-	oversized   bool
-}
-
-func fixtureBacklog() []fixtureBacklogItem {
-	return []fixtureBacklogItem{
-		{id: "201", title: "Add dark mode toggle", ageDays: 10},
-		{id: "202", title: "Add dark mode switch", ageDays: 3, duplicateOf: "201"},
-		{id: "203", title: "Investigate old flaky test", ageDays: 120},
-		{id: "204", title: "Rewrite entire auth system end to end", ageDays: 5, oversized: true},
-	}
-}
-
-// curate applies the same conservative-default decision shape described in the
-// curator's instructions.md, deterministically, so the test is reproducible
-// without an LLM in the loop.
-func curateFixture(items []fixtureBacklogItem) map[string]interface{} {
-	deduped, stale, split, ready := 0, 0, 0, 0
-	const childrenPerSplit = 3
-	for _, it := range items {
-		switch {
-		case it.duplicateOf != "":
-			deduped++
-		case it.oversized:
-			split++
-			ready += childrenPerSplit // children are ready; the parent becomes a tracking issue, not ready itself
-		case it.ageDays > 90:
-			stale++
-		default:
-			ready++
-		}
-	}
-	return map[string]interface{}{
-		"deduped":          deduped,
-		"staleFlagged":     stale,
-		"split":            split,
-		"markedReady":      ready,
-		"markedNeedsHuman": 0,
-	}
+func fixtureBacklog() []string {
+	return []string{"201", "202", "203", "204"}
 }
 
 func curationRunInput(spec apiv1.WorkflowSpec) RunInput {
@@ -98,8 +54,7 @@ func curationRunInput(spec apiv1.WorkflowSpec) RunInput {
 }
 
 // TestBacklogCurationDryRun exercises the shipped definition end to end over a
-// fixture backlog containing a duplicate pair, a stale item, and an oversized
-// epic — the three scenarios issue #25's acceptance criteria names.
+// fixture batch of claimed backlog items.
 func TestBacklogCurationDryRun(t *testing.T) {
 	spec := loadCurationWorkflow(t)
 	items := fixtureBacklog()
@@ -120,7 +75,7 @@ func TestBacklogCurationDryRun(t *testing.T) {
 			gotQueryInputs = env.Inputs
 			claimed := make([]interface{}, len(items))
 			for i, it := range items {
-				claimed[i] = it.id
+				claimed[i] = it
 			}
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
@@ -136,7 +91,6 @@ func TestBacklogCurationDryRun(t *testing.T) {
 			gotCurateGoal = env.Goal
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
-				Outputs: map[string]interface{}{"curation-summary": curateFixture(items)},
 				Summary: "curated 4 items",
 			}, nil
 		},
@@ -179,10 +133,8 @@ func TestBacklogCurationDryRun(t *testing.T) {
 		t.Errorf("claimed-items count = %d, want 4", len(claimed))
 	}
 
-	// curate ran second (goober = curator per the definition) and produced a
-	// curation summary reflecting the fixture's decision shape: 1 dedupe pair,
-	// 1 stale flag, 1 split (3 children), 4 total marked ready (1 survivor + 3
-	// split children), 0 needing a human.
+	// curate ran second (goober = curator per the definition) and reported its
+	// outcome through the scalar result summary, without structured outputs.
 	if gotCurateGoal == "" {
 		t.Error("curate stage did not receive a goal")
 	}
@@ -190,21 +142,11 @@ func TestBacklogCurationDryRun(t *testing.T) {
 	if !ok || curateOut.Status != apiv1.ResultSuccess {
 		t.Fatalf("curate output missing or not success: %+v", curateOut)
 	}
-	summary, ok := curateOut.Outputs["curation-summary"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("curation-summary missing or wrong shape: %#v", curateOut.Outputs["curation-summary"])
+	if curateOut.Summary != "curated 4 items" {
+		t.Errorf("curate summary = %q, want %q", curateOut.Summary, "curated 4 items")
 	}
-	wantCounts := map[string]int{"deduped": 1, "staleFlagged": 1, "split": 1, "markedReady": 4, "markedNeedsHuman": 0}
-	for k, want := range wantCounts {
-		got, ok := summary[k]
-		if !ok {
-			t.Errorf("curation-summary missing %q", k)
-			continue
-		}
-		gotInt, ok := toInt(got)
-		if !ok || gotInt != want {
-			t.Errorf("curation-summary[%q] = %v, want %d", k, got, want)
-		}
+	if len(curateOut.Outputs) != 0 {
+		t.Errorf("curate outputs = %#v, want none", curateOut.Outputs)
 	}
 }
 
@@ -229,7 +171,6 @@ func TestBacklogCurationRerunIsNoOp(t *testing.T) {
 		invoke: func(_ context.Context, _ apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
-				Outputs: map[string]interface{}{"curation-summary": curateFixture(nil)},
 				Summary: "nothing to curate",
 			}, nil
 		},
@@ -252,18 +193,11 @@ func TestBacklogCurationRerunIsNoOp(t *testing.T) {
 	if len(claimed) != 0 {
 		t.Errorf("claimed-items = %v, want empty", claimed)
 	}
-}
-
-// toInt normalizes an activity-result numeric value: the Temporal test
-// environment round-trips activity results through its data converter, so a Go
-// int constructed in a fake may come back as float64.
-func toInt(v interface{}) (int, bool) {
-	switch n := v.(type) {
-	case int:
-		return n, true
-	case float64:
-		return int(n), true
-	default:
-		return 0, false
+	curateOut := res.Outputs["curate"]
+	if curateOut.Summary != "nothing to curate" {
+		t.Errorf("curate summary = %q, want %q", curateOut.Summary, "nothing to curate")
+	}
+	if len(curateOut.Outputs) != 0 {
+		t.Errorf("curate outputs = %#v, want none", curateOut.Outputs)
 	}
 }

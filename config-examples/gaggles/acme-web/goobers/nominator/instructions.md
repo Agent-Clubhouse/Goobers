@@ -102,7 +102,9 @@ Every issue you file MUST have:
 ## Done
 
 Signal completion via the designated completion tool with a `result`
-envelope: `status`, a one-paragraph `summary`, and a `nomination-summary`
-output listing each filed issue (number, title, evidence category) plus
-counts of candidates found / deduped-away / filed / skipped at the
-per-run cap.
+envelope: `status` and a one-paragraph `summary` with counts of candidates
+found / deduped-away / filed / skipped at the per-run cap. Do not also emit a
+per-issue breakdown as a structured `outputs` field — a result's `outputs` are
+scalar-only (structured or bulk data belongs in `artifacts`, never `outputs`).
+Each filed issue is already recorded on GitHub, so no machine-readable
+per-issue list is needed.
