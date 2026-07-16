@@ -156,10 +156,10 @@
           "x-conformance": "excluded"
         },
         "digest": {
-          "description": "Content address. Normative — commits to the scrubbed bytes.",
+          "description": "Content address. Normative except for runner-assembled context-manifest artifacts, whose bytes include non-normative pointer metadata.",
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$",
-          "x-conformance": "normative"
+          "x-conformance": "conditional: excluded for runner-assembled context-manifest artifacts"
         },
         "size": {
           "description": "Blob length in bytes. Derived; not normative.",

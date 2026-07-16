@@ -4,11 +4,12 @@ import "fmt"
 
 // NormativeEvent is the cross-runner comparable projection of an Event: the
 // full conformance-normative field set (§3.3), with excluded fields (Time,
-// Ref.Path/Size/MediaType, Error.Message, ExternalRef.URL, and the entire
-// Runner map) dropped. Two runners implementing the same workflow definition
-// against the same inputs must produce identical NormativeEvent sequences
-// (ConformanceView's output) for identical outcomes — this is the comparison
-// surface a V2 Temporal harness (#40) diffs against the local runner.
+// Ref.Path/Size/MediaType, context-manifest Ref.Digest, Error.Message,
+// ExternalRef.URL, and the entire Runner map) dropped. Two runners implementing
+// the same workflow definition against the same inputs must produce identical
+// NormativeEvent sequences (ConformanceView's output) for identical outcomes —
+// this is the comparison surface a V2 Temporal harness (#40) diffs against the
+// local runner.
 //
 // Deliberately flat (every field a string/int/named-string type, no
 // pointers) so NormativeEvent is directly comparable with == — a pointer
@@ -71,7 +72,7 @@ func projectNormative(e Event) NormativeEvent {
 		Attempt: e.Attempt, AttemptClass: e.AttemptClass, Gate: e.Gate,
 		Verdict: e.Verdict, Target: e.Target, Status: e.Status, Name: e.Name,
 	}
-	if e.Ref != nil {
+	if e.Ref != nil && !isContextManifestArtifact(e) {
 		ne.RefDigest = e.Ref.Digest
 	}
 	if e.ExternalRef != nil {
@@ -90,6 +91,13 @@ func projectNormative(e Event) NormativeEvent {
 		ne.RedactionReason = e.Redaction.Reason
 	}
 	return ne
+}
+
+func isContextManifestArtifact(e Event) bool {
+	return e.Type == EventArtifactRecorded &&
+		e.Stage != "" &&
+		e.Attempt > 0 &&
+		e.Name == ContextManifestArtifactName(e.Stage, e.Attempt)
 }
 
 // String renders ne as a stable, single-line, human-readable form for test

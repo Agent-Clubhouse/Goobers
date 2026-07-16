@@ -126,6 +126,39 @@ func TestConformanceViewExcludesNonNormativeFields(t *testing.T) {
 	}
 }
 
+func TestConformanceViewExcludesContextManifestDigest(t *testing.T) {
+	base := Event{
+		Schema:  EventSchema,
+		Type:    EventArtifactRecorded,
+		Stage:   "implement",
+		Attempt: 1,
+		Name:    ContextManifestArtifactName("implement", 1),
+		Ref:     &Ref{Digest: "sha256:aaaa"},
+	}
+	other := base
+	other.Ref = &Ref{Digest: "sha256:bbbb"}
+
+	got := ConformanceView([]Event{base})
+	want := ConformanceView([]Event{other})
+	if len(got) != 1 || len(want) != 1 {
+		t.Fatalf("context manifest projections = %d and %d, want one each", len(got), len(want))
+	}
+	if got[0] != want[0] {
+		t.Fatalf("context manifest content digest leaked into conformance: %+v vs %+v", got[0], want[0])
+	}
+	if got[0].RefDigest != "" {
+		t.Fatalf("context manifest RefDigest = %q, want excluded", got[0].RefDigest)
+	}
+
+	ordinary := base
+	ordinary.Name = "diff"
+	ordinaryOther := other
+	ordinaryOther.Name = "diff"
+	if ConformanceView([]Event{ordinary})[0] == ConformanceView([]Event{ordinaryOther})[0] {
+		t.Fatal("ordinary artifact content digest must remain normative")
+	}
+}
+
 // TestConformanceViewSkipsExcludedEvents confirms ConformanceView filters
 // through IsConformanceNormative — infra-tagged attempts, span.recorded, and
 // repaired events never appear in the projection.

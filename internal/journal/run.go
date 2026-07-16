@@ -277,6 +277,12 @@ func (r *Run) RecordArtifact(name string, data []byte) (Ref, error) {
 	return r.recordArtifact(Event{Type: EventArtifactRecorded, Name: name}, data)
 }
 
+// ContextManifestArtifactName is the stable journal name for the context
+// manifest supplied to one stage attempt.
+func ContextManifestArtifactName(stage string, attempt int) string {
+	return fmt.Sprintf("context/%s-attempt-%d.json", stage, attempt)
+}
+
 // RecordStageArtifact is RecordArtifact for runner-authored artifacts tied to
 // one stage attempt. The stage metadata keeps infra-retry artifacts out of the
 // conformance set alongside the attempt that produced them.

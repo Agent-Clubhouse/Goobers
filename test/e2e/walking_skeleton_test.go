@@ -522,7 +522,7 @@ func simulateSkeletonCrashMidImplement(t *testing.T, runsDir string, machine *wo
 		t.Fatalf("simulateSkeletonCrashMidImplement: append stage.started: %v", err)
 	}
 	if _, err := jr.RecordStageArtifact(
-		"implement", 1, "", "context/implement-attempt-1.json", []byte(`{"contextPointers":[]}`),
+		"implement", 1, "", journal.ContextManifestArtifactName("implement", 1), []byte(`{"contextPointers":[]}`),
 	); err != nil {
 		t.Fatalf("simulateSkeletonCrashMidImplement: record context manifest: %v", err)
 	}

@@ -905,7 +905,7 @@ func recordContextManifest(jr *journal.Run, env apiv1.InvocationEnvelope, stage 
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	name := fmt.Sprintf("context/%s-attempt-%d.json", stage, attempt)
+	name := journal.ContextManifestArtifactName(stage, attempt)
 	if _, err := jr.RecordStageArtifact(stage, attempt, class, name, data); err != nil {
 		return fmt.Errorf("record artifact: %w", err)
 	}

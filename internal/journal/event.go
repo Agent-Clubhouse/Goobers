@@ -120,7 +120,8 @@ type Event struct {
 	Artifacts []Ref `json:"artifacts,omitempty"`
 
 	// Ref points at in-journal content (artifact.recorded, input.snapshot). Its
-	// Digest is normative; Path/Size are not (see Ref).
+	// Digest is normative except for runner-assembled context manifests, whose
+	// bytes include non-normative pointer metadata; Path/Size are not (see Ref).
 	Ref *Ref `json:"ref,omitempty"`
 	// Name labels the Ref (artifact/input name). Normative.
 	Name string `json:"name,omitempty"`
