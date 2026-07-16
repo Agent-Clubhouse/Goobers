@@ -13,10 +13,11 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func TestPullRequestClaimConcurrentSelectorsExactlyOneWins(t *testing.T) {
+func TestPRSelectConcurrentRunsExactlyOneClaimsPR(t *testing.T) {
 	root := initDemo(t)
 	eligible := []providers.PullRequestSummary{{Number: 77}}
 	type outcome struct {
+		runID    string
 		selected *providers.PullRequestSummary
 		err      error
 	}
@@ -24,13 +25,13 @@ func TestPullRequestClaimConcurrentSelectorsExactlyOneWins(t *testing.T) {
 	start := make(chan struct{})
 
 	var wg sync.WaitGroup
-	for _, runID := range []string{"merge-run", "remediation-run"} {
+	for _, runID := range []string{"merge-run-a", "merge-run-b"} {
 		wg.Add(1)
 		go func(runID string) {
 			defer wg.Done()
 			<-start
-			selected, err := claimPullRequest(root, eligible, runID, "selector", time.Hour)
-			outcomes <- outcome{selected: selected, err: err}
+			selected, err := claimPullRequest(root, eligible, runID, "merge-review", time.Hour)
+			outcomes <- outcome{runID: runID, selected: selected, err: err}
 		}(runID)
 	}
 	close(start)
@@ -39,6 +40,7 @@ func TestPullRequestClaimConcurrentSelectorsExactlyOneWins(t *testing.T) {
 
 	winners := 0
 	noWork := 0
+	winnerRunID := ""
 	for outcome := range outcomes {
 		if outcome.err != nil {
 			t.Fatalf("claim: %v", outcome.err)
@@ -51,9 +53,19 @@ func TestPullRequestClaimConcurrentSelectorsExactlyOneWins(t *testing.T) {
 			t.Fatalf("selected PR = #%d, want #77", outcome.selected.Number)
 		}
 		winners++
+		winnerRunID = outcome.runID
 	}
 	if winners != 1 || noWork != 1 {
 		t.Fatalf("winners = %d, no-work selectors = %d; want exactly one of each", winners, noWork)
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, held := ledger.Lookup(pullRequestClaimKey(77))
+	if !held || entry.RunID != winnerRunID || entry.Workflow != "merge-review" {
+		t.Fatalf("persisted PR claim = (%+v, %v), want winner %q in merge-review", entry, held, winnerRunID)
 	}
 }
 

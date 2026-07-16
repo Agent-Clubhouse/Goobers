@@ -20,8 +20,8 @@ import (
 // flight — harmless under G3, but pointless.
 const defaultExcludeLabels = "goobers:merge-ready,goobers:needs-remediation,goobers:merge-escalated"
 
-// runPRSelect implements `goobers pr-select` (issue #359): merge-review's
-// selection stage. Picks at most one eligible PR per run — the same
+// runPRSelect implements `goobers pr-select` (issues #359 and #481):
+// merge-review's selection stage. Picks at most one eligible PR per run — the same
 // one-per-run shape backlog-query uses for issues (design doc §3's
 // declarative-selection model), not a batch scan of the whole open-PR set in
 // a single run. The selected PR is leased in the shared PR claim namespace so
