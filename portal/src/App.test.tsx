@@ -167,9 +167,8 @@ describe("App prototype", () => {
 
     const patchRow = screen.getByText("implementation.patch").closest("article");
     expect(patchRow).not.toBeNull();
-    const download = within(patchRow!).getByRole("link", { name: "Download" });
-    expect(download).toHaveAttribute("download");
-    expect(download).toHaveAttribute("href", "/artifacts/01JZ441DAEMONAPI/implementation.patch");
+    expect(within(patchRow!).getByText("Metadata only")).toBeInTheDocument();
+    expect(within(patchRow!).queryByRole("link", { name: "Download" })).not.toBeInTheDocument();
     expect(within(patchRow!).queryByRole("button", { name: "View content" })).not.toBeInTheDocument();
   });
 
