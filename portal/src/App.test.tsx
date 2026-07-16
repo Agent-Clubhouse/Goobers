@@ -1,7 +1,11 @@
+import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+
+const portalStyles = readFileSync("src/styles.css", "utf8");
+const portalTokens = readFileSync("src/styles/tokens.css", "utf8");
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -85,6 +89,28 @@ describe("portal foundation", () => {
     expect(screen.getByRole("button", { name: "All runs" })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("keeps graph controls scrollable at constrained desktop widths", () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+    window.location.hash = "#/workflow/implementation";
+    render(<App />);
+
+    const viewport = screen.getByRole("region", { name: "Execution graph viewport" });
+    const graph = screen.getByRole("group", { name: /execution graph/i });
+    expect(window.innerWidth).toBe(1024);
+    expect(viewport).toContainElement(graph);
+    expect(viewport).toHaveAttribute("tabindex", "0");
+    expect(portalStyles).toMatch(/\.graph-viewport\s*\{[^}]*overflow-x: auto;/s);
+    expect(portalStyles).toMatch(/\.graph-canvas\s*\{[^}]*min-width: 920px;/s);
+  });
+
+  it("keeps light warning text at WCAG AA contrast", () => {
+    const contrast = contrastRatio(
+      cssCustomProperty(portalTokens, "--warning"),
+      cssCustomProperty(portalTokens, "--warning-soft"),
+    );
+    expect(contrast).toBeGreaterThanOrEqual(4.5);
+  });
+
   it("does not present unavailable artifact content as an action", () => {
     renderRun("01JZ402DASHBOARD");
     fireEvent.change(screen.getByRole("slider", { name: "Replay position" }), {
@@ -95,6 +121,32 @@ describe("portal foundation", () => {
     expect(artifact.closest("button")).toBeNull();
   });
 });
+
+function cssCustomProperty(styles: string, property: string) {
+  const match = styles.match(new RegExp(`${property}:\\s*(#[a-f\\d]{6})`, "i"));
+  if (!match) {
+    throw new Error(`Expected ${property} to be a six-digit hex color`);
+  }
+  return match[1];
+}
+
+function contrastRatio(foreground: string, background: string) {
+  const [lighter, darker] = [relativeLuminance(foreground), relativeLuminance(background)].sort(
+    (left, right) => right - left,
+  );
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function relativeLuminance(hex: string) {
+  const channels = hex
+    .match(/[a-f\d]{2}/gi)
+    ?.map((channel) => Number.parseInt(channel, 16) / 255)
+    .map((channel) => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
+  if (!channels || channels.length !== 3) {
+    throw new Error(`Expected a six-digit hex color, received "${hex}"`);
+  }
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
 
 function setReducedMotion(matches: boolean) {
   Object.defineProperty(window, "matchMedia", {

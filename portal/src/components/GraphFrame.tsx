@@ -21,7 +21,9 @@ export function GraphFrame({
         </div>
         {action ?? (hint && <span className="graph-legend">{hint}</span>)}
       </div>
-      {children}
+      <div aria-label="Execution graph viewport" className="graph-viewport" role="region" tabIndex={0}>
+        {children}
+      </div>
     </div>
   );
 }
