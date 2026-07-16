@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -224,15 +225,21 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string) err
 }
 
 func worktreeRegistered(ctx context.Context, repoDir, path string) (bool, error) {
-	out, err := gitOutput(ctx, repoDir, "worktree", "list", "--porcelain", "-z")
+	out, err := gitOutput(ctx, repoDir, "worktree", "list", "--porcelain")
 	if err != nil {
 		return false, err
 	}
-	for _, field := range strings.Split(out, "\x00") {
-		if !strings.HasPrefix(field, "worktree ") {
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "worktree ") {
 			continue
 		}
-		registeredPath := strings.TrimPrefix(field, "worktree ")
+		registeredPath := strings.TrimPrefix(line, "worktree ")
+		if strings.HasPrefix(registeredPath, `"`) {
+			registeredPath, err = strconv.Unquote(registeredPath)
+			if err != nil {
+				return false, fmt.Errorf("worktree: parse registered path %q: %w", registeredPath, err)
+			}
+		}
 		if filepath.Clean(registeredPath) == filepath.Clean(path) {
 			return true, nil
 		}

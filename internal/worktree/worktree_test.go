@@ -615,6 +615,35 @@ func TestManager_Reap_RemovesDeregisteredMarkerlessDirectory(t *testing.T) {
 	}
 }
 
+func TestWorktreeRegistered_SupportsGitBefore236(t *testing.T) {
+	binDir := t.TempDir()
+	fakeGit := filepath.Join(binDir, "git")
+	script := `#!/bin/sh
+for arg in "$@"; do
+	if [ "$arg" = "-z" ]; then
+		echo "unknown switch z" >&2
+		exit 129
+	fi
+done
+printf 'worktree %s\nHEAD deadbeef\n\n' "$FAKE_WORKTREE_PATH"
+`
+	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	worktreePath := filepath.Join(t.TempDir(), "registered worktree")
+	t.Setenv("FAKE_WORKTREE_PATH", worktreePath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	registered, err := worktreeRegistered(context.Background(), t.TempDir(), worktreePath)
+	if err != nil {
+		t.Fatalf("worktreeRegistered with pre-2.36 Git: %v", err)
+	}
+	if !registered {
+		t.Fatal("worktreeRegistered with pre-2.36 Git = false, want true")
+	}
+}
+
 // TestManager_SafeBareRepositoryExplicit_StillWorks is #247's regression: a
 // hardened `git config safe.bareRepository=explicit` (an increasingly common
 // security default) makes git refuse cwd-based discovery of a bare repo,
