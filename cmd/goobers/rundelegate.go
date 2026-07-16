@@ -39,7 +39,8 @@ const pendingTriggersDir = "pending-triggers"
 // triggerRequest is one delegation request file's content: "please Trigger
 // this workflow on my behalf, I couldn't take the lock myself."
 type triggerRequest struct {
-	Workflow string `json:"workflow"`
+	Workflow  string    `json:"workflow"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // triggerResponse is what the daemon writes back once it has acted on a
@@ -73,7 +74,7 @@ func writeTriggerRequest(schedulerDir, workflow string) (requestID string, err e
 	}
 	defer func() { _ = f.Close() }()
 
-	data, err := json.Marshal(triggerRequest{Workflow: workflow})
+	data, err := json.Marshal(triggerRequest{Workflow: workflow, CreatedAt: time.Now().UTC()})
 	if err != nil {
 		return "", err
 	}
@@ -127,7 +128,8 @@ var delegationPollInterval = 100 * time.Millisecond
 var triggerDelegationTimeout = 30 * time.Second
 
 // sweepPendingTriggers is the daemon-side half of #343's delegation
-// protocol, called periodically from runUpContext's own sweep goroutine
+// protocol, called at startup and periodically from runUpContext's sweep
+// goroutine
 // (mirroring the existing claim-recovery ticker's shape). It dispatches
 // every pending request through sched — the exact same Scheduler.Trigger a
 // local `goobers run` invocation would call directly — and writes back a
@@ -152,9 +154,20 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 	}
 	var sweepErr error
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), requestSuffix) {
+		if e.IsDir() {
 			continue
 		}
+		if strings.HasSuffix(e.Name(), responseSuffix) {
+			info, err := e.Info()
+			if err == nil && now().Sub(info.ModTime()) > triggerDelegationTimeout {
+				_ = os.Remove(filepath.Join(reqDir, e.Name()))
+			}
+			continue
+		}
+		if !strings.HasSuffix(e.Name(), requestSuffix) {
+			continue
+		}
+
 		requestID := strings.TrimSuffix(e.Name(), requestSuffix)
 		reqPath := filepath.Join(reqDir, e.Name())
 
@@ -176,12 +189,24 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 		resp := triggerResponse{}
 		if err := json.Unmarshal(data, &req); err != nil {
 			resp.Error = fmt.Sprintf("delegate: malformed trigger request: %v", err)
+		} else if req.CreatedAt.IsZero() {
+			resp.Error = fmt.Sprintf("delegate: trigger request %s has no creation time; refusing to dispatch", requestID)
+			sched.RecordTriggerRefusal(req.Workflow, resp.Error)
 		} else {
-			runID, terr := sched.Trigger(ctx, req.Workflow, now())
-			if terr != nil {
-				resp.Error = terr.Error()
+			sweepTime := now()
+			if sweepTime.Sub(req.CreatedAt) > triggerDelegationTimeout {
+				resp.Error = fmt.Sprintf(
+					"delegate: stale trigger request %s was created at %s, more than %s ago; refusing to dispatch",
+					requestID, req.CreatedAt.Format(time.RFC3339Nano), triggerDelegationTimeout,
+				)
+				sched.RecordTriggerRefusal(req.Workflow, resp.Error)
 			} else {
-				resp.RunID = runID
+				runID, terr := sched.Trigger(ctx, req.Workflow, sweepTime)
+				if terr != nil {
+					resp.Error = terr.Error()
+				} else {
+					resp.RunID = runID
+				}
 			}
 		}
 

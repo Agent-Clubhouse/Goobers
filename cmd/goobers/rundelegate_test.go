@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,10 +25,22 @@ import (
 type fakeDelegateStarter struct {
 	result localscheduler.StartResult
 	err    error
+
+	mu    sync.Mutex
+	calls int
 }
 
 func (f *fakeDelegateStarter) Start(context.Context, localscheduler.StartRequest) (localscheduler.StartResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
 	return f.result, f.err
+}
+
+func (f *fakeDelegateStarter) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 func newTestDelegateScheduler(t *testing.T, entries []localscheduler.WorkflowEntry) (*localscheduler.Scheduler, string) {
@@ -107,6 +121,101 @@ func filepathGlobRequests(schedulerDir string) ([]string, error) {
 	return filepath.Glob(filepath.Join(schedulerDir, pendingTriggersDir, "*"+requestSuffix))
 }
 
+func writeTriggerRequestFixture(t *testing.T, schedulerDir, requestID string, req triggerRequest) {
+	t.Helper()
+	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(reqDir, requestID+requestSuffix), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSweepRefusesStaleRequestAndJournalsNote(t *testing.T) {
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Starter:   starter,
+	}})
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	const requestID = "stale"
+	writeTriggerRequestFixture(t, schedulerDir, requestID, triggerRequest{
+		Workflow:  "implement",
+		CreatedAt: now.Add(-triggerDelegationTimeout - time.Second),
+	})
+
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, func() time.Time { return now }); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
+
+	if starter.count() != 0 {
+		t.Fatalf("starter calls = %d, want 0", starter.count())
+	}
+	requests, err := filepathGlobRequests(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 0 {
+		t.Fatalf("stale request was not consumed: %v", requests)
+	}
+	_, err = pollTriggerResponse(context.Background(), schedulerDir, requestID, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "stale trigger request") || !strings.Contains(err.Error(), "refusing to dispatch") {
+		t.Fatalf("pollTriggerResponse error = %v, want a stale-request refusal", err)
+	}
+
+	events, err := journal.ReadInstanceLog(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range events {
+		if ev.Type == journal.EventTickSkipped && ev.Workflow == "implement" && strings.Contains(ev.Reason, "stale trigger request") {
+			return
+		}
+	}
+	t.Fatalf("stale-request refusal was not journaled: %+v", events)
+}
+
+func TestSweepCollectsExpiredOrphanResponse(t *testing.T) {
+	sched, schedulerDir := newTestDelegateScheduler(t, nil)
+	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(reqDir, "old"+responseSuffix)
+	freshPath := filepath.Join(reqDir, "fresh"+responseSuffix)
+	for _, path := range []string{oldPath, freshPath} {
+		if err := os.WriteFile(path, []byte(`{"runId":"orphan"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-triggerDelegationTimeout - time.Second)
+	fresh := now.Add(-triggerDelegationTimeout + time.Second)
+	if err := os.Chtimes(oldPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(freshPath, fresh, fresh); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, func() time.Time { return now }); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
+
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expired orphan response stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(freshPath); err != nil {
+		t.Fatalf("fresh response was removed: %v", err)
+	}
+}
+
 // TestSweepUnknownWorkflowRespondsWithError proves a delegated request for a
 // workflow that doesn't exist surfaces the same "unknown workflow" error
 // Scheduler.Trigger itself returns — through the response file, not silently
@@ -154,6 +263,74 @@ func TestPollTriggerResponseTimesOutWithNoSweeper(t *testing.T) {
 	if elapsed > 2*time.Second {
 		t.Fatalf("took %s, want it bounded close to the 200ms timeout", elapsed)
 	}
+}
+
+func TestRunUpSweepsStaleDelegationAtStartup(t *testing.T) {
+	prevInterval := delegationSweepInterval
+	delegationSweepInterval = time.Hour
+	t.Cleanup(func() { delegationSweepInterval = prevInterval })
+
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const requestID = "predates-daemon"
+	writeTriggerRequestFixture(t, l.SchedulerDir(), requestID, triggerRequest{
+		Workflow:  "no-such-workflow",
+		CreatedAt: time.Now().Add(-triggerDelegationTimeout - time.Minute),
+	})
+
+	reqDir := filepath.Join(l.SchedulerDir(), pendingTriggersDir)
+	orphanPath := filepath.Join(reqDir, "startup-orphan"+responseSuffix)
+	if err := os.WriteFile(orphanPath, []byte(`{"runId":"orphan"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-triggerDelegationTimeout - time.Minute)
+	if err := os.Chtimes(orphanPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	upStdout := &daemonStartedWriter{started: make(chan struct{})}
+	var upStderr bytes.Buffer
+	var upCode int
+	upDone := make(chan struct{})
+	go func() {
+		upCode = runUpContext(ctx, []string{root}, upStdout, &upStderr)
+		close(upDone)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-upDone:
+		case <-time.After(10 * time.Second):
+			t.Error("runUpContext did not shut down during cleanup")
+		}
+	})
+
+	select {
+	case <-upStdout.started:
+	case <-upDone:
+		t.Fatalf("runUpContext exited before startup: code = %d, stderr = %q", upCode, upStderr.String())
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for runUpContext to report daemon readiness")
+	}
+
+	_, err := pollTriggerResponse(context.Background(), l.SchedulerDir(), requestID, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "stale trigger request") {
+		t.Fatalf("startup refusal error = %v, want stale trigger request", err)
+	}
+	if _, err := os.Stat(orphanPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("startup orphan response stat error = %v, want not exist", err)
+	}
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range events {
+		if ev.Type == journal.EventTickSkipped && strings.Contains(ev.Reason, "stale trigger request") {
+			return
+		}
+	}
+	t.Fatalf("startup stale-request refusal was not journaled: %+v", events)
 }
 
 // daemonStartedWriter turns runUpContext's existing startup message into a

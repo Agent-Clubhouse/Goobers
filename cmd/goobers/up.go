@@ -306,6 +306,11 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
 	}
 
+	// Sweep once before announcing readiness so requests and responses orphaned
+	// across daemon lifetimes are handled without waiting for the first tick.
+	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
+	triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
+
 	// The periodic sweep runs on its own goroutine for the daemon's entire
 	// lifetime, concurrently with the main goroutine's own stdout/stderr
 	// writes (both "daemon started" above and the shutdown messages below) —
@@ -350,7 +355,6 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// rationale as the claim-recovery goroutine above.
 	delegationTicker := time.NewTicker(delegationSweepInterval)
 	delegationTickerDone := make(chan struct{})
-	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
 	go func() {
 		defer close(delegationTickerDone)
 		defer delegationTicker.Stop()

@@ -392,6 +392,16 @@ func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time)
 	return runID, nil
 }
 
+// RecordTriggerRefusal journals a trigger rejected by an admission layer
+// before Scheduler.Trigger could safely dispatch it.
+func (s *Scheduler) RecordTriggerRefusal(workflow, reason string) {
+	s.journalEvent(journal.Event{
+		Type:     journal.EventTickSkipped,
+		Workflow: workflow,
+		Reason:   reason,
+	})
+}
+
 // Signal fires every workflow subscribed to the named external signal (WF-014,
 // #342: a type=signal trigger declares Signal: "<name>") — `goobers signal
 // <name>` CLI wiring calls this today; an HTTP/webhook sink (#169) is the
