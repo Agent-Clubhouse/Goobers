@@ -243,18 +243,39 @@ func lastFinishedSubject(events []journal.Event) (stage string, result apiv1.Res
 // every downstream stage receives — from every REAL stage.finished event in
 // the journal, mirroring the live path's unconditional `pointers =
 // append(pointers, produced...)` right after every runTask call (regardless
-// of the stage's business status). The infra-tagged interrupted-attempt
-// marker is excluded — it never carries real Artifacts (see
-// lastFinishedSubject); a task revisited more than once (a gate looping back
-// to it) contributes each visit's artifacts in order, exactly as the live
-// path would.
+// of the stage's business status), PLUS every gate.evaluated event that
+// routed onward to a real stage with a journaled verdict artifact —
+// mirroring the live path's `pointers = append(pointers,
+// apiv1.ContextPointer{...gr.VerdictArtifact})` in walk (issue #412). The
+// infra-tagged interrupted-attempt marker is excluded — it never carries
+// real Artifacts (see lastFinishedSubject); a task revisited more than once
+// (a gate looping back to it) contributes each visit's artifacts in order,
+// exactly as the live path would. Events are walked in their journaled
+// (chronological) order so a resumed run's pointers interleave stage
+// artifacts and verdict pointers identically to how a live run would have
+// accumulated them.
 func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
 	var out []apiv1.ContextPointer
 	for _, e := range events {
-		if e.Type != journal.EventStageFinished || e.AttemptClass == journal.AttemptInfra {
-			continue
+		switch e.Type {
+		case journal.EventStageFinished:
+			if e.AttemptClass == journal.AttemptInfra {
+				continue
+			}
+			out = append(out, contextPointersFor(e.Stage, artifactPointersFrom(e.Artifacts))...)
+		case journal.EventGateEvaluated:
+			if e.Ref == nil {
+				continue
+			}
+			switch e.Target {
+			case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
+				continue
+			}
+			out = append(out, apiv1.ContextPointer{
+				Name:     e.Gate + ".verdict",
+				Artifact: &apiv1.ArtifactPointer{Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size, MediaType: "application/json"},
+			})
 		}
-		out = append(out, contextPointersFor(e.Stage, artifactPointersFrom(e.Artifacts))...)
 	}
 	return out
 }

@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1891,6 +1892,57 @@ func TestGateDiffSeedNilForNoGateEvents(t *testing.T) {
 	}
 }
 
+// TestReconstructPointersIncludesVerdictOnRepassRoute is issue #412's
+// resume-side counterpart to TestRunnerRepassReceivesReviewerVerdictAsContext:
+// a crash right after a gate journals a repass verdict — before the repass
+// stage's own dispatch — must not lose that verdict on resume. reconstructPointers
+// must include it exactly as the live path would (walk's own append right
+// after evaluateGate), and must exclude terminal-routed evaluations (abort/
+// escalate/complete never dispatch anything downstream to hand it to).
+func TestReconstructPointersIncludesVerdictOnRepassRoute(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+			Artifacts: []journal.Ref{{Path: "artifacts/sha256/aa", Digest: "sha256:aaaa", Size: 3}}},
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Target: "implement",
+			Name: "verdict/review-1.json", Ref: &journal.Ref{Path: "artifacts/sha256/bb", Digest: "sha256:bbbb", Size: 42}},
+		// A terminal-routed evaluation (no downstream dispatch) must NOT
+		// contribute a pointer — there's nothing to hand it to.
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: "fail", Target: workflow.TargetAbort,
+			Name: "verdict/ci-gate-1.json", Ref: &journal.Ref{Path: "artifacts/sha256/cc", Digest: "sha256:cccc", Size: 9}},
+		// An automated gate's event (no Ref — nothing was journaled as an
+		// artifact) must be a no-op too, same as the live path's nil check.
+		{Type: journal.EventGateEvaluated, Gate: "autogate", Verdict: "fail", Target: "implement"},
+	}
+	got := reconstructPointers(events)
+
+	var stagePtr, verdictPtr *apiv1.ContextPointer
+	for i := range got {
+		switch got[i].Name {
+		case "implement.artifact[0]":
+			stagePtr = &got[i]
+		case "review.verdict":
+			verdictPtr = &got[i]
+		}
+	}
+	if stagePtr == nil {
+		t.Fatalf("reconstructPointers = %+v, want implement's own stage.finished artifact preserved", got)
+	}
+	if verdictPtr == nil {
+		t.Fatalf("reconstructPointers = %+v, want a review.verdict pointer for the repass-routed gate.evaluated event", got)
+	}
+	if verdictPtr.Artifact == nil || verdictPtr.Artifact.Digest != "sha256:bbbb" {
+		t.Fatalf("verdictPtr.Artifact = %+v, want digest sha256:bbbb (the journaled Ref)", verdictPtr.Artifact)
+	}
+	for _, p := range got {
+		if p.Name == "ci-gate.verdict" {
+			t.Fatalf("reconstructPointers = %+v, want no pointer for a terminal-routed (@abort) evaluation", got)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("reconstructPointers returned %d pointers, want exactly 2 (implement's artifact + review's verdict)", len(got))
+	}
+}
+
 // countingDeterministic records how many times it was dispatched — for
 // proving a stage was NOT re-dispatched (#107): an already-finished stage
 // resumed at must never re-invoke its executor.
@@ -2731,6 +2783,135 @@ func TestRunnerEscalatesOnDuplicateRepassDiff(t *testing.T) {
 	}
 	if gateEvents[1].Target != workflow.TargetEscalate {
 		t.Fatalf("2nd gate.evaluated event target = %q, want %q", gateEvents[1].Target, workflow.TargetEscalate)
+	}
+}
+
+// verdictAwareDeterministic records each invocation's InvocationEnvelope and
+// produces genuinely different content each attempt (the attempt count baked
+// into the file) — so successive repasses never trip the #316 identical-diff
+// guard on their own, isolating this fixture's actual subject (issue #412:
+// does the repass dispatch receive the reviewer's prior verdict as a
+// ContextPointer) from #316's guard.
+type verdictAwareDeterministic struct {
+	t       *testing.T
+	calls   int
+	gotEnvs []apiv1.InvocationEnvelope
+}
+
+func (c *verdictAwareDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	c.t.Helper()
+	c.calls++
+	c.gotEnvs = append(c.gotEnvs, env)
+	content := fmt.Sprintf("attempt %d content\n", c.calls)
+	if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte(content), 0o644); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	runGit(c.t, env.Workspace, "add", "-A")
+	runGit(c.t, env.Workspace, "commit", "-m", fmt.Sprintf("impl change %d", c.calls))
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "implemented"}, nil
+}
+
+// needsChangesThenPassReviewer requests changes on the first review and
+// approves the second — simulating a repass that successfully engages with
+// feedback and converges, the scenario #412 exists to make possible.
+type needsChangesThenPassReviewer struct{ calls int }
+
+func (r *needsChangesThenPassReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (r *needsChangesThenPassReviewer) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	r.calls++
+	if r.calls == 1 {
+		return apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "please fix X", Rationale: "specific, addressable finding"}, nil
+	}
+	return apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "looks good now"}, nil
+}
+
+// TestRunnerRepassReceivesReviewerVerdictAsContext is issue #412's end-to-end
+// acceptance, driven through a real Start(): a repass dispatch back to
+// "implement" must carry the gate's just-recorded verdict as a
+// ContextPointer, resolving to the reviewer's actual decision/summary — not
+// a placeholder — and a repass that engages with it (produces new content)
+// must converge to completed rather than trip the #316 identical-diff guard.
+func TestRunnerRepassReceivesReviewerVerdictAsContext(t *testing.T) {
+	deterministic := &verdictAwareDeterministic{t: t}
+	reviewer := &needsChangesThenPassReviewer{}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	runsDir := filepath.Join(instanceRoot, "runs")
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return deterministic, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return reviewer, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-verdict-context",
+		Machine: agenticGateMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The #316 identical-diff guard must NOT fire: the repass received the
+	// verdict and produced genuinely new content, so the run converges.
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed (a repass that engages with the verdict should converge, not escalate)", res.Phase)
+	}
+	if deterministic.calls != 2 {
+		t.Fatalf("implement calls = %d, want 2 (1 initial + 1 repass)", deterministic.calls)
+	}
+	if reviewer.calls != 2 {
+		t.Fatalf("reviewer calls = %d, want 2", reviewer.calls)
+	}
+
+	initialEnv, repassEnv := deterministic.gotEnvs[0], deterministic.gotEnvs[1]
+	for _, cp := range initialEnv.ContextPointers {
+		if cp.Name == "review.verdict" {
+			t.Fatalf("initial implement envelope unexpectedly carries a review.verdict pointer (no gate has evaluated yet): %+v", cp)
+		}
+	}
+
+	var verdictPtr *apiv1.ContextPointer
+	for i := range repassEnv.ContextPointers {
+		if repassEnv.ContextPointers[i].Name == "review.verdict" {
+			verdictPtr = &repassEnv.ContextPointers[i]
+		}
+	}
+	if verdictPtr == nil {
+		t.Fatalf("repass envelope has no review.verdict ContextPointer; got %+v", repassEnv.ContextPointers)
+	}
+	if verdictPtr.Artifact == nil || verdictPtr.Artifact.Digest == "" {
+		t.Fatalf("review.verdict pointer has no digested artifact: %+v", verdictPtr)
+	}
+
+	// The pointer must resolve to the ACTUAL verdict content (not a
+	// placeholder) — read it back the same way materializeContext would.
+	data, err := verdictPtr.Artifact.Resolve(filepath.Join(runsDir, "run-verdict-context"))
+	if err != nil {
+		t.Fatalf("resolve verdict artifact: %v", err)
+	}
+	var verdict apiv1.Verdict
+	if err := json.Unmarshal(data, &verdict); err != nil {
+		t.Fatalf("unmarshal verdict artifact: %v", err)
+	}
+	if verdict.Decision != apiv1.VerdictNeedsChanges || verdict.Summary != "please fix X" {
+		t.Fatalf("resolved verdict = %+v, want the reviewer's actual 1st verdict", verdict)
 	}
 }
 
