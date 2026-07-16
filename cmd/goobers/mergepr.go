@@ -134,7 +134,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(reasons) > 0 {
-		if err := writeMergeResult(resultFile, false, "", reasons); err != nil {
+		if err := writeMergeResult(resultFile, pullNumber, false, "", reasons); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
@@ -149,7 +149,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: merge pull request: %v\n", err)
 		return 1
 	}
-	if err := writeMergeResult(resultFile, result.Merged, result.MergeSHA, nil); err != nil {
+	if err := writeMergeResult(resultFile, pullNumber, result.Merged, result.MergeSHA, nil); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -157,14 +157,15 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// writeMergeResult writes the declared result file's flat JSON — merged
-// (bool, always present), mergeSha (on success), reason (a semicolon-joined
-// list of unmet conjuncts, on refusal) — matching InputResultFile's
-// flat-scalar-merge convention (internal/executor/shell.go's
-// mergeResultFileOutputs) so a downstream gate can branch on
-// Outputs["merged"] with zero new plumbing.
-func writeMergeResult(path string, merged bool, mergeSHA string, reasons []string) error {
-	out := map[string]interface{}{"merged": merged}
+// writeMergeResult writes the declared result file's flat JSON — selectedNumber
+// (string, always present), merged (bool, always present), mergeSha (on success),
+// reason (a semicolon-joined list of unmet conjuncts, on refusal) — matching
+// InputResultFile's flat-scalar-merge convention (internal/executor/shell.go's
+// mergeResultFileOutputs). selectedNumber is echoed so the task after merge-gate
+// can receive it through InputsFrom; merged lets that gate branch with zero new
+// plumbing.
+func writeMergeResult(path, selectedNumber string, merged bool, mergeSHA string, reasons []string) error {
+	out := map[string]interface{}{"selectedNumber": selectedNumber, "merged": merged}
 	if mergeSHA != "" {
 		out["mergeSha"] = mergeSHA
 	}
