@@ -125,7 +125,11 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	}
 	switch phase {
 	case journal.PhaseCompleted, journal.PhaseAborted, journal.PhaseEscalated, journal.PhaseFailed:
-		return Result{Phase: phase}, nil
+		res := Result{Phase: phase}
+		if err := r.finalizeTerminal(in.RunID, phase); err != nil {
+			return res, err
+		}
+		return res, nil
 	}
 
 	events, err := rd.Events()
@@ -176,9 +180,9 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 			// flight. Re-dispatching it now would silently re-run its side
 			// effects (#107); instead apply the exact transition a live
 			// walk would have taken right after runTask returned.
-			next, res, advance, terr := r.taskOutcome(jr, in.Machine, t, lastResult, 0)
+			next, res, advance, terr := r.taskOutcome(in.RunID, jr, in.Machine, t, lastResult, 0)
 			if terr != nil {
-				return Result{}, terr
+				return res, terr
 			}
 			if !advance {
 				return res, nil

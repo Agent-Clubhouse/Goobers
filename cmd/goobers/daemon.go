@@ -114,9 +114,17 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		}
 	}
 
+	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber))
+	if err != nil {
+		return nil, fmt.Errorf("open instance log: %w", err)
+	}
+
 	runnerCfg, wtMgr, err := buildRunnerConfig(l, cfg, goobers, tel, sharedReg)
 	if err != nil {
 		return nil, err
+	}
+	runnerCfg.FinalizeTerminal = func(runID string, _ journal.RunPhase) error {
+		return releaseClaimsForRun(l, instanceLog, runID)
 	}
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
@@ -129,11 +137,6 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, sharedReg)
 	if err != nil {
 		return nil, err
-	}
-
-	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber))
-	if err != nil {
-		return nil, fmt.Errorf("open instance log: %w", err)
 	}
 
 	// Issue #137: every workflow's cron schedule evaluates in the
@@ -282,6 +285,9 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // cases itself; a gate-paused run's Resume call returns almost immediately
 // (walk re-checkpoints at the same gate without evaluating anything), so its
 // reserved slot (below) is held only briefly, not for the daemon's lifetime.
+// Runs already terminal in their event log are not resumed, but their claims
+// are released idempotently to close a crash window between run.finished and
+// the runner's terminal finalizer.
 //
 // release is called with each resumed run's workflow once its Resume call
 // returns (success or error) — the counterpart to Scheduler.Reconcile having
@@ -303,9 +309,9 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // trackedStarter.Start — the batched span exporter must write spans.jsonl to
 // disk before ingest reads it.
 //
-// resumeInterruptedRuns itself only errors on something that makes the scan
-// as a whole meaningless (runsDir unreadable for a reason other than not
-// existing yet).
+// resumeInterruptedRuns errors when the scan itself cannot proceed or when
+// terminal-run cleanup fails; claim cleanup fails closed rather than silently
+// leaving a known terminal owner in the ledger.
 func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	runsDir := l.RunsDir()
 	entries, err := os.ReadDir(runsDir)
@@ -337,6 +343,9 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 		if phase, err := rd.Phase(); err == nil {
 			switch phase {
 			case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+				if err := releaseClaimsForRun(l, log, id.RunID); err != nil {
+					return resumed, warned, fmt.Errorf("release claims for terminal run %q: %w", id.RunID, err)
+				}
 				continue // terminal: nothing to resume
 			}
 		}

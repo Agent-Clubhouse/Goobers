@@ -125,6 +125,52 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 	}
 }
 
+func TestResumeScanReleasesClaimsForAlreadyTerminalRun(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const runID = "stale-terminal-with-claim"
+	newStaleTerminalRun(t, l, runID, "default-implement", journal.PhaseEscalated, "review")
+
+	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.Claim("498", runID, "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(context.Background())
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
+	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, warned, err := resumeInterruptedRuns(
+		context.Background(), l, setup.Runner, setup.Machines, setup.RepoRefs,
+		setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed) != 0 || len(warned) != 0 {
+		t.Fatalf("resumed=%v warned=%v, want neither for terminal run", resumed, warned)
+	}
+
+	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, ok := reopened.Lookup("498"); ok {
+		t.Fatalf("terminal run's claim survived startup reconciliation: %+v", entry)
+	}
+}
+
 // TestRunAbortRejectsStaleTerminalCheckpoint is #242's `run abort` acceptance
 // scenario: aborting a run whose journal already shows it finished — even
 // though its checkpoint still claims {running, ...} — must be rejected the

@@ -34,6 +34,11 @@ type SpanStarter interface {
 	StartGate(ctx context.Context, attrs telemetry.GateAttributes) (context.Context, telemetry.Span, error)
 }
 
+// TerminalFinalizer performs instance-level cleanup after a run's terminal
+// event is durably journaled. It may be invoked again when Resume observes an
+// already-terminal run, so implementations must be idempotent.
+type TerminalFinalizer func(runID string, phase journal.RunPhase) error
+
 // Config wires a Runner's dependencies: the daemon-wide singletons (worktree
 // provisioning, gate evaluation) and the per-run executor factories
 // (executor.go) — the substrate the local runner drives directly (worktrees
@@ -76,6 +81,9 @@ type Config struct {
 	Worktrees *worktree.Manager
 	// RunsDir is the journal's run directory (<instance-root>/runs).
 	RunsDir string
+	// FinalizeTerminal performs instance-level cleanup for every terminal run,
+	// after run.finished is durable. Optional; errors are surfaced to the caller.
+	FinalizeTerminal TerminalFinalizer
 	// MaxSteps overrides DefaultMaxSteps when > 0.
 	MaxSteps int
 	// RepoCloneURL derives the git remote URL worktree.Manager clones from a
@@ -359,7 +367,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	for {
 		steps++
 		if steps > r.maxSteps {
-			return r.failTerminal(jr, state, steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps))
+			return r.failTerminal(in.RunID, jr, state, steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps))
 		}
 		jr.SetMachineState(state)
 
@@ -398,14 +406,14 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}
 			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt)
 			if err != nil {
-				return r.failTerminal(jr, t.Name, steps, err)
+				return r.failTerminal(in.RunID, jr, t.Name, steps, err)
 			}
 			pointers = append(pointers, produced...)
 			lastStage, lastResult = t.Name, result
 
-			next, res, advance, oerr := r.taskOutcome(jr, in.Machine, t, result, steps)
+			next, res, advance, oerr := r.taskOutcome(in.RunID, jr, in.Machine, t, result, steps)
 			if oerr != nil {
-				return Result{}, oerr
+				return res, oerr
 			}
 			if !advance {
 				return res, nil
@@ -443,11 +451,11 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					Type: journal.EventError, Gate: g.Name,
 					Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
 				}); aerr != nil {
-					return r.failTerminal(jr, g.Name, steps, fmt.Errorf("runner: journal worktree removal error for gate %q: %w", g.Name, aerr))
+					return r.failTerminal(in.RunID, jr, g.Name, steps, fmt.Errorf("runner: journal worktree removal error for gate %q: %w", g.Name, aerr))
 				}
 			}
 			if err != nil {
-				return r.failTerminal(jr, g.Name, steps, err)
+				return r.failTerminal(in.RunID, jr, g.Name, steps, err)
 			}
 			if gr.Escalated && r.cfg.Escalation != nil && in.Item != nil {
 				// Same drain contract as runTask/evaluateGate: a SIGTERM mid-
@@ -464,16 +472,16 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					reason = "repass produced a diff identical to the immediately prior attempt"
 				}
 				if err := r.cfg.Escalation.NotifyEscalated(context.WithoutCancel(ctx), in.Item.ID, gr, reason); err != nil {
-					return r.failTerminal(jr, g.Name, steps, fmt.Errorf("runner: notify escalation for gate %q: %w", g.Name, err))
+					return r.failTerminal(in.RunID, jr, g.Name, steps, fmt.Errorf("runner: notify escalation for gate %q: %w", g.Name, err))
 				}
 			}
 			switch gr.Target {
 			case workflow.TargetAbort:
-				return r.finish(jr, journal.PhaseAborted, g.Name, steps)
+				return r.finish(in.RunID, jr, journal.PhaseAborted, g.Name, steps)
 			case workflow.TargetEscalate:
-				return r.finish(jr, journal.PhaseEscalated, g.Name, steps)
+				return r.finish(in.RunID, jr, journal.PhaseEscalated, g.Name, steps)
 			case workflow.TerminalComplete:
-				return r.finish(jr, journal.PhaseCompleted, g.Name, steps)
+				return r.finish(in.RunID, jr, journal.PhaseCompleted, g.Name, steps)
 			}
 			if gr.VerdictArtifact != nil {
 				// #412: the next dispatch — a repass back to the stage that
@@ -491,7 +499,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			continue
 		}
 
-		return r.failTerminal(jr, state, steps, fmt.Errorf("runner: unknown state %q", state))
+		return r.failTerminal(in.RunID, jr, state, steps, fmt.Errorf("runner: unknown state %q", state))
 	}
 }
 
@@ -503,7 +511,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 // the journal must record the failure, not pretend the run is still live
 // (ruling #110). If the terminal append itself fails, both errors are
 // reported rather than one silently swallowing the other.
-func (r *Runner) failTerminal(jr *journal.Run, finalState string, steps int, origErr error) (Result, error) {
+func (r *Runner) failTerminal(runID string, jr *journal.Run, finalState string, steps int, origErr error) (Result, error) {
 	// Record the actual cause as an error event before the bare terminal marker
 	// (#305). finish() below journals only run.finished{PhaseFailed}; origErr was
 	// otherwise merely returned up the Go call stack — which `goobers run` never
@@ -519,13 +527,14 @@ func (r *Runner) failTerminal(jr *journal.Run, finalState string, steps int, ori
 		Type:  journal.EventError,
 		Error: &journal.ErrorDetail{Code: "run_failed", Message: origErr.Error()},
 	})
-	if _, ferr := r.finish(jr, journal.PhaseFailed, finalState, steps); ferr != nil {
-		return Result{}, fmt.Errorf("%w (additionally failed to journal terminal failure: %w)", origErr, ferr)
+	res, ferr := r.finish(runID, jr, journal.PhaseFailed, finalState, steps)
+	if ferr != nil {
+		return res, fmt.Errorf("%w (additionally failed to finalize terminal failure: %w)", origErr, ferr)
 	}
 	if appendErr != nil {
-		return Result{}, fmt.Errorf("%w (additionally failed to journal the failure cause: %w)", origErr, appendErr)
+		return res, fmt.Errorf("%w (additionally failed to journal the failure cause: %w)", origErr, appendErr)
 	}
-	return Result{Phase: journal.PhaseFailed, FinalState: finalState, Steps: steps}, origErr
+	return res, origErr
 }
 
 // taskOutcome applies the #110 stage-status ruling to a finished task's
@@ -540,7 +549,7 @@ func (r *Runner) failTerminal(jr *journal.Run, finalState string, steps int, ori
 // attempt already finished, not interrupted — the walk must not re-dispatch
 // it (#107), just pick up the same decision a live walk would have made
 // right after runTask returned.
-func (r *Runner) taskOutcome(jr *journal.Run, machine *workflow.Machine, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
+func (r *Runner) taskOutcome(runID string, jr *journal.Run, machine *workflow.Machine, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
 	switch result.Status {
 	case apiv1.ResultBlocked:
 		return "", Result{Phase: journal.PhaseRunning, FinalState: t.Name, Steps: steps}, false, nil
@@ -557,13 +566,13 @@ func (r *Runner) taskOutcome(jr *journal.Run, machine *workflow.Machine, t apiv1
 		// selects on. Placed ahead of the gate-routing branch so the
 		// disposition wins over the ordinary "failure into the gate" path.
 		if isNonRetryableEscalation(result.Error) {
-			res, err = r.finish(jr, journal.PhaseEscalated, t.Name, steps)
+			res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
 			return "", res, false, err
 		}
 		if _, isGate := machine.Gate(t.Next); t.Next != "" && isGate {
 			return t.Next, Result{}, true, nil
 		}
-		res, err = r.finish(jr, journal.PhaseFailed, t.Name, steps)
+		res, err = r.finish(runID, jr, journal.PhaseFailed, t.Name, steps)
 		return "", res, false, err
 	case apiv1.ResultNoWork:
 		// Short-circuits straight to PhaseCompleted, unconditionally — never
@@ -576,7 +585,7 @@ func (r *Runner) taskOutcome(jr *journal.Run, machine *workflow.Machine, t apiv1
 		// query-backlog -> curate/implement wiring (Next names a real,
 		// non-reserved state) still terminates cleanly on an empty tick
 		// without the workflow author having to special-case it in the DSL.
-		res, err = r.finish(jr, journal.PhaseCompleted, t.Name, steps)
+		res, err = r.finish(runID, jr, journal.PhaseCompleted, t.Name, steps)
 		return "", res, false, err
 	}
 	// A successful task's Next may be a plain state name or one of the
@@ -589,24 +598,39 @@ func (r *Runner) taskOutcome(jr *journal.Run, machine *workflow.Machine, t apiv1
 	// surface must not crash one runner while completing on another).
 	switch t.Next {
 	case workflow.TargetAbort:
-		res, err = r.finish(jr, journal.PhaseAborted, t.Name, steps)
+		res, err = r.finish(runID, jr, journal.PhaseAborted, t.Name, steps)
 		return "", res, false, err
 	case workflow.TargetEscalate:
-		res, err = r.finish(jr, journal.PhaseEscalated, t.Name, steps)
+		res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
 		return "", res, false, err
 	case workflow.TerminalComplete:
-		res, err = r.finish(jr, journal.PhaseCompleted, t.Name, steps)
+		res, err = r.finish(runID, jr, journal.PhaseCompleted, t.Name, steps)
 		return "", res, false, err
 	}
 	return t.Next, Result{}, true, nil
 }
 
-// finish appends the run's terminal run.finished event and returns its Result.
-func (r *Runner) finish(jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
+// finish appends the run's terminal run.finished event, then performs the
+// configured instance-level finalization.
+func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
 	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
 		return Result{}, fmt.Errorf("runner: journal run.finished: %w", err)
 	}
-	return Result{Phase: phase, FinalState: finalState, Steps: steps}, nil
+	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
+	if err := r.finalizeTerminal(runID, phase); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+func (r *Runner) finalizeTerminal(runID string, phase journal.RunPhase) error {
+	if r.cfg.FinalizeTerminal == nil {
+		return nil
+	}
+	if err := r.cfg.FinalizeTerminal(runID, phase); err != nil {
+		return fmt.Errorf("runner: finalize terminal run %q (%s): %w", runID, phase, err)
+	}
+	return nil
 }
 
 // runTask dispatches one task, retrying dispatch-level failures up to its

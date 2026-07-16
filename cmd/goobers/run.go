@@ -221,6 +221,10 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		// already-terminal run, flipping its recorded terminal phase.
 		switch phase {
 		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+			if err := releaseClaimsForRun(l, nil, runID); err != nil {
+				pf(stderr, "error: release claims for terminal run %s: %v\n", runID, err)
+				return 2
+			}
 			pf(stderr, "error: run %s is already terminal (phase=%s)\n", runID, phase)
 			return 1
 		}
@@ -234,6 +238,10 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	defer func() { _ = run.Close() }()
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted)}); err != nil {
 		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if err := releaseClaimsForRun(l, nil, runID); err != nil {
+		pf(stderr, "error: release claims for aborted run %s: %v\n", runID, err)
 		return 2
 	}
 
