@@ -1,6 +1,8 @@
 package journal
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -97,11 +99,11 @@ func (l *InstanceLog) Append(ev Event) error {
 	defer releaseInstanceLogLock(lock)
 
 	path := filepath.Join(l.dir, fileEvents)
-	events, tornBytes, err := readEvents(path)
+	lastSeq, tornBytes, err := readInstanceLogTail(path)
 	if err != nil {
 		return err
 	}
-	l.seq = highestEventSeq(events)
+	l.seq = lastSeq
 	if tornBytes > 0 {
 		if err := truncateTornTail(path, tornBytes); err != nil {
 			return err
@@ -144,6 +146,88 @@ func highestEventSeq(events []Event) uint64 {
 		}
 	}
 	return highest
+}
+
+const (
+	instanceTailInitialBytes = 64 * 1024
+	instanceTailMaxBytes     = 3*maxEventBytes + 3
+)
+
+// readInstanceLogTail finds the newest usable sequence without rescanning the
+// instance's lifetime journal. It expands a bounded suffix only when a large
+// event, torn write, or corrupt completed record obscures the preceding event.
+func readInstanceLogTail(path string) (uint64, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("journal: open instance log tail: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return 0, 0, fmt.Errorf("journal: stat instance log tail: %w", err)
+	}
+	size := info.Size()
+	if size == 0 {
+		return 0, 0, nil
+	}
+
+	readSize := min(size, int64(instanceTailInitialBytes))
+	maxRead := min(size, int64(instanceTailMaxBytes))
+	for {
+		offset := size - readSize
+		data := make([]byte, int(readSize))
+		if _, err := f.ReadAt(data, offset); err != nil {
+			return 0, 0, fmt.Errorf("journal: read instance log tail: %w", err)
+		}
+		seq, tornBytes, needMore := parseInstanceLogTail(data, offset)
+		if !needMore {
+			return seq, tornBytes, nil
+		}
+		if readSize == maxRead {
+			return 0, 0, fmt.Errorf("journal: no sequence found in last %d bytes", readSize)
+		}
+		readSize = min(readSize*2, maxRead)
+	}
+}
+
+func parseInstanceLogTail(data []byte, offset int64) (uint64, int, bool) {
+	completeEnd := len(data)
+	tornBytes := 0
+	if data[len(data)-1] != '\n' {
+		newline := bytes.LastIndexByte(data, '\n')
+		if newline < 0 {
+			if offset > 0 {
+				return 0, 0, true
+			}
+			return 0, len(data), false
+		}
+		completeEnd = newline + 1
+		tornBytes = len(data) - completeEnd
+	}
+
+	for end := completeEnd; end > 0; {
+		if data[end-1] == '\n' {
+			end--
+		}
+		start := bytes.LastIndexByte(data[:end], '\n') + 1
+		if start == 0 && offset > 0 {
+			return 0, 0, true
+		}
+
+		line := bytes.TrimSpace(bytes.TrimLeft(data[start:end], "\x00"))
+		var event struct {
+			Seq uint64 `json:"seq"`
+		}
+		if len(line) > 0 && json.Unmarshal(line, &event) == nil && event.Seq > 0 {
+			return event.Seq, tornBytes, false
+		}
+		end = start
+	}
+	return 0, tornBytes, false
 }
 
 func acquireInstanceLogLock(dir string) (*os.File, error) {

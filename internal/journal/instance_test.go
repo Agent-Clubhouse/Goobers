@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -118,6 +119,91 @@ func TestInstanceLogSerializesIndependentWriters(t *testing.T) {
 		if ev.Seq != uint64(i+1) {
 			t.Fatalf("event %d seq = %d, want %d", i, ev.Seq, i+1)
 		}
+	}
+}
+
+func TestInstanceLogAppendSkipsCorruptCompletedEvent(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	log, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("OpenInstanceLog: %v", err)
+	}
+	defer func() { _ = log.Close() }()
+
+	if err := log.Append(Event{Type: EventTriggerFired, Workflow: "nominate"}); err != nil {
+		t.Fatalf("Append initial event: %v", err)
+	}
+	path := filepath.Join(dir, fileEvents)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{corrupt completed event}\n"); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := log.Append(Event{Type: EventTriggerFired, Workflow: "implement"}); err != nil {
+		t.Fatalf("Append after corrupt event: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
+	var last Event
+	if err := json.Unmarshal(lines[len(lines)-1], &last); err != nil {
+		t.Fatalf("decode last event: %v", err)
+	}
+	if last.Seq != 2 || last.Workflow != "implement" {
+		t.Fatalf("last event = %+v, want seq 2 implement event", last)
+	}
+}
+
+func TestInstanceLogRecoversTornTailOnAppend(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	log, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("OpenInstanceLog: %v", err)
+	}
+	defer func() { _ = log.Close() }()
+
+	if err := log.Append(Event{Type: EventTriggerFired, Workflow: "nominate"}); err != nil {
+		t.Fatalf("Append initial event: %v", err)
+	}
+	path := filepath.Join(dir, fileEvents)
+	torn := []byte(`{"seq":2,"type":"trigger.fired"`)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(torn); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := log.Append(Event{Type: EventTriggerFired, Workflow: "implement"}); err != nil {
+		t.Fatalf("Append after torn tail: %v", err)
+	}
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %+v, want original, repair, and appended event", events)
+	}
+	if events[1].Seq != 2 || events[1].Type != EventRepaired ||
+		events[1].Runner["discardedBytes"] != float64(len(torn)) {
+		t.Fatalf("repair event = %+v, want %d discarded bytes", events[1], len(torn))
+	}
+	if events[2].Seq != 3 || events[2].Workflow != "implement" {
+		t.Fatalf("appended event = %+v, want seq 3 implement event", events[2])
 	}
 }
 
