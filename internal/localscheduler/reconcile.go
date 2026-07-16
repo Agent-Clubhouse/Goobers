@@ -9,9 +9,8 @@ import (
 
 // ActiveRunCounts scans runsDir for non-terminal runs and returns per-workflow
 // active counts — the daemon-startup reconciliation Conditions.Reconcile needs,
-// since Conditions' in-memory counters don't survive a restart. A run whose
-// state.json can't be read (e.g. mid-recovery) is conservatively counted as
-// active rather than dropped, so a restart never silently exceeds max-parallel.
+// since Conditions' in-memory counters don't survive a restart. The event log
+// is authoritative because state.json can lag a crash-fsynced run.finished.
 func ActiveRunCounts(runsDir string) (map[string]int, error) {
 	counts := map[string]int{}
 	entries, err := os.ReadDir(runsDir)
@@ -34,12 +33,11 @@ func ActiveRunCounts(runsDir string) (map[string]int, error) {
 		if err != nil {
 			continue
 		}
-		st, err := rd.State()
+		phase, err := rd.Phase()
 		if err != nil {
-			counts[id.Workflow]++
 			continue
 		}
-		if st.Phase == journal.PhaseRunning {
+		if phase == journal.PhaseRunning {
 			counts[id.Workflow]++
 		}
 	}

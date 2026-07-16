@@ -277,8 +277,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // prior crash or unclean daemon shutdown and restarts it via Runner.Resume,
 // each in its own goroutine tracked by wg — the daemon-startup recovery pass
 // (issue #23 AC: restart via Runner.Resume). "Interrupted" is exactly
-// journal.PhaseRunning (or an unreadable state.json, conservatively treated
-// the same way ActiveRunCounts does): no run.finished event has landed.
+// journal.PhaseRunning in the event log: no run.finished event has landed.
 // Resume itself is idempotent on an already-terminal run and safe to call on
 // one that merely paused gracefully (a human gate, or a prior clean drain),
 // not only a genuine crash — so this scan doesn't need to distinguish those
@@ -289,11 +288,12 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // are released idempotently to close a crash window between run.finished and
 // the runner's terminal finalizer.
 //
-// release is called with each resumed run's workflow once its Resume call
-// returns (success or error) — the counterpart to Scheduler.Reconcile having
-// already seeded that run's workflow into Conditions' active count (issue
-// #135: previously nothing ever released a reconciled slot, so any restart
-// with a non-terminal run starved that workflow of new dispatches forever).
+// release is called for every terminal or resumed run. For a resumed run it is
+// called once Resume returns (success or error) — the counterpart to
+// Scheduler.Reconcile having already seeded that run's workflow into
+// Conditions' active count (issue #135). Terminal runs should not have a seeded
+// slot, but releasing defensively keeps the reconciliation and resume scans
+// from leaking one if their classification ever drifts.
 // Pass sched.Release; a plain func so this doesn't need a *Scheduler to test.
 //
 // A run whose workflow no longer resolves in the current config (renamed or
@@ -346,6 +346,7 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 				if err := releaseClaimsForRun(l, log, id.RunID); err != nil {
 					return resumed, warned, fmt.Errorf("release claims for terminal run %q: %w", id.RunID, err)
 				}
+				release(id.Workflow)
 				continue // terminal: nothing to resume
 			}
 		}

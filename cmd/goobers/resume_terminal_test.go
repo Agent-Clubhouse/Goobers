@@ -92,21 +92,44 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
-	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
-		t.Fatal(err)
+	defer setup.Shutdown(context.Background())
+
+	var sched *localscheduler.Scheduler
+	releases := 0
+	for restart := 0; restart < 3; restart++ {
+		sched = localscheduler.New(setup.Entries, setup.InstanceLog)
+		if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		resumed, warned, err := resumeInterruptedRuns(
+			ctx, l, setup.Runner, setup.Machines, setup.RepoRefs,
+			setup.InstanceLog, setup.Telemetry, setup.RollupDB,
+			func(workflow string) {
+				releases++
+				sched.Release(workflow)
+			},
+			&wg,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(warned) != 0 {
+			t.Fatalf("restart %d: warned = %v, want none", restart, warned)
+		}
+		if len(resumed) != 0 {
+			t.Fatalf("restart %d: resumed = %v, want none — the run's journal already shows it finished despite the stale checkpoint", restart, resumed)
+		}
+	}
+	wg.Wait()
+	if releases != 3 {
+		t.Fatalf("terminal slot releases = %d, want one per restart", releases)
 	}
 
-	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg)
+	runID, err := sched.Trigger(ctx, "default-implement", time.Now())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Trigger rejected after repeated terminal-run reconciliation: %v", err)
 	}
-	if len(warned) != 0 {
-		t.Fatalf("warned = %v, want none", warned)
-	}
-	if len(resumed) != 0 {
-		t.Fatalf("resumed = %v, want none — the run's journal already shows it finished despite the stale checkpoint", resumed)
-	}
+	waitForRunPhase(t, l.RunsDir(), runID, journal.PhaseCompleted)
 	wg.Wait()
 
 	// The checkpoint itself is untouched by the scan (only Recover, which
@@ -130,6 +153,9 @@ func TestResumeScanReleasesClaimsForAlreadyTerminalRun(t *testing.T) {
 	l := instance.NewLayout(root)
 	const runID = "stale-terminal-with-claim"
 	newStaleTerminalRun(t, l, runID, "default-implement", journal.PhaseEscalated, "review")
+	if err := os.WriteFile(filepath.Join(l.RunsDir(), runID, "state.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
 	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
@@ -151,15 +177,25 @@ func TestResumeScanReleasesClaimsForAlreadyTerminalRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	releases := 0
 	resumed, warned, err := resumeInterruptedRuns(
 		context.Background(), l, setup.Runner, setup.Machines, setup.RepoRefs,
-		setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg,
+		setup.InstanceLog, setup.Telemetry, setup.RollupDB,
+		func(workflow string) {
+			releases++
+			sched.Release(workflow)
+		},
+		&wg,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(resumed) != 0 || len(warned) != 0 {
 		t.Fatalf("resumed=%v warned=%v, want neither for terminal run", resumed, warned)
+	}
+	wg.Wait()
+	if releases != 1 {
+		t.Fatalf("terminal slot releases = %d, want 1", releases)
 	}
 
 	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
