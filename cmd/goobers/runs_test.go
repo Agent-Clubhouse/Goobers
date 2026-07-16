@@ -14,60 +14,42 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-func TestRunsListNewestFirstWithLimit(t *testing.T) {
+func TestStatusAndRunsListShareRunTable(t *testing.T) {
 	root := initDemo(t)
-	l := instance.NewLayout(root)
 	start := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
-	createListRun(t, l.RunsDir(), "old-run", start)
-	createListRun(t, l.RunsDir(), "middle-run", start.Add(time.Minute))
-	createListRun(t, l.RunsDir(), "new-run", start.Add(2*time.Minute))
+	writeStatusRunWithPhase(t, root, "old-run", "implementation", "goobers", start, journal.PhaseFailed)
+	writeStatusRunWithPhase(t, root, "middle-run", "implementation", "goobers", start.Add(time.Minute), journal.PhaseFailed)
+	writeStatusRunWithPhase(t, root, "new-run", "implementation", "goobers", start.Add(2*time.Minute), journal.PhaseFailed)
+	writeStatusRunWithPhase(t, root, "other-run", "merge-review", "goobers", start.Add(3*time.Minute), journal.PhaseFailed)
 
-	code, stdout, stderr := runArgs(t, "runs", "list", "--limit=2", root)
-	if code != 0 {
-		t.Fatalf("runs list: code = %d, stderr = %q", code, stderr)
+	flags := []string{"--phase=failed", "--workflow=implementation", "--limit=2", root}
+	statusCode, statusStdout, statusStderr := runArgs(t, append([]string{"status"}, flags...)...)
+	runsCode, runsStdout, runsStderr := runArgs(t, append([]string{"runs", "list"}, flags...)...)
+	if statusCode != 0 || runsCode != 0 {
+		t.Fatalf("status code = %d, stderr = %q; runs list code = %d, stderr = %q",
+			statusCode, statusStderr, runsCode, runsStderr)
 	}
-	if !strings.Contains(stdout, "RUN ID") {
-		t.Fatalf("runs list stdout = %q, want summary table header", stdout)
+	if runsStdout != statusStdout {
+		t.Fatalf("runs list stdout = %q, want byte-identical status output %q", runsStdout, statusStdout)
 	}
-	newIndex := strings.Index(stdout, "new-run")
-	middleIndex := strings.Index(stdout, "middle-run")
+	newIndex := strings.Index(statusStdout, "new-run")
+	middleIndex := strings.Index(statusStdout, "middle-run")
 	if newIndex == -1 || middleIndex == -1 || newIndex > middleIndex {
-		t.Fatalf("runs list stdout = %q, want newest run before middle run", stdout)
+		t.Fatalf("shared stdout = %q, want newest run before middle run", statusStdout)
 	}
-	if strings.Contains(stdout, "old-run") {
-		t.Fatalf("runs list stdout = %q, want --limit=2 to exclude oldest run", stdout)
+	if strings.Contains(statusStdout, "old-run") || strings.Contains(statusStdout, "other-run") {
+		t.Fatalf("shared stdout = %q, want filters before limit", statusStdout)
 	}
-}
 
-func TestRunsListJSON(t *testing.T) {
-	root := initDemo(t)
-	l := instance.NewLayout(root)
-	start := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
-	createListRun(t, l.RunsDir(), "old-run", start)
-	createListRun(t, l.RunsDir(), "middle-run", start.Add(time.Minute))
-	createListRun(t, l.RunsDir(), "new-run", start.Add(2*time.Minute))
-
-	code, stdout, stderr := runArgs(t, "runs", "list", "--json", "--limit=2", root)
-	if code != 0 {
-		t.Fatalf("runs list --json: code = %d, stderr = %q", code, stderr)
+	jsonFlags := append([]string{"--json"}, flags...)
+	statusCode, statusStdout, statusStderr = runArgs(t, append([]string{"status"}, jsonFlags...)...)
+	runsCode, runsStdout, runsStderr = runArgs(t, append([]string{"runs", "list"}, jsonFlags...)...)
+	if statusCode != 0 || runsCode != 0 {
+		t.Fatalf("status --json code = %d, stderr = %q; runs list --json code = %d, stderr = %q",
+			statusCode, statusStderr, runsCode, runsStderr)
 	}
-	want := fmt.Sprintf(
-		`[{"runId":"new-run","workflow":"implementation","gaggle":"goobers","phase":"running","startedAt":%q},{"runId":"middle-run","workflow":"implementation","gaggle":"goobers","phase":"running","startedAt":%q}]`+"\n",
-		start.Add(2*time.Minute).Format(time.RFC3339), start.Add(time.Minute).Format(time.RFC3339),
-	)
-	if stdout != want {
-		t.Fatalf("stdout = %q, want %q", stdout, want)
-	}
-}
-
-func TestRunsListJSONEmptyInstance(t *testing.T) {
-	root := initDemo(t)
-	code, stdout, stderr := runArgs(t, "runs", "list", "--json", root)
-	if code != 0 {
-		t.Fatalf("runs list --json: code = %d, stderr = %q", code, stderr)
-	}
-	if stdout != "[]\n" {
-		t.Fatalf("stdout = %q, want %q", stdout, "[]\n")
+	if runsStdout != statusStdout {
+		t.Fatalf("runs list --json stdout = %q, want byte-identical status output %q", runsStdout, statusStdout)
 	}
 }
 
@@ -79,11 +61,12 @@ func TestRunsCommandUsage(t *testing.T) {
 		wantStdout string
 		wantStderr string
 	}{
-		{name: "top-level help", args: []string{"help"}, wantCode: 0, wantStdout: "goobers runs du [--json]"},
-		{name: "runs help", args: []string{"runs", "help"}, wantCode: 0, wantStdout: "Usage: goobers runs"},
+		{name: "top-level help mentions runs list", args: []string{"help"}, wantCode: 0, wantStdout: "goobers runs list"},
+		{name: "top-level help mentions runs du", args: []string{"help"}, wantCode: 0, wantStdout: "goobers runs du [--json]"},
+		{name: "runs help", args: []string{"runs", "help"}, wantCode: 0, wantStdout: "alias for the goobers status run table"},
 		{name: "missing action", args: []string{"runs"}, wantCode: 2, wantStderr: "Usage: goobers runs"},
 		{name: "unknown action", args: []string{"runs", "bogus"}, wantCode: 2, wantStderr: `unknown subcommand "bogus"`},
-		{name: "negative limit", args: []string{"runs", "list", "--limit=-1"}, wantCode: 2, wantStderr: "Usage: goobers runs list"},
+		{name: "negative limit", args: []string{"runs", "list", "--limit=-1"}, wantCode: 2, wantStderr: "--limit must be non-negative"},
 		{name: "too many paths", args: []string{"runs", "list", "one", "two"}, wantCode: 2, wantStderr: "Usage: goobers runs list"},
 		{name: "du too many paths", args: []string{"runs", "du", "one", "two"}, wantCode: 2, wantStderr: "Usage: goobers runs du"},
 	}

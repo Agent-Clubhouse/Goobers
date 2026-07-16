@@ -86,8 +86,8 @@ func TestStatusJSON(t *testing.T) {
 		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
 	}
 	want := fmt.Sprintf(
-		`{"warnings":[],"runs":[{"runId":"z-old","workflow":"old-workflow","gaggle":"old-gaggle","phase":"running","startedAt":%q},{"runId":"a-new","workflow":"new-workflow","gaggle":"new-gaggle","phase":"running","startedAt":%q}]}`+"\n",
-		oldStartedAt.Format(time.RFC3339), newStartedAt.Format(time.RFC3339),
+		`{"warnings":[],"runs":[{"runId":"a-new","workflow":"new-workflow","gaggle":"new-gaggle","phase":"running","startedAt":%q},{"runId":"z-old","workflow":"old-workflow","gaggle":"old-gaggle","phase":"running","startedAt":%q}]}`+"\n",
+		newStartedAt.Format(time.RFC3339), oldStartedAt.Format(time.RFC3339),
 	)
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
@@ -197,8 +197,8 @@ func TestStatusFiltersByWorkflowBeforeLimit(t *testing.T) {
 	}
 	middleIndex := strings.Index(stdout, "merge-middle")
 	newIndex := strings.Index(stdout, "merge-new")
-	if middleIndex == -1 || newIndex == -1 || middleIndex > newIndex {
-		t.Fatalf("stdout = %q, want the two newest merge-review runs in ascending order", stdout)
+	if middleIndex == -1 || newIndex == -1 || newIndex > middleIndex {
+		t.Fatalf("stdout = %q, want the two newest merge-review runs newest first", stdout)
 	}
 	if strings.Contains(stdout, "merge-old") || strings.Contains(stdout, "other-newest") {
 		t.Fatalf("stdout = %q, want workflow filter applied before the limit", stdout)
@@ -233,9 +233,9 @@ func TestStatusJSONFiltersByMultiplePhases(t *testing.T) {
 		t.Fatalf("status --json --phase: code = %d, stderr = %q", code, stderr)
 	}
 	want := fmt.Sprintf(
-		`{"warnings":[],"runs":[{"runId":"failed-run","workflow":"implementation","gaggle":"goobers","phase":"failed","startedAt":%q},{"runId":"escalated-run","workflow":"implementation","gaggle":"goobers","phase":"escalated","startedAt":%q}]}`+"\n",
-		startedAt.Add(time.Minute).Format(time.RFC3339),
+		`{"warnings":[],"runs":[{"runId":"escalated-run","workflow":"implementation","gaggle":"goobers","phase":"escalated","startedAt":%q},{"runId":"failed-run","workflow":"implementation","gaggle":"goobers","phase":"failed","startedAt":%q}]}`+"\n",
 		startedAt.Add(2*time.Minute).Format(time.RFC3339),
+		startedAt.Add(time.Minute).Format(time.RFC3339),
 	)
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)

@@ -118,10 +118,11 @@ Usage:
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
   goobers workflow show <name> [path]  show a workflow as a text DAG
-  goobers runs list [--json] [--limit=N] [path]  list runs, most-recent first
+  goobers runs list [--json] [--phase=...] [--workflow=...] [--limit=N] [path]
+                                alias for the status run table (same flags, no --watch)
   goobers runs du [--json] [path]       report per-run journal and artifact bytes
   goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--limit=N] [--watch [--interval=2s]] [path]
-                                validate config, show warnings, list runs, or report daemon health with --daemon
+                                validate config, show warnings, list runs newest first, or report daemon health with --daemon
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
