@@ -292,9 +292,10 @@ func gateRunnerJSON(ev journalEvent) (sql.NullString, error) {
 }
 
 // IngestSchedulerLog reads the instance journal (scheduler/events.jsonl) —
-// trigger.fired/tick.skipped/claim.acquired/claim.released and the instance-
-// level run.started/run.finished echoes localscheduler's dispatch appends —
-// and (re)populates scheduler_events (issue #128: this was never ingested at
+// trigger.fired/tick.skipped/claim.acquired/claim.released, scheduler
+// decisions, claim transitions, the instance-level run.started/run.finished
+// echoes localscheduler's dispatch appends, and instance-level errors — and
+// (re)populates scheduler_events (issue #128: this was never ingested at
 // all). Idempotent (delete-then-insert over the whole table, since the
 // instance log is a single stream, not per-run), so it's safe to call after
 // every dispatch tick (incremental) or as part of Rebuild (full rescan).
@@ -315,15 +316,27 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	if _, err := tx.Exec(`DELETE FROM scheduler_events`); err != nil {
 		return fmt.Errorf("rollup: clear scheduler_events: %w", err)
 	}
+	if _, err := tx.Exec(`DELETE FROM scheduler_errors`); err != nil {
+		return fmt.Errorf("rollup: clear scheduler_errors: %w", err)
+	}
 	for _, ev := range events {
 		switch ev.Type {
-		case eventTriggerFired, eventTickSkipped, eventClaimAcquired, eventClaimReleased, eventRunStarted, eventRunFinished:
+		case eventTriggerFired, eventTickSkipped, eventClaimAcquired, eventClaimReleased, eventRunStarted, eventRunFinished, eventError:
 			if _, err := tx.Exec(`
 				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(seq) DO NOTHING`,
 				ev.Seq, ev.Type, nullIfEmpty(ev.Workflow), nullIfEmpty(ev.RunID), nullIfEmpty(ev.Reason), nullIfEmpty(ev.Status), formatTime(ev.Time)); err != nil {
 				return fmt.Errorf("rollup: insert scheduler_event seq %d: %w", ev.Seq, err)
+			}
+			if ev.Type == eventError && ev.Error != nil {
+				if _, err := tx.Exec(`
+					INSERT INTO scheduler_errors (seq, code, error_class, message, occurred_at)
+					VALUES (?, ?, ?, ?, ?)`,
+					ev.Seq, ev.Error.Code, nullIfEmpty(string(telemetry.ClassifyError(ev.Error.Code))),
+					nullIfEmpty(telemetry.Redact(ev.Error.Message)), formatTime(ev.Time)); err != nil {
+					return fmt.Errorf("rollup: insert scheduler_error seq %d: %w", ev.Seq, err)
+				}
 			}
 		}
 	}

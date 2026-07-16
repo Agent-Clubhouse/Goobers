@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -57,7 +58,9 @@ func TestSweepDispatchesPendingRequest(t *testing.T) {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
 
-	sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now)
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -84,8 +87,12 @@ func TestSweepConsumesRequestFileOnce(t *testing.T) {
 	if _, err := writeTriggerRequest(schedulerDir, "implement"); err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
-	sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now)
-	sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now) // must be a no-op
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("first sweepPendingTriggers: %v", err)
+	}
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("second sweepPendingTriggers: %v", err)
+	}
 
 	entries, err := filepathGlobRequests(schedulerDir)
 	if err != nil {
@@ -111,7 +118,9 @@ func TestSweepUnknownWorkflowRespondsWithError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
-	sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now)
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
 
 	_, err = pollTriggerResponse(context.Background(), schedulerDir, requestID, time.Second)
 	if err == nil {
@@ -231,5 +240,49 @@ func TestRunDelegatesToLiveDaemon(t *testing.T) {
 	}
 	if !sawFired || !sawStarted {
 		t.Fatalf("expected the delegated run visible in the daemon's own instance journal: %+v", events)
+	}
+}
+
+func TestUpJournalsDelegationSweepError(t *testing.T) {
+	prevInterval := delegationSweepInterval
+	delegationSweepInterval = 20 * time.Millisecond
+	t.Cleanup(func() { delegationSweepInterval = prevInterval })
+
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	if err := os.WriteFile(filepath.Join(l.SchedulerDir(), pendingTriggersDir), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := &daemonStartedWriter{started: make(chan struct{})}
+	var stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() { done <- runUpContext(ctx, []string{root}, started, &stderr) }()
+
+	select {
+	case <-started.started:
+	case code := <-done:
+		t.Fatalf("runUpContext exited before startup: code = %d, stderr = %q", code, stderr.String())
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for daemon startup")
+	}
+
+	event := waitForInstanceError(t, l.SchedulerDir(), "trigger_sweep_failed")
+	if !strings.Contains(event.Error.Message, "read pending triggers") {
+		t.Fatalf("trigger sweep error = %q, want pending-trigger read detail", event.Error.Message)
+	}
+
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runUpContext did not return after cancellation")
+	}
+	if strings.Contains(stderr.String(), "trigger_sweep_failed") {
+		t.Fatalf("trigger sweep error leaked to stderr: %q", stderr.String())
 	}
 }

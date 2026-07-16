@@ -168,4 +168,16 @@ CREATE TABLE IF NOT EXISTS span_business_status (
 
 CREATE INDEX IF NOT EXISTS idx_span_business_status_run ON span_business_status(run_id);
 `,
+	// v4: instance-journal maintenance failures use the same error envelope as
+	// run errors. Preserve their structured fields in a scheduler-keyed table
+	// so they can participate in recurring error-signature queries.
+	`
+CREATE TABLE IF NOT EXISTS scheduler_errors (
+	seq          INTEGER NOT NULL PRIMARY KEY,
+	code         TEXT NOT NULL,
+	error_class  TEXT,
+	message      TEXT,
+	occurred_at  TEXT
+);
+`,
 }

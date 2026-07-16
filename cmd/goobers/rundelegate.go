@@ -141,12 +141,16 @@ var triggerDelegationTimeout = 30 * time.Second
 // run — the same "don't replay an ambiguous firing" principle Scheduler's
 // own trigger.fired-before-dispatch ordering already applies (see dispatch's
 // doc comment in scheduler.go).
-func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *localscheduler.Scheduler, now func() time.Time) {
+func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *localscheduler.Scheduler, now func() time.Time) error {
 	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
 	entries, err := os.ReadDir(reqDir)
-	if err != nil {
-		return // no pending-triggers dir yet (no delegated request has ever been made) — nothing to do
+	if os.IsNotExist(err) {
+		return nil
 	}
+	if err != nil {
+		return fmt.Errorf("delegate: read pending triggers: %w", err)
+	}
+	var sweepErr error
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), requestSuffix) {
 			continue
@@ -156,10 +160,16 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 
 		data, err := os.ReadFile(reqPath)
 		if err != nil {
-			continue // gone already (a concurrent sweep somehow won it, or it was cleaned up) — skip, nothing to respond to
+			if !os.IsNotExist(err) {
+				sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: read trigger request %s: %w", requestID, err))
+			}
+			continue
 		}
 		if err := os.Remove(reqPath); err != nil {
-			continue // lost a race for this exact file; the winner will respond
+			if !os.IsNotExist(err) {
+				sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: consume trigger request %s: %w", requestID, err))
+			}
+			continue
 		}
 
 		var req triggerRequest
@@ -177,8 +187,12 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 
 		respData, err := json.Marshal(resp)
 		if err != nil {
-			continue // shouldn't happen (triggerResponse is trivially marshalable); the waiting `goobers run` times out instead
+			sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: encode trigger response %s: %w", requestID, err))
+			continue
 		}
-		_ = os.WriteFile(filepath.Join(reqDir, requestID+responseSuffix), respData, 0o644)
+		if err := os.WriteFile(filepath.Join(reqDir, requestID+responseSuffix), respData, 0o644); err != nil {
+			sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: write trigger response %s: %w", requestID, err))
+		}
 	}
+	return sweepErr
 }
