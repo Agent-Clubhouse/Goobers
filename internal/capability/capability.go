@@ -42,6 +42,9 @@ const (
 	// GitHubPRWrite grants GitHub PR open/poll/close (the implementation
 	// workflow's open-pr and ci-poll stages).
 	GitHubPRWrite Capability = "github:pr:write"
+	// GitHubBranchDelete grants deletion of a remote GitHub branch after its
+	// pull request merges and no open pull request uses it as a base.
+	GitHubBranchDelete Capability = "github:branch:delete"
 	// GitHubPRMerge grants GitHub PR merge (issue #360) — deliberately
 	// separate from GitHubPRWrite so it can be granted narrowly to
 	// `merge-review` alone: `implementation` and `pr-remediation` push
@@ -76,7 +79,7 @@ const (
 
 // All returns every canonical capability, in declaration order.
 func All() []Capability {
-	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubPRWrite, GitHubPRMerge, TelemetryRead, JournalRead, AgentModel}
+	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubPRWrite, GitHubBranchDelete, GitHubPRMerge, TelemetryRead, JournalRead, AgentModel}
 }
 
 // Known reports whether s is a canonical capability string.

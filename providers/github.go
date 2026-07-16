@@ -163,6 +163,29 @@ func (p *GitHubProvider) CreateBranch(ctx context.Context, req BranchRequest) (B
 	return BranchResult{Name: req.Name, SHA: out.Object.SHA, URL: out.URL}, nil
 }
 
+// DeleteBranch deletes a GitHub branch ref.
+func (p *GitHubProvider) DeleteBranch(ctx context.Context, req DeleteBranchRequest) error {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return err
+	}
+	if req.Name == "" {
+		return fmt.Errorf("branch name is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "git", "refs", "heads", req.Name)
+	if err != nil {
+		return err
+	}
+	if err := p.doStatus(ctx, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound}); err != nil {
+		return err
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       fmt.Sprintf("%s/%s@%s", req.Repository.Owner, req.Repository.Name, req.Name),
+		Operation: "delete",
+	})
+	return nil
+}
+
 // Commit writes file changes to a GitHub branch.
 func (p *GitHubProvider) Commit(ctx context.Context, req CommitRequest) (CommitResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
@@ -410,6 +433,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		Merged:           pr.Merged,
 		Mergeable:        pr.Mergeable,
 		Draft:            pr.Draft,
+		HeadBranch:       pr.Head.Ref,
 		HeadSHA:          pr.Head.SHA,
 		BaseSHA:          pr.Base.SHA,
 		BaseBranch:       pr.Base.Ref,

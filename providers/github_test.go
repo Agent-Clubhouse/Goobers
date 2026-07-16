@@ -292,8 +292,42 @@ func TestGitHubProviderErrorPaths(t *testing.T) {
 	if _, err := provider.CreateBranch(context.Background(), BranchRequest{Repository: repo}); err == nil {
 		t.Fatal("expected missing branch name to return an error")
 	}
+	if err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{Repository: repo}); err == nil {
+		t.Fatal("expected missing branch name to return an error")
+	}
 	if _, err := provider.Subscribe(context.Background(), TriggerSubscription{Kind: TriggerWebhook, Repository: repo}); err == nil {
 		t.Fatal("expected unsupported webhook subscription to return an error")
+	}
+}
+
+func TestGitHubProviderDeletesBranchAndRecordsMutation(t *testing.T) {
+	for _, status := range []int{http.StatusNoContent, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/repos/acme/app/git/refs/heads/goobers/implementation/run-1", func(w http.ResponseWriter, r *http.Request) {
+				assertMethod(t, r, http.MethodDelete)
+				w.WriteHeader(status)
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			recorder := &recordingRecorder{}
+			provider := NewGitHubProvider("token",
+				func(p *GitHubProvider) { p.BaseURL = server.URL },
+				WithMutationRecorder(recorder),
+			)
+			req := DeleteBranchRequest{
+				Repository: RepositoryRef{Owner: "acme", Name: "app"},
+				Name:       "goobers/implementation/run-1",
+			}
+			if err := provider.DeleteBranch(context.Background(), req); err != nil {
+				t.Fatalf("DeleteBranch returned error: %v", err)
+			}
+			ref, ok := recorder.last()
+			if !ok || ref.Ref != "acme/app@goobers/implementation/run-1" || ref.Operation != "delete" {
+				t.Fatalf("recorded ref = %+v (ok=%v), want branch deletion", ref, ok)
+			}
+		})
 	}
 }
 

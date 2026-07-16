@@ -256,6 +256,10 @@ func (f *fakeRepoProvider) CreateBranch(context.Context, providers.BranchRequest
 	return providers.BranchResult{}, nil
 }
 
+func (f *fakeRepoProvider) DeleteBranch(context.Context, providers.DeleteBranchRequest) error {
+	return nil
+}
+
 func (f *fakeRepoProvider) Commit(context.Context, providers.CommitRequest) (providers.CommitResult, error) {
 	return providers.CommitResult{}, nil
 }

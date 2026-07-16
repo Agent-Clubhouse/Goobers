@@ -17,6 +17,7 @@ type Provider interface {
 type RepoProvider interface {
 	CloneRepository(context.Context, CloneRequest) (CloneResult, error)
 	CreateBranch(context.Context, BranchRequest) (BranchResult, error)
+	DeleteBranch(context.Context, DeleteBranchRequest) error
 	Commit(context.Context, CommitRequest) (CommitResult, error)
 	OpenPullRequest(context.Context, PullRequestRequest) (PullRequestResult, error)
 	RequestReview(context.Context, ReviewRequest) error
