@@ -21,6 +21,12 @@ import (
 
 var prReferencePattern = regexp.MustCompile(`(?i)\bPR\s*#\s*([0-9]+)\b`)
 
+// hashReferencePattern additionally accepts the bare "#N" form ("with #597's
+// runs list --json path") — live merge-review verdicts reference the selected
+// PR this way inside finding messages, without the "PR" prefix
+// prReferencePattern requires.
+var hashReferencePattern = regexp.MustCompile(`#\s*([0-9]+)\b`)
+
 // prThreadComment is one comment on the PR thread — human/other-agent review
 // feedback, or a prior merge-review verdict comment — surfaced as context
 // for whatever addresses the PR next (design doc §5: pr-remediation reads
@@ -205,6 +211,26 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// verdictHasSubstantiveFindingForPR reports whether verdict carries a
+// substantive finding attributable to the selected PR itself. Attribution
+// rules, in order:
+//
+//   - A Location with no "PR #N" reference is file/line-scoped within the
+//     selected PR's own diff — counts (#525's retain-file-scoped rule).
+//   - A Location referencing the selected PR counts.
+//   - A Location referencing only sibling PRs is NOT automatically a
+//     sibling's own issue (#608): merge-review's cross-PR-conflict findings
+//     point Location at the sibling ("PR #598") while the Message states
+//     what the SELECTED PR is blocked on ("Reconcile ... with #597's runs
+//     list --json row shape"). If the Message references the selected PR —
+//     "PR #597" or the bare "#597" live verdicts actually use — the finding
+//     is about the selected PR's own mergeability and counts. Dropping
+//     these made rebase-pr report needsAgent:false on every cycle of a
+//     genuinely deadlocked PR, violating its "a clean rebase never
+//     suppresses a known substantive finding" contract.
+//   - Otherwise the finding describes a sibling's own issue and is excluded
+//     (#525: a plain-rebase PR must not be misrouted into agentic
+//     remediation by findings that aren't about it).
 func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int) bool {
 	if verdict == nil {
 		return false
@@ -214,14 +240,27 @@ func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int) boo
 		if finding.Class != apiv1.FindingSubstantive {
 			continue
 		}
-		matches := prReferencePattern.FindAllStringSubmatch(finding.Location, -1)
-		if len(matches) == 0 {
+		locationRefs := prReferencePattern.FindAllStringSubmatch(finding.Location, -1)
+		if len(locationRefs) == 0 {
 			return true
 		}
-		for _, match := range matches {
-			if match[1] == target {
-				return true
-			}
+		if referencesTarget(locationRefs, target) {
+			return true
+		}
+		if referencesTarget(hashReferencePattern.FindAllStringSubmatch(finding.Message, -1), target) {
+			return true
+		}
+	}
+	return false
+}
+
+// referencesTarget reports whether any captured PR-number reference equals
+// target (matches come from prReferencePattern or hashReferencePattern, both
+// of which capture the number as the first submatch).
+func referencesTarget(matches [][]string, target string) bool {
+	for _, match := range matches {
+		if match[1] == target {
+			return true
 		}
 	}
 	return false
