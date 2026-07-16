@@ -545,6 +545,21 @@ func (r *Runner) taskOutcome(jr *journal.Run, machine *workflow.Machine, t apiv1
 	case apiv1.ResultBlocked:
 		return "", Result{Phase: journal.PhaseRunning, FinalState: t.Name, Steps: steps}, false, nil
 	case apiv1.ResultFailure:
+		// #415: a stage that self-identifies a non-retryable business
+		// disposition — status:failure with error.retryable==false and a
+		// recognized escalate code (ISSUE_OVER_SCOPE / NEEDS_DECOMPOSITION) —
+		// routes straight to @escalate after this one attempt, bypassing the
+		// Next gate and its repass loop. Without it, an un-scopeable issue the
+		// implementer correctly rejected on attempt 1 re-enters the
+		// reviewer→implement repass loop and re-derives the identical
+		// conclusion until the repass budget exhausts, terminating `aborted`
+		// instead of the `escalated` a human / a future decomposition workflow
+		// selects on. Placed ahead of the gate-routing branch so the
+		// disposition wins over the ordinary "failure into the gate" path.
+		if isNonRetryableEscalation(result.Error) {
+			res, err = r.finish(jr, journal.PhaseEscalated, t.Name, steps)
+			return "", res, false, err
+		}
 		if _, isGate := machine.Gate(t.Next); t.Next != "" && isGate {
 			return t.Next, Result{}, true, nil
 		}
@@ -914,6 +929,29 @@ func errorDetailFrom(e *apiv1.ErrorInfo) *journal.ErrorDetail {
 	return &journal.ErrorDetail{Code: e.Code, Message: e.Message}
 }
 
+// escalateErrorCodes are the recognized non-retryable business dispositions an
+// agentic stage can emit to route its run straight to @escalate (#415) rather
+// than into the Next gate's repass loop. Each names a conclusion that
+// re-running the stage can only re-derive — the item needs a human or a future
+// decomposition workflow, not another implement attempt. Kept as a
+// runner-owned policy set (the runner owns status→transition routing), not a
+// schema enum, so recognizing a new code never reopens the closed envelope
+// contract.
+var escalateErrorCodes = map[string]bool{
+	"ISSUE_OVER_SCOPE":    true,
+	"NEEDS_DECOMPOSITION": true,
+}
+
+// isNonRetryableEscalation reports whether a stage failure is a non-retryable
+// business disposition the runner escalates on sight (#415): error.retryable
+// is false AND error.code is a recognized escalate code. A failure that is
+// retryable, or that carries an absent/unrecognized code, is not escalated
+// here — it follows the ordinary failure route (into the Next gate, else
+// PhaseFailed). nil in → false (no error detail, nothing to route on).
+func isNonRetryableEscalation(e *apiv1.ErrorInfo) bool {
+	return e != nil && !e.Retryable && escalateErrorCodes[e.Code]
+}
+
 // evaluateGate dispatches one gate attempt through gateEval (internal/gate,
 // #20), which owns branch resolution, bounded repass, escalation override, and
 // gate.evaluated journaling — this method does none of that itself.
@@ -953,6 +991,13 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	// agentic gate with no committed change, passes "" through to Evaluate,
 	// which treats that as "no digest to compare" and never short-circuits.
 	var diffDigest string
+	// emptyDiff (#415) is set below only for an agentic gate whose AGENTIC
+	// subject stage committed no change — recordReviewerDiff returns a nil
+	// pointer for a zero-length diff. Passed to Evaluate so the reviewer gate
+	// fast-fails that empty diff on review-1 instead of looping repasses over
+	// it. Scoped to an agentic subject so a deterministic subject that is not
+	// expected to commit (e.g. merge-review) still gets a real reviewer pass.
+	var emptyDiff bool
 	var env apiv1.InvocationEnvelope
 	if g.Evaluator == apiv1.EvaluatorAutomated {
 		env = apiv1.InvocationEnvelope{
@@ -1002,6 +1047,17 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 				if ptr.Artifact != nil {
 					diffDigest = ptr.Artifact.Digest
 				}
+			} else if subjectTask, ok := in.Machine.Task(subjectStage); ok && subjectTask.Type == apiv1.TaskAgentic {
+				// A nil pointer (no error — that returned early above) means the
+				// run branch has a zero-length diff. Fast-fail it (#415) only
+				// when the subject stage is AGENTIC: an agent whose deliverable
+				// is its committed work produced nothing to review, so a repass
+				// can only re-observe the same emptiness. A deterministic
+				// subject (e.g. merge-review's gather-sibling-context, whose
+				// reviewer judges PRs from its outputs, not a run-branch commit)
+				// is never expected to commit — its empty diff is normal, and
+				// the reviewer must still run against its actual evidence.
+				emptyDiff = true
 			}
 		}
 	}
@@ -1027,7 +1083,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: ag}
 	}
 
-	result, err = gateEval.Evaluate(ctx, g, env, subjectStage, subjectResult, diffDigest)
+	result, err = gateEval.Evaluate(ctx, g, env, subjectStage, subjectResult, diffDigest, emptyDiff)
 	if err != nil {
 		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, err)
 		span.Fail(err)

@@ -112,7 +112,7 @@ func TestFullRepassFixture(t *testing.T) {
 	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: string(subject.Status)}}
 
 	// 1st automated evaluation: fail -> repass to implement.
-	r1, err := ev.Evaluate(context.Background(), autoGate, env, "implement", subject, "")
+	r1, err := ev.Evaluate(context.Background(), autoGate, env, "implement", subject, "", false)
 	if err != nil {
 		t.Fatalf("Evaluate #1: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestFullRepassFixture(t *testing.T) {
 
 	// "implement" repasses; this time it succeeds.
 	env.Inputs[InputKeyStatus] = string(apiv1.ResultSuccess)
-	r2, err := ev.Evaluate(context.Background(), autoGate, env, "implement", apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, "")
+	r2, err := ev.Evaluate(context.Background(), autoGate, env, "implement", apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, "", false)
 	if err != nil {
 		t.Fatalf("Evaluate #2: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestFullRepassFixture(t *testing.T) {
 
 	// Reviewer gate: needs-changes -> repass to implement.
 	rev.reviewVerdict = apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "please fix X"}
-	r3, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "")
+	r3, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false)
 	if err != nil {
 		t.Fatalf("Evaluate #3: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestFullRepassFixture(t *testing.T) {
 
 	// Reviewer gate: approve -> complete.
 	rev.reviewVerdict = apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "looks good"}
-	r4, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "")
+	r4, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false)
 	if err != nil {
 		t.Fatalf("Evaluate #4: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestEvaluateSetsVerdictArtifactForAgenticGate(t *testing.T) {
 	run := newTestJournal(t)
 	ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: rev}, Journal: run}
 
-	r, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "")
+	r, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestEvaluateSetsVerdictArtifactForAgenticGate(t *testing.T) {
 		}
 		auto := &fakeAutomated{outcomes: []string{OutcomeFail}}
 		ev := &Evaluator{Automated: auto, Journal: newTestJournal(t)}
-		r, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}, "implement", apiv1.ResultEnvelope{}, "")
+		r, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}, "implement", apiv1.ResultEnvelope{}, "", false)
 		if err != nil {
 			t.Fatalf("Evaluate: %v", err)
 		}
@@ -229,7 +229,7 @@ func TestEvaluateSetsVerdictArtifactForAgenticGate(t *testing.T) {
 	t.Run("nil when journaling is disabled", func(t *testing.T) {
 		rev := &fakeGoober{reviewVerdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges}}
 		ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: rev}}
-		r, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "")
+		r, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false)
 		if err != nil {
 			t.Fatalf("Evaluate: %v", err)
 		}
@@ -263,7 +263,7 @@ func TestEvaluatorEscalatesOnRepassBudgetExhaustion(t *testing.T) {
 		{"implement", false},      // attempt 2 <= budget(2)
 		{wf.TargetEscalate, true}, // attempt 3 > budget(2)
 	} {
-		r, err := ev.Evaluate(context.Background(), g, env, "implement", subject, "")
+		r, err := ev.Evaluate(context.Background(), g, env, "implement", subject, "", false)
 		if err != nil {
 			t.Fatalf("Evaluate #%d: %v", i, err)
 		}
@@ -305,7 +305,7 @@ func TestEvaluatorEscalatesOnDuplicateDiffWithoutReReview(t *testing.T) {
 	ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: rev}, MaxRepasses: 3, Journal: run}
 
 	// 1st attempt: a real diff, never seen before — reviewer is consulted.
-	r1, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:aaaa")
+	r1, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:aaaa", false)
 	if err != nil {
 		t.Fatalf("Evaluate #1: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestEvaluatorEscalatesOnDuplicateDiffWithoutReReview(t *testing.T) {
 	// 2nd attempt: the implementer produced the exact same diff again (the
 	// #316 failure mode) — Evaluate must detect the repeat, escalate, and
 	// skip the reviewer call entirely.
-	r2, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:aaaa")
+	r2, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:aaaa", false)
 	if err != nil {
 		t.Fatalf("Evaluate #2: %v", err)
 	}
@@ -349,6 +349,52 @@ func TestEvaluatorEscalatesOnDuplicateDiffWithoutReReview(t *testing.T) {
 	}
 }
 
+// TestEvaluatorFastFailsEmptyDiffOnReviewOne is issue #415's reviewer sibling:
+// when the implement stage commits nothing (an empty diff — e.g. it produced
+// no change on an over-scope probe), the reviewer gate must fast-`fail` on the
+// FIRST review — resolving the gate's own `fail` branch, not escalating — and
+// must never invoke the (real, costly) reviewer for a diff that offers nothing
+// to evaluate. Without it, an empty diff draws two needs-changes repasses
+// before the #316 identical-diff guard finally escalates.
+func TestEvaluatorFastFailsEmptyDiffOnReviewOne(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "reviewgate",
+		Evaluator: apiv1.EvaluatorAgentic,
+		Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+		Branches: map[string]string{
+			string(apiv1.VerdictPass):         wf.TerminalComplete,
+			string(apiv1.VerdictNeedsChanges): "implement",
+			string(apiv1.VerdictFail):         wf.TargetAbort,
+		},
+	}
+	// The fake would PASS if consulted — so a `fail` outcome can only come from
+	// the empty-diff short-circuit, never from the reviewer.
+	rev := &fakeGoober{reviewVerdict: apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "would approve"}}
+	run := newTestJournal(t)
+	ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: rev}, MaxRepasses: 3, Journal: run}
+
+	// emptyDiff=true, diffDigest="" — the run branch carries no committed change.
+	r, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", true)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if r.Target != wf.TargetAbort || r.Outcome != string(apiv1.VerdictFail) {
+		t.Fatalf("r = %+v, want outcome=fail target=%s (the gate's own fail branch, review-1)", r, wf.TargetAbort)
+	}
+	if r.Escalated || r.DuplicateDiff {
+		t.Fatalf("r = %+v, want escalated=false duplicateDiff=false — an empty diff fails on review-1, it does not escalate", r)
+	}
+	if r.Attempt != 1 {
+		t.Fatalf("r.Attempt = %d, want 1 (fails on the first review, no repass loop)", r.Attempt)
+	}
+	if rev.reviewCalls != 0 {
+		t.Fatalf("reviewCalls = %d, want 0 (the reviewer must never be invoked for an empty diff)", rev.reviewCalls)
+	}
+	if r.Verdict == nil || r.Verdict.Decision != apiv1.VerdictFail {
+		t.Fatalf("r.Verdict = %+v, want a synthesized fail verdict explaining the empty diff", r.Verdict)
+	}
+}
+
 // TestEvaluatorDoesNotEscalateOnDifferentDiff is the control for the
 // duplicate-diff test above: consecutive attempts with genuinely different
 // diffs are ordinary repass activity, not non-convergence, and must not
@@ -368,10 +414,10 @@ func TestEvaluatorDoesNotEscalateOnDifferentDiff(t *testing.T) {
 	rev := &fakeGoober{reviewVerdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges}}
 	ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: rev}, MaxRepasses: 3, Journal: newTestJournal(t)}
 
-	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:aaaa"); err != nil {
+	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:aaaa", false); err != nil {
 		t.Fatalf("Evaluate #1: %v", err)
 	}
-	r2, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:bbbb")
+	r2, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:bbbb", false)
 	if err != nil {
 		t.Fatalf("Evaluate #2: %v", err)
 	}
@@ -407,7 +453,7 @@ func TestEvaluatorHonorsSeededRepassCount(t *testing.T) {
 	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}
 	subject := apiv1.ResultEnvelope{Status: apiv1.ResultFailure}
 
-	r, err := ev.Evaluate(context.Background(), g, env, "implement", subject, "")
+	r, err := ev.Evaluate(context.Background(), g, env, "implement", subject, "", false)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -427,7 +473,7 @@ func TestEvaluatorHonorsSeededRepassCount(t *testing.T) {
 	// MaxRepasses or the fixture, is what drove the escalation.
 	freshAuto := &fakeAutomated{outcomes: []string{OutcomeFail}}
 	fresh := &Evaluator{Automated: freshAuto, MaxRepasses: 2, Journal: newTestJournal(t)}
-	fr, err := fresh.Evaluate(context.Background(), g, env, "implement", subject, "")
+	fr, err := fresh.Evaluate(context.Background(), g, env, "implement", subject, "", false)
 	if err != nil {
 		t.Fatalf("Evaluate (fresh): %v", err)
 	}
@@ -445,7 +491,7 @@ func TestEvaluatorNeverSilentlyPasses(t *testing.T) {
 	}
 	auto := &fakeAutomated{outcomes: []string{OutcomeFail}}
 	ev := &Evaluator{Automated: auto}
-	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}, "implement", apiv1.ResultEnvelope{}, ""); err == nil {
+	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}, "implement", apiv1.ResultEnvelope{}, "", false); err == nil {
 		t.Fatal("want error when the outcome has no defined branch (GT-002)")
 	}
 }
@@ -453,19 +499,19 @@ func TestEvaluatorNeverSilentlyPasses(t *testing.T) {
 func TestEvaluatorHumanGateNotSupportedAtV0(t *testing.T) {
 	g := apiv1.Gate{Name: "approve", Evaluator: apiv1.EvaluatorHuman, Human: &apiv1.HumanGate{}, Branches: map[string]string{"approved": "done"}}
 	ev := &Evaluator{}
-	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, ""); err == nil {
+	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false); err == nil {
 		t.Fatal("want error: human gates are not supported at V0")
 	}
 }
 
 func TestEvaluatorRequiresConfiguredDependency(t *testing.T) {
 	autoGate := apiv1.Gate{Name: "g", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "status-equals"}, Branches: map[string]string{OutcomePass: ""}}
-	if _, err := (&Evaluator{}).Evaluate(context.Background(), autoGate, apiv1.InvocationEnvelope{}, "s", apiv1.ResultEnvelope{}, ""); err == nil {
+	if _, err := (&Evaluator{}).Evaluate(context.Background(), autoGate, apiv1.InvocationEnvelope{}, "s", apiv1.ResultEnvelope{}, "", false); err == nil {
 		t.Fatal("want error when Automated is not configured")
 	}
 
 	agenticGate := apiv1.Gate{Name: "g", Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Goober: "r"}, Branches: map[string]string{"pass": ""}}
-	if _, err := (&Evaluator{}).Evaluate(context.Background(), agenticGate, apiv1.InvocationEnvelope{}, "s", apiv1.ResultEnvelope{}, ""); err == nil {
+	if _, err := (&Evaluator{}).Evaluate(context.Background(), agenticGate, apiv1.InvocationEnvelope{}, "s", apiv1.ResultEnvelope{}, "", false); err == nil {
 		t.Fatal("want error when Reviewer is not configured")
 	}
 }
