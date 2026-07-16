@@ -6,9 +6,11 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 type statusJSONSummary struct {
@@ -23,13 +25,35 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit run summaries as JSON")
+	phaseFilter := fs.String("phase", "", "filter by comma-separated run phases")
+	workflowFilter := fs.String("workflow", "", "filter by workflow name")
+	limit := fs.Int("limit", 0, "maximum number of runs to show (default: all)")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers status [--json] [path]\n\n"+
+		pf(stderr, "Usage: goobers status [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [path]\n\n"+
 			"List runs under an instance's runs/ directory with their current phase\n"+
 			"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *limit < 0 {
+		pf(stderr, "error: --limit must be non-negative\n")
+		return 2
+	}
+
+	phases := make(map[journal.RunPhase]struct{})
+	if *phaseFilter != "" {
+		for _, value := range strings.Split(*phaseFilter, ",") {
+			phase := journal.RunPhase(strings.TrimSpace(value))
+			switch phase {
+			case journal.PhaseRunning, journal.PhaseCompleted, journal.PhaseFailed,
+				journal.PhaseAborted, journal.PhaseEscalated:
+				phases[phase] = struct{}{}
+			default:
+				pf(stderr, "error: invalid phase %q (want running, completed, failed, aborted, or escalated)\n", value)
+				return 2
+			}
+		}
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
@@ -50,7 +74,25 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	if len(phases) > 0 || *workflowFilter != "" {
+		filtered := runs[:0]
+		for _, run := range runs {
+			if *workflowFilter != "" && run.Workflow != *workflowFilter {
+				continue
+			}
+			if len(phases) > 0 {
+				if _, ok := phases[run.Phase]; !ok {
+					continue
+				}
+			}
+			filtered = append(filtered, run)
+		}
+		runs = filtered
+	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].StartedAt.Before(runs[j].StartedAt) })
+	if *limit > 0 && len(runs) > *limit {
+		runs = runs[len(runs)-*limit:]
+	}
 	if *jsonOutput {
 		summaries := make([]statusJSONSummary, len(runs))
 		for i, r := range runs {
