@@ -94,19 +94,36 @@ lifting the effective ceiling from "first review must be perfect" to "first or s
 
 ### 3.2 L1 — thread `selectedNumber` through `merge-review`
 
-**One-line fix; unblocks the entire V0.5 lifecycle.** `merge-review`'s decider reaches
-a correct `decision:pass` but `apply-verdict` aborts with `selectedNumber is required`
-because `gather-sibling-context.expectedOutputs`
-(`selfhost/gaggles/goobers/workflows/merge-review.yaml:64-66`) declares only the two
-SHAs, omitting `selectedNumber` — which its result JSON **already emits**, and which
-`apply-verdict.inputsFrom` (`:74-82`) consumes. Add `selectedNumber` to
-`expectedOutputs`. Prerequisite for every label-gated path (L7, L5, pr-remediation).
+**Small fix; unblocks the entire V0.5 lifecycle.** `merge-review`'s decider reaches a
+correct `decision:pass` but `apply-verdict` aborts with `selectedNumber is required`.
+Prerequisite for every label-gated path (L7, L5, pr-remediation).
 
-**Latent secondary (fold in):** type inconsistency — `pr-select` emits `"number":"403"`
-(string), `gather-sibling-context` emits `"selectedNumber":403` (int). Normalize so the
-handoff is a single type. **Test debt this exposed:** V0.5 has no poll→select→review→
-apply integration test; unit tests that stub stage IO pass while the wired workflow is
-100% broken. The fix must add that end-to-end test.
+**Root cause (corrected 2026-07-15, per Dev-3's trace on #413 — this doc's first draft
+mis-ranked it).** The **load-bearing fix is stringifying `selectedNumber` end-to-end**,
+*not* the `expectedOutputs` declaration:
+
+- `ExpectedOutputs` is **inert for threading** — it is declared only as a
+  gate-validatable postcondition (`api/v1alpha1/workflow_types.go:131`, TSK-003); no
+  runner path consumes it for the result-file→`Outputs` merge. Adding `selectedNumber`
+  to it alone would **not** fix L1.
+- `internal/executor`'s `InputResultFile` convention only threads **string-valued**
+  top-level result-file keys into a downstream stage's `GOOBERS_INPUT_*` env var — a
+  numeric value survives into the run's `Outputs` map but is **silently dropped** at
+  that step. `gather-sibling-context` emits `selectedNumber` as a native int
+  (`403`), so it never reaches `apply-verdict.inputsFrom`
+  (`selfhost/gaggles/goobers/workflows/merge-review.yaml:74-82`). The **sibling** stage
+  `gather-pr-context` already stringifies it *for this exact reason*
+  (`cmd/goobers/gatherprcontext.go:164-171`); `gather-sibling-context`'s failure to do
+  so is the asymmetry that is the bug.
+
+**Fix (three parts):** (1) emit `selectedNumber` as a **string** in
+`gather-sibling-context` (matching `pr-select`'s `strconv.Itoa` + `apply-verdict`'s
+`Atoi`) — the actual fix; (2) add it to `gather-sibling-context.expectedOutputs`
+(`merge-review.yaml:64-66`) as postcondition hygiene / AC; (3) add the
+poll→select→gather→review→apply **integration test** asserting a label is *actually
+applied*. **Test debt this exposed:** V0.5 had no such end-to-end test — unit tests that
+stub stage IO passed while the wired workflow was 100% broken. General gotcha: **any**
+non-string value threaded through `Task.InputsFrom` hits this same silent drop.
 
 ### 3.3 L7 — one eligibility lifecycle the selection query trusts
 
