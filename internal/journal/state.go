@@ -35,6 +35,14 @@ type State struct {
 	// MachineState is the current workflow state-machine node (the state name
 	// the runner resumes at). Empty once the run is terminal.
 	MachineState string `json:"machineState,omitempty"`
+	// Reason is the human-facing explanation for a terminal run, mirrored
+	// from the run.finished event's own Error.Message when the terminal
+	// transition carried one (e.g. a WF-016 resume-refusal's digest-mismatch
+	// text, #520) — empty for an ordinary business-outcome terminal with no
+	// error attached. Durable and grep-able directly in state.json so an
+	// operator distinguishes WHY a run stopped without reading the full
+	// event log. EXCLUDED from conformance, same as the rest of State.
+	Reason string `json:"reason,omitempty"`
 	// LastSeq is the seq of the last event durably committed before this
 	// checkpoint was written. Recovery uses it to detect events that landed in
 	// the journal after the last checkpoint.
