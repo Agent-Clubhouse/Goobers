@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -15,8 +16,9 @@ import (
 // scheduling history the same way they read runs.
 //
 // Unlike a Run, an InstanceLog has no run.yaml, state.json, or artifacts — it is
-// a single long-lived append-only log for the daemon's lifetime, opened once
-// when the instance starts (e.g. by `goobers up`) rather than once per run.
+// a single long-lived append-only log for the instance's lifetime. The daemon
+// keeps one handle open while stage subprocesses may open independent handles;
+// appends are serialized across all of them.
 type InstanceLog struct {
 	dir      string
 	scrubber Scrubber
@@ -38,23 +40,30 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 		return nil, RecoverReport{}, fmt.Errorf("journal: create instance log dir: %w", err)
 	}
 
-	path := filepath.Join(dir, fileEvents)
-	events, tornBytes, err := readEvents(path)
+	lock, err := acquireInstanceLogLock(dir)
 	if err != nil {
 		return nil, RecoverReport{}, err
 	}
-	report := RecoverReport{TornBytes: tornBytes}
-	if len(events) > 0 {
-		report.LastSeq = events[len(events)-1].Seq
+
+	path := filepath.Join(dir, fileEvents)
+	events, tornBytes, err := readEvents(path)
+	if err != nil {
+		releaseInstanceLogLock(lock)
+		return nil, RecoverReport{}, err
 	}
+	report := RecoverReport{TornBytes: tornBytes}
+	report.LastSeq = highestEventSeq(events)
 	if err := truncateTornTail(path, tornBytes); err != nil {
+		releaseInstanceLogLock(lock)
 		return nil, RecoverReport{}, err
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
+		releaseInstanceLogLock(lock)
 		return nil, RecoverReport{}, fmt.Errorf("journal: open instance log: %w", err)
 	}
+	releaseInstanceLogLock(lock)
 	l := &InstanceLog{dir: dir, scrubber: cfg.scrubber, now: cfg.now, file: f, seq: report.LastSeq}
 
 	if tornBytes > 0 {
@@ -80,7 +89,32 @@ func (l *InstanceLog) Append(ev Event) error {
 	if l.closed {
 		return ErrClosed
 	}
-	_, err := appendEvent(l.file, &l.seq, l.scrubber, l.now, ev)
+
+	lock, err := acquireInstanceLogLock(l.dir)
+	if err != nil {
+		return err
+	}
+	defer releaseInstanceLogLock(lock)
+
+	path := filepath.Join(l.dir, fileEvents)
+	events, tornBytes, err := readEvents(path)
+	if err != nil {
+		return err
+	}
+	l.seq = highestEventSeq(events)
+	if tornBytes > 0 {
+		if err := truncateTornTail(path, tornBytes); err != nil {
+			return err
+		}
+		if _, err := appendEvent(l.file, &l.seq, l.scrubber, l.now, Event{
+			Type:   EventRepaired,
+			Runner: map[string]any{"discardedBytes": tornBytes},
+		}); err != nil {
+			return err
+		}
+	}
+
+	_, err = appendEvent(l.file, &l.seq, l.scrubber, l.now, ev)
 	return err
 }
 
@@ -100,4 +134,34 @@ func (l *InstanceLog) Close() error {
 func ReadInstanceLog(dir string) ([]Event, error) {
 	events, _, err := readEvents(filepath.Join(dir, fileEvents))
 	return events, err
+}
+
+func highestEventSeq(events []Event) uint64 {
+	var highest uint64
+	for _, event := range events {
+		if event.Seq > highest {
+			highest = event.Seq
+		}
+	}
+	return highest
+}
+
+func acquireInstanceLogLock(dir string) (*os.File, error) {
+	f, err := os.OpenFile(filepath.Join(dir, fileLock), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("journal: open instance log lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("journal: acquire instance log lock: %w", err)
+	}
+	return f, nil
+}
+
+func releaseInstanceLogLock(f *os.File) {
+	if f == nil {
+		return
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
 }

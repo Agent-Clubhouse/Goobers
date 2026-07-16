@@ -2,8 +2,10 @@ package journal
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/goobers/goobers/api/validate"
@@ -15,6 +17,7 @@ func TestInstanceLogRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenInstanceLog: %v", err)
 	}
+
 	if report.Repaired {
 		t.Fatalf("fresh log should not report repair: %+v", report)
 	}
@@ -67,6 +70,54 @@ func TestInstanceLogRoundTrip(t *testing.T) {
 	events, _ = ReadInstanceLog(dir)
 	if len(events) != 6 || events[5].Seq != 6 {
 		t.Fatalf("seq did not continue across reopen: %+v", events)
+	}
+}
+
+func TestInstanceLogSerializesIndependentWriters(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	first, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("OpenInstanceLog first writer: %v", err)
+	}
+	defer func() { _ = first.Close() }()
+	second, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("OpenInstanceLog second writer: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+
+	const perWriter = 50
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i, log := range []*InstanceLog{first, second} {
+		wg.Add(1)
+		go func(writer int, log *InstanceLog) {
+			defer wg.Done()
+			for n := 0; n < perWriter; n++ {
+				if err := log.Append(Event{Type: EventTriggerFired, Workflow: fmt.Sprintf("writer-%d", writer)}); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(i, log)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("Append: %v", err)
+	}
+
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatalf("ReadInstanceLog: %v", err)
+	}
+	if len(events) != 2*perWriter {
+		t.Fatalf("events = %d, want %d", len(events), 2*perWriter)
+	}
+	for i, ev := range events {
+		if ev.Seq != uint64(i+1) {
+			t.Fatalf("event %d seq = %d, want %d", i, ev.Seq, i+1)
+		}
 	}
 }
 

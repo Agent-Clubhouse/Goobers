@@ -298,6 +298,9 @@ func gateRunnerJSON(ev journalEvent) (sql.NullString, error) {
 // all). Idempotent (delete-then-insert over the whole table, since the
 // instance log is a single stream, not per-run), so it's safe to call after
 // every dispatch tick (incremental) or as part of Rebuild (full rescan).
+// Legacy logs may contain a duplicate seq from writers that raced before
+// instance-journal appends were cross-process serialized; the first record at
+// that seq wins so one historical collision cannot poison every future ingest.
 func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	events, err := readInstanceEvents(schedulerDir)
 	if err != nil {
@@ -318,7 +321,8 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 		case eventTriggerFired, eventTickSkipped, eventClaimAcquired, eventClaimReleased, eventRunStarted, eventRunFinished:
 			if _, err := tx.Exec(`
 				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(seq) DO NOTHING`,
 				ev.Seq, ev.Type, nullIfEmpty(ev.Workflow), nullIfEmpty(ev.RunID), nullIfEmpty(ev.Reason), nullIfEmpty(ev.Status), formatTime(ev.Time)); err != nil {
 				return fmt.Errorf("rollup: insert scheduler_event seq %d: %w", ev.Seq, err)
 			}
