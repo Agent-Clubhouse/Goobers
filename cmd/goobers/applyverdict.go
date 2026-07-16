@@ -113,8 +113,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})
 	if err != nil {
-		pf(stderr, "error: list pull requests: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "list pull requests", err, "")
 	}
 	var current *providers.PullRequestSummary
 	for i := range prs {
@@ -149,8 +148,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		AddLabels:  []string{label},
 		Comment:    comment,
 	}); err != nil {
-		pf(stderr, "error: apply verdict to PR #%d: %v\n", selectedNumber, err)
-		return 1
+		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, "")
 	}
 
 	pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, verdict.Decision)

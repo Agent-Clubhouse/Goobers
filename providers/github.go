@@ -30,6 +30,9 @@ type GitHubProvider struct {
 	rateObserver RateLimitObserver
 	// maxRetries bounds rate-limit retries on a single request.
 	maxRetries int
+	// maxRateLimitWait bounds the total time one request spends sleeping on
+	// rate-limit backoff before giving up with a typed RateLimitError (#614).
+	maxRateLimitWait time.Duration
 	// now and sleep are injectable for deterministic rate-limit tests.
 	now   func() time.Time
 	sleep func(context.Context, time.Duration) error
@@ -38,11 +41,12 @@ type GitHubProvider struct {
 // NewGitHubProvider constructs a GitHub provider with optional overrides.
 func NewGitHubProvider(token string, opts ...func(*GitHubProvider)) *GitHubProvider {
 	p := &GitHubProvider{
-		BaseURL:    "https://api.github.com",
-		Token:      token,
-		maxRetries: defaultRateLimitRetries,
-		now:        time.Now,
-		sleep:      contextSleep,
+		BaseURL:          "https://api.github.com",
+		Token:            token,
+		maxRetries:       defaultRateLimitRetries,
+		maxRateLimitWait: defaultRateLimitMaxWait,
+		now:              time.Now,
+		sleep:            contextSleep,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -79,6 +83,15 @@ func WithRateLimitObserver(observer RateLimitObserver) func(*GitHubProvider) {
 // retried before the error is surfaced.
 func WithMaxRateLimitRetries(n int) func(*GitHubProvider) {
 	return func(p *GitHubProvider) { p.maxRetries = n }
+}
+
+// WithRateLimitMaxWait overrides the total time one request may spend
+// sleeping on rate-limit backoff (#614) before giving up with a typed
+// RateLimitError. Keep it under the invoking stage's own timeout: a wait
+// that outlives the stage gets the whole process killed as "timeout",
+// masking the rate-limit cause.
+func WithRateLimitMaxWait(d time.Duration) func(*GitHubProvider) {
+	return func(p *GitHubProvider) { p.maxRateLimitWait = d }
 }
 
 // Kind returns the GitHub provider kind.
@@ -1135,11 +1148,20 @@ func (p *GitHubProvider) do(ctx context.Context, method, endpoint string, body i
 
 // send issues one GitHub request, retrying transient failures — rate limits,
 // 5xx server errors, and transport errors — with bounded backoff (up to
-// p.maxRetries). It returns the final response for the caller to consume and
-// close; a nil error guarantees a non-nil response. Callers that only need a
-// decoded body should use doStatus; getAllPages uses send directly so it can
-// read the Link header for pagination (#139).
+// p.maxRetries attempts and, for rate limits, up to maxRateLimitWait total
+// sleep, honoring X-RateLimit-Reset/Retry-After). It returns the final
+// response for the caller to consume and close; a nil error guarantees a
+// non-nil response. A rate limit that cannot be absorbed within those
+// budgets returns a typed *RateLimitError (#614) rather than the response,
+// so no caller ever folds it into a generic non-2xx string error. Callers
+// that only need a decoded body should use doStatus; getAllPages uses send
+// directly so it can read the Link header for pagination (#139).
 func (p *GitHubProvider) send(ctx context.Context, method, endpoint string, body interface{}) (*http.Response, error) {
+	maxWait := p.maxRateLimitWait
+	if maxWait <= 0 {
+		maxWait = defaultRateLimitMaxWait
+	}
+	var rateLimitWaited time.Duration
 	for attempt := 0; ; attempt++ {
 		req, err := newJSONRequest(ctx, method, endpoint, body)
 		if err != nil {
@@ -1167,13 +1189,24 @@ func (p *GitHubProvider) send(ctx context.Context, method, endpoint string, body
 			}
 			return nil, fmt.Errorf("send request: %w", err)
 		}
-		if isRateLimited(resp) && attempt < p.maxRetries {
+		if isRateLimited(resp) {
 			wait, ev := p.rateLimitPlan(resp, endpoint, attempt)
 			_ = resp.Body.Close()
+			if attempt >= p.maxRetries || rateLimitWaited+wait > maxWait {
+				// Waiting can't help within this request's budget — the
+				// retry allowance is spent, or the reset is further out than
+				// the wait budget allows (#614). Fail FAST with the typed
+				// error so the caller (and the run journal) sees "rate
+				// limited, resets at <t>" instead of a generic 403 string,
+				// and no time is burned sleeping toward a wait that cannot
+				// reach the reset anyway.
+				return nil, rateLimitErrorFrom(ev)
+			}
 			p.observeRateLimit(ctx, ev)
 			if err := p.sleep(ctx, wait); err != nil {
 				return nil, err
 			}
+			rateLimitWaited += wait
 			continue
 		}
 		if resp.StatusCode >= 500 && attempt < p.maxRetries {

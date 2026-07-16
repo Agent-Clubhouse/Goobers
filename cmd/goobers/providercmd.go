@@ -1,9 +1,13 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
@@ -115,6 +119,48 @@ func providerRunContext() (runID, workflow string, err error) {
 		return "", "", fmt.Errorf("GOOBERS_WORKFLOW is not set — this subcommand must run as a workflow stage")
 	}
 	return runID, workflow, nil
+}
+
+// failProviderStage reports a stage-fatal provider error: it prints the same
+// "error: <what>: <err>" line the call sites used to (unchanged operator UX)
+// and returns 1. Additionally, when err is a typed rate-limit error (#614),
+// it writes the declared result file with the structured errorCode fields
+// internal/executor/shell.go lifts into the stage's ErrorInfo — so a
+// quota-exhausted tick journals as github_rate_limited, with the reset time
+// in the message, instead of the missing_result_file that used to bury the
+// real cause under a raw-stderr archaeology exercise. resultFileDefault is
+// the command's own default result-file name (the same value its success
+// path passes to providerInput("resultFile", ...)); a command with no
+// declared or default result file writes nothing and keeps plain
+// nonzero_exit semantics, since shell.go has nowhere fail-closed to read a
+// structured signal from.
+func failProviderStage(stderr io.Writer, what string, err error, resultFileDefault string) int {
+	pf(stderr, "error: %s: %v\n", what, err)
+	var rl *providers.RateLimitError
+	if !errors.As(err, &rl) {
+		return 1
+	}
+	resultFile := providerInput("resultFile", resultFileDefault)
+	if resultFile == "" {
+		return 1
+	}
+	payload := map[string]interface{}{
+		executor.OutputErrorCode:      providers.ErrorCodeRateLimited,
+		executor.OutputErrorMessage:   fmt.Sprintf("%s: %v", what, err),
+		executor.OutputErrorRetryable: true,
+	}
+	if !rl.Reset.IsZero() {
+		payload["rateLimitReset"] = rl.Reset.UTC().Format(time.RFC3339)
+	}
+	data, merr := json.Marshal(payload)
+	if merr != nil {
+		pf(stderr, "warning: marshal rate-limit error result: %v\n", merr)
+		return 1
+	}
+	if werr := os.WriteFile(resultFile, data, 0o644); werr != nil {
+		pf(stderr, "warning: write rate-limit error result %s: %v\n", resultFile, werr)
+	}
+	return 1
 }
 
 // withClaimLock serializes fn against every other process (a concurrent

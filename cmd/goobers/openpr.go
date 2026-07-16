@@ -108,8 +108,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	result, err := provider.OpenPullRequest(context.Background(), prReq)
 	if err != nil {
-		pf(stderr, "error: open pull request: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "open pull request", err, "pr-result.json")
 	}
 
 	resultFile := providerInput("resultFile", "pr-result.json")
