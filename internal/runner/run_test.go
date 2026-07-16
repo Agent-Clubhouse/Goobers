@@ -2303,7 +2303,7 @@ func TestRunnerResumeAtGateEvaluatesRealSubject(t *testing.T) {
 // caller happens to pass — WF-016's whole point is that a changed
 // definition is refused, not reinterpreted, and an unpinned run is
 // indistinguishable from "we don't know if the definition changed."
-// Since #520 a refusal reports the canonical PhaseAborted terminal instead
+// Since #520 a refusal reports the canonical PhaseFailed terminal instead
 // of a bare error — resume_refusal_test.go covers that contract in depth;
 // here it's enough that the run was not walked.
 func TestRunnerResumeRefusesEmptyWorkflowDigest(t *testing.T) {
