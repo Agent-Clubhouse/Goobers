@@ -432,6 +432,14 @@ func formatEvent(ev journal.Event) string {
 		if ev.Status != "" {
 			s += fmt.Sprintf(" status=%s", ev.Status)
 		}
+		if len(ev.Outputs) > 0 {
+			outputs, err := json.Marshal(ev.Outputs)
+			if err != nil {
+				s += " outputs=<invalid>"
+			} else {
+				s += " outputs=" + string(outputs)
+			}
+		}
 		return s
 	case journal.EventGateEvaluated:
 		return fmt.Sprintf("%s gate=%s verdict=%s target=%s", prefix, ev.Gate, ev.Verdict, ev.Target)

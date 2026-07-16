@@ -1,0 +1,50 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: todo-check
+spec:
+  gaggle: acme-web
+  displayName: Custom TODO check
+  triggers:
+    - type: schedule
+      schedule: "@weekly"
+  readiness:
+    maxConcurrentRuns: 1
+  start: check-todos
+  tasks:
+    - name: check-todos
+      type: deterministic
+      goal: Count tracked TODO markers and publish the full listing.
+      run:
+        command: ["sh", "scripts/check-todos.sh"]
+      inputs:
+        resultFile: "todo-check-result.json"
+        timeout: "30s"
+        maxOutputBytes: "65536"
+      capabilities: []
+      expectedOutputs:
+        - todoCount
+      next: todos-found
+    - name: report-todos
+      type: deterministic
+      goal: Report that TODO markers were found.
+      run:
+        command: ["sh", "-c", "printf '%s\n' 'TODO markers found; inspect the check-todos stdout artifact.'"]
+      capabilities: []
+    - name: report-clean
+      type: deterministic
+      goal: Report that no TODO markers were found.
+      run:
+        command: ["sh", "-c", "printf '%s\n' 'No TODO markers found.'"]
+      capabilities: []
+  gates:
+    - name: todos-found
+      evaluator: automated
+      automated:
+        check: output-numeric-gte
+        params:
+          key: todoCount
+          threshold: "1"
+      branches:
+        pass: report-todos
+        fail: report-clean

@@ -515,6 +515,15 @@ func TestFormatEvent(t *testing.T) {
 			want: "[5] stage.finished stage=implement attempt=2 class=policy status=success",
 		},
 		{
+			name: "stage finished with outputs",
+			event: journal.Event{
+				Seq: 5, Type: journal.EventStageFinished, Stage: "check-todos", Attempt: 1,
+				AttemptClass: journal.AttemptPolicy, Status: "success",
+				Outputs: map[string]any{"todoCount": float64(2)},
+			},
+			want: `[5] stage.finished stage=check-todos attempt=1 class=policy status=success outputs={"todoCount":2}`,
+		},
+		{
 			name: "gate evaluated",
 			event: journal.Event{
 				Seq: 6, Type: journal.EventGateEvaluated, Gate: "review", Verdict: "pass", Target: "local-ci",
