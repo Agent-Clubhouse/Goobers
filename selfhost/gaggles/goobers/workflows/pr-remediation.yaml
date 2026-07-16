@@ -42,7 +42,9 @@ spec:
     # run's worktree (replacing whatever branch the runner's worktree
     # provisioning defaulted to), and load the merge-review Verdict + PR-
     # thread comments + whether the base has advanced as context for the
-    # rebase + finding-driven routing stage that follows (#363).
+    # rebase + finding-driven routing stage that follows (#363). Selection
+    # shares pr-select's PR lease namespace so review and remediation cannot
+    # race on the same PR.
     - name: gather-pr-context
       type: deterministic
       goal: Select a PR needing remediation, check out its branch, and load review context.
