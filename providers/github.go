@@ -837,6 +837,15 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 	if req.UpdatedSince != nil {
 		values.Set("since", req.UpdatedSince.UTC().Format(time.RFC3339))
 	}
+	if req.OldestFirst {
+		// GitHub's issues list defaults to newest-first (sort=created,
+		// direction=desc — undocumented but confirmed live, #532). An explicit
+		// ascending sort makes the fetch itself FIFO, so a Limit-truncated read
+		// drops the newest items (still reachable after older ones drain)
+		// instead of permanently starving the oldest.
+		values.Set("sort", "created")
+		values.Set("direction", "asc")
+	}
 	if req.Page > 0 {
 		// An explicit Page means the caller drives pagination itself: honor it
 		// as a single-page read (its own per_page, no Link following).

@@ -241,6 +241,12 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 	if req.State != "" {
 		query += fmt.Sprintf(" AND [System.State] = '%s'", strings.ReplaceAll(req.State, "'", "''"))
 	}
+	if req.OldestFirst {
+		// WIQL without ORDER BY leaves result order unspecified — the same
+		// Limit-truncation starvation hazard as GitHub's newest-first default
+		// (#532). System.Id ascends with creation order, so this is FIFO.
+		query += " ORDER BY [System.Id] ASC"
+	}
 	endpoint, err := p.workURL(project, "wiql")
 	if err != nil {
 		return nil, err
