@@ -592,6 +592,7 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 		journal.EventRunStarted,
 		journal.EventRefTouched, // the run branch, journaled up front (#133)
 		journal.EventStageStarted,
+		journal.EventArtifactRecorded, // runner-assembled context manifest
 		journal.EventArtifactRecorded,
 		journal.EventStageFinished,
 		journal.EventGateEvaluated,
@@ -615,8 +616,10 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	// The artifact the task produced is readable back through its recorded Ref,
 	// digest-verified — the same round-trip a downstream stage would do via
 	// ArtifactPointer.Resolve (#10).
+	var sawDiff bool
 	for _, e := range events {
-		if e.Type == journal.EventArtifactRecorded {
+		if e.Type == journal.EventArtifactRecorded && e.Name == "diff" {
+			sawDiff = true
 			b, err := rd.ArtifactBytes(*e.Ref)
 			if err != nil {
 				t.Fatalf("ArtifactBytes: %v", err)
@@ -625,6 +628,9 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 				t.Errorf("artifact bytes = %q", b)
 			}
 		}
+	}
+	if !sawDiff {
+		t.Fatal("expected the task's diff artifact")
 	}
 }
 
@@ -1463,6 +1469,9 @@ func simulateCrashMidAttempt(t *testing.T, runsDir string, machine *workflow.Mac
 	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: stageName, Attempt: attempt}); err != nil {
 		t.Fatalf("simulateCrashMidAttempt: append stage.started: %v", err)
 	}
+	if err := recordContextManifest(jr, apiv1.InvocationEnvelope{}, stageName, attempt, ""); err != nil {
+		t.Fatalf("simulateCrashMidAttempt: record context manifest: %v", err)
+	}
 	if err := jr.Close(); err != nil {
 		t.Fatalf("simulateCrashMidAttempt: close: %v", err)
 	}
@@ -1526,9 +1535,11 @@ func TestRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
 		}
 	}
 	wantTypes := []journal.EventType{
-		journal.EventStageStarted,  // attempt 1, pre-crash
+		journal.EventStageStarted, // attempt 1, pre-crash
+		journal.EventArtifactRecorded,
 		journal.EventStageFinished, // attempt 1, infra, journaled by Resume
 		journal.EventStageStarted,  // attempt 2, the crash-driven continuation
+		journal.EventArtifactRecorded,
 		journal.EventStageFinished, // attempt 2, the crash-driven continuation, success
 	}
 	if len(stageEvents) != len(wantTypes) {
@@ -1539,26 +1550,29 @@ func TestRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
 			t.Errorf("event[%d].Type = %q, want %q", i, e.Type, wantTypes[i])
 		}
 	}
-	if stageEvents[1].Attempt != 1 || stageEvents[1].AttemptClass != journal.AttemptInfra || stageEvents[1].Status != string(apiv1.ResultFailure) {
-		t.Errorf("interrupted-attempt event = %+v, want attempt=1 class=infra status=failure", stageEvents[1])
+	if stageEvents[2].Attempt != 1 || stageEvents[2].AttemptClass != journal.AttemptInfra || stageEvents[2].Status != string(apiv1.ResultFailure) {
+		t.Errorf("interrupted-attempt event = %+v, want attempt=1 class=infra status=failure", stageEvents[2])
 	}
 	// #111: the continuation dispatched right after an interrupted attempt is
 	// driven by the CRASH, not Task.Retry — it must be tagged "infra", not
 	// "policy" (which would wrongly make it conformance-normative, §3.3).
-	if stageEvents[2].Attempt != 2 || stageEvents[2].AttemptClass != journal.AttemptInfra {
-		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=infra", stageEvents[2])
+	if stageEvents[3].Attempt != 2 || stageEvents[3].AttemptClass != journal.AttemptInfra {
+		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=infra", stageEvents[3])
 	}
-	if stageEvents[3].Attempt != 2 || stageEvents[3].AttemptClass != journal.AttemptInfra || stageEvents[3].Status != string(apiv1.ResultSuccess) {
-		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 class=infra status=success", stageEvents[3])
+	if stageEvents[4].Attempt != 2 || stageEvents[4].AttemptClass != journal.AttemptInfra || stageEvents[4].Type != journal.EventArtifactRecorded {
+		t.Errorf("resumed-attempt context artifact = %+v, want attempt=2 class=infra artifact.recorded", stageEvents[4])
+	}
+	if stageEvents[5].Attempt != 2 || stageEvents[5].AttemptClass != journal.AttemptInfra || stageEvents[5].Status != string(apiv1.ResultSuccess) {
+		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 class=infra status=success", stageEvents[5])
 	}
 
 	// Every post-crash event for "implement" (the interrupted marker AND the
-	// crash-driven continuation's own started/finished) is excluded from the
-	// conformance set (§3.3) — confirm IsConformanceNormative agrees for all
-	// three, not just the interrupted marker.
-	for i := 1; i <= 3; i++ {
+	// crash-driven continuation's own started/context/finished) is excluded
+	// from the conformance set (§3.3) — confirm IsConformanceNormative agrees
+	// for all four, not just the interrupted marker.
+	for i := 2; i <= 5; i++ {
 		if stageEvents[i].IsConformanceNormative() {
-			t.Errorf("event[%d] = %+v must be excluded from conformance (§3.3) — only the original attempt=1 started event may be normative for a crashed stage", i, stageEvents[i])
+			t.Errorf("event[%d] = %+v must be excluded from conformance (§3.3) — only the original attempt=1 events may be normative for a crashed stage", i, stageEvents[i])
 		}
 	}
 
@@ -2970,6 +2984,53 @@ func TestRunnerRepassReceivesReviewerVerdictAsContext(t *testing.T) {
 	}
 	if verdict.Decision != apiv1.VerdictNeedsChanges || verdict.Summary != "please fix X" {
 		t.Fatalf("resolved verdict = %+v, want the reviewer's actual 1st verdict", verdict)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-verdict-context"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var manifests []contextManifest
+	for _, event := range events {
+		if event.Type != journal.EventArtifactRecorded || event.Name != "context/implement-attempt-1.json" {
+			continue
+		}
+		if event.Stage != "implement" || event.Attempt != 1 || event.Ref == nil || event.Ref.Digest == "" {
+			t.Fatalf("context manifest event is not a digested implement-stage artifact: %+v", event)
+		}
+		manifestData, err := rd.ArtifactBytes(*event.Ref)
+		if err != nil {
+			t.Fatalf("read context manifest artifact: %v", err)
+		}
+		var manifest contextManifest
+		if err := json.Unmarshal(manifestData, &manifest); err != nil {
+			t.Fatalf("unmarshal context manifest: %v", err)
+		}
+		manifests = append(manifests, manifest)
+	}
+	if len(manifests) != 2 {
+		t.Fatalf("implement context manifests = %d, want 2 (initial + repass)", len(manifests))
+	}
+	for _, cp := range manifests[0].ContextPointers {
+		if cp.Name == "review.verdict" {
+			t.Fatalf("initial context manifest unexpectedly carries review.verdict: %+v", manifests[0])
+		}
+	}
+	var manifestVerdict *apiv1.ContextPointer
+	for i := range manifests[1].ContextPointers {
+		if manifests[1].ContextPointers[i].Name == "review.verdict" {
+			manifestVerdict = &manifests[1].ContextPointers[i]
+		}
+	}
+	if manifestVerdict == nil {
+		t.Fatalf("repass context manifest has no review.verdict pointer: %+v", manifests[1])
+	}
+	if !reflect.DeepEqual(*manifestVerdict, *verdictPtr) {
+		t.Fatalf("manifest review.verdict = %+v, want the pointer actually supplied to the repass = %+v", *manifestVerdict, *verdictPtr)
 	}
 }
 

@@ -91,9 +91,11 @@ type Event struct {
 
 	// --- orchestration payload (normative unless noted) ---
 
-	// Stage is the stage name for stage.* events. Normative.
+	// Stage is the stage name for stage.* events and stage-scoped artifacts.
+	// Normative.
 	Stage string `json:"stage,omitempty"`
-	// Attempt is the 1-based attempt number for stage.* events. Normative.
+	// Attempt is the 1-based attempt number for stage.* events and
+	// stage-scoped artifacts. Normative.
 	Attempt int `json:"attempt,omitempty"`
 	// AttemptClass tags a retry attempt. Normative iff not "infra".
 	AttemptClass AttemptClass `json:"attemptClass,omitempty"`
@@ -118,7 +120,8 @@ type Event struct {
 	Artifacts []Ref `json:"artifacts,omitempty"`
 
 	// Ref points at in-journal content (artifact.recorded, input.snapshot). Its
-	// Digest is normative; Path/Size are not (see Ref).
+	// Digest is normative except for runner-assembled context manifests, whose
+	// bytes include non-normative pointer metadata; Path/Size are not (see Ref).
 	Ref *Ref `json:"ref,omitempty"`
 	// Name labels the Ref (artifact/input name). Normative.
 	Name string `json:"name,omitempty"`

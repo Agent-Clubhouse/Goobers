@@ -521,6 +521,11 @@ func simulateSkeletonCrashMidImplement(t *testing.T, runsDir string, machine *wo
 	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
 		t.Fatalf("simulateSkeletonCrashMidImplement: append stage.started: %v", err)
 	}
+	if _, err := jr.RecordStageArtifact(
+		"implement", 1, "", journal.ContextManifestArtifactName("implement", 1), []byte(`{"contextPointers":[]}`),
+	); err != nil {
+		t.Fatalf("simulateSkeletonCrashMidImplement: record context manifest: %v", err)
+	}
 	if err := jr.Close(); err != nil {
 		t.Fatalf("simulateSkeletonCrashMidImplement: close: %v", err)
 	}
@@ -580,9 +585,11 @@ func TestWalkingSkeletonCrashResume(t *testing.T) {
 		}
 	}
 	wantTypes := []journal.EventType{
-		journal.EventStageStarted,  // attempt 1, pre-crash (hand-built above)
+		journal.EventStageStarted, // attempt 1, pre-crash (hand-built above)
+		journal.EventArtifactRecorded,
 		journal.EventStageFinished, // attempt 1, infra, journaled by Resume
 		journal.EventStageStarted,  // attempt 2, the crash-driven continuation
+		journal.EventArtifactRecorded,
 		journal.EventStageFinished, // attempt 2, the crash-driven continuation, success
 	}
 	if len(implementEvents) != len(wantTypes) {
@@ -593,23 +600,26 @@ func TestWalkingSkeletonCrashResume(t *testing.T) {
 			t.Errorf("event[%d].Type = %q, want %q", i, e.Type, wantTypes[i])
 		}
 	}
-	if implementEvents[1].Attempt != 1 || implementEvents[1].AttemptClass != journal.AttemptInfra || implementEvents[1].Status != string(apiv1.ResultFailure) {
-		t.Errorf("interrupted-attempt event = %+v, want attempt=1 class=infra status=failure", implementEvents[1])
+	if implementEvents[2].Attempt != 1 || implementEvents[2].AttemptClass != journal.AttemptInfra || implementEvents[2].Status != string(apiv1.ResultFailure) {
+		t.Errorf("interrupted-attempt event = %+v, want attempt=1 class=infra status=failure", implementEvents[2])
 	}
 	// #111: the continuation dispatched right after the interrupted attempt
 	// is driven by the crash, not Task.Retry — it must be tagged "infra",
 	// not "policy" (which would wrongly make it conformance-normative,
 	// §3.3, adding a phantom retry event a crash-free run never produces).
-	if implementEvents[2].Attempt != 2 || implementEvents[2].AttemptClass != journal.AttemptInfra {
-		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=infra", implementEvents[2])
+	if implementEvents[3].Attempt != 2 || implementEvents[3].AttemptClass != journal.AttemptInfra {
+		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=infra", implementEvents[3])
 	}
-	if implementEvents[3].Attempt != 2 || implementEvents[3].AttemptClass != journal.AttemptInfra || implementEvents[3].Status != string(apiv1.ResultSuccess) {
-		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 class=infra status=success", implementEvents[3])
+	if implementEvents[4].Attempt != 2 || implementEvents[4].AttemptClass != journal.AttemptInfra || implementEvents[4].Type != journal.EventArtifactRecorded {
+		t.Errorf("resumed-attempt context artifact = %+v, want attempt=2 class=infra artifact.recorded", implementEvents[4])
+	}
+	if implementEvents[5].Attempt != 2 || implementEvents[5].AttemptClass != journal.AttemptInfra || implementEvents[5].Status != string(apiv1.ResultSuccess) {
+		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 class=infra status=success", implementEvents[5])
 	}
 	// Every post-crash "implement" event is excluded from conformance
-	// (§3.3) — confirm IsConformanceNormative agrees for all three, same as
+	// (§3.3) — confirm IsConformanceNormative agrees for all four, same as
 	// internal/runner's own crash-resume test.
-	for i := 1; i <= 3; i++ {
+	for i := 2; i <= 5; i++ {
 		if implementEvents[i].IsConformanceNormative() {
 			t.Errorf("event[%d] = %+v must be excluded from conformance (§3.3)", i, implementEvents[i])
 		}
