@@ -2,8 +2,8 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"testing"
-	"time"
 
 	"go.temporal.io/sdk/testsuite"
 
@@ -189,8 +189,7 @@ func TestDeterministicTask(t *testing.T) {
 	}
 }
 
-// TestHumanGateSignal: a human gate proceeds when its decision signal arrives.
-func TestHumanGateSignal(t *testing.T) {
+func TestHumanGateRejectedBeforeSignal(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
@@ -209,17 +208,12 @@ func TestHumanGateSignal(t *testing.T) {
 	}
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	env.RegisterActivity(&Activities{Goober: successInvoker()})
-	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(HumanGateSignal("approve"), "pass")
-	}, time.Millisecond)
-
 	env.ExecuteWorkflow(Run, runInput("human", spec))
 
-	var res RunResult
-	_ = env.GetWorkflowResult(&res)
-	if res.Status != StatusCompleted {
-		t.Errorf("status = %q, want completed", res.Status)
+	err := env.GetWorkflowError()
+	const want = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("workflow error = %v, want actionable human-gate rejection", err)
 	}
 }
 
