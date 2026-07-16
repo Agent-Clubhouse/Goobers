@@ -118,7 +118,44 @@ The shared gate-evaluator warning stands: anything touching
 - #491 — parameterized manual-run args; #564's webhook trigger deliberately
   excludes payload→args until this is designed.
 
-## 5. Rulings recorded on issues (quick index)
+## 5. Authoring, demo & polish track (added mid-campaign)
+
+Operator steering: alongside the hardening, tomorrow should have *nice things
+to demo* — the onboarding flow, the dashboard, and visible CLI delight.
+
+**Onboarding & Authoring (milestone 13):** #576 (AUTH-3 `goobers scaffold
+goober|workflow`), #577 (AUTH-4 bring-your-own-script stage cookbook +
+runnable example), #578 (AUTH-5 end-to-end authoring tutorial with
+CI-validated checkpoints), #579 (ONB-3 `goobers init --demo`, a
+zero-credential first-five-minutes demo). All independent, but #576 lands best
+first (tutorial and demo reference the scaffolder); #489's `manual` trigger is
+the natural base for #576/#579 (documented yearly-cron fallback if it hasn't
+landed).
+
+**CLI polish / demo surface:** #583 (`status --watch` live fleet board), #584
+(per-workflow fleet summary + next-fire times), #585 (`trace` timeline view),
+#586 (`goobers stats` lifetime summary card), #587 (shell completions), #588
+(`up --notify` desktop notifications), #589 (DASH-11 `goobers dashboard`
+launcher — the portal capstone, blocked by #441/#451/#445). Collision notes:
+#583/#584 follow #557 (status convergence); #585 feeds/reads #556 (`--json`)
+and #463 (cause record); #588 hangs off #541's notification call sites.
+
+The dashboard/portal queue itself (#440–#452, #510–#518) was already approved
+and in flight before this campaign — it is the other demo pillar; nothing here
+reorders it.
+
+## 6. Mid-campaign reconciliations
+
+A second nomination stream ran concurrently with this triage; duplicates were
+consolidated in place: #533 → #530 (scheduler dup-seq; ruling ported, so I3's
+reference is #530), #545 → #544 (ResultBlocked — whose live evidence *changed
+the ruling*: `blocked` is schema-valid and live (6 occurrences), so it now maps
+to `escalated` + issue-park per #539, not `failed`). Also filed by that stream
+and standing: #532 (FIFO starvation beyond the newest-20 fetch window —
+compounds #539's starvation loop; both are I4), #552/#569 (dependency-aware
+selection design captures, unapproved-by-design).
+
+## 7. Rulings recorded on issues (quick index)
 
 Maintainer rulings unblocking previously human-gated items, with the decision
 inline on the issue: #489 (manual trigger kind, approach b), #492
