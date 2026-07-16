@@ -160,8 +160,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})
 	if err != nil {
-		pf(stderr, "error: list pull requests: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "list pull requests", err, "")
 	}
 	var current *providers.PullRequestSummary
 	for i := range prs {
@@ -196,8 +195,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 
 	rawComments, err := provider.ListComments(ctx, repo, strconv.Itoa(selectedNumber))
 	if err != nil {
-		pf(stderr, "error: list comments on PR #%d: %v\n", selectedNumber, err)
-		return 1
+		return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selectedNumber), err, "")
 	}
 	// Latest comment carrying an embedded payload wins, same rationale as
 	// gather-pr-context's verdict scan: only the most recently recorded

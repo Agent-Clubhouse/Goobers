@@ -109,8 +109,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// actual current state right before deciding.
 	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
 	if err != nil {
-		pf(stderr, "error: poll pull request: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "poll pull request", err, "merge-result.json")
 	}
 
 	var reasons []string
@@ -146,8 +145,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA, CommitMessage: commitMessage,
 	})
 	if err != nil {
-		pf(stderr, "error: merge pull request: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "merge pull request", err, "merge-result.json")
 	}
 	if err := writeMergeResult(resultFile, pullNumber, result.Merged, result.MergeSHA, nil); err != nil {
 		pf(stderr, "error: %v\n", err)

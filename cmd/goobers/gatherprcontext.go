@@ -111,8 +111,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})
 	if err != nil {
-		pf(stderr, "error: list pull requests: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "list pull requests", err, "pr-context.json")
 	}
 
 	var eligible []providers.PullRequestSummary
@@ -151,8 +150,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 
 	rawComments, err := provider.ListComments(ctx, repo, strconv.Itoa(selected.Number))
 	if err != nil {
-		pf(stderr, "error: list comments on PR #%d: %v\n", selected.Number, err)
-		return 1
+		return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selected.Number), err, "pr-context.json")
 	}
 	// Latest comment carrying an embedded payload wins (a PR can accumulate
 	// several merge-review cycles' worth of comments; only the most recent

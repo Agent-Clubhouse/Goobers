@@ -115,8 +115,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		if _, err := provider.UpdateWorkItem(context.Background(), providers.UpdateWorkItemRequest{
 			Repository: repo, ID: selectedNumber, RemoveLabels: []string{needsRemediationLabel},
 		}); err != nil {
-			pf(stderr, "error: clear %s from PR #%s: %v\n", needsRemediationLabel, selectedNumber, err)
-			return 1
+			return failProviderStage(stderr, fmt.Sprintf("clear %s from PR #%s", needsRemediationLabel, selectedNumber), err, "rebase-result.json")
 		}
 		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false); err != nil {
 			pf(stderr, "error: %v\n", err)

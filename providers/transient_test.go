@@ -20,6 +20,8 @@ func TestIsTransientError(t *testing.T) {
 		{"4xx not found", fmt.Errorf("GET /pulls/1 failed: status 404: not found"), false},
 		{"4xx forbidden", fmt.Errorf("GET /pulls/1 failed: status 403: forbidden"), false},
 		{"wrapped net error", fmt.Errorf("send request: %w", &net.DNSError{Err: "temporary failure", IsTemporary: true}), true},
+		{"typed rate-limit give-up", &RateLimitError{Endpoint: "/repos/acme/app/issues", Status: 403}, true},
+		{"wrapped typed rate-limit give-up", fmt.Errorf("list work items: %w", &RateLimitError{Endpoint: "/x", Status: 429}), true},
 		{"context canceled", context.Canceled, false},
 		{"context deadline exceeded", context.DeadlineExceeded, false},
 		{"wrapped context canceled", fmt.Errorf("send request: %w", context.Canceled), false},

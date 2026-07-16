@@ -147,8 +147,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		Limit:      queryLimit,
 	})
 	if err != nil {
-		pf(stderr, "error: list work items: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "list work items", err, "claimed-item.json")
 	}
 
 	// Re-verify eligibility in code (SEC-047: backlog content is untrusted
@@ -182,8 +181,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	if _, err := providerToken(capability.GitHubPRWrite); err == nil {
 		openIssues, err := openPRIssueNumbers(ctx, provider, repo)
 		if err != nil {
-			pf(stderr, "error: list open pull requests: %v\n", err)
-			return 1
+			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")
 		}
 		backstopped := eligible[:0]
 		for _, item := range eligible {

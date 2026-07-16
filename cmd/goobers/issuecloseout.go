@@ -116,8 +116,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	base := providerInput("base", "main")
 	pr, found, err := provider.FindPullRequestByBranch(ctx, repo, head, base)
 	if err != nil {
-		pf(stderr, "error: find pull request: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "find pull request", err, "")
 	}
 	comment := providerInput("comment", "")
 	if comment == "" {

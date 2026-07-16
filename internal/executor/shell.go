@@ -76,6 +76,23 @@ const (
 // there is nowhere else fail-closed to read a structured signal from.
 const OutputNoWork = "noWork"
 
+// OutputErrorCode / OutputErrorMessage / OutputErrorRetryable are the
+// well-known InputResultFile output keys a deterministic command sets to
+// report a TYPED failure — the failure analog of OutputNoWork (#614). A
+// command that exits nonzero after writing its declared result file with
+// OutputErrorCode set gets that code (and message/retryable, when present)
+// as the stage's ErrorInfo instead of the generic nonzero_exit — and,
+// because the file exists, instead of the missing_result_file that used to
+// bury the real cause (e.g. a GitHub rate-limit 403 now journals as
+// github_rate_limited with the reset time in its message). Checked only on
+// a nonzero exit with a successfully read result file, so an unrelated
+// stage that never writes these keys keeps exactly the old behavior.
+const (
+	OutputErrorCode      = "errorCode"
+	OutputErrorMessage   = "errorMessage"
+	OutputErrorRetryable = "errorRetryable"
+)
+
 // ArtifactRecorder persists stage output bytes into the run journal and
 // returns a content-addressed pointer to them. *journal.Run satisfies this.
 type ArtifactRecorder interface {
@@ -372,6 +389,19 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		return result, nil
 	}
 	result.Status = apiv1.ResultFailure
+	// A typed error reported through the declared result file (see
+	// OutputErrorCode) beats the generic nonzero_exit: the command knew
+	// exactly why it failed and said so structurally.
+	if code, ok := result.Outputs[OutputErrorCode].(string); ok && code != "" {
+		message, _ := result.Outputs[OutputErrorMessage].(string)
+		if message == "" {
+			message = fmt.Sprintf("command exited %d", exitCode)
+		}
+		retryable, _ := result.Outputs[OutputErrorRetryable].(bool)
+		result.Error = &apiv1.ErrorInfo{Code: code, Message: message, Retryable: retryable}
+		result.Summary = message
+		return result, nil
+	}
 	result.Error = &apiv1.ErrorInfo{
 		Code:      "nonzero_exit",
 		Message:   fmt.Sprintf("command exited %d", exitCode),

@@ -71,8 +71,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})
 	if err != nil {
-		pf(stderr, "error: list pull requests: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "list pull requests", err, "selected-pr.json")
 	}
 
 	var eligible []providers.PullRequestSummary
