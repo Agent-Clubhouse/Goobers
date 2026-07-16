@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { runs, workflows } from "../prototypeData";
 import type { Navigate, PrimaryArea } from "../routing";
 import { useTheme } from "../theme";
@@ -11,10 +12,16 @@ interface PortalShellProps {
 
 export function PortalShell({ activeArea, children, navigate }: PortalShellProps) {
   const { theme, toggleTheme } = useTheme();
+  const mainContent = useRef<HTMLElement>(null);
+
+  const skipToMainContent = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    mainContent.current?.focus();
+  };
 
   return (
     <div className="portal-frame">
-      <a className="skip-link" href="#main-content">
+      <a className="skip-link" href="#main-content" onClick={skipToMainContent}>
         Skip to main content
       </a>
       <aside className="sidebar">
@@ -100,7 +107,7 @@ export function PortalShell({ activeArea, children, navigate }: PortalShellProps
           </div>
         </header>
 
-        <main className="page-content" id="main-content" tabIndex={-1}>
+        <main className="page-content" id="main-content" ref={mainContent} tabIndex={-1}>
           {children}
         </main>
       </div>

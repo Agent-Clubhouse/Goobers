@@ -110,6 +110,18 @@ describe("portal foundation", () => {
     );
   });
 
+  it("skips to main content without changing the active hash route", async () => {
+    window.location.hash = "#/workflows";
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "Skip to main content" }));
+
+    expect(window.location.hash).toBe("#/workflows");
+    expect(screen.getByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(screen.getByRole("main")).toHaveFocus();
+  });
+
   it("supports directional graph selection and exposes the compact responsive contract", () => {
     window.location.hash = "#/workflow/implementation";
     render(<App />);
