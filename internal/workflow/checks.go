@@ -87,6 +87,11 @@ func workspaceProblems(def Definition) []string {
 		default:
 			problems = append(problems, fmt.Sprintf("task %q: unknown workspace %q (want repo or scratch)", task.Name, task.Run.Workspace))
 		}
+		switch task.Run.Network {
+		case "", apiv1.NetworkNone:
+		default:
+			problems = append(problems, fmt.Sprintf("task %q: unknown network mode %q (want none)", task.Name, task.Run.Network))
+		}
 	}
 	return problems
 }

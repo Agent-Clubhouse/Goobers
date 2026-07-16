@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,17 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
-
-type denyNetworkTransport struct {
-	attempts atomic.Int32
-}
-
-func (t *denyNetworkTransport) RoundTrip(*http.Request) (*http.Response, error) {
-	t.attempts.Add(1)
-	return nil, errors.New("network disabled by demo test")
-}
 
 type demoDaemonWriter struct {
 	mu      sync.Mutex
@@ -46,6 +39,31 @@ func (w *demoDaemonWriter) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.buf.String()
+}
+
+func TestDemoNetworkProbe(t *testing.T) {
+	const marker = "demo-network-probe"
+	markerIndex := -1
+	for i, arg := range os.Args {
+		if arg == marker {
+			markerIndex = i
+			break
+		}
+	}
+	if markerIndex < 0 {
+		return
+	}
+	if markerIndex+1 >= len(os.Args) {
+		t.Fatal("network probe address missing")
+	}
+	conn, err := net.DialTimeout("tcp", os.Args[markerIndex+1], time.Second)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("stage process reached the network probe")
+	}
+	if err := os.WriteFile("triage.json", []byte(`{"item":"network probe","category":"documentation","priority":2}`), 0o644); err != nil {
+		t.Fatalf("write triage result: %v", err)
+	}
 }
 
 func TestInitDemoBannerGolden(t *testing.T) {
@@ -83,6 +101,42 @@ func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
 		t.Fatalf("init --demo: code = %d, stderr = %q", code, stderr)
 	}
 
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for network probe: %v", err)
+	}
+	t.Cleanup(func() { _ = probe.Close() })
+	workflowPath := filepath.Join(root, "config", "gaggles", "demo", "workflows", "demo.yaml")
+	workflowData, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("read demo workflow: %v", err)
+	}
+	var demo apiv1.Workflow
+	if err := yaml.Unmarshal(workflowData, &demo); err != nil {
+		t.Fatalf("decode demo workflow: %v", err)
+	}
+	testBin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test binary: %v", err)
+	}
+	demo.Spec.Tasks[0].Run.Command = []string{
+		"sh", "-c",
+		`exec "$1" -test.run=^TestDemoNetworkProbe$ -- demo-network-probe "$2"`,
+		"demo-probe", testBin, probe.Addr().String(),
+	}
+	workflowData, err = yaml.Marshal(demo)
+	if err != nil {
+		t.Fatalf("encode demo workflow: %v", err)
+	}
+	if err := os.WriteFile(workflowPath, workflowData, 0o644); err != nil {
+		t.Fatalf("write demo workflow: %v", err)
+	}
+
+	orphan := filepath.Join(root, "workcopies", "scratch", "stage-crash-orphan")
+	if err := os.MkdirAll(orphan, 0o700); err != nil {
+		t.Fatalf("plant crash-orphaned scratch workspace: %v", err)
+	}
+
 	var cloneAttempts atomic.Int32
 	previousCloneURL := repoCloneURL
 	repoCloneURL = func(apiv1.RepoRef) (string, error) {
@@ -90,11 +144,6 @@ func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
 		return "", errors.New("repository access disabled by demo test")
 	}
 	t.Cleanup(func() { repoCloneURL = previousCloneURL })
-
-	networkGuard := &denyNetworkTransport{}
-	previousTransport := http.DefaultTransport
-	http.DefaultTransport = networkGuard
-	t.Cleanup(func() { http.DefaultTransport = previousTransport })
 
 	previousSweep := delegationSweepInterval
 	delegationSweepInterval = 20 * time.Millisecond
@@ -128,6 +177,9 @@ func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
 		t.Fatalf("goobers up exited before startup: code = %d, stderr = %q", upCode, upStderr.String())
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for goobers up")
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("crash-orphaned scratch workspace was not reaped: %v", err)
 	}
 
 	code, runOut, runErr := runArgs(t, "run", "demo", root)
@@ -167,9 +219,6 @@ func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
 
 	if got := cloneAttempts.Load(); got != 0 {
 		t.Errorf("demo attempted %d repository operation(s)", got)
-	}
-	if got := networkGuard.attempts.Load(); got != 0 {
-		t.Errorf("demo attempted %d HTTP request(s)", got)
 	}
 	allOutput := runOut + runErr + statusOut + statusErr + traceOut + traceErr + upStdout.String() + upStderr.String()
 	if strings.Contains(strings.ToLower(allOutput), "credential") {

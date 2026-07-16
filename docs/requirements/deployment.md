@@ -23,11 +23,12 @@ choice, never a product fork: the same definitions run everywhere.
   **ArgoCD** + a **Goobers operator** deliver `config` as CRDs; **Temporal** (self-hosted,
   Postgres-backed) hosts the same compiled workflows and projects its history down into
   the same run-journal format (`ARCHITECTURE.md §3.2, §10`).
-- **A run executes in an ephemeral, isolated run environment** prepared with auth, the
-  harness (signed in), and a fresh working copy of the target repo; handed goal + context
-  via the **invocation envelope**; finishing via the **result envelope**; emitting
-  telemetry; then torn down. Tiers 1–2: a git worktree + local process. Tier 3: an
-  ephemeral pod. Same contract, different substrate.
+- **A run executes in an ephemeral, isolated run environment** handed goal + context via
+  the **invocation envelope**; finishing via the **result envelope**; emitting telemetry;
+  then torn down. Repo-backed stages are prepared with auth, the harness where needed,
+  and a fresh working copy of the target repo. Deterministic stages may instead use an
+  empty scratch workspace. Tiers 1–2: a git worktree or scratch directory + local
+  process. Tier 3: an ephemeral pod. Same contract, different substrate.
 - **Scaling** = replica counts driven by the scale factor in definitions — concurrent
   local runs at tiers 1–2, pod/worker replicas at tier 3.
 
@@ -104,10 +105,11 @@ component goes when you outgrow the box.
 These are seam contracts, satisfied by both runners; the pod wording is the tier-3 form.
 
 - **DEP-004 (MUST):** *(All tiers)* A run MUST execute in an **ephemeral, isolated run
-  environment** prepared with auth, the harness (signed in), and a fresh working copy of
-  the target repo (`GBO-011`). Tiers 1–2: an isolated git worktree + local process
-  branched off the managed working copy (`DEP-026`). **Tier 3 (V2):** an ephemeral
-  Kubernetes pod.
+  environment**. Repo-backed stages MUST receive a fresh working copy of the target repo
+  and auth plus the signed-in harness where required (`GBO-011`); deterministic stages
+  MAY instead receive an empty scratch workspace (`TSK-040`). Tiers 1–2: an isolated git
+  worktree branched off the managed working copy (`DEP-026`) or a scratch directory,
+  plus a local process. **Tier 3 (V2):** an ephemeral Kubernetes pod.
 - **DEP-005 (MUST):** *(All tiers)* The run environment MUST receive goal + context via
   the **invocation envelope** (`GBO-012`) and the agent MUST signal completion via the
   **result envelope** (`GBO-013`). The envelope schemas are identical at every tier.
@@ -115,8 +117,8 @@ These are seam contracts, satisfied by both runners; the pod wording is the tier
   capture telemetry from each run (`GBO-020`, `GBO-021`), landing as journal spans + the
   tier's run-telemetry store (`TEL-010`).
 - **DEP-007 (MUST):** *(All tiers)* Run environments MUST be torn down after completion —
-  worktrees removed at tiers 1–2, pods deleted at tier 3. No lingering state; the run
-  journal is the durable record.
+  worktrees and scratch directories removed at tiers 1–2, pods deleted at tier 3. No
+  lingering state; the run journal is the durable record.
 
 ### Scaling
 

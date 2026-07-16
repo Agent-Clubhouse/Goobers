@@ -209,6 +209,13 @@ spec:
                           description: Image optionally overrides the container image
                             the command runs in.
                           type: string
+                        network:
+                          description: |-
+                            Network selects the command's network access. Empty inherits the host
+                            network. "none" denies network access to the command and its descendants.
+                          enum:
+                          - none
+                          type: string
                         workspace:
                           description: |-
                             Workspace selects where the command runs. Empty or "repo" provisions the

@@ -19,10 +19,10 @@ defined inputs, work to be done, and a goal. `ARCHITECTURE.md` refers to tasks a
 - **Deterministic tasks** run arbitrary commands (tests, linters, builders, CI pollers)
   in the task's run environment. **Agentic tasks** invoke a goober's harness with an
   **invocation envelope** (goal, context pointers, capability grants).
-- Every Task executes in an **ephemeral, isolated run environment** over a fresh,
-  disposable working copy of the target repo: a git worktree off the managed working
-  copy, run as a local process, at tiers 1–2; the workspace of an ephemeral pod at
-  tier 3 (V2).
+- Every Task executes in an **ephemeral, isolated, disposable workspace**. Repo-backed
+  tasks receive a fresh working copy of the target repo: a git worktree off the managed
+  working copy, run as a local process, at tiers 1–2; the workspace of an ephemeral pod
+  at tier 3 (V2). Deterministic tasks may instead request an empty scratch workspace.
 - A Task reports completion + result back to the runner so the machine can advance:
   agentic tasks via the goober's **result envelope** (`GBO-013`); deterministic tasks
   via their structured return. Either way the outcome is appended to the **run
@@ -68,12 +68,14 @@ defined inputs, work to be done, and a goal. `ARCHITECTURE.md` refers to tasks a
   are a first-class runner capability (`WF-021`).
 
 ### Stage contract (run environment, artifacts, capabilities)
-- **TSK-040 (MUST):** Every Task MUST execute in an ephemeral, isolated run environment
-  over a **fresh, disposable working copy** of the target repo — at tiers 1–2 a git
-  worktree off the managed working copy, run as a local process; at tier 3 (V2) the
-  workspace of an ephemeral pod. Environments MUST be cleaned up after the run. This
-  is the **owning statement** of the stage run-environment contract
-  (`ARCHITECTURE.md §5`; `WF-053` and `GBO-050` defer here). *(All tiers)*
+- **TSK-040 (MUST):** Every Task MUST execute in an ephemeral, isolated, disposable
+  workspace. Repo-backed Tasks MUST receive a **fresh working copy** of the target repo
+  — at tiers 1–2 a git worktree off the managed working copy, run as a local process;
+  at tier 3 (V2) the workspace of an ephemeral pod. Deterministic Tasks MAY instead
+  declare `run.workspace: scratch` to receive an empty workspace without repository
+  resolution. Environments MUST be cleaned up after the run. This is the **owning
+  statement** of the stage run-environment contract (`ARCHITECTURE.md §5`; `WF-053`
+  and `GBO-050` defer here). *(All tiers)*
 - **TSK-041 (MUST):** Tasks MUST exchange data only via envelopes and **artifact
   pointers** (path + content digest inside the run journal); a Task MUST NOT reach
   into another Task's state or rely on implicit shared state. *(All tiers)*

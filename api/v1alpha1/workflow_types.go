@@ -177,6 +177,11 @@ type DeterministicRun struct {
 	// Image optionally overrides the container image the command runs in.
 	// +optional
 	Image string `json:"image,omitempty" yaml:"image,omitempty"`
+	// Network selects the command's network access. Empty inherits the host
+	// network. "none" denies network access to the command and its descendants.
+	// +kubebuilder:validation:Enum=none
+	// +optional
+	Network NetworkMode `json:"network,omitempty" yaml:"network,omitempty"`
 	// Workspace selects where the command runs. Empty or "repo" provisions the
 	// workflow's repository worktree. "scratch" provisions an empty, disposable
 	// directory and requires no repository connection.
@@ -184,6 +189,14 @@ type DeterministicRun struct {
 	// +optional
 	Workspace WorkspaceMode `json:"workspace,omitempty" yaml:"workspace,omitempty"`
 }
+
+// NetworkMode selects the network access available to a deterministic command.
+type NetworkMode string
+
+const (
+	// NetworkNone denies network access to the command and its descendants.
+	NetworkNone NetworkMode = "none"
+)
 
 // WorkspaceMode selects the filesystem workspace for a deterministic command.
 type WorkspaceMode string

@@ -125,10 +125,11 @@ everything a goober does happens inside a workflow, at every deployment tier.
   state; no stage reaches into another stage's state. Owning contract: `TSK-041`
   (`ARCHITECTURE.md §5`); this ID defers to it. *(All tiers)*
 - **WF-053 (MUST):** Each stage MUST execute in a **fresh, isolated, disposable
-  working copy** of the target repo, torn down after the run. Owning contract:
-  `TSK-040` (`ARCHITECTURE.md §5`); this ID defers to it. *(Tiers 1–2: a git
-  worktree off the managed working copy, run as a local process; Tier 3 (V2): the
-  workspace of an ephemeral Kubernetes agent pod.)*
+  workspace**, torn down after the run. Repo-backed stages receive a working copy of
+  the target repo; deterministic stages MAY instead request an empty scratch workspace.
+  Owning contract: `TSK-040` (`ARCHITECTURE.md §5`); this ID defers to it. *(Tiers
+  1–2: a git worktree or local scratch directory, run as a local process; Tier 3
+  (V2): the workspace of an ephemeral Kubernetes agent pod.)*
 - **WF-054 (MUST):** The local runner MUST recover from a crash by replaying the
   state checkpoint + event journal on restart and resuming from the last completed
   stage — durability is append + fsync, with no database or service dependency.

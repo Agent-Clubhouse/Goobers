@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -139,6 +140,14 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	for _, entry := range startupReleased {
 		pf(stdout, "recovered expired claim %s (was held by run %s)\n", entry.ItemID, entry.RunID)
+	}
+
+	// Scratch workspaces have no git metadata to recover. Once this daemon
+	// holds the instance lock, every stage-* entry belongs to the prior process
+	// and can be removed before interrupted runs allocate fresh workspaces.
+	if err := runner.ReapScratchWorkspaces(filepath.Join(l.WorkcopiesDir(), "scratch")); err != nil {
+		pf(stderr, "error: reap scratch workspaces: %v\n", err)
+		return 1
 	}
 
 	// Reap crash-orphaned worktrees before anything tries to resume into one

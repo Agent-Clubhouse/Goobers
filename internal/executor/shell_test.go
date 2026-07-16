@@ -300,6 +300,19 @@ func TestShellExecutor_ProviderClassificationUsesTerminalError(t *testing.T) {
 	}
 }
 
+func TestShellExecutor_RejectsUnknownNetworkMode(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+
+	_, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", "exit 0"},
+		Network: apiv1.NetworkMode("host"),
+	})
+	if err == nil || !strings.Contains(err.Error(), `unknown network mode "host"`) {
+		t.Fatalf("Run error = %v, want unknown network mode", err)
+	}
+}
+
 func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 	exec, _ := newTestExecutor(t, nil)
 	env := baseEnvelope(t)

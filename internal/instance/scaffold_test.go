@@ -94,8 +94,9 @@ func TestInitDemoFresh(t *testing.T) {
 		t.Fatalf("unexpected demo workflow: %+v", workflow)
 	}
 	for _, task := range workflow.Spec.Tasks {
-		if task.Type != apiv1.TaskDeterministic || task.Run == nil || task.Run.Workspace != apiv1.WorkspaceScratch {
-			t.Fatalf("demo task is not a scratch deterministic stage: %+v", task)
+		if task.Type != apiv1.TaskDeterministic || task.Run == nil ||
+			task.Run.Workspace != apiv1.WorkspaceScratch || task.Run.Network != apiv1.NetworkNone {
+			t.Fatalf("demo task is not an offline scratch deterministic stage: %+v", task)
 		}
 	}
 }

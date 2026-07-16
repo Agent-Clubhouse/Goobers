@@ -1738,7 +1738,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if err := os.MkdirAll(r.cfg.ScratchDir, 0o700); err != nil {
 			return nil, fmt.Errorf("create scratch workspace root: %w", err)
 		}
-		path, err := os.MkdirTemp(r.cfg.ScratchDir, "stage-*")
+		path, err := os.MkdirTemp(r.cfg.ScratchDir, scratchWorkspacePrefix+"*")
 		if err != nil {
 			return nil, fmt.Errorf("create scratch workspace: %w", err)
 		}
