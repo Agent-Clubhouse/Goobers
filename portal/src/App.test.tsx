@@ -70,9 +70,13 @@ describe("portal foundations", () => {
     unmount();
     window.location.hash = "#/workflow/implementation";
     render(<App />);
+    const graph = screen.getByRole("group", { name: "Implementation execution graph" });
+    const graphViewport = screen.getByRole("region", { name: "Scrollable Implementation execution graph" });
     const firstStage = screen.getByRole("button", { name: "Gather context, pending" });
     const secondStage = screen.getByRole("button", { name: "Implement, pending" });
 
+    expect(graphViewport).toContainElement(graph);
+    expect(graphViewport).toHaveAttribute("tabindex", "0");
     firstStage.focus();
     fireEvent.keyDown(firstStage, { key: "ArrowRight" });
     expect(secondStage).toHaveFocus();
@@ -148,6 +152,8 @@ describe("portal foundations", () => {
     });
 
     expect(await screen.findByText("In progress")).toBeInTheDocument();
+    expect(screen.getByText("Outcome not recorded yet.")).toBeInTheDocument();
+    expect(screen.queryByText("Produced a partial API and portal client without a complete slice.")).not.toBeInTheDocument();
     expect(screen.queryByText("attempt-1-summary.md")).not.toBeInTheDocument();
     expect(container.querySelector('[data-edge="review-gate->implement"]')).not.toHaveClass("graph-edge-active");
   });

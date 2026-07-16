@@ -112,6 +112,7 @@ function visibleAttempts(run: Run, stageId: string, eventSeq: number): StageAtte
         ...attempt,
         status: "running",
         duration: "In progress",
+        summary: "Outcome not recorded yet.",
         output: undefined,
         artifacts: [],
       };

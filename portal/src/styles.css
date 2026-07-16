@@ -790,6 +790,17 @@ summary:focus-visible {
   padding: 18px;
 }
 
+.graph-viewport {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.graph-viewport:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .graph-canvas {
   background-color: var(--surface);
   background-image: radial-gradient(var(--line) 0.7px, transparent 0.7px);
@@ -797,6 +808,7 @@ summary:focus-visible {
   border: 1px solid var(--line);
   border-radius: 8px;
   height: 282px;
+  min-width: 960px;
   overflow: hidden;
   position: relative;
 }
@@ -1646,14 +1658,6 @@ summary:focus-visible {
     border-top: 1px solid var(--line);
     justify-content: space-between;
     padding-top: 12px;
-  }
-
-  .graph-canvas {
-    min-width: 920px;
-  }
-
-  .graph-panel {
-    overflow-x: auto;
   }
 
   .playback-panel {
