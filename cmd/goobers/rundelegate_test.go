@@ -5,6 +5,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -146,23 +147,19 @@ func TestPollTriggerResponseTimesOutWithNoSweeper(t *testing.T) {
 	}
 }
 
-// waitForLockHeld polls until lockPath is held by someone else (the live
-// daemon under test) rather than sleeping a fixed guess — acquireInstanceLock
-// itself is the only reliable signal, since the lock FILE is created by
-// O_CREATE regardless of whether the flock succeeds (so the file's mere
-// existence proves nothing).
-func waitForLockHeld(t *testing.T, lockPath string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		release, err := acquireInstanceLock(lockPath)
-		if err != nil {
-			return // held by someone else already — the daemon has it
-		}
-		release()
-		time.Sleep(10 * time.Millisecond)
+// daemonStartedWriter turns runUpContext's existing startup message into a
+// readiness signal. That message is emitted only after the daemon owns the
+// instance lock and starts its delegation sweeper.
+type daemonStartedWriter struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (w *daemonStartedWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("daemon started")) {
+		w.once.Do(func() { close(w.started) })
 	}
-	t.Fatal("timed out waiting for the daemon to acquire the instance lock")
+	return len(p), nil
 }
 
 // TestRunDelegatesToLiveDaemon is #343's end-to-end CLI acceptance: with a
@@ -180,9 +177,14 @@ func TestRunDelegatesToLiveDaemon(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var upStdout, upStderr bytes.Buffer
-	upDone := make(chan int, 1)
-	go func() { upDone <- runUpContext(ctx, []string{root}, &upStdout, &upStderr) }()
+	upStdout := &daemonStartedWriter{started: make(chan struct{})}
+	var upStderr bytes.Buffer
+	var upCode int
+	upDone := make(chan struct{})
+	go func() {
+		upCode = runUpContext(ctx, []string{root}, upStdout, &upStderr)
+		close(upDone)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -192,7 +194,13 @@ func TestRunDelegatesToLiveDaemon(t *testing.T) {
 		}
 	})
 
-	waitForLockHeld(t, filepath.Join(l.SchedulerDir(), "up.lock"))
+	select {
+	case <-upStdout.started:
+	case <-upDone:
+		t.Fatalf("runUpContext exited before startup: code = %d, stderr = %q", upCode, upStderr.String())
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for runUpContext to report daemon readiness")
+	}
 
 	code, stdout, stderr := runArgs(t, "run", "default-implement", root)
 	if code != 0 {
