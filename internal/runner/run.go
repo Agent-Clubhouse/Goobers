@@ -87,7 +87,7 @@ type Config struct {
 	// MaxSteps overrides DefaultMaxSteps when > 0.
 	MaxSteps int
 	// RepoCloneURL derives the git remote URL worktree.Manager clones from a
-	// RepoRef. Defaults to defaultRepoCloneURL (github.com over HTTPS). Tests
+	// RepoRef. Defaults to defaultRepoCloneURL. Tests
 	// override this to point at a local fixture repo without network access.
 	RepoCloneURL func(apiv1.RepoRef) (string, error)
 	// Telemetry optionally spans the run/task/gate walk (issue #126). Nil
@@ -1298,12 +1298,13 @@ func artifactPointersFrom(refs []journal.Ref) []apiv1.ArtifactPointer {
 }
 
 // defaultRepoCloneURL derives the git remote URL worktree.Manager clones from
-// a RepoRef. ADO support is a placeholder pending its provider's clone-URL
-// convention (V0 ships GitHub first, ARCHITECTURE §12).
+// a RepoRef.
 func defaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {
 	switch ref.Provider {
 	case apiv1.ProviderGitHub:
 		return fmt.Sprintf("https://github.com/%s/%s.git", ref.Owner, ref.Name), nil
+	case apiv1.ProviderADO:
+		return fmt.Sprintf("https://dev.azure.com/%s/_git/%s", ref.Owner, ref.Name), nil
 	default:
 		return "", fmt.Errorf("runner: unsupported repo provider %q", ref.Provider)
 	}
