@@ -1,12 +1,15 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/version"
 )
 
 func TestAcquireInstanceLockExcludesConcurrentHolder(t *testing.T) {
@@ -43,11 +46,82 @@ func TestAcquireInstanceLockReacquirableAfterRelease(t *testing.T) {
 	release2()
 }
 
+func TestAcquireDaemonLockWritesIdentity(t *testing.T) {
+	root := t.TempDir()
+	lockPath := filepath.Join(root, "scheduler", "up.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().UTC()
+	release, err := acquireDaemonLock(lockPath, root)
+	if err != nil {
+		t.Fatalf("acquireDaemonLock: %v", err)
+	}
+	defer release()
+
+	f, err := os.Open(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := readDaemonIdentity(f)
+	_ = f.Close()
+	if err != nil {
+		t.Fatalf("readDaemonIdentity: %v", err)
+	}
+	if identity == nil {
+		t.Fatal("readDaemonIdentity returned nil")
+	}
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.PID != os.Getpid() {
+		t.Errorf("pid = %d, want %d", identity.PID, os.Getpid())
+	}
+	if identity.StartedAt.Before(before) || identity.StartedAt.After(time.Now().UTC()) {
+		t.Errorf("startedAt = %s, want acquisition time", identity.StartedAt)
+	}
+	if identity.InstanceRoot != absoluteRoot {
+		t.Errorf("instanceRoot = %q, want %q", identity.InstanceRoot, absoluteRoot)
+	}
+	if identity.Version != version.Get().String() {
+		t.Errorf("version = %q, want %q", identity.Version, version.Get().String())
+	}
+}
+
+func TestAcquireInstanceLockConflictIncludesHolderPID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "up.lock")
+	identity := daemonIdentity{
+		PID:          os.Getpid(),
+		StartedAt:    time.Date(2026, time.July, 16, 9, 0, 0, 0, time.UTC),
+		InstanceRoot: "/tmp/goobers",
+		Version:      "v0.3.0",
+	}
+	release, err := acquireInstanceLockWithIdentity(path, &identity)
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	defer release()
+
+	if _, err := acquireInstanceLock(path); err == nil {
+		t.Fatal("expected second acquire to fail")
+	} else if !strings.Contains(err.Error(), "already holds the lock") ||
+		!strings.Contains(err.Error(), fmt.Sprintf("holder pid %d", os.Getpid())) {
+		t.Fatalf("err = %v, want existing conflict message enriched with holder pid", err)
+	}
+}
+
 func TestUpFailsFastOnSecondInstance(t *testing.T) {
 	root := initDemo(t)
 	l := instance.NewLayout(root)
 
-	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	identity := daemonIdentity{
+		PID:          os.Getpid(),
+		StartedAt:    time.Date(2026, time.July, 16, 9, 0, 0, 0, time.UTC),
+		InstanceRoot: root,
+		Version:      "v0.3.0",
+	}
+	release, err := acquireInstanceLockWithIdentity(filepath.Join(l.SchedulerDir(), "up.lock"), &identity)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -59,6 +133,9 @@ func TestUpFailsFastOnSecondInstance(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "already holds the lock") {
 		t.Fatalf("stderr = %q", stderr)
+	}
+	if !strings.Contains(stderr, fmt.Sprintf("holder pid %d", os.Getpid())) {
+		t.Fatalf("stderr = %q, want holder pid", stderr)
 	}
 }
 
