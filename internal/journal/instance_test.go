@@ -122,6 +122,44 @@ func TestInstanceLogSerializesIndependentWriters(t *testing.T) {
 	}
 }
 
+func TestInstanceLogAppendPreservesLegacySequenceHighWaterMark(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
+	for _, seq := range []uint64{1, 3, 2} {
+		if err := encoder.Encode(Event{Seq: seq, Type: EventTriggerFired, Workflow: "legacy"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, fileEvents), data.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	log, report, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("OpenInstanceLog: %v", err)
+	}
+	defer func() { _ = log.Close() }()
+	if report.LastSeq != 3 {
+		t.Fatalf("last seq = %d, want legacy high-water mark 3", report.LastSeq)
+	}
+	if err := log.Append(Event{Type: EventTriggerFired, Workflow: "current"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatalf("ReadInstanceLog: %v", err)
+	}
+	last := events[len(events)-1]
+	if last.Seq != 4 || last.Workflow != "current" {
+		t.Fatalf("last event = %+v, want seq 4 current event", last)
+	}
+}
+
 func TestInstanceLogAppendSkipsCorruptCompletedEvent(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "scheduler")
 	log, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))

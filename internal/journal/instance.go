@@ -103,7 +103,7 @@ func (l *InstanceLog) Append(ev Event) error {
 	if err != nil {
 		return err
 	}
-	l.seq = lastSeq
+	l.seq = max(l.seq, lastSeq)
 	if tornBytes > 0 {
 		if err := truncateTornTail(path, tornBytes); err != nil {
 			return err
