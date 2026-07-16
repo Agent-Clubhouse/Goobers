@@ -108,7 +108,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}
-		if err := printTranscripts(stdout, reader, events, selectedStage); err != nil {
+		if err := printTranscripts(stdout, reader, events, runID, selectedStage); err != nil {
 			pf(stderr, "error: %v in run %q\n", err, runID)
 			if errors.Is(err, errTranscriptNotFound) {
 				return 1
@@ -211,28 +211,30 @@ var errTranscriptNotFound = errors.New("no recorded agent transcript")
 
 type recordedTranscript struct {
 	event journal.Event
+	stage string
 	data  []byte
 }
 
-func printTranscripts(stdout io.Writer, reader *journal.Reader, events []journal.Event, stage string) error {
+func printTranscripts(stdout io.Writer, reader *journal.Reader, events []journal.Event, runID, stage string) error {
 	var transcripts []recordedTranscript
 	for _, ev := range events {
+		recordedStage := strings.TrimPrefix(ev.Stage, runID+":")
 		if ev.Type != journal.EventSpanRecorded ||
 			(ev.Name != "transcript" && !strings.HasSuffix(ev.Name, ".transcript")) ||
-			(stage != "" && ev.Stage != stage) {
+			(stage != "" && recordedStage != stage) {
 			continue
 		}
 		if ev.Ref == nil {
-			return fmt.Errorf("transcript for stage %q at seq %d is unavailable: span event has no content reference", ev.Stage, ev.Seq)
+			return fmt.Errorf("transcript for stage %q at seq %d is unavailable: span event has no content reference", recordedStage, ev.Seq)
 		}
 		data, err := reader.SpanBytes(*ev.Ref)
 		if err != nil {
-			return fmt.Errorf("transcript for stage %q at seq %d is unavailable: %w", ev.Stage, ev.Seq, err)
+			return fmt.Errorf("transcript for stage %q at seq %d is unavailable: %w", recordedStage, ev.Seq, err)
 		}
 		if len(data) == 0 {
-			return fmt.Errorf("transcript for stage %q at seq %d is unavailable: recorded content is empty", ev.Stage, ev.Seq)
+			return fmt.Errorf("transcript for stage %q at seq %d is unavailable: recorded content is empty", recordedStage, ev.Seq)
 		}
-		transcripts = append(transcripts, recordedTranscript{event: ev, data: data})
+		transcripts = append(transcripts, recordedTranscript{event: ev, stage: recordedStage, data: data})
 	}
 	if len(transcripts) == 0 {
 		if stage != "" {
@@ -247,7 +249,7 @@ func printTranscripts(stdout io.Writer, reader *journal.Reader, events []journal
 			pln(stdout, "")
 		}
 		pf(stdout, "--- stage=%q name=%q seq=%d ---\n",
-			transcript.event.Stage, transcript.event.Name, transcript.event.Seq)
+			transcript.stage, transcript.event.Name, transcript.event.Seq)
 		pf(stdout, "%s", transcript.data)
 		if transcript.data[len(transcript.data)-1] != '\n' {
 			pln(stdout, "")

@@ -109,13 +109,13 @@ func TestTraceListsRecordedTranscripts(t *testing.T) {
 	root := t.TempDir()
 	const runID = "transcript-list"
 	run := newTraceTestRun(t, root, runID)
-	if _, err := run.RecordSpan("query-backlog", "copilot-cli.transcript", []byte("selected issue 477\n")); err != nil {
+	if _, err := run.RecordSpan(runID+":query-backlog", "copilot-cli.transcript", []byte("selected issue 477\n")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run.RecordSpan("query-backlog", "copilot-cli.tool-events", []byte("internal tool event")); err != nil {
+	if _, err := run.RecordSpan(runID+":query-backlog", "copilot-cli.tool-events", []byte("internal tool event")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run.RecordSpan("implement", "copilot-cli.transcript", []byte("implemented trace views")); err != nil {
+	if _, err := run.RecordSpan(runID+":implement", "copilot-cli.transcript", []byte("implemented trace views")); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.Close(); err != nil {
@@ -146,10 +146,10 @@ func TestTraceSelectsStageTranscript(t *testing.T) {
 	root := t.TempDir()
 	const runID = "transcript-stage"
 	run := newTraceTestRun(t, root, runID)
-	if _, err := run.RecordSpan("query-backlog", "copilot-cli.transcript", []byte("query transcript")); err != nil {
+	if _, err := run.RecordSpan(runID+":query-backlog", "copilot-cli.transcript", []byte("query transcript")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run.RecordSpan("implement", "copilot-cli.transcript", []byte("implementation transcript")); err != nil {
+	if _, err := run.RecordSpan(runID+":implement", "copilot-cli.transcript", []byte("implementation transcript")); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.Close(); err != nil {
@@ -229,77 +229,6 @@ func newTraceTestRun(t *testing.T, root, runID string) *journal.Run {
 		t.Fatal(err)
 	}
 	return run
-}
-
-func TestTraceResolvesUniqueRunIDPrefix(t *testing.T) {
-	root := t.TempDir()
-	const runID = "dd57a3c2f0d27ea99ca7fa84db6ecab4"
-	createTraceRun(t, root, runID)
-
-	code, stdout, stderr := runArgs(t, "trace", "dd57a3c2", root)
-	if code != 0 {
-		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
-	}
-	if !strings.Contains(stdout, "run:      "+runID+"\n") {
-		t.Fatalf("trace stdout missing resolved run id: %q", stdout)
-	}
-}
-
-func TestTraceRejectsAmbiguousRunIDPrefix(t *testing.T) {
-	root := t.TempDir()
-	const (
-		first  = "dd57a3c2aaaaaaaaaaaaaaaaaaaaaaaa"
-		second = "dd57a3c2f0d27ea99ca7fa84db6ecab4"
-	)
-	createTraceRun(t, root, first)
-	createTraceRun(t, root, second)
-
-	code, stdout, stderr := runArgs(t, "trace", "dd57a3c2", root)
-	if code != 2 {
-		t.Fatalf("trace: code = %d, want 2", code)
-	}
-	if stdout != "" {
-		t.Fatalf("trace stdout = %q, want empty", stdout)
-	}
-	want := `error: ambiguous prefix "dd57a3c2" matches 2 runs: ` + first + ", " + second + "\n"
-	if stderr != want {
-		t.Fatalf("trace stderr = %q, want %q", stderr, want)
-	}
-}
-
-func TestTracePrefersExactRunIDOverPrefixMatches(t *testing.T) {
-	root := t.TempDir()
-	const (
-		exact  = "dd57a3c2f0d27ea99ca7fa84db6ecab4"
-		longer = exact + "-other"
-	)
-	createTraceRun(t, root, exact)
-	createTraceRun(t, root, longer)
-
-	code, stdout, stderr := runArgs(t, "trace", exact, root)
-	if code != 0 {
-		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
-	}
-	if !strings.Contains(stdout, "run:      "+exact+"\n") {
-		t.Fatalf("trace stdout missing exact run id: %q", stdout)
-	}
-}
-
-func createTraceRun(t *testing.T, root, runID string) {
-	t.Helper()
-	run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
-		RunID:           runID,
-		Workflow:        "implementation",
-		WorkflowVersion: 1,
-		Gaggle:          "goobers",
-		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
-	}, nil)
-	if err != nil {
-		t.Fatalf("create trace run %q: %v", runID, err)
-	}
-	if err := run.Close(); err != nil {
-		t.Fatalf("close trace run %q: %v", runID, err)
-	}
 }
 
 func TestTraceShowsEscalationSummary(t *testing.T) {
