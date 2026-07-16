@@ -81,7 +81,8 @@ button {
 
 button:focus-visible,
 input:focus-visible,
-summary:focus-visible {
+summary:focus-visible,
+.artifact-action:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
@@ -1377,10 +1378,9 @@ summary:focus-visible {
 }
 
 .attempt-switcher {
-  display: flex;
-  gap: 4px;
+  display: grid;
+  gap: 6px;
   margin: 18px 0 14px;
-  overflow: auto;
 }
 
 .attempt-button {
@@ -1389,15 +1389,62 @@ summary:focus-visible {
   border-radius: 6px;
   color: var(--muted);
   cursor: pointer;
+  display: grid;
   font-size: 9px;
-  padding: 5px 7px;
-  white-space: nowrap;
+  gap: 5px;
+  padding: 8px 9px;
+  text-align: left;
+  width: 100%;
 }
 
 .attempt-button-active {
   background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent-ink);
+}
+
+.attempt-button-title,
+.attempt-button-meta {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.attempt-button-title strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.attempt-button small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.attempt-class {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 7px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  padding: 2px 5px;
+  text-transform: uppercase;
+}
+
+.attempt-class-initial {
+  color: var(--muted-strong);
+}
+
+.attempt-class-policy {
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 38%, var(--line));
+  color: var(--warning);
+}
+
+.attempt-class-infra {
+  background: var(--active-soft);
+  border-color: color-mix(in srgb, var(--active) 38%, var(--line));
+  color: var(--active);
 }
 
 .attempt-content {
@@ -1437,24 +1484,57 @@ summary:focus-visible {
   margin: 12px 0;
 }
 
-.output-line {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+.output-list,
+.artifact-metadata,
+.definition-properties,
+.artifact-dialog-meta {
   display: grid;
-  gap: 5px;
-  margin-bottom: 16px;
-  padding: 9px;
+  margin: 0;
 }
 
-.output-line span {
+.output-list {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.output-list div,
+.definition-properties div {
+  align-items: start;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 90px minmax(0, 1fr);
+  padding: 8px 9px;
+}
+
+.output-list div + div,
+.definition-properties div + div {
+  border-top: 1px solid var(--line);
+}
+
+.output-list dt,
+.definition-properties dt,
+.artifact-metadata dt,
+.artifact-dialog-meta dt {
   color: var(--muted);
   font-size: 8px;
   text-transform: uppercase;
 }
 
-.output-line code {
+.output-list dd,
+.definition-properties dd,
+.artifact-metadata dd,
+.artifact-dialog-meta dd {
+  margin: 0;
+}
+
+.output-list code {
   font-size: 9px;
+}
+
+.output-provenance {
+  color: var(--muted) !important;
+  font-size: 8px !important;
+  margin: 7px 0 16px !important;
 }
 
 .artifact-heading {
@@ -1462,30 +1542,31 @@ summary:focus-visible {
 }
 
 .artifact-list {
-  border-bottom: 1px solid var(--line);
-  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
 }
 
 .artifact-row {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  text-align: left;
+}
+
+.artifact-title {
   align-items: start;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
   display: grid;
   gap: 8px;
-  grid-template-columns: auto 1fr auto;
-  padding: 10px 2px;
-  text-align: left;
-  width: 100%;
+  grid-template-columns: auto 1fr;
 }
 
-.artifact-row + .artifact-row {
-  border-top: 1px solid var(--line);
-}
-
-.artifact-row > span {
+.artifact-title > span {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
 
 .artifact-row strong {
@@ -1494,16 +1575,88 @@ summary:focus-visible {
 
 .artifact-row small,
 .artifact-size,
+.artifact-access-note,
 .empty-detail {
   color: var(--muted);
   font-size: 8px;
   line-height: 1.4;
 }
 
-.definition-disclosure {
+.artifact-metadata {
+  gap: 6px;
+}
+
+.artifact-metadata div {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: 62px minmax(0, 1fr);
+}
+
+.artifact-metadata dd {
+  color: var(--muted-strong);
+  font-size: 8px;
+  min-width: 0;
+}
+
+.artifact-digest code {
+  display: block;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.digest-verified,
+.digest-unverified {
+  display: inline-block;
+  font-size: 7px;
+  font-weight: 750;
+  margin-top: 4px;
+  text-transform: uppercase;
+}
+
+.digest-verified {
+  color: var(--success);
+}
+
+.digest-unverified {
+  color: var(--danger);
+}
+
+.artifact-action {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--accent-ink);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 8px;
+  font-weight: 700;
+  justify-content: center;
+  justify-self: start;
+  padding: 5px 8px;
+  text-decoration: none;
+}
+
+.artifact-access-note {
+  font-style: italic;
+}
+
+.definition-context {
   border-top: 1px solid var(--line);
   margin-top: 18px;
   padding-top: 14px;
+}
+
+.definition-context > .section-kicker {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.definition-disclosure {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px;
 }
 
 .definition-disclosure summary {
@@ -1516,6 +1669,122 @@ summary:focus-visible {
   color: var(--muted);
   font-size: 9px;
   line-height: 1.5;
+}
+
+.definition-properties {
+  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  margin-bottom: 12px;
+}
+
+.artifact-dialog-backdrop {
+  align-items: center;
+  background: color-mix(in srgb, var(--ink) 35%, transparent);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 20;
+}
+
+.artifact-dialog {
+  background: var(--panel-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  box-shadow: 0 18px 60px color-mix(in srgb, #000000 24%, transparent);
+  display: grid;
+  gap: 14px;
+  max-height: min(720px, calc(100vh - 48px));
+  max-width: 780px;
+  overflow: auto;
+  padding: 18px;
+  width: 100%;
+}
+
+.artifact-dialog > header {
+  align-items: start;
+  display: flex;
+  justify-content: space-between;
+}
+
+.artifact-dialog h2 {
+  font-size: 15px;
+  margin: 3px 0 0;
+}
+
+.dialog-close {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  height: 30px;
+  justify-content: center;
+  width: 30px;
+}
+
+.artifact-dialog-meta {
+  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+}
+
+.artifact-dialog-meta div {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 86px minmax(0, 1fr);
+  padding: 8px 0;
+}
+
+.artifact-dialog-meta div + div {
+  border-top: 1px solid var(--line);
+}
+
+.artifact-dialog-meta dd {
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+
+.artifact-load-state {
+  align-items: start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--muted-strong);
+  display: grid;
+  font-size: 10px;
+  gap: 7px;
+  padding: 16px;
+}
+
+.artifact-load-error {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--line));
+}
+
+.artifact-load-state button {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 9px;
+  justify-self: start;
+  padding: 5px 8px;
+}
+
+.artifact-content {
+  background: var(--code-bg);
+  border-radius: 7px;
+  color: var(--code-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.55;
+  margin: 0;
+  min-height: 180px;
+  overflow: auto;
+  padding: 14px;
+  white-space: pre-wrap;
 }
 
 @keyframes active-sweep {

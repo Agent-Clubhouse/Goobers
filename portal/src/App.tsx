@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   instanceWarnings,
   runStatusLabel,
   runs,
   workflowForRun,
   workflows,
+  type Artifact,
   type NodeState,
   type Run,
   type RunEvent,
@@ -803,31 +804,209 @@ function visibleAttempts(run: Run, stageId: string, eventSeq: number): StageAtte
       }
       return {
         ...attempt,
-        status: "running",
+        status: "running" as const,
         duration: "In progress",
-        output: undefined,
-        artifacts: [],
+        summary: "Outcome is not available at the selected event.",
+        outputs: undefined,
+        artifacts: attempt.artifacts.filter((artifact) => artifact.recordedSeq <= eventSeq),
       };
-    });
+    })
+    .sort((left, right) => left.startedSeq - right.startedSeq || left.number - right.number);
+}
+
+const safeArtifactMediaTypes = new Set([
+  "application/json",
+  "application/yaml",
+  "text/markdown",
+  "text/plain",
+  "text/yaml",
+]);
+
+function canPreviewArtifact(artifact: Artifact): boolean {
+  return (
+    safeArtifactMediaTypes.has(artifact.mediaType.toLowerCase()) &&
+    (artifact.content !== undefined || artifact.contentError !== undefined)
+  );
+}
+
+function loadArtifactContent(artifact: Artifact): Promise<string> {
+  return new Promise((resolve, reject) => {
+    window.setTimeout(() => {
+      if (artifact.contentError) {
+        reject(new Error(artifact.contentError));
+        return;
+      }
+      if (artifact.content === undefined) {
+        reject(new Error("Artifact content is not available."));
+        return;
+      }
+      if (artifact.mediaType.toLowerCase() === "application/json") {
+        try {
+          resolve(JSON.stringify(JSON.parse(artifact.content), null, 2));
+        } catch {
+          reject(new Error("Artifact content is not valid JSON."));
+        }
+        return;
+      }
+      resolve(artifact.content);
+    }, 20);
+  });
+}
+
+function ArtifactViewer({
+  artifact,
+  attempt,
+  run,
+  stage,
+  onClose,
+}: {
+  artifact: Artifact;
+  attempt: StageAttempt;
+  run: Run;
+  stage: WorkflowStage;
+  onClose: () => void;
+}) {
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [contentState, setContentState] = useState<
+    { status: "loading" } | { status: "ready"; content: string } | { status: "error"; message: string }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    let current = true;
+    setContentState({ status: "loading" });
+    loadArtifactContent(artifact).then(
+      (content) => {
+        if (current) {
+          setContentState({ status: "ready", content });
+        }
+      },
+      (error: unknown) => {
+        if (current) {
+          setContentState({
+            status: "error",
+            message: error instanceof Error ? error.message : "Artifact content could not be loaded.",
+          });
+        }
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [artifact, loadAttempt]);
+
+  return (
+    <div className="artifact-dialog-backdrop">
+      <section
+        aria-labelledby="artifact-dialog-title"
+        aria-modal="true"
+        className="artifact-dialog"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+          }
+        }}
+        role="dialog"
+      >
+        <header>
+          <div>
+            <span className="section-kicker">Artifact content</span>
+            <h2 id="artifact-dialog-title">{artifact.name}</h2>
+          </div>
+          <button aria-label="Close artifact viewer" autoFocus className="dialog-close" onClick={onClose} type="button">
+            <Icon name="close" size={16} />
+          </button>
+        </header>
+        <dl className="artifact-dialog-meta">
+          <div>
+            <dt>Provenance</dt>
+            <dd>{run.shortId} · {stage.name} · Attempt {attempt.number} · Seq {artifact.recordedSeq}</dd>
+          </div>
+          <div>
+            <dt>Media</dt>
+            <dd>{artifact.mediaType} · {artifact.size}</dd>
+          </div>
+          <div>
+            <dt>Digest</dt>
+            <dd><code>{artifact.digest}</code> · {artifact.digestVerified ? "Verified" : "Unverified"}</dd>
+          </div>
+        </dl>
+        {contentState.status === "loading" && (
+          <div className="artifact-load-state" role="status">
+            Loading artifact content…
+          </div>
+        )}
+        {contentState.status === "error" && (
+          <div className="artifact-load-state artifact-load-error" role="alert">
+            <strong>Artifact unavailable</strong>
+            <span>{contentState.message}</span>
+            <button onClick={() => setLoadAttempt((attemptNumber) => attemptNumber + 1)} type="button">
+              Retry
+            </button>
+          </div>
+        )}
+        {contentState.status === "ready" && (
+          <pre aria-label={`${artifact.name} content`} className="artifact-content">{contentState.content}</pre>
+        )}
+      </section>
+    </div>
+  );
 }
 
 function AttemptInspector({
   run,
   stage,
   eventSeq,
+  eventAttemptNumber,
 }: {
   run: Run;
   stage: WorkflowStage;
   eventSeq: number;
+  eventAttemptNumber?: number;
 }) {
   const attempts = visibleAttempts(run, stage.id, eventSeq);
-  const [selectedAttemptNumber, setSelectedAttemptNumber] = useState<number>();
+  const [selectedAttemptNumber, setSelectedAttemptNumber] = useState<number | undefined>(eventAttemptNumber);
+  const [selectedArtifact, setSelectedArtifact] = useState<Artifact>();
+  const artifactTrigger = useRef<HTMLButtonElement | null>(null);
+  const attemptButtons = useRef<Array<HTMLButtonElement | null>>([]);
   const selectedAttempt =
     attempts.find((attempt) => attempt.number === selectedAttemptNumber) ?? attempts[attempts.length - 1];
 
-  useEffect(() => {
-    setSelectedAttemptNumber(undefined);
-  }, [stage.id, eventSeq]);
+  const selectAttemptAt = (index: number) => {
+    const attempt = attempts[index];
+    if (!attempt) {
+      return;
+    }
+    setSelectedAttemptNumber(attempt.number);
+    attemptButtons.current[index]?.focus();
+  };
+
+  const onAttemptKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let nextIndex: number | undefined;
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+      nextIndex = (index + 1) % attempts.length;
+    } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+      nextIndex = (index - 1 + attempts.length) % attempts.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = attempts.length - 1;
+    }
+    if (nextIndex !== undefined) {
+      event.preventDefault();
+      selectAttemptAt(nextIndex);
+    }
+  };
+
+  const openArtifact = (artifact: Artifact, trigger: HTMLButtonElement) => {
+    artifactTrigger.current = trigger;
+    setSelectedArtifact(artifact);
+  };
+
+  const closeArtifact = () => {
+    artifactTrigger.current?.focus();
+    setSelectedArtifact(undefined);
+  };
 
   return (
     <aside className="run-inspector">
@@ -848,32 +1027,68 @@ function AttemptInspector({
         </div>
       ) : (
         <>
-          <div className="attempt-switcher" aria-label="Stage attempts">
-            {attempts.map((attempt) => (
+          <div aria-label="Stage attempts" aria-orientation="vertical" className="attempt-switcher" role="tablist">
+            {attempts.map((attempt, index) => (
               <button
+                aria-controls={`attempt-panel-${attempt.id}`}
+                aria-selected={selectedAttempt?.id === attempt.id}
                 className={selectedAttempt?.id === attempt.id ? "attempt-button attempt-button-active" : "attempt-button"}
+                id={`attempt-tab-${attempt.id}`}
                 key={attempt.id}
                 onClick={() => setSelectedAttemptNumber(attempt.number)}
+                onKeyDown={(event) => onAttemptKeyDown(event, index)}
+                ref={(element) => {
+                  attemptButtons.current[index] = element;
+                }}
+                role="tab"
+                tabIndex={selectedAttempt?.id === attempt.id ? 0 : -1}
                 type="button"
               >
-                Attempt {attempt.number}
+                <span className="attempt-button-title">
+                  <strong>Attempt {attempt.number}</strong>
+                  <span className={`attempt-class attempt-class-${attempt.kind}`}>{attempt.kind}</span>
+                </span>
+                <span className="attempt-button-meta">
+                  <span className={`attempt-state attempt-${attempt.status}`}>{attempt.status}</span>
+                  <span className="mono">{attempt.duration}</span>
+                </span>
+                <small>{attempt.summary}</small>
               </button>
             ))}
           </div>
           {selectedAttempt && (
-            <div className="attempt-content">
+            <div
+              aria-labelledby={`attempt-tab-${selectedAttempt.id}`}
+              className="attempt-content"
+              id={`attempt-panel-${selectedAttempt.id}`}
+              role="tabpanel"
+            >
               <div className="attempt-summary-row">
                 <span className={`attempt-state attempt-${selectedAttempt.status}`}>{selectedAttempt.status}</span>
                 <span className="mono">{selectedAttempt.duration}</span>
-                <span>{selectedAttempt.kind}</span>
+                <span>{selectedAttempt.kind} attempt</span>
               </div>
               <p>{selectedAttempt.summary}</p>
-              {selectedAttempt.output && (
-                <div className="output-line">
-                  <span>Output</span>
-                  <code>{selectedAttempt.output}</code>
-                </div>
+              <div className="artifact-heading">
+                <span>Scalar outputs</span>
+                <span>{Object.keys(selectedAttempt.outputs ?? {}).length}</span>
+              </div>
+              {selectedAttempt.outputs && Object.keys(selectedAttempt.outputs).length > 0 ? (
+                <dl className="output-list">
+                  {Object.entries(selectedAttempt.outputs).map(([name, value]) => (
+                    <div key={name}>
+                      <dt>{name}</dt>
+                      <dd><code>{String(value)}</code></dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : (
+                <p className="empty-detail">No scalar outputs recorded yet.</p>
               )}
+              <p className="output-provenance">
+                From {stage.name} · Attempt {selectedAttempt.number}
+                {selectedAttempt.endedSeq ? ` · Seq ${selectedAttempt.endedSeq}` : ` · Started at seq ${selectedAttempt.startedSeq}`}
+              </p>
               <div className="artifact-heading">
                 <span>Artifacts</span>
                 <span>{selectedAttempt.artifacts.length}</span>
@@ -883,14 +1098,53 @@ function AttemptInspector({
               ) : (
                 <div className="artifact-list">
                   {selectedAttempt.artifacts.map((artifact) => (
-                    <div className="artifact-row" key={artifact.name}>
-                      <Icon name="artifact" size={17} />
-                      <span>
-                        <strong>{artifact.name}</strong>
-                        <small>{artifact.summary}</small>
-                      </span>
-                      <span className="artifact-size">{artifact.size}</span>
-                    </div>
+                    <article className="artifact-row" key={`${artifact.name}-${artifact.digest}`}>
+                      <div className="artifact-title">
+                        <Icon name="artifact" size={17} />
+                        <span>
+                          <strong>{artifact.name}</strong>
+                          <small>{artifact.summary}</small>
+                        </span>
+                      </div>
+                      <dl className="artifact-metadata">
+                        <div>
+                          <dt>Media</dt>
+                          <dd>{artifact.mediaType}</dd>
+                        </div>
+                        <div>
+                          <dt>Size</dt>
+                          <dd>{artifact.size}</dd>
+                        </div>
+                        <div>
+                          <dt>Provenance</dt>
+                          <dd>Attempt {selectedAttempt.number} · Seq {artifact.recordedSeq}</dd>
+                        </div>
+                        <div className="artifact-digest">
+                          <dt>Digest</dt>
+                          <dd>
+                            <code>{artifact.digest}</code>
+                            <span className={artifact.digestVerified ? "digest-verified" : "digest-unverified"}>
+                              {artifact.digestVerified ? "Verified" : "Unverified"}
+                            </span>
+                          </dd>
+                        </div>
+                      </dl>
+                      {canPreviewArtifact(artifact) ? (
+                        <button
+                          className="artifact-action"
+                          onClick={(event) => openArtifact(artifact, event.currentTarget)}
+                          type="button"
+                        >
+                          View content
+                        </button>
+                      ) : artifact.downloadUrl ? (
+                        <a className="artifact-action" download href={artifact.downloadUrl}>
+                          Download
+                        </a>
+                      ) : (
+                        <span className="artifact-access-note">Metadata only</span>
+                      )}
+                    </article>
                   ))}
                 </div>
               )}
@@ -899,11 +1153,37 @@ function AttemptInspector({
         </>
       )}
 
-      <details className="definition-disclosure">
-        <summary>Stage definition</summary>
-        <p>{stage.description}</p>
-        <pre className="code-block">{stage.yaml}</pre>
-      </details>
+      <section className="definition-context">
+        <span className="section-kicker">Definition context</span>
+        <details className="definition-disclosure">
+          <summary>View stage definition and YAML</summary>
+          <p>{stage.description}</p>
+          <dl className="definition-properties">
+            <div>
+              <dt>{stage.kind === "gate" ? "Evaluator" : "Goober"}</dt>
+              <dd>{stage.evaluator ?? stage.goober}</dd>
+            </div>
+            <div>
+              <dt>Policy</dt>
+              <dd>{stage.retry}</dd>
+            </div>
+          </dl>
+          <div className="code-heading">
+            <span>Raw definition</span>
+            <span>YAML</span>
+          </div>
+          <pre className="code-block">{stage.yaml}</pre>
+        </details>
+      </section>
+      {selectedArtifact && selectedAttempt && (
+        <ArtifactViewer
+          artifact={selectedArtifact}
+          attempt={selectedAttempt}
+          onClose={closeArtifact}
+          run={run}
+          stage={stage}
+        />
+      )}
     </aside>
   );
 }
@@ -1278,7 +1558,15 @@ function RunPage({ run, navigate }: { run: Run; navigate: (route: Route) => void
           </div>
         </div>
 
-        {selectedStage && <AttemptInspector eventSeq={currentEvent?.seq ?? 0} run={run} stage={selectedStage} />}
+        {selectedStage && (
+          <AttemptInspector
+            eventAttemptNumber={currentEvent?.stageId === selectedStage.id ? currentEvent.attempt : undefined}
+            eventSeq={currentEvent?.seq ?? 0}
+            key={`${selectedStage.id}-${currentEvent?.seq ?? 0}`}
+            run={run}
+            stage={selectedStage}
+          />
+        )}
       </section>
     </>
   );

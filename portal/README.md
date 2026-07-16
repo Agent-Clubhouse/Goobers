@@ -55,7 +55,8 @@ The full product and architecture authority is
 - The graph layout is fixture-specific, not a general layout engine.
 - Components are intentionally colocated for iteration speed and may be split
   during productionization.
-- Artifact rows demonstrate hierarchy but do not open real journal content.
+- Artifact previews use static fixture content; production will load the same safe
+  text/JSON views and download-only media through the shared daemon API.
 - The responsive treatment is a baseline; production work will generalize graph
   layout beyond the fixed prototype fixtures.
 - Tier-1 is localhost-only and does not activate the future MSAL/OIDC scaffold.

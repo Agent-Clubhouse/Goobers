@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -41,9 +41,114 @@ describe("App prototype", () => {
       target: { value: "3" },
     });
 
-    expect(await screen.findByText("In progress")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: /Attempt 1.*running.*In progress/i })).toBeInTheDocument();
     expect(screen.queryByText("attempt-1-summary.md")).not.toBeInTheDocument();
+    expect(screen.queryByText("Produced a partial API and portal client without a complete slice.")).not.toBeInTheDocument();
+    expect(screen.queryByText("17 files, +812/-44")).not.toBeInTheDocument();
     expect(container.querySelector('[data-edge="review-gate->implement"]')).not.toHaveClass("graph-edge-active");
+
+  });
+
+  it("orders attempt classes, follows the selected event, and supports keyboard switching", async () => {
+    const user = userEvent.setup();
+    window.location.hash = "#/run/01JZ402DASHBOARD";
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Select event 13: Implementation attempt 3 complete" }));
+    const attemptList = screen.getByRole("tablist", { name: "Stage attempts" });
+    const attempts = within(attemptList).getAllByRole("tab");
+
+    expect(attempts).toHaveLength(3);
+    expect(attempts[0]).toHaveTextContent(/Attempt 1.*initial.*completed.*6m 47s/i);
+    expect(attempts[1]).toHaveTextContent(/Attempt 2.*infra.*completed.*6m 31s/i);
+    expect(attempts[2]).toHaveTextContent(/Attempt 3.*policy.*completed.*5m 33s/i);
+    expect(attempts[2]).toHaveAttribute("aria-selected", "true");
+
+    await user.click(attempts[0]);
+    expect(attempts[0]).toHaveAttribute("aria-selected", "true");
+    attempts[0].focus();
+    fireEvent.keyDown(attempts[0], { key: "ArrowRight" });
+    expect(attempts[1]).toHaveAttribute("aria-selected", "true");
+    expect(attempts[1]).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "Select event 8: Implementation infrastructure retry" }));
+    const selectedEventAttempt = screen.getByRole("tab", { name: /Attempt 2.*infra.*running.*In progress/i });
+    expect(selectedEventAttempt).toHaveAttribute("aria-selected", "true");
+    expect(within(screen.getByRole("tabpanel")).getByText("Outcome is not available at the selected event.")).toBeInTheDocument();
+    expect(screen.queryByText("attempt-2-summary.md")).not.toBeInTheDocument();
+  });
+
+  it("shows artifact provenance and safely handles content, errors, downloads, and focus return", async () => {
+    const user = userEvent.setup();
+    window.location.hash = "#/run/01JZ441DAEMONAPI";
+    render(<App />);
+
+    fireEvent.change(screen.getByRole("slider", { name: "Replay position" }), {
+      target: { value: "4" },
+    });
+    expect(screen.getByText("implementation-summary.md")).toBeInTheDocument();
+    expect(screen.queryByText("18 passed")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("slider", { name: "Replay position" }), {
+      target: { value: "6" },
+    });
+    await user.click(screen.getByRole("button", { name: "Implement, complete" }));
+    expect(screen.getByText("18 passed")).toBeInTheDocument();
+    expect(screen.getByText("#472")).toBeInTheDocument();
+
+    const summaryRow = screen.getByText("implementation-summary.md").closest("article");
+    expect(summaryRow).not.toBeNull();
+    expect(within(summaryRow!).getByText("text/markdown")).toBeInTheDocument();
+    expect(within(summaryRow!).getByText("4.1 KB")).toBeInTheDocument();
+    expect(within(summaryRow!).getByText("Attempt 1 · Seq 5")).toBeInTheDocument();
+    expect(within(summaryRow!).getByText("Verified")).toBeInTheDocument();
+    expect(within(summaryRow!).getByText(/^sha256:/)).toBeInTheDocument();
+
+    const summaryButton = within(summaryRow!).getByRole("button", { name: "View content" });
+    fireEvent.click(summaryButton);
+    expect(screen.getByRole("status")).toHaveTextContent("Loading artifact content");
+    expect(await screen.findByLabelText("implementation-summary.md content")).toHaveTextContent(
+      "Added daemon read endpoints and fixture-backed coverage.",
+    );
+    await user.click(screen.getByRole("button", { name: "Close artifact viewer" }));
+    expect(summaryButton).toHaveFocus();
+
+    const pullRequestRow = screen.getByText("pull-request.json").closest("article");
+    expect(pullRequestRow).not.toBeNull();
+    const pullRequestButton = within(pullRequestRow!).getByRole("button", { name: "View content" });
+    fireEvent.click(pullRequestButton);
+    expect(await screen.findByLabelText("pull-request.json content")).toHaveTextContent('"number": 472');
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(pullRequestButton).toHaveFocus();
+
+    const manifestRow = screen.getByText("artifact-manifest.json").closest("article");
+    expect(manifestRow).not.toBeNull();
+    fireEvent.click(within(manifestRow!).getByRole("button", { name: "View content" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Artifact unavailable");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Artifact content could not be loaded from the local journal.",
+    );
+    await user.click(screen.getByRole("button", { name: "Close artifact viewer" }));
+
+    const patchRow = screen.getByText("implementation.patch").closest("article");
+    expect(patchRow).not.toBeNull();
+    const download = within(patchRow!).getByRole("link", { name: "Download" });
+    expect(download).toHaveAttribute("download");
+    expect(download).toHaveAttribute("href", "/artifacts/01JZ441DAEMONAPI/implementation.patch");
+    expect(within(patchRow!).queryByRole("button", { name: "View content" })).not.toBeInTheDocument();
+  });
+
+  it("keeps empty attempt detail and static definition context separate", async () => {
+    const user = userEvent.setup();
+    window.location.hash = "#/run/01JZ441DAEMONAPI";
+    render(<App />);
+
+    expect(screen.getByText("No artifacts recorded yet.")).toBeInTheDocument();
+    expect(screen.getByText("Definition context")).toBeInTheDocument();
+    await user.click(screen.getByText("View stage definition and YAML"));
+    expect(screen.getByText(/goober: reviewer/)).toBeInTheDocument();
+    expect(within(screen.getByRole("tabpanel")).getByText("Outcome is not available at the selected event.")).toBeInTheDocument();
   });
 });
 

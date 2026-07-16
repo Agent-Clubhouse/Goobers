@@ -45,6 +45,12 @@ export interface Artifact {
   mediaType: string;
   size: string;
   summary: string;
+  digest: string;
+  digestVerified: boolean;
+  recordedSeq: number;
+  content?: string;
+  contentError?: string;
+  downloadUrl?: string;
 }
 
 export interface StageAttempt {
@@ -57,7 +63,7 @@ export interface StageAttempt {
   startedSeq: number;
   endedSeq?: number;
   summary: string;
-  output?: string;
+  outputs?: Record<string, string | number | boolean>;
   artifacts: Artifact[];
 }
 
@@ -108,6 +114,10 @@ export interface InstanceWarning {
   code: string;
   title: string;
   detail: string;
+}
+
+function fixtureArtifact(artifact: Omit<Artifact, "digestVerified">): Artifact {
+  return { ...artifact, digestVerified: true };
 }
 
 const implementationStages: WorkflowStage[] = [
@@ -491,8 +501,8 @@ const escalatedRunEvents: RunEvent[] = [
     time: "19:52:16",
     elapsed: "8:06",
     type: "stage.started",
-    title: "Implementation attempt 2",
-    detail: "The run returned to implementation with the reviewer verdict attached.",
+    title: "Implementation infrastructure retry",
+    detail: "The policy repass resumed after a transient runner transport failure.",
     tone: "active",
     stageId: "implement",
     attempt: 2,
@@ -503,8 +513,8 @@ const escalatedRunEvents: RunEvent[] = [
     time: "19:58:47",
     elapsed: "14:37",
     type: "stage.finished",
-    title: "Implementation attempt 2 complete",
-    detail: "API coverage improved, but the portal remained coupled to speculative response shapes.",
+    title: "Infrastructure retry complete",
+    detail: "The recovered attempt improved API coverage, but the portal remained coupled to speculative response shapes.",
     tone: "success",
     stageId: "implement",
     attempt: 2,
@@ -743,8 +753,18 @@ export const runs: Run[] = [
         startedSeq: 2,
         endedSeq: 3,
         summary: "Pinned the issue, repository revision, and workflow digest.",
-        output: "workflowDigest: sha256:1df8...9a3c",
-        artifacts: [{ name: "issue-context.json", mediaType: "application/json", size: "8.2 KB", summary: "Normalized issue and repository context." }],
+        outputs: { workflowDigest: "sha256:1df8...9a3c" },
+        artifacts: [
+          fixtureArtifact({
+            name: "issue-context.json",
+            mediaType: "application/json",
+            size: "8.2 KB",
+            summary: "Normalized issue and repository context.",
+            digest: "sha256:90f4c279903f4cd52e56ab2a735de14cfe5e76a6aa71d8cbb0deca887f19a4c2",
+            recordedSeq: 3,
+            content: `{"issue":441,"workflow":"implementation","revision":"b74ca21"}`,
+          }),
+        ],
       },
       {
         id: "implement-1-active",
@@ -756,10 +776,44 @@ export const runs: Run[] = [
         startedSeq: 4,
         endedSeq: 6,
         summary: "Added the initial daemon read endpoints with fixture-backed coverage.",
-        output: "tests: 18 passed",
+        outputs: { tests: "18 passed", pullRequest: "#472" },
         artifacts: [
-          { name: "implementation-summary.md", mediaType: "text/markdown", size: "4.1 KB", summary: "Changed files, decisions, and targeted test results." },
-          { name: "pull-request.json", mediaType: "application/json", size: "1.2 KB", summary: "Provider reference for PR #472." },
+          fixtureArtifact({
+            name: "implementation-summary.md",
+            mediaType: "text/markdown",
+            size: "4.1 KB",
+            summary: "Changed files, decisions, and targeted test results.",
+            digest: "sha256:86d0e43ffb193e3628d488431e87af03aa39271a2f38022119466b01df43df31",
+            recordedSeq: 5,
+            content: "## Implementation\n\nAdded daemon read endpoints and fixture-backed coverage.",
+          }),
+          fixtureArtifact({
+            name: "pull-request.json",
+            mediaType: "application/json",
+            size: "1.2 KB",
+            summary: "Provider reference for PR #472.",
+            digest: "sha256:e31f76bc175780afc3d731e79215564c89fa90c31e09142c8fa5e788063313c8",
+            recordedSeq: 5,
+            content: `{"number":472,"state":"open","head":"implementation/441"}`,
+          }),
+          fixtureArtifact({
+            name: "artifact-manifest.json",
+            mediaType: "application/json",
+            size: "640 B",
+            summary: "Digest manifest for the implementation artifacts.",
+            digest: "sha256:77c5f9161c7ce06ab18f71b4e78c281f5ec4a1ab668e33514dceb4d37a453dc0",
+            recordedSeq: 5,
+            contentError: "Artifact content could not be loaded from the local journal.",
+          }),
+          fixtureArtifact({
+            name: "implementation.patch",
+            mediaType: "text/x-diff",
+            size: "14.7 KB",
+            summary: "Raw implementation patch; available as a download only.",
+            digest: "sha256:b84792fd08e659b82375c4a71f7679a54e6f783395c542a142f53db6390ebdeb",
+            recordedSeq: 5,
+            downloadUrl: "/artifacts/01JZ441DAEMONAPI/implementation.patch",
+          }),
         ],
       },
       {
@@ -811,7 +865,17 @@ export const runs: Run[] = [
         startedSeq: 2,
         endedSeq: 3,
         summary: "Pinned the deliberately broad evaluation issue and workflow definition.",
-        artifacts: [{ name: "issue-context.json", mediaType: "application/json", size: "11.4 KB", summary: "Issue #402 context and acceptance criteria." }],
+        artifacts: [
+          fixtureArtifact({
+            name: "issue-context.json",
+            mediaType: "application/json",
+            size: "11.4 KB",
+            summary: "Issue #402 context and acceptance criteria.",
+            digest: "sha256:0fce782ff589bcdb8e4bf7de7034de71991cac04353b3bac231a65a9eebc4ac1",
+            recordedSeq: 3,
+            content: `{"issue":402,"scope":"dashboard and workflow DAG"}`,
+          }),
+        ],
       },
       {
         id: "implement-1-escalated",
@@ -823,21 +887,41 @@ export const runs: Run[] = [
         startedSeq: 4,
         endedSeq: 5,
         summary: "Produced a partial API and portal client without a complete slice.",
-        output: "diff: 17 files, +812/-44",
-        artifacts: [{ name: "attempt-1-summary.md", mediaType: "text/markdown", size: "5.8 KB", summary: "Initial implementation decisions and test output." }],
+        outputs: { diff: "17 files, +812/-44" },
+        artifacts: [
+          fixtureArtifact({
+            name: "attempt-1-summary.md",
+            mediaType: "text/markdown",
+            size: "5.8 KB",
+            summary: "Initial implementation decisions and test output.",
+            digest: "sha256:084be08f6b22f4f959d796192f05ff4d04ad3422814a7b44a5459127b933e5bd",
+            recordedSeq: 5,
+            content: "## Attempt 1\n\nProduced a partial API and portal client.",
+          }),
+        ],
       },
       {
         id: "implement-2-escalated",
         stageId: "implement",
         number: 2,
-        kind: "policy",
+        kind: "infra",
         status: "completed",
         duration: "6m 31s",
         startedSeq: 8,
         endedSeq: 9,
-        summary: "Improved endpoint coverage but retained speculative response coupling.",
-        output: "diff: 21 files, +1044/-81",
-        artifacts: [{ name: "attempt-2-summary.md", mediaType: "text/markdown", size: "6.3 KB", summary: "Second-pass changes and unresolved contract notes." }],
+        summary: "Recovered from a transient runner failure and improved endpoint coverage.",
+        outputs: { diff: "21 files, +1044/-81" },
+        artifacts: [
+          fixtureArtifact({
+            name: "attempt-2-summary.md",
+            mediaType: "text/markdown",
+            size: "6.3 KB",
+            summary: "Recovered attempt changes and unresolved contract notes.",
+            digest: "sha256:25cb32df546628a5d4a7d43f97899c474e3f766b30b6b56a9c162405a15ef511",
+            recordedSeq: 9,
+            content: "## Infrastructure retry\n\nRecovered execution improved endpoint coverage; portal coupling remained.",
+          }),
+        ],
       },
       {
         id: "implement-3-escalated",
@@ -849,8 +933,18 @@ export const runs: Run[] = [
         startedSeq: 12,
         endedSeq: 13,
         summary: "Recorded the final diff and explicit remaining scope boundaries.",
-        output: "diff: 23 files, +1182/-96",
-        artifacts: [{ name: "attempt-3-summary.md", mediaType: "text/markdown", size: "7.1 KB", summary: "Final attempt summary and remaining blockers." }],
+        outputs: { diff: "23 files, +1182/-96" },
+        artifacts: [
+          fixtureArtifact({
+            name: "attempt-3-summary.md",
+            mediaType: "text/markdown",
+            size: "7.1 KB",
+            summary: "Final attempt summary and remaining blockers.",
+            digest: "sha256:a11dbce029abcb0797c93cd313528c44e88679348dd689c8989c587f776cb391",
+            recordedSeq: 13,
+            content: "## Attempt 3\n\nRecorded the final diff and remaining scope boundaries.",
+          }),
+        ],
       },
       {
         id: "review-1-escalated",
@@ -862,7 +956,17 @@ export const runs: Run[] = [
         startedSeq: 6,
         endedSeq: 7,
         summary: "Requested a coherent vertical slice.",
-        artifacts: [{ name: "verdict-1.json", mediaType: "application/json", size: "2.4 KB", summary: "Structured needs-changes verdict." }],
+        artifacts: [
+          fixtureArtifact({
+            name: "verdict-1.json",
+            mediaType: "application/json",
+            size: "2.4 KB",
+            summary: "Structured needs-changes verdict.",
+            digest: "sha256:b322c2b1420cb47386183106f9d2193c87451049c18e87d840485239617df308",
+            recordedSeq: 7,
+            content: `{"verdict":"needs-changes","reason":"scope"}`,
+          }),
+        ],
       },
       {
         id: "review-2-escalated",
@@ -874,7 +978,17 @@ export const runs: Run[] = [
         startedSeq: 10,
         endedSeq: 11,
         summary: "Flagged mutable reconstruction of historical workflow graphs.",
-        artifacts: [{ name: "verdict-2.json", mediaType: "application/json", size: "2.8 KB", summary: "Second structured needs-changes verdict." }],
+        artifacts: [
+          fixtureArtifact({
+            name: "verdict-2.json",
+            mediaType: "application/json",
+            size: "2.8 KB",
+            summary: "Second structured needs-changes verdict.",
+            digest: "sha256:3f410920084ea66e3787ef11461d1369bc8de856831e7526ac87c95d9eb1d160",
+            recordedSeq: 11,
+            content: `{"verdict":"needs-changes","reason":"mutable workflow graph"}`,
+          }),
+        ],
       },
       {
         id: "review-3-escalated",
@@ -886,7 +1000,17 @@ export const runs: Run[] = [
         startedSeq: 14,
         endedSeq: 15,
         summary: "Escalated after the final allowed repass remained over-scoped.",
-        artifacts: [{ name: "verdict-3.json", mediaType: "application/json", size: "3.1 KB", summary: "Terminal verdict and escalation rationale." }],
+        artifacts: [
+          fixtureArtifact({
+            name: "verdict-3.json",
+            mediaType: "application/json",
+            size: "3.1 KB",
+            summary: "Terminal verdict and escalation rationale.",
+            digest: "sha256:487f53e739cb2be1f110d1f25518bf708233f6e3d84da3e37181e9082eea85e4",
+            recordedSeq: 15,
+            content: `{"verdict":"needs-changes","terminal":true,"branch":"@escalate"}`,
+          }),
+        ],
       },
       {
         id: "review-gate-1-escalated",
@@ -898,8 +1022,18 @@ export const runs: Run[] = [
         startedSeq: 7,
         endedSeq: 7,
         summary: "Routed the first needs-changes verdict back to implementation.",
-        output: "target: implement",
-        artifacts: [{ name: "verdict-1.json", mediaType: "application/json", size: "2.4 KB", summary: "Structured needs-changes verdict." }],
+        outputs: { target: "implement" },
+        artifacts: [
+          fixtureArtifact({
+            name: "verdict-1.json",
+            mediaType: "application/json",
+            size: "2.4 KB",
+            summary: "Structured needs-changes verdict.",
+            digest: "sha256:b322c2b1420cb47386183106f9d2193c87451049c18e87d840485239617df308",
+            recordedSeq: 7,
+            content: `{"verdict":"needs-changes","reason":"scope"}`,
+          }),
+        ],
       },
       {
         id: "review-gate-2-escalated",
@@ -911,8 +1045,18 @@ export const runs: Run[] = [
         startedSeq: 11,
         endedSeq: 11,
         summary: "Routed the second needs-changes verdict back to implementation.",
-        output: "target: implement",
-        artifacts: [{ name: "verdict-2.json", mediaType: "application/json", size: "2.8 KB", summary: "Second structured needs-changes verdict." }],
+        outputs: { target: "implement" },
+        artifacts: [
+          fixtureArtifact({
+            name: "verdict-2.json",
+            mediaType: "application/json",
+            size: "2.8 KB",
+            summary: "Second structured needs-changes verdict.",
+            digest: "sha256:3f410920084ea66e3787ef11461d1369bc8de856831e7526ac87c95d9eb1d160",
+            recordedSeq: 11,
+            content: `{"verdict":"needs-changes","reason":"mutable workflow graph"}`,
+          }),
+        ],
       },
       {
         id: "review-gate-3-escalated",
@@ -924,8 +1068,18 @@ export const runs: Run[] = [
         startedSeq: 15,
         endedSeq: 15,
         summary: "The final needs-changes verdict exhausted the repass budget and selected escalation.",
-        output: "target: @escalate",
-        artifacts: [{ name: "verdict-3.json", mediaType: "application/json", size: "3.1 KB", summary: "Terminal verdict and escalation rationale." }],
+        outputs: { target: "@escalate" },
+        artifacts: [
+          fixtureArtifact({
+            name: "verdict-3.json",
+            mediaType: "application/json",
+            size: "3.1 KB",
+            summary: "Terminal verdict and escalation rationale.",
+            digest: "sha256:487f53e739cb2be1f110d1f25518bf708233f6e3d84da3e37181e9082eea85e4",
+            recordedSeq: 15,
+            content: `{"verdict":"needs-changes","terminal":true,"branch":"@escalate"}`,
+          }),
+        ],
       },
     ],
   },
@@ -957,8 +1111,18 @@ export const runs: Run[] = [
         startedSeq: 4,
         endedSeq: 5,
         summary: "Implemented and tested the escalation disposition.",
-        output: "tests: 42 passed",
-        artifacts: [{ name: "implementation-summary.md", mediaType: "text/markdown", size: "3.9 KB", summary: "Implementation and verification summary." }],
+        outputs: { tests: "42 passed" },
+        artifacts: [
+          fixtureArtifact({
+            name: "implementation-summary.md",
+            mediaType: "text/markdown",
+            size: "3.9 KB",
+            summary: "Implementation and verification summary.",
+            digest: "sha256:1752dfa1f99a9a67d78c6dbcc44d7a4b7d71f9d57c6d6495a74ed262b43f4a2d",
+            recordedSeq: 5,
+            content: "## Implementation\n\nAdded first-class escalation disposition support.",
+          }),
+        ],
       },
     ],
   },
