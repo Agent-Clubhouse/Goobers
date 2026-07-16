@@ -459,22 +459,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			if err != nil {
 				return r.failTerminal(in.RunID, jr, g.Name, steps, err)
 			}
-			if gr.Escalated && r.cfg.Escalation != nil && in.Item != nil {
-				// Same drain contract as runTask/evaluateGate: a SIGTERM mid-
-				// notification must let it finish, not abort it — an
-				// aborted notification here would leave the escalation
-				// comment un-posted, and a later resume re-evaluating the
-				// same escalated gate would fire NotifyEscalated again,
-				// duplicating it (#112).
-				reason := "repass budget exhausted"
-				if gr.DuplicateDiff {
-					// #316: escalated on the very first repeat, not on
-					// exhausting the budget — say so, or the notified human
-					// wrongly assumes MaxRepasses attempts actually ran.
-					reason = "repass produced a diff identical to the immediately prior attempt"
-				}
-				if err := r.cfg.Escalation.NotifyEscalated(context.WithoutCancel(ctx), in.Item.ID, gr, reason); err != nil {
-					return r.failTerminal(in.RunID, jr, g.Name, steps, fmt.Errorf("runner: notify escalation for gate %q: %w", g.Name, err))
+			if reason, ok := terminalGateNotificationReason(gr); ok {
+				if err := r.notifyTerminalGate(context.WithoutCancel(ctx), jr, in.Item, gr, reason); err != nil {
+					return r.failTerminal(in.RunID, jr, g.Name, steps, err)
 				}
 			}
 			switch gr.Target {
@@ -503,6 +490,49 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 
 		return r.failTerminal(in.RunID, jr, state, steps, fmt.Errorf("runner: unknown state %q", state))
 	}
+}
+
+func terminalGateNotificationReason(gr gate.Result) (string, bool) {
+	if gr.Target != workflow.TargetAbort && gr.Target != workflow.TargetEscalate {
+		return "", false
+	}
+	if gr.Escalated {
+		if gr.DuplicateDiff {
+			return "repass produced a diff identical to the immediately prior attempt", true
+		}
+		return "repass budget exhausted", true
+	}
+
+	reason := fmt.Sprintf("gate %s resolved %s -> %s", gr.Gate, gr.Outcome, gr.Target)
+	if gr.Verdict != nil {
+		rationale := strings.TrimSpace(gr.Verdict.Rationale)
+		if rationale == "" {
+			rationale = strings.TrimSpace(gr.Verdict.Summary)
+		}
+		if rationale != "" {
+			reason += ": " + rationale
+		}
+	}
+	return reason, true
+}
+
+func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, item *apiv1.BacklogItem, gr gate.Result, reason string) error {
+	if r.cfg.Escalation == nil || item == nil {
+		return nil
+	}
+	if err := r.cfg.Escalation.NotifyEscalated(ctx, item.ID, gr, reason); err != nil {
+		if aerr := jr.Append(journal.Event{
+			Type: journal.EventError,
+			Gate: gr.Gate,
+			Error: &journal.ErrorDetail{
+				Code:    "gate_terminal_notification_failed",
+				Message: err.Error(),
+			},
+		}); aerr != nil {
+			return fmt.Errorf("runner: journal terminal notification failure for gate %q: %w", gr.Gate, aerr)
+		}
+	}
+	return nil
 }
 
 // failTerminal journals the run's terminal run.finished(PhaseFailed) event

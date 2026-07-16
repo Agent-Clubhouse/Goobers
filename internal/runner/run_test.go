@@ -2358,6 +2358,206 @@ func (c *blockingCommenter) UpdateWorkItem(ctx context.Context, _ providers.Upda
 	return providers.WorkItem{}, nil
 }
 
+type recordingCommenter struct {
+	requests []providers.UpdateWorkItemRequest
+	err      error
+}
+
+func (c *recordingCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	c.requests = append(c.requests, req)
+	return providers.WorkItem{}, c.err
+}
+
+type fixedOutcomeAutomated string
+
+func (a fixedOutcomeAutomated) Evaluate(context.Context, apiv1.AutomatedGate, apiv1.InvocationEnvelope) (string, error) {
+	return string(a), nil
+}
+
+type fixedVerdictReviewer struct {
+	verdict apiv1.Verdict
+}
+
+func (r *fixedVerdictReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (r *fixedVerdictReviewer) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return r.verdict, nil
+}
+
+func terminalCIGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "ci-poll",
+		Tasks: []apiv1.Task{
+			{Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll CI", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "ci-gate"},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "ci-gate",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "ci-status"},
+				Branches: map[string]string{
+					gate.OutcomePass:    workflow.TerminalComplete,
+					gate.OutcomeFail:    workflow.TargetAbort,
+					gate.OutcomeTimeout: workflow.TargetEscalate,
+				},
+			},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "terminal-ci-gate", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile terminal CI gate machine: %v", err)
+	}
+	return m
+}
+
+func TestRunnerNotifiesExplicitGateEscalationOnce(t *testing.T) {
+	commenter := &recordingCommenter{}
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		"run-ci-timeout:ci-poll": {status: apiv1.ResultSuccess},
+	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
+	r.cfg.Escalation = &gate.EscalationNotifier{
+		Poster:     commenter,
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-ci-timeout",
+		Machine: terminalCIGateMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Item:    &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix CI"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", res.Phase)
+	}
+	if len(commenter.requests) != 1 {
+		t.Fatalf("notification calls = %d, want 1", len(commenter.requests))
+	}
+	comment := commenter.requests[0].Comment
+	for _, want := range []string{"ci-gate", gate.OutcomeTimeout, workflow.TargetEscalate} {
+		if !strings.Contains(comment, want) {
+			t.Fatalf("comment = %q, want it to contain %q", comment, want)
+		}
+	}
+}
+
+func TestRunnerTerminalGateNotificationFailureIsBestEffort(t *testing.T) {
+	commenter := &recordingCommenter{err: fmt.Errorf("provider unavailable")}
+	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
+		"run-notify-error:ci-poll": {status: apiv1.ResultSuccess},
+	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
+	r.cfg.Escalation = &gate.EscalationNotifier{
+		Poster:     commenter,
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-notify-error",
+		Machine: terminalCIGateMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Item:    &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix CI"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated despite notification error", res.Phase)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-notify-error"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "gate_terminal_notification_failed" {
+			return
+		}
+	}
+	t.Fatal("notification failure was not recorded in the run journal")
+}
+
+func TestRunnerSkipsTerminalGateNotificationWithoutDrivingItem(t *testing.T) {
+	commenter := &recordingCommenter{}
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		"run-scheduled-timeout:ci-poll": {status: apiv1.ResultSuccess},
+	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-scheduled-timeout",
+		Machine: terminalCIGateMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", res.Phase)
+	}
+	if len(commenter.requests) != 0 {
+		t.Fatalf("notification calls = %d, want 0 without a driving item", len(commenter.requests))
+	}
+}
+
+func TestRunnerNotifiesGateAbortWithReviewerRationale(t *testing.T) {
+	commenter := &recordingCommenter{}
+	r, _ := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return &committingDeterministic{t: t}, nil
+	}, nil)
+	reviewer := &fixedVerdictReviewer{verdict: apiv1.Verdict{
+		Decision:  apiv1.VerdictFail,
+		Rationale: "the implementation violates the fail-closed contract",
+	}}
+	r.cfg.NewAgentic = func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		return reviewer, nil
+	}
+	r.cfg.Escalation = &gate.EscalationNotifier{
+		Poster:     commenter,
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-review-abort",
+		Machine: agenticGateMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Item:    &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix bug"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseAborted {
+		t.Fatalf("phase = %q, want aborted", res.Phase)
+	}
+	if len(commenter.requests) != 1 {
+		t.Fatalf("notification calls = %d, want 1", len(commenter.requests))
+	}
+	comment := commenter.requests[0].Comment
+	for _, want := range []string{"review", workflow.TargetAbort, reviewer.verdict.Rationale} {
+		if !strings.Contains(comment, want) {
+			t.Fatalf("comment = %q, want it to contain %q", comment, want)
+		}
+	}
+}
+
 // repassLoopMachine is implement (always fails) -> review (automated gate,
 // fail loops back to implement) — the same shape
 // TestRunnerResumeRestoresGateRepassCounter uses, factored out here so this
@@ -2466,6 +2666,39 @@ func TestRunnerNotifyEscalatedSurvivesCancellation(t *testing.T) {
 
 	if commenter.ctxErr != nil {
 		t.Fatalf("UpdateWorkItem's ctx.Err() = %v, want nil — the run-level cancellation must not have propagated to the escalation notification", commenter.ctxErr)
+	}
+}
+
+func TestRunnerAutomaticEscalationDoesNotDoubleNotify(t *testing.T) {
+	commenter := &recordingCommenter{}
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		"run-auto-escalate:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "x", Message: "always fails"}},
+	}, gate.NewAutomatedEvaluator())
+	r.cfg.MaxRepasses = 1
+	r.cfg.Escalation = &gate.EscalationNotifier{
+		Poster:     commenter,
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-auto-escalate",
+		Machine: repassLoopMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Item:    &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix bug"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", res.Phase)
+	}
+	if len(commenter.requests) != 1 {
+		t.Fatalf("notification calls = %d, want exactly 1", len(commenter.requests))
+	}
+	if !strings.Contains(commenter.requests[0].Comment, "repass budget exhausted") {
+		t.Fatalf("comment = %q, want automatic escalation reason", commenter.requests[0].Comment)
 	}
 }
 
