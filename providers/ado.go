@@ -15,6 +15,11 @@ import (
 // V1 (BL-033); the V0 workload runs on GitHub only.
 var errADOBacklogV1 = errors.New("ado: extended backlog operations (comments, general update, claim) land in V1 (BL-033)")
 
+const (
+	adoPullRequestPageSize = 100
+	adoChangePageSize      = 2000
+)
+
 // ADOProvider implements repo, backlog, and trigger operations for Azure DevOps.
 type ADOProvider struct {
 	Organization string
@@ -228,15 +233,140 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	return MergePullRequestResult{}, fmt.Errorf("ado: pull request merge lands in V1 parity (BL-033)")
 }
 
-// ListPullRequests is not yet implemented for Azure DevOps: merge-review
-// (issue #359) is scoped to the GitHub V0 workload, same as PollPullRequest.
+// ListPullRequests lists active Azure DevOps pull requests matching the
+// provider-neutral base and head-prefix filters.
 func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequestsRequest) ([]PullRequestSummary, error) {
-	return nil, fmt.Errorf("ado: pull request listing lands in V1 parity (BL-033)")
+	if err := requireRepo(req.Repository); err != nil {
+		return nil, err
+	}
+	endpoint, err := p.repoURL(req.Repository, "pullrequests")
+	if err != nil {
+		return nil, err
+	}
+	values := url.Values{
+		"searchCriteria.status":       []string{"active"},
+		"searchCriteria.includeLinks": []string{"true"},
+		"$top":                        []string{strconv.Itoa(adoPullRequestPageSize)},
+	}
+	if req.Base != "" {
+		values.Set("searchCriteria.targetRefName", "refs/heads/"+strings.TrimPrefix(req.Base, "refs/heads/"))
+	}
+
+	var prs []adoPullRequest
+	for skip := 0; ; skip += adoPullRequestPageSize {
+		values.Set("$skip", strconv.Itoa(skip))
+		pageEndpoint, err := addQuery(endpoint, values)
+		if err != nil {
+			return nil, err
+		}
+		var page adoPullRequestsResponse
+		if err := p.do(ctx, http.MethodGet, pageEndpoint, nil, &page); err != nil {
+			return nil, err
+		}
+		prs = append(prs, page.Value...)
+		if len(page.Value) < adoPullRequestPageSize {
+			break
+		}
+	}
+
+	headPrefix := strings.TrimPrefix(req.HeadPrefix, "refs/heads/")
+	out := make([]PullRequestSummary, 0, len(prs))
+	for _, pr := range prs {
+		head := strings.TrimPrefix(pr.SourceRefName, "refs/heads/")
+		if headPrefix != "" && !strings.HasPrefix(head, headPrefix) {
+			continue
+		}
+		labels := make([]string, 0, len(pr.Labels))
+		for _, label := range pr.Labels {
+			labels = append(labels, label.Name)
+		}
+		prURL := pr.URL
+		if pr.Links.Web.Href != "" {
+			prURL = pr.Links.Web.Href
+		}
+		out = append(out, PullRequestSummary{
+			ID:         strconv.Itoa(pr.PullRequestID),
+			Number:     pr.PullRequestID,
+			URL:        prURL,
+			Head:       head,
+			Base:       strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
+			HeadSHA:    pr.LastMergeSourceCommit.CommitID,
+			BaseSHA:    pr.LastMergeTargetCommit.CommitID,
+			Draft:      pr.IsDraft,
+			Labels:     labels,
+			CheckState: CheckStatePending,
+			UpdatedAt:  pr.CreationDate,
+		})
+	}
+	return out, nil
 }
 
-// PullRequestFiles is not yet implemented for Azure DevOps: see ListPullRequests.
+// PullRequestFiles lists the cumulative changes in the latest pull request
+// iteration, relative to the common source/target commit.
 func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, pullID string) ([]ChangedFile, error) {
-	return nil, fmt.Errorf("ado: pull request file listing lands in V1 parity (BL-033)")
+	if err := requireRepo(repo); err != nil {
+		return nil, err
+	}
+	if pullID == "" {
+		return nil, fmt.Errorf("pull id is required")
+	}
+	iterationsEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations")
+	if err != nil {
+		return nil, err
+	}
+	var iterations adoPullRequestIterationsResponse
+	if err := p.do(ctx, http.MethodGet, iterationsEndpoint, nil, &iterations); err != nil {
+		return nil, err
+	}
+	latestIteration := 0
+	for _, iteration := range iterations.Value {
+		if iteration.ID > latestIteration {
+			latestIteration = iteration.ID
+		}
+	}
+	if latestIteration == 0 {
+		return nil, fmt.Errorf("ado pull request %s returned no iterations", pullID)
+	}
+
+	changesEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations", strconv.Itoa(latestIteration), "changes")
+	if err != nil {
+		return nil, err
+	}
+	files := make([]ChangedFile, 0)
+	top, skip := adoChangePageSize, 0
+	for {
+		pageEndpoint, err := addQuery(changesEndpoint, url.Values{
+			"$top":  []string{strconv.Itoa(top)},
+			"$skip": []string{strconv.Itoa(skip)},
+		})
+		if err != nil {
+			return nil, err
+		}
+		var page adoPullRequestIterationChanges
+		if err := p.do(ctx, http.MethodGet, pageEndpoint, nil, &page); err != nil {
+			return nil, err
+		}
+		for _, change := range page.ChangeEntries {
+			if change.Item.Path == "" {
+				return nil, fmt.Errorf("ado pull request %s iteration %d returned a change without a path", pullID, latestIteration)
+			}
+			files = append(files, ChangedFile{
+				Path:   strings.TrimPrefix(change.Item.Path, "/"),
+				Status: adoChangedFileStatus(change.ChangeType),
+			})
+		}
+		if page.NextSkip == 0 {
+			break
+		}
+		if page.NextSkip <= skip {
+			return nil, fmt.Errorf("ado pull request %s returned invalid change pagination offset %d", pullID, page.NextSkip)
+		}
+		skip = page.NextSkip
+		if page.NextTop > 0 {
+			top = page.NextTop
+		}
+	}
+	return files, nil
 }
 
 // CompareCommits is not yet implemented for Azure DevOps: see PullRequestFiles.
@@ -582,8 +712,72 @@ type adoPushResponse struct {
 }
 
 type adoPullRequest struct {
-	PullRequestID int    `json:"pullRequestId"`
-	URL           string `json:"url"`
+	PullRequestID         int          `json:"pullRequestId"`
+	URL                   string       `json:"url"`
+	Status                string       `json:"status"`
+	Title                 string       `json:"title"`
+	CreatedBy             adoIdentity  `json:"createdBy"`
+	CreationDate          time.Time    `json:"creationDate"`
+	SourceRefName         string       `json:"sourceRefName"`
+	TargetRefName         string       `json:"targetRefName"`
+	IsDraft               bool         `json:"isDraft"`
+	Labels                []adoLabel   `json:"labels"`
+	LastMergeSourceCommit adoCommitRef `json:"lastMergeSourceCommit"`
+	LastMergeTargetCommit adoCommitRef `json:"lastMergeTargetCommit"`
+	Links                 adoPRLinks   `json:"_links"`
+}
+
+type adoPullRequestsResponse struct {
+	Value []adoPullRequest `json:"value"`
+}
+
+type adoIdentity struct {
+	DisplayName string `json:"displayName"`
+	UniqueName  string `json:"uniqueName"`
+}
+
+type adoLabel struct {
+	Name string `json:"name"`
+}
+
+type adoCommitRef struct {
+	CommitID string `json:"commitId"`
+}
+
+type adoPRLinks struct {
+	Web struct {
+		Href string `json:"href"`
+	} `json:"web"`
+}
+
+type adoPullRequestIterationsResponse struct {
+	Value []struct {
+		ID int `json:"id"`
+	} `json:"value"`
+}
+
+type adoPullRequestIterationChanges struct {
+	ChangeEntries []struct {
+		ChangeType string `json:"changeType"`
+		Item       struct {
+			Path string `json:"path"`
+		} `json:"item"`
+	} `json:"changeEntries"`
+	NextSkip int `json:"nextSkip"`
+	NextTop  int `json:"nextTop"`
+}
+
+func adoChangedFileStatus(changeType string) string {
+	switch strings.ToLower(changeType) {
+	case "add":
+		return "added"
+	case "delete":
+		return "removed"
+	case "rename", "sourcerename", "targetrename":
+		return "renamed"
+	default:
+		return "modified"
+	}
 }
 
 func mapADOWorkItem(item adoWorkItem) WorkItem {

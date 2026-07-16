@@ -172,6 +172,148 @@ func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 	}
 }
 
+func TestADOProviderListPullRequests(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		if got := r.Header.Get("Authorization"); got != basicAuth("goobers", "token") {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if got := r.URL.Query().Get("api-version"); got != "7.1" {
+			t.Fatalf("api-version = %q", got)
+		}
+		if got := r.URL.Query().Get("searchCriteria.status"); got != "active" {
+			t.Fatalf("searchCriteria.status = %q", got)
+		}
+		if got := r.URL.Query().Get("searchCriteria.includeLinks"); got != "true" {
+			t.Fatalf("searchCriteria.includeLinks = %q", got)
+		}
+		if got := r.URL.Query().Get("searchCriteria.targetRefName"); got != "refs/heads/main" {
+			t.Fatalf("searchCriteria.targetRefName = %q", got)
+		}
+		if got := r.URL.Query().Get("$top"); got != "100" {
+			t.Fatalf("$top = %q", got)
+		}
+		if got := r.URL.Query().Get("$skip"); got != "0" {
+			t.Fatalf("$skip = %q", got)
+		}
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{
+			{
+				"pullRequestId":         12,
+				"url":                   "api-pr-url",
+				"status":                "active",
+				"title":                 "Implement ADO reads",
+				"createdBy":             map[string]string{"displayName": "Mona", "uniqueName": "mona@example.com"},
+				"creationDate":          "2026-07-15T20:30:00Z",
+				"sourceRefName":         "refs/heads/goobers/implementation/run-1",
+				"targetRefName":         "refs/heads/main",
+				"isDraft":               true,
+				"labels":                []map[string]string{{"name": "goobers:needs-remediation"}},
+				"lastMergeSourceCommit": map[string]string{"commitId": "head-sha"},
+				"lastMergeTargetCommit": map[string]string{"commitId": "base-sha"},
+				"_links":                map[string]interface{}{"web": map[string]string{"href": "web-pr-url"}},
+			},
+			{
+				"pullRequestId": 13,
+				"sourceRefName": "refs/heads/human/manual-fix",
+				"targetRefName": "refs/heads/main",
+			},
+		}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	prs, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Base:       "main",
+		HeadPrefix: "goobers/",
+	})
+	if err != nil {
+		t.Fatalf("ListPullRequests returned error: %v", err)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("len(prs) = %d, want 1: %#v", len(prs), prs)
+	}
+	pr := prs[0]
+	if pr.ID != "12" || pr.Number != 12 || pr.URL != "web-pr-url" {
+		t.Fatalf("unexpected pull request identity: %#v", pr)
+	}
+	if pr.Head != "goobers/implementation/run-1" || pr.Base != "main" || pr.HeadSHA != "head-sha" || pr.BaseSHA != "base-sha" {
+		t.Fatalf("unexpected pull request refs: %#v", pr)
+	}
+	if !pr.Draft || pr.CheckState != CheckStatePending || len(pr.Labels) != 1 || pr.Labels[0] != "goobers:needs-remediation" {
+		t.Fatalf("unexpected pull request metadata: %#v", pr)
+	}
+	if got := pr.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"); got != "2026-07-15T20:30:00Z" {
+		t.Fatalf("UpdatedAt = %q", got)
+	}
+}
+
+func TestADOProviderPullRequestFiles(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12/iterations", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		if got := r.Header.Get("Authorization"); got != basicAuth("goobers", "token") {
+			t.Fatalf("Authorization = %q", got)
+		}
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]int{{"id": 1}, {"id": 3}, {"id": 2}}})
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12/iterations/3/changes", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		switch got := r.URL.Query().Get("$skip"); got {
+		case "0":
+			if top := r.URL.Query().Get("$top"); top != "2000" {
+				t.Fatalf("first $top = %q", top)
+			}
+			writeJSON(t, w, map[string]interface{}{
+				"changeEntries": []map[string]interface{}{
+					{"changeType": "add", "item": map[string]string{"path": "/cmd/goobers/new.go"}},
+					{"changeType": "edit", "item": map[string]string{"path": "/internal/runner/run.go"}},
+				},
+				"nextSkip": 2,
+				"nextTop":  2,
+			})
+		case "2":
+			if top := r.URL.Query().Get("$top"); top != "2" {
+				t.Fatalf("second $top = %q", top)
+			}
+			writeJSON(t, w, map[string]interface{}{
+				"changeEntries": []map[string]interface{}{
+					{"changeType": "delete", "item": map[string]string{"path": "/old.txt"}},
+					{"changeType": "rename", "item": map[string]string{"path": "/new-name.txt"}},
+				},
+				"nextSkip": 0,
+				"nextTop":  0,
+			})
+		default:
+			t.Fatalf("unexpected $skip = %q", got)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	files, err := provider.PullRequestFiles(context.Background(), RepositoryRef{Name: "repo", Project: "project"}, "12")
+	if err != nil {
+		t.Fatalf("PullRequestFiles returned error: %v", err)
+	}
+	if len(files) != 4 {
+		t.Fatalf("len(files) = %d, want 4: %#v", len(files), files)
+	}
+	want := []ChangedFile{
+		{Path: "cmd/goobers/new.go", Status: "added"},
+		{Path: "internal/runner/run.go", Status: "modified"},
+		{Path: "old.txt", Status: "removed"},
+		{Path: "new-name.txt", Status: "renamed"},
+	}
+	for i := range want {
+		if files[i] != want[i] {
+			t.Fatalf("files[%d] = %#v, want %#v", i, files[i], want[i])
+		}
+	}
+}
+
 func TestADOProviderCreateWorkItemSubscribeAndClone(t *testing.T) {
 	var wiqlCalls int
 	mux := http.NewServeMux()
@@ -277,5 +419,11 @@ func TestADOProviderErrorPaths(t *testing.T) {
 	}
 	if _, err := provider.Subscribe(context.Background(), TriggerSubscription{Kind: TriggerWebhook, Repository: repo}); err == nil {
 		t.Fatal("expected unsupported webhook subscription to return an error")
+	}
+	if _, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{}); err == nil {
+		t.Fatal("expected missing repository to return an error")
+	}
+	if _, err := provider.PullRequestFiles(context.Background(), repo, ""); err == nil {
+		t.Fatal("expected missing pull id to return an error")
 	}
 }
