@@ -215,6 +215,55 @@ func TestMergePRRefusesOnUnmetConjunct(t *testing.T) {
 	}
 }
 
+func TestMergePRRetriesAfterLiveEligibilityRecovers(t *testing.T) {
+	cases := []struct {
+		name    string
+		block   func(*mergePRServerState)
+		recover func(*mergePRServerState)
+	}{
+		{
+			name:    "CI fails after review",
+			block:   func(st *mergePRServerState) { st.checkState = "failure" },
+			recover: func(st *mergePRServerState) { st.checkState = "success" },
+		},
+		{
+			name:    "PR becomes draft after review",
+			block:   func(st *mergePRServerState) { st.draft = true },
+			recover: func(st *mergePRServerState) { st.draft = false },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &mergePRServerState{checkState: "success", headSHA: "head123", baseSHA: "base456"}
+			tc.block(st)
+			server := newMergePRServer(t, "your-org", "your-repo", st)
+			root, dir := mergePREnv(t, server.URL, false, map[string]string{
+				"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+			})
+
+			code, _, stderr := runArgs(t, "merge-pr", root)
+			if code != 0 {
+				t.Fatalf("refusal code = %d, stderr = %q", code, stderr)
+			}
+			if merged, _ := readMergeResult(t, dir)["merged"].(bool); merged {
+				t.Fatal("PR merged while its live eligibility differed from the reviewed state")
+			}
+
+			tc.recover(st)
+			code, _, stderr = runArgs(t, "merge-pr", root)
+			if code != 0 {
+				t.Fatalf("retry code = %d, stderr = %q", code, stderr)
+			}
+			if merged, _ := readMergeResult(t, dir)["merged"].(bool); !merged {
+				t.Fatal("PR was not merged after its live eligibility recovered")
+			}
+			if st.mergeCalls != 1 {
+				t.Fatalf("merge endpoint called %d times, want 1 after recovery", st.mergeCalls)
+			}
+		})
+	}
+}
+
 // TestMergePRAdvisoryModeNeverMerges proves the advisory-mode toggle refuses
 // to merge even when every other conjunct holds.
 func TestMergePRAdvisoryModeNeverMerges(t *testing.T) {

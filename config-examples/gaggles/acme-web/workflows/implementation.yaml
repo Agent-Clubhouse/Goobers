@@ -160,8 +160,8 @@ spec:
         in-review — issue #361/#355: the work isn't done until the PR
         merges, so this no longer closes the issue outright. The actual
         close happens at the merge event (`goobers post-merge`, run by the
-        separate merge-review workflow once its verdict + CI + SHA-pin
-        conjuncts all hold, issue #360).
+        separate opt-in merge-review workflow after its verdict + CI +
+        SHA-pin conjuncts all hold, issue #360).
       run:
         command: ["goobers", "issue-close-out"]
       inputs:
