@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -48,6 +49,7 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 	l := instance.NewLayout(root)
 	writeFixture(t, filepath.Join(root, "config", "gaggles", "example", "workflows", "acceptance.yaml"), abortAgenticWorkflowYAML)
 	baseline := worktreeDirectoryCount(t, l.WorkcopiesDir())
+	forceOrdinaryWorktreeRemoveFailure(t)
 
 	previousSweepInterval := delegationSweepInterval
 	delegationSweepInterval = 10 * time.Millisecond
@@ -118,6 +120,7 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 		}
 
 		waitForInstanceRunFinished(t, l.SchedulerDir(), runID, journal.PhaseAborted)
+		assertWorktreeRemovalFailureBeforeTerminal(t, l.RunsDir(), runID)
 		assertRunFinishedLast(t, l.RunsDir(), runID, journal.PhaseAborted)
 		if _, err := os.Stat(attempt.workspace); !os.IsNotExist(err) {
 			t.Fatalf("cycle %d aborted run's worktree still exists: %v", i, err)
@@ -126,6 +129,39 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 			t.Fatalf("cycle %d worktree count = %d, want baseline %d", i, got, baseline)
 		}
 	}
+}
+
+func forceOrdinaryWorktreeRemoveFailure(t *testing.T) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	shimDir := t.TempDir()
+	shim := `#!/bin/sh
+last=
+for arg do
+	last=$arg
+done
+case " $* " in
+	*" worktree remove --force "*)
+		if [ -d "$last" ]; then
+			if [ ! -e "$GOOBERS_TEST_GIT_REMOVE_FAILED" ]; then
+				: > "$GOOBERS_TEST_GIT_REMOVE_FAILED"
+				exit 1
+			fi
+			rm -f "$GOOBERS_TEST_GIT_REMOVE_FAILED"
+		fi
+		;;
+esac
+exec "$GOOBERS_TEST_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(shim), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+	t.Setenv("GOOBERS_TEST_REAL_GIT", realGit)
+	t.Setenv("GOOBERS_TEST_GIT_REMOVE_FAILED", filepath.Join(shimDir, "remove-failed"))
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func TestRunAbortPreservesAndJournalsKeptWorktree(t *testing.T) {
@@ -296,6 +332,31 @@ func assertRunFinishedLast(t *testing.T, runsDir, runID string, phase journal.Ru
 	if last.Type != journal.EventRunFinished || last.Status != string(phase) {
 		t.Fatalf("last run event = (%s, %s), want (run.finished, %s)", last.Type, last.Status, phase)
 	}
+}
+
+func assertWorktreeRemovalFailureBeforeTerminal(t *testing.T, runsDir, runID string) {
+	t.Helper()
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	removalFailed := false
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "worktree_remove_failed" {
+			removalFailed = true
+		}
+		if event.Type == journal.EventRunFinished {
+			if !removalFailed {
+				t.Fatal("run finished without the forced ordinary worktree removal failure")
+			}
+			return
+		}
+	}
+	t.Fatal("run journal has no terminal event")
 }
 
 func waitForInstanceRunFinished(t *testing.T, schedulerDir, runID string, phase journal.RunPhase) {
