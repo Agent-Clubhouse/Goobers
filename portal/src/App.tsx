@@ -12,6 +12,15 @@ import {
   type Workflow,
   type WorkflowStage,
 } from "./prototypeData";
+import {
+  compressedIdleDelayMs,
+  formatReplayDuration,
+  idleCompressionThresholdMs,
+  orderedReplayEvents,
+  replaySpeeds,
+  replayTransition,
+  type ReplaySpeed,
+} from "./replay";
 
 type Theme = "light" | "dark";
 type IconName =
@@ -28,6 +37,8 @@ type IconName =
   | "overview"
   | "pause"
   | "play"
+  | "previous"
+  | "next"
   | "run"
   | "sun"
   | "workflow";
@@ -106,6 +117,18 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
       </>
     ),
     play: <path d="m8 5 11 7-11 7Z" />,
+    previous: (
+      <>
+        <path d="M6 5v14" />
+        <path d="m18 6-8 6 8 6Z" />
+      </>
+    ),
+    next: (
+      <>
+        <path d="M18 5v14" />
+        <path d="m6 6 8 6-8 6Z" />
+      </>
+    ),
     run: (
       <>
         <circle cx="12" cy="12" r="9" />
@@ -210,12 +233,14 @@ function TopologyGraph({
   workflow,
   states,
   activeEdges,
+  traversingEdge,
   selectedStageId,
   onSelectStage,
 }: {
   workflow: Workflow;
   states?: Record<string, NodeState>;
   activeEdges?: ReadonlySet<string>;
+  traversingEdge?: string;
   selectedStageId?: string;
   onSelectStage: (stageId: string) => void;
 }) {
@@ -241,7 +266,11 @@ function TopologyGraph({
           return (
             <g key={`${edge.from}-${edge.to}-${edge.label ?? "next"}`}>
               <path
-                className={active ? "graph-edge graph-edge-active" : "graph-edge"}
+                className={[
+                  "graph-edge",
+                  active ? "graph-edge-active" : "",
+                  traversingEdge === edgeKey ? "graph-edge-traversing" : "",
+                ].filter(Boolean).join(" ")}
                 d={path}
                 data-edge={edgeKey}
               />
@@ -748,6 +777,23 @@ function deriveTraversedEdges(events: RunEvent[], index: number): Set<string> {
   return traversed;
 }
 
+function traversalEdgeAtEvent(events: RunEvent[], index: number): string | undefined {
+  const current = events[index];
+  if (!current?.stageId || !["stage.started", "gate.evaluated", "run.finished"].includes(current.type)) {
+    return undefined;
+  }
+  for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
+    const previous = events[previousIndex];
+    if (!previous.stageId || !["stage.started", "gate.evaluated", "run.finished"].includes(previous.type)) {
+      continue;
+    }
+    return previous.stageId === current.stageId
+      ? undefined
+      : `${previous.stageId}->${current.stageId}`;
+  }
+  return undefined;
+}
+
 function visibleAttempts(run: Run, stageId: string, eventSeq: number): StageAttempt[] {
   return run.attempts
     .filter((attempt) => attempt.stageId === stageId && attempt.startedSeq <= eventSeq)
@@ -862,45 +908,121 @@ function AttemptInspector({
   );
 }
 
+function usePrefersReducedMotion(): boolean {
+  const query = "(prefers-reduced-motion: reduce)";
+  const [reducedMotion, setReducedMotion] = useState(
+    () => typeof window.matchMedia === "function" && window.matchMedia(query).matches,
+  );
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") {
+      return;
+    }
+    const mediaQuery = window.matchMedia(query);
+    const onChange = (event: MediaQueryListEvent) => setReducedMotion(event.matches);
+    mediaQuery.addEventListener("change", onChange);
+    return () => mediaQuery.removeEventListener("change", onChange);
+  }, []);
+
+  return reducedMotion;
+}
+
+type ReplayMode = "live-follow" | "replay";
+
 function RunPage({ run, navigate }: { run: Run; navigate: (route: Route) => void }) {
   const workflow = workflowForRun(run);
-  const [replayIndex, setReplayIndex] = useState(run.events.length - 1);
+  const events = useMemo(() => orderedReplayEvents(run.events), [run.events]);
+  const lastEventIndex = Math.max(events.length - 1, 0);
+  const activeRun = run.status === "running";
+  const [mode, setMode] = useState<ReplayMode>(activeRun ? "live-follow" : "replay");
+  const [replayIndex, setReplayIndex] = useState(lastEventIndex);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [speed, setSpeed] = useState(1);
-  const currentEvent = run.events[replayIndex] ?? run.events[0];
+  const [speed, setSpeed] = useState<ReplaySpeed>(1);
+  const reducedMotion = usePrefersReducedMotion();
+  const currentEvent = events[replayIndex] ?? events[0];
   const [selectedStageId, setSelectedStageId] = useState(
     currentEvent?.stageId ?? workflow.stages[0]?.id ?? "",
   );
   const selectedStage =
     workflow.stages.find((stage) => stage.id === selectedStageId) ?? workflow.stages[0];
-  const nodeStates = deriveNodeStates(workflow, run.events, replayIndex);
-  const traversedEdges = deriveTraversedEdges(run.events, replayIndex);
+  const nodeStates = deriveNodeStates(workflow, events, replayIndex);
+  const traversedEdges = deriveTraversedEdges(events, replayIndex);
+  const transition = replayTransition(events, replayIndex, speed);
+  const atEnd = replayIndex >= lastEventIndex;
+  const replayEnded = mode === "replay" && atEnd && !isPlaying;
+  const liveHistoryInspection = mode === "live-follow" && replayIndex < lastEventIndex;
+  const latestSequence = events[events.length - 1]?.seq;
 
   useEffect(() => {
     if (!isPlaying) {
       return;
     }
-    if (replayIndex >= run.events.length - 1) {
+    if (atEnd || !transition) {
       setIsPlaying(false);
       return;
     }
     const timeout = window.setTimeout(() => {
-      setReplayIndex((current) => Math.min(current + 1, run.events.length - 1));
-    }, Math.max(110, 850 / speed));
+      setReplayIndex((current) => Math.min(current + 1, lastEventIndex));
+    }, transition.playbackDelayMs);
     return () => window.clearTimeout(timeout);
-  }, [isPlaying, replayIndex, run.events.length, speed]);
+  }, [atEnd, isPlaying, lastEventIndex, replayIndex, transition?.playbackDelayMs]);
 
   useEffect(() => {
-    if (currentEvent?.stageId) {
-      setSelectedStageId(currentEvent.stageId);
+    if (activeRun && mode === "live-follow" && latestSequence !== undefined) {
+      setReplayIndex(lastEventIndex);
     }
-  }, [currentEvent]);
+  }, [activeRun, lastEventIndex, latestSequence, mode]);
+
+  useEffect(() => {
+    setSelectedStageId(currentEvent?.stageId ?? workflow.stages[0]?.id ?? "");
+  }, [currentEvent, workflow.stages]);
+
+  const selectReplayIndex = (index: number, enterReplay: boolean) => {
+    setIsPlaying(false);
+    if (enterReplay) {
+      setMode("replay");
+    }
+    setReplayIndex(Math.max(0, Math.min(index, lastEventIndex)));
+  };
 
   const togglePlayback = () => {
-    if (replayIndex >= run.events.length - 1) {
+    if (isPlaying) {
+      setIsPlaying(false);
+      return;
+    }
+    setMode("replay");
+    if (atEnd) {
       setReplayIndex(0);
     }
-    setIsPlaying((current) => !current);
+    setIsPlaying(true);
+  };
+
+  const enterReplay = () => {
+    setIsPlaying(false);
+    setMode("replay");
+    setReplayIndex(0);
+  };
+
+  const returnToLive = () => {
+    setIsPlaying(false);
+    setMode("live-follow");
+    setReplayIndex(lastEventIndex);
+  };
+
+  const onReplayKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.currentTarget !== event.target) {
+      return;
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      selectReplayIndex(replayIndex - 1, true);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      selectReplayIndex(replayIndex + 1, true);
+    } else if (event.key === " ") {
+      event.preventDefault();
+      togglePlayback();
+    }
   };
 
   return (
@@ -970,7 +1092,7 @@ function RunPage({ run, navigate }: { run: Run; navigate: (route: Route) => void
         </section>
       )}
 
-      <section className="run-workspace">
+      <section className="run-workspace" data-replay-motion={reducedMotion ? "reduced" : "animated"}>
         <div className="run-primary">
           <div className="graph-panel run-graph-panel">
             <div className="panel-heading-row">
@@ -991,43 +1113,96 @@ function RunPage({ run, navigate }: { run: Run; navigate: (route: Route) => void
               onSelectStage={setSelectedStageId}
               selectedStageId={selectedStageId}
               states={nodeStates}
+              traversingEdge={
+                isPlaying && !reducedMotion
+                  ? traversalEdgeAtEvent(events, replayIndex)
+                  : undefined
+              }
               workflow={workflow}
             />
           </div>
 
-          <div className="playback-panel">
-            <div className="playback-now">
-              <span className={`event-mark event-${currentEvent?.tone ?? "neutral"}`} />
-              <div>
-                <span>
-                  Event {replayIndex + 1} of {run.events.length} · {currentEvent?.elapsed}
+          <section
+            aria-label="Replay controls"
+            className="playback-panel"
+            onKeyDown={onReplayKeyDown}
+            tabIndex={0}
+          >
+            <div className="playback-summary">
+              <div className="playback-now">
+                <span className={`event-mark event-${currentEvent?.tone ?? "neutral"}`} />
+                <div>
+                  <span>
+                    Event {events.length === 0 ? 0 : replayIndex + 1} of {events.length}
+                    {" · "}Seq {currentEvent?.seq ?? "—"}
+                    {" · "}Real elapsed {currentEvent?.elapsed ?? "—"}
+                  </span>
+                  <strong>{currentEvent?.title ?? "No durable events"}</strong>
+                </div>
+              </div>
+              <div className="replay-mode-control">
+                <span className={`replay-mode replay-mode-${mode}`}>
+                  {mode === "live-follow"
+                    ? liveHistoryInspection
+                      ? "Live follow · inspecting history"
+                      : "Live follow"
+                    : "Replay mode"}
                 </span>
-                <strong>{currentEvent?.title}</strong>
+                {activeRun && mode === "live-follow" && (
+                  <button className="mode-button" onClick={enterReplay} type="button">
+                    Enter replay
+                  </button>
+                )}
+                {activeRun && mode === "replay" && (
+                  <button className="mode-button" onClick={returnToLive} type="button">
+                    Return to live
+                  </button>
+                )}
               </div>
             </div>
             <div className="playback-controls">
               <button
+                aria-label="Previous event"
+                className="step-button"
+                disabled={replayIndex === 0 || events.length === 0}
+                onClick={() => selectReplayIndex(replayIndex - 1, true)}
+                type="button"
+              >
+                <Icon name="previous" size={16} />
+              </button>
+              <button
                 aria-label={isPlaying ? "Pause replay" : "Play replay"}
                 className="play-button"
+                disabled={events.length === 0}
                 onClick={togglePlayback}
                 type="button"
               >
                 <Icon name={isPlaying ? "pause" : "play"} size={17} />
               </button>
+              <button
+                aria-label="Next event"
+                className="step-button"
+                disabled={atEnd || events.length === 0}
+                onClick={() => selectReplayIndex(replayIndex + 1, true)}
+                type="button"
+              >
+                <Icon name="next" size={16} />
+              </button>
               <input
                 aria-label="Replay position"
-                max={run.events.length - 1}
+                disabled={events.length <= 1}
+                max={lastEventIndex}
                 min={0}
                 onChange={(event) => {
-                  setIsPlaying(false);
-                  setReplayIndex(Number(event.target.value));
+                  selectReplayIndex(Number(event.target.value), true);
                 }}
                 type="range"
                 value={replayIndex}
               />
               <div className="speed-control" aria-label="Replay speed">
-                {[1, 5, 10].map((value) => (
+                {replaySpeeds.map((value) => (
                   <button
+                    aria-pressed={speed === value}
                     className={speed === value ? "speed-button speed-button-active" : "speed-button"}
                     key={value}
                     onClick={() => setSpeed(value)}
@@ -1038,7 +1213,36 @@ function RunPage({ run, navigate }: { run: Run; navigate: (route: Route) => void
                 ))}
               </div>
             </div>
-          </div>
+            <div className="playback-context">
+              <span className="replay-state" aria-live="polite">
+                {mode === "live-follow"
+                  ? liveHistoryInspection
+                    ? `Inspecting event ${replayIndex + 1}; new durable events remain live-followed.`
+                    : `Following the latest durable event, sequence ${currentEvent?.seq ?? "—"}.`
+                  : isPlaying
+                    ? `Playing event ${replayIndex + 1} of ${events.length}.`
+                    : replayEnded
+                      ? `Replay ended at event ${events.length}. Play restarts from event 1.`
+                      : `Replay paused at event ${replayIndex + 1} of ${events.length}.`}
+              </span>
+              <span>
+                Idle compression: waits over {formatReplayDuration(idleCompressionThresholdMs)} play in at most{" "}
+                {formatReplayDuration(compressedIdleDelayMs)} before speed; real elapsed is unchanged.
+              </span>
+              {transition?.idleCompressed && (
+                <strong className="compressed-wait">
+                  Next wait: {formatReplayDuration(transition.realDelayMs)} compressed to{" "}
+                  {formatReplayDuration(transition.playbackDelayMs)} at {speed}x.
+                </strong>
+              )}
+              <span>
+                {reducedMotion
+                  ? "Reduced motion: state changes are instant without graph traversal animation."
+                  : "Graph traversal animates only after the durable event is selected."}
+              </span>
+              <span className="keyboard-hint">Keyboard: Space play/pause · Left/Right previous/next</span>
+            </div>
+          </section>
 
           <div className="event-ledger">
             <div className="panel-heading-row">
@@ -1049,12 +1253,13 @@ function RunPage({ run, navigate }: { run: Run; navigate: (route: Route) => void
               <span className="graph-legend">Ordered by durable sequence</span>
             </div>
             <ol>
-              {run.events.map((event, index) => (
+              {events.map((event, index) => (
                 <li className={index === replayIndex ? "ledger-item ledger-item-active" : "ledger-item"} key={event.id}>
                   <button
+                    aria-current={index === replayIndex ? "true" : undefined}
+                    aria-label={`Select event ${event.seq}: ${event.title}`}
                     onClick={() => {
-                      setIsPlaying(false);
-                      setReplayIndex(index);
+                      selectReplayIndex(index, !activeRun || mode === "replay");
                     }}
                     type="button"
                   >
