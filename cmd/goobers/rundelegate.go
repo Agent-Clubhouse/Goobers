@@ -182,7 +182,15 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 		if err := json.Unmarshal(data, &req); err != nil {
 			resp.Error = fmt.Sprintf("delegate: malformed trigger request: %v", err)
 		} else if req.CreatedAt.IsZero() {
+			const reason = "delegation: trigger request missing createdAt"
 			resp.Error = "delegate: malformed trigger request: missing createdAt"
+			if log != nil {
+				_ = log.Append(journal.Event{
+					Type:     journal.EventTickSkipped,
+					Workflow: req.Workflow,
+					Reason:   reason,
+				})
+			}
 		} else if sweptAt.After(req.CreatedAt.Add(triggerDelegationTimeout)) {
 			const reason = "delegation: trigger request expired before daemon pickup"
 			resp.Error = "delegate: trigger request expired before live daemon pickup"

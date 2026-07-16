@@ -189,6 +189,61 @@ func TestSweepRefusesStaleRequest(t *testing.T) {
 	}
 }
 
+func TestSweepRefusesLegacyRequestWithoutCreatedAt(t *testing.T) {
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir, log := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Starter:   starter,
+	}})
+	requestID := "legacy"
+	requestDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	if err := os.MkdirAll(requestDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	requestPath := filepath.Join(requestDir, requestID+requestSuffix)
+	if err := os.WriteFile(requestPath, []byte(`{"workflow":"implement"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sweepPendingTriggers(context.Background(), schedulerDir, sched, log, time.Now)
+
+	if _, err := os.Stat(requestPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy request still exists: %v", err)
+	}
+	responsePath := filepath.Join(requestDir, requestID+responseSuffix)
+	data, err := os.ReadFile(responsePath)
+	if err != nil {
+		t.Fatalf("read refusal response: %v", err)
+	}
+	var response triggerResponse
+	if err := json.Unmarshal(data, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != "delegate: malformed trigger request: missing createdAt" {
+		t.Fatalf("response error = %q, want missing-createdAt refusal", response.Error)
+	}
+
+	events, err := journal.ReadInstanceLog(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawRefusal bool
+	for _, event := range events {
+		if event.Type == journal.EventTriggerFired || event.Type == journal.EventRunStarted {
+			t.Fatalf("legacy request was dispatched: %+v", event)
+		}
+		if event.Type == journal.EventTickSkipped &&
+			event.Workflow == "implement" &&
+			event.Reason == "delegation: trigger request missing createdAt" {
+			sawRefusal = true
+		}
+	}
+	if !sawRefusal {
+		t.Fatalf("legacy refusal was not journaled: %+v", events)
+	}
+}
+
 func TestSweepRemovesOrphanedResponse(t *testing.T) {
 	sched, schedulerDir, log := newTestDelegateScheduler(t, nil)
 	now := time.Date(2026, 7, 16, 20, 0, 0, 0, time.UTC)
