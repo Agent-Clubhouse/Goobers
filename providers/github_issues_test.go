@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -405,8 +406,17 @@ func TestGitHubRateLimitGivesUpAfterMaxRetries(t *testing.T) {
 	defer srv.Close()
 	p := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = srv.URL }, WithMaxRateLimitRetries(2))
 	p.sleep = func(context.Context, time.Duration) error { return nil }
-	if _, err := p.GetWorkItem(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "7"); err == nil {
+	_, err := p.GetWorkItem(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "7")
+	if err == nil {
 		t.Fatal("expected error after exhausting rate-limit retries")
+	}
+	// The give-up error is typed (#614), never the generic non-2xx string.
+	var rl *RateLimitError
+	if !errors.As(err, &rl) {
+		t.Fatalf("err = %v (%T), want *RateLimitError", err, err)
+	}
+	if !rl.Secondary {
+		t.Fatalf("Retry-After-driven limit should mark Secondary, got %+v", rl)
 	}
 }
 

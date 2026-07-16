@@ -28,6 +28,13 @@ func IsTransientError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
+	// A typed rate-limit give-up (#614) is transient by definition: the quota
+	// window resets on the clock, so a caller polling over minutes should
+	// back off and try again, never treat it as permanent.
+	var rl *RateLimitError
+	if errors.As(err, &rl) {
+		return true
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		return true
