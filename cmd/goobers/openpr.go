@@ -73,10 +73,18 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	body := providerInput("body", "")
+	structuredBody := false
 	if body == "" {
-		body = "Automated PR opened by the goobers implementation workflow."
+		body, structuredBody, err = renderStructuredPRBody(root, runID, issueID, issueTitle)
+		if err != nil {
+			pf(stderr, "error: render pull request body from journal: %v\n", err)
+			return 1
+		}
+		if !structuredBody {
+			body = "Automated PR opened by the goobers implementation workflow."
+		}
 	}
-	if haveIssue && issueID != "" {
+	if haveIssue && issueID != "" && !structuredBody {
 		body += "\n\nFixes #" + issueID
 	}
 
