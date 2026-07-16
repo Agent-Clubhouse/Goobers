@@ -157,20 +157,31 @@ func (c *outputCapturingDeterministic) Run(_ context.Context, env apiv1.Invocati
 // Task.Retry's policy-attempt loop. Safe for the single-goroutine dispatch
 // runTask does (no locking needed).
 type flakyDeterministic struct {
-	failUntil           int
-	calls               int
-	firstAttemptStarted chan struct{}
+	failUntil int
+	calls     int
 }
 
 func (f *flakyDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	f.calls++
-	if f.calls == 1 && f.firstAttemptStarted != nil {
-		close(f.firstAttemptStarted)
-	}
 	if f.calls <= f.failUntil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("transient failure (call %d)", f.calls)
 	}
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "eventually succeeded"}, nil
+}
+
+// backoffObservedContext reports when runTask obtains Done for its retry wait.
+// The walk loop checks Err instead, so this fires only after dispatch fails.
+type backoffObservedContext struct {
+	context.Context
+	entered chan<- struct{}
+}
+
+func (c backoffObservedContext) Done() <-chan struct{} {
+	select {
+	case c.entered <- struct{}{}:
+	default:
+	}
+	return c.Context.Done()
 }
 
 // blockingDeterministic signals started once dispatch actually reaches it,
@@ -1294,15 +1305,15 @@ func TestRunnerRetryBackoffInterruptedByDrainCancellation(t *testing.T) {
 	const backoff = 10 * time.Second
 	const maxAttempts = 5 // un-interrupted worst case: 4 waits * 10s = 40s
 	machine := retryFixtureMachineWithBackoff(t, maxAttempts, backoff)
-	flaky := &flakyDeterministic{
-		failUntil:           1000, // always fails within budget
-		firstAttemptStarted: make(chan struct{}),
-	}
+	flaky := &flakyDeterministic{failUntil: 1000} // always fails within budget
 	r, _ := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
 		return flaky, nil
 	}, gate.NewAutomatedEvaluator())
 
-	ctx, cancel := context.WithCancel(context.Background())
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	backoffEntered := make(chan struct{}, 1)
+	ctx := backoffObservedContext{Context: cancelCtx, entered: backoffEntered}
 	type startResult struct {
 		res Result
 		err error
@@ -1319,9 +1330,14 @@ func TestRunnerRetryBackoffInterruptedByDrainCancellation(t *testing.T) {
 		done <- startResult{res, err}
 	}()
 
-	// Synchronize with actual dispatch so cancellation cannot race the walk
-	// loop's between-stages drain check.
-	<-flaky.firstAttemptStarted
+	const entryBound = 5 * time.Second
+	select {
+	case <-backoffEntered:
+	case got := <-done:
+		t.Fatalf("Start returned before entering retry backoff: result=%+v err=%v", got.res, got.err)
+	case <-time.After(entryBound):
+		t.Fatalf("retry backoff was not entered within %s", entryBound)
+	}
 	start := time.Now()
 	cancel()
 
