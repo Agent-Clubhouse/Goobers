@@ -134,6 +134,37 @@ func TestIngestSchedulerLogCapturesDecisions(t *testing.T) {
 	}
 }
 
+func TestIngestSchedulerLogToleratesDuplicateSequence(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEvents(t, schedulerDir, []string{
+		instanceEventLine(1, "trigger.fired", `"workflow":"nominate","reason":"scheduled"`),
+		instanceEventLine(2, "claim.acquired", `"runId":"`+fixtureRunID+`"`),
+		instanceEventLine(2, "trigger.fired", `"workflow":"implement","reason":"scheduled"`),
+		instanceEventLine(3, "run.started", `"workflow":"nominate","runId":"`+fixtureRunID+`"`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+		t.Fatalf("IngestSchedulerLog: %v", err)
+	}
+	events, err := db.SchedulerEvents("")
+	if err != nil {
+		t.Fatalf("SchedulerEvents: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("scheduler events = %d, want 3: %#v", len(events), events)
+	}
+	if events[1].Seq != 2 || events[1].Type != "claim.acquired" {
+		t.Fatalf("duplicate seq retained %#v, want first occurrence", events[1])
+	}
+	if events[2].Seq != 3 || events[2].Type != "run.started" {
+		t.Fatalf("event after duplicate = %#v, want seq 3 run.started", events[2])
+	}
+}
+
 // TestRebuildIngestsSchedulerLog proves Rebuild — not just the incremental
 // IngestSchedulerLog call — picks up the instance journal too, since
 // `goobers telemetry --rebuild` is the documented recovery path for an

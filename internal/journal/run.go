@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -52,26 +51,14 @@ type Run struct {
 // descriptors in one process blocks too. Current flows avoid that deadlock:
 // Create uses a fresh run id, and in-process resume closes its writer first.
 func acquireRunLock(dir string) (*os.File, error) {
-	f, err := os.OpenFile(filepath.Join(dir, fileLock), os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("journal: open run lock: %w", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("journal: acquire run lock: %w", err)
-	}
-	return f, nil
+	return acquireJournalLock(dir, "run")
 }
 
 // releaseRunLock unlocks and closes a lock file acquireRunLock returned. Safe
 // to call with nil (a Run that never acquired one, e.g. a construction path
 // that failed before acquireRunLock ran).
 func releaseRunLock(f *os.File) {
-	if f == nil {
-		return
-	}
-	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	_ = f.Close()
+	releaseJournalLock(f)
 }
 
 // config holds constructor options.
