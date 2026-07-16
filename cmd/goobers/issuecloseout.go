@@ -141,6 +141,25 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// Release the goobers:claimed label on the same event that releases the
+	// ledger claim below (#414 design point 1), regardless of status — even
+	// the in-review branch above releases the ledger claim unconditionally,
+	// and UpdateWorkItemStatus only ever swaps goobers/status:-prefixed
+	// labels, so without this the claim marker survived indefinitely and a
+	// fresh eligibility query could see a completed (or in-review) item as
+	// still "claimed" forever. Best-effort like the ClaimWorkItem marker on
+	// the claim side (backlogquery.go): the durable ledger release below,
+	// not this label, is what's actually authoritative for eligibility, so a
+	// failed removal here leaves only a stale human-visible marker, not a
+	// stuck item.
+	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository:   repo,
+		ID:           claim.ItemID,
+		RemoveLabels: []string{providers.LabelClaimed},
+	}); err != nil {
+		pf(stderr, "warning: release %s claim label: %v\n", claim.ItemID, err)
+	}
+
 	// Release the lease now rather than waiting for it to expire — the run
 	// is finished with this item, and RecoverExpired's periodic sweep
 	// (goobers up, #131) should not have to reclaim it later.

@@ -53,6 +53,9 @@ spec:
         resultFile: "claimed-items.json"
       capabilities:
         - github:issues:write
+        # Same open-PR eligibility backstop as implementation.yaml's
+        # query-backlog (issue #414).
+        - github:pr:write
       expectedOutputs:
         - claimed-items
       next: curate

@@ -66,6 +66,13 @@ spec:
         resultFile: "claimed-item.json"
       capabilities:
         - github:issues:write
+        # Read-only in practice here (issue #414's open-PR eligibility
+        # backstop: list open goober-authored PRs to exclude any candidate
+        # issue that already has one, a defense-in-depth check on top of
+        # excludeLabels above) — no dedicated read-only PR capability exists
+        # yet, so this reuses github:pr:write the same way #361's post-merge
+        # stage does for its own PR reads.
+        - github:pr:write
       expectedOutputs:
         - claimed-item
       next: implement

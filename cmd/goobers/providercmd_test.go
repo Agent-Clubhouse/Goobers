@@ -349,11 +349,21 @@ func prDetailJSON(pr *fakePR) map[string]interface{} {
 	}
 	return map[string]interface{}{
 		"number": pr.number, "html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
-		"draft": pr.draft, "updated_at": "2026-07-15T00:00:00Z",
+		"draft": pr.draft, "updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
 		"head":   map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
 		"base":   map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA},
 		"labels": labels,
 	}
+}
+
+// setPRBody sets a fixture PR's body after addOpenPR — a separate setter
+// rather than another positional param on addOpenPR (already long, shared by
+// many tests) for the one caller (#414's open-PR eligibility backstop) that
+// needs it.
+func (s *fakeGitHubServer) setPRBody(number int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].body = body
 }
 
 func hasAllLabels(have, want []string) bool {
