@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/worktree"
@@ -38,6 +39,9 @@ var claimRecoverInterval = 5 * time.Minute
 // cadence. Var, not const, so tests can shrink it further.
 var delegationSweepInterval = 2 * time.Second
 
+// heartbeatInterval is a var so daemon tests do not wait a full minute.
+var heartbeatInterval = time.Minute
+
 // reapStaleAfter bounds how long a Keep-on-failure worktree survives before
 // Manager.Reap sweeps it up too, on top of genuine crash orphans (issue
 // #136) — nothing in the runner sets RemoveOptions.Keep yet, so this only
@@ -58,12 +62,13 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers up [path]\n\n"+
+		pf(stderr, "Usage: goobers up [--quiet] [path]\n\n"+
 			"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n"+
 			"plus the local runner loop (default path \".\"). Blocks until interrupted\n"+
 			"(SIGINT/SIGTERM), then drains in-flight runs before exiting. Exit codes:\n"+
 			"0 = clean shutdown, 1 = daemon startup failed, 2 = usage/IO error.\n")
 	}
+	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -245,6 +250,16 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}()
 
 	pf(stdout, "daemon started at %s (%d workflow(s))\n", root, len(setup.Entries))
+	var heartbeatDone <-chan struct{}
+	if !*quiet {
+		lastSeq := uint64(0)
+		if events, err := journal.ReadInstanceLog(l.SchedulerDir()); err == nil && len(events) > 0 {
+			lastSeq = events[len(events)-1].Seq
+		}
+		done := make(chan struct{})
+		heartbeatDone = done
+		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), lastSeq, heartbeatInterval, done)
+	}
 	runErr := sched.Run(ctx) // blocks until ctx is cancelled
 
 	// Wait for both background goroutines to fully stop BEFORE any further
@@ -254,6 +269,9 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// (stdout/stderr are not safe for concurrent use).
 	<-claimTickerDone
 	<-delegationTickerDone
+	if heartbeatDone != nil {
+		<-heartbeatDone
+	}
 
 	if runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {
 		pf(stderr, "error: scheduler stopped: %v\n", runErr)
@@ -266,4 +284,66 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pf(stdout, "shutdown timed out after %s: some runs may still be checkpointing\n", drainGrace)
 	}
 	return 0
+}
+
+type heartbeatActivity struct {
+	triggers int
+	started  int
+	finished int
+	skipped  int
+}
+
+func summarizeHeartbeat(events []journal.Event, afterSeq uint64) (heartbeatActivity, uint64) {
+	activity := heartbeatActivity{}
+	lastSeq := afterSeq
+	for _, event := range events {
+		if event.Seq <= afterSeq {
+			continue
+		}
+		if event.Seq > lastSeq {
+			lastSeq = event.Seq
+		}
+		switch event.Type {
+		case journal.EventTriggerFired:
+			activity.triggers++
+		case journal.EventRunStarted:
+			activity.started++
+		case journal.EventRunFinished:
+			activity.finished++
+		case journal.EventTickSkipped:
+			activity.skipped++
+		}
+	}
+	return activity, lastSeq
+}
+
+func emitHeartbeats(
+	ctx context.Context,
+	stdout io.Writer,
+	schedulerDir string,
+	workflowCount int,
+	lastSeq uint64,
+	interval time.Duration,
+	done chan<- struct{},
+) {
+	defer close(done)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			events, err := journal.ReadInstanceLog(schedulerDir)
+			if err != nil {
+				pf(stdout, "[%s] alive — scheduler activity unavailable: %v\n", now.Format("15:04:05"), err)
+				continue
+			}
+			activity, nextSeq := summarizeHeartbeat(events, lastSeq)
+			lastSeq = nextSeq
+			pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped\n",
+				now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped)
+		}
+	}
 }
