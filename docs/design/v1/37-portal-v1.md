@@ -1,11 +1,27 @@
-# Design: Portal v1 — read-only over journals + telemetry, human-gate approvals — V1 epic #37
+# Historical design: Portal v1 - superseded by dashboard and HITL designs
 
-> Status: **Draft for review** · Area prefix: `PORT`/`GT` · Milestone: **V1**
+> Status: **Superseded for dispatch** (2026-07-16) · Historical context only
 > Requirements: [`docs/requirements/portal.md`](../../requirements/portal.md)
 > (PORT-010..025), [`docs/requirements/gate.md`](../../requirements/gate.md) (GT-003/GT-012)
 >
-> Detailed-design artifact for epic **#37**. The dispatchable work items (P0–P4)
-> each link back to the correspondingly-named section here.
+> Read/dashboard work moved to [`../dashboard.md`](../dashboard.md) and epic
+> [#440](https://github.com/Agent-Clubhouse/Goobers/issues/440). Human approval,
+> pause/resume, and intervention moved to
+> [`../human-in-the-loop.md`](../human-in-the-loop.md) and epic #462.
+> Do not dispatch P0-P4 from this document.
+
+## Supersession map
+
+| Historical slice | Current authority |
+|---|---|
+| P0 human gate + pause/resume | HITL issues #465-#469 |
+| P1 daemon read API | Dashboard API issues under #440 |
+| P2 CLI approve/reject | HITL issue #466 |
+| P3 portal retarget | Dashboard UI issues under #440 |
+| P4 access-control seam | HITL issue #469 |
+
+The remainder is retained to explain earlier decisions and issue history. Where
+it conflicts with the approved dashboard or HITL designs, those designs win.
 
 ## 1. Verdict
 
@@ -25,10 +41,10 @@ front-ends over the same daemon endpoint.
 
 ## 2. Scope boundary
 
-**In scope (V1, tiers 1–2):** human-gate evaluator with durable pause/resume; a thin
-read-only daemon API (roster, run list, trace, telemetry stats, pending approvals) + the
-one write path (submit approval); `goobers approve` CLI + pending list; portal retargeted
-to the real API; an access-control seam (none at tier 1).
+**Historical scope (V1, tiers 1–2):** human-gate evaluator with durable
+pause/resume; a thin read-only daemon API; CLI approval paths; portal retarget;
+and an access-control seam. These concerns are now split across #440 and #462 so
+each can ship independently.
 
 **Out of scope — V2 / WON'T-v1:** runner-specific operational views (PORT-025, WON'T-v1);
 OIDC *implementation* (that's **#38** — this epic ships only the auth seam + tier-1 no-auth
@@ -86,8 +102,9 @@ daemon read API (served by `goobers up`, local port):
 
 ### P3 — Portal retarget to the real API
 - Replace the mock client: roster view, run list + trace viewer, human-gate approval panel,
-  all wired to P1. Portal stays **optional** (PORT-022); it renders a journal directly
-  (PORT-024). No config/setup surface. Depends on **P1** (and P0 for the panel).
+  all wired to P1. Portal stays **optional** (PORT-022); the browser reads the daemon
+  API, whose shared read service projects the journal (PORT-024). No config/setup
+  surface. Depends on **P1** (and P0 for the panel).
 - **Seams:** `portal/src/*`, P1 API.
 - **Test plan:** component/integration tests against a fake P1 API — run list renders from
   `/runs`, trace from `/runs/{id}/trace`, approval panel submits to `POST /approvals`;

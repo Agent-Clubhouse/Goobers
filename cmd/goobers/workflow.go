@@ -30,18 +30,20 @@ func runWorkflow(args []string, stdout, stderr io.Writer) int {
 }
 
 func workflowUsage(w io.Writer) {
-	pf(w, "Usage: goobers workflow show <name> [path]\n\n"+
-		"Show the named workflow as a text DAG (default path \".\").\n")
+	pf(w, "Usage: goobers workflow show [--dot] <name> [path]\n\n"+
+		"Show the named workflow as a text DAG or Graphviz DOT (default path \".\").\n")
 }
 
 func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("workflow show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers workflow show <name> [path]\n\n"+
+		pf(stderr, "Usage: goobers workflow show [--dot] <name> [path]\n\n"+
 			"Load the named workflow from the instance config and show its stages,\n"+
-			"kinds, and transition targets as a text DAG (default path \".\").\n")
+			"kinds, and transition targets as a text DAG or Graphviz DOT\n"+
+			"(default path \".\").\n")
 	}
+	dot := fs.Bool("dot", false, "emit Graphviz DOT")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -72,7 +74,11 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
 	}
 	for _, wf := range set.Workflows {
 		if wf.Name == name {
-			printWorkflowDAG(stdout, wf)
+			if *dot {
+				printWorkflowDOT(stdout, wf)
+			} else {
+				printWorkflowDAG(stdout, wf)
+			}
 			return 0
 		}
 	}
@@ -92,6 +98,22 @@ func printWorkflowDAG(w io.Writer, wf apiv1.Workflow) {
 			pf(w, "    %s target: %s\n", outcome, displayWorkflowTarget(gate.Branches[outcome]))
 		}
 	}
+}
+
+func printWorkflowDOT(w io.Writer, wf apiv1.Workflow) {
+	pf(w, "digraph {\n")
+	for _, task := range wf.Spec.Tasks {
+		pf(w, "  %q [shape=box];\n", task.Name)
+		pf(w, "  %q -> %q;\n", task.Name, displayWorkflowTarget(task.Next))
+	}
+	for _, gate := range wf.Spec.Gates {
+		pf(w, "  %q [shape=diamond];\n", gate.Name)
+		for _, outcome := range orderedGateOutcomes(gate.Branches) {
+			pf(w, "  %q -> %q [label=%q];\n",
+				gate.Name, displayWorkflowTarget(gate.Branches[outcome]), outcome)
+		}
+	}
+	pf(w, "}\n")
 }
 
 func orderedGateOutcomes(branches map[string]string) []string {
