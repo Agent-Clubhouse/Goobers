@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -40,9 +41,10 @@ func runRuns(args []string, stdout, stderr io.Writer) int {
 func runRunsList(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("runs list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	jsonOutput := fs.Bool("json", false, "emit run summaries as JSON")
 	limit := fs.Int("limit", 0, "maximum number of runs to show (default: all)")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers runs list [--limit=N] [path]\n\n"+
+		pf(stderr, "Usage: goobers runs list [--json] [--limit=N] [path]\n\n"+
 			"List runs under an instance's runs/ directory, most-recent first\n"+
 			"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
 	}
@@ -68,10 +70,6 @@ func runRunsList(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if len(runs) == 0 {
-		pln(stdout, "no runs found")
-		return 0
-	}
 	sort.Slice(runs, func(i, j int) bool {
 		if runs[i].StartedAt.Equal(runs[j].StartedAt) {
 			return runs[i].RunID < runs[j].RunID
@@ -80,6 +78,17 @@ func runRunsList(args []string, stdout, stderr io.Writer) int {
 	})
 	if *limit > 0 && len(runs) > *limit {
 		runs = runs[:*limit]
+	}
+	if *jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(statusJSONSummaries(runs)); err != nil {
+			pf(stderr, "error: encode runs list: %v\n", err)
+			return 2
+		}
+		return 0
+	}
+	if len(runs) == 0 {
+		pln(stdout, "no runs found")
+		return 0
 	}
 
 	pf(stdout, "%-34s  %-24s  %-10s  %-10s  %s\n", "RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED")

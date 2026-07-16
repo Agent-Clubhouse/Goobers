@@ -20,8 +20,9 @@ import (
 func runTrace(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("trace", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	jsonOutput := fs.Bool("json", false, "emit the run trace as JSON")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers trace <run-id> [path]\n\n"+
+		pf(stderr, "Usage: goobers trace [--json] <run-id> [path]\n\n"+
 			"Show a run's journal events and, if the telemetry rollup has ingested it,\n"+
 			"its trace spans (default path \".\"). Exit codes: 0 = OK, 1 = run not found, 2 = usage/IO error.\n")
 	}
@@ -79,15 +80,47 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	var escalation *escalationSummary
 	if phase == journal.PhaseEscalated {
 		summary, err := readEscalationSummary(reader, events)
 		if err != nil {
 			pf(stderr, "error: escalation summary: %v\n", err)
 			return 2
 		}
-		printEscalationSummary(stdout, summary)
+		escalation = &summary
 	}
 
+	repasses, err := repassCount(events, "")
+	if err != nil {
+		pf(stderr, "error: repass count: %v\n", err)
+		return 2
+	}
+	spans := spanSummaries(l.TelemetryDB(), id.RunID)
+
+	var state *journal.State
+	if stateErr == nil {
+		state = &st
+	}
+	if *jsonOutput {
+		result := traceJSONResult{
+			Identity:   id,
+			Phase:      phase,
+			State:      state,
+			Repasses:   repasses,
+			Escalation: escalation,
+			Events:     events,
+			Spans:      spans,
+		}
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			pf(stderr, "error: encode trace: %v\n", err)
+			return 2
+		}
+		return 0
+	}
+
+	if escalation != nil {
+		printEscalationSummary(stdout, *escalation)
+	}
 	pf(stdout, "run:      %s\n", id.RunID)
 	pf(stdout, "workflow: %s (v%d)\n", id.Workflow, id.WorkflowVersion)
 	if id.WorkflowDigest != "" {
@@ -96,14 +129,8 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	pf(stdout, "gaggle:   %s\n", id.Gaggle)
 	pf(stdout, "trigger:  %s %s\n", id.Trigger.Kind, id.Trigger.Ref)
 	pf(stdout, "started:  %s\n", id.StartedAt.Format("2006-01-02T15:04:05Z07:00"))
-	if stateErr == nil {
-		pf(stdout, "phase:    %s (machineState=%q, lastSeq=%d)\n", st.Phase, st.MachineState, st.LastSeq)
-	}
-
-	repasses, err := repassCount(events, "")
-	if err != nil {
-		pf(stderr, "error: repass count: %v\n", err)
-		return 2
+	if state != nil {
+		pf(stdout, "phase:    %s (machineState=%q, lastSeq=%d)\n", state.Phase, state.MachineState, state.LastSeq)
 	}
 	pf(stdout, "repasses: %d\n", repasses)
 	pln(stdout, "\nevents:")
@@ -111,34 +138,48 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		pln(stdout, "  "+formatEvent(ev))
 	}
 
-	printSpans(stdout, l.TelemetryDB(), id.RunID)
+	printSpans(stdout, spans)
 	return 0
 }
 
+type traceJSONResult struct {
+	Identity   journal.RunIdentity  `json:"identity"`
+	Phase      journal.RunPhase     `json:"phase"`
+	State      *journal.State       `json:"state,omitempty"`
+	Repasses   int                  `json:"repasses"`
+	Escalation *escalationSummary   `json:"escalation,omitempty"`
+	Events     []journal.Event      `json:"events"`
+	Spans      []rollup.SpanSummary `json:"spans"`
+}
+
 type escalationSummary struct {
-	stage       string
-	gate        string
-	repassCount int
-	reason      string
+	Stage                  string `json:"stage"`
+	Gate                   string `json:"gate"`
+	RepassCount            int    `json:"repassCount"`
+	LastNeedsChangesReason string `json:"lastNeedsChangesReason"`
 }
 
 func readEscalationSummary(reader *journal.Reader, events []journal.Event) (escalationSummary, error) {
 	const notRecorded = "(not recorded)"
-	summary := escalationSummary{stage: notRecorded, gate: notRecorded, reason: notRecorded}
+	summary := escalationSummary{
+		Stage:                  notRecorded,
+		Gate:                   notRecorded,
+		LastNeedsChangesReason: notRecorded,
+	}
 
 	gateIndex := -1
 	for i := len(events) - 1; i >= 0; i-- {
 		ev := events[i]
 		if ev.Type == journal.EventGateEvaluated && ev.Target == workflow.TargetEscalate {
 			gateIndex = i
-			summary.gate = ev.Gate
+			summary.Gate = ev.Gate
 			break
 		}
 	}
 	if gateIndex < 0 {
 		for i := len(events) - 1; i >= 0; i-- {
 			if events[i].Type == journal.EventStageFinished {
-				summary.stage = events[i].Stage
+				summary.Stage = events[i].Stage
 				break
 			}
 		}
@@ -147,21 +188,21 @@ func readEscalationSummary(reader *journal.Reader, events []journal.Event) (esca
 
 	for i := gateIndex - 1; i >= 0; i-- {
 		if events[i].Type == journal.EventStageFinished {
-			summary.stage = events[i].Stage
+			summary.Stage = events[i].Stage
 			break
 		}
 	}
 
-	count, err := repassCount(events[:gateIndex+1], summary.gate)
+	count, err := repassCount(events[:gateIndex+1], summary.Gate)
 	if err != nil {
 		return escalationSummary{}, err
 	}
-	summary.repassCount = count
+	summary.RepassCount = count
 
 	for i := gateIndex; i >= 0; i-- {
 		ev := events[i]
 		if ev.Type != journal.EventGateEvaluated ||
-			ev.Gate != summary.gate ||
+			ev.Gate != summary.Gate ||
 			ev.Verdict != string(apiv1.VerdictNeedsChanges) {
 			continue
 		}
@@ -170,24 +211,24 @@ func readEscalationSummary(reader *journal.Reader, events []journal.Event) (esca
 		}
 		data, err := reader.ArtifactBytes(*ev.Ref)
 		if err != nil {
-			return escalationSummary{}, fmt.Errorf("read verdict for gate %q: %w", summary.gate, err)
+			return escalationSummary{}, fmt.Errorf("read verdict for gate %q: %w", summary.Gate, err)
 		}
 		var verdict apiv1.Verdict
 		if err := json.Unmarshal(data, &verdict); err != nil {
-			return escalationSummary{}, fmt.Errorf("parse verdict for gate %q: %w", summary.gate, err)
+			return escalationSummary{}, fmt.Errorf("parse verdict for gate %q: %w", summary.Gate, err)
 		}
 		if verdict.Decision != apiv1.VerdictNeedsChanges {
 			return escalationSummary{}, fmt.Errorf(
 				"verdict artifact for gate %q has decision %q, want %q",
-				summary.gate, verdict.Decision, apiv1.VerdictNeedsChanges,
+				summary.Gate, verdict.Decision, apiv1.VerdictNeedsChanges,
 			)
 		}
-		summary.reason = strings.TrimSpace(verdict.Rationale)
-		if summary.reason == "" {
-			summary.reason = strings.TrimSpace(verdict.Summary)
+		summary.LastNeedsChangesReason = strings.TrimSpace(verdict.Rationale)
+		if summary.LastNeedsChangesReason == "" {
+			summary.LastNeedsChangesReason = strings.TrimSpace(verdict.Summary)
 		}
-		if summary.reason == "" {
-			summary.reason = notRecorded
+		if summary.LastNeedsChangesReason == "" {
+			summary.LastNeedsChangesReason = notRecorded
 		}
 		break
 	}
@@ -262,11 +303,11 @@ func repassCount(events []journal.Event, gate string) (int, error) {
 }
 
 func printEscalationSummary(stdout io.Writer, summary escalationSummary) {
-	reason := strings.ReplaceAll(summary.reason, "\n", "\n    ")
+	reason := strings.ReplaceAll(summary.LastNeedsChangesReason, "\n", "\n    ")
 	pf(stdout, "⚠ ESCALATED\n")
-	pf(stdout, "  stage: %s\n", summary.stage)
-	pf(stdout, "  gate: %s\n", summary.gate)
-	pf(stdout, "  repass count: %d\n", summary.repassCount)
+	pf(stdout, "  stage: %s\n", summary.Stage)
+	pf(stdout, "  gate: %s\n", summary.Gate)
+	pf(stdout, "  repass count: %d\n", summary.RepassCount)
 	pf(stdout, "  last needs-changes reason: %s\n\n", reason)
 }
 
@@ -320,7 +361,7 @@ func formatEvent(ev journal.Event) string {
 	}
 }
 
-// printSpans best-effort enriches trace output with rollup-ingested spans. It
+// spanSummaries best-effort loads rollup-ingested spans. It
 // reads telemetry.db directly (no Rebuild call here) — that used to mean a
 // fresh `goobers trace` right after `goobers run` showed nothing until a
 // separate `goobers telemetry stats/errors` had rebuilt the db first (issue
@@ -332,18 +373,26 @@ func formatEvent(ev journal.Event) string {
 // error — spans are informational only (ARCHITECTURE.md §3.3 excludes them
 // from conformance) — so this silently does nothing rather than requiring
 // rollup setup just to read a run's journal.
-func printSpans(stdout io.Writer, dbPath, runID string) {
+func spanSummaries(dbPath, runID string) []rollup.SpanSummary {
+	empty := []rollup.SpanSummary{}
 	if _, err := os.Stat(dbPath); err != nil {
-		return
+		return empty
 	}
 	db, err := rollup.Open(dbPath)
 	if err != nil {
-		return
+		return empty
 	}
 	defer func() { _ = db.Close() }()
 
 	spans, err := db.Spans(runID)
-	if err != nil || len(spans) == 0 {
+	if err != nil || spans == nil {
+		return empty
+	}
+	return spans
+}
+
+func printSpans(stdout io.Writer, spans []rollup.SpanSummary) {
+	if len(spans) == 0 {
 		return
 	}
 	pln(stdout, "\nspans:")

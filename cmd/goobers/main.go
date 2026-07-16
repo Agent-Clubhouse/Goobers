@@ -104,12 +104,12 @@ Usage:
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
   goobers workflow show <name> [path]  show a workflow as a text DAG
-  goobers runs list [--limit=N] [path]  list runs, most-recent first
+  goobers runs list [--json] [--limit=N] [path]  list runs, most-recent first
   goobers status [--json] [--phase=...] [--workflow=...] [--limit=N] [path]
                                 list runs and their current phase
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
-  goobers trace <run-id> [path] show a run's journal events (+ spans if rolled up)
-  goobers telemetry stats|errors [path]  success rate/duration or recent-error aggregates
+  goobers trace [--json] <run-id> [path] show a run's journal events (+ spans if rolled up)
+  goobers telemetry stats|errors [--json] [path]  success rate/duration or recent-error aggregates
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)

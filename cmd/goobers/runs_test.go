@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,38 @@ func TestRunsListNewestFirstWithLimit(t *testing.T) {
 	}
 	if strings.Contains(stdout, "old-run") {
 		t.Fatalf("runs list stdout = %q, want --limit=2 to exclude oldest run", stdout)
+	}
+}
+
+func TestRunsListJSON(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	start := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+	createListRun(t, l.RunsDir(), "old-run", start)
+	createListRun(t, l.RunsDir(), "middle-run", start.Add(time.Minute))
+	createListRun(t, l.RunsDir(), "new-run", start.Add(2*time.Minute))
+
+	code, stdout, stderr := runArgs(t, "runs", "list", "--json", "--limit=2", root)
+	if code != 0 {
+		t.Fatalf("runs list --json: code = %d, stderr = %q", code, stderr)
+	}
+	want := fmt.Sprintf(
+		`[{"runId":"new-run","workflow":"implementation","gaggle":"goobers","phase":"running","startedAt":%q},{"runId":"middle-run","workflow":"implementation","gaggle":"goobers","phase":"running","startedAt":%q}]`+"\n",
+		start.Add(2*time.Minute).Format(time.RFC3339), start.Add(time.Minute).Format(time.RFC3339),
+	)
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+func TestRunsListJSONEmptyInstance(t *testing.T) {
+	root := initDemo(t)
+	code, stdout, stderr := runArgs(t, "runs", "list", "--json", root)
+	if code != 0 {
+		t.Fatalf("runs list --json: code = %d, stderr = %q", code, stderr)
+	}
+	if stdout != "[]\n" {
+		t.Fatalf("stdout = %q, want %q", stdout, "[]\n")
 	}
 }
 

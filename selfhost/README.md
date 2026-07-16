@@ -177,7 +177,7 @@ admin can touch.
 ```sh
 goobers status                 # instance overview: workflows, next cron fires, active/recent runs
 goobers trace <run-id>          # a run's full journal: timeline, stages, attempts, gate verdicts, artifacts
-goobers trace <run-id> --json    # same, for scripting
+goobers trace --json <run-id>    # same, for scripting
 ```
 
 Every scheduling decision and claim-ledger transition is also inspectable

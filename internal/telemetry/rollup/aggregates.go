@@ -44,42 +44,42 @@ type StatsRequest struct {
 
 // RunStats is the success/failure/duration aggregate for one workflow.
 type RunStats struct {
-	Workflow      string
-	TotalRuns     int
-	CompletedRuns int
-	FailedRuns    int
-	OtherRuns     int // aborted, escalated, or still running
+	Workflow      string `json:"workflow"`
+	TotalRuns     int    `json:"totalRuns"`
+	CompletedRuns int    `json:"completedRuns"`
+	FailedRuns    int    `json:"failedRuns"`
+	OtherRuns     int    `json:"otherRuns"` // aborted, escalated, or still running
 	// SuccessRate is CompletedRuns / (CompletedRuns + FailedRuns), the rate
 	// over runs that have reached a success/failure verdict. 0 when neither
 	// has occurred yet (avoids a divide-by-zero, not a claim of 0% success).
-	SuccessRate   float64
-	AvgDurationMs float64
-	MinDurationMs int64
-	MaxDurationMs int64
+	SuccessRate   float64 `json:"successRate"`
+	AvgDurationMs float64 `json:"avgDurationMs"`
+	MinDurationMs int64   `json:"minDurationMs"`
+	MaxDurationMs int64   `json:"maxDurationMs"`
 }
 
 // StageStats is the success/failure/duration aggregate for one stage name,
 // across every run matching the request's filters.
 type StageStats struct {
-	Stage             string
-	TotalAttempts     int
-	SucceededAttempts int
-	FailedAttempts    int
+	Stage             string `json:"stage"`
+	TotalAttempts     int    `json:"totalAttempts"`
+	SucceededAttempts int    `json:"succeededAttempts"`
+	FailedAttempts    int    `json:"failedAttempts"`
 	// SuccessRate is SucceededAttempts / (SucceededAttempts + FailedAttempts);
 	// blocked attempts count toward TotalAttempts but not the rate (neither a
 	// success nor a failure verdict).
-	SuccessRate   float64
-	AvgDurationMs float64
-	MinDurationMs int64
-	MaxDurationMs int64
+	SuccessRate   float64 `json:"successRate"`
+	AvgDurationMs float64 `json:"avgDurationMs"`
+	MinDurationMs int64   `json:"minDurationMs"`
+	MaxDurationMs int64   `json:"maxDurationMs"`
 }
 
 // StatsResult bundles the run-level and stage-level views a single Stats call
 // returns — one query round-trip covers both the "by workflow" and "by stage"
 // shapes #24 asks for.
 type StatsResult struct {
-	Runs   []RunStats
-	Stages []StageStats
+	Runs   []RunStats   `json:"runs"`
+	Stages []StageStats `json:"stages"`
 }
 
 // Stats computes success/failure rates and durations by workflow and by
@@ -205,14 +205,14 @@ func statsWhere(workflowCol, gaggleCol, timeCol string, req StatsRequest) (strin
 // ErrorEvent is one run_errors row joined with its run's workflow, for the
 // cross-run "recent errors" query.
 type ErrorEvent struct {
-	RunID      string
-	Workflow   string
-	Stage      string
-	Attempt    int
-	Code       string
-	ErrorClass string
-	Message    string
-	OccurredAt time.Time
+	RunID      string    `json:"runId"`
+	Workflow   string    `json:"workflow"`
+	Stage      string    `json:"stage"`
+	Attempt    int       `json:"attempt"`
+	Code       string    `json:"code"`
+	ErrorClass string    `json:"errorClass"`
+	Message    string    `json:"message"`
+	OccurredAt time.Time `json:"occurredAt"`
 }
 
 // ErrorsRequest filters the cross-run recent-errors query. Zero-value fields
