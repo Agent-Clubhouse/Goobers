@@ -989,17 +989,23 @@ func TestGitHubProviderMergePullRequestRefusedOnSHAMismatch(t *testing.T) {
 	}
 }
 
-// TestGitHubProviderPollPullRequestSurfacesDraftAndSHAs is #360's regression:
+// TestGitHubProviderPollPullRequestSurfacesMergeInputs is #360's regression:
 // a conjunctive auto-merge action re-checks not-draft and the SHA-pin (D6)
-// against PollPullRequest's live result — these fields must actually reach
-// the caller, not just exist unpopulated on the struct.
-func TestGitHubProviderPollPullRequestSurfacesDraftAndSHAs(t *testing.T) {
+// against PollPullRequest's live result. Branch cleanup also needs the head
+// repository because a fork PR's branch does not live in the base repository.
+func TestGitHubProviderPollPullRequestSurfacesMergeInputs(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, map[string]interface{}{
 			"number": 9, "state": "open", "draft": true, "html_url": "https://github.com/acme/app/pull/9",
 			"body": "Implements the thing.\n\nFixes #42",
-			"head": map[string]interface{}{"sha": "headsha123"},
+			"head": map[string]interface{}{
+				"ref": "feature", "sha": "headsha123",
+				"repo": map[string]interface{}{
+					"name": "app-fork", "html_url": "https://github.com/contributor/app-fork",
+					"owner": map[string]string{"login": "contributor"},
+				},
+			},
 			"base": map[string]interface{}{"sha": "basesha456", "ref": "main"},
 		})
 	})
@@ -1030,6 +1036,9 @@ func TestGitHubProviderPollPullRequestSurfacesDraftAndSHAs(t *testing.T) {
 	}
 	if result.HeadSHA != "headsha123" {
 		t.Fatalf("HeadSHA = %q, want headsha123", result.HeadSHA)
+	}
+	if result.HeadRepository == nil || result.HeadRepository.Owner != "contributor" || result.HeadRepository.Name != "app-fork" {
+		t.Fatalf("HeadRepository = %+v, want contributor/app-fork", result.HeadRepository)
 	}
 	if result.BaseSHA != "basesha456" {
 		t.Fatalf("BaseSHA = %q, want basesha456", result.BaseSHA)

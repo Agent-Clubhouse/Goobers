@@ -434,6 +434,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		Mergeable:        pr.Mergeable,
 		Draft:            pr.Draft,
 		HeadBranch:       pr.Head.Ref,
+		HeadRepository:   githubRepositoryRef(pr.Head.Repo),
 		HeadSHA:          pr.Head.SHA,
 		BaseSHA:          pr.Base.SHA,
 		BaseBranch:       pr.Base.Ref,
@@ -445,6 +446,18 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		CommentsSince:    comments,
 		URL:              pr.HTMLURL,
 	}, nil
+}
+
+func githubRepositoryRef(repo *githubRepository) *RepositoryRef {
+	if repo == nil {
+		return nil
+	}
+	return &RepositoryRef{
+		Provider: ProviderGitHub,
+		Owner:    repo.Owner.Login,
+		Name:     repo.Name,
+		URL:      repo.HTMLURL,
+	}
 }
 
 // ClosePullRequest closes a GitHub pull request, detecting merged-vs-closed, and
@@ -1441,13 +1454,20 @@ type githubPullRequestDetail struct {
 	Labels    []githubLabel `json:"labels"`
 	UpdatedAt time.Time     `json:"updated_at"`
 	Head      struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string            `json:"ref"`
+		SHA  string            `json:"sha"`
+		Repo *githubRepository `json:"repo"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"base"`
+}
+
+type githubRepository struct {
+	Name    string     `json:"name"`
+	HTMLURL string     `json:"html_url"`
+	Owner   githubUser `json:"owner"`
 }
 
 type githubMergeResult struct {

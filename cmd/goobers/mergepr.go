@@ -151,7 +151,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 	var cleanup *mergeBranchCleanup
 	if result.Merged {
-		outcome := cleanupMergedBranch(ctx, repo, poll.HeadBranch, provider)
+		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)
 		cleanup = &outcome
 		if outcome.Error != "" {
 			pf(stderr, "warning: merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
@@ -173,7 +173,7 @@ type mergeBranchCleanup struct {
 	Error      string
 }
 
-func cleanupMergedBranch(ctx context.Context, repo providers.RepositoryRef, headBranch string, prProvider *providers.GitHubProvider) mergeBranchCleanup {
+func cleanupMergedBranch(ctx context.Context, headRepository *providers.RepositoryRef, headBranch string, prProvider *providers.GitHubProvider) mergeBranchCleanup {
 	out := mergeBranchCleanup{HeadBranch: headBranch}
 	recorder := sidecarMutationRecorder{kind: "branch"}
 	fail := func(err error) mergeBranchCleanup {
@@ -184,9 +184,12 @@ func cleanupMergedBranch(ctx context.Context, repo providers.RepositoryRef, head
 	if headBranch == "" {
 		return fail(fmt.Errorf("merged pull request did not report a head branch"))
 	}
+	if headRepository == nil {
+		return fail(fmt.Errorf("merged pull request did not report a head repository"))
+	}
 
 	stacked, err := prProvider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository:     repo,
+		Repository:     *headRepository,
 		Base:           headBranch,
 		SkipCheckState: true,
 	})
@@ -203,7 +206,7 @@ func cleanupMergedBranch(ctx context.Context, repo providers.RepositoryRef, head
 		return fail(err)
 	}
 	branchProvider := newGitHubProvider(token, providers.WithMutationRecorder(recorder))
-	if err := branchProvider.DeleteBranch(ctx, providers.DeleteBranchRequest{Repository: repo, Name: headBranch}); err != nil {
+	if err := branchProvider.DeleteBranch(ctx, providers.DeleteBranchRequest{Repository: *headRepository, Name: headBranch}); err != nil {
 		return fail(fmt.Errorf("delete branch %q: %w", headBranch, err))
 	}
 	out.Status = "deleted"

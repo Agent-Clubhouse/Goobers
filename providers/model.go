@@ -255,8 +255,11 @@ type PullRequestPollResult struct {
 	Mergeable  *bool  `json:"mergeable,omitempty"`
 	Draft      bool   `json:"draft"`
 	HeadBranch string `json:"headBranch,omitempty"`
-	HeadSHA    string `json:"headSha,omitempty"`
-	BaseSHA    string `json:"baseSha,omitempty"`
+	// HeadRepository identifies where HeadBranch actually lives. It can differ
+	// from the pull request repository for fork pull requests.
+	HeadRepository *RepositoryRef `json:"headRepository,omitempty"`
+	HeadSHA        string         `json:"headSha,omitempty"`
+	BaseSHA        string         `json:"baseSha,omitempty"`
 	// BaseBranch is the target branch name (e.g. "main") — distinct from
 	// BaseSHA (a pinned commit): issue #361's post-merge fan-out needs the
 	// branch name to find OTHER open PRs targeting the same base, not the
