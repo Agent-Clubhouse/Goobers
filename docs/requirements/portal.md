@@ -1,6 +1,6 @@
 # Spec: Portal
 
-> Status: **Draft** · Aligned to `../ARCHITECTURE.md` (2026-07-12) · Derives from
+> Status: **Approved for staged implementation** · Aligned to `../ARCHITECTURE.md` (2026-07-16) · Derives from
 > `../VISION.md` §4 + portal-scope decision · Area prefix: `PORT`
 
 ## Purpose
@@ -16,16 +16,18 @@ the web portal is optional locally and becomes the natural surface for teams
 
 ## Model
 
-The portal reads two things and nothing else:
+The portal reads one versioned daemon API and nothing else. That API is a thin
+adapter over a shared read service whose sources are:
 
 - **Run journals** (`ARCHITECTURE.md §4`) — the append-only, content-digested record
   every run produces, at every tier.
 - **The run-telemetry store** — journal spans + the local rollup store at tiers 1–2;
   ADX at tier 3.
 
-Together these are a **stable product contract**: the portal never reads any runner's
-internals (local runner state or Temporal history), so the same portal works unchanged
-whether runs execute on a laptop or a cluster (`ARCHITECTURE.md §2` invariant 7).
+Together these feed a **stable product contract**: the portal never reads files,
+SQLite, a runner's internals (local runner state or Temporal history), or task
+queues directly. The daemon API and CLI read commands share the same read
+service, so the product model does not drift by surface.
 
 The dividing line for interactivity is **config-time vs. runtime**:
 
@@ -50,6 +52,13 @@ behind every unit of work.
 - **PORT-003 (MUST):** The portal MUST surface traces/telemetry for runs (observability
   into what happened and why) from the run journal and the goober-run telemetry store.
   *(All tiers)*
+- **PORT-004 (MUST):** The initial portal view MUST prioritize runs needing human
+  attention, active runs, and recent outcomes over aggregate vanity metrics.
+- **PORT-005 (MUST):** Run detail MUST coordinate the pinned execution graph with
+  the ordered journal event ledger, stage attempts, scalar outputs, and artifact
+  provenance.
+- **PORT-006 (SHOULD):** Completed run history SHOULD support event-sequence replay.
+  Replay MUST remain understandable with animation disabled.
 
 ### Interactivity (minimal, runtime only)
 - **PORT-010 (MUST):** The portal MUST NOT be used for setup/configuration; all config is
@@ -63,10 +72,10 @@ behind every unit of work.
   tier 2, **Tier 3 (V2):** Entra ID SSO + RBAC — coordinate with Security.
 
 ### Data contract & tiers
-- **PORT-020 (MUST):** The portal MUST read only the **run journal** and the
-  **run-telemetry store** — never a runner's internals (local runner state files as
-  private structures, or raw Temporal history/task queues). The journal + telemetry
-  shape is the stable contract the portal is built against. *(All tiers)*
+- **PORT-020 (MUST):** The portal MUST read only the versioned daemon product API.
+  The API's shared read service reads provisioned definitions, the **run journal**,
+  and the **run-telemetry store** - never private runner structures or raw Temporal
+  history/task queues. *(All tiers)*
 - **PORT-021 (MUST):** At tier 1 the **`goobers` CLI** (`status`, `trace <run-id>`) is
   the primary observability surface and MUST cover PORT-001/-002/-003 semantics
   (liveness, workforce + run status, per-run trace) without requiring the web portal
@@ -77,9 +86,15 @@ behind every unit of work.
 - **PORT-023 (MUST):** Where the portal is not running, human-gate approvals MUST have
   a non-portal path (CLI approval and/or the git PR surface for code-merge gates) so
   PORT-011 never makes the portal a hard dependency at tier 1. *(Tiers 1–2)*
-- **PORT-024 (SHOULD):** The portal SHOULD render a run journal directly from its
-  on-disk form (`run.yaml`, `events.jsonl`, `spans/`) so a local instance can serve
-  the portal with no store beyond the journal + `telemetry.db`. *(Tiers 1–2)*
+- **PORT-024 (SHOULD):** At tiers 1–2, the daemon API SHOULD serve the product
+  contract directly from the on-disk journal + `telemetry.db`; no additional
+  durable store is required. The browser never receives filesystem paths.
+- **PORT-026 (MUST):** A historic run MUST render against the execution graph
+  pinned by its recorded workflow version/digest, not mutable current config.
+- **PORT-027 (MUST):** Portal artifact access MUST preserve journal containment,
+  digest verification, redaction, and media-type controls.
+- **PORT-028 (MUST):** The portal MUST provide keyboard operation, reduced-motion
+  support, non-color status cues, and WCAG AA text/control contrast.
 - **PORT-025 (WON'T (v1)):** Runner-specific operational views (e.g. Temporal worker
   health, task-queue depth) are not portal scope; if ever surfaced they arrive as
   tier-3 annotations on the same journal shape, not a separate UI. **Tier 3 (V2).**
@@ -105,6 +120,6 @@ behind every unit of work.
 - **PORT-Q3:** **Resolved:** auth is a **ladder by tier** (`ARCHITECTURE.md §9`): none
   at tier 1, optional OIDC at tier 2; **Tier 3 (V2):** **Microsoft Entra ID**
   (SSO + RBAC) — see `SEC-020`. This is where Entra goes when you scale.
-- **PORT-Q4:** **Resolved:** the portal's data source is the run journal + run-telemetry
-  store, not an engine API (`ARCHITECTURE.md §2, §4`); the existing `portal/` code
-  retargets from its mock client to journals in **V1** (`ARCHITECTURE.md §11–12`).
+- **PORT-Q4:** **Resolved:** the browser uses the versioned daemon API. The API
+  and CLI share a journal/telemetry-backed read service; there is no browser
+  journals-direct path and no dashboard-only read implementation.
