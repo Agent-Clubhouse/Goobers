@@ -440,6 +440,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 
 	return PullRequestPollResult{
 		Number:           pr.Number,
+		Title:            pr.Title,
 		State:            pr.State,
 		Merged:           pr.Merged,
 		Mergeable:        pr.Mergeable,
@@ -532,6 +533,9 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 	if req.PullID == "" {
 		return MergePullRequestResult{}, fmt.Errorf("pull id is required")
 	}
+	if req.MergeMethod != "" && !req.MergeMethod.IsValid() {
+		return MergePullRequestResult{}, fmt.Errorf("unsupported merge method %q", req.MergeMethod)
+	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "merge")
 	if err != nil {
 		return MergePullRequestResult{}, err
@@ -540,8 +544,14 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 	if req.ExpectedHeadSHA != "" {
 		body["sha"] = req.ExpectedHeadSHA
 	}
+	if req.CommitTitle != "" {
+		body["commit_title"] = req.CommitTitle
+	}
 	if req.CommitMessage != "" {
 		body["commit_message"] = req.CommitMessage
+	}
+	if req.MergeMethod != "" {
+		body["merge_method"] = string(req.MergeMethod)
 	}
 	var out githubMergeResult
 	if err := p.do(ctx, http.MethodPut, endpoint, body, &out); err != nil {
@@ -1498,6 +1508,7 @@ type githubPullRequest struct {
 type githubPullRequestDetail struct {
 	ID        int64         `json:"id"`
 	Number    int           `json:"number"`
+	Title     string        `json:"title"`
 	State     string        `json:"state"`
 	Merged    bool          `json:"merged"`
 	Mergeable *bool         `json:"mergeable"`

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -37,6 +38,7 @@ type mergePRServerState struct {
 	baseListCalls   int
 	baseDeleteCalls int
 	mergeSHA        *string // set by the /merge handler on a successful call
+	mergeBody       map[string]interface{}
 	// files is this PR's own changed files (issue #718's delta-aware
 	// baseSha conjunct: what base's movement is checked for intersecting).
 	// baseMovement maps a "oldBaseSHA...newBaseSHA" compare key to the
@@ -65,6 +67,8 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		writeFakeJSON(w, map[string]interface{}{
 			"number": 9, "state": "open", "merged": false, "draft": st.draft,
 			"html_url": "https://github.com/" + owner + "/" + repo + "/pull/9",
+			"title":    "Implement structured merge messages",
+			"body":     "Implements the requested behavior.\n\nFixes #42",
 			"head": map[string]interface{}{
 				"ref": st.headBranch, "sha": st.headSHA,
 				"repo": map[string]interface{}{
@@ -120,7 +124,14 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		}})
 	})
 	mux.HandleFunc(prefix+"/issues/9/comments", func(w http.ResponseWriter, r *http.Request) {
-		writeFakeJSON(w, []map[string]interface{}{})
+		comment := renderVerdictComment(apiv1.Verdict{
+			Decision:  apiv1.VerdictPass,
+			Summary:   "The implementation is ready to merge.",
+			Rationale: "It satisfies the issue while preserving the existing merge safety checks.",
+			HeadSHA:   st.headSHA,
+			BaseSHA:   st.baseSHA,
+		})
+		writeFakeJSON(w, []map[string]interface{}{{"id": 1, "body": comment}})
 	})
 	mux.HandleFunc(prefix+"/pulls/9/files", func(w http.ResponseWriter, r *http.Request) {
 		out := make([]map[string]interface{}, 0, len(st.files))
@@ -140,6 +151,9 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 	})
 	mux.HandleFunc(prefix+"/pulls/9/merge", func(w http.ResponseWriter, r *http.Request) {
 		st.mergeCalls++
+		if err := json.NewDecoder(r.Body).Decode(&st.mergeBody); err != nil {
+			t.Errorf("decode merge request body: %v", err)
+		}
 		sha := "merge-commit-sha"
 		st.mergeSHA = &sha
 		writeFakeJSON(w, map[string]interface{}{"sha": sha, "merged": true, "message": "merged"})
@@ -242,6 +256,18 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 	}
 	if result["mergeSha"] != "merge-commit-sha" {
 		t.Fatalf("result = %+v, want mergeSha set", result)
+	}
+	if st.mergeBody["merge_method"] != "squash" {
+		t.Fatalf("merge_method = %v, want squash", st.mergeBody["merge_method"])
+	}
+	if st.mergeBody["commit_title"] != "Implement structured merge messages" {
+		t.Fatalf("commit_title = %q, want PR title", st.mergeBody["commit_title"])
+	}
+	wantMessage := "The implementation is ready to merge.\n\n" +
+		"It satisfies the issue while preserving the existing merge safety checks.\n\n" +
+		"Closes #42"
+	if st.mergeBody["commit_message"] != wantMessage {
+		t.Fatalf("commit_message = %q, want %q", st.mergeBody["commit_message"], wantMessage)
 	}
 	if result["selectedNumber"] != "9" {
 		t.Fatalf("result = %+v, want selectedNumber=%q", result, "9")
@@ -383,6 +409,40 @@ func TestMergePRDeleteRequiresCapabilityWithoutRewritingMerge(t *testing.T) {
 	}
 	if st.deleteCalls != 0 {
 		t.Fatalf("delete endpoint called %d times without capability, want 0", st.deleteCalls)
+	}
+}
+
+func TestMergePRUsesConfiguredMergeMethod(t *testing.T) {
+	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456"}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, _ := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+		"mergeMethod": "rebase",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.mergeBody["merge_method"] != "rebase" {
+		t.Fatalf("merge_method = %v, want rebase", st.mergeBody["merge_method"])
+	}
+}
+
+func TestMergePRRejectsUnknownMergeMethod(t *testing.T) {
+	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456"}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, _ := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+		"mergeMethod": "octopus",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1, stderr = %q", code, stderr)
+	}
+	if st.mergeCalls != 0 {
+		t.Fatalf("merge endpoint called %d times, want 0", st.mergeCalls)
 	}
 }
 

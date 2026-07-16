@@ -40,10 +40,11 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			"verdict=pass, CI green, not a draft, and the SHA-pin still matches the\n"+
 			"PR's live head/base (never a bare self-approval). Declared inputs:\n"+
 			"pullNumber, verdict, headSha, baseSha (all required), advisoryMode\n"+
-			"(default false — report only, no merge attempted), commitMessage,\n"+
-			"resultFile (default merge-result.json). Successful merges also report\n"+
-			"headBranch and branchCleanup (deleted, skipped-stacked, or failed).\n"+
-			"Exit codes: 0 = evaluated\n"+
+			"(default false — report only, no merge attempted), mergeMethod\n"+
+			"(merge/squash/rebase; default squash), commitMessage (default: PR\n"+
+			"title + review rationale + referenced issues), resultFile (default\n"+
+			"merge-result.json). Successful merges also report headBranch and\n"+
+			"branchCleanup (deleted, skipped-stacked, or failed). Exit codes: 0 = evaluated\n"+
 			"(merged or not — see the result file's \"merged\" field), 1 = business\n"+
 			"error (missing capability/config, malformed inputs, provider failure),\n"+
 			"2 = usage/IO error.\n")
@@ -104,6 +105,11 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 	advisoryMode := providerInput("advisoryMode", "false") == "true"
 	commitMessage := providerInput("commitMessage", "")
+	mergeMethod := providers.MergeMethod(providerInput("mergeMethod", string(providers.MergeMethodSquash)))
+	if !mergeMethod.IsValid() {
+		pf(stderr, "error: mergeMethod input %q must be merge, squash, or rebase\n", mergeMethod)
+		return 1
+	}
 	resultFile := providerInput("resultFile", "merge-result.json")
 
 	ctx := context.Background()
@@ -130,6 +136,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	var result providers.MergePullRequestResult
 	var mergeAttempted bool
 	var mergeErr error
+	var commitErr error
 	lockErr := withClaimLock(lockPath, func() error {
 		// Independent, live re-check (D6) — never trust a caller-supplied
 		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
@@ -177,9 +184,27 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			return nil
 		}
 
+		// #528: the structured commit message is built from THIS locked
+		// poll's verdict comment, not a separately (unlocked) re-fetched
+		// one — #719's whole point is that everything from "decide to
+		// merge" through the actual MergePullRequest call happens under
+		// one lock, so a second, unlocked provider round-trip here would
+		// silently reopen the exact race #719 closes. commitTitle stays
+		// empty (provider default) whenever a caller-supplied commitMessage
+		// is already set.
+		commitTitle := ""
+		mergeCommitMessage := commitMessage
+		if strings.TrimSpace(mergeCommitMessage) == "" {
+			commitTitle, mergeCommitMessage, commitErr = structuredMergeCommitMessage(poll)
+			if commitErr != nil {
+				return nil
+			}
+		}
+
 		mergeAttempted = true
 		result, mergeErr = provider.MergePullRequest(ctx, providers.MergePullRequestRequest{
-			Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA, CommitMessage: commitMessage,
+			Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA,
+			CommitTitle: commitTitle, CommitMessage: mergeCommitMessage, MergeMethod: mergeMethod,
 		})
 		return nil
 	})
@@ -198,14 +223,18 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "not merged (pr #%s): %s\n", pullNumber, strings.Join(reasons, "; "))
 		return 0
 	}
-	if !mergeAttempted {
-		// Unreachable: either pollErr, reasons, or a successful merge
-		// attempt always sets one of the above.
-		pf(stderr, "error: internal: merge-pr reached no decision for pr #%s\n", pullNumber)
+	if commitErr != nil {
+		pf(stderr, "error: build merge commit message: %v\n", commitErr)
 		return 1
 	}
 	if mergeErr != nil {
 		return failProviderStage(stderr, "merge pull request", mergeErr, "merge-result.json")
+	}
+	if !mergeAttempted {
+		// Unreachable: either pollErr, reasons, commitErr, mergeErr, or a
+		// successful merge attempt always sets one of the above.
+		pf(stderr, "error: internal: merge-pr reached no decision for pr #%s\n", pullNumber)
+		return 1
 	}
 
 	var cleanup *mergeBranchCleanup
@@ -224,6 +253,50 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "merged pr #%s (%s)\n", pullNumber, result.MergeSHA)
 	return 0
+}
+
+func structuredMergeCommitMessage(poll providers.PullRequestPollResult) (string, string, error) {
+	title := strings.TrimSpace(poll.Title)
+	if title == "" {
+		return "", "", fmt.Errorf("pull request title is empty")
+	}
+
+	var verdict *apiv1.Verdict
+	for i := len(poll.CommentsSince) - 1; i >= 0; i-- {
+		candidate, ok := parseVerdictComment(poll.CommentsSince[i].Body)
+		if !ok || candidate.Decision != apiv1.VerdictPass {
+			continue
+		}
+		if candidate.HeadSHA != "" && candidate.HeadSHA != poll.HeadSHA {
+			continue
+		}
+		if candidate.BaseSHA != "" && candidate.BaseSHA != poll.BaseSHA {
+			continue
+		}
+		verdict = &candidate
+		break
+	}
+	if verdict == nil {
+		return "", "", fmt.Errorf("no current pass verdict with a summary or rationale found in pull request comments")
+	}
+
+	summary := strings.TrimSpace(verdict.Summary)
+	rationale := strings.TrimSpace(verdict.Rationale)
+	if summary == "" && rationale == "" {
+		return "", "", fmt.Errorf("current pass verdict has no summary or rationale")
+	}
+
+	var parts []string
+	if summary != "" {
+		parts = append(parts, summary)
+	}
+	if rationale != "" && rationale != summary {
+		parts = append(parts, rationale)
+	}
+	for _, issue := range closingIssueNumbers(poll.Body) {
+		parts = append(parts, "Closes #"+issue)
+	}
+	return title, strings.Join(parts, "\n\n"), nil
 }
 
 type mergeBranchCleanup struct {

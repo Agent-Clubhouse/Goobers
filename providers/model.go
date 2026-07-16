@@ -254,14 +254,17 @@ type PullRequestPollRequest struct {
 // against a previously-computed verdict's SHA-pin before acting on it — never
 // trust a caller-supplied "still valid" claim, always re-poll (design doc D6).
 type PullRequestPollResult struct {
-	Number     int    `json:"number"`
-	State      string `json:"state"`
-	Merged     bool   `json:"merged"`
-	Mergeable  *bool  `json:"mergeable,omitempty"`
-	Draft      bool   `json:"draft"`
-	HeadBranch string `json:"headBranch,omitempty"`
-	// HeadRepository identifies where HeadBranch actually lives. It can differ
-	// from the pull request repository for fork pull requests.
+	Number    int    `json:"number"`
+	Title     string `json:"title,omitempty"`
+	State     string `json:"state"`
+	Merged    bool   `json:"merged"`
+	Mergeable *bool  `json:"mergeable,omitempty"`
+	Draft     bool   `json:"draft"`
+	// HeadBranch and HeadRepository identify the PR's head branch and where
+	// it actually lives — can differ from the pull request repository for
+	// fork pull requests (#605's post-merge cleanup needs this to delete
+	// the correct branch).
+	HeadBranch     string         `json:"headBranch,omitempty"`
 	HeadRepository *RepositoryRef `json:"headRepository,omitempty"`
 	HeadSHA        string         `json:"headSha,omitempty"`
 	BaseSHA        string         `json:"baseSha,omitempty"`
@@ -298,6 +301,26 @@ type ClosePullRequestResult struct {
 	State  string `json:"state"`
 }
 
+// MergeMethod controls how a provider incorporates a pull request's commits.
+type MergeMethod string
+
+// Supported pull request merge methods.
+const (
+	MergeMethodMerge  MergeMethod = "merge"
+	MergeMethodSquash MergeMethod = "squash"
+	MergeMethodRebase MergeMethod = "rebase"
+)
+
+// IsValid reports whether m is a supported pull request merge method.
+func (m MergeMethod) IsValid() bool {
+	switch m {
+	case MergeMethodMerge, MergeMethodSquash, MergeMethodRebase:
+		return true
+	default:
+		return false
+	}
+}
+
 // MergePullRequestRequest describes merging a pull request (issue #360). The
 // caller (a conjunctive auto-merge action) is responsible for verifying every
 // merge conjunct BEFORE calling this — MergePullRequest itself performs no
@@ -313,8 +336,12 @@ type MergePullRequestRequest struct {
 	// since the caller last checked — belt-and-suspenders alongside the
 	// caller's own SHA-pin re-check (D6).
 	ExpectedHeadSHA string `json:"expectedHeadSha,omitempty"`
+	// CommitTitle, if set, overrides GitHub's default merge-commit title.
+	CommitTitle string `json:"commitTitle,omitempty"`
 	// CommitMessage, if set, overrides GitHub's default merge-commit message.
 	CommitMessage string `json:"commitMessage,omitempty"`
+	// MergeMethod, if set, selects merge, squash, or rebase semantics.
+	MergeMethod MergeMethod `json:"mergeMethod,omitempty"`
 }
 
 // MergePullRequestResult reports the outcome of a merge attempt. Merged=false
