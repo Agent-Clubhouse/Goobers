@@ -46,6 +46,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runRuns(args[1:], stdout, stderr)
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
+	case "stats":
+		return runStats(args[1:], stdout, stderr)
 	case "trace":
 		return runTrace(args[1:], stdout, stderr)
 	case "telemetry":
@@ -111,6 +113,8 @@ Usage:
   goobers runs list [--json] [--limit=N] [path]  list runs, most-recent first
   goobers status [--json] [--phase=...] [--workflow=...] [--limit=N] [path]
                                 list runs and their current phase
+  goobers stats [--since <duration>] [--json] [path]
+                                show the instance lifetime summary card
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
   goobers trace [--json] <run-id> [path] show a run's journal events (+ spans if rolled up)
   goobers telemetry stats|errors [--json] [path]  success rate/duration or recent-error aggregates
