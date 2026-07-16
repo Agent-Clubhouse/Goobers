@@ -181,6 +181,15 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 			startState = in.Machine.Def.Spec.Start
 		}
 	}
+	// The item snapshot is reconstructed before the finished-task replay below,
+	// not after: taskOutcome's blocked arm (#544) hands it to the instance-level
+	// Blocked handler, so a resumed run replaying a blocked finish must carry
+	// the same item a live walk would have.
+	item, err := resumeItem(rd, id)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: resume item snapshot for run %q: %w", in.RunID, err)
+	}
+
 	var resume *resumeContext
 	if t, isTask := in.Machine.Task(startState); isTask {
 		if attempt := interruptedAttempt(events, startState); attempt > 0 {
@@ -194,7 +203,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 			// flight. Re-dispatching it now would silently re-run its side
 			// effects (#107); instead apply the exact transition a live
 			// walk would have taken right after runTask returned.
-			next, res, advance, terr := r.taskOutcome(in.RunID, jr, in.Machine, t, lastResult, 0)
+			next, res, advance, terr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, item, t, lastResult, 0)
 			if terr != nil {
 				return res, terr
 			}
@@ -203,11 +212,6 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 			}
 			startState = next
 		}
-	}
-
-	item, err := resumeItem(rd, id)
-	if err != nil {
-		return Result{}, fmt.Errorf("runner: resume item snapshot for run %q: %w", in.RunID, err)
 	}
 	startIn := StartInput{
 		RunID:   in.RunID,

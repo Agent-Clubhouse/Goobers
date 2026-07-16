@@ -244,3 +244,110 @@ func TestRunnerResumeSurvivesMissingStateJSONBeforeAnyStage(t *testing.T) {
 		t.Fatalf("implement dispatched %d times, want exactly 1 — fallback to the machine's declared start state must still run the whole workflow", det.calls)
 	}
 }
+
+// TestRunnerResumeReplaysBlockedFinishAsEscalated covers the #544 crash
+// window for a blocked result: the stage.finished(blocked) event landed but
+// the process died before the terminal transition. Resume must apply the
+// IDENTICAL decision a live walk would have made (taskOutcome's blocked arm):
+// escalated, cause journaled, Blocked handler invoked with the blockers
+// parsed from the journaled outputs — never a re-dispatch of the stage. A
+// second Resume (the restart-loop AC) is then a pure no-op reporting
+// escalated, without re-invoking the handler.
+func TestRunnerResumeReplaysBlockedFinishAsEscalated(t *testing.T) {
+	machine := fixtureMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-blocked-crash", Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("implement")
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatalf("append stage.started: %v", err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+		Status:  string(apiv1.ResultBlocked),
+		Error:   &journal.ErrorDetail{Code: "DEPENDENCY_NOT_MET", Message: "blocked on #441"},
+		Outputs: map[string]interface{}{OutputBlockedBy: "441"},
+	}); err != nil {
+		t.Fatalf("append stage.finished: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	det := &countingDeterministic{}
+	var handlerCalls []BlockedOutcome
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		Blocked: func(_ context.Context, o BlockedOutcome) error {
+			handlerCalls = append(handlerCalls, o)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	in := ResumeInput{
+		RunID:   "run-blocked-crash",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	}
+	res, err := r.Resume(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated (the same transition a live walk takes)", res.Phase)
+	}
+	if det.calls != 0 {
+		t.Fatalf("executor dispatched %d times, want 0 — the blocked attempt already finished, resume must not re-run it", det.calls)
+	}
+	if len(handlerCalls) != 1 {
+		t.Fatalf("Blocked handler invoked %d times, want 1", len(handlerCalls))
+	}
+	if got := handlerCalls[0]; got.RunID != "run-blocked-crash" || got.Stage != "implement" ||
+		len(got.Blockers) != 1 || got.Blockers[0] != "441" {
+		t.Fatalf("BlockedOutcome = %+v, want run-blocked-crash/implement blocked on [441]", got)
+	}
+
+	// Restart loop (#544 AC): every subsequent Resume is a pure no-op
+	// reporting the journaled terminal phase — no second handler call, no
+	// second run.finished.
+	res, err = r.Resume(context.Background(), in)
+	if err != nil {
+		t.Fatalf("second Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("second resume phase = %q, want escalated", res.Phase)
+	}
+	if len(handlerCalls) != 1 {
+		t.Fatalf("Blocked handler invoked %d times after second resume, want still 1", len(handlerCalls))
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-blocked-crash"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	finished := 0
+	for _, e := range events {
+		if e.Type == journal.EventRunFinished {
+			finished++
+		}
+	}
+	if finished != 1 {
+		t.Fatalf("run.finished count = %d, want exactly 1", finished)
+	}
+}

@@ -92,6 +92,22 @@ not a fresh start.
   same conclusion. Reserve these codes for genuine un-scopeability — an
   ordinary failure you expect a repass could fix should stay a plain
   `failure` (retryable).
+- **If the issue cannot proceed because something else needs to happen
+  first** — an unmerged prerequisite, a missing external dependency, anything
+  outside your control that blocks progress on this specific issue — return
+  `status: blocked` with `error.code: DEPENDENCY_NOT_MET` and `error.message`
+  naming what's unmet. **If you can name the specific blocking issue number(s),
+  put them in `outputs.blockedBy` as a single comma-separated string** (e.g.
+  `"441,442"`) — this lets the scheduler skip re-claiming this issue until
+  those close, and it un-blocks automatically once they do, no human needed.
+  `outputs` only accepts scalar values (strings/numbers/booleans/null) — do
+  **not** report `outputs.blockedBy` as an array or object; it will be
+  schema-rejected and burn an attempt. If you cannot name a concrete blocking
+  issue, omit `outputs.blockedBy` — the issue is parked for a human instead.
+  Do not use `blocked` for an un-scopeable issue (that's `ISSUE_OVER_SCOPE`
+  above) or for a fixable failure (that's a plain `failure`) — reserve it for
+  "something else has to happen first, and it isn't in scope for me to make
+  happen."
 
 ## Done
 
