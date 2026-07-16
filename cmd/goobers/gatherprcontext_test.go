@@ -14,15 +14,15 @@ import (
 )
 
 // gatherPRContextServer is a small stateful fake GitHub server for
-// gather-pr-context's (#362) tests: one open PR carrying the
-// needs-remediation label, its check state, and a fixed set of comments (one
-// of which carries an embedded verdict-json payload).
+// gather-pr-context's tests: one open PR, its check state, and a fixed set of
+// comments (one of which may carry an embedded verdict-json payload).
 type gatherPRContextServer struct {
 	owner, repo string
 	prNumber    int
 	head, base  string
 	headSHA     string
 	baseSHA     string
+	checkState  string
 	labels      []string
 	comments    []map[string]interface{}
 }
@@ -51,7 +51,16 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 		})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/status", prefix, s.headSHA), func(w http.ResponseWriter, r *http.Request) {
-		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []map[string]interface{}{}})
+		state := s.checkState
+		if state == "" {
+			state = "success"
+		}
+		writeFakeJSON(w, map[string]interface{}{
+			"state": state,
+			"statuses": []map[string]interface{}{
+				{"context": "ci", "state": state},
+			},
+		})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/check-runs", prefix, s.headSHA), func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
@@ -212,8 +221,69 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 	}
 }
 
+func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
+	const prBranch = "goobers/impl/run-ci-red"
+	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
+
+	srv := gatherPRContextServer{
+		owner: "your-org", repo: "your-repo",
+		prNumber: 56, head: prBranch, base: "main",
+		headSHA: headSHA, baseSHA: baseSHA,
+		checkState: "failure",
+	}
+	server := srv.start(t)
+
+	prev := newGitHubProvider
+	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "run-ci-red", BaseRef: "main",
+		Branch: "goobers/pr-remediation/run-ci-red",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
+
+	instanceRoot := initDemo(t)
+	t.Setenv("GOOBERS_RUN_ID", "run-ci-red")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Chdir(wt.Path)
+
+	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "PR #56") {
+		t.Fatalf("stdout = %q, want a mention of PR #56", stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "pr-context.json"))
+	if err != nil {
+		t.Fatalf("read pr-context.json: %v", err)
+	}
+	var got struct {
+		SelectedNumber string `json:"selectedNumber"`
+		Head           string `json:"head"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal pr-context.json: %v (data=%s)", err, data)
+	}
+	if got.SelectedNumber != "56" || got.Head != prBranch {
+		t.Fatalf("got = %+v, want selectedNumber=\"56\" head=%q", got, prBranch)
+	}
+}
+
 // TestGatherPRContextNoEligiblePRIsNoWork proves gather-pr-context succeeds
-// (exit 0, no-work) rather than erroring when nothing carries the label —
+// (exit 0, no-work) rather than erroring when no PR is labeled or failing —
 // a normal outcome (mirrors pr-select's own no-work shape), not an error.
 func TestGatherPRContextNoEligiblePRIsNoWork(t *testing.T) {
 	srv := gatherPRContextServer{owner: "your-org", repo: "your-repo", base: "main"}
