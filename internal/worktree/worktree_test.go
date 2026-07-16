@@ -569,6 +569,81 @@ func TestManager_Reap_RemovesMarkerlessWorktree(t *testing.T) {
 	}
 }
 
+func TestManager_Reap_RemovesDeregisteredMarkerlessDirectory(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "deregistered", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.Remove(m.markerPath(wt.key, wt.RunID)); err != nil {
+		t.Fatalf("remove marker: %v", err)
+	}
+	if registered, err := worktreeRegistered(ctx, m.repoDirForKey(wt.key), wt.Path); err != nil || !registered {
+		t.Fatalf("worktreeRegistered before deregistration = %v, %v; want true, nil", registered, err)
+	}
+
+	// Recreate the directory after Git removes and deregisters the worktree,
+	// matching an interrupted removal that leaves only filesystem state behind.
+	if err := runGit(ctx, m.repoDirForKey(wt.key), "worktree", "remove", "--force", wt.Path); err != nil {
+		t.Fatalf("remove worktree registration: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(wt.Path, "leftover.txt"), "leftover")
+	if registered, err := worktreeRegistered(ctx, m.repoDirForKey(wt.key), wt.Path); err != nil || registered {
+		t.Fatalf("worktreeRegistered after deregistration = %v, %v; want false, nil", registered, err)
+	}
+
+	results, warnings, err := m.Reap(ctx, ReapOptions{})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected Reap warnings: %+v", warnings)
+	}
+	if len(results) != 1 || results[0].RunID != wt.RunID || results[0].Reason != ReapReasonMarkerless {
+		t.Fatalf("unexpected Reap results: %+v", results)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected deregistered worktree directory removed, stat err = %v", err)
+	}
+
+	results, warnings, err = m.Reap(ctx, ReapOptions{})
+	if err != nil || len(results) != 0 || len(warnings) != 0 {
+		t.Fatalf("second Reap should be a no-op, got %+v, warnings %+v, err %v", results, warnings, err)
+	}
+}
+
+func TestWorktreeRegistered_SupportsGitBefore236(t *testing.T) {
+	binDir := t.TempDir()
+	fakeGit := filepath.Join(binDir, "git")
+	script := `#!/bin/sh
+for arg in "$@"; do
+	if [ "$arg" = "-z" ]; then
+		echo "unknown switch z" >&2
+		exit 129
+	fi
+done
+printf 'worktree %s\nHEAD deadbeef\n\n' "$FAKE_WORKTREE_PATH"
+`
+	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	worktreePath := filepath.Join(t.TempDir(), "registered worktree")
+	t.Setenv("FAKE_WORKTREE_PATH", worktreePath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	registered, err := worktreeRegistered(context.Background(), t.TempDir(), worktreePath)
+	if err != nil {
+		t.Fatalf("worktreeRegistered with pre-2.36 Git: %v", err)
+	}
+	if !registered {
+		t.Fatal("worktreeRegistered with pre-2.36 Git = false, want true")
+	}
+}
+
 // TestManager_SafeBareRepositoryExplicit_StillWorks is #247's regression: a
 // hardened `git config safe.bareRepository=explicit` (an increasingly common
 // security default) makes git refuse cwd-based discovery of a bare repo,
