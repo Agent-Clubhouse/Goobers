@@ -47,6 +47,15 @@ The runner hands the stage an `InvocationEnvelope`:
     upstream outputs and input snapshots; or
   - an `external` ref (`kind` + `uri`) — e.g. the issue/PR URL. Content outside the
     journal is untrusted; fetching and trusting it is the stage's job.
+
+  > **Planned (V0.7 ladder remediation, L3 — `docs/design/v07-ladder-remediation.md`
+  > §3.1):** on a **repass** (a gate routing `needs-changes` back to a prior
+  > `implement` stage), the runner must include the gate's most-recent `Verdict`
+  > artifact (`verdict/<gate>-<attempt>.json`) among that stage's `contextPointers`.
+  > Today the gate path contributes no pointer, so the repass stage never receives
+  > the feedback the goal text tells it to read — the V0.6 ladder's headline
+  > non-convergence bug. The fix stays entirely within this `contextPointers`
+  > mechanism (no envelope reach-through, no schema change).
 - `capabilities[]` — the capability grants the stage's definition declares (e.g.
   `github:issues:write`). **Capability admission fails closed**: credentials for a
   capability not listed here are never materialized (§5).
@@ -91,6 +100,16 @@ pipeline.
 | `success` | advance the state machine to the next stage/gate |
 | `failure` | if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern). Otherwise (a non-gate stage, terminal, or empty `Next`) the run ends `PhaseFailed`: never run downstream stages on a failed result, never silently complete. |
 | `blocked` | halt the run pending external intervention (human input, an unmet dependency) — a resumable pause, like a human gate's, at any position |
+
+> **Planned (V0.7 ladder remediation, L6 — `docs/design/v07-ladder-remediation.md`
+> §3.4):** a `failure` result carrying `error.retryable == false` **and** a
+> recognized escalate code (e.g. `ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION`) will
+> route straight to `@escalate` (terminal `escalated`) after one attempt — bypassing
+> the `Next` gate and the repass loop. Today `error.code`/`retryable` is recorded but
+> never routed on, so a permanent failure (e.g. an un-scopeable item) re-enters the
+> repass loop until the budget exhausts and terminates as `aborted`, not `escalated`
+> — the V0.6 ladder's over-scope-probe finding. This is a business-disposition route,
+> distinct from `Task.Retry` below (which is infra-only).
 
 `Task.Retry` (declared retry policy, attempt budget, backoff) governs only
 **dispatch/infra errors** — a Go error returned by the executor, not a

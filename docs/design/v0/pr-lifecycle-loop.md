@@ -248,6 +248,14 @@ These build **on** the V0.5 contracts without reworking them:
   and other-agent PRs; a "full review" vs "integration-delta" mode toggle; **human-active
   backoff** (defer remediation when a non-Goobers author recently pushed/commented);
   opt-out label (`goobers:no-merge-review`). Advisory-mode default for these repos.
+  > **V0.6 ladder confirmation (L5, #369 + #368):** the round-2 run confirmed this need
+  > concretely — with only schedule-poll triggers and self-applied-label selection, a
+  > human (or other agent) leaving a PR review drives **no** automated action, and
+  > `merge-review` never reads the PR's existing review thread. The desired shape is a
+  > **state-driven** monitor that reconciles on PR facts (unresolved review threads from
+  > *any* author, behind-base, CI, staleness) and feeds that thread as first-class
+  > remediation input. Tracked in #369 (policy) + #368 (event trigger); hard-depends on
+  > L1 (label writeback) and L3 (repass context). No new issue — augmenting those.
 - **Native GitHub Review protocol (V1).** Post verdicts as GitHub reviews
   (approve/request-changes) so branch-protection stale-dismissal invalidates on push for
   free, required-checks gate the merge, and human reviewers see Goobers' verdict inline.
@@ -299,3 +307,28 @@ Foundations first; each is intended to be a single reviewable PR.
 V1 / V1.1 follow-ons (filed, milestoned V1): native review protocol; winner-election +
 lazy rebase; robust oscillation detection; event-driven triggering; mixed-company mode;
 cost-control (skip-unchanged + sticky comment).
+
+## 12. V0.6 ladder live-run errata (V0.7 remediation)
+
+Running this V0.5 lifecycle end-to-end for the first time (via `goobers up`, the V0.6
+eval ladder round 2) surfaced two defects in the shipped implementation. Both are
+designed as frontload fixes in
+[`docs/design/v07-ladder-remediation.md`](../v07-ladder-remediation.md); recorded here
+against the design they belong to:
+
+- **L1 — `merge-review` `apply-verdict` fails 100% when a PR is eligible.** The decider
+  reaches a correct `decision:pass` (§4 verdict contract works), but `apply-verdict`
+  aborts with `selectedNumber is required`: `gather-sibling-context`
+  (`selfhost/gaggles/goobers/workflows/merge-review.yaml:64-66`) emits `selectedNumber`
+  in its result but omits it from `expectedOutputs`, so the runner never threads it to
+  `apply-verdict` (`:74-82`). One-line fix + a poll→select→review→apply integration test
+  (its absence let 100%-broken wiring pass unit tests). Until fixed, **no PR ever
+  receives a merge-review label** — the whole §3 label handoff is inert.
+- **L7 — no terminal issue state in no-merge mode → false re-eligibility.** §8 says the
+  issue sits `in-review` until the merge event closes it. But `goobers:claimed` is
+  removed *nowhere* (`providers/github.go:1001-1008` only swaps `goobers/status:`
+  labels), the ledger releases the claim on completion, and eligibility excludes
+  in-review items only via a label written at PR-open with no open-PR backstop — so a
+  completed rung's issue can become eligible again and be re-implemented into a duplicate
+  PR. Fix: release `goobers:claimed` on close-out, add an open-PR eligibility backstop,
+  and make the durable ledger authoritative (§3.3 of the remediation doc).
