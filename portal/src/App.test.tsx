@@ -3,9 +3,15 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
-describe("App prototype", () => {
+const reducedMotionQuery = "(prefers-reduced-motion: reduce)";
+const compactLayoutQuery = "(max-width: 820px)";
+
+describe("portal foundations", () => {
   beforeEach(() => {
     window.location.hash = "#/overview";
+    window.localStorage.clear();
+    delete document.documentElement.dataset.theme;
+    setMediaMatches({});
   });
 
   it("shows the operational overview", () => {
@@ -29,6 +35,94 @@ describe("App prototype", () => {
     expect(screen.getByRole("button", { name: "Pause replay" })).toBeInTheDocument();
   });
 
+  it.each([
+    ["#/overview", "One run needs attention."],
+    ["#/workflows", "Workflows"],
+    ["#/runs", "Runs"],
+  ])("renders the %s fixture route", (hash, heading) => {
+    window.location.hash = hash;
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
+  });
+
+  it("persists independently tuned themes locally", async () => {
+    window.localStorage.setItem("goobers-theme", "dark");
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    await user.click(screen.getByRole("button", { name: "Use light theme" }));
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(window.localStorage.getItem("goobers-theme")).toBe("light");
+  });
+
+  it("operates primary navigation and graph selection from the keyboard", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<App />);
+    const workflowsNavigation = screen.getByRole("button", { name: "Workflows" });
+
+    workflowsNavigation.focus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(workflowsNavigation).toHaveAttribute("aria-current", "page");
+
+    unmount();
+    window.location.hash = "#/workflow/implementation";
+    render(<App />);
+    const firstStage = screen.getByRole("button", { name: "Gather context, pending" });
+    const secondStage = screen.getByRole("button", { name: "Implement, pending" });
+
+    firstStage.focus();
+    fireEvent.keyDown(firstStage, { key: "ArrowRight" });
+    expect(secondStage).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(secondStage).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("complementary", { name: "Implement inspector" })).toBeInTheDocument();
+  });
+
+  it("skips to main content without changing the current hash route", async () => {
+    window.location.hash = "#/runs";
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "Skip to content" }));
+    expect(screen.getByRole("main")).toHaveFocus();
+    expect(window.location.hash).toBe("#/runs");
+    expect(screen.getByRole("heading", { name: "Runs" })).toBeInTheDocument();
+  });
+
+  it("exposes compact responsive behavior without dropping control labels", () => {
+    setMediaMatches({ [compactLayoutQuery]: true });
+    const { container } = render(<App />);
+
+    expect(container.querySelector(".portal-frame")).toHaveAttribute("data-layout", "compact");
+    expect(screen.getByRole("button", { name: "Workflows" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open run Daemon read-only HTTP API/i })).toHaveClass("run-grid");
+  });
+
+  it("pairs semantic status text with a non-color icon cue", () => {
+    render(<App />);
+
+    const completed = screen.getAllByText("Completed")[0].closest(".status-badge");
+    expect(completed).toHaveTextContent("Completed");
+    expect(completed?.querySelector("svg")).toBeInTheDocument();
+  });
+
+  it("keeps rendered shell actions purposeful", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Dismiss warning preview" }));
+    expect(screen.queryByText("Config revision differs from the last successful run")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /View all runs/i }));
+    const attentionFilter = await screen.findByRole("button", { name: "attention" });
+    await user.click(attentionFilter);
+    expect(attentionFilter).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("button", { name: /Open run Daemon read API/i })).not.toBeInTheDocument();
+  });
+
   it("uses the run's pinned workflow and does not reveal future attempt results", async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
@@ -47,11 +141,11 @@ describe("App prototype", () => {
   });
 });
 
-function setReducedMotion(matches: boolean) {
+function setMediaMatches(matchesByQuery: Record<string, boolean>) {
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
     value: vi.fn().mockImplementation((query: string) => ({
-      matches,
+      matches: matchesByQuery[query] ?? false,
       media: query,
       onchange: null,
       addEventListener: vi.fn(),
@@ -61,6 +155,10 @@ function setReducedMotion(matches: boolean) {
       dispatchEvent: () => true,
     })),
   });
+}
+
+function setReducedMotion(matches: boolean) {
+  setMediaMatches({ [reducedMotionQuery]: matches });
 }
 
 function renderRun(runId = "01JZ455ESCALATE") {

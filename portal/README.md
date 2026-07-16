@@ -1,10 +1,11 @@
-# Goobers dashboard prototype
+# Goobers portal
 
-This directory contains the accepted V1 interaction and visual reference for
-the Dashboard / Portal milestone (#14, epic #440).
+This directory contains the production UI foundations for the Dashboard /
+Portal milestone (#14, epic #440).
 
-It is a real React/Vite click-through backed by static fixtures. It is design
-collateral, not the production daemon client.
+The Overview, Workflows, and Runs routes are backed by static fixtures until
+the versioned daemon client lands. The shell, visual primitives, theme tokens,
+responsive behavior, and accessibility support are production code.
 
 ## Run it
 
@@ -49,16 +50,12 @@ path. It contains three repasses and a terminal escalation.
 The full product and architecture authority is
 [`docs/design/dashboard.md`](../docs/design/dashboard.md).
 
-## Prototype boundaries
+## Current boundaries
 
 - Data is static and intentionally shaped around representative runs.
 - The graph layout is fixture-specific, not a general layout engine.
-- Components are intentionally colocated for iteration speed and may be split
-  during productionization.
 - Artifact rows demonstrate hierarchy but do not open real journal content.
-- The responsive treatment is a baseline; production work will generalize graph
-  layout beyond the fixed prototype fixtures.
-- Tier-1 is localhost-only and does not activate the future MSAL/OIDC scaffold.
+- Tier-1 is localhost-only; authentication is not part of this foundation.
 
-Production issues must preserve accepted behavior while replacing fixtures with
-the shared versioned daemon API.
+Later portal slices replace fixtures through the shared versioned daemon API
+without changing these presentation foundations.

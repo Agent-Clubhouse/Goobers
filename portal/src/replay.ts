@@ -1,4 +1,4 @@
-import type { RunEvent } from "./prototypeData";
+import type { RunEvent } from "./fixtures";
 
 export const replaySpeeds = [1, 5, 10] as const;
 export type ReplaySpeed = (typeof replaySpeeds)[number];
