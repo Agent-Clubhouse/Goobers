@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -90,8 +91,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})
 	if err != nil {
-		pf(stderr, "error: list pull requests: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "list pull requests", err, "sibling-context.json")
 	}
 
 	var selectedHeadSHA, selectedBaseSHA string
@@ -107,8 +107,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		}
 		files, ferr := provider.PullRequestFiles(ctx, repo, strconv.Itoa(pr.Number))
 		if ferr != nil {
-			pf(stderr, "error: list files for PR #%d: %v\n", pr.Number, ferr)
-			return 1
+			return failProviderStage(stderr, fmt.Sprintf("list files for PR #%d", pr.Number), ferr, "sibling-context.json")
 		}
 		paths := make([]string, 0, len(files))
 		for _, f := range files {

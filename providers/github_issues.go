@@ -19,7 +19,67 @@ const (
 	defaultRateLimitRetries = 4
 	rateLimitBackoffBase    = time.Second
 	rateLimitBackoffMax     = 60 * time.Second
+	// rateLimitResetSlack pads a server-directed wait (Retry-After or the
+	// reset clock) so the retry fires just after the window actually rolls
+	// over, not a clock-jitter hair before it — a too-early retry burns an
+	// attempt on a guaranteed second 403.
+	rateLimitResetSlack = 2 * time.Second
+	// defaultRateLimitMaxWait bounds the TOTAL time send() spends sleeping
+	// on rate-limit backoff within one request (#614). Honoring
+	// X-RateLimit-Reset means a single wait can be minutes, not the old
+	// sub-minute exponential — but a shell stage subprocess is killed at
+	// internal/executor's 10-minute DefaultTimeout, and that kill surfaces
+	// as "timeout", masking the rate-limit cause this machinery exists to
+	// make visible. 5 minutes absorbs a near reset boundary transparently
+	// while leaving the stage's own work room under that ceiling; a reset
+	// further out fails fast with a typed RateLimitError instead.
+	// WithRateLimitMaxWait overrides.
+	defaultRateLimitMaxWait = 5 * time.Minute
 )
+
+// ErrorCodeRateLimited is the stable error code a GitHub rate-limited failure
+// surfaces under (#614) — carried by RateLimitError and by the stage
+// result-file error convention (internal/executor's OutputErrorCode), so a
+// quota-exhausted tick journals as itself rather than the generic
+// missing_result_file it used to hide behind.
+const ErrorCodeRateLimited = "github_rate_limited"
+
+// RateLimitError is the typed error send() returns when a rate-limited
+// request cannot be absorbed by in-request backoff — the reset is further out
+// than the wait budget, or the retry budget is exhausted (#614). Callers can
+// errors.As it to learn when the quota recovers, instead of parsing the
+// generic "status 403" string the non-2xx path used to fold this into.
+type RateLimitError struct {
+	Endpoint  string
+	Status    int
+	Remaining int
+	// Reset is when GitHub says the quota window rolls over — zero when the
+	// response carried no X-RateLimit-Reset header.
+	Reset time.Time
+	// Secondary marks a Retry-After-driven (abuse/secondary) limit rather
+	// than an exhausted primary quota.
+	Secondary bool
+}
+
+func (e *RateLimitError) Error() string {
+	msg := fmt.Sprintf("github rate limited (%s): %s: status %d, remaining %d", ErrorCodeRateLimited, e.Endpoint, e.Status, e.Remaining)
+	if !e.Reset.IsZero() {
+		msg += ", resets at " + e.Reset.UTC().Format(time.RFC3339)
+	}
+	return msg
+}
+
+// rateLimitErrorFrom builds the typed give-up error from the same decision
+// record rateLimitPlan produced for telemetry.
+func rateLimitErrorFrom(ev RateLimitEvent) *RateLimitError {
+	return &RateLimitError{
+		Endpoint:  ev.Endpoint,
+		Status:    ev.Status,
+		Remaining: ev.Remaining,
+		Reset:     ev.Reset,
+		Secondary: ev.Secondary,
+	}
+}
 
 // isRateLimited reports whether resp is a GitHub rate-limit response we should back
 // off and retry. It inspects headers only, so the body stays available for the
@@ -72,10 +132,15 @@ func (p *GitHubProvider) rateLimitPlan(resp *http.Response, endpoint string, att
 		}
 	}
 	if wait <= 0 {
+		// No server-directed wait: capped exponential fallback.
 		wait = backoffDuration(attempt)
-	}
-	if wait > rateLimitBackoffMax {
-		wait = rateLimitBackoffMax
+	} else {
+		// A server-directed wait (Retry-After or the reset clock) is honored
+		// as-is plus slack — the old blanket rateLimitBackoffMax cap turned a
+		// 21-minute reset into futile 60s sleeps that could never straddle
+		// the window (#614). send() bounds the total via its wait budget
+		// instead of capping each individual wait here.
+		wait += rateLimitResetSlack
 	}
 	ev.Wait = wait
 	return wait, ev
