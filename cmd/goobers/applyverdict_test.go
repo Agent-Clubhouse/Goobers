@@ -7,6 +7,27 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+func TestVerdictLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		decision apiv1.VerdictDecision
+		want     string
+	}{
+		{name: "pass", decision: apiv1.VerdictPass, want: "goobers:merge-ready"},
+		{name: "fail", decision: apiv1.VerdictFail, want: "goobers:merge-escalated"},
+		{name: "unknown", decision: apiv1.VerdictDecision("unknown"), want: "goobers:needs-remediation"},
+		{name: "zero value", decision: apiv1.VerdictDecision(""), want: "goobers:needs-remediation"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := verdictLabel(tt.decision); got != tt.want {
+				t.Fatalf("verdictLabel(%q) = %q, want %q", tt.decision, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestRenderVerdictCommentEmbedsRecoverableVerdict is #362's prerequisite:
 // pr-remediation's gather-pr-context runs in a different workflow's run than
 // merge-review's apply-verdict, so it must recover the structured Verdict
