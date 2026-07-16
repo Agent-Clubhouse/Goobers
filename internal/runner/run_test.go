@@ -3353,6 +3353,11 @@ func TestDefaultRepoCloneURL(t *testing.T) {
 			want: "https://dev.azure.com/acme/widgets/_git/web",
 		},
 		{
+			name: "azure devops escapes path segments",
+			ref:  apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme/widgets project", Name: "web app"},
+			want: "https://dev.azure.com/acme/widgets%20project/_git/web%20app",
+		},
+		{
 			name:    "unknown provider",
 			ref:     apiv1.RepoRef{Provider: "unknown", Owner: "acme", Name: "web"},
 			wantErr: `runner: unsupported repo provider "unknown"`,

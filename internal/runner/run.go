@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -1304,7 +1306,9 @@ func defaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {
 	case apiv1.ProviderGitHub:
 		return fmt.Sprintf("https://github.com/%s/%s.git", ref.Owner, ref.Name), nil
 	case apiv1.ProviderADO:
-		return fmt.Sprintf("https://dev.azure.com/%s/_git/%s", ref.Owner, ref.Name), nil
+		organization, project, _ := strings.Cut(ref.Owner, "/")
+		return fmt.Sprintf("https://dev.azure.com/%s/%s/_git/%s",
+			url.PathEscape(organization), url.PathEscape(project), url.PathEscape(ref.Name)), nil
 	default:
 		return "", fmt.Errorf("runner: unsupported repo provider %q", ref.Provider)
 	}
