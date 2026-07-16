@@ -14,9 +14,7 @@ metadata:
 spec:
   gaggle: example
   triggers:
-    - type: backlog-item
-      selector:
-        goobers: "true"
+    - type: manual
   start: prepare
   tasks:
     - name: prepare
@@ -51,6 +49,7 @@ func TestWorkflowShowPrintsTextDAG(t *testing.T) {
 	}
 
 	want := `workflow: default-implement
+triggers: manual-only
 start: prepare
 stages:
   prepare (kind: deterministic) -> review

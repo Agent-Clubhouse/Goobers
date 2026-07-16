@@ -20,7 +20,19 @@
         "triggers": {
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/$defs/trigger" }
+          "items": { "$ref": "#/$defs/trigger" },
+          "allOf": [
+            {
+              "if": {
+                "contains": {
+                  "type": "object",
+                  "required": ["type"],
+                  "properties": { "type": { "const": "manual" } }
+                }
+              },
+              "then": { "maxItems": 1 }
+            }
+          ]
         },
         "readiness": {
           "type": "object",
