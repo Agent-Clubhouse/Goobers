@@ -73,15 +73,16 @@ describe("App prototype", () => {
     window.location.hash = "#/run/01JZ402DASHBOARD";
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "Select event 13: Implementation attempt 3 complete" }));
+    await user.click(screen.getByRole("button", { name: "Select event 15: Implementation attempt 4 complete" }));
     const attemptList = screen.getByRole("tablist", { name: "Stage attempts" });
     const attempts = within(attemptList).getAllByRole("tab");
 
-    expect(attempts).toHaveLength(3);
+    expect(attempts).toHaveLength(4);
     expect(attempts[0]).toHaveTextContent(/Attempt 1.*initial.*completed.*6m 47s/i);
-    expect(attempts[1]).toHaveTextContent(/Attempt 2.*policy.*completed.*6m 31s/i);
-    expect(attempts[2]).toHaveTextContent(/Attempt 3.*policy.*completed.*5m 33s/i);
-    expect(attempts[2]).toHaveAttribute("aria-selected", "true");
+    expect(attempts[1]).toHaveTextContent(/Attempt 2.*policy.*failed.*48s/i);
+    expect(attempts[2]).toHaveTextContent(/Attempt 3.*infra.*completed.*5m 41s/i);
+    expect(attempts[3]).toHaveTextContent(/Attempt 4.*policy.*completed.*5m 33s/i);
+    expect(attempts[3]).toHaveAttribute("aria-selected", "true");
 
     await user.click(attempts[0]);
     expect(attempts[0]).toHaveAttribute("aria-selected", "true");
@@ -90,11 +91,16 @@ describe("App prototype", () => {
     expect(attempts[1]).toHaveAttribute("aria-selected", "true");
     expect(attempts[1]).toHaveFocus();
 
+    await user.click(screen.getByRole("button", { name: "Select event 10: Implementation infrastructure retry" }));
+    const infraEventAttempt = screen.getByRole("tab", { name: /Attempt 3.*infra.*running.*In progress/i });
+    expect(infraEventAttempt).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText("attempt-3-summary.md")).not.toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: "Select event 8: Implementation policy repass" }));
     const selectedEventAttempt = screen.getByRole("tab", { name: /Attempt 2.*policy.*running.*In progress/i });
     expect(selectedEventAttempt).toHaveAttribute("aria-selected", "true");
     expect(within(screen.getByRole("tabpanel")).getByText("Outcome is not available at the selected event.")).toBeInTheDocument();
-    expect(screen.queryByText("attempt-2-summary.md")).not.toBeInTheDocument();
+    expect(screen.queryByText("attempt-3-summary.md")).not.toBeInTheDocument();
   });
 
   it("shows artifact provenance and safely handles content, errors, downloads, and focus return", async () => {
