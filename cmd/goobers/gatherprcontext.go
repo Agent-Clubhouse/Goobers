@@ -27,6 +27,15 @@ var prReferencePattern = regexp.MustCompile(`(?i)\bPR\s*#\s*([0-9]+)\b`)
 // prReferencePattern requires.
 var hashReferencePattern = regexp.MustCompile(`#\s*([0-9]+)\b`)
 
+type remediationPriority uint8
+
+const (
+	remediationPriorityNone remediationPriority = iota
+	remediationPriorityBehindBase
+	remediationPriorityFailingCI
+	remediationPriorityNeedsRemediation
+)
+
 // prThreadComment is one comment on the PR thread — human/other-agent review
 // feedback, or a prior merge-review verdict comment — surfaced as context
 // for whatever addresses the PR next (design doc §5: pr-remediation reads
@@ -40,23 +49,24 @@ type prThreadComment struct {
 // runGatherPRContext implements `goobers gather-pr-context` (issue #362):
 // pr-remediation's entrypoint, replacing implementation's query-backlog head
 // (design doc §5 — "the one genuinely new executor entrypoint"). Selects one
-// open, goober-authored PR labeled needs-remediation or reporting failing CI,
-// checks out ITS branch into this stage's worktree (replacing whatever branch
-// the runner's worktree provisioning defaulted to — pr-remediation re-enters
-// on an EXISTING PR, it does not open a new one), and loads the merge-review
-// Verdict + PR-thread comments + whether the base has advanced since this PR
-// branched, as context for the stages that follow (#363's rebase +
-// finding-driven routing).
+// open, goober-authored PR labeled needs-remediation, reporting failing CI, or
+// behind its base, checks out ITS branch into this stage's worktree (replacing
+// whatever branch the runner's worktree provisioning defaulted to —
+// pr-remediation re-enters on an EXISTING PR, it does not open a new one), and
+// loads the merge-review Verdict + PR-thread comments + whether the base has
+// advanced since this PR branched, as context for the stages that follow
+// (#363's rebase + finding-driven routing).
 func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("gather-pr-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers gather-pr-context [path]\n\n"+
 			"Select one open, goober-authored PR labeled goobers:needs-remediation\n"+
-			"or reporting failing CI, check out its branch into this stage's\n"+
-			"worktree, and load the latest merge-review verdict + PR-thread comments\n"+
-			"+ whether the base has advanced since this PR branched, writing them to\n"+
-			"the declared result file. [path] is the instance root (matching\n"+
+			"or reporting failing CI, falling back to a PR behind its base only when\n"+
+			"neither stronger signal is present. Check out its branch into this\n"+
+			"stage's worktree and load the latest merge-review verdict + PR-thread\n"+
+			"comments + whether the base has advanced since this PR branched, writing\n"+
+			"them to the declared result file. [path] is the instance root (matching\n"+
 			"pr-select/apply-verdict), defaulting to GOOBERS_INSTANCE_ROOT; git\n"+
 			"operations run against the stage's actual worktree (the process's\n"+
 			"current directory), not path — same split push-branch already relies\n"+
@@ -114,20 +124,29 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "list pull requests", err, "pr-context.json")
 	}
 
-	var eligible []providers.PullRequestSummary
-	for _, pr := range prs {
-		needsRemediation := hasAnyLabel(pr.Labels, []string{needsRemediationLabel})
-		failingCI := pr.CheckState == providers.CheckStateFailing &&
-			!hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel})
-		if needsRemediation || failingCI {
-			eligible = append(eligible, pr)
+	fetchedBases := make(map[string]bool)
+	candidates, _, err := selectRemediationCandidates(prs, func(pr providers.PullRequestSummary) (bool, error) {
+		if !fetchedBases[pr.Base] {
+			if _, err := fetchExistingBranch(".", pr.Base, pushToken); err != nil {
+				return false, fmt.Errorf("fetch base branch %q: %w", pr.Base, err)
+			}
+			fetchedBases[pr.Base] = true
 		}
+		headSHA, err := fetchExistingBranch(".", pr.Head, pushToken)
+		if err != nil {
+			return false, fmt.Errorf("fetch PR #%d branch %q: %w", pr.Number, pr.Head, err)
+		}
+		return isCommitBehindBase(".", pr.BaseSHA, headSHA)
+	})
+	if err != nil {
+		pf(stderr, "error: determine remediation eligibility: %v\n", err)
+		return 1
 	}
-	if len(eligible) == 0 {
+	if len(candidates) == 0 {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	claimed, err := claimEligiblePullRequest(root, eligible)
+	claimed, err := claimEligiblePullRequest(root, candidates)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
 		return 1
@@ -211,6 +230,72 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// remediationPriorityFor classifies a single PR's remediation urgency,
+// independent of its peers — needs-remediation outranks failing CI, and
+// neither implies anything about whether the PR is merely behind its base
+// (that's a fallback tier, checked only when nothing clears these two: see
+// selectRemediationCandidates).
+func remediationPriorityFor(pr providers.PullRequestSummary) remediationPriority {
+	switch {
+	case hasAnyLabel(pr.Labels, []string{needsRemediationLabel}):
+		return remediationPriorityNeedsRemediation
+	case pr.CheckState == providers.CheckStateFailing &&
+		!hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}):
+		return remediationPriorityFailingCI
+	}
+	return remediationPriorityNone
+}
+
+// selectRemediationCandidates returns every open PR at the single strongest
+// remediation-priority tier present (needs-remediation, else failing CI),
+// so claimEligiblePullRequest can still try each in ascending-number order
+// for exactly-once selection across concurrent runs — returning only ONE
+// pre-picked PR here would mean a concurrent run's claim on that PR strands
+// every other eligible PR for a full cycle, regressing the pre-#596-fallback
+// contract of offering the WHOLE eligible set to the claim ledger.
+//
+// Only when nothing clears either tier does a PR merely behind its base
+// become eligible at all (#596's fix — previously such a PR was only
+// rebased as a side effect of something else flagging it first). Checking
+// "behind base" requires fetching each candidate's branches, so behindBase
+// is only invoked when nothing stronger exists — the priority tiers above
+// are decidable from the PR summary alone, no fetch required.
+func selectRemediationCandidates(prs []providers.PullRequestSummary, behindBase func(providers.PullRequestSummary) (bool, error)) ([]providers.PullRequestSummary, remediationPriority, error) {
+	var candidates []providers.PullRequestSummary
+	best := remediationPriorityNone
+	for _, pr := range prs {
+		switch p := remediationPriorityFor(pr); {
+		case p == remediationPriorityNone:
+			continue
+		case p > best:
+			best = p
+			candidates = []providers.PullRequestSummary{pr}
+		case p == best:
+			candidates = append(candidates, pr)
+		}
+	}
+	if best != remediationPriorityNone {
+		return candidates, best, nil
+	}
+
+	for _, pr := range prs {
+		if hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) {
+			continue
+		}
+		behind, err := behindBase(pr)
+		if err != nil {
+			return nil, remediationPriorityNone, err
+		}
+		if behind {
+			candidates = append(candidates, pr)
+		}
+	}
+	if len(candidates) > 0 {
+		best = remediationPriorityBehindBase
+	}
+	return candidates, best, nil
+}
+
 // verdictHasSubstantiveFindingForPR reports whether verdict carries a
 // substantive finding attributable to the selected PR itself. Attribution
 // rules, in order:
@@ -285,6 +370,24 @@ func referencesTarget(matches [][]string, target string) bool {
 // defeating the "don't clobber a concurrent push" guarantee force-with-lease
 // exists for.
 func checkoutExistingBranch(dir, branch, token string) (fetchedSHA string, err error) {
+	fetchedSHA, err = fetchExistingBranch(dir, branch, token)
+	if err != nil {
+		return "", err
+	}
+	checkout := exec.Command("git", "checkout", "-B", branch, "FETCH_HEAD")
+	checkout.Dir = dir
+	if out, err := checkout.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("checkout %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	return fetchedSHA, nil
+}
+
+// fetchExistingBranch fetches branch from origin into dir and returns its
+// remote SHA, without checking it out — used both by checkoutExistingBranch
+// (which checks out on top) and by selectRemediationCandidates' behind-base
+// probe (which only needs the SHA to compare ancestry, and must not disturb
+// dir's currently-checked-out branch while probing OTHER PRs' candidacy).
+func fetchExistingBranch(dir, branch, token string) (string, error) {
 	url, err := originURL(dir)
 	if err != nil {
 		return "", err
@@ -302,13 +405,7 @@ func checkoutExistingBranch(dir, branch, token string) (fetchedSHA string, err e
 	if err != nil {
 		return "", fmt.Errorf("resolve fetched SHA for %s: %w", branch, err)
 	}
-	fetchedSHA = strings.TrimSpace(string(out))
-	checkout := exec.Command("git", "checkout", "-B", branch, "FETCH_HEAD")
-	checkout.Dir = dir
-	if out, err := checkout.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("checkout %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
-	}
-	return fetchedSHA, nil
+	return strings.TrimSpace(string(out)), nil
 }
 
 // isBehindBase reports whether baseSHA is NOT an ancestor of the checked-out
@@ -318,10 +415,20 @@ func checkoutExistingBranch(dir, branch, token string) (fetchedSHA string, err e
 // finding-driven, never rebase-driven — that decision belongs to the stage
 // after this one).
 func isBehindBase(dir, baseSHA string) (bool, error) {
+	return isCommitBehindBase(dir, baseSHA, "HEAD")
+}
+
+// isCommitBehindBase is isBehindBase generalized to an arbitrary headSHA
+// (rather than always the dir's checked-out HEAD) — selectRemediationCandidates'
+// behind-base probe needs to test candidate PRs it hasn't checked out.
+func isCommitBehindBase(dir, baseSHA, headSHA string) (bool, error) {
 	if baseSHA == "" {
 		return false, fmt.Errorf("PR has no recorded base SHA")
 	}
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", baseSHA, "HEAD")
+	if headSHA == "" {
+		return false, fmt.Errorf("PR has no recorded head SHA")
+	}
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", baseSHA, headSHA)
 	cmd.Dir = dir
 	err := cmd.Run()
 	if err == nil {
@@ -331,5 +438,5 @@ func isBehindBase(dir, baseSHA string) (bool, error) {
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 		return true, nil
 	}
-	return false, fmt.Errorf("git merge-base --is-ancestor %s HEAD: %w", baseSHA, err)
+	return false, fmt.Errorf("git merge-base --is-ancestor %s %s: %w", baseSHA, headSHA, err)
 }
