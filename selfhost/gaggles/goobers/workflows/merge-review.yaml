@@ -27,9 +27,9 @@ spec:
   tasks:
     # Selection (design doc §3's declarative-selection model, applied to
     # PRs): one open, non-draft, green-CI goobers/* PR not already carrying
-    # a merge-review label. No claim ledger for V0.5 — see pr-select.go's
-    # own doc comment for why that's an accepted scope call, not an
-    # oversight.
+    # a merge-review label. The selected PR is leased in the same claim
+    # namespace gather-pr-context uses, excluding concurrent review/remediation
+    # of one PR.
     - name: pr-select
       type: deterministic
       goal: Select one eligible open PR for holistic review.

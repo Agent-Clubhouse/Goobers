@@ -122,15 +122,15 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	// Deterministic ordering (ascending PR number, i.e. oldest-flagged-first)
-	// — mirrors pr-select: a stable, reproducible choice among however many
-	// are eligible, not priority/FIFO ordering (#350's job).
-	selected := eligible[0]
-	for _, pr := range eligible[1:] {
-		if pr.Number < selected.Number {
-			selected = pr
-		}
+	claimed, err := claimEligiblePullRequest(root, eligible)
+	if err != nil {
+		pf(stderr, "error: claim eligible PR: %v\n", err)
+		return 1
 	}
+	if claimed == nil {
+		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+	}
+	selected := *claimed
 
 	if _, err := checkoutExistingBranch(".", selected.Head, pushToken); err != nil {
 		pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selected.Number, selected.Head, err)

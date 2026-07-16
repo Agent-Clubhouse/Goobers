@@ -24,10 +24,8 @@ const defaultExcludeLabels = "goobers:merge-ready,goobers:needs-remediation,goob
 // selection stage. Picks at most one eligible PR per run — the same
 // one-per-run shape backlog-query uses for issues (design doc §3's
 // declarative-selection model), not a batch scan of the whole open-PR set in
-// a single run. No claim-ledger exclusivity for V0.5: maxConcurrentRuns=1 +
-// excluding already-labeled PRs bounds double-processing to "a rare wasted
-// cycle," which G3 (liberal limits, waste acceptable) explicitly tolerates —
-// building claim infrastructure for it would be scope beyond what #359 asks.
+// a single run. The selected PR is leased in the shared PR claim namespace so
+// concurrent merge-review and pr-remediation runs cannot select it together.
 func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("pr-select", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -94,15 +92,15 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "no eligible PR to select this cycle")
 	}
 
-	// Deterministic ordering (ascending PR number, i.e. oldest-opened-first)
-	// — not FIFO/priority ordering (#350's job once it exists), just a
-	// stable, reproducible choice among however many are eligible.
-	selected := eligible[0]
-	for _, pr := range eligible[1:] {
-		if pr.Number < selected.Number {
-			selected = pr
-		}
+	claimed, err := claimEligiblePullRequest(root, eligible)
+	if err != nil {
+		pf(stderr, "error: claim eligible PR: %v\n", err)
+		return 1
 	}
+	if claimed == nil {
+		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+	}
+	selected := *claimed
 
 	resultFile := providerInput("resultFile", "selected-pr.json")
 	data, err := json.Marshal(map[string]string{
