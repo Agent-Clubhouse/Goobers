@@ -157,12 +157,16 @@ func (c *outputCapturingDeterministic) Run(_ context.Context, env apiv1.Invocati
 // Task.Retry's policy-attempt loop. Safe for the single-goroutine dispatch
 // runTask does (no locking needed).
 type flakyDeterministic struct {
-	failUntil int
-	calls     int
+	failUntil           int
+	calls               int
+	firstAttemptStarted chan struct{}
 }
 
 func (f *flakyDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	f.calls++
+	if f.calls == 1 && f.firstAttemptStarted != nil {
+		close(f.firstAttemptStarted)
+	}
 	if f.calls <= f.failUntil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("transient failure (call %d)", f.calls)
 	}
@@ -1290,7 +1294,10 @@ func TestRunnerRetryBackoffInterruptedByDrainCancellation(t *testing.T) {
 	const backoff = 10 * time.Second
 	const maxAttempts = 5 // un-interrupted worst case: 4 waits * 10s = 40s
 	machine := retryFixtureMachineWithBackoff(t, maxAttempts, backoff)
-	flaky := &flakyDeterministic{failUntil: 1000} // always fails within budget
+	flaky := &flakyDeterministic{
+		failUntil:           1000, // always fails within budget
+		firstAttemptStarted: make(chan struct{}),
+	}
 	r, _ := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
 		return flaky, nil
 	}, gate.NewAutomatedEvaluator())
@@ -1301,7 +1308,6 @@ func TestRunnerRetryBackoffInterruptedByDrainCancellation(t *testing.T) {
 		err error
 	}
 	done := make(chan startResult, 1)
-	start := time.Now()
 	go func() {
 		res, err := r.Start(ctx, StartInput{
 			RunID:   "run-backoff-drain",
@@ -1313,10 +1319,10 @@ func TestRunnerRetryBackoffInterruptedByDrainCancellation(t *testing.T) {
 		done <- startResult{res, err}
 	}()
 
-	// Give the first attempt time to dispatch, fail, and enter its backoff
-	// wait (comfortably inside the 10s window — dispatch itself is
-	// near-instant here) before cancelling.
-	time.Sleep(300 * time.Millisecond)
+	// Synchronize with actual dispatch so cancellation cannot race the walk
+	// loop's between-stages drain check.
+	<-flaky.firstAttemptStarted
+	start := time.Now()
 	cancel()
 
 	const bound = 8 * time.Second // comfortably under the un-interrupted 40s, comfortably over dispatch/scheduling noise
