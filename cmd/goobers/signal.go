@@ -34,9 +34,11 @@ func runSignal(args []string, stdout, stderr io.Writer) int {
 			"daemon uses (default path \".\"). A signal may match zero, one, or many\n"+
 			"workflows; waits for every dispatched run to reach a terminal state or\n"+
 			"pause before returning (same blocking UX as `goobers run`).\n"+
-			"Exit codes: 0 = signal delivered (even if it matched no subscribed\n"+
-			"workflow, or run conditions rejected every match), 1 = business error\n"+
-			"(a daemon already holds this instance's lock), 2 = usage/IO error.\n")
+			"Exit codes after waiting: 0 = every admitted run completed (also used when\n"+
+			"none were admitted), 1 = any run failed/aborted or a business error, 2 =\n"+
+			"usage/IO error, 3 = any run escalated. Escalation takes precedence for\n"+
+			"mixed outcomes; successful submission-only modes exit 0 because they do\n"+
+			"not observe a terminal phase.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -110,6 +112,7 @@ func runSignal(args []string, stdout, stderr io.Writer) int {
 	// even started) — the same Add-before-Wait requirement sync.WaitGroup
 	// always has. waitForRunTerminal's polling loop naturally closes that
 	// race by blocking until each run's own journal shows it under way.
+	exitCode := 0
 	for _, runID := range runIDs {
 		phase, err := waitForRunTerminal(ctx, l.RunsDir(), runID)
 		if err != nil {
@@ -117,8 +120,11 @@ func runSignal(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		pf(stdout, "finished: run=%s phase=%s\n", runID, phase)
+		if phaseExit := exitForPhase(phase); phaseExit > exitCode {
+			exitCode = phaseExit
+		}
 	}
 	wg.Wait()
 	pf(stdout, "inspect with: goobers trace <run-id> %s\n", root)
-	return 0
+	return exitCode
 }

@@ -127,7 +127,9 @@ Usage:
   goobers remediation-checkpoint [--budget N]  durable per-PR repass budget + same-diff escalation (a workflow stage)
 
 path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
-business errors, 2 = usage/IO error.
+business errors, 2 = usage/IO error. After waiting for a run, run/signal use
+0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
+modes exit 0 before a terminal outcome is known.
 
 backlog-query/push-branch/open-pr/issue-close-out/merge-pr/pr-select/
 gather-sibling-context/apply-verdict/post-merge/gather-pr-context/

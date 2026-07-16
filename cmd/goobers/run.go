@@ -21,6 +21,19 @@ import (
 // have to wait out a real 200ms per poll.
 var runPollInterval = 200 * time.Millisecond
 
+func exitForPhase(phase journal.RunPhase) int {
+	switch phase {
+	case journal.PhaseCompleted:
+		return 0
+	case journal.PhaseFailed, journal.PhaseAborted:
+		return 1
+	case journal.PhaseEscalated:
+		return 3
+	default:
+		return 1
+	}
+}
+
 func runRun(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "abort" {
 		return runRunAbort(args[1:], stdout, stderr)
@@ -36,9 +49,11 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 			"daemon uses, then wait for it to reach a terminal state or pause (default\n"+
 			"path \".\"). If a live `goobers up` daemon already holds the instance lock,\n"+
 			"delegates the trigger to it instead of failing (#343) — dispatched through\n"+
-			"the same Scheduler.Trigger path either way. Exit codes: 0 = run created and\n"+
-			"dispatched, 1 = business error (unknown workflow, invalid config, run\n"+
-			"conditions rejected the trigger), 2 = usage/IO error.\n"+
+			"the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =\n"+
+			"completed, 1 = failed/aborted or business error (unknown workflow, invalid\n"+
+			"config, run conditions rejected the trigger), 2 = usage/IO error, 3 =\n"+
+			"escalated. A successful submission-only mode (such as --no-wait, once\n"+
+			"available) exits 0 because it does not observe a terminal phase.\n"+
 			"`run abort` marks a stuck non-terminal run aborted directly in its own\n"+
 			"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n")
 	}
@@ -134,7 +149,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "finished: phase=%s\n", phase)
 	pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
-	return 0
+	return exitForPhase(phase)
 }
 
 // runDelegatedTrigger is #343's actual fix: called when acquireInstanceLock
@@ -167,7 +182,7 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root stri
 	}
 	pf(stdout, "finished: phase=%s\n", phase)
 	pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
-	return 0
+	return exitForPhase(phase)
 }
 
 // runRunAbort marks a stuck non-terminal run as aborted by appending a
