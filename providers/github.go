@@ -163,27 +163,38 @@ func (p *GitHubProvider) CreateBranch(ctx context.Context, req BranchRequest) (B
 	return BranchResult{Name: req.Name, SHA: out.Object.SHA, URL: out.URL}, nil
 }
 
-// DeleteBranch deletes a GitHub branch ref.
-func (p *GitHubProvider) DeleteBranch(ctx context.Context, req DeleteBranchRequest) error {
+// DeleteBranch removes a GitHub branch ref. A missing ref is an idempotent
+// no-op, reported through DeleteBranchResult rather than as an error — both
+// #605's post-merge cleanup and #607's orphaned-branch cleanup call this
+// with a branch that may already be gone (a concurrent cleanup, or a human
+// deleted it manually) and neither wants that treated as failure.
+func (p *GitHubProvider) DeleteBranch(ctx context.Context, req DeleteBranchRequest) (DeleteBranchResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
-		return err
+		return DeleteBranchResult{}, err
 	}
 	if req.Name == "" {
-		return fmt.Errorf("branch name is required")
+		return DeleteBranchResult{}, fmt.Errorf("branch name is required")
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "git", "refs", "heads", req.Name)
 	if err != nil {
-		return err
+		return DeleteBranchResult{}, err
 	}
-	if err := p.doStatus(ctx, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound}); err != nil {
-		return err
+	resp, err := p.send(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return DeleteBranchResult{}, err
 	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound && (resp.StatusCode < 200 || resp.StatusCode > 299) {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return DeleteBranchResult{}, fmt.Errorf("DELETE %s failed: status %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	deleted := resp.StatusCode != http.StatusNotFound
 	p.recordExternalRef(ctx, ExternalRef{
 		Provider:  ProviderGitHub,
 		Ref:       fmt.Sprintf("%s/%s@%s", req.Repository.Owner, req.Repository.Name, req.Name),
 		Operation: "delete",
 	})
-	return nil
+	return DeleteBranchResult{Deleted: deleted}, nil
 }
 
 // Commit writes file changes to a GitHub branch.

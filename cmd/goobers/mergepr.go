@@ -220,7 +220,7 @@ func cleanupMergedBranch(ctx context.Context, headRepository *providers.Reposito
 		return fail(err)
 	}
 	branchProvider := newGitHubProvider(token, providers.WithMutationRecorder(recorder))
-	if err := branchProvider.DeleteBranch(ctx, providers.DeleteBranchRequest{Repository: *headRepository, Name: headBranch}); err != nil {
+	if _, err := branchProvider.DeleteBranch(ctx, providers.DeleteBranchRequest{Repository: *headRepository, Name: headBranch}); err != nil {
 		return fail(fmt.Errorf("delete branch %q: %w", headBranch, err))
 	}
 	out.Status = "deleted"

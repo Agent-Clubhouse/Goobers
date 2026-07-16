@@ -102,8 +102,8 @@ func (p *ADOProvider) CreateBranch(ctx context.Context, req BranchRequest) (Bran
 }
 
 // DeleteBranch is part of the provider contract; ADO parity lands in V1.
-func (p *ADOProvider) DeleteBranch(context.Context, DeleteBranchRequest) error {
-	return fmt.Errorf("ado: branch deletion lands in V1 parity (BL-033)")
+func (p *ADOProvider) DeleteBranch(context.Context, DeleteBranchRequest) (DeleteBranchResult, error) {
+	return DeleteBranchResult{}, fmt.Errorf("ado: branch deletion lands in V1 parity (BL-033)")
 }
 
 // Commit writes file changes to an Azure DevOps branch.

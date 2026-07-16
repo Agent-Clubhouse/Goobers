@@ -131,6 +131,10 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	if err != nil {
 		return nil, err
 	}
+	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg)
+	if err != nil {
+		return nil, err
+	}
 	runnerCfg.FinalizeTerminal = func(runID string, _ journal.RunPhase) error {
 		return releaseClaimsForRun(l, instanceLog, runID)
 	}

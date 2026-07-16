@@ -17,7 +17,7 @@ type Provider interface {
 type RepoProvider interface {
 	CloneRepository(context.Context, CloneRequest) (CloneResult, error)
 	CreateBranch(context.Context, BranchRequest) (BranchResult, error)
-	DeleteBranch(context.Context, DeleteBranchRequest) error
+	DeleteBranch(context.Context, DeleteBranchRequest) (DeleteBranchResult, error)
 	Commit(context.Context, CommitRequest) (CommitResult, error)
 	OpenPullRequest(context.Context, PullRequestRequest) (PullRequestResult, error)
 	RequestReview(context.Context, ReviewRequest) error
@@ -47,6 +47,12 @@ type RepoProvider interface {
 	// needed to make the cache key and merge-pr's SHA-pin check delta-aware
 	// instead of raw-SHA-equality.
 	CompareCommits(ctx context.Context, repo RepositoryRef, base, head string) (CompareResult, error)
+}
+
+// BranchDeleter removes remote branch refs. It is separate from RepoProvider
+// so V0's GitHub-only cleanup does not widen every provider implementation.
+type BranchDeleter interface {
+	DeleteBranch(context.Context, DeleteBranchRequest) (DeleteBranchResult, error)
 }
 
 // BranchName returns the run-scoped branch-name convention the repo provider

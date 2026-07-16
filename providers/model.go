@@ -133,11 +133,17 @@ type BranchResult struct {
 	URL  string `json:"url,omitempty"`
 }
 
-// DeleteBranchRequest describes a branch ref to delete.
+// DeleteBranchRequest identifies a remote branch ref to remove.
 type DeleteBranchRequest struct {
 	Repository RepositoryRef `json:"repository"`
 	Name       string        `json:"name"`
 }
+
+// DeleteBranchResult reports whether the branch existed and was deleted.
+type DeleteBranchResult struct {
+	Deleted bool `json:"deleted"`
+}
+
 
 // CommitChangeType identifies how a file changes in a commit.
 type CommitChangeType string
