@@ -45,12 +45,16 @@ func IsTransientError(err error) bool {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
 	}
-	if m := statusCodePattern.FindStringSubmatch(err.Error()); m != nil {
+	message := strings.ToLower(err.Error())
+	var responseErr *providerResponseError
+	if errors.As(err, &responseErr) {
+		return isTransientStatus(responseErr.statusCode, responseErr.hasRetryGuidance())
+	}
+	if m := statusCodePattern.FindStringSubmatch(message); m != nil {
 		if code, convErr := strconv.Atoi(m[1]); convErr == nil {
-			return code >= 500 || code == 429
+			return isTransientStatus(code, hasRateLimitRetryGuidance(message))
 		}
 	}
-	message := strings.ToLower(err.Error())
 	for _, fragment := range transientMessageFragments {
 		if strings.Contains(message, fragment) {
 			return true
@@ -59,9 +63,29 @@ func IsTransientError(err error) bool {
 	return false
 }
 
-// statusCodePattern matches the "status %d" shape readJSONResponse's error
-// messages use (see providers/http.go) — the only place a non-2xx GitHub
-// response surfaces as a plain error string rather than a typed value.
+func isTransientStatus(code int, guidedRateLimit bool) bool {
+	return code >= 500 || code == 429 || code == 403 && guidedRateLimit
+}
+
+func hasRateLimitRetryGuidance(message string) bool {
+	for _, fragment := range []string{
+		"retry after ",
+		"retry-after:",
+		"retry-after=",
+		"x-ratelimit-remaining: 0",
+		"x-ratelimit-remaining=0",
+		`x-ratelimit-remaining="0"`,
+		"x-ratelimit-reset",
+	} {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+// statusCodePattern matches provider errors that cross a subprocess boundary
+// and therefore no longer retain providerResponseError's typed metadata.
 var statusCodePattern = regexp.MustCompile(`status (\d{3})`)
 
 // transientMessageFragments covers the transport errors that cross the

@@ -48,7 +48,7 @@ func readPage(resp *http.Response, method, endpoint string) ([]byte, string, err
 		return nil, "", fmt.Errorf("%s %s: read body: %w", method, endpoint, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, "", fmt.Errorf("%s %s failed: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, "", newProviderResponseError(resp, method, endpoint, body)
 	}
 	return body, parseNextLink(resp.Header.Get("Link")), nil
 }
@@ -80,6 +80,50 @@ func parseNextLink(link string) string {
 // HTTPClient sends HTTP requests for provider implementations.
 type HTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
+}
+
+type providerResponseError struct {
+	method             string
+	endpoint           string
+	statusCode         int
+	body               string
+	retryAfter         string
+	rateLimitRemaining string
+	rateLimitReset     string
+}
+
+func (e *providerResponseError) Error() string {
+	message := fmt.Sprintf("%s %s failed: status %d: %s", e.method, e.endpoint, e.statusCode, e.body)
+	if !e.hasRetryGuidance() {
+		return message
+	}
+	var guidance []string
+	if e.retryAfter != "" {
+		guidance = append(guidance, "Retry-After="+strconv.Quote(e.retryAfter))
+	}
+	if e.rateLimitRemaining == "0" {
+		guidance = append(guidance, "X-RateLimit-Remaining=\"0\"")
+		if e.rateLimitReset != "" {
+			guidance = append(guidance, "X-RateLimit-Reset="+strconv.Quote(e.rateLimitReset))
+		}
+	}
+	return message + " (" + strings.Join(guidance, ", ") + ")"
+}
+
+func (e *providerResponseError) hasRetryGuidance() bool {
+	return e.retryAfter != "" || e.rateLimitRemaining == "0"
+}
+
+func newProviderResponseError(resp *http.Response, method, endpoint string, body []byte) error {
+	return &providerResponseError{
+		method:             method,
+		endpoint:           endpoint,
+		statusCode:         resp.StatusCode,
+		body:               strings.TrimSpace(string(body)),
+		retryAfter:         strings.TrimSpace(resp.Header.Get("Retry-After")),
+		rateLimitRemaining: strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")),
+		rateLimitReset:     strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")),
+	}
 }
 
 // CommandRunner executes external commands such as git clone.
@@ -144,7 +188,7 @@ func readJSONResponse(resp *http.Response, method, endpoint string, out interfac
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("%s %s failed: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		return newProviderResponseError(resp, method, endpoint, body)
 	}
 	if out == nil || resp.StatusCode == http.StatusNoContent {
 		return nil

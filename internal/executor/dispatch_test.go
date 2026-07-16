@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -71,12 +72,14 @@ func TestTaskExecutor_ClassifiesCIPollProviderFailures(t *testing.T) {
 		name               string
 		err                error
 		wantInfrastructure bool
+		wantFailure        bool
 	}{
-		{"server error", errors.New("GET /pulls/9 failed: status 503: unavailable"), true},
-		{"rate limit", errors.New("GET /pulls/9 failed: status 429: retry later"), true},
-		{"authentication", errors.New("GET /pulls/9 failed: status 401: bad credentials"), false},
-		{"authorization", errors.New("GET /pulls/9 failed: status 403: forbidden"), false},
-		{"deterministic request", errors.New("GET /pulls/9 failed: status 422: invalid"), false},
+		{"server error", errors.New("GET /pulls/9 failed: status 503: unavailable"), true, false},
+		{"rate limit", errors.New("GET /pulls/9 failed: status 429: retry later"), true, false},
+		{"guided forbidden rate limit", errors.New("GET /pulls/9 failed: status 403: Retry-After=60"), true, false},
+		{"authentication", errors.New("GET /pulls/9 failed: status 401: bad credentials"), false, true},
+		{"authorization", errors.New("GET /pulls/9 failed: status 403: forbidden"), false, true},
+		{"deterministic request", errors.New("GET /pulls/9 failed: status 422: invalid"), false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,9 +101,20 @@ func TestTaskExecutor_ClassifiesCIPollProviderFailures(t *testing.T) {
 				RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
 				Inputs:  map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
 			}
-			_, runErr := te.Run(context.Background(), env, apiv1.DeterministicRun{})
+			result, runErr := te.Run(context.Background(), env, apiv1.DeterministicRun{})
 			if got := invoke.IsInfrastructureFailure(runErr); got != tc.wantInfrastructure {
 				t.Fatalf("infrastructure failure = %v, want %v (err=%v)", got, tc.wantInfrastructure, runErr)
+			}
+			if tc.wantFailure {
+				if runErr != nil {
+					t.Fatalf("Run returned dispatch error %v, want failure result", runErr)
+				}
+				if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "poll_provider_error" || result.Error.Retryable {
+					t.Fatalf("result = %+v, want non-retryable poll_provider_error failure", result)
+				}
+				if !strings.Contains(result.Error.Message, tc.err.Error()) {
+					t.Fatalf("failure message %q does not preserve provider cause %q", result.Error.Message, tc.err)
+				}
 			}
 		})
 	}

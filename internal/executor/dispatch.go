@@ -58,8 +58,22 @@ func (t *TaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, ru
 			return apiv1.ResultEnvelope{}, err
 		}
 		result, err := t.CIPoll.Run(ctx, cfg)
+		if err == nil {
+			return result, nil
+		}
 		if providers.IsTransientError(err) {
 			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(err)
+		}
+		var providerErr *ciPollProviderError
+		if errors.As(err, &providerErr) {
+			return apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "ci-poll provider request failed",
+				Error: &apiv1.ErrorInfo{
+					Code:    "poll_provider_error",
+					Message: err.Error(),
+				},
+			}, nil
 		}
 		return result, err
 	default:
