@@ -256,6 +256,148 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 	}
 }
 
+// TestVerdictCountsCrossPRConflictFindingsForSelectedPR is #608's repro: a
+// merge-review cross-PR-conflict finding points Location at the SIBLING
+// ("PR #598") while its Message names what the selected PR is blocked on.
+// Before the fix these were dropped as "the sibling's own issue", so
+// rebase-pr reported needsAgent:false on every cycle of a genuinely
+// deadlocked PR — never escalating, never converging. Finding shapes below
+// are lifted verbatim from PR #597's live verdict comments.
+func TestVerdictCountsCrossPRConflictFindingsForSelectedPR(t *testing.T) {
+	t.Run("message names selected PR with bare #N", func(t *testing.T) {
+		verdict := &apiv1.Verdict{
+			Findings: []apiv1.Finding{{
+				Severity: apiv1.SeverityError,
+				Class:    apiv1.FindingSubstantive,
+				Location: "PR #598",
+				Message: "PR #598 directly rewrites the same status/runs behavior and files while converging ordering and flags. " +
+					"Reconcile its shared run-table implementation with #597's runs list --json row shape and ordering.",
+			}},
+		}
+		if !verdictHasSubstantiveFindingForPR(verdict, 597) {
+			t.Fatal("cross-PR-conflict finding blocking selected PR #597 was not counted (its Location references only the sibling)")
+		}
+	})
+
+	t.Run("message names selected PR with PR #N", func(t *testing.T) {
+		verdict := &apiv1.Verdict{
+			Findings: []apiv1.Finding{{
+				Severity: apiv1.SeverityError,
+				Class:    apiv1.FindingSubstantive,
+				Location: "PR #538",
+				Message:  "PR #538 concurrently evolves cmd/goobers/trace.go. Ensure the combined trace contract retains PR #597's JSON events.",
+			}},
+		}
+		if !verdictHasSubstantiveFindingForPR(verdict, 597) {
+			t.Fatal("cross-PR-conflict finding blocking selected PR #597 was not counted")
+		}
+	})
+
+	t.Run("sibling-only finding stays excluded (#525)", func(t *testing.T) {
+		verdict := &apiv1.Verdict{
+			Findings: []apiv1.Finding{{
+				Severity: apiv1.SeverityError,
+				Class:    apiv1.FindingSubstantive,
+				Location: "PR #480",
+				Message:  "PR #480's new table-alignment test asserts on locale-dependent width output and fails on CI runners.",
+			}},
+		}
+		if verdictHasSubstantiveFindingForPR(verdict, 597) {
+			t.Fatal("a sibling's own substantive finding (never mentioning the selected PR) counted for selected PR #597")
+		}
+	})
+
+	t.Run("sibling number in message does not count for that sibling's own gather pass", func(t *testing.T) {
+		// The same live #597 finding, seen when the SELECTED PR is a
+		// different, unrelated sibling (#595): neither Location nor Message
+		// references #595, so it must stay excluded there.
+		verdict := &apiv1.Verdict{
+			Findings: []apiv1.Finding{{
+				Severity: apiv1.SeverityError,
+				Class:    apiv1.FindingSubstantive,
+				Location: "PR #598",
+				Message:  "PR #598 directly rewrites the same status/runs behavior. Reconcile its shared run-table implementation with #597's runs list --json row shape.",
+			}},
+		}
+		if verdictHasSubstantiveFindingForPR(verdict, 595) {
+			t.Fatal("a finding about the #597/#598 conflict counted for uninvolved PR #595")
+		}
+	})
+}
+
+// TestGatherPRContextCountsCrossPRConflictVerdict is #608's end-to-end
+// acceptance: a verdict comment whose only findings name sibling PRs as the
+// blocker (Location "PR #598"-style, Message "...with #597's..." — the exact
+// shape merge-review posts live) must still produce
+// hasSubstantiveFindings="true" for the selected PR, so rebase-pr can never
+// report needsAgent:false for a verdict-confirmed deadlocked PR.
+func TestGatherPRContextCountsCrossPRConflictVerdict(t *testing.T) {
+	const prBranch = "goobers/impl/run-608"
+	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
+
+	verdictComment := "**merge-review verdict: needs-changes**\n\nBlocked by unresolved cross-PR command-contract drift.\n\n" +
+		`<!-- verdict-json: {"decision":"needs-changes","summary":"PR #597 is correct in isolation but remains blocked by unresolved cross-PR command-contract drift.","findings":[{"severity":"error","message":"PR #598 directly rewrites the same status/runs behavior and files. Reconcile its shared run-table implementation with #597's runs list --json row shape and ordering.","location":"PR #598","class":"substantive"},{"severity":"error","message":"PR #538 concurrently evolves cmd/goobers/trace.go. Ensure the combined trace JSON contract represents every transcript view exposed in text.","location":"PR #538","class":"substantive"}],"headSha":"` + headSHA + `","baseSha":"` + baseSHA + `"} -->`
+
+	srv := gatherPRContextServer{
+		owner: "your-org", repo: "your-repo",
+		prNumber: 597, head: prBranch, base: "main",
+		headSHA: headSHA, baseSHA: baseSHA,
+		labels: []string{"goobers:needs-remediation"},
+		comments: []map[string]interface{}{
+			{"id": 1, "user": map[string]string{"login": "merge-review-bot"}, "body": verdictComment, "created_at": "2026-07-16T11:32:41Z"},
+		},
+	}
+	server := srv.start(t)
+
+	prev := newGitHubProvider
+	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "run-608", BaseRef: "main",
+		Branch: "goobers/pr-remediation/run-608",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
+
+	instanceRoot := initDemo(t)
+	t.Setenv("GOOBERS_RUN_ID", "run-608")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Chdir(wt.Path)
+
+	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "pr-context.json"))
+	if err != nil {
+		t.Fatalf("read pr-context.json: %v", err)
+	}
+	var got struct {
+		SelectedNumber         string `json:"selectedNumber"`
+		HasSubstantiveFindings string `json:"hasSubstantiveFindings"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal pr-context.json: %v (data=%s)", err, data)
+	}
+	if got.SelectedNumber != "597" {
+		t.Fatalf("selectedNumber = %q, want \"597\"", got.SelectedNumber)
+	}
+	if got.HasSubstantiveFindings != "true" {
+		t.Fatalf("hasSubstantiveFindings = %q, want \"true\" — cross-PR-conflict findings blocking the selected PR were dropped as sibling-only (#608)", got.HasSubstantiveFindings)
+	}
+}
+
 func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 	const prBranch = "goobers/impl/run-ci-red"
 	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
