@@ -193,7 +193,7 @@ func TestEvaluateSetsVerdictArtifactForAgenticGate(t *testing.T) {
 	run := newTestJournal(t)
 	ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: rev}, Journal: run}
 
-	r, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "")
+	r, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestEvaluateSetsVerdictArtifactForAgenticGate(t *testing.T) {
 		}
 		auto := &fakeAutomated{outcomes: []string{OutcomeFail}}
 		ev := &Evaluator{Automated: auto, Journal: newTestJournal(t)}
-		r, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}, "implement", apiv1.ResultEnvelope{}, "")
+		r, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}, "implement", apiv1.ResultEnvelope{}, "", false)
 		if err != nil {
 			t.Fatalf("Evaluate: %v", err)
 		}
@@ -229,7 +229,7 @@ func TestEvaluateSetsVerdictArtifactForAgenticGate(t *testing.T) {
 	t.Run("nil when journaling is disabled", func(t *testing.T) {
 		rev := &fakeGoober{reviewVerdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges}}
 		ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: rev}}
-		r, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "")
+		r, err := ev.Evaluate(context.Background(), reviewGate, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false)
 		if err != nil {
 			t.Fatalf("Evaluate: %v", err)
 		}
