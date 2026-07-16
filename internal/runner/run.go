@@ -41,6 +41,32 @@ type SpanStarter interface {
 // already-terminal run, so implementations must be idempotent.
 type TerminalFinalizer func(runID string, phase journal.RunPhase) error
 
+// BlockedOutcome describes a run terminating because a stage reported status
+// "blocked" (#544/#545) — the value Config.Blocked receives.
+type BlockedOutcome struct {
+	RunID string
+	// Stage is the stage that reported blocked.
+	Stage string
+	// ItemID is the driving backlog item's id when the run was started with
+	// one (StartInput.Item). Empty for a run that claims its item mid-run
+	// (schedule/backlog-item-triggered implementation runs) — the handler
+	// resolves those from the claim ledger by RunID instead.
+	ItemID string
+	// Reason is the agent's stated reason for the block (its error detail,
+	// falling back to its summary).
+	Reason string
+	// Blockers are the blocking issue numbers the stage referenced via the
+	// documented outputs.blockedBy convention (comma-separated numbers in a
+	// scalar string — see docs/stage-contract.md). Empty when the stage named
+	// none in machine-readable form.
+	Blockers []string
+}
+
+// BlockedHandler is Config.Blocked's shape. Implementations are instance-level
+// (composition-root) policy: record the block for selection to skip (#552),
+// comment on / park the driving issue. Must tolerate an empty ItemID.
+type BlockedHandler func(ctx context.Context, o BlockedOutcome) error
+
 // Config wires a Runner's dependencies: the daemon-wide singletons (worktree
 // provisioning, gate evaluation) and the per-run executor factories
 // (executor.go) — the substrate the local runner drives directly (worktrees
@@ -66,6 +92,15 @@ type Config struct {
 	// Escalation notifies the driving backlog item's provider when a run
 	// escalates (internal/gate.EscalationNotifier). Optional — nil is a no-op.
 	Escalation *gate.EscalationNotifier
+	// Blocked handles the instance-level consequences of a stage reporting
+	// status "blocked" (#544/#545): recording the learned dependency block for
+	// selection to skip (#552) and surfacing/parking the driving issue. Called
+	// after the blocked cause is journaled and before the run's terminal
+	// run.finished event, so a claim-ledger lookup inside the handler still
+	// sees the run's claims (FinalizeTerminal releases them only after).
+	// Optional — nil is a no-op; a handler error is journaled, never fatal to
+	// reaching the terminal phase.
+	Blocked BlockedHandler
 	// GateGooberCapabilities resolves an agentic gate's reviewer goober name to
 	// the capabilities its definition declares. An agentic GATE has no
 	// stage-level capabilities of its own (apiv1.AgenticGate is just a Goober
@@ -413,7 +448,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			pointers = append(pointers, produced...)
 			lastStage, lastResult = t.Name, result
 
-			next, res, advance, oerr := r.taskOutcome(in.RunID, jr, in.Machine, t, result, steps)
+			next, res, advance, oerr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.Item, t, result, steps)
 			if oerr != nil {
 				return res, oerr
 			}
@@ -535,6 +570,97 @@ func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, item *
 	return nil
 }
 
+// notifyBlocked invokes the configured Blocked handler (#544/#545/#552).
+// A handler error is journaled (blocked_handling_failed) and swallowed — the
+// run must still reach its terminal phase; the recording/parking is
+// best-effort, mirroring notifyTerminalGate. Only a journal-write failure is
+// returned (a journal that cannot be written is fatal, §2.6).
+func (r *Runner) notifyBlocked(ctx context.Context, jr *journal.Run, o BlockedOutcome) error {
+	if r.cfg.Blocked == nil {
+		return nil
+	}
+	if err := r.cfg.Blocked(ctx, o); err != nil {
+		if aerr := jr.Append(journal.Event{
+			Type: journal.EventError, Stage: o.Stage,
+			Error: &journal.ErrorDetail{Code: "blocked_handling_failed", Message: err.Error()},
+		}); aerr != nil {
+			return fmt.Errorf("runner: journal blocked-handling failure for %q: %w", o.Stage, aerr)
+		}
+	}
+	return nil
+}
+
+// blockedReason condenses a blocked result's own explanation for the journal's
+// blocked_by_agent cause event: the structured error detail when present
+// (code-prefixed, so an agent's DEPENDENCY_NOT_MET survives into the run-level
+// record), else the summary, else a fixed marker so the event is never empty.
+func blockedReason(result apiv1.ResultEnvelope) string {
+	if result.Error != nil && result.Error.Message != "" {
+		if result.Error.Code != "" {
+			return result.Error.Code + ": " + result.Error.Message
+		}
+		return result.Error.Message
+	}
+	if s := strings.TrimSpace(result.Summary); s != "" {
+		return s
+	}
+	return "stage reported blocked with no error detail"
+}
+
+// parseBlockedBy extracts blocking issue numbers from the documented
+// outputs.blockedBy convention (docs/stage-contract.md): a scalar string of
+// comma-separated issue numbers — the envelope schema admits only scalars in
+// outputs, which is exactly why live blocked results that tried a structured
+// array got schema-rejected and burned an attempt (#545). Lenient on input
+// shape (tolerates "#" prefixes, whitespace, a bare JSON number), strict on
+// content: only all-digit tokens survive, deduplicated in first-seen order.
+// Nil when the key is absent or nothing parseable remains.
+func parseBlockedBy(outputs map[string]interface{}) []string {
+	v, ok := outputs[OutputBlockedBy]
+	if !ok || v == nil {
+		return nil
+	}
+	var raw string
+	switch n := v.(type) {
+	case string:
+		raw = n
+	case float64:
+		raw = strconv.FormatInt(int64(n), 10)
+	case int:
+		raw = strconv.Itoa(n)
+	default:
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, tok := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ';' }) {
+		tok = strings.TrimPrefix(strings.TrimSpace(tok), "#")
+		if tok == "" || seen[tok] {
+			continue
+		}
+		allDigits := true
+		for _, r := range tok {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if !allDigits {
+			continue
+		}
+		seen[tok] = true
+		out = append(out, tok)
+	}
+	return out
+}
+
+// OutputBlockedBy is the documented ResultEnvelope output key a blocked stage
+// references its blocking issue numbers through — comma-separated numbers in
+// a single scalar string (outputs are scalar-only by schema). Shared by the
+// runner's parse (above) and the instructions/docs that teach producers the
+// convention.
+const OutputBlockedBy = "blockedBy"
+
 // failTerminal journals the run's terminal run.finished(PhaseFailed) event
 // before surfacing origErr, so a walk-level error never leaves phase=running
 // forever — the daemon auto-resumes every PhaseRunning run on restart
@@ -571,20 +697,55 @@ func (r *Runner) failTerminal(runID string, jr *journal.Run, finalState string, 
 
 // taskOutcome applies the #110 stage-status ruling to a finished task's
 // result: success advances to Next; failure advances only if Next is a gate
-// (which branches on it), otherwise ends the run PhaseFailed; blocked halts
-// as a resumable pause. advance=true means continue the walk at next;
-// advance=false means the walk is over — return res (already appended its
-// own terminal event, if any).
+// (which branches on it), otherwise ends the run PhaseFailed; blocked ends
+// the run PhaseEscalated (#544). advance=true means continue the walk at
+// next; advance=false means the walk is over — return res (already appended
+// its own terminal event, if any).
 //
 // Factored out of walk's live dispatch path so Resume (resume.go) can apply
 // the IDENTICAL transition when it finds the checkpointed task's last
 // attempt already finished, not interrupted — the walk must not re-dispatch
 // it (#107), just pick up the same decision a live walk would have made
-// right after runTask returned.
-func (r *Runner) taskOutcome(runID string, jr *journal.Run, machine *workflow.Machine, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
+// right after runTask returned. ctx/item feed only the blocked arm's
+// instance-level handler (Config.Blocked); the transition decision itself
+// stays pure.
+func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run, machine *workflow.Machine, item *apiv1.BacklogItem, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
 	switch result.Status {
 	case apiv1.ResultBlocked:
-		return "", Result{Phase: journal.PhaseRunning, FinalState: t.Name, Steps: steps}, false, nil
+		// #544 ruling: blocked is a schema-valid producer value, so it maps to
+		// a canonical terminal phase — escalated, not failed (never punish the
+		// producer for using the documented contract), and never the prior
+		// immortal PhaseRunning pause (claim held to lease expiry, re-resumed
+		// on every restart, run.finished never journaled — #545's 6 live
+		// occurrences). The cause is journaled first (#305: finish() alone
+		// records only the bare phase), then the instance-level handler runs
+		// (recording the learned block for #552's selection skip / parking the
+		// issue) while the claim ledger still holds this run's claims, then
+		// the ordinary terminal path releases everything via FinalizeTerminal.
+		o := BlockedOutcome{
+			RunID:    runID,
+			Stage:    t.Name,
+			Reason:   blockedReason(result),
+			Blockers: parseBlockedBy(result.Outputs),
+		}
+		if item != nil {
+			o.ItemID = item.ID
+		}
+		if aerr := jr.Append(journal.Event{
+			Type: journal.EventError, Stage: t.Name,
+			Error: &journal.ErrorDetail{Code: "blocked_by_agent", Message: o.Reason},
+		}); aerr != nil {
+			res, err = r.failTerminal(runID, jr, t.Name, steps, fmt.Errorf("runner: journal blocked cause for %q: %w", t.Name, aerr))
+			return "", res, false, err
+		}
+		// Same drain contract as notifyTerminalGate's call site: a SIGTERM
+		// already in progress must not skip the block recording/parking.
+		if nerr := r.notifyBlocked(context.WithoutCancel(ctx), jr, o); nerr != nil {
+			res, err = r.failTerminal(runID, jr, t.Name, steps, nerr)
+			return "", res, false, err
+		}
+		res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
+		return "", res, false, err
 	case apiv1.ResultFailure:
 		// #415: a stage that self-identifies a non-retryable business
 		// disposition — status:failure with error.retryable==false and a

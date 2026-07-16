@@ -92,7 +92,7 @@ pipeline.
 |---|---|
 | `success` | advance the state machine to the next stage/gate |
 | `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION`), route straight to `@escalate` (terminal `escalated`) after this one attempt — bypassing `Next` and any repass loop. Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
-| `blocked` | halt the run pending external intervention (human input, an unmet dependency) — a resumable pause, like a human gate's, at any position |
+| `blocked` | **finish the run `escalated`** (#544/#545) — never a pause. The blocked cause is journaled (`blocked_by_agent`, carrying `error`), the claim is released via the normal terminal path, and the driving issue is notified: if `outputs.blockedBy` names blocking issue numbers, backlog selection records the block and skips the issue until every named blocker closes (self-heals automatically, #552); otherwise the issue is parked `goobers:needs-human` (#539's convention) since there is nothing concrete for selection to key off. |
 
 > **Non-retryable escalate disposition (#415, V0.7 ladder remediation L6 —
 > `docs/design/v07-ladder-remediation.md` §3.4):** a `failure` result carrying
@@ -116,6 +116,23 @@ pipeline.
 > deterministic subject that is not expected to commit to the run branch (e.g.
 > merge-review's reviewer, which judges PRs from its stage outputs) still gets a
 > real reviewer evaluation on an empty diff.
+>
+> **`blocked` contract (#544/#545, dependency-not-met — never punish the
+> producer for using a documented status):** never repass, never pause — a
+> `blocked` result finishes the run `escalated` after one attempt, exactly
+> like the non-retryable escalate disposition above. Use `error.code:
+> DEPENDENCY_NOT_MET` (or another descriptive code — unlike `failure`'s
+> escalate codes, `blocked`'s code is not runner-matched, it's for a human
+> reading the journal) and `error.message` naming what's unmet. **To name the
+> specific blocking issue(s) so selection can skip and self-heal (#552),**
+> set `outputs.blockedBy` to a **comma-separated string of issue numbers**
+> (e.g. `"441,442"` or `"#441, #442"`) — `outputs` is scalar-only by schema
+> (§"Where a stage writes its output" above), so do **not** attempt an array
+> or object here; a prior live occurrence tried exactly that and was
+> schema-rejected, burning a whole attempt for nothing. Omit `outputs.blockedBy`
+> when the block isn't attributable to specific open issues — the driving
+> issue is parked `goobers:needs-human` for a human decision instead, since
+> there's nothing concrete for automatic selection to skip on.
 
 `Task.Retry` (declared retry policy, attempt budget, backoff) governs only
 **dispatch/infra errors** — a Go error returned by the executor, not a

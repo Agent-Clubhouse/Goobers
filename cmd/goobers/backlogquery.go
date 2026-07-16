@@ -79,6 +79,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		pathArg = fs.Arg(0)
 	}
 	root := providerStageRoot(pathArg)
+	l := layoutFor(root)
 
 	if *release {
 		return runBacklogQueryRelease(root, stdout, stderr)
@@ -191,6 +192,33 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		}
 		eligible = backstopped
 	}
+
+	// Dependency-aware skip (#552): an item already reported blocked (#545)
+	// on a still-open prerequisite is never re-claimed to re-derive the
+	// identical conclusion every tick — self-heals the moment every blocker
+	// closes, no human involved. Shares claims.lock with the ledger below
+	// (blocked.json's own convention) since a concurrent tick's claim and a
+	// concurrent tick's blocked-write must not race each other.
+	err = withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
+		recs, lerr := loadBlockedRecords(blockedRecordsPath(l))
+		if lerr != nil {
+			return lerr
+		}
+		filtered, changed, ferr := filterBlockedEligibility(ctx, provider, repo, eligible, recs)
+		if ferr != nil {
+			return ferr
+		}
+		eligible = filtered
+		if !changed {
+			return nil
+		}
+		return saveBlockedRecords(blockedRecordsPath(l), recs)
+	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
 	// Claim order was an accident of whichever sort order the provider's
 	// List endpoint happens to default to (#350) — GitHub's is undocumented
 	// desc-by-created (newest-first), the exact opposite of the README's
@@ -243,7 +271,6 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		leaseDuration = d
 	}
 
-	l := layoutFor(root)
 	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir())
 	if err != nil {
 		pf(stderr, "error: open instance log: %v\n", err)

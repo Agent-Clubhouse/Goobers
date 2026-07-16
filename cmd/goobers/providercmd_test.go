@@ -366,6 +366,15 @@ func (s *fakeGitHubServer) setPRBody(number int, body string) {
 	s.prs[number].body = body
 }
 
+// closeIssue flips a fixture issue's state to closed — for #552's
+// backlog-query blocked-eligibility tests, which need to prove a recorded
+// blocker's closure unblocks the item it gates.
+func (s *fakeGitHubServer) closeIssue(number int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[number].state = "closed"
+}
+
 func hasAllLabels(have, want []string) bool {
 	for _, w := range want {
 		if w == "" {

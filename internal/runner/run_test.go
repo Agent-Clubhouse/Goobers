@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -952,19 +953,123 @@ func TestRunnerTaskFailureWithGateNextStillBranches(t *testing.T) {
 	}
 }
 
-// TestRunnerTaskBlockedHaltsResumablePause proves a "blocked" business status
-// halts the run at that task — a resumable pause like a human gate's, at any
-// position — instead of the pre-fix behavior of advancing to Next
-// unconditionally (which would evaluate "review" against a blocked result).
-func TestRunnerTaskBlockedHaltsResumablePause(t *testing.T) {
+// TestRunnerTaskBlockedFinishesEscalated proves the #544 ruling: a "blocked"
+// business status ends the run at a canonical terminal phase — escalated —
+// with the cause journaled (blocked_by_agent), the Blocked handler invoked
+// (with the blockers parsed from the documented outputs.blockedBy scalar
+// convention) BEFORE FinalizeTerminal releases the run's claims, and the Next
+// gate never evaluated against a blocked result. Pre-fix, this run hung at
+// PhaseRunning forever holding its claim for the full lease (#545's 6 live
+// occurrences).
+func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 	machine := fixtureMachine(t)
 	byTask := map[string]stubTaskResult{
-		"run-blocked:implement": {status: apiv1.ResultBlocked, summary: "waiting on an external dependency"},
+		"run-blocked:implement": {
+			status:    apiv1.ResultBlocked,
+			errorInfo: &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "issues #441 and #442 must merge first"},
+			outputs:   map[string]interface{}{OutputBlockedBy: "#441, 442,441"},
+		},
 	}
 	r, runsDir := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
 
+	var order []string
+	var got BlockedOutcome
+	r.cfg.Blocked = func(_ context.Context, o BlockedOutcome) error {
+		order = append(order, "blocked")
+		got = o
+		return nil
+	}
+	r.cfg.FinalizeTerminal = func(runID string, phase journal.RunPhase) error {
+		order = append(order, "finalize")
+		if runID != "run-blocked" || phase != journal.PhaseEscalated {
+			t.Errorf("FinalizeTerminal got (%q, %q), want (run-blocked, escalated)", runID, phase)
+		}
+		return nil
+	}
+
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-blocked",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Item:    &apiv1.BacklogItem{ID: "510", Provider: apiv1.ProviderGitHub},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated (canonical terminal, #544)", res.Phase)
+	}
+	if res.FinalState != "implement" {
+		t.Fatalf("finalState = %q, want implement", res.FinalState)
+	}
+
+	if len(order) != 2 || order[0] != "blocked" || order[1] != "finalize" {
+		t.Fatalf("hook order = %v, want [blocked finalize] (handler must see the claims before release)", order)
+	}
+	want := BlockedOutcome{
+		RunID:    "run-blocked",
+		Stage:    "implement",
+		ItemID:   "510",
+		Reason:   "DEPENDENCY_NOT_MET: issues #441 and #442 must merge first",
+		Blockers: []string{"441", "442"},
+	}
+	if got.RunID != want.RunID || got.Stage != want.Stage || got.ItemID != want.ItemID || got.Reason != want.Reason {
+		t.Fatalf("BlockedOutcome = %+v, want %+v", got, want)
+	}
+	if len(got.Blockers) != 2 || got.Blockers[0] != "441" || got.Blockers[1] != "442" {
+		t.Fatalf("Blockers = %v, want [441 442] (parsed, deduped, in order)", got.Blockers)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-blocked"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	phase, err := rd.Phase()
+	if err != nil {
+		t.Fatalf("Phase: %v", err)
+	}
+	if phase != journal.PhaseEscalated {
+		t.Fatalf("journaled phase = %q, want escalated (run.finished must be durable)", phase)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var sawCause bool
+	for _, e := range events {
+		if e.Type == journal.EventGateEvaluated {
+			t.Fatalf("review must not be evaluated against a blocked result, got gate.evaluated event %+v", e)
+		}
+		if e.Type == journal.EventError && e.Error != nil && e.Error.Code == "blocked_by_agent" {
+			sawCause = true
+			if e.Error.Message != want.Reason {
+				t.Errorf("blocked_by_agent message = %q, want %q", e.Error.Message, want.Reason)
+			}
+		}
+	}
+	if !sawCause {
+		t.Fatal("expected a blocked_by_agent error event recording the cause (#305 pattern)")
+	}
+}
+
+// TestRunnerTaskBlockedHandlerErrorStillTerminal proves the Blocked handler is
+// best-effort: its failure is journaled (blocked_handling_failed) but the run
+// still reaches escalated — the terminal-cleanup guarantee (I1) must not
+// depend on an instance-level notification succeeding.
+func TestRunnerTaskBlockedHandlerErrorStillTerminal(t *testing.T) {
+	machine := fixtureMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-blocked-herr:implement": {status: apiv1.ResultBlocked, summary: "waiting on an external dependency"},
+	}
+	r, runsDir := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+	r.cfg.Blocked = func(context.Context, BlockedOutcome) error {
+		return errors.New("provider unreachable")
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-blocked-herr",
 		Machine: machine,
 		Gaggle:  "acme-web",
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
@@ -973,32 +1078,110 @@ func TestRunnerTaskBlockedHaltsResumablePause(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if res.Phase != journal.PhaseRunning {
-		t.Fatalf("phase = %q, want running (paused pending intervention, not terminal)", res.Phase)
-	}
-	if res.FinalState != "implement" {
-		t.Fatalf("finalState = %q, want implement (halted there, not advanced to review)", res.FinalState)
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated despite handler failure", res.Phase)
 	}
 
-	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-blocked"))
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-blocked-herr"))
 	if err != nil {
 		t.Fatalf("OpenRead: %v", err)
-	}
-	st, err := rd.State()
-	if err != nil {
-		t.Fatalf("State: %v", err)
-	}
-	if st.Phase != journal.PhaseRunning || st.MachineState != "implement" {
-		t.Fatalf("state.json = %+v, want running at implement (resume point)", st)
 	}
 	events, err := rd.Events()
 	if err != nil {
 		t.Fatalf("Events: %v", err)
 	}
+	var sawHandlerFailure, sawCause bool
 	for _, e := range events {
-		if e.Type == journal.EventGateEvaluated {
-			t.Fatalf("review must not be evaluated against a blocked result, got gate.evaluated event %+v", e)
+		if e.Type != journal.EventError || e.Error == nil {
+			continue
 		}
+		switch e.Error.Code {
+		case "blocked_handling_failed":
+			sawHandlerFailure = true
+		case "blocked_by_agent":
+			sawCause = true
+			if e.Error.Message != "waiting on an external dependency" {
+				t.Errorf("blocked_by_agent message = %q, want the summary fallback", e.Error.Message)
+			}
+		}
+	}
+	if !sawHandlerFailure {
+		t.Fatal("expected a blocked_handling_failed error event for the failed handler")
+	}
+	if !sawCause {
+		t.Fatal("expected the blocked_by_agent cause event")
+	}
+}
+
+// TestRunnerTaskBlockedWithoutItemPassesEmptyItemID proves a run with no
+// StartInput.Item (schedule/backlog-item-triggered implementation runs claim
+// their item mid-run) still invokes the Blocked handler, with an empty ItemID
+// — the composition-root handler resolves the item from the claim ledger by
+// RunID in that case.
+func TestRunnerTaskBlockedWithoutItemPassesEmptyItemID(t *testing.T) {
+	machine := fixtureMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-blocked-noitem:implement": {status: apiv1.ResultBlocked, summary: "blocked"},
+	}
+	r, _ := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+	var got *BlockedOutcome
+	r.cfg.Blocked = func(_ context.Context, o BlockedOutcome) error {
+		got = &o
+		return nil
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-blocked-noitem",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", res.Phase)
+	}
+	if got == nil {
+		t.Fatal("Blocked handler was not invoked")
+	}
+	if got.ItemID != "" {
+		t.Fatalf("ItemID = %q, want empty (no StartInput.Item)", got.ItemID)
+	}
+}
+
+// TestParseBlockedBy pins the documented outputs.blockedBy convention: lenient
+// on separators/#-prefixes/whitespace and a bare JSON number, strict on
+// content (digit-only tokens), deduplicated in first-seen order.
+func TestParseBlockedBy(t *testing.T) {
+	cases := []struct {
+		name    string
+		outputs map[string]interface{}
+		want    []string
+	}{
+		{"absent key", map[string]interface{}{"other": "441"}, nil},
+		{"nil outputs", nil, nil},
+		{"plain csv", map[string]interface{}{OutputBlockedBy: "441,442"}, []string{"441", "442"}},
+		{"hashes and spaces", map[string]interface{}{OutputBlockedBy: " #441 , #442 ; 443"}, []string{"441", "442", "443"}},
+		{"dedup preserves order", map[string]interface{}{OutputBlockedBy: "442,441,442"}, []string{"442", "441"}},
+		{"json number", map[string]interface{}{OutputBlockedBy: float64(441)}, []string{"441"}},
+		{"non-numeric tokens dropped", map[string]interface{}{OutputBlockedBy: "441, the dashboard epic, GH-442"}, []string{"441"}},
+		{"garbage only", map[string]interface{}{OutputBlockedBy: "soon(tm)"}, nil},
+		{"boolean value", map[string]interface{}{OutputBlockedBy: true}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseBlockedBy(tc.outputs)
+			if len(got) != len(tc.want) {
+				t.Fatalf("parseBlockedBy = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("parseBlockedBy = %v, want %v", got, tc.want)
+				}
+			}
+		})
 	}
 }
 
