@@ -22,10 +22,10 @@ import (
 // proves the DSL correctly sequences gather-signals -> nominate, that a
 // fixture decision function files evidence-backed issues capped at
 // maxNominationsPerRun and dedupes against already-nominated issues on a
-// second run, and that a nominated item composes with backlog-curation's own
-// decision logic (curation_test.go, same package). The actual gap-finding
-// *judgment* is the nominator's instructions.md (LLM-driven), not asserted
-// here — same boundary curation_test.go and implementation_test.go draw.
+// second run, and that a nominated item composes with backlog-curation's trust
+// boundary. The actual gap-finding *judgment* is the nominator's
+// instructions.md (LLM-driven), not asserted here — same boundary
+// curation_test.go and implementation_test.go draw.
 
 const nominationConfigRoot = "../../config-examples/gaggles/acme-web"
 
@@ -131,23 +131,16 @@ func TestWorkNominationDryRun(t *testing.T) {
 
 	var gotNominateGoal string
 	var gotCap string
+	var gotFiled, gotDeduped int
 	inv := &fakeInvoker{
 		invoke: func(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 			gotNominateGoal = env.Goal
 			gotCap, _ = env.Inputs["maxNominationsPerRun"].(string)
 			filed, deduped := nominateFixture(signals, nil, 5)
-			issues := make([]interface{}, len(filed))
-			for i, f := range filed {
-				issues[i] = map[string]interface{}{"title": f.title, "evidence": f.evidence}
-			}
+			gotFiled, gotDeduped = len(filed), deduped
 			return apiv1.ResultEnvelope{
-				Status: apiv1.ResultSuccess,
-				Outputs: map[string]interface{}{"nomination-summary": map[string]interface{}{
-					"filed":   len(filed),
-					"deduped": deduped,
-					"issues":  issues,
-				}},
-				Summary: "filed nominations",
+				Status:  apiv1.ResultSuccess,
+				Summary: "found 4 candidates; 0 deduped; filed 4; 0 skipped at per-run cap",
 			}, nil
 		},
 	}
@@ -193,15 +186,17 @@ func TestWorkNominationDryRun(t *testing.T) {
 	if !ok || nominateOut.Status != apiv1.ResultSuccess {
 		t.Fatalf("nominate output missing or not success: %+v", nominateOut)
 	}
-	summary, ok := nominateOut.Outputs["nomination-summary"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("nomination-summary missing or wrong shape: %#v", nominateOut.Outputs["nomination-summary"])
+	if gotFiled != 4 {
+		t.Errorf("filed = %d, want 4 (all signals within cap)", gotFiled)
 	}
-	if got, ok := toInt(summary["filed"]); !ok || got != 4 {
-		t.Errorf("nomination-summary[filed] = %v, want 4 (all signals within cap)", summary["filed"])
+	if gotDeduped != 0 {
+		t.Errorf("deduped = %d, want 0 (first run, nothing existing)", gotDeduped)
 	}
-	if got, ok := toInt(summary["deduped"]); !ok || got != 0 {
-		t.Errorf("nomination-summary[deduped] = %v, want 0 (first run, nothing existing)", summary["deduped"])
+	if nominateOut.Summary != "found 4 candidates; 0 deduped; filed 4; 0 skipped at per-run cap" {
+		t.Errorf("nominate summary = %q, want run counts", nominateOut.Summary)
+	}
+	if len(nominateOut.Outputs) != 0 {
+		t.Errorf("nominate outputs = %#v, want none", nominateOut.Outputs)
 	}
 }
 
@@ -221,15 +216,14 @@ func TestWorkNominationDedupesOnSecondRun(t *testing.T) {
 			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]interface{}{"telemetry-signals": "artifact://telemetry-signals"}}, nil
 		},
 	}
+	var gotFiled, gotDeduped int
 	inv := &fakeInvoker{
 		invoke: func(_ context.Context, _ apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 			filed, deduped := nominateFixture(signals, existing, 5)
+			gotFiled, gotDeduped = len(filed), deduped
 			return apiv1.ResultEnvelope{
-				Status: apiv1.ResultSuccess,
-				Outputs: map[string]interface{}{"nomination-summary": map[string]interface{}{
-					"filed":   len(filed),
-					"deduped": deduped,
-				}},
+				Status:  apiv1.ResultSuccess,
+				Summary: "found 4 candidates; 4 deduped; filed 0; 0 skipped at per-run cap",
 			}, nil
 		},
 	}
@@ -246,12 +240,18 @@ func TestWorkNominationDedupesOnSecondRun(t *testing.T) {
 	if res.Status != StatusCompleted {
 		t.Fatalf("status = %q, want completed", res.Status)
 	}
-	summary := res.Outputs["nominate"].Outputs["nomination-summary"].(map[string]interface{})
-	if got, ok := toInt(summary["filed"]); !ok || got != 0 {
-		t.Errorf("second-run nomination-summary[filed] = %v, want 0 (all deduped)", summary["filed"])
+	if gotFiled != 0 {
+		t.Errorf("second-run filed = %d, want 0 (all deduped)", gotFiled)
 	}
-	if got, ok := toInt(summary["deduped"]); !ok || got != len(signals) {
-		t.Errorf("second-run nomination-summary[deduped] = %v, want %d", summary["deduped"], len(signals))
+	if gotDeduped != len(signals) {
+		t.Errorf("second-run deduped = %d, want %d", gotDeduped, len(signals))
+	}
+	nominateOut := res.Outputs["nominate"]
+	if nominateOut.Summary != "found 4 candidates; 4 deduped; filed 0; 0 skipped at per-run cap" {
+		t.Errorf("second-run nominate summary = %q, want run counts", nominateOut.Summary)
+	}
+	if len(nominateOut.Outputs) != 0 {
+		t.Errorf("second-run nominate outputs = %#v, want none", nominateOut.Outputs)
 	}
 }
 
@@ -309,29 +309,16 @@ func TestWorkNominationNeverGrantsPushCapability(t *testing.T) {
 }
 
 // TestNominatedIssueComposesWithCuration is the fixture-layer form of issue
-// #26's composition AC: an issue this workflow files is exactly the shape
-// backlog-curation's own decision logic (curateFixture, curation_test.go,
-// same package) marks goobers:ready — fresh, not a duplicate, not
-// oversized — once a maintainer applies goobers:approved and curation's
-// query-backlog stage claims it (#25).
+// #26's composition AC: an issue this workflow files carries only the
+// nomination marker, leaving the maintainer trust decision and readiness
+// marker to backlog curation.
 func TestNominatedIssueComposesWithCuration(t *testing.T) {
 	filed, _ := nominateFixture(fixtureSignals()[:1], nil, 5)
 	if len(filed) != 1 {
 		t.Fatalf("len(filed) = %d, want 1", len(filed))
 	}
 
-	nominated := fixtureBacklogItem{id: "nom-1", title: filed[0].title, ageDays: 0}
-	summary := curateFixture([]fixtureBacklogItem{nominated})
-	if got, ok := toInt(summary["markedReady"]); !ok || got != 1 {
-		t.Errorf("curation summary for nominated item = %+v, want markedReady=1", summary)
-	}
-	if got, ok := toInt(summary["deduped"]); !ok || got != 0 {
-		t.Errorf("nominated item wrongly curated as a duplicate: %+v", summary)
-	}
-	if got, ok := toInt(summary["staleFlagged"]); !ok || got != 0 {
-		t.Errorf("nominated item wrongly curated as stale: %+v", summary)
-	}
-	if got, ok := toInt(summary["split"]); !ok || got != 0 {
-		t.Errorf("nominated item wrongly curated as oversized: %+v", summary)
+	if got := filed[0].labels; len(got) != 1 || got[0] != "goobers:nominated" {
+		t.Errorf("nominated issue labels = %v, want only goobers:nominated", got)
 	}
 }

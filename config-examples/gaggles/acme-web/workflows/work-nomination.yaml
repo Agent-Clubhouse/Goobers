@@ -63,6 +63,7 @@ spec:
         # file, and how far back "already covered" looks when deduping.
         maxNominationsPerRun: "5"
         dedupeWindowDays: "14"
-      expectedOutputs:
-        - nomination-summary
+      # No structured output: each nomination is already filed as a GitHub
+      # issue, and a result's `outputs` are scalar-only (#302). The scalar
+      # `summary` in the result envelope carries the run's counts.
       # Terminal: no `next`.

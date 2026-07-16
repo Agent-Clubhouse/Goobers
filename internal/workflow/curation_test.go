@@ -87,10 +87,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 		t.Errorf("curator capabilities = %v, want exactly [github:issues:write]", curator.Spec.Capabilities)
 	}
 
-	// Bumped for #236 (query-backlog declares a resultFile so the claimed-items
-	// batch is lifted into an artifact and reaches the curator), recomputed on
-	// top of #234's release stage now present in the compiled workflow.
-	const wantDigest = "sha256:e91f816c4bff46be78876ef7dd4ddbf8fbbc166f8fae1470906e58b03bb38e5c"
+	// Bumped for #302 after removing the structured curation-summary output
+	// expectation from the curate stage.
+	const wantDigest = "sha256:3bddb18b564a7a5c59f5d08af8751d1530c39f2301f092ef83fb4a6507fc8613"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
