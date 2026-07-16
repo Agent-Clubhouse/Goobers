@@ -23,7 +23,11 @@ type ResumeInput struct {
 	RunID string
 	// Machine is the compiled workflow (#9) this run was walking. Its digest
 	// MUST match the run's pinned WorkflowDigest (WF-016) — resuming a run
-	// under a changed definition is refused, not silently reinterpreted.
+	// under a changed definition is refused, not silently reinterpreted. A
+	// refusal is itself terminal (#520): the run is journaled PhaseFailed
+	// (with the WF-016 refusal text as the run.finished event's own error
+	// detail) and finalized like any other terminal run, releasing its
+	// claims — see refuseResume.
 	Machine *workflow.Machine
 	// RepoRef is the target repository every stage worktree branches from —
 	// the same value originally passed to Start.
@@ -96,18 +100,6 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
 	}
-	// Every run Start creates pins WorkflowDigest (run.go's journal.Create
-	// call, always from in.Machine.Digest()) — an empty value here means the
-	// pin itself is missing (a corrupted or pre-WF-016 run.yaml), which is
-	// exactly the "resuming under a changed definition" risk WF-016 exists
-	// to catch: refuse rather than silently skip verification (#112).
-	if id.WorkflowDigest == "" {
-		return Result{}, fmt.Errorf("runner: run %q has no pinned workflow digest, refusing to resume (WF-016)", in.RunID)
-	}
-	if id.WorkflowDigest != in.Machine.Digest() {
-		return Result{}, fmt.Errorf("runner: run %q is pinned to workflow digest %q, cannot resume against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest())
-	}
-
 	// Terminal detection is event-log-first (#242): the on-disk state.json
 	// checkpoint can lag a crash-fsynced run.finished event by the write
 	// window inside Append (the event's own fsync, then the checkpoint
@@ -119,6 +111,12 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	// from the event log — the source of truth — so it stays correct
 	// regardless of whether state.json ever caught up, and a missing or
 	// corrupt checkpoint no longer fails Resume outright.
+	//
+	// Checked BEFORE the WF-016 digest verification below (#520): a terminal
+	// run is returned as-is, never re-walked, so a definition change cannot
+	// affect it — and a run a refusal already aborted must short-circuit
+	// here on any later Resume rather than re-refuse and journal a second
+	// run.finished event onto a finished run.
 	phase, err := rd.Phase()
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)
@@ -130,6 +128,22 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 			return res, err
 		}
 		return res, nil
+	}
+
+	// Every run Start creates pins WorkflowDigest (run.go's journal.Create
+	// call, always from in.Machine.Digest()) — an empty value here means the
+	// pin itself is missing (a corrupted or pre-WF-016 run.yaml), which is
+	// exactly the "resuming under a changed definition" risk WF-016 exists
+	// to catch: refuse rather than silently skip verification (#112). A
+	// refusal ends the run at the canonical PhaseFailed terminal (#520,
+	// maintainer ruling) — see refuseResume.
+	if id.WorkflowDigest == "" {
+		return r.refuseResume(jr, in.RunID, "resume_refused_missing_digest",
+			fmt.Sprintf("run %q has no pinned workflow digest, refusing to resume (WF-016)", in.RunID))
+	}
+	if id.WorkflowDigest != in.Machine.Digest() {
+		return r.refuseResume(jr, in.RunID, "resume_refused_digest_mismatch",
+			fmt.Sprintf("run %q is pinned to workflow digest %q, cannot resume against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest()))
 	}
 
 	events, err := rd.Events()
@@ -217,6 +231,44 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	}
 	span.Succeed(string(result.Phase))
 	return result, nil
+}
+
+// refuseResume ends a run whose WF-016 resume verification failed at the
+// canonical PhaseFailed terminal (maintainer ruling on #520, issue comment
+// 2026-07-16T08:45:22Z): the run cannot proceed through no operator's or
+// scheduler's live decision, so the aborted/cancelled family — which implies
+// someone CHOSE to stop it — is the wrong phase; this is a failure of the
+// run, even though the refusal itself is correct behavior WF-016 must keep.
+// Landing on PhaseFailed also gets this path #498/#526's claim-release
+// coverage with zero special-casing, instead of leaving the journal's phase
+// "running" forever the way the pre-#520 bare-error return did — the live
+// failure mode was a config-only daemon restart leaking one held claim per
+// in-flight run.
+//
+// Per the ruling, the WF-016 text must survive durably in two places: the
+// run.finished event's own Error field (never a separate preceding error
+// event — one canonical place to look) and, via Run.Append's reason
+// tracking (internal/journal/run.go) mirroring that same Error.Message into
+// state.json's Reason field, state.json itself. Grepping "WF-016" finds it
+// either way.
+//
+// The success-path return here is deliberately (Result{PhaseFailed}, nil),
+// not an error: the refusal has been fully handled, and a nil error is what
+// makes the daemon's resume scan record the canonical phase as the run's
+// status instead of a raw "error: ..." string.
+func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result, error) {
+	if err := jr.Append(journal.Event{
+		Type:   journal.EventRunFinished,
+		Status: string(journal.PhaseFailed),
+		Error:  &journal.ErrorDetail{Code: code, Message: msg},
+	}); err != nil {
+		return Result{}, fmt.Errorf("runner: %s (additionally failed to journal terminal refusal: %w)", msg, err)
+	}
+	res := Result{Phase: journal.PhaseFailed}
+	if err := r.finalizeTerminal(runID, journal.PhaseFailed); err != nil {
+		return res, fmt.Errorf("runner: %s (additionally failed to finalize terminal refusal: %w)", msg, err)
+	}
+	return res, nil
 }
 
 // lastFinishedSubject reconstructs the (stage, ResultEnvelope) pair a live
