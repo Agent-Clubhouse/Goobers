@@ -242,13 +242,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		// already-terminal run, flipping its recorded terminal phase.
 		switch phase {
 		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-			terminalRun, _, err := journal.Recover(dir)
-			if err != nil {
-				pf(stderr, "error: recover terminal run %s for cleanup: %v\n", runID, err)
-				return 2
-			}
-			defer func() { _ = terminalRun.Close() }()
-			if err := finalizeTerminalRun(l, nil, wtMgr, terminalRun, runID); err != nil {
+			if err := finalizeTerminalRun(l, nil, wtMgr, runID); err != nil {
 				pf(stderr, "error: finalize terminal run %s: %v\n", runID, err)
 				return 2
 			}
@@ -271,7 +265,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if err := finalizeTerminalRun(l, nil, wtMgr, run, runID); err != nil {
+	if err := finalizeTerminalRun(l, nil, wtMgr, runID); err != nil {
 		pf(stderr, "error: finalize aborted run %s: %v\n", runID, err)
 		return 2
 	}

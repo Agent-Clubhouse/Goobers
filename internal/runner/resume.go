@@ -121,7 +121,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	switch phase {
 	case journal.PhaseCompleted, journal.PhaseAborted, journal.PhaseEscalated, journal.PhaseFailed:
 		res := Result{Phase: phase}
-		if err := r.finalizeTerminal(in.RunID, phase, jr); err != nil {
+		if err := r.FinalizeTerminal(in.RunID, phase); err != nil {
 			return res, err
 		}
 		return res, nil
@@ -267,7 +267,7 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 	// third PhaseFailed producer. FailureStage stays empty: a resume-time
 	// digest check isn't attributable to one stage.
 	res := Result{Phase: journal.PhaseFailed, FailureCode: code, FailureMessage: boundFailureMessage(msg)}
-	if err := r.finalizeTerminal(runID, journal.PhaseFailed, jr); err != nil {
+	if err := r.FinalizeTerminal(runID, journal.PhaseFailed); err != nil {
 		return res, fmt.Errorf("runner: %s (additionally failed to finalize terminal refusal: %w)", msg, err)
 	}
 	return res, nil

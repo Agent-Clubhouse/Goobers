@@ -45,10 +45,10 @@ type SpanStarter interface {
 type TerminalPreparer func(runID string, phase journal.RunPhase, jr *journal.Run) error
 
 // TerminalFinalizer performs instance-level cleanup after a run's terminal
-// event is durably journaled. It may append runner-specific cleanup annotations
-// to jr and may be invoked again when Resume observes an already-terminal run,
-// so implementations must be idempotent.
-type TerminalFinalizer func(runID string, phase journal.RunPhase, jr *journal.Run) error
+// event is durably journaled. It must not append to the closed run journal and
+// may be invoked again when startup observes an already-terminal run, so
+// implementations must be idempotent.
+type TerminalFinalizer func(runID string, phase journal.RunPhase) error
 
 // BlockedOutcome describes a run terminating because a stage reported status
 // "blocked" (#544/#545) — the value Config.Blocked receives.
@@ -1023,7 +1023,7 @@ func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, f
 		return Result{}, fmt.Errorf("runner: journal run.finished: %w", err)
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
-	if err := r.finalizeTerminal(runID, phase, jr); err != nil {
+	if err := r.FinalizeTerminal(runID, phase); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -1039,11 +1039,13 @@ func (r *Runner) prepareTerminal(runID string, phase journal.RunPhase, jr *journ
 	return nil
 }
 
-func (r *Runner) finalizeTerminal(runID string, phase journal.RunPhase, jr *journal.Run) error {
+// FinalizeTerminal runs the configured idempotent instance-level finalizer.
+// Startup recovery uses the same entrypoint after discovering a terminal run.
+func (r *Runner) FinalizeTerminal(runID string, phase journal.RunPhase) error {
 	if r.cfg.FinalizeTerminal == nil {
 		return nil
 	}
-	if err := r.cfg.FinalizeTerminal(runID, phase, jr); err != nil {
+	if err := r.cfg.FinalizeTerminal(runID, phase); err != nil {
 		return fmt.Errorf("runner: finalize terminal run %q (%s): %w", runID, phase, err)
 	}
 	return nil

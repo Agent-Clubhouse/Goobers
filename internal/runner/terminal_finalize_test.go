@@ -27,7 +27,7 @@ func TestFinishFinalizesEveryTerminalPhaseAfterJournaling(t *testing.T) {
 
 			var finalized bool
 			r := &Runner{cfg: Config{
-				FinalizeTerminal: func(gotRunID string, gotPhase journal.RunPhase, _ *journal.Run) error {
+				FinalizeTerminal: func(gotRunID string, gotPhase journal.RunPhase) error {
 					if gotRunID != runID || gotPhase != phase {
 						t.Fatalf("finalizer got (%q, %q), want (%q, %q)", gotRunID, gotPhase, runID, phase)
 					}
@@ -70,7 +70,7 @@ func TestFinishSurfacesFinalizerFailureWithTerminalResult(t *testing.T) {
 	defer func() { _ = jr.Close() }()
 
 	r := &Runner{cfg: Config{
-		FinalizeTerminal: func(string, journal.RunPhase, *journal.Run) error {
+		FinalizeTerminal: func(string, journal.RunPhase) error {
 			return errors.New("cleanup failed")
 		},
 	}}
