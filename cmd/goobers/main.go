@@ -98,7 +98,7 @@ Usage:
   goobers --version             print build version, commit, and date
   goobers init [path]           scaffold an instance root
   goobers validate [path]       validate an instance's instance.yaml + config/
-  goobers up [path]             run the daemon (scheduler + runner)
+  goobers up [--quiet] [path]   run the daemon (scheduler + runner)
   goobers run <workflow> [path] trigger a run manually (still honors run conditions)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
   goobers signal <name> [path]  fire an external signal, dispatching every

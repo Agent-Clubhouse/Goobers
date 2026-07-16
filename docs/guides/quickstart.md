@@ -61,7 +61,9 @@ prior crash or unclean shutdown via `Runner.Resume` before admitting new
 work, and draining in-flight runs gracefully on SIGINT/SIGTERM rather than
 killing them mid-attempt (#23). Blocks until interrupted; exit code `0` on a
 clean shutdown, `1` if the daemon fails to start (e.g. another `up` already
-holds this instance's lock).
+holds this instance's lock). While running, it prints a liveness heartbeat
+with scheduler activity once per minute; pass `--quiet` to suppress the
+heartbeat while retaining startup and shutdown messages.
 
 `instance.yaml` is read once, at startup — editing it while `up` is running
 (a new repo, a `runConditions` change, etc.) has no effect until you restart

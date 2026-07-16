@@ -132,6 +132,60 @@ func TestUpIdlesThenDrainsOnCancel(t *testing.T) {
 	}
 }
 
+func TestSummarizeHeartbeatCountsOnlyNewSchedulerActivity(t *testing.T) {
+	events := []journal.Event{
+		{Seq: 1, Type: journal.EventRunStarted},
+		{Seq: 2, Type: journal.EventTriggerFired},
+		{Seq: 3, Type: journal.EventTriggerFired},
+		{Seq: 4, Type: journal.EventRunStarted},
+		{Seq: 5, Type: journal.EventRunFinished},
+		{Seq: 6, Type: journal.EventTickSkipped},
+		{Seq: 7, Type: journal.EventClaimReleased},
+	}
+
+	got, lastSeq := summarizeHeartbeat(events, 2)
+	want := heartbeatActivity{triggers: 1, started: 1, finished: 1, skipped: 1}
+	if got != want {
+		t.Fatalf("activity = %+v, want %+v", got, want)
+	}
+	if lastSeq != 7 {
+		t.Fatalf("last seq = %d, want 7", lastSeq)
+	}
+}
+
+func TestUpHeartbeatIsDefaultOnAndQuietSuppressesIt(t *testing.T) {
+	previous := heartbeatInterval
+	heartbeatInterval = 20 * time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = previous })
+
+	for _, tc := range []struct {
+		name          string
+		args          func(string) []string
+		wantHeartbeat bool
+	}{
+		{name: "default", args: func(root string) []string { return []string{root} }, wantHeartbeat: true},
+		{name: "quiet", args: func(root string) []string { return []string{"--quiet", root} }, wantHeartbeat: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := initDeterministicDemo(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+
+			var stdout, stderr bytes.Buffer
+			if code := runUpContext(ctx, tc.args(root), &stdout, &stderr); code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "daemon started") {
+				t.Fatalf("stdout = %q, want daemon-started message", stdout.String())
+			}
+			gotHeartbeat := strings.Contains(stdout.String(), "] alive — ")
+			if gotHeartbeat != tc.wantHeartbeat {
+				t.Fatalf("stdout = %q, heartbeat present = %t, want %t", stdout.String(), gotHeartbeat, tc.wantHeartbeat)
+			}
+		})
+	}
+}
+
 // TestUpResumesInterruptedRun is issue #23's crash-resume acceptance: a run
 // left non-terminal (state.json checkpointed at a task, no run.finished
 // event — the signature of a prior crash or unclean shutdown, per
