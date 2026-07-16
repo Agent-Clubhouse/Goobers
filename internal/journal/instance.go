@@ -38,15 +38,19 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 		return nil, RecoverReport{}, fmt.Errorf("journal: create instance log dir: %w", err)
 	}
 
+	lock, err := acquireJournalLock(dir, "instance log")
+	if err != nil {
+		return nil, RecoverReport{}, err
+	}
+	defer releaseJournalLock(lock)
+
 	path := filepath.Join(dir, fileEvents)
 	events, tornBytes, err := readEvents(path)
 	if err != nil {
 		return nil, RecoverReport{}, err
 	}
 	report := RecoverReport{TornBytes: tornBytes}
-	if len(events) > 0 {
-		report.LastSeq = events[len(events)-1].Seq
-	}
+	report.LastSeq = highestEventSeq(events)
 	if err := truncateTornTail(path, tornBytes); err != nil {
 		return nil, RecoverReport{}, err
 	}
@@ -58,7 +62,7 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 	l := &InstanceLog{dir: dir, scrubber: cfg.scrubber, now: cfg.now, file: f, seq: report.LastSeq}
 
 	if tornBytes > 0 {
-		if err := l.Append(Event{
+		if _, err := appendEvent(l.file, &l.seq, l.scrubber, l.now, Event{
 			Type:   EventRepaired,
 			Runner: map[string]any{"discardedBytes": tornBytes},
 		}); err != nil {
@@ -80,7 +84,30 @@ func (l *InstanceLog) Append(ev Event) error {
 	if l.closed {
 		return ErrClosed
 	}
-	_, err := appendEvent(l.file, &l.seq, l.scrubber, l.now, ev)
+
+	lock, err := acquireJournalLock(l.dir, "instance log")
+	if err != nil {
+		return err
+	}
+	defer releaseJournalLock(lock)
+
+	events, tornBytes, err := readEvents(filepath.Join(l.dir, fileEvents))
+	if err != nil {
+		return err
+	}
+	l.seq = highestEventSeq(events)
+	if err := truncateTornTail(filepath.Join(l.dir, fileEvents), tornBytes); err != nil {
+		return err
+	}
+	if tornBytes > 0 {
+		if _, err := appendEvent(l.file, &l.seq, l.scrubber, l.now, Event{
+			Type:   EventRepaired,
+			Runner: map[string]any{"discardedBytes": tornBytes},
+		}); err != nil {
+			return err
+		}
+	}
+	_, err = appendEvent(l.file, &l.seq, l.scrubber, l.now, ev)
 	return err
 }
 
@@ -100,4 +127,14 @@ func (l *InstanceLog) Close() error {
 func ReadInstanceLog(dir string) ([]Event, error) {
 	events, _, err := readEvents(filepath.Join(dir, fileEvents))
 	return events, err
+}
+
+func highestEventSeq(events []Event) uint64 {
+	var highest uint64
+	for _, ev := range events {
+		if ev.Seq > highest {
+			highest = ev.Seq
+		}
+	}
+	return highest
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/api/validate"
 )
@@ -67,6 +68,74 @@ func TestInstanceLogRoundTrip(t *testing.T) {
 	events, _ = ReadInstanceLog(dir)
 	if len(events) != 6 || events[5].Seq != 6 {
 		t.Fatalf("seq did not continue across reopen: %+v", events)
+	}
+}
+
+func TestInstanceLogIndependentWritersAllocateUniqueSequence(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	first, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("open first instance log: %v", err)
+	}
+	defer func() { _ = first.Close() }()
+	second, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("open second instance log: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+
+	for i, writer := range []*InstanceLog{first, second, first} {
+		if err := writer.Append(Event{Type: EventTriggerFired, Workflow: "workflow"}); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3", len(events))
+	}
+	for i, event := range events {
+		if want := uint64(i + 1); event.Seq != want {
+			t.Fatalf("event %d seq = %d, want %d", i, event.Seq, want)
+		}
+	}
+}
+
+func TestInstanceLogAppendWaitsForJournalLock(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	instanceLog, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = instanceLog.Close() }()
+
+	lock, err := acquireJournalLock(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendDone := make(chan error, 1)
+	go func() {
+		appendDone <- instanceLog.Append(Event{Type: EventTriggerFired, Workflow: "workflow"})
+	}()
+
+	select {
+	case err := <-appendDone:
+		releaseJournalLock(lock)
+		t.Fatalf("Append returned before journal lock was released: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	releaseJournalLock(lock)
+
+	select {
+	case err := <-appendDone:
+		if err != nil {
+			t.Fatalf("Append after lock release: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Append did not proceed after journal lock was released")
 	}
 }
 
