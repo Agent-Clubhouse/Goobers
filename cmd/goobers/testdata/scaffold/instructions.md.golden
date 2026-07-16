@@ -1,5 +1,5 @@
 ---
-role: reviewer2
+role: "reviewer2"
 description: Describe the work this goober performs.
 tags:
   - custom

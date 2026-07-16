@@ -1,10 +1,10 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 metadata:
-  name: {{ .Name }}
+  name: "{{ .Name }}"
 spec:
-  gaggle: {{ .Gaggle }}
-  displayName: {{ .Name }}
+  gaggle: "{{ .Gaggle }}"
+  displayName: "{{ .Name }}"
   triggers:
     - type: manual
     # Run on a cron schedule:
@@ -30,7 +30,7 @@ spec:
       next: ready-check
     - name: act
       type: agentic
-      goober: {{ .Goober }}
+      goober: "{{ .Goober }}"
       goal: Continue the workflow using the prepared result.
       capabilities:
         - agent:model

@@ -1,11 +1,11 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Goober
 metadata:
-  name: {{ .Name }}
+  name: "{{ .Name }}"
 spec:
-  gaggle: {{ .Gaggle }}
-  role: {{ .Name }}
-  displayName: {{ .Name }}
+  gaggle: "{{ .Gaggle }}"
+  role: "{{ .Name }}"
+  displayName: "{{ .Name }}"
   instructions: instructions.md
   harness: copilot
   capabilities:
@@ -19,7 +19,7 @@ spec:
     # - telemetry:read
     # - journal:read
   skills:
-    - {{ .Name }}
+    - "{{ .Name }}"
   tools:
     - shell
   scaleFactor: 1

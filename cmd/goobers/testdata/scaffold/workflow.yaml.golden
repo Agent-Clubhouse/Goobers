@@ -1,10 +1,10 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 metadata:
-  name: my-flow
+  name: "my-flow"
 spec:
-  gaggle: example
-  displayName: my-flow
+  gaggle: "example"
+  displayName: "my-flow"
   triggers:
     - type: manual
     # Run on a cron schedule:
@@ -30,7 +30,7 @@ spec:
       next: ready-check
     - name: act
       type: agentic
-      goober: reviewer2
+      goober: "reviewer2"
       goal: Continue the workflow using the prepared result.
       capabilities:
         - agent:model

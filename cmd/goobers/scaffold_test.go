@@ -95,6 +95,25 @@ func TestScaffoldGooberAndWorkflowValidateClean(t *testing.T) {
 	}
 }
 
+func TestScaffoldScalarNamesValidateClean(t *testing.T) {
+	root := initDemo(t)
+
+	if code, _, stderr := runArgs(t, "scaffold", "goober", "123", root); code != 0 {
+		t.Fatalf("scaffold goober: code=%d stderr=%q", code, stderr)
+	}
+	if code, _, stderr := runArgs(t, "scaffold", "workflow", "true", root); code != 0 {
+		t.Fatalf("scaffold workflow: code=%d stderr=%q", code, stderr)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "WARNING") {
+		t.Fatalf("validate emitted a warning: %q", stdout)
+	}
+}
+
 func TestScaffoldRefusesOverwriteUnlessForced(t *testing.T) {
 	root := initDemo(t)
 	dir := filepath.Join(root, "config", "gaggles", "example", "goobers", "reviewer2")
