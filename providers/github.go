@@ -768,7 +768,7 @@ func normalizeCheckRunState(status, conclusion string) CheckState {
 	switch strings.ToLower(conclusion) {
 	case "success", "neutral", "skipped":
 		return CheckStatePassing
-	case "failure", "timed_out", "cancelled", "action_required", "stale":
+	case "failure", "timed_out", "cancelled", "action_required", "stale", "startup_failure":
 		return CheckStateFailing
 	default:
 		return CheckStatePending

@@ -527,6 +527,12 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 	}
 }
 
+func TestNormalizeCheckRunStateStartupFailure(t *testing.T) {
+	if got := normalizeCheckRunState("completed", "startup_failure"); got != CheckStateFailing {
+		t.Fatalf("normalizeCheckRunState() = %q, want %q", got, CheckStateFailing)
+	}
+}
+
 func TestGitHubProviderPollPullRequestChangesRequestedWins(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {

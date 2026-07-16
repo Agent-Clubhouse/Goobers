@@ -31,10 +31,10 @@ type prThreadComment struct {
 // runGatherPRContext implements `goobers gather-pr-context` (issue #362):
 // pr-remediation's entrypoint, replacing implementation's query-backlog head
 // (design doc §5 — "the one genuinely new executor entrypoint"). Selects one
-// open, goober-authored PR labeled needs-remediation, checks out ITS branch
-// into this stage's worktree (replacing whatever branch the runner's
-// worktree provisioning defaulted to — pr-remediation re-enters on an
-// EXISTING PR, it does not open a new one), and loads the merge-review
+// open, goober-authored PR labeled needs-remediation or reporting failing CI,
+// checks out ITS branch into this stage's worktree (replacing whatever branch
+// the runner's worktree provisioning defaulted to — pr-remediation re-enters
+// on an EXISTING PR, it does not open a new one), and loads the merge-review
 // Verdict + PR-thread comments + whether the base has advanced since this PR
 // branched, as context for the stages that follow (#363's rebase +
 // finding-driven routing).
@@ -43,16 +43,16 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers gather-pr-context [path]\n\n"+
-			"Select one open, goober-authored PR labeled goobers:needs-remediation,\n"+
-			"check out its branch into this stage's worktree, and load the latest\n"+
-			"merge-review verdict + PR-thread comments + whether the base has\n"+
-			"advanced since this PR branched, writing them to the declared result\n"+
-			"file. [path] is the instance root (matching pr-select/apply-verdict),\n"+
-			"defaulting to GOOBERS_INSTANCE_ROOT; git operations run against the\n"+
-			"stage's actual worktree (the process's current directory), not path —\n"+
-			"same split push-branch already relies on. Exit codes: 0 = context\n"+
-			"gathered (or no-work if no PR carries the label), 1 = business error,\n"+
-			"2 = usage/IO error.\n")
+			"Select one open, goober-authored PR labeled goobers:needs-remediation\n"+
+			"or reporting failing CI, check out its branch into this stage's\n"+
+			"worktree, and load the latest merge-review verdict + PR-thread comments\n"+
+			"+ whether the base has advanced since this PR branched, writing them to\n"+
+			"the declared result file. [path] is the instance root (matching\n"+
+			"pr-select/apply-verdict), defaulting to GOOBERS_INSTANCE_ROOT; git\n"+
+			"operations run against the stage's actual worktree (the process's\n"+
+			"current directory), not path — same split push-branch already relies\n"+
+			"on. Exit codes: 0 = context gathered (or no-work if no PR is eligible),\n"+
+			"1 = business error, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -108,12 +108,15 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 
 	var eligible []providers.PullRequestSummary
 	for _, pr := range prs {
-		if hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) {
+		needsRemediation := hasAnyLabel(pr.Labels, []string{needsRemediationLabel})
+		failingCI := pr.CheckState == providers.CheckStateFailing &&
+			!hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel})
+		if needsRemediation || failingCI {
 			eligible = append(eligible, pr)
 		}
 	}
 	if len(eligible) == 0 {
-		return writeNoWorkResult(stdout, stderr, "no PR carries "+needsRemediationLabel+" this cycle")
+		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
 	// Deterministic ordering (ascending PR number, i.e. oldest-flagged-first)
@@ -178,6 +181,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
+	hasFailingCI := strconv.FormatBool(selected.CheckState == providers.CheckStateFailing)
 
 	resultFile := providerInput("resultFile", "pr-context.json")
 	data, err := json.MarshalIndent(map[string]interface{}{
@@ -188,6 +192,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		"baseSha":                selected.BaseSHA,
 		"isBehindBase":           behind,
 		"hasSubstantiveFindings": hasSubstantiveFindings,
+		"hasFailingCI":           hasFailingCI,
 		"verdict":                verdict,
 		"comments":               comments,
 	}, "", "  ")
