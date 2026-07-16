@@ -1,123 +1,337 @@
-# Design: Dashboard / Portal — live read-only visual hub over the daemon API
+# Design: Dashboard / Portal - calm operations workbench over the daemon API
 
-> Status: **Draft for review — not implemented** · Area prefix: `DASH` (new), `API` (new) · Milestone: **Dashboard / Portal** (#14)
-> Requirements: [`docs/requirements/portal.md`](../requirements/portal.md) (supersedes PORT-Q4 journals-direct — see §2)
-> Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) · [`docs/design/v1/observability-substrate.md`](v1/observability-substrate.md)
-> Related issues: #37 (Portal v1), #169 (daemon read-only API), #171 (portal retarget), #402 (live viz + DAG), #170 (CLI approval surface), #398 (`workflow show --dot`)
+> Status: **Approved for staged implementation** (2026-07-16)
+> Area prefixes: `API`, `DASH`
+> Milestone: **Dashboard / Portal - calm live operations workbench** (#14)
+> Epic: [#440](https://github.com/Agent-Clubhouse/Goobers/issues/440)
+> Requirements: [`docs/requirements/portal.md`](../requirements/portal.md)
+> Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
+> Prototype: [`portal/`](../../portal/)
 
-## 1. Why this exists
+## 1. Product decision
 
-A view-only, low-latency dashboard for watching gaggles, workflows, and runs — a "hub for watching"
-with delightful, professional, modern UI (light + dark). This is brain-dump **item 11**. It also hosts
-**item 13 tier-1** (escalation viewing) and consumes **item 8** warnings.
+The dashboard is a calm operations workbench for understanding:
 
-**Non-negotiable architectural principle (PO):** the dashboard is built *entirely* on the same API the
-CLI uses. There are **no dashboard-only code paths or mutations** — any mutation the UI offers calls the
-exact same API surface the CLI does. New CLI actions should appear in the UI and vice versa; we build a
-**continuous CLI↔UI parity check** to enforce this.
+1. What is happening now?
+2. What needs human attention?
+3. Why did a run reach its current state?
+4. What did each stage produce?
 
-## 2. Current state (grounded) & the prerequisite
+It is not a chat client, a configuration editor, a marketing dashboard, or a
+second orchestration path.
 
-- **There is no daemon API.** The `goobers up` daemon runs scheduler + runner in-process and exposes
-  **no HTTP/gRPC surface** (no `ListenAndServe`/`grpc.NewServer` anywhere). `api/` is Go types + JSON
-  schemas, **not** a network API.
-- CLI `status`/`trace`/`telemetry` each read the **on-disk journal** (`runs/<id>/…`) and telemetry
-  SQLite (`internal/telemetry/rollup`) **inline** (`cmd/goobers/status.go`, `trace.go`, `telemetry.go`).
-- The portal is a **mock-only React 19 + Vite scaffold** (`portal/src/api/mockClient.ts`); the
-  `GoobersPortalApi` contract exists (`portal/src/api/types.ts:113`) but binds to in-memory fixtures.
-  MSAL auth deps are present but unused.
-- **Spec tension resolved here:** `portal.md` PORT-Q4 currently says the portal reads journals
-  *directly*. That conflicts with the PO principle above and with #169/#171. **Decision (arch authority):**
-  we adopt a **shared daemon read-only API** as the single source both CLI and portal read through.
-  `portal.md` will be updated to reflect this. Rationale: journals-direct would fork the read logic
-  between CLI and UI, breaking parity by construction and coupling the UI to on-disk layout.
+The product shorthand is:
 
-**Therefore this milestone's foundation is building the daemon read-only API** (#169), then retargeting
-both the CLI's read commands and the portal onto it (#171). The DAG-export work (#398, #402) feeds §4.
+> **Workbench, not command center. Ledger, not chat. Signal, not spectacle.**
 
-## 3. The shared read-only API (API)
+The supplied Goobers mascot is the identity anchor. It may appear in the product
+mark, first-boot state, and selected explanatory moments. It is not repeated as
+an agent avatar and does not turn runtime state into character animation.
+Operational language remains literal even when the brand is playful.
 
-A local HTTP (JSON) service embedded in the `goobers up` daemon, localhost-only (see §6). It exposes
-exactly the read model the CLI needs, so the CLI's `status/trace/telemetry` become thin API clients and
-the portal binds to the same shapes.
+## 2. Non-negotiable architecture
 
-Endpoints (read-only for dashboard v0):
+The journal is the source of truth. A shared read service projects the journal,
+telemetry rollup, and provisioned definitions into a versioned product contract.
+The daemon's loopback HTTP API and CLI read commands are adapters over that same
+service.
 
-- `GET /gaggles` — provisioned gaggles + per-gaggle workflow count + active-run count.
-- `GET /gaggles/{g}/workflows` — workflows with displayName, description, config (maxConcurrency,
-  retry, schedule), active-run indicator.
-- `GET /workflows/{w}` — workflow definition incl. **serialized execution graph** (nodes/edges from the
-  compiled `workflow.Machine`) + run list (active vs historic, current stage, retry used/remaining, duration).
-- `GET /runs/{id}` — run detail: per-run execution graph, per-stage status/attempts/timing, and the
-  **event stream** needed to drive replay (ordered `stage.*`/`gate.evaluated` events with timestamps).
-- `GET /runs/{id}/stages/{s}` — stage-run detail: logs, inputs, artifacts, repeat-invocation list.
-- `GET /workflows/{w}/stages/{s}` — static stage definition (config, raw YAML).
-- Mutations (later milestones, still API-first): the human-gate approve/override/rerun surface from the
-  Human-in-the-Loop milestone (#16) and #170 — the dashboard calls these, never its own path.
+```text
+run journals + telemetry rollup + provisioned definitions
+                         |
+                  shared read service
+                  /                 \
+      daemon loopback HTTP API      CLI read commands
+                  |
+               portal
+```
 
-**Parity check:** a test/CI harness that diffs the CLI command/action registry against the API route set
-(and the UI's action registry against the API) so a new CLI action that has no API route — or a UI
-action not backed by the shared API — fails CI.
+This resolves the former `PORT-Q4` journals-direct position:
 
-## 4. UX specification (DASH)
+- The browser never reads journal files or telemetry SQLite directly.
+- HTTP handlers do not own a second read implementation.
+- CLI commands do not each reconstruct product state independently.
+- Historic CLI inspection must remain available when the daemon is not running,
+  through the same shared service in-process.
 
-Themeable (light/dark), low-latency (near-real-time to actual runs), with tasteful progress animation.
-**View-only for dashboard v0** — every page footer states that editing is done via the workflow CD
-(milestone #15), not the UI.
+API parity is scoped to **runtime read models and runtime capabilities**. It does
+not mean every CLI command appears in the portal. Setup, validation, config
+authoring, daemon lifecycle, and other config-time commands remain CLI-only.
 
-- **Home** — cards/rows of provisioned gaggles; per gaggle: # workflows defined, # active runs.
-- **Gaggle Summary** — horizontal rows, one per workflow, with displayName, description, and common
-  config (max concurrency, retry count, schedule).
-- **Workflow Page** — two areas: (top) the **execution graph**, zoom/pan; (below) the run list with a
-  clear active-vs-historic indicator, current stage for active runs, retry used/remaining, duration.
-- **Run Page** — drill into one run: the run's execution graph, optionally a **delta vs the graph of a
-  prior workflow version** (deferred until we have real registry versioning — see Versioning #12; stub
-  the delta affordance now, populate later). A **pause / play / scrubber replay** that animates the run
-  via focus/light indicators at selectable speeds (1×/2×/5×/10×/50×), making implement↔review cycles
-  visually obvious. Replay is driven by the ordered event stream from `GET /runs/{id}`.
-- **Stage Page (from Workflow)** — click a stage → side panel with its *definition*: what it is, inputs,
-  configuration, the raw YAML (structured + pretty).
-- **Stage-Run Page (from Run)** — click a stage in a run → side panel with a **[Run | Stage] tab
-  selector**. *Run* tab: logs/details/outcome for that stage-invocation, with a dropdown when it ran
-  multiple times (repasses/retries). *Stage* tab: the same static definition as the Stage Page.
-- **Escalation view (item 13 tier-1)** — escalated/terminal runs are first-class in the run list and
-  run page: show run history, artifacts-at-each-step, current state, and the gate/condition that forced
-  escalation. View-only here; unblock actions come from milestone #16.
+## 3. Current state and prototype authority
 
-### Craft bar (explicit)
-Wireframe and design-review the UI heavily; **scrub common low-quality "AI-generated app" patterns**
-(generic gradients, purple-on-white default palettes, emoji-as-icons, dead placeholder cards, inconsistent
-spacing). Professional, simplistic, modern. Both themes designed, not just inverted.
+As of approval:
 
-## 5. Data latency
+- `goobers up` has no HTTP server.
+- `status`, `trace`, and `telemetry` read journals/SQLite independently.
+- The existing `GoobersPortalApi` is a walking-skeleton contract. Its status
+  enums and response shapes are not the production API contract.
+- The portal prototype in `portal/` is the interaction and visual reference,
+  backed by realistic static fixtures.
 
-Dashboard must feel live. Options to decide during build: server-push (SSE/WebSocket) from the daemon on
-journal append vs short-interval poll of the read API. Leaning SSE for run/stage updates given the daemon
-already observes journal writes; poll as fallback.
+The prototype deliberately covers:
 
-## 6. Auth (scope note)
+- Overview, workflow inventory, workflow detail, run history, and run detail.
+- An execution graph synchronized with an ordered event ledger.
+- Escalation cause, repass budget, attempts, outputs, and artifacts.
+- Replay controls and event-by-event inspection.
+- Light and dark themes, responsive layouts, keyboard focus, and reduced motion.
 
-Dashboard v0 is **localhost-only, local-only, no auth** (matches tier-1 posture). Scoped identity/OIDC
-(Entra or generic OIDC) is **V3+** and tracked by the existing auth-seam issues (#173/#174/#38) — out of
-scope here beyond not painting ourselves into a corner (the API stays behind the same authenticator seam).
+It is not production implementation. It uses static data, a fixture-specific
+graph layout, and intentionally keeps components together for rapid iteration.
+Production issues may refactor it while preserving the accepted behavior and
+visual principles.
 
-## 7. Issue breakdown (milestone #14)
+## 4. Information architecture
 
-- **[EPIC]** Dashboard / Portal.
-- API-1: Daemon read-only HTTP API — embed in `goobers up`, localhost-only (foundation; extends #169).
-- API-2: Serialize the compiled execution graph (nodes/edges) + `goobers workflow show --dot` (folds #398).
-- API-3: Retarget CLI `status`/`trace`/`telemetry` onto the shared API client (extends #171).
-- API-4: CLI↔UI↔API parity check in CI.
-- DASH-1: Portal retarget off mock onto the real API client (extends #171/#37).
-- DASH-2: Home + Gaggle Summary pages.
-- DASH-3: Workflow page — execution-graph viz (zoom/pan) + run list.
-- DASH-4: Run page — per-run graph + replay scrubber (1×–50×) driven by event stream.
-- DASH-5: Stage & Stage-Run side panels ([Run|Stage] tabs, multi-invocation dropdown).
-- DASH-6: Escalation view (item 13 tier-1) + item-8 warning surfacing in the UI.
-- DASH-7: Theming (light/dark) + motion system + design-review/AI-slop-scrub pass.
-- DASH-8: Live latency transport (SSE/poll) decision + implementation.
+The portal has three primary destinations.
 
-## 8. Open questions
+### 4.1 Overview
 
-- Do we need the prior-version graph **delta** before real registry versioning lands? (Stub now, wire later.)
-- SSE vs poll for the live transport (§5) — decide with a latency spike.
+Answers "what needs me?" before "what exists?"
+
+- Daemon connection and freshness.
+- Runs needing attention.
+- Active runs and their current stages.
+- Recent outcomes.
+- Active instance/config warnings.
+
+There are no vanity KPI cards. Counts appear only when they help interpret the
+operational lists.
+
+### 4.2 Workflows
+
+A dense inventory grouped or filtered by gaggle:
+
+- Name and purpose.
+- Trigger.
+- Active/max concurrency.
+- Last outcome and recency.
+
+Workflow detail contains the static execution graph, definition/config summary,
+stage inspection, and run history. A gaggle is primarily scope and context, not
+a mandatory navigation step. Gaggle detail includes the provisioned goober
+definitions (role, skills/capabilities, status, and workflow/stage ownership)
+required by `PORT-002`; it does not promote the roster to a primary navigation
+destination until richer capacity/health data exists.
+
+### 4.3 Runs
+
+A filterable history across workflows and gaggles. Run detail is the primary
+diagnostic surface:
+
+- Identity, pinned workflow version/digest, trigger, duration, and state.
+- A fixed execution graph.
+- An ordered, durable event ledger.
+- Stage attempts, outputs, artifacts, and definition.
+- Escalation cause when applicable.
+- Replay for completed history and live-follow for active runs.
+
+## 5. Interaction model
+
+### 5.1 Graph and time stay separate
+
+The graph explains structure. The event ledger explains time and causality. They
+are coordinated but not collapsed into one overloaded visualization.
+
+Selecting a graph node opens its current attempt context. Selecting an event
+moves the playhead and selects the event's stage. Repasses reuse the same graph
+nodes and appear as attempt counts/traversals, not duplicated nodes.
+
+Tasks and gates use one stable visual grammar:
+
+- Deterministic and agentic tasks share the task shape; kind and owner differ.
+- Gates share the gate shape; evaluator kind differs.
+- Color never carries state alone.
+- Branch edges retain their declared outcome labels.
+
+### 5.2 Replay is an explicit mode
+
+Replay is driven by ordered journal sequence, not animation timing or OTel
+spans. It provides:
+
+- Play/pause.
+- Direct scrubbing.
+- Previous/next event keyboard operation.
+- Selectable speed.
+- Compressed/skip-idle time for long waits.
+- Current event title, elapsed time, and durable sequence.
+- A reduced-motion presentation with equivalent information.
+
+The prior-version graph delta affordance is removed until real registry
+versioning can back it. The UI does not ship dead controls.
+
+### 5.3 Attempt inspector
+
+The inspector uses **Attempt** and **Definition** concepts, not the ambiguous
+`Run | Stage` labels from the earlier draft.
+
+For a selected stage it shows:
+
+- Attempt number and class (`initial`, `policy`, `infra`).
+- Status and duration.
+- Outcome summary and scalar outputs.
+- Artifacts, with type, size, digest/provenance, and safe content access.
+- Static definition and raw YAML through progressive disclosure.
+
+Raw logs and transcripts are secondary diagnostic detail. Artifacts and
+structured outcomes are first-class because they are the durable review units.
+
+### 5.4 Escalation
+
+Escalation is not a generic error page. The same run detail surface gains a
+causal summary:
+
+- Gate/condition that selected escalation.
+- Selected branch.
+- Repass/retry budget consumed.
+- Terminal reason.
+- Attempts and artifacts available at the point of escalation.
+
+This milestone is view-only. Intervention controls arrive from the
+Human-in-the-Loop milestone and call the same runtime API as the CLI.
+
+## 6. Visual and content system
+
+### 6.1 Brand
+
+- The mascot anchors the product mark and selected empty states.
+- Purple is a restrained brand accent, not a page background or generic
+  gradient system.
+- The brand can be friendly; runtime copy stays precise.
+- No agent faces, moods, "thinking" theater, or anthropomorphic failure copy.
+
+### 6.2 Surfaces and depth
+
+- Base surfaces are opaque and border-defined.
+- Shadow indicates real elevation only: menus, dialogs, and floating inspectors.
+- Transparency is used only when it explains layering.
+- Cards are reserved for true grouped objects; operational lists remain dense.
+
+### 6.3 Motion
+
+Motion explains a transition:
+
+- Node activation and edge traversal.
+- Live-follow updates.
+- Inspector/dialog entry and exit.
+- Replay progress.
+
+No ambient glow, decorative pulse, or perpetual animation. All motion honors
+`prefers-reduced-motion`.
+
+### 6.4 Theme and accessibility
+
+Light and dark are independently tuned themes, not inversions. Baseline:
+
+- WCAG AA contrast for text and controls.
+- Status encoded by text/icon/shape as well as color.
+- Full keyboard operation for navigation, graph selection, ledger, replay, and
+  inspector controls.
+- Screen-reader labels for graph topology and state.
+- Reduced-motion support.
+- Colorblind-safe semantic states.
+- Desktop-first, functional tablet/mobile layouts without clipped controls.
+
+## 7. Shared read model and HTTP contract
+
+The production contract is versioned under `/api/v1`. IDs are stable and
+unambiguous; workflow identity includes gaggle and version/digest where needed.
+List endpoints support deterministic sorting, pagination/cursors, and filters.
+Errors use one structured envelope.
+
+Minimum read surfaces:
+
+- `GET /api/v1/health`
+- `GET /api/v1/instance`
+- `GET /api/v1/gaggles`
+- `GET /api/v1/gaggles/{gaggle}/goobers`
+- `GET /api/v1/gaggles/{gaggle}/workflows`
+- `GET /api/v1/gaggles/{gaggle}/workflows/{workflow}`
+- `GET /api/v1/runs`
+- `GET /api/v1/runs/{run}`
+- `GET /api/v1/runs/{run}/events`
+- `GET /api/v1/runs/{run}/stages/{stage}/attempts`
+- `GET /api/v1/runs/{run}/artifacts/{digest}`
+- `GET /api/v1/telemetry/...` for the existing CLI telemetry projections
+- `GET /api/v1/events` for live updates
+
+The exact wire representation is defined in Go contract types and tested against
+the TypeScript client. It must preserve canonical journal phases:
+`running`, `completed`, `failed`, `aborted`, and `escalated`. Presentation
+groupings such as "Needs attention" are UI derivations, not new persisted states.
+
+A run response includes the graph pinned to its recorded workflow
+version/digest. It never reconstructs historic topology from mutable current
+config.
+
+Artifact reads use the journal's containment, digest verification, redaction,
+and media-type rules. The API never exposes arbitrary filesystem paths.
+
+## 8. Live transport
+
+Use Server-Sent Events for local live updates, with polling as a documented
+fallback.
+
+The protocol must define:
+
+- Snapshot-plus-cursor startup with no race between them.
+- Stable event IDs/cursors.
+- `Last-Event-ID` reconnect.
+- Heartbeats and explicit connected/reconnecting/stale states.
+- Client deduplication and ordered application.
+- A measurable local update target (p95 under one second from durable append to
+  visible state on the same machine).
+
+The event stream invalidates/refetches versioned read models; it does not create
+a second ad hoc shape for every page.
+
+## 9. Delivery order
+
+Implementation is intentionally split into independently reviewable PRs:
+
+1. Shared read-service and UI foundations.
+2. Canonical graph and inventory/run read contracts.
+3. CLI convergence onto the shared service.
+4. Overview, workflow, and run vertical slices.
+5. Attempt inspection, replay, escalation, warnings, and live updates.
+6. Runtime capability parity enforcement.
+
+Every issue in epic #440 states its exact dependencies. An issue may be approved
+before dependencies merge, but implementation must not open a production PR
+until its blockers are complete.
+
+### 9.1 Issue map
+
+| Slice | Issue | Merge boundary |
+|---|---:|---|
+| Shared read service + HTTP lifecycle | #441 | Go foundation |
+| Canonical graph projection after #398 | #442 | Compiler/contracts + CLI refactor |
+| Instance/gaggle/goober/workflow reads | #510 | Go API |
+| Run/event/attempt/artifact reads | #511 | Go API |
+| `status` convergence | #443 | CLI adapter |
+| `trace` convergence | #512 | CLI adapter |
+| Telemetry reads + CLI convergence | #513 | Go telemetry vertical slice |
+| Contract/capability parity | #444 | Contract + CI |
+| SSE update stream | #452 | Go transport |
+| Production UI foundation | #451 | TypeScript/CSS foundation |
+| Typed daemon client | #445 | TypeScript data layer |
+| Overview + gaggle/goober/workflow inventory | #446 | Portal page slice |
+| Workflow detail + graph | #447 | Portal page slice |
+| Run detail + ledger | #448 | Portal page slice |
+| Stage-attempt inspector | #449 | Portal component slice |
+| Deterministic replay | #514 | Portal interaction slice |
+| Escalation view | #450 | Portal view slice |
+| Config warnings | #515 | Portal view slice |
+| Live client/freshness | #518 | TypeScript live-data slice |
+
+## 10. Explicit non-goals for V1
+
+- Chat or direct agent steering.
+- Config/setup editing.
+- Workflow authoring.
+- Human intervention mutations (owned by Human-in-the-Loop).
+- Cloud/team auth beyond preserving the authorizer seam.
+- Generic infrastructure/Temporal internals.
+- Prior-version graph diff.
+- Mobile feature parity with the desktop diagnostic workspace.

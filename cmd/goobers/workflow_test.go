@@ -64,6 +64,33 @@ stages:
 	}
 }
 
+func TestWorkflowShowPrintsDOT(t *testing.T) {
+	root := initDemo(t)
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	if err := os.WriteFile(workflowPath, []byte(workflowShowFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "workflow", "show", "--dot", "default-implement", root)
+	if code != 0 {
+		t.Fatalf("workflow show --dot: code = %d, stderr = %q", code, stderr)
+	}
+
+	want := `digraph {
+  "prepare" [shape=box];
+  "prepare" -> "review";
+  "finish" [shape=box];
+  "finish" -> "<complete>";
+  "review" [shape=diamond];
+  "review" -> "finish" [label="pass"];
+  "review" -> "prepare" [label="fail"];
+}
+`
+	if stdout != want {
+		t.Fatalf("workflow show --dot stdout:\n%s\nwant:\n%s", stdout, want)
+	}
+}
+
 func TestWorkflowShowUnknownWorkflow(t *testing.T) {
 	root := initDemo(t)
 	code, _, stderr := runArgs(t, "workflow", "show", "no-such-workflow", root)
@@ -80,7 +107,7 @@ func TestWorkflowUsage(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code = %d, want 2", code)
 	}
-	if !strings.Contains(stderr, "Usage: goobers workflow show <name> [path]") {
+	if !strings.Contains(stderr, "Usage: goobers workflow show [--dot] <name> [path]") {
 		t.Fatalf("stderr = %q", stderr)
 	}
 
@@ -88,7 +115,7 @@ func TestWorkflowUsage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("workflow help code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "Usage: goobers workflow show <name> [path]") {
+	if !strings.Contains(stdout, "Usage: goobers workflow show [--dot] <name> [path]") {
 		t.Fatalf("workflow help stdout = %q", stdout)
 	}
 
