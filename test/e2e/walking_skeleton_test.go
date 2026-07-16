@@ -164,6 +164,21 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 					if df, ok := payload.(dispatchFailure); ok {
 						return df.err
 					}
+					// The coder's true deliverable is a committed diff on the run
+					// branch, and since #415 an empty diff fast-fails at the
+					// review gate before the reviewer runs. So on a successful
+					// coder result, commit a change — unique per call, so a
+					// repass produces a *different* diff (clearing the #316
+					// identical-diff guard too). The reviewer commits nothing.
+					if gooberName != "reviewer" {
+						if env, ok := payload.(apiv1.ResultEnvelope); ok && env.Status == apiv1.ResultSuccess {
+							if werr := os.WriteFile(filepath.Join(req.Workspace, "impl.txt"), []byte(fmt.Sprintf("coder change %d\n", calls)), 0o644); werr != nil {
+								return werr
+							}
+							runSkeletonGit(t, req.Workspace, "add", "-A")
+							runSkeletonGit(t, req.Workspace, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", fmt.Sprintf("coder impl %d", calls))
+						}
+					}
 					return harness.WriteCompletion(req.Workspace, req.CompletionPath, payload)
 				},
 			}

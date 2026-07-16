@@ -28,7 +28,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -169,7 +171,21 @@ func initAcceptanceDemo(t *testing.T) string {
 				calls[gooberName]++
 				n := calls[gooberName]
 				mu.Unlock()
-				return harness.WriteCompletion(req.Workspace, req.CompletionPath, acceptanceAct(gooberName, n))
+				payload := acceptanceAct(gooberName, n)
+				// The implementer's deliverable is a committed diff on the run
+				// branch; since #415 an empty diff fast-fails at the review gate
+				// before the reviewer runs. Commit a change on a successful
+				// implement result — unique per call so the repass produces a
+				// different diff (also clearing the #316 identical-diff guard).
+				// The reviewer commits nothing.
+				if gooberName != "reviewer" {
+					if env, ok := payload.(apiv1.ResultEnvelope); ok && env.Status == apiv1.ResultSuccess {
+						if err := commitFixtureChange(req.Workspace, n); err != nil {
+							return err
+						}
+					}
+				}
+				return harness.WriteCompletion(req.Workspace, req.CompletionPath, payload)
 			},
 		}
 	}
@@ -198,6 +214,27 @@ func acceptanceAct(gooberName string, call int) interface{} {
 		Summary: "implemented",
 		Outputs: map[string]interface{}{"changedFileCount": 1},
 	}
+}
+
+// commitFixtureChange commits a unique change to the run branch in workspace,
+// standing in for the implementer's real committed diff so the review gate has
+// a non-empty diff to evaluate (an empty diff fast-fails since #415). Explicit
+// -c identity keeps it independent of any ambient git config on the runner.
+func commitFixtureChange(workspace string, call int) error {
+	if err := os.WriteFile(filepath.Join(workspace, "impl.txt"), []byte(fmt.Sprintf("coder change %d\n", call)), 0o644); err != nil {
+		return err
+	}
+	for _, args := range [][]string{
+		{"add", "-A"},
+		{"-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", fmt.Sprintf("coder impl %d", call)},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = workspace
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %v: %w\n%s", args, err, out)
+		}
+	}
+	return nil
 }
 
 func writeFixture(t *testing.T, path, content string) {

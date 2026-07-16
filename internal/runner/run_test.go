@@ -96,6 +96,27 @@ func (s *stubDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope,
 	return result, nil
 }
 
+// committingStubDeterministic is stubDeterministic that first commits a real
+// (non-empty) change to the run branch, so a stage feeding an agentic review
+// gate produces a diff the reviewer can be invoked on — since #415 an empty
+// diff fast-fails before the reviewer. Status/error/outputs/artifacts still
+// come from byTask, so it drops into any stub-driven agentic-gate test.
+type committingStubDeterministic struct {
+	t      *testing.T
+	rec    ArtifactRecorder
+	byTask map[string]stubTaskResult
+}
+
+func (c *committingStubDeterministic) Run(ctx context.Context, env apiv1.InvocationEnvelope, dr apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	c.t.Helper()
+	if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte("stub implementation change\n"), 0o644); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	runGit(c.t, env.Workspace, "add", "-A")
+	runGit(c.t, env.Workspace, "commit", "-m", "stub impl change")
+	return (&stubDeterministic{rec: c.rec, byTask: c.byTask}).Run(ctx, env, dr)
+}
+
 // outputCapturingDeterministic is stubDeterministic plus recording each
 // call's full InvocationEnvelope by TaskID, so a test can assert what
 // actually arrived in env.Inputs — e.g. #132's InputsFrom output->input
@@ -2547,6 +2568,39 @@ func agenticGateMachine(t *testing.T) *workflow.Machine {
 	return m
 }
 
+// agenticImplementGateMachine is agenticGateMachine but with an AGENTIC
+// implement stage (goober "coder"), for #415's empty-diff fast-fail, which
+// fires only when the subject feeding the review gate is agentic — an agent
+// that was supposed to commit work but produced nothing.
+func agenticImplementGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a diff", Next: "review"},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "review",
+				Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{
+					"pass":          workflow.TerminalComplete,
+					"needs-changes": "implement",
+					"fail":          workflow.TargetAbort,
+				},
+			},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "agentic-implement-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile agentic implement machine: %v", err)
+	}
+	return m
+}
+
 // newAgenticGateRunner mirrors newTestRunnerWithDeterministic but wires a fake
 // agentic reviewer and a GateGooberCapabilities map, for #294's gate-envelope
 // capability sourcing.
@@ -2559,8 +2613,12 @@ func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, review
 	}
 	fixtureRepo := newFixtureRepo(t)
 	r, err := New(Config{
+		// Commit a real change on the implement stage so the agentic review
+		// gate sees a non-empty diff — since #415 an empty diff fast-fails
+		// before the reviewer runs, which would defeat a test that needs the
+		// reviewer invoked (e.g. #294 gate-capability sourcing).
 		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
-			return &stubDeterministic{rec: rec, byTask: byTask}, nil
+			return &committingStubDeterministic{t: t, rec: rec, byTask: byTask}, nil
 		},
 		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
 			return reviewer, nil
@@ -2912,6 +2970,204 @@ func TestRunnerRepassReceivesReviewerVerdictAsContext(t *testing.T) {
 	}
 	if verdict.Decision != apiv1.VerdictNeedsChanges || verdict.Summary != "please fix X" {
 		t.Fatalf("resolved verdict = %+v, want the reviewer's actual 1st verdict", verdict)
+	}
+}
+
+// committingFailingDeterministic commits a real (non-empty) diff and then
+// returns status:failure with a configurable, non-retryable error code — the
+// #415 shape: an implementer that did work but concludes the issue can't be
+// completed. The committed diff keeps the control subtest's failure off the
+// #415 empty-diff fast-fail path, so an unrecognized code genuinely reaches
+// the reviewer rather than being fast-failed on an empty branch.
+type committingFailingDeterministic struct {
+	t    *testing.T
+	code string
+}
+
+func (c *committingFailingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	c.t.Helper()
+	if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte("partial work before giving up\n"), 0o644); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	runGit(c.t, env.Workspace, "add", "-A")
+	runGit(c.t, env.Workspace, "commit", "-m", "partial")
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultFailure,
+		Summary: "issue cannot be completed as a single change",
+		Error:   &apiv1.ErrorInfo{Code: c.code, Message: "needs a human / decomposition", Retryable: false},
+	}, nil
+}
+
+// TestRunnerEscalatesNonRetryableFailureDisposition is issue #415's end-to-end
+// acceptance, driven through a real Start(): an implement stage that returns
+// status:failure with error.retryable==false AND a recognized escalate code
+// (ISSUE_OVER_SCOPE) terminates `escalated` on the FIRST attempt — bypassing
+// the review gate and the repass loop entirely (the reviewer is never
+// invoked). The control case proves the route is keyed on the recognized code,
+// not merely on retryable==false: an unrecognized code still routes into the
+// gate, where the reviewer evaluates it. Without the fix, the escalate-code
+// failure routes into the review gate (needs-changes → implement) and
+// terminates `aborted` only after the repass budget exhausts — inverted from
+// the intended `escalated`.
+func TestRunnerEscalatesNonRetryableFailureDisposition(t *testing.T) {
+	start := func(t *testing.T, code string) (Result, *capturingReviewer) {
+		t.Helper()
+		reviewer := &capturingReviewer{}
+		instanceRoot := t.TempDir()
+		wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+		if err != nil {
+			t.Fatalf("new worktree manager: %v", err)
+		}
+		fixtureRepo := newFixtureRepo(t)
+		r, err := New(Config{
+			NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+				return &committingFailingDeterministic{t: t, code: code}, nil
+			},
+			NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+				return reviewer, nil
+			},
+			Worktrees:    wtMgr,
+			RunsDir:      filepath.Join(instanceRoot, "runs"),
+			RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		res, err := r.Start(context.Background(), StartInput{
+			RunID:   "run-escalate-disposition",
+			Machine: agenticGateMachine(t),
+			Gaggle:  "acme-web",
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		return res, reviewer
+	}
+
+	t.Run("recognized escalate code routes straight to @escalate, bypassing the gate", func(t *testing.T) {
+		res, reviewer := start(t, "ISSUE_OVER_SCOPE")
+		if res.Phase != journal.PhaseEscalated {
+			t.Fatalf("phase = %q, want escalated (a non-retryable escalate-code failure escalates on attempt 1)", res.Phase)
+		}
+		if reviewer.called {
+			t.Fatal("reviewer was invoked — the non-retryable escalation must bypass the review gate and its repass loop entirely")
+		}
+	})
+
+	t.Run("control: an unrecognized code still routes into the gate", func(t *testing.T) {
+		// retryable==false but the code is not a recognized escalate code, so
+		// the ordinary failure route applies: into the review gate. The commit
+		// gives it a non-empty diff, so the reviewer actually evaluates it
+		// (here: pass → complete). Proves the escalation is keyed on the code.
+		res, reviewer := start(t, "SOME_OTHER_FAILURE")
+		if res.Phase != journal.PhaseCompleted {
+			t.Fatalf("phase = %q, want completed (unrecognized code → into the gate → reviewer passes)", res.Phase)
+		}
+		if !reviewer.called {
+			t.Fatal("reviewer was not invoked — an unrecognized failure code must still route into the gate, not escalate")
+		}
+	})
+}
+
+// TestRunnerFastFailsEmptyDiffFromAgenticStage is #415's reviewer sibling,
+// driven end to end: an AGENTIC implement stage that returns success but
+// commits nothing (an empty diff) reaching an agentic review gate fast-`fail`s
+// on review-1 — terminal `aborted` via the gate's fail branch — without ever
+// invoking the reviewer. Exercises the runner wiring the gate-package unit test
+// can't: evaluateGate detecting the empty diff from recordReviewerDiff's nil
+// pointer AND confirming the subject stage is agentic before passing
+// emptyDiff=true.
+func TestRunnerFastFailsEmptyDiffFromAgenticStage(t *testing.T) {
+	coder := &capturingReviewer{}    // its Invoke returns success, commits nothing
+	reviewer := &capturingReviewer{} // must never be called on an empty diff
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{}, nil
+		},
+		NewAgentic: func(gooberName string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+			if gooberName == "reviewer" {
+				return reviewer, nil
+			}
+			return coder, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-empty-agentic-diff",
+		Machine: agenticImplementGateMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseAborted {
+		t.Fatalf("phase = %q, want aborted (an agentic stage's empty diff fast-fails to the gate's fail→@abort branch on review-1)", res.Phase)
+	}
+	if reviewer.called {
+		t.Fatal("reviewer was invoked — an agentic stage's empty diff must fast-fail on review-1 without a reviewer call")
+	}
+}
+
+// TestRunnerDeterministicSubjectEmptyDiffStillReviews is #415's collision guard
+// for merge-review: an agentic review gate fed by a DETERMINISTIC subject stage
+// that commits nothing (its reviewer judges PRs/outputs, not a run-branch diff)
+// must NOT fast-fail on the empty diff — the reviewer still runs against its
+// real evidence. Without the agentic-subject scoping, the blanket empty-diff
+// fast-fail would bypass merge-review's reviewer and feed it a bogus fail.
+func TestRunnerDeterministicSubjectEmptyDiffStillReviews(t *testing.T) {
+	runID := "run-det-subject-empty-diff"
+	// A deterministic implement returns success but commits nothing → empty diff.
+	byTask := map[string]stubTaskResult{runID + ":implement": {status: apiv1.ResultSuccess, summary: "no run-branch commit"}}
+	reviewer := &capturingReviewer{} // returns pass → the run completes
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: byTask}, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return reviewer, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: agenticGateMachine(t), // deterministic implement → agentic review
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed (a deterministic subject's empty diff must NOT fast-fail — the reviewer still runs and passes)", res.Phase)
+	}
+	if !reviewer.called {
+		t.Fatal("reviewer was NOT invoked — a deterministic subject's empty diff must still reach the reviewer (the merge-review case)")
 	}
 }
 
