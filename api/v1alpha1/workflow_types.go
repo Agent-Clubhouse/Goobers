@@ -177,7 +177,23 @@ type DeterministicRun struct {
 	// Image optionally overrides the container image the command runs in.
 	// +optional
 	Image string `json:"image,omitempty" yaml:"image,omitempty"`
+	// Workspace selects where the command runs. Empty or "repo" provisions the
+	// workflow's repository worktree. "scratch" provisions an empty, disposable
+	// directory and requires no repository connection.
+	// +kubebuilder:validation:Enum=repo;scratch
+	// +optional
+	Workspace WorkspaceMode `json:"workspace,omitempty" yaml:"workspace,omitempty"`
 }
+
+// WorkspaceMode selects the filesystem workspace for a deterministic command.
+type WorkspaceMode string
+
+const (
+	// WorkspaceRepo provisions a fresh worktree from the target repository.
+	WorkspaceRepo WorkspaceMode = "repo"
+	// WorkspaceScratch provisions an empty disposable directory.
+	WorkspaceScratch WorkspaceMode = "scratch"
+)
 
 // EvaluatorKind is the pluggable evaluator a gate uses. A gate has exactly one
 // (GT-003, GT-016).

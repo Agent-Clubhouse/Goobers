@@ -289,6 +289,21 @@ func TestCompileRejectsSignalTriggerWithNoName(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsUnknownWorkspace(t *testing.T) {
+	spec := linearSpec()
+	spec.Tasks[0] = apiv1.Task{
+		Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+		Run: &apiv1.DeterministicRun{
+			Command:   []string{"true"},
+			Workspace: apiv1.WorkspaceMode("host"),
+		},
+	}
+	_, err := Compile(Definition{Name: "bad-workspace", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `unknown workspace "host"`) {
+		t.Fatalf("Compile error = %v, want unknown workspace", err)
+	}
+}
+
 func TestCompileAdmissionCapabilities(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",

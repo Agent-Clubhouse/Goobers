@@ -760,6 +760,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		},
 		Automated:              gate.NewAutomatedEvaluator(),
 		Worktrees:              wtMgr,
+		ScratchDir:             filepath.Join(l.WorkcopiesDir(), "scratch"),
 		RunsDir:                l.RunsDir(),
 		RepoCloneURL:           repoCloneURL,
 		GateGooberCapabilities: gateGooberCaps,

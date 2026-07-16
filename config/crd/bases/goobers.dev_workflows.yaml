@@ -209,6 +209,15 @@ spec:
                           description: Image optionally overrides the container image
                             the command runs in.
                           type: string
+                        workspace:
+                          description: |-
+                            Workspace selects where the command runs. Empty or "repo" provisions the
+                            workflow's repository worktree. "scratch" provisions an empty, disposable
+                            directory and requires no repository connection.
+                          enum:
+                          - repo
+                          - scratch
+                          type: string
                       required:
                       - command
                       type: object

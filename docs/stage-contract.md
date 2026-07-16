@@ -40,8 +40,10 @@ by convention:
 The runner hands the stage an `InvocationEnvelope`:
 
 - `goal` — what to achieve.
-- `workspace` — absolute path to the fresh, isolated, disposable working copy the
-  stage runs in (a git worktree at tiers 1–2; a pod workspace at tier 3).
+- `workspace` — absolute path to the fresh, isolated, disposable workspace the
+  stage runs in. Repo-backed stages receive a git worktree at tiers 1–2; a
+  deterministic task with `run.workspace: scratch` receives an empty directory
+  and does not resolve a repository.
 - `contextPointers[]` — the read-only inputs. Each is exactly one of:
   - an `artifact` (`ArtifactPointer`: journal-relative `path` + `sha256` digest) —
     upstream outputs and input snapshots; or

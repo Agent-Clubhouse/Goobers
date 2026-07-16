@@ -160,6 +160,9 @@ type Config struct {
 	// Worktrees provisions the fresh, isolated, disposable working copy each
 	// stage attempt runs in (§5).
 	Worktrees *worktree.Manager
+	// ScratchDir contains disposable workspaces for deterministic commands that
+	// declare run.workspace=scratch. Required only when such a task executes.
+	ScratchDir string
 	// RunsDir is the journal's run directory (<instance-root>/runs).
 	RunsDir string
 	// PrepareTerminal records external cleanup immediately before run.finished.
@@ -326,20 +329,20 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	ctx, span := r.startRunSpan(ctx, in)
 	defer span.End()
 
-	// Record the run's branch up front (providers.BranchName): every stage's
-	// worktree checks it out and the implementer pushes it, so it is the run's
-	// primary external ref for traceability (#133). Deterministic from
-	// (workflow, run id), so it is conformance-stable across runners.
-	if err := jr.Append(journal.Event{
-		Type: journal.EventRefTouched,
-		ExternalRef: &journal.ExternalRef{
-			Provider: string(in.RepoRef.Provider),
-			Kind:     "branch",
-			ID:       providers.BranchName(in.Machine.Def.Name, in.RunID),
-		},
-	}); err != nil {
-		span.Fail(err)
-		return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
+	// A scratch-only workflow has no repository branch. Repo-backed workflows
+	// retain the run branch as their primary external ref (#133).
+	if machineUsesRepo(in.Machine) {
+		if err := jr.Append(journal.Event{
+			Type: journal.EventRefTouched,
+			ExternalRef: &journal.ExternalRef{
+				Provider: string(in.RepoRef.Provider),
+				Kind:     "branch",
+				ID:       providers.BranchName(in.Machine.Def.Name, in.RunID),
+			},
+		}); err != nil {
+			span.Fail(err)
+			return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
+		}
 	}
 
 	result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, registrar, walkSeed{})
@@ -1258,11 +1261,12 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task)
 	return ctx, span
 }
 
-// dispatchTask provisions one attempt's worktree and invokes the task's
+// dispatchTask provisions one attempt's workspace and invokes the task's
 // executor. It never journals its own result/err — runTask owns attempt/
 // retry journaling so a retried attempt is never mistaken for the run's
-// overall outcome. removeErr is separate and additive: a failed worktree
-// teardown (issue #136 — previously silently discarded, letting a failed
+// overall outcome. removeErr is separate and additive: a failed workspace
+// teardown (issue #136 — worktree failures were previously silently discarded,
+// letting a failed
 // Remove turn every subsequent retry of this stage into a guaranteed
 // "already has a worktree" error) never overrides the stage's own
 // result/err, but runTask still surfaces it as a journaled warning so it's
@@ -1274,8 +1278,8 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task)
 // #228): a deterministic stage's underlying subcommand (backlog-query/
 // open-pr/issue-close-out) runs as a separate short-lived process with no
 // legal journal access, so it records its provider-mutation facts to a
-// sidecar file in the worktree instead; dispatchTask reads that sidecar
-// (before wt.Remove's defer destroys the worktree, since runTask can't read
+// sidecar file in the workspace instead; dispatchTask reads that sidecar
+// (before cleanup destroys the workspace, since runTask can't read
 // it after the fact) and returns the parsed facts for runTask to project
 // into ref.touched events. Read on the deterministic success path only —
 // mutations only ever come from a deterministic provider-chain subcommand,
@@ -1289,11 +1293,15 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task)
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
 func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, attempt int, class journal.AttemptClass) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
-	env, wt, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream)
+	workspaceMode := apiv1.WorkspaceRepo
+	if t.Run != nil && t.Run.Workspace != "" {
+		workspaceMode = t.Run.Workspace
+	}
+	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream, workspaceMode)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("prepare stage %q: %w", t.Name, err), nil
 	}
-	defer func() { removeErr = wt.Remove(ctx, worktree.RemoveOptions{}) }()
+	defer func() { removeErr = workspace.Remove(ctx) }()
 
 	for inputKey, outputKey := range t.InputsFrom {
 		v, ok := upstreamResult.Outputs[outputKey]
@@ -1518,13 +1526,15 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		if g.Evaluator == apiv1.EvaluatorAgentic {
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
-		env, wt, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, upstream)
+		var workspace *stageWorkspace
+		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, upstream, apiv1.WorkspaceRepo)
 		if err != nil {
 			err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
 			span.Fail(err)
 			return gate.Result{}, err, nil
 		}
-		defer func() { removeErr = wt.Remove(ctx, worktree.RemoveOptions{}) }()
+		defer func() { removeErr = workspace.Remove(ctx) }()
+		wt = workspace.worktree
 
 		// #301: give an agentic reviewer gate a runner-produced, digested diff
 		// of the run branch (git diff base...HEAD) as evidence, so it judges the
@@ -1679,34 +1689,24 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 	return ctx, span
 }
 
-// buildEnvelope provisions the isolated worktree and builds the invocation
-// envelope for one stage attempt. The caller owns removing the returned
-// worktree. Credentials are NOT resolved here — each invoke.Deterministic/
-// invoke.Goober executor resolves its own capability-scoped credentials from
-// env.Capabilities (see executor.go).
-func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, goal string, taskInputs map[string]string, capabilities []string, upstream []apiv1.ContextPointer) (apiv1.InvocationEnvelope, *worktree.Worktree, error) {
-	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+type stageWorkspace struct {
+	path     string
+	worktree *worktree.Worktree
+}
+
+func (w *stageWorkspace) Remove(ctx context.Context) error {
+	if w.worktree != nil {
+		return w.worktree.Remove(ctx, worktree.RemoveOptions{})
+	}
+	return os.RemoveAll(w.path)
+}
+
+// buildEnvelope provisions an isolated repository worktree or empty scratch
+// directory and builds one stage attempt's invocation envelope.
+func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, goal string, taskInputs map[string]string, capabilities []string, upstream []apiv1.ContextPointer, workspaceMode apiv1.WorkspaceMode) (apiv1.InvocationEnvelope, *stageWorkspace, error) {
+	workspace, err := r.createStageWorkspace(ctx, in, stageName, workspaceMode)
 	if err != nil {
 		return apiv1.InvocationEnvelope{}, nil, err
-	}
-	baseRef := in.RepoRef.Branch
-	if baseRef == "" {
-		baseRef = "main"
-	}
-	// Every stage of a run checks out the run's shared branch in its own fresh
-	// worktree: the first mutating stage creates it off baseRef, later stages
-	// inherit the prior stages' commits. Without this, each stage's worktree
-	// detached at baseRef and local-ci/reviewer gates evaluated a pristine tree
-	// instead of the run's actual diff (#133). Branch is keyed on the run id,
-	// not the per-stage worktree key, so all stages share the one branch.
-	wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
-		RepoURL: repoURL,
-		RunID:   in.RunID + "-" + stageName,
-		BaseRef: baseRef,
-		Branch:  providers.BranchName(in.Machine.Def.Name, in.RunID),
-	})
-	if err != nil {
-		return apiv1.InvocationEnvelope{}, nil, fmt.Errorf("create worktree: %w", err)
 	}
 
 	inputs := make(map[string]interface{}, len(taskInputs))
@@ -1719,14 +1719,66 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		RunID:           in.RunID,
 		Gaggle:          in.Gaggle,
 		Goal:            goal,
-		Workspace:       wt.Path,
+		Workspace:       workspace.path,
 		RepoRef:         in.RepoRef,
 		Item:            in.Item,
 		ContextPointers: upstream,
 		Capabilities:    capabilities,
 		Inputs:          inputs,
 	}
-	return env, wt, nil
+	return env, workspace, nil
+}
+
+func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode) (*stageWorkspace, error) {
+	switch mode {
+	case apiv1.WorkspaceScratch:
+		if r.cfg.ScratchDir == "" {
+			return nil, fmt.Errorf("create scratch workspace: runner ScratchDir is required")
+		}
+		if err := os.MkdirAll(r.cfg.ScratchDir, 0o700); err != nil {
+			return nil, fmt.Errorf("create scratch workspace root: %w", err)
+		}
+		path, err := os.MkdirTemp(r.cfg.ScratchDir, "stage-*")
+		if err != nil {
+			return nil, fmt.Errorf("create scratch workspace: %w", err)
+		}
+		return &stageWorkspace{path: path}, nil
+	case "", apiv1.WorkspaceRepo:
+		repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+		if err != nil {
+			return nil, err
+		}
+		baseRef := in.RepoRef.Branch
+		if baseRef == "" {
+			baseRef = "main"
+		}
+		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
+			RepoURL: repoURL,
+			RunID:   in.RunID + "-" + stageName,
+			BaseRef: baseRef,
+			Branch:  providers.BranchName(in.Machine.Def.Name, in.RunID),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create worktree: %w", err)
+		}
+		return &stageWorkspace{path: wt.Path, worktree: wt}, nil
+	default:
+		return nil, fmt.Errorf("unknown workspace mode %q", mode)
+	}
+}
+
+func machineUsesRepo(machine *workflow.Machine) bool {
+	for _, task := range machine.Def.Spec.Tasks {
+		if task.Type == apiv1.TaskAgentic || task.Run == nil || task.Run.Workspace != apiv1.WorkspaceScratch {
+			return true
+		}
+	}
+	for _, g := range machine.Def.Spec.Gates {
+		if g.Evaluator != apiv1.EvaluatorAutomated {
+			return true
+		}
+	}
+	return false
 }
 
 // contextPointersFor turns stageName's already-committed artifacts into the

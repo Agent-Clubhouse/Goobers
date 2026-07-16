@@ -53,7 +53,8 @@ execution. Two runners implement the same contract:
 - Owns the run journal directly as **plain files** (§4). Durability = append + fsync;
   crash recovery = replay `state.json` + journal on restart and resume from the last
   completed stage.
-- Executes stages as local processes in isolated git worktrees.
+- Executes repo-backed stages as local processes in isolated git worktrees;
+  deterministic stages may instead request an empty disposable scratch workspace.
 - An embedded scheduler fires cron triggers and enforces run conditions
   (max-parallel, budgets).
 
@@ -152,7 +153,8 @@ document's term for what the Task spec calls a task; the terms are equivalent ac
 the doc set.)
 
 - **Deterministic stages** — arbitrary commands (tests, linters, builders, CI pollers)
-  run in the stage worktree with declared env, timeout, and retry policy.
+  run with declared env, timeout, and retry policy. They use a repository worktree
+  by default, or an empty disposable scratch workspace when they do not need a repo.
 - **Agentic stages** — an agent harness invoked in the stage worktree with an
   **invocation envelope** (goal, context pointers, capability grants); it must finish
   by producing a **result envelope** (status, outputs, artifact pointers). Harness
@@ -169,11 +171,14 @@ Contract rules:
 
 - Stages exchange **artifact pointers** (path + digest inside the journal), never
   implicit shared state.
-- Each stage runs in a **fresh, isolated, disposable working copy** of the target
-  repo. At tiers 1–2 that is a git worktree branched off the managed working copy
-  (§6); at tier 3 it is the workspace of an ephemeral pod (fresh clone or sparse
-  checkout). The tier-neutral contract is isolation + disposal after the run; the
-  worktree is the tiers-1–2 mechanism, not the contract.
+- Each stage runs in a **fresh, isolated, disposable workspace**. Repo-backed
+  stages receive a working copy of the target repo: at tiers 1–2 that is a git
+  worktree branched off the managed working copy (§6); at tier 3 it is the
+  workspace of an ephemeral pod (fresh clone or sparse checkout). Deterministic
+  stages may declare `run.workspace: scratch` to receive an empty workspace with
+  no repository resolution. The tier-neutral contract is isolation + disposal
+  after the run; the worktree is the tiers-1–2 repo-backed mechanism, not the
+  contract.
 - **Capability admission:** a stage may only touch capabilities its definition
   declares, from the canonical registry (`internal/capability`, issue #74) —
   e.g. `github:issues:write`, `repo:push`, `telemetry:read`. Undeclared use, and

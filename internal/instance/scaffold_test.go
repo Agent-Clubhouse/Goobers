@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 func TestInitFresh(t *testing.T) {
@@ -59,6 +61,42 @@ func TestInitFresh(t *testing.T) {
 	}
 	if len(set.Gaggles) != 1 || len(set.Goobers) != 1 || len(set.Workflows) != 1 {
 		t.Fatalf("unexpected seeded config shape: %+v", set)
+	}
+}
+
+func TestInitDemoFresh(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo")
+	res, err := InitDemo(root)
+	if err != nil {
+		t.Fatalf("InitDemo: %v", err)
+	}
+	if len(res.Skipped) != 0 {
+		t.Fatalf("fresh demo init skipped entries: %v", res.Skipped)
+	}
+
+	l := NewLayout(root)
+	cfg, err := LoadConfig(l.ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.Repos) != 0 || len(cfg.Credentials) != 0 {
+		t.Fatalf("demo instance unexpectedly requires connections: %+v", cfg)
+	}
+	set, report, err := LoadConfigDir(l.ConfigDir())
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if len(set.Gaggles) != 1 || len(set.Goobers) != 0 || len(set.Workflows) != 1 {
+		t.Fatalf("unexpected demo config shape: %+v", set)
+	}
+	workflow := set.Workflows[0]
+	if workflow.Name != "demo" || len(workflow.Spec.Tasks) != 2 || len(workflow.Spec.Gates) != 1 {
+		t.Fatalf("unexpected demo workflow: %+v", workflow)
+	}
+	for _, task := range workflow.Spec.Tasks {
+		if task.Type != apiv1.TaskDeterministic || task.Run == nil || task.Run.Workspace != apiv1.WorkspaceScratch {
+			t.Fatalf("demo task is not a scratch deterministic stage: %+v", task)
+		}
 	}
 }
 
