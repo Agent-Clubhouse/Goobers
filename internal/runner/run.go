@@ -1303,6 +1303,28 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		}
 	}
 
+	// cachedVerdict (issue #523): a deterministic subject stage (merge-
+	// review's gather-sibling-context) may have already found a digest-
+	// matched prior verdict for this exact evaluation and handed it back as
+	// a scalar JSON string output — subjectResult.Outputs is a generic
+	// map[string]interface{} no gate-package code should need to know the
+	// shape of, so the decode (and the "is this even a merge-review-style
+	// cache hit" question) lives entirely here, at the one call site that
+	// already owns subjectResult. A decode failure is silently ignored, not
+	// fatal: an absent or malformed cachedVerdictJson is exactly the normal
+	// "no cache hit" case for every gate that never produces this key at
+	// all (every gate but merge-review's review gate). Rebound on every
+	// call — possibly to nil — mirroring Reviewer's own rebind contract
+	// just below, so a hit for one gate can never leak into the next.
+	var cachedVerdict *apiv1.Verdict
+	if raw, ok := subjectResult.Outputs["cachedVerdictJson"].(string); ok && raw != "" {
+		var v apiv1.Verdict
+		if jerr := json.Unmarshal([]byte(raw), &v); jerr == nil {
+			cachedVerdict = &v
+		}
+	}
+	gateEval.CachedVerdict = cachedVerdict
+
 	switch g.Evaluator {
 	case apiv1.EvaluatorAutomated:
 		env.Inputs = make(map[string]interface{}, 1+len(subjectResult.Outputs))
@@ -1311,17 +1333,23 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 			env.Inputs[k] = v
 		}
 	case apiv1.EvaluatorAgentic:
-		ag, aerr := ex.agentic(gooberName)
-		if aerr != nil {
-			err := fmt.Errorf("runner: gate %q: %w", g.Name, aerr)
-			span.Fail(err)
-			return gate.Result{}, err, nil
+		// A cache hit means Evaluate below will never call the reviewer at
+		// all, so there is nothing for a goober executor to do — skip
+		// constructing one entirely rather than resolving credentials and
+		// wiring a Goober that Evaluate is guaranteed not to invoke.
+		if cachedVerdict == nil {
+			ag, aerr := ex.agentic(gooberName)
+			if aerr != nil {
+				err := fmt.Errorf("runner: gate %q: %w", g.Name, aerr)
+				span.Fail(err)
+				return gate.Result{}, err, nil
+			}
+			// Rebound per gate evaluated, not shared across gateEval's lifetime:
+			// different agentic gates in the same run may target different
+			// reviewer goobers. gate.Evaluator reads this field fresh on every
+			// Evaluate call, so mutating it here between calls is safe.
+			gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: ag}
 		}
-		// Rebound per gate evaluated, not shared across gateEval's lifetime:
-		// different agentic gates in the same run may target different
-		// reviewer goobers. gate.Evaluator reads this field fresh on every
-		// Evaluate call, so mutating it here between calls is safe.
-		gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: ag}
 	}
 
 	result, err = gateEval.Evaluate(ctx, g, env, subjectStage, subjectResult, diffDigest, emptyDiff)

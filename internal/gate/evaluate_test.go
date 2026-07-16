@@ -349,6 +349,77 @@ func TestEvaluatorEscalatesOnDuplicateDiffWithoutReReview(t *testing.T) {
 	}
 }
 
+// TestEvaluatorReusesCachedVerdictWithoutReviewerCall is issue #523's core
+// mechanism test: when the caller (merge-review's gather-sibling-context, in
+// production; the test itself here) has already found a digest-matched
+// prior verdict and sets Evaluator.CachedVerdict, Evaluate must skip the
+// reviewer entirely, reuse that verdict's content verbatim (Decision,
+// Digest, SourceRunID all unchanged), resolve the branch from ITS Decision,
+// and journal CacheHit=true — auditable via the same Runner-namespace
+// annotation convention duplicateDiff already established.
+func TestEvaluatorReusesCachedVerdictWithoutReviewerCall(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "reviewgate",
+		Evaluator: apiv1.EvaluatorAgentic,
+		Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+		Branches: map[string]string{
+			string(apiv1.VerdictPass):         wf.TerminalComplete,
+			string(apiv1.VerdictNeedsChanges): "implement",
+			string(apiv1.VerdictFail):         wf.TargetAbort,
+		},
+	}
+	rev := &fakeGoober{reviewVerdict: apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "a live call would say this"}}
+	run := newTestJournal(t)
+	cached := &apiv1.Verdict{
+		Decision: apiv1.VerdictPass, Summary: "reused from a prior run",
+		Digest: "sha256:matched", SourceRunID: "run-original", HeadSHA: "headsha1", BaseSHA: "basesha1",
+	}
+	ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: rev}, Journal: run, CachedVerdict: cached}
+
+	r, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "gather-sibling-context", apiv1.ResultEnvelope{}, "", false)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if rev.reviewCalls != 0 {
+		t.Fatalf("reviewCalls = %d, want 0 (the reviewer must never be invoked on a cache hit)", rev.reviewCalls)
+	}
+	if !r.CacheHit {
+		t.Fatalf("r.CacheHit = false, want true")
+	}
+	if r.Target != wf.TerminalComplete {
+		t.Fatalf("r.Target = %q, want %q (resolved from the cached verdict's own pass decision)", r.Target, wf.TerminalComplete)
+	}
+	if r.Verdict == nil || r.Verdict.Digest != "sha256:matched" || r.Verdict.SourceRunID != "run-original" {
+		t.Fatalf("r.Verdict = %+v, want the cached verdict reused verbatim (Digest/SourceRunID unchanged)", r.Verdict)
+	}
+	if r.DuplicateDiff {
+		t.Fatalf("r.DuplicateDiff = true, want false (CacheHit and DuplicateDiff are distinct escalation-free vs. escalating paths)")
+	}
+
+	events := readGateEvents(t, run)
+	if len(events) != 1 {
+		t.Fatalf("journaled gate events = %d, want 1", len(events))
+	}
+	hit, ok := events[0].Runner["verdictCacheHit"].(bool)
+	if !ok || !hit {
+		t.Fatalf("events[0].Runner[verdictCacheHit] = %v, want true", events[0].Runner["verdictCacheHit"])
+	}
+
+	t.Run("rebinding CachedVerdict to nil for the next gate restores live evaluation", func(t *testing.T) {
+		ev.CachedVerdict = nil
+		r2, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "gather-sibling-context", apiv1.ResultEnvelope{}, "", false)
+		if err != nil {
+			t.Fatalf("Evaluate: %v", err)
+		}
+		if r2.CacheHit {
+			t.Fatalf("r2.CacheHit = true, want false once CachedVerdict is rebound to nil")
+		}
+		if rev.reviewCalls != 1 {
+			t.Fatalf("reviewCalls = %d, want 1 (the live reviewer must run once CachedVerdict is cleared)", rev.reviewCalls)
+		}
+	})
+}
+
 // TestEvaluatorFastFailsEmptyDiffOnReviewOne is issue #415's reviewer sibling:
 // when the implement stage commits nothing (an empty diff — e.g. it produced
 // no change on an over-scope probe), the reviewer gate must fast-`fail` on the

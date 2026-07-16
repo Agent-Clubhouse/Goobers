@@ -31,6 +31,16 @@ type Journal interface {
 // Evaluator.LastDiffDigest from each gate's last such event on resume, the
 // same way gateRepassSeed reconstructs Attempts.
 //
+// verdictCacheHit (issue #523) is a third Runner-namespace annotation,
+// alongside duplicateDiff: true when this attempt reused
+// Evaluator.CachedVerdict instead of invoking the reviewer. Unlike
+// duplicateDiff/repassAttempt it has no seeding contract to preserve on
+// resume — a cache hit is a one-shot fact about how THIS attempt's verdict
+// was obtained, not run-scoped counter state. The reused Verdict's own
+// SourceRunID (unchanged by the reuse) is what makes a cache-hit event
+// auditable in `goobers trace`: the annotation says "this run skipped the
+// reviewer," the artifact says which run actually ran it.
+//
 // recordVerdict returns the verdict's journaled ArtifactPointer (nil when
 // r.Verdict is nil, or when j is nil) so the caller (Evaluate) can attach it
 // to Result.VerdictArtifact — the same artifact this function just recorded,
@@ -40,7 +50,7 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 	if j == nil {
 		return nil, nil
 	}
-	runner := map[string]any{"repassAttempt": r.Attempt, "escalated": r.Escalated, "duplicateDiff": r.DuplicateDiff}
+	runner := map[string]any{"repassAttempt": r.Attempt, "escalated": r.Escalated, "duplicateDiff": r.DuplicateDiff, "verdictCacheHit": r.CacheHit}
 	if diffDigest != "" {
 		runner["diffDigest"] = diffDigest
 	}

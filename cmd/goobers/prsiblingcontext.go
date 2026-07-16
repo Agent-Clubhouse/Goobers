@@ -21,6 +21,7 @@ type siblingPR struct {
 	Number     int      `json:"number"`
 	URL        string   `json:"url"`
 	Head       string   `json:"head"`
+	HeadSHA    string   `json:"headSha"`
 	Draft      bool     `json:"draft"`
 	Labels     []string `json:"labels,omitempty"`
 	CheckState string   `json:"checkState"`
@@ -36,18 +37,34 @@ type siblingPR struct {
 // ones pr-select would itself find eligible) — a sibling that's draft, red,
 // or already labeled is still relevant evidence (e.g. "PR #12 touches the
 // same file but isn't ready yet").
+//
+// Per-sibling evidence is memoized across runs (issue #523,
+// siblingcache.go): the open-PR list itself is always queried fresh — it is
+// the freshness probe, one request regardless of PR count, and the source
+// of every volatile field (draft/labels/head SHA) — but a sibling whose
+// head SHA is unchanged since the last gather reuses its cached files and
+// terminal check state instead of costing three more requests per run.
 func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("gather-sibling-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers gather-sibling-context [path]\n\n"+
+		pf(stderr, "Usage: goobers gather-sibling-context [--no-cache] [--no-verdict-cache] [path]\n\n"+
 			"Load the other open goober-authored PRs' touched files + state as\n"+
 			"evidence for the holistic review (a workflow stage, follows\n"+
 			"pr-select). Requires selectedNumber/selectedHead/selectedBase inputs\n"+
-			"(Task.InputsFrom pr-select's own outputs). Exit codes: 0 = context\n"+
-			"gathered (possibly empty — no siblings is not an error), 1 = business\n"+
-			"error, 2 = usage/IO error.\n")
+			"(Task.InputsFrom pr-select's own outputs). Sibling files/check state\n"+
+			"are memoized per head SHA under the instance scheduler dir; --no-cache\n"+
+			"bypasses that memo entirely (neither read nor written) to force a fully\n"+
+			"fresh gather. Separately, this stage also computes the selected PR's\n"+
+			"reviewDigest and checks the PR's own most recent verdict comment for a\n"+
+			"matching one (issue #523's verdict-level cache) — a match is emitted as\n"+
+			"cachedVerdictJson, letting the runner skip the reviewer gate's LLM call\n"+
+			"entirely; --no-verdict-cache skips that lookup, always forcing a fresh\n"+
+			"review. Exit codes: 0 = context gathered (possibly empty — no siblings\n"+
+			"is not an error), 1 = business error, 2 = usage/IO error.\n")
 	}
+	noCache := fs.Bool("no-cache", false, "bypass the sibling-context cache (debug/remediation escape hatch)")
+	noVerdictCache := fs.Bool("no-verdict-cache", false, "skip the verdict-cache lookup, always forcing a fresh review (debug/remediation escape hatch)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -87,14 +104,25 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	headPrefix := providerInput("headPrefix", "goobers/")
 
 	ctx := context.Background()
+	// SkipCheckState: the list is the always-fresh probe (one request), but
+	// per-candidate check-state resolution is two more requests per PR —
+	// resolved below only for siblings whose cached state isn't reusable.
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix,
+		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "sibling-context.json")
 	}
 
+	schedulerDir := layoutFor(root).SchedulerDir()
+	var cached map[string]siblingCacheEntry
+	if !*noCache {
+		cached = loadSiblingCache(schedulerDir, stderr)
+	}
+	next := make(map[string]siblingCacheEntry, len(prs))
+
 	var selectedHeadSHA, selectedBaseSHA string
+	reused := 0
 	siblings := make([]siblingPR, 0, len(prs))
 	for _, pr := range prs {
 		if pr.Number == selectedNumber {
@@ -103,20 +131,51 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			// pin against (design doc §6 D6), not whatever pr-select saw
 			// several stages ago.
 			selectedHeadSHA, selectedBaseSHA = pr.HeadSHA, pr.BaseSHA
+			// Keep its still-valid memo through the save's prune-to-open-set:
+			// this PR is a *sibling* from every other run's perspective, and
+			// merge-review cycles through selections — evicting here would
+			// force the very next run to re-fetch it.
+			if prior, ok := cached[strconv.Itoa(pr.Number)]; ok && prior.HeadSHA == pr.HeadSHA {
+				next[strconv.Itoa(pr.Number)] = prior
+			}
 			continue
 		}
-		files, ferr := provider.PullRequestFiles(ctx, repo, strconv.Itoa(pr.Number))
-		if ferr != nil {
-			return failProviderStage(stderr, fmt.Sprintf("list files for PR #%d", pr.Number), ferr, "sibling-context.json")
+		key := strconv.Itoa(pr.Number)
+		prior, hit := cached[key]
+		hit = hit && prior.HeadSHA == pr.HeadSHA
+		paths := prior.Files
+		if !hit {
+			files, ferr := provider.PullRequestFiles(ctx, repo, key)
+			if ferr != nil {
+				return failProviderStage(stderr, fmt.Sprintf("list files for PR #%d", pr.Number), ferr, "sibling-context.json")
+			}
+			paths = make([]string, 0, len(files))
+			for _, f := range files {
+				paths = append(paths, f.Path)
+			}
+		} else {
+			reused++
 		}
-		paths := make([]string, 0, len(files))
-		for _, f := range files {
-			paths = append(paths, f.Path)
+		checkState := prior.CheckState
+		if !hit || !checkStateTerminal(checkState) {
+			checkState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
+			if err != nil {
+				return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", pr.Number), err, "sibling-context.json")
+			}
 		}
+		next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: checkState, Files: paths}
 		siblings = append(siblings, siblingPR{
-			Number: pr.Number, URL: pr.URL, Head: pr.Head, Draft: pr.Draft,
-			Labels: pr.Labels, CheckState: string(pr.CheckState), Files: paths,
+			Number: pr.Number, URL: pr.URL, Head: pr.Head, HeadSHA: pr.HeadSHA, Draft: pr.Draft,
+			Labels: pr.Labels, CheckState: string(checkState), Files: paths,
 		})
+	}
+
+	// Persist before the selected-vanished check: sibling evidence gathered
+	// on a run that ends up moot is still valid memo for the next run.
+	if !*noCache {
+		if err := saveSiblingCache(schedulerDir, next); err != nil {
+			pf(stderr, "warning: persist sibling-context cache: %v\n", err)
+		}
 	}
 
 	if selectedHeadSHA == "" {
@@ -125,8 +184,34 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "selected PR is no longer open")
 	}
 
+	// #523 verdict-level cache: compute this evaluation's digest from the
+	// exact inputs just gathered, then check the selected PR's own most
+	// recent verdict comment for a match. A match lets the runner skip the
+	// reviewer gate's LLM call entirely (internal/gate.Evaluator.
+	// CachedVerdict) — the expensive part the maintainer ruling targets
+	// (90-280s per call), distinct from --no-cache's fetch-level saving
+	// above.
+	reviewDigest := computeReviewDigest(selectedHeadSHA, selectedBaseSHA, siblings)
+	var cachedVerdictJSON string
+	if !*noVerdictCache {
+		cached, cerr := findCachedVerdict(ctx, provider, repo, selectedNumber, reviewDigest)
+		if cerr != nil {
+			// A failed lookup is an optimization loss, not a stage failure —
+			// same posture as loadSiblingCache's degrade-on-error: fall
+			// through to a real review rather than aborting the gather.
+			pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
+		} else if cached != nil {
+			data, merr := json.Marshal(cached)
+			if merr != nil {
+				pf(stderr, "warning: marshal cached verdict: %v\n", merr)
+			} else {
+				cachedVerdictJSON = string(data)
+			}
+		}
+	}
+
 	resultFile := providerInput("resultFile", "sibling-context.json")
-	data, err := json.MarshalIndent(map[string]interface{}{
+	out := map[string]interface{}{
 		// selectedNumber is emitted as a STRING (selectedNumberStr, not the
 		// parsed int), matching pr-select's "number":"403" and apply-verdict's
 		// strconv.Atoi consumer — one type end-to-end (#413). This is
@@ -139,8 +224,17 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		"selectedNumber":  selectedNumberStr,
 		"selectedHeadSha": selectedHeadSHA,
 		"selectedBaseSha": selectedBaseSHA,
+		"reviewDigest":    reviewDigest,
 		"siblings":        siblings,
-	}, "", "  ")
+	}
+	if cachedVerdictJSON != "" {
+		// A scalar string (not a nested object) so executor.
+		// mergeResultFileOutputs' flat-object merge actually lifts it into
+		// Outputs["cachedVerdictJson"] — the runner reads it there directly
+		// (evaluateGate), never through a declared inputsFrom edge.
+		out["cachedVerdictJson"] = cachedVerdictJSON
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		pf(stderr, "error: marshal sibling context: %v\n", err)
 		return 1
@@ -150,6 +244,11 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	pf(stdout, "gathered context for %d sibling PR(s)\n", len(siblings))
+	cacheNote := "no verdict cache hit"
+	if cachedVerdictJSON != "" {
+		cacheNote = "verdict cache HIT — reviewer call will be skipped"
+	}
+	pf(stdout, "gathered context for %d sibling PR(s) (%d reused from cache, %d fetched fresh); %s\n",
+		len(siblings), reused, len(siblings)-reused, cacheNote)
 	return 0
 }

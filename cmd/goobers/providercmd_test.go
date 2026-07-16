@@ -61,6 +61,26 @@ type fakeGitHubServer struct {
 	prs    map[int]*fakePR
 	nextPR int
 	server *httptest.Server
+	// filesRequests/checkStateRequests count GET /pulls/{n}/files and
+	// /commits/{sha}/{status,check-runs} hits — the per-sibling API cost
+	// #523's cache exists to eliminate, so its tests can assert "an
+	// unchanged sibling costs zero requests on the next gather".
+	filesRequests      int
+	checkStateRequests int
+}
+
+// resetRequestCounts zeroes the per-endpoint counters between gather runs so
+// a test can assert on one run's cost in isolation.
+func (s *fakeGitHubServer) resetRequestCounts() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.filesRequests, s.checkStateRequests = 0, 0
+}
+
+func (s *fakeGitHubServer) requestCounts() (files, checkState int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.filesRequests, s.checkStateRequests
 }
 
 func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
@@ -305,6 +325,7 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 	}
 	switch {
 	case len(parts) == 2 && parts[1] == "files" && r.Method == http.MethodGet:
+		s.filesRequests++
 		out := make([]map[string]interface{}, 0, len(pr.files))
 		for _, f := range pr.files {
 			out = append(out, map[string]interface{}{
@@ -343,6 +364,7 @@ func (s *fakeGitHubServer) handleCommitItem(w http.ResponseWriter, r *http.Reque
 	}
 	sha, kind := parts[0], parts[1]
 	s.mu.Lock()
+	s.checkStateRequests++
 	state := "success"
 	for _, pr := range s.prs {
 		if pr.headSHA == sha && pr.checkState != "" {
@@ -414,6 +436,42 @@ func (s *fakeGitHubServer) closeIssue(number int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.issues[number].state = "closed"
+}
+
+// setPRHead models a push/rebase to a fixture PR between runs: a new head
+// SHA and the file set the new head touches (#523's cache-invalidation
+// tests).
+func (s *fakeGitHubServer) setPRHead(number int, headSHA string, files []fakePRFile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].headSHA = headSHA
+	s.prs[number].files = files
+}
+
+// setPRCheckState models CI advancing on an unchanged head (pending →
+// success/failure) between runs (#523's terminal-state reuse tests).
+func (s *fakeGitHubServer) setPRCheckState(number int, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].checkState = state
+}
+
+// setPRClosed models a fixture PR closing/merging between runs (#523's
+// cache-pruning test).
+func (s *fakeGitHubServer) setPRClosed(number int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].state = "closed"
+}
+
+// addComment seeds a comment directly on issue/PR number's thread, bypassing
+// the POST endpoint — for tests that need a fixture PR to already carry a
+// prior run's posted verdict comment (#523's verdict-cache lookup) before
+// the stage under test ever runs.
+func (s *fakeGitHubServer) addComment(number int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[number].comments = append(s.issues[number].comments, body)
 }
 
 func hasAllLabels(have, want []string) bool {

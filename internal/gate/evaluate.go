@@ -41,6 +41,17 @@ type Result struct {
 	// than because the repass budget was exhausted. The reviewer was never
 	// called for this attempt — Verdict is synthesized, not agent-produced.
 	DuplicateDiff bool
+	// CacheHit is true when Evaluator.CachedVerdict was set for this
+	// evaluation (issue #523's cross-run verdict cache): the reviewer was
+	// never called, and Verdict is the caller-supplied cached verdict,
+	// re-journaled as-is (including its original SourceRunID) rather than
+	// freshly produced. Distinct from DuplicateDiff, which is an in-run,
+	// same-attempt-content dedup — CacheHit is cross-run, keyed by the
+	// caller's own digest match (the caller — merge-review's
+	// gather-sibling-context — already verified the cached verdict's
+	// inputs are unchanged before ever setting CachedVerdict; Evaluate
+	// trusts that verification and never recomputes it).
+	CacheHit bool
 	// Verdict is the full agentic-gate verdict (decision, rationale,
 	// evidence, findings). nil for automated gates.
 	Verdict *apiv1.Verdict
@@ -108,6 +119,23 @@ type Evaluator struct {
 	// internal/runner/resume.go's gateDiffSeed), and Evaluate mutates it in
 	// place as the live checkpoint source.
 	LastDiffDigest map[string]string
+
+	// CachedVerdict, when non-nil, short-circuits the NEXT agentic gate
+	// Evaluate call: the reviewer is never invoked, and this Verdict is
+	// reused as-is (Result.CacheHit = true). Ignored for automated/human
+	// gates. Rebound fresh by the caller before every Evaluate call — the
+	// same mutate-before-call contract Reviewer already documents above
+	// (evaluateGate sets it, possibly to nil, on every gate dispatch) — so
+	// a cache hit for one gate can never leak into the next gate this
+	// Evaluator evaluates. Issue #523: merge-review's review gate is the
+	// only caller that ever sets this, from a digest-matched verdict
+	// gather-sibling-context already found on the selected PR's own prior
+	// comment (or, within the same run, on this run's own journal) —
+	// scoped there, not here, precisely so this stays a generic,
+	// workflow-agnostic mechanism: Evaluate itself has no notion of PRs,
+	// siblings, or digests, only "a caller-verified verdict is available,
+	// reuse it."
+	CachedVerdict *apiv1.Verdict
 }
 
 // Evaluate runs gate g's evaluator against env (already built by the caller,
@@ -144,6 +172,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	var outcome string
 	var verdict *apiv1.Verdict
 	duplicateDiff := false
+	cacheHit := false
 
 	switch g.Evaluator {
 	case apiv1.EvaluatorAutomated:
@@ -161,10 +190,23 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 		outcome = out
 
 	case apiv1.EvaluatorAgentic:
-		if e.Reviewer == nil {
+		if e.CachedVerdict != nil {
+			// #523: the caller already found a digest-matched verdict for
+			// this exact evaluation's inputs (see CachedVerdict's doc
+			// comment) — checked first, ahead of the e.Reviewer nil-guard
+			// below (a cache-hit caller has no reason to construct/wire a
+			// reviewer goober it already knows Evaluate won't invoke, so
+			// Reviewer may legitimately be nil here) and ahead of
+			// emptyDiff/duplicateDiff (same-run repass heuristics inferring
+			// what the reviewer would likely say, whereas this is the
+			// caller asserting it already knows: the real answer, computed
+			// against these identical inputs, already exists).
+			cacheHit = true
+			verdict = e.CachedVerdict
+			outcome = string(verdict.Decision)
+		} else if e.Reviewer == nil {
 			return Result{}, fmt.Errorf("gate %q: agentic reviewer not configured", g.Name)
-		}
-		if emptyDiff {
+		} else if emptyDiff {
 			// #415 sibling: the implement stage produced no committed change,
 			// so there is nothing for the reviewer to evaluate or a repass to
 			// iterate on. Fast-`fail` on the first review — resolving the
@@ -232,7 +274,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	// durable pre-dispatch marker pattern tasks have (a new journal event
 	// type + resume.go logic) — deferred to #263 rather than folded into this
 	// grouped hardening pass; see that issue for the full rationale.
-	r := Result{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated, DuplicateDiff: duplicateDiff, Verdict: verdict}
+	r := Result{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated, DuplicateDiff: duplicateDiff, CacheHit: cacheHit, Verdict: verdict}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal verdict: %w", g.Name, err)
