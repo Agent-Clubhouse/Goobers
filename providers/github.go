@@ -555,9 +555,12 @@ func (p *GitHubProvider) ListPullRequests(ctx context.Context, req ListPullReque
 		if req.HeadPrefix != "" && !strings.HasPrefix(pr.Head.Ref, req.HeadPrefix) {
 			continue
 		}
-		checkState, _, err := p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
-		if err != nil {
-			return nil, err
+		var checkState CheckState
+		if !req.SkipCheckState {
+			checkState, _, err = p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
+			if err != nil {
+				return nil, err
+			}
 		}
 		labels := make([]string, 0, len(pr.Labels))
 		for _, l := range pr.Labels {
@@ -666,6 +669,17 @@ func (p *GitHubProvider) reviewDecision(ctx context.Context, repo RepositoryRef,
 	default:
 		return ReviewDecisionPending, 0, nil
 	}
+}
+
+// RefCheckState resolves ref's combined check state on demand — the
+// per-candidate resolution ListPullRequests does by default, exposed for
+// callers that list with SkipCheckState and then resolve only the
+// candidates whose state they cannot reuse from a prior gather (issue
+// #523's sibling-context cache). A read, so it does not emit a mutation
+// event.
+func (p *GitHubProvider) RefCheckState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, error) {
+	state, _, err := p.combinedCheckState(ctx, repo, ref)
+	return state, err
 }
 
 // combinedCheckState normalizes GitHub's legacy combined status plus check-runs

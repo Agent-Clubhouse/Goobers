@@ -669,6 +669,68 @@ func TestGitHubProviderListPullRequestsFiltersByHeadPrefixAndReportsCheckState(t
 	}
 }
 
+// TestGitHubProviderListPullRequestsSkipCheckState is issue #523's list-cost
+// contract: with SkipCheckState set, the list makes exactly one kind of
+// request (the pulls list itself — no per-candidate status/check-runs
+// round-trips) and leaves CheckState empty for the caller to resolve on
+// demand via RefCheckState.
+func TestGitHubProviderListPullRequestsSkipCheckState(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{
+			{
+				"number": 10, "html_url": "https://github.com/acme/app/pull/10", "draft": false,
+				"updated_at": "2026-07-15T00:00:00Z",
+				"head":       map[string]interface{}{"ref": "goobers/implementation/run-1", "sha": "aaa111"},
+				"base":       map[string]interface{}{"ref": "main", "sha": "base111"},
+			},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("SkipCheckState list must not resolve check state, got %s", r.URL.Path)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	out, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, Base: "main", HeadPrefix: "goobers/",
+		SkipCheckState: true,
+	})
+	if err != nil {
+		t.Fatalf("ListPullRequests: %v", err)
+	}
+	if len(out) != 1 || out[0].CheckState != "" {
+		t.Fatalf("out = %+v, want one summary with empty CheckState", out)
+	}
+}
+
+// TestGitHubProviderRefCheckState is RefCheckState's on-demand half of
+// #523's contract: the same combined status + check-runs normalization
+// ListPullRequests applies by default, resolvable per ref.
+func TestGitHubProviderRefCheckState(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/commits/aaa111/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"state": "failure", "statuses": []map[string]interface{}{
+			{"context": "ci", "state": "failure"},
+		}})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/aaa111/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	state, err := provider.RefCheckState(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "aaa111")
+	if err != nil {
+		t.Fatalf("RefCheckState: %v", err)
+	}
+	if state != CheckStateFailing {
+		t.Fatalf("state = %q, want failing", state)
+	}
+}
+
 // TestGitHubProviderPullRequestFilesListsTouchedFiles is issue #359's
 // sibling-set context gathering: given another open PR's number, list the
 // files it touches for cross-PR conflict/drift detection.

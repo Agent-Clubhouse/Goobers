@@ -329,6 +329,16 @@ type ListPullRequestsRequest struct {
 	// applied client-side: GitHub's pulls-list API has no server-side
 	// prefix match on head, only an exact head=owner:branch filter.
 	HeadPrefix string `json:"headPrefix,omitempty"`
+	// SkipCheckState leaves each summary's CheckState empty instead of
+	// resolving it per candidate — resolving costs two extra API requests
+	// per PR (combined status + check-runs), which dominates the list's
+	// API budget as the open-PR set grows (issue #523: 21 open PRs =
+	// 40+ requests per gather, every merge-review cycle). Opt-in so the
+	// callers that gate on CheckState (pr-select's eligibility filter)
+	// keep their fresh-by-default behavior; a caller that sets this owns
+	// resolving check state itself (RefCheckState) for the candidates it
+	// actually needs it for.
+	SkipCheckState bool `json:"skipCheckState,omitempty"`
 }
 
 // PullRequestSummary is one open PR as merge-review's selection stage sees
