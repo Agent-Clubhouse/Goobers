@@ -80,6 +80,18 @@ describe("portal foundation", () => {
     expect(screen.getByRole("button", { name: "Workflows" })).toHaveAttribute("aria-current", "page");
   });
 
+  it("skips to main content without changing the current route", async () => {
+    window.location.hash = "#/runs";
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "Skip to content" }));
+
+    expect(window.location.hash).toBe("#/runs");
+    expect(screen.getByRole("main")).toHaveFocus();
+    expect(screen.getByRole("heading", { name: "Runs" })).toBeInTheDocument();
+  });
+
   it("puts responsive layout classes on headers and actionable rows", () => {
     window.location.hash = "#/runs";
     render(<App />);

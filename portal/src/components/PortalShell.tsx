@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { PrimaryArea, Route } from "../routes";
 import { useTheme } from "../theme";
 import { Icon } from "./Icon";
@@ -17,10 +18,20 @@ export function PortalShell({
   workflowCount: number;
 }) {
   const { theme, toggleTheme } = useTheme();
+  const mainContent = useRef<HTMLElement>(null);
 
   return (
     <div className="portal-frame">
-      <a className="skip-link" href="#main-content">Skip to content</a>
+      <a
+        className="skip-link"
+        href="#main-content"
+        onClick={(event) => {
+          event.preventDefault();
+          mainContent.current?.focus();
+        }}
+      >
+        Skip to content
+      </a>
       <aside className="sidebar">
         <button
           aria-label="Go to overview"
@@ -76,7 +87,7 @@ export function PortalShell({
           </div>
         </header>
 
-        <main className="page-content" id="main-content" tabIndex={-1}>
+        <main className="page-content" id="main-content" ref={mainContent} tabIndex={-1}>
           {children}
         </main>
       </div>
