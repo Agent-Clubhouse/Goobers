@@ -39,6 +39,12 @@ type mergePRServerState struct {
 	baseDeleteCalls int
 	mergeSHA        *string // set by the /merge handler on a successful call
 	mergeBody       map[string]interface{}
+	commentCalls    int
+	// verdictOnSecondCommentPage forces the pass verdict onto page 2 of the
+	// comments endpoint, behind 100 routine comments and a Link: rel="next"
+	// header — proves structuredMergeCommitMessage's verdict lookup follows
+	// pagination rather than only checking the first page.
+	verdictOnSecondCommentPage bool
 	// files is this PR's own changed files (issue #718's delta-aware
 	// baseSha conjunct: what base's movement is checked for intersecting).
 	// baseMovement maps a "oldBaseSHA...newBaseSHA" compare key to the
@@ -124,6 +130,16 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		}})
 	})
 	mux.HandleFunc(prefix+"/issues/9/comments", func(w http.ResponseWriter, r *http.Request) {
+		st.commentCalls++
+		if st.verdictOnSecondCommentPage && r.URL.Query().Get("page") != "2" {
+			comments := make([]map[string]interface{}, 100)
+			for i := range comments {
+				comments[i] = map[string]interface{}{"id": i + 1, "body": "Routine pull request comment."}
+			}
+			w.Header().Set("Link", fmt.Sprintf("<http://%s%s?page=2>; rel=\"next\"", r.Host, r.URL.Path))
+			writeFakeJSON(w, comments)
+			return
+		}
 		comment := renderVerdictComment(apiv1.Verdict{
 			Decision:  apiv1.VerdictPass,
 			Summary:   "The implementation is ready to merge.",
@@ -426,6 +442,28 @@ func TestMergePRUsesConfiguredMergeMethod(t *testing.T) {
 	}
 	if st.mergeBody["merge_method"] != "rebase" {
 		t.Fatalf("merge_method = %v, want rebase", st.mergeBody["merge_method"])
+	}
+}
+
+func TestMergePRFindsVerdictBeyondFirstCommentPage(t *testing.T) {
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
+		verdictOnSecondCommentPage: true,
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, _ := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.commentCalls != 2 {
+		t.Fatalf("comments endpoint called %d times, want 2", st.commentCalls)
+	}
+	if st.mergeCalls != 1 {
+		t.Fatalf("merge endpoint called %d times, want 1", st.mergeCalls)
 	}
 }
 

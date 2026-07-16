@@ -896,13 +896,18 @@ func (p *GitHubProvider) pullRequestComments(ctx context.Context, repo Repositor
 			return nil, err
 		}
 	}
-	var raw []githubIssueComment
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &raw); err != nil {
+	comments := make([]PullRequestComment, 0)
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var raw []githubIssueComment
+		if err := json.Unmarshal(page, &raw); err != nil {
+			return fmt.Errorf("decode pull request comments page: %w", err)
+		}
+		for _, c := range raw {
+			comments = append(comments, PullRequestComment{ID: c.ID, Author: c.User.Login, Body: c.Body, URL: c.HTMLURL, CreatedAt: c.CreatedAt})
+		}
+		return nil
+	}); err != nil {
 		return nil, err
-	}
-	comments := make([]PullRequestComment, 0, len(raw))
-	for _, c := range raw {
-		comments = append(comments, PullRequestComment{ID: c.ID, Author: c.User.Login, Body: c.Body, URL: c.HTMLURL, CreatedAt: c.CreatedAt})
 	}
 	return comments, nil
 }
