@@ -92,13 +92,25 @@ describe("portal foundations", () => {
     expect(screen.getByRole("heading", { name: "Runs" })).toBeInTheDocument();
   });
 
-  it("exposes compact responsive behavior without dropping control labels", () => {
+  it("keeps semantic run columns aligned in compact layouts", () => {
     setMediaMatches({ [compactLayoutQuery]: true });
-    const { container } = render(<App />);
+    const { container, unmount } = render(<App />);
 
     expect(container.querySelector(".portal-frame")).toHaveAttribute("data-layout", "compact");
     expect(screen.getByRole("button", { name: "Workflows" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Open run Daemon read-only HTTP API/i })).toHaveClass("run-grid");
+    const activeRun = screen.getByRole("button", { name: /Open run Daemon read-only HTTP API/i });
+    expect(activeRun).toHaveClass("run-grid");
+    expect(activeRun.querySelector(".row-primary")).toHaveTextContent("Daemon read-only HTTP API");
+    expect(activeRun.querySelector(".run-workflow")).toHaveTextContent("Implementation");
+    expect(container.querySelector(".data-header .run-workflow")).toHaveTextContent("Workflow");
+
+    unmount();
+    window.location.hash = "#/runs";
+    const runsView = render(<App />);
+    const historyRun = screen.getByRole("button", { name: /Open run Daemon read-only HTTP API/i });
+    expect(historyRun.querySelector(".row-primary")).toHaveTextContent("Daemon read-only HTTP API");
+    expect(historyRun.querySelector(".run-started")).toHaveTextContent("Today at 9:12 PM");
+    expect(runsView.container.querySelector(".data-header .run-started")).toHaveTextContent("Started");
   });
 
   it("pairs semantic status text with a non-color icon cue", () => {

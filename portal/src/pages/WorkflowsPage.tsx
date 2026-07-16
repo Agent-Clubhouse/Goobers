@@ -20,7 +20,13 @@ export function WorkflowsPage({ navigate }: { navigate: (route: Route) => void }
 
       <section className="content-section">
         <DataList
-          headers={["Workflow", "Trigger", "Concurrency", "Last outcome", ""]}
+          headers={[
+            { label: "Workflow" },
+            { label: "Trigger" },
+            { label: "Concurrency" },
+            { label: "Last outcome" },
+            { label: "" },
+          ]}
           label="Provisioned workflows"
           layout="workflow-grid"
         >

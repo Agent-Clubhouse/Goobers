@@ -2,6 +2,11 @@ import { Icon } from "./Icon";
 
 export type DataListLayout = "run-grid" | "outcome-grid" | "workflow-grid" | "all-runs-grid";
 
+export interface DataListHeader {
+  className?: string;
+  label: string;
+}
+
 export function DataList({
   label,
   layout,
@@ -10,14 +15,18 @@ export function DataList({
 }: {
   label: string;
   layout: DataListLayout;
-  headers?: string[];
+  headers?: DataListHeader[];
   children: React.ReactNode;
 }) {
   return (
     <div aria-label={label} className="data-table">
       {headers && (
         <div aria-hidden="true" className={`data-header ${layout}`}>
-          {headers.map((header, index) => <span key={`${header}-${index}`}>{header}</span>)}
+          {headers.map((header, index) => (
+            <span className={header.className} key={`${header.label}-${index}`}>
+              {header.label}
+            </span>
+          ))}
         </div>
       )}
       {children}

@@ -45,7 +45,14 @@ export function RunsPage({ navigate }: { navigate: (route: Route) => void }) {
 
       <section className="content-section">
         <DataList
-          headers={["Run", "Status", "Current stage", "Started", "Duration", ""]}
+          headers={[
+            { label: "Run" },
+            { label: "Status" },
+            { label: "Current stage" },
+            { className: "run-started", label: "Started" },
+            { label: "Duration" },
+            { label: "" },
+          ]}
           label="Run history"
           layout="all-runs-grid"
         >
@@ -64,7 +71,7 @@ export function RunsPage({ navigate }: { navigate: (route: Route) => void }) {
               </span>
               <StatusBadge status={run.status} />
               <span>{run.currentStage}</span>
-              <span>{run.startedAt}</span>
+              <span className="run-started">{run.startedAt}</span>
               <span className="mono">{run.duration}</span>
             </DataRow>
           ))}

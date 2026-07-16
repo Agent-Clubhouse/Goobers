@@ -88,7 +88,13 @@ export function OverviewPage({ navigate }: { navigate: (route: Route) => void })
           </button>
         </div>
         <DataList
-          headers={["Run", "Workflow", "Current stage", "Elapsed", ""]}
+          headers={[
+            { label: "Run" },
+            { className: "run-workflow", label: "Workflow" },
+            { label: "Current stage" },
+            { label: "Elapsed" },
+            { label: "" },
+          ]}
           label="Active runs"
           layout="run-grid"
         >
@@ -105,7 +111,7 @@ export function OverviewPage({ navigate }: { navigate: (route: Route) => void })
                   {run.issue} · {run.shortId}
                 </span>
               </span>
-              <span>{workflowForRun(run).name}</span>
+              <span className="run-workflow">{workflowForRun(run).name}</span>
               <span className="stage-progress">
                 <span aria-hidden="true" className="stage-progress-mark" />
                 {run.currentStage}
@@ -124,7 +130,13 @@ export function OverviewPage({ navigate }: { navigate: (route: Route) => void })
           </div>
         </div>
         <DataList
-          headers={["Run", "Outcome", "Workflow", "Duration", ""]}
+          headers={[
+            { label: "Run" },
+            { label: "Outcome" },
+            { label: "Workflow" },
+            { label: "Duration" },
+            { label: "" },
+          ]}
           label="Recent outcomes"
           layout="outcome-grid"
         >

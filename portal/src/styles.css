@@ -1526,8 +1526,7 @@ summary:focus-visible {
     grid-template-columns: minmax(230px, 1.5fr) minmax(110px, 0.8fr) 120px 18px;
   }
 
-  .run-grid > span:nth-child(2),
-  .data-row.run-grid > span:nth-child(2) {
+  .run-grid > .run-workflow {
     display: none;
   }
 
@@ -1536,8 +1535,7 @@ summary:focus-visible {
     grid-template-columns: minmax(230px, 1.5fr) 120px 110px 80px 18px;
   }
 
-  .all-runs-grid > span:nth-child(4),
-  .data-row.all-runs-grid > span:nth-child(4) {
+  .all-runs-grid > .run-started {
     display: none;
   }
 }
