@@ -169,6 +169,21 @@ func (f *flakyDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, 
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "eventually succeeded"}, nil
 }
 
+// backoffObservedContext reports when runTask obtains Done for its retry wait.
+// The walk loop checks Err instead, so this fires only after dispatch fails.
+type backoffObservedContext struct {
+	context.Context
+	entered chan<- struct{}
+}
+
+func (c backoffObservedContext) Done() <-chan struct{} {
+	select {
+	case c.entered <- struct{}{}:
+	default:
+	}
+	return c.Context.Done()
+}
+
 // blockingDeterministic signals started once dispatch actually reaches it,
 // then blocks until released and signals finished — for proving a
 // SIGTERM-style cancellation lets an in-flight attempt finish rather than
@@ -1295,13 +1310,15 @@ func TestRunnerRetryBackoffInterruptedByDrainCancellation(t *testing.T) {
 		return flaky, nil
 	}, gate.NewAutomatedEvaluator())
 
-	ctx, cancel := context.WithCancel(context.Background())
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	backoffEntered := make(chan struct{}, 1)
+	ctx := backoffObservedContext{Context: cancelCtx, entered: backoffEntered}
 	type startResult struct {
 		res Result
 		err error
 	}
 	done := make(chan startResult, 1)
-	start := time.Now()
 	go func() {
 		res, err := r.Start(ctx, StartInput{
 			RunID:   "run-backoff-drain",
@@ -1313,10 +1330,15 @@ func TestRunnerRetryBackoffInterruptedByDrainCancellation(t *testing.T) {
 		done <- startResult{res, err}
 	}()
 
-	// Give the first attempt time to dispatch, fail, and enter its backoff
-	// wait (comfortably inside the 10s window — dispatch itself is
-	// near-instant here) before cancelling.
-	time.Sleep(300 * time.Millisecond)
+	const entryBound = 5 * time.Second
+	select {
+	case <-backoffEntered:
+	case got := <-done:
+		t.Fatalf("Start returned before entering retry backoff: result=%+v err=%v", got.res, got.err)
+	case <-time.After(entryBound):
+		t.Fatalf("retry backoff was not entered within %s", entryBound)
+	}
+	start := time.Now()
 	cancel()
 
 	const bound = 8 * time.Second // comfortably under the un-interrupted 40s, comfortably over dispatch/scheduling noise
