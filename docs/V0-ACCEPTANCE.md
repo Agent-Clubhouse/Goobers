@@ -40,6 +40,9 @@ against the responsible issue, per issue #30's scope.
 ## Prerequisites
 
 - Go 1.26+ (matches `go.mod`).
+- `golangci-lint` on the daemon's `PATH`; the `local-ci` gate inherits the
+  daemon's environment, not your interactive shell's (see
+  `docs/guides/quickstart.md`).
 - A GitHub personal access token with `repo` scope for the target repo (see
   `docs/guides/github-token-scopes.md`) and, for a real dogfood run, write
   access to a repo you're willing to have the instance open PRs against —
