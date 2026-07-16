@@ -54,12 +54,12 @@
       "x-conformance": "excluded"
     },
     "stage": {
-      "description": "Stage name for stage.* events.",
+      "description": "Stage name for stage.* events and stage-scoped artifacts.",
       "type": "string",
       "x-conformance": "normative"
     },
     "attempt": {
-      "description": "1-based attempt number for stage.* events.",
+      "description": "1-based attempt number for stage.* events and stage-scoped artifacts.",
       "type": "integer",
       "minimum": 1,
       "x-conformance": "normative"

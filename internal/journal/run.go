@@ -274,6 +274,19 @@ func (r *Run) Checkpoint() error {
 // appends an artifact.recorded event. Identical content deduplicates to one
 // blob. The returned Ref's Digest commits to the scrubbed bytes.
 func (r *Run) RecordArtifact(name string, data []byte) (Ref, error) {
+	return r.recordArtifact(Event{Type: EventArtifactRecorded, Name: name}, data)
+}
+
+// RecordStageArtifact is RecordArtifact for runner-authored artifacts tied to
+// one stage attempt. The stage metadata keeps infra-retry artifacts out of the
+// conformance set alongside the attempt that produced them.
+func (r *Run) RecordStageArtifact(stage string, attempt int, class AttemptClass, name string, data []byte) (Ref, error) {
+	return r.recordArtifact(Event{
+		Type: EventArtifactRecorded, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name,
+	}, data)
+}
+
+func (r *Run) recordArtifact(ev Event, data []byte) (Ref, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -287,9 +300,10 @@ func (r *Run) RecordArtifact(name string, data []byte) (Ref, error) {
 	}
 	ref, err := writeContentScrubbed(r.dir, relPath, scrubbed, digest)
 	if err != nil {
-		return Ref{}, fmt.Errorf("journal: record artifact %q: %w", name, err)
+		return Ref{}, fmt.Errorf("journal: record artifact %q: %w", ev.Name, err)
 	}
-	if err := r.append(Event{Type: EventArtifactRecorded, Name: name, Ref: &ref}); err != nil {
+	ev.Ref = &ref
+	if err := r.append(ev); err != nil {
 		return Ref{}, err
 	}
 	if err := r.checkpoint(); err != nil {

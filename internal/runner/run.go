@@ -707,7 +707,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, in, ex, t, upstream, upstreamResult)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class)
 		for _, m := range mutations {
 			// Best-effort, like ClaimLedger's own journal() (issue #228): a
 			// provider mutation already happened for real regardless of
@@ -847,7 +847,7 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task)
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, attempt int, class journal.AttemptClass) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	env, wt, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("prepare stage %q: %w", t.Name, err), nil
@@ -871,6 +871,9 @@ func (r *Runner) dispatchTask(ctx context.Context, in StartInput, ex *executors,
 		if err != nil {
 			return apiv1.ResultEnvelope{}, nil, err, nil
 		}
+		if err := recordContextManifest(jr, env, t.Name, attempt, class); err != nil {
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err), nil
+		}
 		result, err = det.Run(ctx, env, *t.Run)
 		if err == nil {
 			mutations = readMutationSidecar(env.Workspace)
@@ -881,11 +884,32 @@ func (r *Runner) dispatchTask(ctx context.Context, in StartInput, ex *executors,
 		if err != nil {
 			return apiv1.ResultEnvelope{}, nil, err, nil
 		}
+		if err := recordContextManifest(jr, env, t.Name, attempt, class); err != nil {
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err), nil
+		}
 		result, err = ag.Invoke(ctx, env)
 		return result, nil, err, nil
 	default:
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type), nil
 	}
+}
+
+type contextManifest struct {
+	ContextPointers []apiv1.ContextPointer `json:"contextPointers"`
+}
+
+func recordContextManifest(jr *journal.Run, env apiv1.InvocationEnvelope, stage string, attempt int, class journal.AttemptClass) error {
+	pointers := make([]apiv1.ContextPointer, len(env.ContextPointers))
+	copy(pointers, env.ContextPointers)
+	data, err := json.Marshal(contextManifest{ContextPointers: pointers})
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	name := fmt.Sprintf("context/%s-attempt-%d.json", stage, attempt)
+	if _, err := jr.RecordStageArtifact(stage, attempt, class, name, data); err != nil {
+		return fmt.Errorf("record artifact: %w", err)
+	}
+	return nil
 }
 
 // mutationsSidecarFile is the well-known, worktree-relative file a

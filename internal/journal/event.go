@@ -91,9 +91,11 @@ type Event struct {
 
 	// --- orchestration payload (normative unless noted) ---
 
-	// Stage is the stage name for stage.* events. Normative.
+	// Stage is the stage name for stage.* events and stage-scoped artifacts.
+	// Normative.
 	Stage string `json:"stage,omitempty"`
-	// Attempt is the 1-based attempt number for stage.* events. Normative.
+	// Attempt is the 1-based attempt number for stage.* events and
+	// stage-scoped artifacts. Normative.
 	Attempt int `json:"attempt,omitempty"`
 	// AttemptClass tags a retry attempt. Normative iff not "infra".
 	AttemptClass AttemptClass `json:"attemptClass,omitempty"`
