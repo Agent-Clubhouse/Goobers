@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -87,7 +89,7 @@ type Config struct {
 	// MaxSteps overrides DefaultMaxSteps when > 0.
 	MaxSteps int
 	// RepoCloneURL derives the git remote URL worktree.Manager clones from a
-	// RepoRef. Defaults to defaultRepoCloneURL (github.com over HTTPS). Tests
+	// RepoRef. Defaults to defaultRepoCloneURL. Tests
 	// override this to point at a local fixture repo without network access.
 	RepoCloneURL func(apiv1.RepoRef) (string, error)
 	// Telemetry optionally spans the run/task/gate walk (issue #126). Nil
@@ -1298,12 +1300,15 @@ func artifactPointersFrom(refs []journal.Ref) []apiv1.ArtifactPointer {
 }
 
 // defaultRepoCloneURL derives the git remote URL worktree.Manager clones from
-// a RepoRef. ADO support is a placeholder pending its provider's clone-URL
-// convention (V0 ships GitHub first, ARCHITECTURE §12).
+// a RepoRef.
 func defaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {
 	switch ref.Provider {
 	case apiv1.ProviderGitHub:
 		return fmt.Sprintf("https://github.com/%s/%s.git", ref.Owner, ref.Name), nil
+	case apiv1.ProviderADO:
+		organization, project, _ := strings.Cut(ref.Owner, "/")
+		return fmt.Sprintf("https://dev.azure.com/%s/%s/_git/%s",
+			url.PathEscape(organization), url.PathEscape(project), url.PathEscape(ref.Name)), nil
 	default:
 		return "", fmt.Errorf("runner: unsupported repo provider %q", ref.Provider)
 	}
