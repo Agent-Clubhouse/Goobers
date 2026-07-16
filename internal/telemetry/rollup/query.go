@@ -74,15 +74,15 @@ type RunError struct {
 
 // SpanSummary is a queryable row from the spans table.
 type SpanSummary struct {
-	SpanID        string
-	ParentSpanID  string
-	Name          string
-	Kind          string
-	Status        string
-	StatusMessage string
-	StartTime     time.Time
-	EndTime       time.Time
-	DurationMs    int64
+	SpanID        string    `json:"spanId"`
+	ParentSpanID  string    `json:"parentSpanId,omitempty"`
+	Name          string    `json:"name"`
+	Kind          string    `json:"kind,omitempty"`
+	Status        string    `json:"status"`
+	StatusMessage string    `json:"statusMessage,omitempty"`
+	StartTime     time.Time `json:"startTime"`
+	EndTime       time.Time `json:"endTime"`
+	DurationMs    int64     `json:"durationMs"`
 }
 
 // SpanEventSummary is a queryable row from the span_events table — a

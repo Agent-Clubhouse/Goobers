@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"io"
 	"time"
@@ -56,11 +57,12 @@ func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
 func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("telemetry stats", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	jsonOutput := fs.Bool("json", false, "emit telemetry statistics as JSON")
 	workflow := fs.String("workflow", "", "filter to one workflow name")
 	gaggle := fs.String("gaggle", "", "filter to one gaggle")
 	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers telemetry stats [--workflow=name] [--gaggle=name] [--rebuild] [path]\n\n"+
+		pf(stderr, "Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--rebuild] [path]\n\n"+
 			"Success rate and duration aggregates per workflow and per stage,\n"+
 			"across every run (default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
 	}
@@ -90,6 +92,19 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	if *jsonOutput {
+		if result.Runs == nil {
+			result.Runs = []rollup.RunStats{}
+		}
+		if result.Stages == nil {
+			result.Stages = []rollup.StageStats{}
+		}
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			pf(stderr, "error: encode telemetry stats: %v\n", err)
+			return 2
+		}
+		return 0
+	}
 	if len(result.Runs) == 0 {
 		pln(stdout, "no runs found")
 		return 0
@@ -117,13 +132,14 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("telemetry errors", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	jsonOutput := fs.Bool("json", false, "emit recent errors as JSON")
 	workflow := fs.String("workflow", "", "filter to one workflow name")
 	gaggle := fs.String("gaggle", "", "filter to one gaggle")
 	class := fs.String("class", "", "filter to one error class")
 	limit := fs.Int("limit", 50, "max errors to show (newest first)")
 	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers telemetry errors [--workflow=name] [--gaggle=name] [--class=name] [--limit=N] [--rebuild] [path]\n\n"+
+		pf(stderr, "Usage: goobers telemetry errors [--json] [--workflow=name] [--gaggle=name] [--class=name] [--limit=N] [--rebuild] [path]\n\n"+
 			"Recent errors across every run, newest first, with run/stage refs\n"+
 			"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
 	}
@@ -151,6 +167,16 @@ func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
+	}
+	if *jsonOutput {
+		if errs == nil {
+			errs = []rollup.ErrorEvent{}
+		}
+		if err := json.NewEncoder(stdout).Encode(errs); err != nil {
+			pf(stderr, "error: encode telemetry errors: %v\n", err)
+			return 2
+		}
+		return 0
 	}
 	if len(errs) == 0 {
 		pln(stdout, "no errors found")

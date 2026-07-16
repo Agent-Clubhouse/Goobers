@@ -21,6 +21,20 @@ type statusJSONSummary struct {
 	StartedAt time.Time `json:"startedAt"`
 }
 
+func statusJSONSummaries(runs []runSummary) []statusJSONSummary {
+	summaries := make([]statusJSONSummary, len(runs))
+	for i, r := range runs {
+		summaries[i] = statusJSONSummary{
+			RunID:     r.RunID,
+			Workflow:  r.Workflow,
+			Gaggle:    r.Gaggle,
+			Phase:     string(r.Phase),
+			StartedAt: r.StartedAt,
+		}
+	}
+	return summaries
+}
+
 func runStatus(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -94,17 +108,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		runs = runs[len(runs)-*limit:]
 	}
 	if *jsonOutput {
-		summaries := make([]statusJSONSummary, len(runs))
-		for i, r := range runs {
-			summaries[i] = statusJSONSummary{
-				RunID:     r.RunID,
-				Workflow:  r.Workflow,
-				Gaggle:    r.Gaggle,
-				Phase:     string(r.Phase),
-				StartedAt: r.StartedAt,
-			}
-		}
-		if err := json.NewEncoder(stdout).Encode(summaries); err != nil {
+		if err := json.NewEncoder(stdout).Encode(statusJSONSummaries(runs)); err != nil {
 			pf(stderr, "error: encode status: %v\n", err)
 			return 2
 		}

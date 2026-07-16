@@ -3,14 +3,107 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
+
+func TestTraceJSONIncludesFailedRunErrorAndSpans(t *testing.T) {
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	const runID = "failed-json-run"
+	startedAt := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+
+	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 3,
+		WorkflowDigest:  "sha256:fixture",
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "556"},
+		StartedAt:       startedAt,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Append(journal.Event{
+		Type:  journal.EventError,
+		Stage: "implement",
+		Error: &journal.ErrorDetail{Code: "stage_failed", Message: "implementation failed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	spanDir := filepath.Join(l.RunsDir(), runID, "spans")
+	if err := os.MkdirAll(spanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	span := telemetry.SpanRecord{
+		Schema:    telemetry.SpanSchema,
+		TraceID:   runID,
+		SpanID:    "0123456789abcdef",
+		Name:      "task/implement",
+		Kind:      telemetry.SpanKindTask,
+		StartTime: startedAt.Add(time.Second),
+		EndTime:   startedAt.Add(2500 * time.Millisecond),
+		Status:    "error",
+	}
+	spanData, err := json.Marshal(span)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spanDir, "spans.jsonl"), append(spanData, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := rollup.Rebuild(l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", "--json", runID, root)
+	if code != 0 {
+		t.Fatalf("trace --json: code = %d, stderr = %q", code, stderr)
+	}
+	var got traceJSONResult
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("trace --json produced invalid JSON: %v\n%s", err, stdout)
+	}
+	if got.Identity.RunID != runID || got.Identity.Workflow != "implementation" ||
+		got.Identity.WorkflowVersion != 3 || got.Identity.WorkflowDigest != "sha256:fixture" ||
+		got.Identity.Trigger.Kind != journal.TriggerItem || got.Identity.Trigger.Ref != "556" {
+		t.Fatalf("identity = %#v", got.Identity)
+	}
+	if got.Phase != journal.PhaseFailed || got.State == nil || got.State.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, state = %#v", got.Phase, got.State)
+	}
+	var terminalError *journal.ErrorDetail
+	for _, event := range got.Events {
+		if event.Type == journal.EventError {
+			terminalError = event.Error
+		}
+	}
+	if terminalError == nil || terminalError.Code != "stage_failed" || terminalError.Message != "implementation failed" {
+		t.Fatalf("events missing terminal error: %#v", got.Events)
+	}
+	if len(got.Spans) != 1 || got.Spans[0].Name != "task/implement" ||
+		got.Spans[0].Status != "error" || got.Spans[0].DurationMs != 1500 {
+		t.Fatalf("spans = %#v", got.Spans)
+	}
+}
 
 func TestTraceShowsEscalationSummary(t *testing.T) {
 	root := t.TempDir()
@@ -79,6 +172,23 @@ func TestTraceShowsEscalationSummary(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "events:") {
 		t.Fatalf("trace stdout missing raw events after summary: %q", stdout)
+	}
+
+	jsonCode, jsonStdout, jsonStderr := runArgs(t, "trace", "--json", runID, root)
+	if jsonCode != 0 {
+		t.Fatalf("trace --json: code = %d, stderr = %q", jsonCode, jsonStderr)
+	}
+	var got traceJSONResult
+	if err := json.Unmarshal([]byte(jsonStdout), &got); err != nil {
+		t.Fatalf("trace --json produced invalid JSON: %v\n%s", err, jsonStdout)
+	}
+	if got.Escalation == nil || got.Escalation.Stage != "implement" ||
+		got.Escalation.Gate != "review" || got.Escalation.RepassCount != 4 ||
+		got.Escalation.LastNeedsChangesReason != reason {
+		t.Fatalf("escalation = %#v", got.Escalation)
+	}
+	if got.Spans == nil {
+		t.Fatalf("spans = nil, want an empty JSON array")
 	}
 }
 
