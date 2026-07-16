@@ -1,6 +1,8 @@
 package journal
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -57,6 +59,155 @@ func TestRecoverSerializesConcurrentWriters(t *testing.T) {
 	case <-second:
 	case <-time.After(5 * time.Second):
 		t.Fatal("second Recover did not proceed after the first released its lock")
+	}
+}
+
+// TestRecoverRefreshesEventsAfterWaitingForLock covers #277: the log snapshot
+// taken before a blocking lock acquisition may contain a torn tail that the
+// lock holder completes before releasing. Recovery must not truncate the newer
+// tail using the stale torn-byte count or resume from a stale sequence.
+func TestRecoverRefreshesEventsAfterWaitingForLock(t *testing.T) {
+	root := t.TempDir()
+	run, err := Create(root, testIdentity(), nil, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	dir := filepath.Join(root, testIdentity().RunID)
+	eventsPath := filepath.Join(dir, fileEvents)
+	lock, err := acquireRunLock(dir)
+	if err != nil {
+		t.Fatalf("acquire lock: %v", err)
+	}
+	lockHeld := true
+	defer func() {
+		if lockHeld {
+			releaseRunLock(lock)
+		}
+	}()
+
+	events, _, err := readEvents(eventsPath)
+	if err != nil {
+		t.Fatalf("readEvents: %v", err)
+	}
+	inFlight, err := json.Marshal(Event{
+		Schema:  EventSchema,
+		Seq:     uint64(len(events) + 1),
+		Type:    EventStageStarted,
+		Time:    fixedClock()(),
+		Stage:   "completed-while-waiting",
+		Attempt: 1,
+	})
+	if err != nil {
+		t.Fatalf("marshal in-flight event: %v", err)
+	}
+	later, err := json.Marshal(Event{
+		Schema:  EventSchema,
+		Seq:     uint64(len(events) + 2),
+		Type:    EventStageStarted,
+		Time:    fixedClock()(),
+		Stage:   "appended-while-waiting",
+		Attempt: 1,
+	})
+	if err != nil {
+		t.Fatalf("marshal later event: %v", err)
+	}
+
+	log, err := os.OpenFile(eventsPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open events log: %v", err)
+	}
+	split := len(inFlight) / 2
+	if _, err := log.Write(inFlight[:split]); err != nil {
+		_ = log.Close()
+		t.Fatalf("write torn event prefix: %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		_ = log.Close()
+		t.Fatalf("sync torn event prefix: %v", err)
+	}
+
+	type recoverResult struct {
+		run    *Run
+		report RecoverReport
+		err    error
+	}
+	recovered := make(chan recoverResult, 1)
+	go func() {
+		r, report, err := Recover(dir, WithClock(fixedClock()))
+		recovered <- recoverResult{run: r, report: report, err: err}
+	}()
+
+	select {
+	case result := <-recovered:
+		if result.run != nil {
+			_ = result.run.Close()
+		}
+		t.Fatal("Recover returned while the run lock was held")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	completedTail := append([]byte{}, inFlight[split:]...)
+	completedTail = append(completedTail, '\n')
+	completedTail = append(completedTail, later...)
+	completedTail = append(completedTail, '\n')
+	if _, err := log.Write(completedTail); err != nil {
+		_ = log.Close()
+		t.Fatalf("complete events while Recover waits: %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		_ = log.Close()
+		t.Fatalf("sync completed events: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("close events log: %v", err)
+	}
+	releaseRunLock(lock)
+	lockHeld = false
+
+	var result recoverResult
+	select {
+	case result = <-recovered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Recover did not proceed after the run lock was released")
+	}
+	if result.err != nil {
+		t.Fatalf("Recover: %v", result.err)
+	}
+	if result.report.TornBytes != 0 || result.report.Repaired {
+		_ = result.run.Close()
+		t.Fatalf("Recover used stale torn-tail state: %+v", result.report)
+	}
+	if result.report.LastSeq != uint64(len(events)+2) {
+		_ = result.run.Close()
+		t.Fatalf("LastSeq=%d want %d", result.report.LastSeq, len(events)+2)
+	}
+	if err := result.run.Append(Event{Type: EventStageStarted, Stage: "after-recover", Attempt: 1}); err != nil {
+		_ = result.run.Close()
+		t.Fatalf("Append after Recover: %v", err)
+	}
+	if err := result.run.Close(); err != nil {
+		t.Fatalf("Close recovered run: %v", err)
+	}
+
+	rd, err := OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	got, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(got) != len(events)+3 {
+		t.Fatalf("event count=%d want %d", len(got), len(events)+3)
+	}
+	for i, event := range got {
+		if event.Seq != uint64(i+1) {
+			t.Fatalf("non-contiguous seq at %d: %d", i, event.Seq)
+		}
 	}
 }
 

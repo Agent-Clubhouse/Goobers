@@ -145,13 +145,8 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 	}
 
 	eventsPath := filepath.Join(dir, fileEvents)
-	events, tornBytes, err := readEvents(eventsPath)
-	if err != nil {
+	if _, _, err := readEvents(eventsPath); err != nil {
 		return nil, RecoverReport{}, err
-	}
-	report := RecoverReport{TornBytes: tornBytes}
-	if len(events) > 0 {
-		report.LastSeq = events[len(events)-1].Seq
 	}
 
 	// Acquire the per-run-dir lock (#243) before any write below, including
@@ -165,11 +160,25 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 		return nil, RecoverReport{}, err
 	}
 
+	// The log may have changed while acquireRunLock blocked behind a live
+	// writer. Refresh both the completed events and torn-tail length under the
+	// lock so truncation cannot apply a stale byte count to a newer tail.
+	events, tornBytes, err := readEvents(eventsPath)
+	if err != nil {
+		releaseRunLock(lock)
+		return nil, RecoverReport{}, err
+	}
+
 	// Truncate a torn partial final record so the next append starts on a clean
 	// record boundary.
 	if err := truncateTornTail(eventsPath, tornBytes); err != nil {
 		releaseRunLock(lock)
 		return nil, RecoverReport{}, err
+	}
+
+	report := RecoverReport{TornBytes: tornBytes}
+	if len(events) > 0 {
+		report.LastSeq = events[len(events)-1].Seq
 	}
 
 	f, err := os.OpenFile(eventsPath, os.O_WRONLY|os.O_APPEND, 0o644)

@@ -48,6 +48,9 @@ type Run struct {
 // until the first releases, rather than erroring — matching this
 // package's existing bias (see cmd/goobers's withClaimLock) that a loser
 // here should wait its turn and get a consistent view, not fail outright.
+// It is not reentrant: acquiring the same run lock twice through separate
+// descriptors in one process blocks too. Current flows avoid that deadlock:
+// Create uses a fresh run id, and in-process resume closes its writer first.
 func acquireRunLock(dir string) (*os.File, error) {
 	f, err := os.OpenFile(filepath.Join(dir, fileLock), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
