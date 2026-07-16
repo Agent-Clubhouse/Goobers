@@ -200,6 +200,11 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
 	}
 
+	// Sweep once before announcing readiness so requests left across a daemon
+	// restart are either refused as stale or dispatched while their clients are
+	// still waiting. The ticker below handles requests created afterward.
+	sweepPendingTriggers(ctx, l.SchedulerDir(), sched, setup.InstanceLog, time.Now)
+
 	// The periodic sweep runs on its own goroutine for the daemon's entire
 	// lifetime, concurrently with the main goroutine's own stdout/stderr
 	// writes (both "daemon started" above and the shutdown messages below) —
@@ -244,7 +249,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			case <-ctx.Done():
 				return
 			case <-delegationTicker.C:
-				sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now)
+				sweepPendingTriggers(ctx, l.SchedulerDir(), sched, setup.InstanceLog, time.Now)
 			}
 		}
 	}()
