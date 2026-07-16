@@ -37,6 +37,16 @@ import (
 // localscheduler.ClaimLedger.Claim's own fail-closed check.
 const DefaultClaimLease = 6 * time.Hour
 
+// backlogScanCeiling is the floor on how many candidates a backlog query
+// fetches from the provider, independent of maxItems (#532) — "how many to
+// scan" and "how many to claim this run" are different questions. High enough
+// that the full eligible set is normally covered outright (the live backlog
+// runs ~40 eligible items; 250 is ~6x that), low enough to bound provider
+// pagination (3 pages at GitHub's per_page=100 max). Truncation past this
+// ceiling is starvation-safe because the fetch is OldestFirst — see the
+// ListWorkItems call below.
+const backlogScanCeiling = 250
+
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -103,9 +113,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// maxItems caps how many eligible items one --claim run claims (#236): it was
 	// a dead input everywhere (the query hardcoded a limit and --claim took
 	// exactly one), so a documented input was silently ignored — the #130 class
-	// of gap. Default 1 (the single-item implementation shape). The provider
-	// query scans at least 20 so eligibility filtering has candidates even when
-	// maxItems is small (preserving the pre-#236 scan breadth).
+	// of gap. Default 1 (the single-item implementation shape).
 	maxItems := 1
 	if s := providerInput("maxItems", ""); s != "" {
 		n, perr := strconv.Atoi(s)
@@ -115,9 +123,23 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		}
 		maxItems = n
 	}
-	queryLimit := maxItems
-	if queryLimit < 20 {
-		queryLimit = 20
+	// How many candidates to SCAN is deliberately decoupled from how many to
+	// CLAIM (#532): the old scan window was max(maxItems, 20), so once
+	// maxItems reached 20 (curation's batch size) the two were the same
+	// variable — a fetch window of exactly the claim count, filled newest-first
+	// by GitHub's default sort, permanently starved everything older
+	// (issues #434–#463 for 3+ hours; #441 unclaimed for 4+ hours, live).
+	// The wide ceiling gives client-side filtering (trust re-verify,
+	// excludeLabels, the open-PR backstop below) real headroom: even if every
+	// item in a claim-count-sized prefix were filtered, eligible items beyond
+	// it are still in view. OldestFirst on the fetch (below) covers the
+	// truncation case past even this ceiling: dropping the NEWEST items is
+	// safe because FIFO claiming drains the queue from the front, so they
+	// become reachable as older items complete — no item is ever permanently
+	// invisible.
+	scanLimit := maxItems
+	if scanLimit < backlogScanCeiling {
+		scanLimit = backlogScanCeiling
 	}
 
 	// SEC-047 fails CLOSED, not open: an empty trustLabel must refuse to
@@ -140,10 +162,11 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		labels = append(labels, requireLabel)
 	}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository: repo,
-		Labels:     labels,
-		State:      "open",
-		Limit:      queryLimit,
+		Repository:  repo,
+		Labels:      labels,
+		State:       "open",
+		Limit:       scanLimit,
+		OldestFirst: true,
 	})
 	if err != nil {
 		pf(stderr, "error: list work items: %v\n", err)

@@ -374,6 +374,13 @@ type ListWorkItemsRequest struct {
 	Limit        int        `json:"limit,omitempty"`
 	// Page selects a 1-based page for stable pagination; 0 means the first page.
 	Page int `json:"page,omitempty"`
+	// OldestFirst, when set, asks the provider to return items in creation
+	// order (oldest filed first) rather than its own default. This matters
+	// whenever Limit truncates the result set: a FIFO consumer (#532) must
+	// have truncation drop the NEWEST items — the ones that stay reachable
+	// once older ones drain — not the oldest, which GitHub's undocumented
+	// newest-first default would otherwise starve forever.
+	OldestFirst bool `json:"oldestFirst,omitempty"`
 }
 
 // UpdateWorkItemRequest is a general backlog item edit: title/body edits, label
