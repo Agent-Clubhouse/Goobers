@@ -1,0 +1,47 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: "my-flow"
+spec:
+  gaggle: "example"
+  displayName: "my-flow"
+  triggers:
+    - type: manual
+    # Run on a cron schedule:
+    # - type: schedule
+    #   schedule: "0 9 * * 1-5"
+    # Claim matching backlog items:
+    # - type: backlog-item
+    #   selector:
+    #     goobers: "true"
+  readiness:
+    maxConcurrentRuns: 1
+  start: prepare
+  tasks:
+    - name: prepare
+      type: deterministic
+      goal: Produce a small result for the automated gate.
+      run:
+        command: ["sh", "-c", "printf '%s\n' '{\"ready\":\"true\"}' > scaffold-result.json"]
+      inputs:
+        resultFile: scaffold-result.json
+      expectedOutputs:
+        - ready
+      next: ready-check
+    - name: act
+      type: agentic
+      goober: "reviewer2"
+      goal: Continue the workflow using the prepared result.
+      capabilities:
+        - agent:model
+  gates:
+    - name: ready-check
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: ready
+          equals: "true"
+      branches:
+        pass: act
+        fail: "@abort"

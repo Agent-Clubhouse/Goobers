@@ -3,11 +3,14 @@ package v1alpha1
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 // TriggerType differentiates workflow archetypes without splitting the taxonomy:
-// consumer workflows trigger on backlog items; producer workflows trigger on a
-// schedule or external signal (WF-010, WF-013).
+// workflows run manually, consume backlog items, or react to a schedule or
+// external signal (WF-010, WF-013).
 type TriggerType string
 
 const (
+	// TriggerManual declares a workflow that only runs through an explicit
+	// `goobers run` invocation.
+	TriggerManual TriggerType = "manual"
 	// TriggerBacklogItem fires when a matching backlog item becomes available.
 	TriggerBacklogItem TriggerType = "backlog-item"
 	// TriggerSchedule fires on a schedule / time-since-last-run.
@@ -20,7 +23,7 @@ const (
 // Trigger declares one condition under which the scheduler may start a run. A run
 // starts only when a trigger fires AND readiness is satisfied (WF-011).
 type Trigger struct {
-	// +kubebuilder:validation:Enum=backlog-item;schedule;signal
+	// +kubebuilder:validation:Enum=manual;backlog-item;schedule;signal
 	// +kubebuilder:validation:Required
 	Type TriggerType `json:"type" yaml:"type"`
 	// Selector routes backlog items to this workflow via k8s-style label matching

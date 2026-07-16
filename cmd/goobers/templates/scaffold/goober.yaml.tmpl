@@ -1,0 +1,25 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: "{{ .Name }}"
+spec:
+  gaggle: "{{ .Gaggle }}"
+  role: "{{ .Name }}"
+  displayName: "{{ .Name }}"
+  instructions: instructions.md
+  harness: copilot
+  capabilities:
+    # Required for the Copilot harness to receive its model credential.
+    - agent:model
+    # Common grants; uncomment only what this goober needs.
+    # - repo:read
+    # - repo:push
+    # - github:issues:write
+    # - github:pr:write
+    # - telemetry:read
+    # - journal:read
+  skills:
+    - "{{ .Name }}"
+  tools:
+    - shell
+  scaleFactor: 1
