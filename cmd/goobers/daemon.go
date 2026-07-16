@@ -35,6 +35,8 @@ type schedulerSetup struct {
 	Runner        *runner.Runner
 	Telemetry     *telemetry.Client
 	RollupDB      *rollup.DB
+	Config        *instance.Config
+	Definitions   *instance.ConfigSet
 	Worktrees     *worktree.Manager
 	InstanceLog   *journal.InstanceLog
 	Entries       []localscheduler.WorkflowEntry
@@ -218,6 +220,8 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		Runner:          rn,
 		Telemetry:       tel,
 		RollupDB:        rollupDB,
+		Config:          cfg,
+		Definitions:     set,
 		Worktrees:       wtMgr,
 		InstanceLog:     instanceLog,
 		Entries:         entries,

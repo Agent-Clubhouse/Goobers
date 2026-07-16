@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"sigs.k8s.io/yaml"
@@ -16,8 +19,9 @@ import (
 // apiVersion/kind convention (ARCHITECTURE.md §6) though instance.yaml is a
 // provisioning file, never a CR the operator reconciles.
 const (
-	ConfigAPIVersion = "goobers.dev/v1alpha1"
-	ConfigKind       = "Instance"
+	ConfigAPIVersion        = "goobers.dev/v1alpha1"
+	ConfigKind              = "Instance"
+	DefaultAPIListenAddress = "127.0.0.1:8080"
 )
 
 // Config is the parsed instance.yaml: target repo(s) + provider, token source
@@ -30,6 +34,7 @@ type Config struct {
 	APIVersion    string          `json:"apiVersion" yaml:"apiVersion"`
 	Kind          string          `json:"kind" yaml:"kind"`
 	Repos         []RepoRef       `json:"repos" yaml:"repos"`
+	API           APIConfig       `json:"api,omitempty" yaml:"api,omitempty"`
 	Telemetry     TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	RunConditions RunConditions   `json:"runConditions,omitempty" yaml:"runConditions,omitempty"`
 	// Credentials sources individual capabilities from their own token refs,
@@ -45,6 +50,12 @@ type Config struct {
 	// reproducible default independent of the host process's own local zone,
 	// which would otherwise vary by deployment and isn't itself DST-free.
 	Timezone string `json:"timezone,omitempty" yaml:"timezone,omitempty"`
+}
+
+// APIConfig configures the daemon's read-only HTTP API.
+type APIConfig struct {
+	// Listen is a host:port address. Only loopback hosts are accepted.
+	Listen string `json:"listen,omitempty" yaml:"listen,omitempty"`
 }
 
 // RepoRef is a target repository this instance connects to.
@@ -108,6 +119,15 @@ func (c *Config) TelemetryEnabled() bool {
 	return c.Telemetry.Enabled == nil || *c.Telemetry.Enabled
 }
 
+// APIListenAddress returns the configured HTTP address, defaulting to a
+// loopback-only listener.
+func (c *Config) APIListenAddress() string {
+	if c.API.Listen == "" {
+		return DefaultAPIListenAddress
+	}
+	return c.API.Listen
+}
+
 // Location resolves Timezone to a *time.Location, defaulting to UTC when
 // unset. Validate already rejects an unresolvable Timezone at load time, so
 // this only errors if tzdata disappeared from underneath an already-loaded
@@ -155,6 +175,9 @@ func LoadConfig(path string) (*Config, error) {
 // IANA timezone — fail closed at load time rather than at the first cron
 // tick that tries to use it.
 func (c *Config) Validate() error {
+	if err := validateAPIListenAddress(c.APIListenAddress()); err != nil {
+		return fmt.Errorf("api.listen: %w", err)
+	}
 	if c.Timezone != "" {
 		if _, err := time.LoadLocation(c.Timezone); err != nil {
 			return fmt.Errorf("timezone %q: %w", c.Timezone, err)
@@ -193,6 +216,27 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env or file — "+
 				"inline secret values are never permitted (CFG-009, SEC-010)", i, cg.Capability)
 		}
+	}
+	return nil
+}
+
+func validateAPIListenAddress(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("must be a host:port address: %w", err)
+	}
+	if host == "" {
+		return fmt.Errorf("host is required; wildcard listeners are not allowed")
+	}
+	if !strings.EqualFold(host, "localhost") {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return fmt.Errorf("host %q is not loopback", host)
+		}
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil || number < 0 || number > 65535 {
+		return fmt.Errorf("port %q must be a number from 0 through 65535", port)
 	}
 	return nil
 }

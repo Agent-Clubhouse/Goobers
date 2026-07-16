@@ -89,6 +89,14 @@ func initDeterministicDemo(t *testing.T) string {
 	if err := os.RemoveAll(filepath.Join(root, "config", "gaggles", "example", "goobers")); err != nil {
 		t.Fatal(err)
 	}
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.API.Listen = "127.0.0.1:0"
+	if err := instance.WriteConfig(instance.NewLayout(root).ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
 
 	fixtureRepo := newDaemonFixtureRepo(t)
 	prev := repoCloneURL

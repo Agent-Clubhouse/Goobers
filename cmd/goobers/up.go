@@ -6,14 +6,18 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/worktree"
@@ -45,6 +49,8 @@ var delegationSweepInterval = 2 * time.Second
 var heartbeatInterval = time.Minute
 
 const sweepErrorReportEvery = 12
+
+var httpShutdownGrace = 5 * time.Second
 
 // reapStaleAfter bounds how long a Keep-on-failure worktree survives before
 // Manager.Reap sweeps it up too, on top of genuine crash orphans (issue
@@ -100,14 +106,18 @@ func runUp(args []string, stdout, stderr io.Writer) int {
 // runUp, so tests can drive shutdown deterministically via ctx cancellation
 // instead of sending real signals.
 func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers up [--quiet] [path]\n\n"+
 			"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n"+
-			"plus the local runner loop (default path \".\"). Blocks until interrupted\n"+
-			"(SIGINT/SIGTERM), then drains in-flight runs before exiting. Exit codes:\n"+
-			"0 = clean shutdown, 1 = daemon startup failed, 2 = usage/IO error.\n")
+			"plus the local runner and loopback HTTP API (default path \".\"). Blocks\n"+
+			"until interrupted (SIGINT/SIGTERM), then drains in-flight runs before\n"+
+			"exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,\n"+
+			"2 = usage/IO error.\n")
 	}
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	if err := fs.Parse(args); err != nil {
@@ -149,6 +159,27 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	defer setup.Shutdown(context.Background())
 
+	var ready atomic.Bool
+	reads, err := readservice.NewLocal(readservice.LocalSources{
+		Layout:      l,
+		Definitions: setup.Definitions,
+		Telemetry:   setup.RollupDB,
+	}, ready.Load)
+	if err != nil {
+		pf(stderr, "error: initialize read service: %v\n", err)
+		return 1
+	}
+	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
+	handler, err := httpapi.NewHandler(reads, httpapi.AllowAll, apiLog)
+	if err != nil {
+		pf(stderr, "error: initialize HTTP API: %v\n", err)
+		return 1
+	}
+	apiServer, err := httpapi.NewServer(setup.Config.APIListenAddress(), handler, apiLog)
+	if err != nil {
+		pf(stderr, "error: initialize HTTP API: %v\n", err)
+		return 1
+	}
 	// Claim-lease recovery (#131): released once now (recovers leases
 	// orphaned by a prior crash) and periodically thereafter (catches a live
 	// run that overran its lease without crashing) — before the scheduler
@@ -217,17 +248,38 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// shutdown drains it with every other background loop. Nil when no workflow
 	// opts into the cap.
 	if setup.OpenPRRefresher != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			setup.OpenPRRefresher.Run(ctx)
-		}()
 		opts = append(opts, localscheduler.WithOpenPRCounter(setup.OpenPRRefresher))
 	}
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+
+	if err := apiServer.Start(); err != nil {
+		pf(stderr, "error: start HTTP API: %v\n", err)
+		return 1
+	}
+	apiStopped := false
+	defer func() {
+		if apiStopped {
+			return
+		}
+		ready.Store(false)
+		cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
+		defer shutdownCancel()
+		if err := apiServer.Shutdown(shutdownCtx); err != nil {
+			pf(stderr, "error: %v\n", err)
+		}
+	}()
+
+	if setup.OpenPRRefresher != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			setup.OpenPRRefresher.Run(ctx)
+		}()
 	}
 
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
@@ -307,7 +359,8 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		}
 	}()
 
-	pf(stdout, "daemon started at %s (%d workflow(s))\n", root, len(setup.Entries))
+	ready.Store(true)
+	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at http://%s%s\n", root, len(setup.Entries), apiServer.Address(), httpapi.Prefix)
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
 		lastSeq := uint64(0)
@@ -318,7 +371,32 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		heartbeatDone = done
 		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), lastSeq, heartbeatInterval, done)
 	}
-	runErr := sched.Run(ctx) // blocks until ctx is cancelled
+	schedulerDone := make(chan error, 1)
+	go func() { schedulerDone <- sched.Run(ctx) }()
+	var runErr error
+	apiFailed := false
+	select {
+	case runErr = <-schedulerDone:
+	case serveErr, ok := <-apiServer.Errors():
+		apiFailed = true
+		if !ok {
+			serveErr = errors.New("server stopped unexpectedly")
+		}
+		pf(stderr, "error: HTTP API stopped: %v\n", serveErr)
+		cancel()
+		runErr = <-schedulerDone
+	}
+	ready.Store(false)
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
+	shutdownErr := apiServer.Shutdown(shutdownCtx)
+	shutdownCancel()
+	apiStopped = true
+	if shutdownErr != nil {
+		apiFailed = true
+		pf(stderr, "error: %v\n", shutdownErr)
+	}
 
 	// Wait for both background goroutines to fully stop BEFORE any further
 	// stdout/stderr writes below: each reacts to the same ctx cancellation
@@ -340,6 +418,9 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pln(stdout, "shutdown complete: all runs drained")
 	} else {
 		pf(stdout, "shutdown timed out after %s: some runs may still be checkpointing\n", drainGrace)
+	}
+	if apiFailed {
+		return 1
 	}
 	return 0
 }

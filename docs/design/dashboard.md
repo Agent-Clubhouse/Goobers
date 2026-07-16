@@ -240,6 +240,22 @@ unambiguous; workflow identity includes gaggle and version/digest where needed.
 List endpoints support deterministic sorting, pagination/cursors, and filters.
 Errors use one structured envelope.
 
+```json
+{
+  "error": {
+    "code": "not_found",
+    "message": "route not found"
+  }
+}
+```
+
+Every route, including unknown routes, method errors, authorization failures,
+and internal read failures, uses this envelope. `code` is stable for adapters;
+`message` is safe for display and does not expose internal paths or errors.
+`goobers up` binds the API to `127.0.0.1:8080` by default. `api.listen` may
+select another numeric port or loopback address; wildcard and non-loopback
+listeners are rejected during instance configuration validation.
+
 Minimum read surfaces:
 
 - `GET /api/v1/health`
