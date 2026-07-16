@@ -113,6 +113,34 @@ func TestForRun(t *testing.T) {
 	}
 }
 
+func TestForRunAll(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	l, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if entries := l.ForRunAll("run-a"); len(entries) != 0 {
+		t.Fatalf("no claims yet: ForRunAll returned %+v", entries)
+	}
+	for _, itemID := range []string{"issue-9", "issue-8"} {
+		if ok, _, err := l.Claim(itemID, "run-a", "backlog-curation", time.Hour); err != nil || !ok {
+			t.Fatalf("Claim(%s): ok=%v err=%v", itemID, ok, err)
+		}
+	}
+	if ok, _, err := l.Claim("issue-10", "run-b", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("Claim(issue-10): ok=%v err=%v", ok, err)
+	}
+
+	entries := l.ForRunAll("run-a")
+	if len(entries) != 2 || entries[0].ItemID != "issue-8" || entries[1].ItemID != "issue-9" {
+		t.Fatalf("ForRunAll(run-a) = %+v, want issue-8 and issue-9 in item ID order", entries)
+	}
+	if entries := l.ForRunAll("run-b"); len(entries) != 1 || entries[0].ItemID != "issue-10" {
+		t.Fatalf("ForRunAll(run-b) = %+v, want only issue-10", entries)
+	}
+}
+
 func TestReleaseIsIdempotentAndOwnerScoped(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claims.json")
 	l, err := OpenClaimLedger(path)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -250,6 +251,24 @@ func (l *ClaimLedger) ForRun(runID string) (ClaimEntry, bool) {
 		}
 	}
 	return ClaimEntry{}, false
+}
+
+// ForRunAll returns every entry runID currently holds, ordered by item ID
+// (for inspection; same expired/live caveat as Lookup).
+func (l *ClaimLedger) ForRunAll(runID string) []ClaimEntry {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var entries []ClaimEntry
+	for _, e := range l.entries {
+		if e.RunID == runID {
+			entries = append(entries, e)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].ItemID < entries[j].ItemID
+	})
+	return entries
 }
 
 // persist rewrites the ledger file atomically. Caller holds l.mu.
