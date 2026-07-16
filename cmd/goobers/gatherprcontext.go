@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,8 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
+
+var prReferencePattern = regexp.MustCompile(`(?i)\bPR\s*#\s*([0-9]+)\b`)
 
 // prThreadComment is one comment on the PR thread — human/other-agent review
 // feedback, or a prior merge-review verdict comment — surfaced as context
@@ -173,13 +176,8 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// and needs this to arrive intact. selectedNumber is stringified for the
 	// exact same reason (matching pr-select's own strconv.Itoa convention).
 	hasSubstantiveFindings := "false"
-	if verdict != nil {
-		for _, f := range verdict.Findings {
-			if f.Class == apiv1.FindingSubstantive {
-				hasSubstantiveFindings = "true"
-				break
-			}
-		}
+	if verdictHasSubstantiveFindingForPR(verdict, selected.Number) {
+		hasSubstantiveFindings = "true"
 	}
 	hasFailingCI := strconv.FormatBool(selected.CheckState == providers.CheckStateFailing)
 
@@ -207,6 +205,28 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "gathered context for PR #%d (%s): behind=%v, %d comment(s)\n", selected.Number, selected.Head, behind, len(comments))
 	return 0
+}
+
+func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int) bool {
+	if verdict == nil {
+		return false
+	}
+	target := strconv.Itoa(prNumber)
+	for _, finding := range verdict.Findings {
+		if finding.Class != apiv1.FindingSubstantive {
+			continue
+		}
+		matches := prReferencePattern.FindAllStringSubmatch(finding.Location, -1)
+		if len(matches) == 0 {
+			return true
+		}
+		for _, match := range matches {
+			if match[1] == target {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // checkoutExistingBranch fetches branch from origin and checks it out at

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -129,7 +130,7 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
 
 	verdictComment := "**merge-review verdict: needs-changes**\n\nRebase and address one nit.\n\n" +
-		`<!-- verdict-json: {"decision":"needs-changes","summary":"Rebase and address one nit.","findings":[{"severity":"warning","message":"nit","class":"substantive"}],"headSha":"` + headSHA + `","baseSha":"` + baseSHA + `"} -->`
+		`<!-- verdict-json: {"decision":"needs-changes","summary":"Rebase and address one nit.","findings":[{"severity":"warning","message":"nit","location":"PR #55","class":"substantive"}],"headSha":"` + headSHA + `","baseSha":"` + baseSHA + `"} -->`
 
 	srv := gatherPRContextServer{
 		owner: "your-org", repo: "your-repo",
@@ -222,6 +223,36 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 	}
 	if len(got.Comments) != 2 {
 		t.Fatalf("comments = %+v, want both thread comments surfaced", got.Comments)
+	}
+}
+
+func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
+	verdict := &apiv1.Verdict{
+		Findings: []apiv1.Finding{
+			{Class: apiv1.FindingRebaseNeeded, Location: "PR #485"},
+			{Class: apiv1.FindingSubstantive, Location: "PR #480"},
+		},
+	}
+
+	if verdictHasSubstantiveFindingForPR(verdict, 485) {
+		t.Fatal("sibling PR #480's substantive finding counted for selected PR #485")
+	}
+
+	verdict.Findings = append(verdict.Findings, apiv1.Finding{
+		Class:    apiv1.FindingSubstantive,
+		Location: "cmd/goobers/foo.go:42",
+	})
+	if !verdictHasSubstantiveFindingForPR(verdict, 485) {
+		t.Fatal("selected PR #485's file-scoped substantive finding was not counted")
+	}
+
+	verdict.Findings = verdict.Findings[:2]
+	verdict.Findings = append(verdict.Findings, apiv1.Finding{
+		Class:    apiv1.FindingSubstantive,
+		Location: "PR #485",
+	})
+	if !verdictHasSubstantiveFindingForPR(verdict, 485) {
+		t.Fatal("selected PR #485's substantive finding was not counted")
 	}
 }
 
