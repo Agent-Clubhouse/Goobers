@@ -108,8 +108,8 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
 
 	trustLabel := providerInput("trustLabel", "")
-	requireLabel := providerInput("requireLabels", "")
-	excludeLabel := providerInput("excludeLabels", "")
+	requireLabels := splitLabelList(providerInput("requireLabels", ""))
+	excludeLabels := splitLabelList(providerInput("excludeLabels", ""))
 
 	// maxItems caps how many eligible items one --claim run claims (#236): it was
 	// a dead input everywhere (the query hardcoded a limit and --claim took
@@ -155,13 +155,11 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	}
 
 	ctx := context.Background()
-	labels := make([]string, 0, 2)
+	labels := make([]string, 0, 1+len(requireLabels))
 	if trustLabel != "" {
 		labels = append(labels, trustLabel)
 	}
-	if requireLabel != "" {
-		labels = append(labels, requireLabel)
-	}
+	labels = append(labels, requireLabels...)
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository:  repo,
 		Labels:      labels,
@@ -181,10 +179,17 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		if trustLabel != "" && !item.HasLabel(trustLabel) {
 			continue
 		}
-		if requireLabel != "" && !item.HasLabel(requireLabel) {
+		hasRequiredLabels := true
+		for _, label := range requireLabels {
+			if !item.HasLabel(label) {
+				hasRequiredLabels = false
+				break
+			}
+		}
+		if !hasRequiredLabels {
 			continue
 		}
-		if excludeLabel != "" && item.HasLabel(excludeLabel) {
+		if hasAnyLabel(item.Labels, excludeLabels) {
 			continue
 		}
 		eligible = append(eligible, item)

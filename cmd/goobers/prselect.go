@@ -64,7 +64,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 
 	base := providerInput("base", "main")
 	headPrefix := providerInput("headPrefix", "goobers/")
-	excludeLabels := strings.Split(providerInput("excludeLabels", defaultExcludeLabels), ",")
+	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
 
 	ctx := context.Background()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
@@ -121,6 +121,16 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "selected PR #%d: %s\n", selected.Number, selected.URL)
 	return 0
+}
+
+func splitLabelList(value string) []string {
+	var labels []string
+	for _, label := range strings.Split(value, ",") {
+		if label = strings.TrimSpace(label); label != "" {
+			labels = append(labels, label)
+		}
+	}
+	return labels
 }
 
 // hasAnyLabel reports whether labels contains any of wants (case-sensitive,
