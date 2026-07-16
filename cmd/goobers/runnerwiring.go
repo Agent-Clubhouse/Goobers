@@ -243,37 +243,59 @@ func buildCredentials(cfg *instance.Config) (*credentials.Resolver, []credential
 // entry (#287) — namespaced so it can never collide with a repo ref (owner/name).
 func credentialRefName(cap string) string { return "credential:" + cap }
 
-// buildCIPollExecutor constructs the ci-poll stage's CIPollExecutor over a
-// PRPoller for the instance's configured (single, V0-simplification) target
-// repo. It returns a nil executor, not an error, when no repo is configured
-// or its token can't be resolved: NewDeterministic constructs a run's WHOLE
-// deterministic-executor stack lazily on the first deterministic task
-// dispatched (internal/runner's executors.deterministic()) — a workflow whose
-// first deterministic stage is a plain shell command with no PR involvement
-// at all (e.g. `make ci`) must not fail just because ci-poll's own
-// credential happens to be unresolvable; only a stage that actually declares
-// kind=ci-poll should fail, and TaskExecutor already fails closed on that
-// when CIPoll is nil (executor/dispatch.go's CIPoll doc). The resolved token,
-// when there is one, is registered with reg so it's scrubbed from anything a
-// later stage in this run writes, exactly like credentials.Injector's own
-// resolution path (executor/env.go's buildStageEnv).
-func buildCIPollExecutor(cfg *instance.Config, resolver *credentials.Resolver, reg runner.SecretRegistrar) (*executor.CIPollExecutor, error) {
-	if len(cfg.Repos) == 0 {
-		return nil, nil
+// ciPollTaskExecutor admits ci-poll's credential against each invocation's
+// declared capabilities. Other deterministic kinds retain TaskExecutor's
+// existing dispatch behavior without materializing the PR credential.
+type ciPollTaskExecutor struct {
+	fallback invoke.Deterministic
+	injector *credentials.Injector
+}
+
+func (e *ciPollTaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	kind, _ := env.Inputs[executor.InputKind].(string)
+	if kind != executor.KindCIPoll {
+		return e.fallback.Run(ctx, env, run)
 	}
-	ref := cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name
-	token, err := resolver.Resolve(context.Background(), ref)
+
+	set, err := e.injector.Materialize(ctx, env.Capabilities)
 	if err != nil {
-		return nil, nil
+		return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
 	}
-	reg.Register([]byte(token))
+	token, err := set.Token(ctx, string(capability.GitHubPRWrite))
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
+	}
 	var poller executor.PRPoller
 	if newPRPoller != nil {
 		poller = newPRPoller(token)
 	} else {
 		poller = providers.NewGitHubProvider(token)
 	}
-	return executor.NewCIPollExecutor(poller)
+	ciPoll, err := executor.NewCIPollExecutor(poller)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	pollCfg, err := executor.CIPollConfigFromEnvelope(env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	return ciPoll.Run(ctx, pollCfg)
+}
+
+// buildCIPollExecutor wraps the deterministic dispatcher for a repo-backed
+// instance. Credential resolution stays lazy so a non-ci-poll stage never
+// requires the PR capability or token.
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, fallback invoke.Deterministic) (invoke.Deterministic, error) {
+	if len(cfg.Repos) == 0 {
+		return fallback, nil
+	}
+	if injector == nil {
+		return nil, fmt.Errorf("build ci-poll executor: credential injector is nil")
+	}
+	if fallback == nil {
+		return nil, fmt.Errorf("build ci-poll executor: fallback executor is nil")
+	}
+	return &ciPollTaskExecutor{fallback: fallback, injector: injector}, nil
 }
 
 // newEscalationPoster constructs the provider the escalation notifier posts
@@ -545,11 +567,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// clone (which never contains the binary) rather than failing (#229).
 			shell.SelfBin = selfBin
 
-			ciPoll, err := buildCIPollExecutor(cfg, resolver, reg)
+			fallback, err := executor.NewTaskExecutor(shell, nil)
 			if err != nil {
 				return nil, err
 			}
-			return executor.NewTaskExecutor(shell, ciPoll)
+			return buildCIPollExecutor(cfg, injector, fallback)
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			spec, ok := goobers[gooberName]

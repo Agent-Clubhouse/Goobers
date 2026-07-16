@@ -40,6 +40,8 @@ spec:
     - name: await-ci
       type: deterministic
       goal: Poll the PR's CI checks until they conclude.
+      capabilities:
+        - github:pr:write
       run:
         command: ["goobers", "ci-poll", "--wait"]
       next: ci-gate

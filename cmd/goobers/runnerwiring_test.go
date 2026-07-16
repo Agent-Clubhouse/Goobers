@@ -2,14 +2,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -199,6 +203,99 @@ type escTestRegistrar struct{ registered [][]byte }
 
 func (r *escTestRegistrar) Register(secret []byte) {
 	r.registered = append(r.registered, append([]byte(nil), secret...))
+}
+
+type ciPollTestFallback struct{}
+
+func (ciPollTestFallback) Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{}, errors.New("unexpected fallback invocation")
+}
+
+type ciPollFakePoller struct{ called bool }
+
+func (p *ciPollFakePoller) PollPullRequest(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
+	p.called = true
+	return providers.PullRequestPollResult{CheckState: providers.CheckStatePassing}, nil
+}
+
+func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Deterministic {
+	t.Helper()
+	t.Setenv("CI_POLL_TOKEN", "ci-poll-token-value")
+	cfg := repoConfig()
+	cfg.Repos[0].Token.Env = "CI_POLL_TOKEN"
+	resolver, grants, err := buildCredentials(cfg)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, grants, reg)
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestFallback{})
+	if err != nil {
+		t.Fatalf("buildCIPollExecutor: %v", err)
+	}
+	return deterministic
+}
+
+func ciPollTestEnvelope(capabilities []string) apiv1.InvocationEnvelope {
+	return apiv1.InvocationEnvelope{
+		RepoRef:      apiv1.RepoRef{Owner: "acme", Name: "web"},
+		Capabilities: capabilities,
+		Inputs: map[string]interface{}{
+			executor.InputKind:     executor.KindCIPoll,
+			executor.InputPRNumber: "401",
+		},
+	}
+}
+
+func TestCIPollCredentialRequiresDeclaredCapability(t *testing.T) {
+	deterministic := newCIPollWiringTestExecutor(t, &escTestRegistrar{})
+	called := false
+	prev := newPRPoller
+	newPRPoller = func(string) executor.PRPoller {
+		called = true
+		return &ciPollFakePoller{}
+	}
+	t.Cleanup(func() { newPRPoller = prev })
+
+	_, err := deterministic.Run(context.Background(), ciPollTestEnvelope(nil), apiv1.DeterministicRun{})
+	if !errors.Is(err, credentials.ErrUndeclaredCapability) {
+		t.Fatalf("Run error = %v, want ErrUndeclaredCapability", err)
+	}
+	if called {
+		t.Fatal("PR poller constructed before capability admission")
+	}
+}
+
+func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
+	reg := &escTestRegistrar{}
+	deterministic := newCIPollWiringTestExecutor(t, reg)
+	poller := &ciPollFakePoller{}
+	var gotToken string
+	prev := newPRPoller
+	newPRPoller = func(token string) executor.PRPoller {
+		gotToken = token
+		return poller
+	}
+	t.Cleanup(func() { newPRPoller = prev })
+
+	result, err := deterministic.Run(context.Background(), ciPollTestEnvelope([]string{string(capability.GitHubPRWrite)}), apiv1.DeterministicRun{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if gotToken != "ci-poll-token-value" {
+		t.Fatalf("poller token = %q, want declared capability token", gotToken)
+	}
+	if !poller.called {
+		t.Fatal("PR poller was not called")
+	}
+	if result.Outputs[executor.OutputCIStatus] != string(providers.CheckStatePassing) {
+		t.Fatalf("outputs = %+v, want ciStatus=%q", result.Outputs, providers.CheckStatePassing)
+	}
+	if len(reg.registered) != 1 || string(reg.registered[0]) != "ci-poll-token-value" {
+		t.Fatalf("registered secrets = %q, want the ci-poll token", reg.registered)
+	}
 }
 
 type escFakeCommenter struct {

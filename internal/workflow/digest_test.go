@@ -52,9 +52,9 @@ func loadShippedWorkflow(t *testing.T, file string) Definition {
 // value) or a regression (investigate). Digests are over the definition's
 // canonical form, so YAML reformatting alone never moves them.
 var goldenDigests = map[string]string{
-	// #239: ci-gate gained a "timeout" branch (routes a ci-poll timeout to
-	// @escalate instead of the "fail" branch's implement repass).
-	"implementation.yaml":   "sha256:3be1fae17a30d399e3379a2cfd0b4d936d8e56673c6bd0d331aaad6314496414",
+	// #401: await-ci explicitly declares the github:pr:write capability used
+	// to poll the pull request's checks.
+	"implementation.yaml":   "sha256:3c0fb6f9133f0df14b208acfdaf6d96173dfd8a24771ce521035862ece080761",
 	"backlog-curation.yaml": "sha256:99bf677d0976f720638d16fe95cf88802da632011bf5e7e1d2ca0c0dabf99bd8",
 	"work-nomination.yaml":  "sha256:013d029452371b4a0ada36d53b94713fb04a31a15b9fa27049ac46acc1f9debc",
 }
