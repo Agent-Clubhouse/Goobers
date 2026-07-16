@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -107,6 +108,79 @@ func TestShellExecutor_NonZeroExit(t *testing.T) {
 	}
 	if result.Metrics["exitCode"] != 3 {
 		t.Fatalf("exitCode metric = %v, want 3", result.Metrics["exitCode"])
+	}
+}
+
+func TestShellExecutor_ClassifiesProviderBuiltinFailures(t *testing.T) {
+	cases := []struct {
+		name               string
+		message            string
+		wantInfrastructure bool
+	}{
+		{"server error", "error: list work items: GET failed: status 503: unavailable", true},
+		{"transport timeout", "error: list work items: net/http: TLS handshake timeout", true},
+		{"authentication", "error: list work items: GET failed: status 401: bad credentials", false},
+		{"authorization", "error: list work items: GET failed: status 403: forbidden", false},
+		{"deterministic request", "error: list work items: GET failed: status 422: invalid query", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script := filepath.Join(t.TempDir(), "goobers")
+			body := "#!/bin/sh\n" +
+				"echo \"" + tc.message + "\" >&2\n" +
+				"exit 1\n"
+			if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			exec, rec := newTestExecutor(t, nil)
+			exec.SelfBin = script
+			env := baseEnvelope(t)
+			env.Inputs = map[string]interface{}{InputResultFile: "provider-result.json"}
+			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+				Command: []string{"goobers", "backlog-query", "--claim"},
+			})
+
+			if got := invoke.IsInfrastructureFailure(err); got != tc.wantInfrastructure {
+				t.Fatalf("infrastructure failure = %v, want %v (result=%+v, err=%v)", got, tc.wantInfrastructure, result, err)
+			}
+			if tc.wantInfrastructure {
+				if !strings.Contains(err.Error(), tc.message) {
+					t.Fatalf("error %q does not preserve provider cause %q", err, tc.message)
+				}
+			} else if err != nil {
+				t.Fatalf("Run returned dispatch error for non-retryable provider failure: %v", err)
+			} else if result.Error == nil || result.Error.Code != "provider_error" || result.Error.Retryable || result.Error.Message != tc.message {
+				t.Fatalf("result error = %+v, want non-retryable provider_error preserving %q", result.Error, tc.message)
+			}
+			if got := string(rec.recorded["task-1/stderr.log"]); !strings.Contains(got, tc.message) {
+				t.Fatalf("stderr artifact = %q, want provider cause %q", got, tc.message)
+			}
+		})
+	}
+}
+
+func TestShellExecutor_ProviderClassificationUsesTerminalError(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "goobers")
+	body := "#!/bin/sh\n" +
+		"echo \"warning: prior request failed: status 503: unavailable\" >&2\n" +
+		"echo \"error: invalid local configuration\" >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, _ := newTestExecutor(t, nil)
+	exec.SelfBin = script
+	env := baseEnvelope(t)
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "backlog-query", "--claim"},
+	})
+	if err != nil {
+		t.Fatalf("Run returned dispatch error from a stale warning: %v", err)
+	}
+	if result.Error == nil || result.Error.Code != "provider_error" || result.Error.Message != "error: invalid local configuration" {
+		t.Fatalf("result error = %+v, want terminal deterministic cause", result.Error)
 	}
 }
 

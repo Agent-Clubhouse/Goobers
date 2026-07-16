@@ -170,6 +170,30 @@ func TestStageInvokesGoobersCLI(t *testing.T) {
 	}
 }
 
+func TestStageInvokesProviderBuiltin(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  []string
+		want bool
+	}{
+		{"backlog query", []string{"goobers", "backlog-query", "--claim"}, true},
+		{"open pr", []string{"goobers", "open-pr"}, true},
+		{"merge pr", []string{"goobers", "merge-pr"}, true},
+		{"ci poll uses in-process classification", []string{"goobers", "ci-poll"}, false},
+		{"push branch is git-backed", []string{"goobers", "push-branch"}, false},
+		{"telemetry query", []string{"goobers", "telemetry-query"}, false},
+		{"external command", []string{"make", "ci"}, false},
+		{"missing subcommand", []string{"goobers"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stageInvokesProviderBuiltin(tc.cmd); got != tc.want {
+				t.Fatalf("stageInvokesProviderBuiltin(%v) = %v, want %v", tc.cmd, got, tc.want)
+			}
+		})
+	}
+}
+
 func hasEnv(env []string, kv string) bool {
 	for _, e := range env {
 		if e == kv {

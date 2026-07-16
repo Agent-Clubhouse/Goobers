@@ -2,9 +2,11 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -61,6 +63,46 @@ func TestTaskExecutor_CIPollWithoutConfiguredExecutorFailsClosed(t *testing.T) {
 	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKind: KindCIPoll}}
 	if _, err := te.Run(context.Background(), env, apiv1.DeterministicRun{}); err == nil {
 		t.Fatal("expected an error when kind=ci-poll is declared but no CIPollExecutor is configured")
+	}
+}
+
+func TestTaskExecutor_ClassifiesCIPollProviderFailures(t *testing.T) {
+	cases := []struct {
+		name               string
+		err                error
+		wantInfrastructure bool
+	}{
+		{"server error", errors.New("GET /pulls/9 failed: status 503: unavailable"), true},
+		{"rate limit", errors.New("GET /pulls/9 failed: status 429: retry later"), true},
+		{"authentication", errors.New("GET /pulls/9 failed: status 401: bad credentials"), false},
+		{"authorization", errors.New("GET /pulls/9 failed: status 403: forbidden"), false},
+		{"deterministic request", errors.New("GET /pulls/9 failed: status 422: invalid"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			shell, _ := newTestExecutor(t, nil)
+			poller := &sequencedPoller{steps: []pollStep{{err: tc.err}}}
+			ciPoll, err := NewCIPollExecutor(poller)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ciPoll.MaxConsecutivePollErrors = 1
+			ciPoll.Sleep = noSleep
+			te, err := NewTaskExecutor(shell, ciPoll)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			env := apiv1.InvocationEnvelope{
+				TaskID:  "poll",
+				RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+				Inputs:  map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
+			}
+			_, runErr := te.Run(context.Background(), env, apiv1.DeterministicRun{})
+			if got := invoke.IsInfrastructureFailure(runErr); got != tc.wantInfrastructure {
+				t.Fatalf("infrastructure failure = %v, want %v (err=%v)", got, tc.wantInfrastructure, runErr)
+			}
+		})
 	}
 }
 

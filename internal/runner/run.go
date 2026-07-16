@@ -25,6 +25,10 @@ import (
 // from the Temporal engine core, ARCHITECTURE §3.1).
 const DefaultMaxSteps = 10000
 
+// DefaultMaxInfrastructureAttempts bounds transient infrastructure failures
+// independently of a task's policy retry allowance.
+const DefaultMaxInfrastructureAttempts int32 = 2
+
 // SpanStarter is the slice of the telemetry client the runner needs to open
 // run/task/gate spans (issue #126). *telemetry.Client satisfies it
 // structurally, mirroring internal/scheduler.SpanStarter's narrow-interface
@@ -1029,7 +1033,10 @@ func (r *Runner) finalizeTerminal(runID string, phase journal.RunPhase) error {
 // Next regardless of its business ResultStatus — a downstream gate is what
 // branches on that; only a genuine dispatch error (the executor returning a
 // Go error — infra failure, not a business "failure" status) triggers a
-// retry, and only Task.Retry's declared policy governs it.
+// retry. Dispatch errors marked by invoke.InfrastructureFailure use the
+// runner's bounded infrastructure allowance and journal their retry as
+// infrastructure; other dispatch retries use Task.Retry and are policy
+// attempts.
 //
 // Dispatch runs on a context.WithoutCancel of ctx: a run-level cancellation
 // (SIGTERM) must let the CURRENT attempt — including any retries already in
@@ -1051,31 +1058,34 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 
 	attemptCtx := context.WithoutCancel(ctx)
 
-	maxAttempts := int32(1)
+	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
 		if t.Retry.MaxAttempts > 0 {
-			maxAttempts = t.Retry.MaxAttempts
+			policyMaxAttempts = t.Retry.MaxAttempts
 		}
 		backoff = time.Duration(t.Retry.BackoffSeconds) * time.Second
 	}
-	if startAttempt > maxAttempts {
-		err := fmt.Errorf("runner: task %q has no attempts left after resume (interrupted attempt already exhausted its %d-attempt budget)", t.Name, maxAttempts)
+	maxAttempts := policyMaxAttempts
+	if DefaultMaxInfrastructureAttempts > maxAttempts {
+		maxAttempts = DefaultMaxInfrastructureAttempts
+	}
+	if startAttempt > policyMaxAttempts {
+		err := fmt.Errorf("runner: task %q has no attempts left after resume (interrupted attempt already exhausted its %d-attempt budget)", t.Name, policyMaxAttempts)
 		span.Fail(err)
 		return apiv1.ResultEnvelope{}, nil, err
 	}
 
 	var lastErr error
+	nextRetryClass := journal.AttemptPolicy
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
 		// The initial attempt carries no class and is always conformance-
-		// normative. A retry within THIS dispatch (attempt > startAttempt,
-		// i.e. the loop already iterated at least once here because a
-		// dispatch error retried) is tagged "policy" since Task.Retry drove
-		// it. The one exception: when this call was invoked as a resume
-		// continuation after an interrupted attempt (startAttempt > 1,
-		// resume.go), its FIRST iteration (attempt == startAttempt) is
-		// tagged "infra" instead — the crash drove it, not Task.Retry, so it
-		// must be excluded from the conformance set (§3.3) exactly like the
+		// normative. A retry within THIS dispatch uses the class selected by
+		// the prior failure: "infra" for an InfrastructureFailure marker,
+		// otherwise "policy". When this call resumes after an interrupted
+		// attempt (startAttempt > 1, resume.go), its FIRST iteration is also
+		// tagged "infra" — the crash drove it, not Task.Retry, so it must be
+		// excluded from the conformance set (§3.3) exactly like the
 		// interrupted attempt's own infra-tagged stage.finished marker
 		// (walk's resumeContext handling) — otherwise a crashed-and-resumed
 		// run's normative event set gains an extra started/finished pair a
@@ -1084,8 +1094,8 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		switch {
 		case attempt == startAttempt && startAttempt > 1:
 			class = journal.AttemptInfra
-		case attempt > 1:
-			class = journal.AttemptPolicy
+		case attempt > startAttempt:
+			class = nextRetryClass
 		}
 		if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: t.Name, Attempt: int(attempt), AttemptClass: class}); err != nil {
 			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
@@ -1123,6 +1133,12 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		}
 		if dispatchErr != nil {
 			lastErr = dispatchErr
+			retryLimit := policyMaxAttempts
+			nextRetryClass = journal.AttemptPolicy
+			if invoke.IsInfrastructureFailure(dispatchErr) {
+				retryLimit = DefaultMaxInfrastructureAttempts
+				nextRetryClass = journal.AttemptInfra
+			}
 			// A journal that cannot be written stops the run (§2.6): this
 			// write failing means the run's own record of what happened is
 			// now unreliable, so it is fatal, not best-effort.
@@ -1132,7 +1148,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			}); aerr != nil {
 				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal executor error for %q: %w", t.Name, aerr)
 			}
-			if attempt < maxAttempts {
+			if attempt < retryLimit {
 				if backoff > 0 {
 					// Wait on the run-level ctx (not attemptCtx, which never
 					// cancels — the drain contract for an in-flight
@@ -1153,7 +1169,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 				}
 				continue
 			}
-			err := fmt.Errorf("runner: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, attempt, maxAttempts)
+			err := fmt.Errorf("runner: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, attempt, retryLimit)
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
 		}

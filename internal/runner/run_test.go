@@ -162,6 +162,20 @@ type flakyDeterministic struct {
 	calls     int
 }
 
+type infrastructureFlakyDeterministic struct {
+	failUntil int
+	calls     int
+	cause     error
+}
+
+func (f *infrastructureFlakyDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	f.calls++
+	if f.calls <= f.failUntil {
+		return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf("provider request: %w", f.cause))
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "provider recovered"}, nil
+}
+
 func (f *flakyDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	f.calls++
 	if f.calls <= f.failUntil {
@@ -1568,6 +1582,100 @@ func TestRunnerRetriesTaskPerPolicy(t *testing.T) {
 		if e.AttemptClass != wantClasses[i] {
 			t.Errorf("start[%d].AttemptClass = %q, want %q", i, e.AttemptClass, wantClasses[i])
 		}
+	}
+}
+
+func TestRunnerRetriesInfrastructureFailureAndRecovers(t *testing.T) {
+	machine := retryFixtureMachine(t, 1)
+	cause := errors.New("status 503: provider unavailable")
+	flaky := &infrastructureFlakyDeterministic{failUntil: 1, cause: cause}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return flaky, nil
+	}, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-infra-recover",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted || flaky.calls != 2 {
+		t.Fatalf("result=%+v calls=%d, want completed after 2 attempts", res, flaky.calls)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-infra-recover"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var starts []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted {
+			starts = append(starts, event)
+		}
+	}
+	if len(starts) != 2 {
+		t.Fatalf("stage.started events = %d, want 2: %+v", len(starts), starts)
+	}
+	if starts[0].AttemptClass != "" || starts[1].AttemptClass != journal.AttemptInfra {
+		t.Fatalf("attempt classes = [%q %q], want [empty infra]", starts[0].AttemptClass, starts[1].AttemptClass)
+	}
+}
+
+func TestRunnerBoundsPersistentInfrastructureFailures(t *testing.T) {
+	machine := retryFixtureMachine(t, 1)
+	cause := errors.New("status 503: provider still unavailable")
+	flaky := &infrastructureFlakyDeterministic{failUntil: 100, cause: cause}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return flaky, nil
+	}, gate.NewAutomatedEvaluator())
+
+	_, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-infra-exhaust",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil {
+		t.Fatal("Start: want persistent infrastructure error")
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("error %q does not preserve provider cause %q", err, cause)
+	}
+	if flaky.calls != 2 {
+		t.Fatalf("executor calls = %d, want retry bound 2", flaky.calls)
+	}
+
+	rd, openErr := journal.OpenRead(filepath.Join(runsDir, "run-infra-exhaust"))
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	events, readErr := rd.Events()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var starts, attemptErrors int
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted {
+			starts++
+		}
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
+			attemptErrors++
+			if !strings.Contains(event.Error.Message, cause.Error()) {
+				t.Fatalf("journaled attempt error %q does not preserve cause %q", event.Error.Message, cause)
+			}
+		}
+	}
+	if starts != 2 || attemptErrors != 2 {
+		t.Fatalf("stage.started=%d executor_error=%d, want every one of 2 attempts journaled", starts, attemptErrors)
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"errors"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/providers"
 )
 
 // InputKind is the env.Inputs key that selects which built-in deterministic
@@ -55,7 +57,11 @@ func (t *TaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, ru
 		if err != nil {
 			return apiv1.ResultEnvelope{}, err
 		}
-		return t.CIPoll.Run(ctx, cfg)
+		result, err := t.CIPoll.Run(ctx, cfg)
+		if providers.IsTransientError(err) {
+			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(err)
+		}
+		return result, err
 	default:
 		return apiv1.ResultEnvelope{}, errors.New("executor: unknown " + InputKind + " " + stringInput(env, InputKind))
 	}
