@@ -144,7 +144,6 @@ type DeleteBranchResult struct {
 	Deleted bool `json:"deleted"`
 }
 
-
 // CommitChangeType identifies how a file changes in a commit.
 type CommitChangeType string
 

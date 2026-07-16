@@ -158,7 +158,7 @@ func TestFinalizeTerminalBranchDecisions(t *testing.T) {
 			if got := events[0].Runner["outcome"]; got != tc.wantOutcome {
 				t.Fatalf("outcome = %v, want %q", got, tc.wantOutcome)
 			}
-			if got := events[0].Runner["reason"]; got != tc.wantReason && !(got == nil && tc.wantReason == "") {
+			if got := events[0].Runner["reason"]; got != tc.wantReason && (got != nil || tc.wantReason != "") {
 				t.Fatalf("reason = %v, want %q", got, tc.wantReason)
 			}
 			if got := events[0].Error != nil; got != tc.wantError {
@@ -189,6 +189,104 @@ func TestFinalizeTerminalBranchIsIdempotent(t *testing.T) {
 	}
 	if events := terminalBranchCleanupEvents(t, runsDir, runID); len(events) != 1 {
 		t.Fatalf("cleanup events = %d, want 1", len(events))
+	}
+}
+
+func TestRunAbortPreparesTerminalBranchCleanup(t *testing.T) {
+	tests := []struct {
+		name        string
+		deleteErr   error
+		wantOutcome string
+	}{
+		{name: "deletion succeeds", wantOutcome: branchCleanupSucceeded},
+		{name: "provider failure preserves abort", deleteErr: errors.New("delete denied"), wantOutcome: branchCleanupFailed},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GOOBERS_GITHUB_TOKEN", "ghp_abort_fixture_dummy_token")
+			root := initDeterministicDemo(t)
+			l := instance.NewLayout(root)
+			const runID = "manually-aborted-run"
+
+			jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+				RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "example",
+				Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := jr.Append(journal.Event{
+				Type: journal.EventRefTouched,
+				ExternalRef: &journal.ExternalRef{
+					Provider: "github",
+					Kind:     "branch",
+					ID:       providers.BranchName("implementation", runID),
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := jr.Append(journal.Event{
+				Type:   journal.EventStageFinished,
+				Stage:  "push-branch",
+				Status: string(apiv1.ResultSuccess),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := jr.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			previous := newTerminalBranchDeleter
+			var calls int
+			newTerminalBranchDeleter = func(providers.TokenSource) providers.BranchDeleter {
+				return fakeBranchDeleter(func(_ context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
+					calls++
+					if req.Name != providers.BranchName("implementation", runID) {
+						t.Fatalf("branch = %q", req.Name)
+					}
+					return providers.DeleteBranchResult{Deleted: tc.deleteErr == nil}, tc.deleteErr
+				})
+			}
+			t.Cleanup(func() { newTerminalBranchDeleter = previous })
+
+			code, _, stderr := runArgs(t, "run", "abort", runID, root)
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			if calls != 1 {
+				t.Fatalf("delete calls = %d, want 1", calls)
+			}
+
+			events := terminalBranchCleanupEvents(t, l.RunsDir(), runID)
+			if len(events) != 1 {
+				t.Fatalf("cleanup events = %d, want 1: %+v", len(events), events)
+			}
+			if got := events[0].Runner["outcome"]; got != tc.wantOutcome {
+				t.Fatalf("outcome = %v, want %q", got, tc.wantOutcome)
+			}
+			if got := events[0].Error != nil; got != (tc.deleteErr != nil) {
+				t.Fatalf("cleanup error present = %t, want %t", got, tc.deleteErr != nil)
+			}
+
+			rd, err := journal.OpenRead(filepath.Join(l.RunsDir(), runID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			allEvents, err := rd.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(allEvents) < 2 {
+				t.Fatalf("events = %+v", allEvents)
+			}
+			finished := allEvents[len(allEvents)-1]
+			if finished.Type != journal.EventRunFinished || finished.Status != string(journal.PhaseAborted) {
+				t.Fatalf("last event = %+v, want aborted run.finished", finished)
+			}
+			if events[0].Seq >= finished.Seq {
+				t.Fatalf("cleanup seq = %d, run.finished seq = %d", events[0].Seq, finished.Seq)
+			}
+		})
 	}
 }
 

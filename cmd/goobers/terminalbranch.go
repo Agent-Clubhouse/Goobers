@@ -44,6 +44,18 @@ func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, regist
 	}, nil
 }
 
+func prepareAbortedRunBranch(l instance.Layout, runID string, jr *journal.Run, registrar terminalSecretRegistry) error {
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		return fmt.Errorf("load terminal branch cleanup config: %w", err)
+	}
+	prepare, err := buildTerminalBranchPreparer(l, cfg, registrar)
+	if err != nil {
+		return err
+	}
+	return prepare(runID, journal.PhaseAborted, jr)
+}
+
 func buildTerminalBranchDelete(cfg *instance.Config, registrar terminalSecretRegistry) (deleteBranchFunc, providers.RepositoryRef, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, providers.RepositoryRef{}, nil
