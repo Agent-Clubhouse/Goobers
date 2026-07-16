@@ -1227,6 +1227,15 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	ctx, span := r.startGateSpan(ctx, in, g, gooberName)
 	defer span.End()
 
+	if recovered, ok, recoveryErr := gateEval.RecoverInterrupted(g.Name, ""); recoveryErr != nil {
+		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, recoveryErr)
+		span.Fail(err)
+		return gate.Result{}, err, nil
+	} else if ok {
+		span.Succeed(recovered.Outcome)
+		return recovered, nil, nil
+	}
+
 	// diffDigest (issue #316) is only ever set below for an agentic gate
 	// whose branch carries a non-empty diff — an automated/human gate, or an
 	// agentic gate with no committed change, passes "" through to Evaluate,

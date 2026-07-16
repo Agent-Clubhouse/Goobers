@@ -174,21 +174,8 @@ type Evaluator struct {
 // to mean "no digest supplied, still call the reviewer" — emptiness is an
 // explicit signal, never inferred from an empty digest.
 func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, diffDigest string, emptyDiff bool) (Result, error) {
-	if attempt := e.Attempts[g.Name]; attempt > e.maxRepasses() {
-		r := Result{
-			Gate:        g.Name,
-			Outcome:     OutcomeFail,
-			Target:      wf.TargetEscalate,
-			Attempt:     attempt,
-			Escalated:   true,
-			Interrupted: true,
-		}
-		artifact, err := recordVerdict(e.Journal, r, diffDigest)
-		if err != nil {
-			return Result{}, fmt.Errorf("gate %q: journal interrupted escalation: %w", g.Name, err)
-		}
-		r.VerdictArtifact = artifact
-		return r, nil
+	if r, recovered, err := e.RecoverInterrupted(g.Name, diffDigest); err != nil || recovered {
+		return r, err
 	}
 
 	switch g.Evaluator {
@@ -298,6 +285,31 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	}
 	r.VerdictArtifact = artifact
 	return r, nil
+}
+
+// RecoverInterrupted synthesizes and journals the terminal escalation required
+// when restored dangling gate.started markers have already exhausted a gate's
+// repass budget. Callers must check this before preparing a side-effecting
+// evaluator; Evaluate also checks it as a fail-safe for direct callers.
+func (e *Evaluator) RecoverInterrupted(gateName, diffDigest string) (Result, bool, error) {
+	attempt := e.Attempts[gateName]
+	if attempt <= e.maxRepasses() {
+		return Result{}, false, nil
+	}
+	r := Result{
+		Gate:        gateName,
+		Outcome:     OutcomeFail,
+		Target:      wf.TargetEscalate,
+		Attempt:     attempt,
+		Escalated:   true,
+		Interrupted: true,
+	}
+	artifact, err := recordVerdict(e.Journal, r, diffDigest)
+	if err != nil {
+		return Result{}, true, fmt.Errorf("gate %q: journal interrupted escalation: %w", gateName, err)
+	}
+	r.VerdictArtifact = artifact
+	return r, true, nil
 }
 
 // trackRepass updates gate g's consecutive non-pass counter: a "pass" outcome

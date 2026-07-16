@@ -215,16 +215,6 @@ func (alwaysFailAutomated) Evaluate(context.Context, apiv1.AutomatedGate, apiv1.
 	return "fail", nil
 }
 
-type countingAutomated struct {
-	calls   int
-	outcome string
-}
-
-func (a *countingAutomated) Evaluate(context.Context, apiv1.AutomatedGate, apiv1.InvocationEnvelope) (string, error) {
-	a.calls++
-	return a.outcome, nil
-}
-
 // --- fixture repo: a local bare repo, so the test needs no network access ---
 
 func newFixtureRepo(t *testing.T) string {
@@ -2111,9 +2101,13 @@ func TestRunnerResumeEscalatesAfterRepeatedInterruptedGateEvaluations(t *testing
 		Gates: []apiv1.Gate{
 			{
 				Name:      "review",
-				Evaluator: apiv1.EvaluatorAutomated,
-				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
-				Branches:  map[string]string{gate.OutcomePass: workflow.TerminalComplete, gate.OutcomeFail: "implement"},
+				Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{
+					string(apiv1.VerdictPass):         workflow.TerminalComplete,
+					string(apiv1.VerdictNeedsChanges): "implement",
+					string(apiv1.VerdictFail):         workflow.TargetAbort,
+				},
 			},
 		},
 	}
@@ -2122,9 +2116,18 @@ func TestRunnerResumeEscalatesAfterRepeatedInterruptedGateEvaluations(t *testing
 		t.Fatalf("compile: %v", err)
 	}
 
-	auto := &countingAutomated{outcome: gate.OutcomePass}
-	r, runsDir := newTestRunner(t, map[string]stubTaskResult{}, auto)
+	r, runsDir := newTestRunner(t, map[string]stubTaskResult{}, gate.NewAutomatedEvaluator())
 	r.cfg.MaxRepasses = 1
+	var preparationCalls, executorCalls int
+	r.cfg.RepoCloneURL = func(apiv1.RepoRef) (string, error) {
+		preparationCalls++
+		return "", errors.New("agentic gate preparation must not run after recovery exhausted the budget")
+	}
+	reviewer := &alwaysNeedsChangesReviewer{}
+	r.cfg.NewAgentic = func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		executorCalls++
+		return reviewer, nil
+	}
 	jr, err := journal.Create(runsDir, journal.RunIdentity{
 		RunID: "run-interrupted-gate", Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
 		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
@@ -2162,8 +2165,8 @@ func TestRunnerResumeEscalatesAfterRepeatedInterruptedGateEvaluations(t *testing
 	if res.Phase != journal.PhaseEscalated {
 		t.Fatalf("phase = %q, want escalated after interrupted attempts exhausted the budget", res.Phase)
 	}
-	if auto.calls != 0 {
-		t.Fatalf("automated evaluator calls after resume = %d, want 0", auto.calls)
+	if preparationCalls != 0 || executorCalls != 0 || reviewer.calls != 0 {
+		t.Fatalf("agentic work after resume: preparations=%d executor constructions=%d reviewer calls=%d, want all zero", preparationCalls, executorCalls, reviewer.calls)
 	}
 
 	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-interrupted-gate"))
