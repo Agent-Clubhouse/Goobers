@@ -144,6 +144,16 @@ func WithOpenPRCounter(counter OpenPRCounter) Option {
 	}
 }
 
+// WithProviderQuota wires the gate that backs the provider-quota circuit
+// breaker (#712). Optional — nil/unset leaves the breaker unenforced.
+func WithProviderQuota(gate ProviderQuotaGate) Option {
+	return func(s *Scheduler) {
+		if gate != nil {
+			s.conditions.SetProviderQuota(gate)
+		}
+	}
+}
+
 // New builds a Scheduler over the given workflow entries. Call Reconcile
 // before Run to seed run-condition and trigger state from durable state after
 // a restart; a freshly-created instance can skip it (everything starts empty).

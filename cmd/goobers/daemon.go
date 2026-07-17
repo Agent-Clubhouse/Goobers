@@ -45,6 +45,14 @@ type schedulerSetup struct {
 	// in (or no repo is configured). Only the `up` daemon starts its Run loop
 	// and wires it as a scheduler option — see up.go.
 	OpenPRRefresher *localscheduler.OpenPRRefresher
+	// ProviderQuota backs the #712 provider-quota circuit breaker: shared by
+	// pointer with runnerCfg.RateLimited (buildRateLimitedHandler), which
+	// writes to it the instant a stage fails with providers.ErrorCodeRateLimited;
+	// SchedulerOptions wires the same pointer into the Scheduler's Admit check.
+	// Unlike OpenPRRefresher this needs no background Run loop (it's pushed to,
+	// not polled), so it's wired uniformly for both `up` and `run` in
+	// SchedulerOptions rather than needing an up.go-only branch. Never nil.
+	ProviderQuota *localscheduler.ProviderQuotaState
 }
 
 // buildSchedulerSetup loads an instance's config, compiles its workflows,
@@ -126,6 +134,11 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	runnerCfg.FinalizeTerminal = func(runID string, _ journal.RunPhase) error {
 		return releaseClaimsForRun(l, instanceLog, runID)
 	}
+	// #712: shared with the Scheduler via SchedulerOptions below — see
+	// schedulerSetup.ProviderQuota's doc comment for why a shared pointer,
+	// not a Scheduler-owned field, is needed here.
+	providerQuota := localscheduler.NewProviderQuotaState()
+	runnerCfg.RateLimited = buildRateLimitedHandler(providerQuota)
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, err
@@ -208,6 +221,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		RepoRefs:        repoRefs,
 		RunConditions:   cfg.RunConditions,
 		OpenPRRefresher: openPRRefresher,
+		ProviderQuota:   providerQuota,
 	}, nil
 }
 
@@ -216,10 +230,15 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 // See buildSchedulerSetup's doc comment for why a nil Telemetry must never
 // reach localscheduler.WithTelemetry directly.
 func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
-	if s.Telemetry == nil {
-		return nil
+	// ProviderQuota (#712) needs no background loop (event-driven, not
+	// polled — see its own doc comment), so unlike OpenPRRefresher it's wired
+	// here uniformly for every caller (both `up` and `run`), not gated behind
+	// an up.go-only branch.
+	opts := []localscheduler.Option{localscheduler.WithProviderQuota(s.ProviderQuota)}
+	if s.Telemetry != nil {
+		opts = append(opts, localscheduler.WithTelemetry(s.Telemetry))
 	}
-	return []localscheduler.Option{localscheduler.WithTelemetry(s.Telemetry)}
+	return opts
 }
 
 // Shutdown flushes/closes the telemetry client and rollup db, nil-safe so a

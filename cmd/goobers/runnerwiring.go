@@ -439,6 +439,25 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver *cred
 	}
 }
 
+// buildRateLimitedHandler wires runner.Config.RateLimited (#712): records the
+// exhausted provider quota into the shared ProviderQuotaState the same
+// composition root also hands to the scheduler (via
+// localscheduler.WithProviderQuota, schedulerSetup.SchedulerOptions) — the
+// Runner and the Scheduler are constructed in different order at the
+// composition root, so this pointer, not a Scheduler-owned field, is what
+// lets the two agree on one state. pq is never nil (buildSchedulerSetup
+// always constructs one); the nil check mirrors the defensive style of this
+// file's other optional-dependency handlers.
+func buildRateLimitedHandler(pq *localscheduler.ProviderQuotaState) runner.RateLimitedHandler {
+	if pq == nil {
+		return nil
+	}
+	return func(_ context.Context, o runner.RateLimitedOutcome) error {
+		pq.RecordExhausted(o.ResetAt)
+		return nil
+	}
+}
+
 // claimedItemIDsForRun resolves the backlog item(s) a run currently claims —
 // the driving-issue fallback for a run started without an Item snapshot. Read
 // under the claim lock like every other ledger access; the blocked handler
