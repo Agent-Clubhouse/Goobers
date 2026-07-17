@@ -219,6 +219,77 @@ func TestTraceOmitsEscalationSummaryForCompletedRun(t *testing.T) {
 	}
 }
 
+func TestTraceResolvesUniqueRunIDPrefix(t *testing.T) {
+	root := t.TempDir()
+	const runID = "dd57a3c2f0d27ea99ca7fa84db6ecab4"
+	createTraceRun(t, root, runID)
+
+	code, stdout, stderr := runArgs(t, "trace", "dd57a3c2", root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "run:      "+runID+"\n") {
+		t.Fatalf("trace stdout missing resolved run id: %q", stdout)
+	}
+}
+
+func TestTraceRejectsAmbiguousRunIDPrefix(t *testing.T) {
+	root := t.TempDir()
+	const (
+		first  = "dd57a3c2aaaaaaaaaaaaaaaaaaaaaaaa"
+		second = "dd57a3c2f0d27ea99ca7fa84db6ecab4"
+	)
+	createTraceRun(t, root, first)
+	createTraceRun(t, root, second)
+
+	code, stdout, stderr := runArgs(t, "trace", "dd57a3c2", root)
+	if code != 2 {
+		t.Fatalf("trace: code = %d, want 2", code)
+	}
+	if stdout != "" {
+		t.Fatalf("trace stdout = %q, want empty", stdout)
+	}
+	want := `error: ambiguous prefix "dd57a3c2" matches 2 runs: ` + first + ", " + second + "\n"
+	if stderr != want {
+		t.Fatalf("trace stderr = %q, want %q", stderr, want)
+	}
+}
+
+func TestTracePrefersExactRunIDOverPrefixMatches(t *testing.T) {
+	root := t.TempDir()
+	const (
+		exact  = "dd57a3c2f0d27ea99ca7fa84db6ecab4"
+		longer = exact + "-other"
+	)
+	createTraceRun(t, root, exact)
+	createTraceRun(t, root, longer)
+
+	code, stdout, stderr := runArgs(t, "trace", exact, root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "run:      "+exact+"\n") {
+		t.Fatalf("trace stdout missing exact run id: %q", stdout)
+	}
+}
+
+func createTraceRun(t *testing.T, root, runID string) {
+	t.Helper()
+	run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create trace run %q: %v", runID, err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close trace run %q: %v", runID, err)
+	}
+}
+
 // TestTraceRepassCountsAreConsistentAcrossMultipleGates is #354: the header
 // `repasses:` line and the ESCALATED block's `repass count:` used to be two
 // independently-hardcoded computations that could silently disagree. They
