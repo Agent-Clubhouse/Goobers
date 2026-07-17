@@ -14,13 +14,17 @@ export function OverviewPage({ navigate }: { navigate: Navigate }) {
   const [warningVisible, setWarningVisible] = useState(true);
   const activeRuns = runs.filter((run) => run.status === "running");
   const recentRuns = runs.filter((run) => run.status !== "running");
-  const attentionRun = runs.find((run) => run.status === "escalated");
+  const attentionRuns = runs.filter((run) => run.status === "escalated");
 
   return (
     <>
       <header className="page-heading">
         <p className="page-kicker">Local instance</p>
-        <h1>One run needs attention.</h1>
+        <h1>
+          {attentionRuns.length === 1
+            ? "One run needs attention."
+            : `${attentionRuns.length} runs need attention.`}
+        </h1>
         <p>Everything else is moving normally across the goobers gaggle.</p>
       </header>
 
@@ -46,33 +50,44 @@ export function OverviewPage({ navigate }: { navigate: Navigate }) {
         </dl>
       </section>
 
-      {attentionRun && (
+      {attentionRuns.length > 0 && (
         <section className="content-section">
           <div className="section-heading">
             <div>
               <p className="section-kicker section-kicker-danger">Attention</p>
-              <h2>Needs a decision</h2>
+              <h2>Needs attention</h2>
             </div>
-            <span className="section-count">1 run</span>
+            <span className="section-count">
+              {attentionRuns.length} {attentionRuns.length === 1 ? "run" : "runs"}
+            </span>
           </div>
-          <button
-            className="attention-row"
-            onClick={() => navigate({ page: "run", id: attentionRun.id })}
-            type="button"
-          >
-            <span className="attention-icon">
-              <Icon name="alert" />
-            </span>
-            <span className="attention-copy">
-              <strong>{attentionRun.title}</strong>
-              <span>{attentionRun.escalation?.title}</span>
-            </span>
-            <span className="attention-meta">
-              <span>{attentionRun.issue}</span>
-              <span>{attentionRun.repasses} of 3 repasses</span>
-            </span>
-            <Icon name="arrow" />
-          </button>
+          <div className="attention-list">
+            {attentionRuns.map((attentionRun) => (
+              <button
+                className="attention-row"
+                key={attentionRun.id}
+                onClick={() => navigate({ page: "run", id: attentionRun.id })}
+                type="button"
+              >
+                <span className="attention-icon">
+                  <Icon name="alert" />
+                </span>
+                <span className="attention-copy">
+                  <strong>{attentionRun.title}</strong>
+                  <span>{attentionRun.escalation?.summary ?? "Escalation cause unavailable"}</span>
+                </span>
+                <span className="attention-meta">
+                  <span>{attentionRun.issue}</span>
+                  <span>
+                    {attentionRun.escalation
+                      ? `${attentionRun.escalation.budget.consumed} of ${attentionRun.escalation.budget.limit} ${attentionRun.escalation.budget.kind} attempts`
+                      : "Legacy record"}
+                  </span>
+                </span>
+                <Icon name="arrow" />
+              </button>
+            ))}
+          </div>
         </section>
       )}
 
