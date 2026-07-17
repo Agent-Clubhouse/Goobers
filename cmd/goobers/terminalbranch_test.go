@@ -341,3 +341,48 @@ func TestBuildTerminalBranchDeleteAdmitsDedicatedCapability(t *testing.T) {
 		t.Fatalf("branch-delete capability %q is not canonical", capability.GitHubBranchDelete)
 	}
 }
+
+// TestBuildTerminalBranchPreparerSkipsCleanupWithoutARepo is issue #587's
+// regression: an instance with no configured repo (the credential-free demo)
+// runs workflows that never touch a branch by design — that absence is not
+// the anomaly finalizeTerminalBranch's "branch-reference-missing" cleanup
+// record exists to flag (a real repo-backed run whose branch ref.touched
+// somehow never got journaled). buildTerminalBranchPreparer must skip branch
+// cleanup entirely for a repo-less instance rather than journal a spurious
+// ref.touched for every single terminal run.
+func TestBuildTerminalBranchPreparerSkipsCleanupWithoutARepo(t *testing.T) {
+	cfg := &instance.Config{}
+	registrar := journal.NewRegistryScrubber()
+	prepare, err := buildTerminalBranchPreparer(instance.Layout{}, cfg, registrar)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const runID = "scratch-only-run"
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: runID, Workflow: "demo"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = jr.Close() })
+
+	// No branch/push/PR events at all — exactly what a scratch-only demo
+	// run's journal looks like.
+	if err := prepare(runID, journal.PhaseCompleted, jr); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range events {
+		if ev.Type == journal.EventRefTouched {
+			t.Fatalf("events = %+v, want no ref.touched appended for a repo-less instance", events)
+		}
+	}
+}
