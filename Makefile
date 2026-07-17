@@ -95,10 +95,23 @@ build: $(addprefix build-,$(CMDS))
 build-%:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/$* ./cmd/$*
 
+# Disable git fsync for the whole test run (#811). Every git subprocess the
+# suite spawns (throwaway fixtures + the runner's real worktree clones/commits)
+# operates on ephemeral scratch repos with zero durability needs, and fsync is
+# the one git syscall that blocks in uninterruptible I/O sleep under disk
+# saturation. When several `local-ci` stages run at once on the self-host box
+# (each a full cold `make ci`), that flush contention wedged a single
+# `git init/commit/clone` for the entire 10-minute stage limit — cmd/goobers
+# never finished and the overnight run opened 0 PRs. core.fsync=none (git 2.36+)
+# keeps git writes in the page cache so they return promptly under load; the
+# deprecated core.fsyncObjectFiles is avoided (it prints a warning that pollutes
+# git's combined output). Unknown to older git, the key is simply ignored.
+GIT_TEST_FSYNC_OFF := GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsync GIT_CONFIG_VALUE_0=none
+
 ## test: Run unit tests with race detector and coverage.
 .PHONY: test
 test:
-	$(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
+	$(GIT_TEST_FSYNC_OFF) $(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
 
 ## cover: Show total test coverage.
 .PHONY: cover
