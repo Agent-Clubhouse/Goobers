@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,13 +42,15 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers run <workflow> [path]\n"+
+		pf(stderr, "Usage: goobers run <workflow> [--no-wait] [path]\n"+
 			"       goobers run abort <run-id> [path]\n\n"+
 			"Trigger a run of a config/ workflow manually, through the same scheduler\n"+
 			"(run conditions, instance journal, single-instance lock) a live `goobers up`\n"+
-			"daemon uses, then wait for it to reach a terminal state or pause (default\n"+
-			"path \".\"). If a live `goobers up` daemon already holds the instance lock,\n"+
+			"daemon uses, then wait for it to reach a terminal state unless\n"+
+			"--no-wait is set (default path \".\"). If a live `goobers up` daemon already\n"+
+			"holds the instance lock,\n"+
 			"delegates the trigger to it instead of failing (#343) — dispatched through\n"+
 			"the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =\n"+
 			"completed, 1 = failed/aborted or business error (unknown workflow, invalid\n"+
@@ -57,7 +60,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 			"`run abort` marks a stuck non-terminal run aborted directly in its own\n"+
 			"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n")
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(runFlagArgs(args)); err != nil {
 		return 2
 	}
 	if fs.NArg() < 1 || fs.NArg() > 2 {
@@ -92,9 +95,25 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
 	if err != nil {
-		return runDelegatedTrigger(ctx, l, name, root, stdout, stderr)
+		return runDelegatedTrigger(ctx, l, name, root, *noWait, stdout, stderr)
 	}
-	defer release()
+	if *noWait && runProcessExits {
+		release()
+		return runDetachedTrigger(ctx, l, name, root, stdout, stderr)
+	}
+	return runStandaloneTrigger(ctx, l, name, root, *noWait, false, release, stdout, stderr)
+}
+
+// runStandaloneTrigger owns the one-shot scheduler and instance lock. A real
+// detached worker stays alive until Starter.Start returns so paused runs
+// release those resources; in-process callers hand that cleanup to a goroutine.
+func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root string, noWait, worker bool, release func(), stdout, stderr io.Writer) int {
+	releaseOnReturn := true
+	defer func() {
+		if releaseOnReturn {
+			release()
+		}
+	}()
 
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(ctx, l, &wg)
@@ -102,7 +121,12 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	defer setup.Shutdown(context.Background())
+	shutdownOnReturn := true
+	defer func() {
+		if shutdownOnReturn {
+			setup.Shutdown(context.Background())
+		}
+	}()
 
 	found := false
 	var gaggle string
@@ -125,12 +149,32 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	runID, err := sched.Trigger(ctx, name, time.Now())
+	triggerCtx := ctx
+	if noWait && !worker {
+		triggerCtx = context.WithoutCancel(ctx)
+	}
+	runID, err := sched.Trigger(triggerCtx, name, time.Now())
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	pf(stdout, "created run %s (workflow=%s gaggle=%s)\n", runID, name, gaggle)
+	if noWait {
+		shutdownOnReturn = false
+		releaseOnReturn = false
+		cleanup := func() {
+			sched.Wait()
+			setup.Shutdown(context.Background())
+			release()
+		}
+		pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
+		if worker {
+			cleanup()
+		} else {
+			go cleanup()
+		}
+		return 0
+	}
 
 	phase, err := waitForRunTerminal(ctx, l.RunsDir(), runID)
 	if err != nil {
@@ -158,10 +202,10 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 // writes a delegation request (rundelegate.go) the daemon's own periodic
 // sweep picks up and dispatches through the identical Scheduler.Trigger path
 // this process would have called itself, then waits for a response and the
-// dispatched run's terminal state exactly like the non-delegated path above
-// — from the caller's perspective the two paths are indistinguishable except
-// for which process actually held the scheduler.
-func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root string, stdout, stderr io.Writer) int {
+// dispatched run's terminal state unless noWait is set. From the caller's
+// perspective the two paths are otherwise indistinguishable except for which
+// process actually held the scheduler.
+func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root string, noWait bool, stdout, stderr io.Writer) int {
 	requestID, err := writeTriggerRequest(l.SchedulerDir(), name)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -174,6 +218,10 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root stri
 		return 1
 	}
 	pf(stdout, "created run %s (workflow=%s, dispatched via live daemon)\n", runID, name)
+	if noWait {
+		pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
+		return 0
+	}
 
 	phase, err := waitForRunTerminal(ctx, l.RunsDir(), runID)
 	if err != nil {
@@ -183,6 +231,22 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root stri
 	pf(stdout, "finished: phase=%s\n", phase)
 	pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
 	return exitForPhase(phase)
+}
+
+// runFlagArgs lets --no-wait appear after the workflow, as documented. The
+// standard flag package otherwise stops parsing at the first positional arg.
+func runFlagArgs(args []string) []string {
+	flags := make([]string, 0, len(args))
+	positionals := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--no-wait" || arg == "-no-wait" ||
+			strings.HasPrefix(arg, "--no-wait=") || strings.HasPrefix(arg, "-no-wait=") {
+			flags = append(flags, arg)
+			continue
+		}
+		positionals = append(positionals, arg)
+	}
+	return append(flags, positionals...)
 }
 
 // runRunAbort marks a stuck non-terminal run as aborted by appending a

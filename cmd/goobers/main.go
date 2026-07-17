@@ -12,7 +12,12 @@ import (
 	"github.com/goobers/goobers/internal/version"
 )
 
+// runProcessExits is true only for the real CLI entrypoint. In-process callers
+// keep standalone asynchronous runs alive in their host process instead.
+var runProcessExits bool
+
 func main() {
+	runProcessExits = true
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
@@ -38,6 +43,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runUp(args[1:], stdout, stderr)
 	case "run":
 		return runRun(args[1:], stdout, stderr)
+	case detachedRunWorkerCommand:
+		return runDetachedWorker(args[1:], stdout, stderr)
 	case "signal":
 		return runSignal(args[1:], stdout, stderr)
 	case "workflow":
@@ -105,7 +112,8 @@ Usage:
                                 scaffold a goober or workflow in a gaggle
   goobers validate [path]       validate an instance's instance.yaml + config/
   goobers up [--quiet] [path]   run the daemon (scheduler + runner + loopback HTTP API)
-  goobers run <workflow> [path] trigger a run manually (still honors run conditions)
+  goobers run <workflow> [--no-wait] [path]
+                                trigger a run manually (still honors run conditions)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow

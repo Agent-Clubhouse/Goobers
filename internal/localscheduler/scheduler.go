@@ -87,8 +87,9 @@ type Scheduler struct {
 	after      func(d time.Duration) <-chan time.Time
 	telemetry  SpanStarter
 
-	mu       sync.Mutex
-	triggers map[string]TriggerState
+	mu         sync.Mutex
+	triggers   map[string]TriggerState
+	dispatches sync.WaitGroup
 	// backlogLastCheck tracks, per backlog-item-triggered workflow, when its
 	// BacklogCounter was last polled (#344) — separate from triggers'
 	// LastEval, which is cron-Schedule-specific bookkeeping a workflow with
@@ -254,6 +255,12 @@ func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 // release path at all and starves its workflow for the daemon's lifetime.
 func (s *Scheduler) Release(workflow string) {
 	s.conditions.Release(workflow)
+}
+
+// Wait blocks until every admitted dispatch has finished its Starter call and
+// post-run bookkeeping. Callers must stop initiating dispatches before waiting.
+func (s *Scheduler) Wait() {
+	s.dispatches.Wait()
 }
 
 // Run is the daemon loop: evaluate every workflow's trigger, dispatch what's
@@ -478,7 +485,9 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	})
 	span.Succeed("started: " + runID)
 
+	s.dispatches.Add(1)
 	go func() {
+		defer s.dispatches.Done()
 		defer s.conditions.Release(entry.Workflow)
 		result, startErr := entry.Starter.Start(ctx, StartRequest{
 			RunID:   runID,
