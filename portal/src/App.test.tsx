@@ -248,6 +248,9 @@ describe("escalation detail", () => {
           mediaType: "application/json",
           size: "1.1 KB",
           summary: "Delivery metadata recorded after the causal event.",
+          digest: "sha256:2b5c8e1a9f4d7c3b6e0a2d5f8c1b4e7a0d3f6c9b2e5a8d1f4c7b0e3a6d9f2c5b",
+          digestVerified: false,
+          recordedSeq: 16,
         },
       ],
     } satisfies StageAttempt;

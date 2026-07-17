@@ -1626,23 +1626,23 @@ summary:focus-visible {
 }
 
 .artifact-row {
-  align-items: start;
-  background: transparent;
-  border: 0;
-  cursor: default;
   display: grid;
   gap: 8px;
-  grid-template-columns: auto 1fr auto;
   padding: 10px 2px;
-  text-align: left;
-  width: 100%;
 }
 
 .artifact-row + .artifact-row {
   border-top: 1px solid var(--line);
 }
 
-.artifact-row > span {
+.artifact-row-heading {
+  align-items: start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto 1fr;
+}
+
+.artifact-row-heading > span {
   display: grid;
   gap: 2px;
 }
@@ -1657,6 +1657,172 @@ summary:focus-visible {
   color: var(--muted);
   font-size: 8px;
   line-height: 1.4;
+}
+
+.artifact-metadata {
+  display: grid;
+  gap: 6px 12px;
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.artifact-metadata dt {
+  color: var(--muted);
+  font-size: 7px;
+  text-transform: uppercase;
+}
+
+.artifact-metadata dd {
+  font-size: 8px;
+  margin: 0;
+}
+
+.artifact-digest {
+  grid-column: 1 / -1;
+}
+
+.artifact-digest code {
+  font-size: 8px;
+  word-break: break-all;
+}
+
+.artifact-digest .digest-verified,
+.artifact-digest .digest-unverified {
+  display: inline-block;
+  font-size: 7px;
+  font-weight: 650;
+  margin-left: 6px;
+  text-transform: uppercase;
+}
+
+.artifact-digest .digest-verified {
+  color: var(--success);
+}
+
+.artifact-digest .digest-unverified {
+  color: var(--muted);
+}
+
+.artifact-action {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-size: 8px;
+  justify-self: start;
+  padding: 5px 9px;
+  text-decoration: none;
+}
+
+.artifact-access-note {
+  color: var(--muted);
+  font-size: 8px;
+  font-style: italic;
+}
+
+.artifact-dialog-backdrop {
+  align-items: center;
+  background: rgb(0 0 0 / 55%);
+  display: grid;
+  inset: 0;
+  justify-items: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 40;
+}
+
+.artifact-dialog {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  display: grid;
+  gap: 14px;
+  max-height: min(640px, 90vh);
+  max-width: min(720px, 92vw);
+  overflow: auto;
+  padding: 20px;
+  width: 100%;
+}
+
+.artifact-dialog header {
+  align-items: start;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.artifact-dialog h2 {
+  font-size: 13px;
+  margin: 2px 0 0;
+}
+
+.dialog-close {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px;
+}
+
+.artifact-dialog-meta {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+  padding-top: 12px;
+}
+
+.artifact-dialog-meta dt {
+  color: var(--muted);
+  font-size: 7px;
+  text-transform: uppercase;
+}
+
+.artifact-dialog-meta dd {
+  font-size: 9px;
+  margin: 2px 0 0;
+}
+
+.artifact-dialog-meta code {
+  font-size: 8px;
+  word-break: break-all;
+}
+
+.artifact-load-state {
+  color: var(--muted);
+  display: grid;
+  font-size: 9px;
+  gap: 8px;
+  justify-items: start;
+  padding: 18px 0;
+}
+
+.artifact-load-error strong {
+  color: var(--danger);
+  font-size: 9px;
+}
+
+.artifact-load-error button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 8px;
+  padding: 5px 9px;
+}
+
+.artifact-content {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 9px;
+  line-height: 1.5;
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .definition-disclosure {

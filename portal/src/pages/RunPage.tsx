@@ -395,7 +395,12 @@ export function RunPage({ run, navigate }: { run: Run; navigate: Navigate }) {
         </div>
 
         {selectedStage && (
-          <AttemptInspector eventSeq={currentEvent?.seq ?? 0} run={run} stage={selectedStage} />
+          <AttemptInspector
+            eventAttemptNumber={currentEvent?.stageId === selectedStage.id ? currentEvent.attempt : undefined}
+            eventSeq={currentEvent?.seq ?? 0}
+            run={run}
+            stage={selectedStage}
+          />
         )}
       </section>
     </>
