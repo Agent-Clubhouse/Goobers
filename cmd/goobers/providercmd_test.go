@@ -48,19 +48,35 @@ type fakePRFile struct {
 	status    string
 	additions int
 	deletions int
+	// patch is the unified-diff hunk text (issue #718's patch-identity
+	// re-keying reads ChangedFile.Patch) — empty is a valid fixture value
+	// (a binary file, or a status-only assertion that doesn't care about
+	// content identity).
+	patch string
+}
+
+// fakeCompare is one fixture answer for GET .../compare/{base}...{head}
+// (issue #718: CompareCommits, used both for a PR's own patch identity and
+// for "what has base touched since this PR's merge-base"). Registered
+// explicitly per (base, head) pair via addCompare — the fake has no git
+// history to derive an answer from, unlike the real GitHub API.
+type fakeCompare struct {
+	mergeBaseSHA string
+	files        []fakePRFile
 }
 
 // fakeGitHubServer is a stateful httptest.Server standing in for GitHub's
 // issues/comments/labels/pulls API, shared across #131/#132's CLI-level
 // integration tests.
 type fakeGitHubServer struct {
-	mu     sync.Mutex
-	owner  string
-	repo   string
-	issues map[int]*fakeIssue
-	prs    map[int]*fakePR
-	nextPR int
-	server *httptest.Server
+	mu       sync.Mutex
+	owner    string
+	repo     string
+	issues   map[int]*fakeIssue
+	prs      map[int]*fakePR
+	compares map[string]fakeCompare
+	nextPR   int
+	server   *httptest.Server
 	// filesRequests/checkStateRequests count GET /pulls/{n}/files and
 	// /commits/{sha}/{status,check-runs} hits — the per-sibling API cost
 	// #523's cache exists to eliminate, so its tests can assert "an
@@ -85,7 +101,7 @@ func (s *fakeGitHubServer) requestCounts() (files, checkState int) {
 
 func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	t.Helper()
-	s := &fakeGitHubServer{owner: owner, repo: repo, issues: map[int]*fakeIssue{}, prs: map[int]*fakePR{}, nextPR: 1}
+	s := &fakeGitHubServer{owner: owner, repo: repo, issues: map[int]*fakeIssue{}, prs: map[int]*fakePR{}, compares: map[string]fakeCompare{}, nextPR: 1}
 	mux := http.NewServeMux()
 	prefix := "/repos/" + owner + "/" + repo
 	mux.HandleFunc(prefix+"/issues", s.handleIssuesCollection)
@@ -93,6 +109,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/issues/", s.handleIssueItem)
 	mux.HandleFunc(prefix+"/pulls/", s.handlePullItem)
 	mux.HandleFunc(prefix+"/commits/", s.handleCommitItem)
+	mux.HandleFunc(prefix+"/compare/", s.handleCompare)
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
 	return s
@@ -123,6 +140,19 @@ func (s *fakeGitHubServer) addOpenPR(number int, head, base, headSHA, baseSHA st
 	if number >= s.nextPR {
 		s.nextPR = number + 1
 	}
+}
+
+// addCompare registers the fixture answer for GET .../compare/base...head
+// (issue #718: CompareCommits). A test's own choice of mergeBaseSHA drives
+// computeSelectedPatchContext's short-circuit (equal to base = "base
+// hasn't moved past the PR's merge-base yet", skipping the second compare
+// entirely) or its base-intersection path (different from base = a second
+// addCompare(mergeBaseSHA, base, ...) fixture is also required, for "what
+// has base touched since the PR's merge-base").
+func (s *fakeGitHubServer) addCompare(base, head, mergeBaseSHA string, files []fakePRFile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.compares[base+"..."+head] = fakeCompare{mergeBaseSHA: mergeBaseSHA, files: files}
 }
 
 func (s *fakeGitHubServer) newGitHubProvider(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
@@ -329,7 +359,7 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 		out := make([]map[string]interface{}, 0, len(pr.files))
 		for _, f := range pr.files {
 			out = append(out, map[string]interface{}{
-				"filename": f.path, "status": f.status, "additions": f.additions, "deletions": f.deletions,
+				"filename": f.path, "status": f.status, "additions": f.additions, "deletions": f.deletions, "patch": f.patch,
 			})
 		}
 		writeFakeJSON(w, out)
@@ -382,6 +412,33 @@ func (s *fakeGitHubServer) handleCommitItem(w http.ResponseWriter, r *http.Reque
 	default:
 		http.Error(w, fmt.Sprintf("unhandled commit path %s", r.URL.Path), http.StatusNotImplemented)
 	}
+}
+
+// handleCompare serves GET .../compare/{base}...{head} from the fixture
+// registered via addCompare (issue #718) — an unregistered pair is a 404,
+// matching a real "unknown ref" response; computeSelectedPatchContext
+// treats that as a degrade-not-fail cache-optimization loss, so a test
+// that never calls addCompare simply never gets a verdict-cache hit rather
+// than failing outright.
+func (s *fakeGitHubServer) handleCompare(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimPrefix(r.URL.Path, "/repos/"+s.owner+"/"+s.repo+"/compare/")
+	s.mu.Lock()
+	cmp, ok := s.compares[key]
+	s.mu.Unlock()
+	if !ok {
+		http.Error(w, "no fixture compare registered for "+key, http.StatusNotFound)
+		return
+	}
+	files := make([]map[string]interface{}, 0, len(cmp.files))
+	for _, f := range cmp.files {
+		files = append(files, map[string]interface{}{
+			"filename": f.path, "status": f.status, "additions": f.additions, "deletions": f.deletions, "patch": f.patch,
+		})
+	}
+	writeFakeJSON(w, map[string]interface{}{
+		"merge_base_commit": map[string]interface{}{"sha": cmp.mergeBaseSHA},
+		"files":             files,
+	})
 }
 
 func issueJSON(issue *fakeIssue) map[string]interface{} {
@@ -446,6 +503,15 @@ func (s *fakeGitHubServer) setPRHead(number int, headSHA string, files []fakePRF
 	defer s.mu.Unlock()
 	s.prs[number].headSHA = headSHA
 	s.prs[number].files = files
+}
+
+// setPRBase models base advancing under an unchanged PR (issue #718's
+// delta-aware baseSha conjunct / cache re-keying tests: base moving is the
+// event under test, independent of anything about the PR's own head).
+func (s *fakeGitHubServer) setPRBase(number int, baseSHA string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].baseSHA = baseSHA
 }
 
 // setPRCheckState models CI advancing on an unchanged head (pending →

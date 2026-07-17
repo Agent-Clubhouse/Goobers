@@ -39,6 +39,14 @@ type RepoProvider interface {
 	// sibling-set context gathering (issue #359): what does the OTHER open PR
 	// change, for cross-PR conflict/drift detection.
 	PullRequestFiles(context.Context, RepositoryRef, string) ([]ChangedFile, error)
+	// CompareCommits reports the common ancestor and file-level diff between
+	// base and head (issue #718): merge-review's verdict-cache re-keying
+	// uses this for the selected PR's own patch content (base=its baseSHA,
+	// head=its headSHA) and for "what changed on base since this PR's
+	// merge-base" (base=that merge-base, head=base's current tip) — both
+	// needed to make the cache key and merge-pr's SHA-pin check delta-aware
+	// instead of raw-SHA-equality.
+	CompareCommits(ctx context.Context, repo RepositoryRef, base, head string) (CompareResult, error)
 }
 
 // BranchName returns the run-scoped branch-name convention the repo provider

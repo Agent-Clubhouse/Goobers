@@ -292,6 +292,10 @@ func (f *fakeRepoProvider) PullRequestFiles(context.Context, providers.Repositor
 	return nil, nil
 }
 
+func (f *fakeRepoProvider) CompareCommits(context.Context, providers.RepositoryRef, string, string) (providers.CompareResult, error) {
+	return providers.CompareResult{}, nil
+}
+
 func TestInProcessPreparerClonesRepoAndBuildsEnv(t *testing.T) {
 	repo := &fakeRepoProvider{}
 	preparer := InProcessPreparer{

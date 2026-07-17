@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/providers"
 )
 
 // #523's CLI-level tests for the verdict-level digest cache (the maintainer
@@ -19,57 +20,110 @@ import (
 // TestEvaluatorReusesCachedVerdictWithoutReviewerCall in internal/gate).
 
 // TestComputeReviewDigestIsSensitiveToEveryPinnedInput is the digest
-// formula's own contract: identical inputs produce identical digests
-// regardless of sibling order (never semantically meaningful), and each of
-// the ruling's four invalidation triggers — selected-PR push (head SHA),
-// base advance (base SHA), a sibling's head SHA changing, and the sibling
-// SET changing — changes the digest.
+// formula's own contract (re-keyed by issue #718 to actually hit on a
+// clean rebase): identical inputs produce identical digests regardless of
+// sibling order (never semantically meaningful); a genuine patch-content
+// change, a base movement that now intersects the PR's files, and the
+// sibling SET changing all change the digest.
 func TestComputeReviewDigestIsSensitiveToEveryPinnedInput(t *testing.T) {
 	siblings := []siblingPR{
-		{Number: 11, HeadSHA: "sha11"},
-		{Number: 12, HeadSHA: "sha12"},
+		{Number: 11, Files: []string{"a.go"}},
+		{Number: 12, Files: []string{"b.go"}},
 	}
 	reordered := []siblingPR{
-		{Number: 12, HeadSHA: "sha12"},
-		{Number: 11, HeadSHA: "sha11"},
+		{Number: 12, Files: []string{"b.go"}},
+		{Number: 11, Files: []string{"a.go"}},
 	}
-	base := computeReviewDigest("head10", "shamainbase", siblings)
+	base := computeReviewDigest("patch10", "base-intersection-empty", siblings)
 
-	if got := computeReviewDigest("head10", "shamainbase", reordered); got != base {
+	if got := computeReviewDigest("patch10", "base-intersection-empty", reordered); got != base {
 		t.Fatalf("digest changed with sibling order = %q, want stable digest %q (siblings must be sorted before hashing)", got, base)
 	}
-	if got := computeReviewDigest("head10-pushed", "shamainbase", siblings); got == base {
-		t.Fatalf("digest unchanged after selected-PR push, want it to differ from %q", base)
+	if got := computeReviewDigest("patch10-changed", "base-intersection-empty", siblings); got == base {
+		t.Fatalf("digest unchanged after the selected PR's own patch content changed, want it to differ from %q", base)
 	}
-	if got := computeReviewDigest("head10", "shamainbase-advanced", siblings); got == base {
-		t.Fatalf("digest unchanged after base advance, want it to differ from %q", base)
+	if got := computeReviewDigest("patch10", "base-intersection-nonempty", siblings); got == base {
+		t.Fatalf("digest unchanged after base's movement started intersecting the PR's files, want it to differ from %q", base)
 	}
-	changedSiblingSHA := []siblingPR{{Number: 11, HeadSHA: "sha11-pushed"}, {Number: 12, HeadSHA: "sha12"}}
-	if got := computeReviewDigest("head10", "shamainbase", changedSiblingSHA); got == base {
-		t.Fatalf("digest unchanged after a sibling's head SHA changed, want it to differ from %q", base)
+	changedSiblingFiles := []siblingPR{{Number: 11, Files: []string{"a.go", "c.go"}}, {Number: 12, Files: []string{"b.go"}}}
+	if got := computeReviewDigest("patch10", "base-intersection-empty", changedSiblingFiles); got == base {
+		t.Fatalf("digest unchanged after a sibling's file set changed, want it to differ from %q", base)
 	}
-	fewerSiblings := []siblingPR{{Number: 11, HeadSHA: "sha11"}}
-	if got := computeReviewDigest("head10", "shamainbase", fewerSiblings); got == base {
+	fewerSiblings := []siblingPR{{Number: 11, Files: []string{"a.go"}}}
+	if got := computeReviewDigest("patch10", "base-intersection-empty", fewerSiblings); got == base {
 		t.Fatalf("digest unchanged after the sibling set shrank, want it to differ from %q", base)
 	}
 }
 
+// TestComputeReviewDigestIgnoresSiblingHeadSHAAlone is #718's headline
+// property for siblings: a force-push that doesn't change WHICH files a
+// sibling touches must NOT perturb the digest — the digest formula doesn't
+// even look at HeadSHA anymore, so this is really a "the field is
+// ignored" proof, guarding against a future edit accidentally
+// reintroducing it.
+func TestComputeReviewDigestIgnoresSiblingHeadSHAAlone(t *testing.T) {
+	before := []siblingPR{{Number: 11, HeadSHA: "sha-before", Files: []string{"a.go"}}}
+	after := []siblingPR{{Number: 11, HeadSHA: "sha-after-forcepush", Files: []string{"a.go"}}}
+	if got, want := computeReviewDigest("patch10", "base-empty", after), computeReviewDigest("patch10", "base-empty", before); got != want {
+		t.Fatalf("digest changed = %q, want unchanged %q — a sibling force-push that doesn't change its file set must not invalidate the cache", got, want)
+	}
+}
+
+// TestPatchIdentityIgnoresHunkLineNumberShift is #718's headline property
+// for the selected PR: a rebase-shifted hunk header (line numbers moved by
+// an earlier, unrelated change in the same file) must not perturb the
+// identity — only the actual +/- content does.
+func TestPatchIdentityIgnoresHunkLineNumberShift(t *testing.T) {
+	unshifted := []providers.ChangedFile{{Path: "foo.go", Status: "modified", Patch: "@@ -10,3 +10,3 @@\n line a\n-old\n+new\n"}}
+	shifted := []providers.ChangedFile{{Path: "foo.go", Status: "modified", Patch: "@@ -50,3 +50,3 @@\n line a\n-old\n+new\n"}}
+	if got, want := patchIdentity(shifted), patchIdentity(unshifted); got != want {
+		t.Fatalf("patchIdentity changed = %q, want unchanged %q — a hunk line-number shift alone must not change the identity", got, want)
+	}
+	realChange := []providers.ChangedFile{{Path: "foo.go", Status: "modified", Patch: "@@ -10,3 +10,3 @@\n line a\n-old\n+something else entirely\n"}}
+	if got, unwanted := patchIdentity(realChange), patchIdentity(unshifted); got == unwanted {
+		t.Fatalf("patchIdentity unchanged = %q, want it to differ — the actual patch content changed", got)
+	}
+}
+
+// selectedPRFiles is the fixture's selected PR #10's own changed files —
+// shared between seedVerdictCacheFixture's addCompare registration and its
+// wantDigest computation so the two can never silently drift apart.
+var selectedPRFiles = []fakePRFile{{path: "cmd/goobers/foo.go", status: "modified", additions: 3, deletions: 1, patch: "@@ -1,3 +1,3 @@\n a\n-b\n+c\n"}}
+
 // seedVerdictCacheFixture stands up the shared fixture: selected PR #10
 // (with a matching issue record, since verdict comments post to the issues
-// API) plus one sibling #11.
+// API) plus one sibling #11. Registers the compare(base...head) fixture
+// #718's patch-identity computation needs — base hasn't moved past the
+// PR's own merge-base in this fixture (mergeBaseSHA == baseSHA), so no
+// second compare (for base's own movement) is needed.
 func seedVerdictCacheFixture(t *testing.T) (root string, server *fakeGitHubServer, wantDigest string) {
 	t.Helper()
 	root = initDemo(t)
 	server = newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(10, "Selected PR")
-	server.addOpenPR(10, "goobers/implementation/run-10", "main", "sha10head", "shamainbase", false, nil, nil)
+	server.addOpenPR(10, "goobers/implementation/run-10", "main", "sha10head", "shamainbase", false, nil, selectedPRFiles)
 	server.addOpenPR(11, "goobers/implementation/run-11", "main", "sha11head", "shamainbase",
 		false, nil, []fakePRFile{{path: "internal/runner/run.go", status: "modified", additions: 1, deletions: 0}})
+	server.addCompare("shamainbase", "sha10head", "shamainbase", selectedPRFiles)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-2")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
 
-	wantDigest = computeReviewDigest("sha10head", "shamainbase", []siblingPR{{Number: 11, HeadSHA: "sha11head"}})
+	patchID := patchIdentity(toChangedFiles(selectedPRFiles))
+	wantDigest = computeReviewDigest(patchID, sortedFileSetDigest(nil), []siblingPR{{Number: 11, Files: []string{"internal/runner/run.go"}}})
 	return root, server, wantDigest
+}
+
+// toChangedFiles converts fixture files to providers.ChangedFile, mirroring
+// exactly what GitHubProvider.CompareCommits/PullRequestFiles produce from
+// the same shape — kept in lockstep with providercmd_test.go's
+// handleCompare/handlePullItem so a test's expected digest is always
+// computed from what the fake server will actually report.
+func toChangedFiles(files []fakePRFile) []providers.ChangedFile {
+	out := make([]providers.ChangedFile, 0, len(files))
+	for _, f := range files {
+		out = append(out, providers.ChangedFile{Path: f.path, Status: f.status, Additions: f.additions, Deletions: f.deletions, Patch: f.patch})
+	}
+	return out
 }
 
 // TestGatherSiblingContextFindsMatchingCachedVerdict is #523's headline
@@ -122,6 +176,145 @@ func TestGatherSiblingContextFindsMatchingCachedVerdict(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "verdict cache HIT") {
 		t.Fatalf("stdout = %q, want it to report a verdict cache hit", stdout)
+	}
+}
+
+// TestGatherSiblingContextCleanRebaseHitsCache is issue #718's headline
+// acceptance criterion: a PR reviewed once, then cleanly rebased (its head
+// SHA changes — a real force-push — but its actual patch content does
+// not), still hits the verdict cache on the next gather. Before #718 this
+// was the dominant 0/16-hit scenario (computeReviewDigest hashed the raw
+// head SHA, so ANY rebase — clean or not — was always a miss).
+func TestGatherSiblingContextCleanRebaseHitsCache(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(30, "Selected PR")
+	preRebaseFiles := []fakePRFile{{path: "cmd/goobers/foo.go", status: "modified", additions: 3, deletions: 1, patch: "@@ -10,3 +10,3 @@\n a\n-b\n+c\n"}}
+	server.addOpenPR(30, "goobers/implementation/run-30", "main", "sha30-before-rebase", "shamainbase", false, nil, preRebaseFiles)
+	server.addCompare("shamainbase", "sha30-before-rebase", "shamainbase", preRebaseFiles)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-review")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "30")
+
+	// A real reviewer produced a verdict for the PR's pre-rebase state.
+	preRebaseDigest := computeReviewDigest(patchIdentity(toChangedFiles(preRebaseFiles)), sortedFileSetDigest(nil), nil)
+	prior := apiv1.Verdict{
+		Decision: apiv1.VerdictPass, Summary: "looks good", Digest: preRebaseDigest,
+		SourceRunID: "run-review", HeadSHA: "sha30-before-rebase", BaseSHA: "shamainbase",
+	}
+	server.addComment(30, renderVerdictComment(prior))
+
+	// The PR gets cleanly rebased: a real force-push changes its head SHA,
+	// but git patch-id (and this stage's patchIdentity, its content-hash
+	// alternative) would report the SAME patch — same path, status, and
+	// hunk content, only the SHA differs. Base does not move in this
+	// scenario (a clean rebase onto the SAME base tip — e.g. an amend/
+	// force-push with no base change at all — still must not be confused
+	// with a stale review; base movement is covered separately by
+	// TestGatherSiblingContextBaseMovementDisjointFromPRStillHitsCache).
+	server.setPRHead(30, "sha30-after-rebase", preRebaseFiles)
+	server.addCompare("shamainbase", "sha30-after-rebase", "shamainbase", preRebaseFiles)
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	code, stdout, stderr := runArgs(t, "gather-sibling-context", root)
+	if code != 0 {
+		t.Fatalf("gather-sibling-context: code = %d, stderr = %q", code, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "sibling-context.json"))
+	if err != nil {
+		t.Fatalf("read sibling-context.json: %v", err)
+	}
+	var result siblingContextResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal sibling-context.json: %v", err)
+	}
+	if result.CachedVerdictJSON == "" {
+		t.Fatalf("cachedVerdictJson is empty — the clean rebase should have hit the verdict cache (stdout=%q)", stdout)
+	}
+	var got apiv1.Verdict
+	if err := json.Unmarshal([]byte(result.CachedVerdictJSON), &got); err != nil {
+		t.Fatalf("unmarshal cachedVerdictJson: %v", err)
+	}
+	if got.Digest != preRebaseDigest {
+		t.Fatalf("cached verdict digest = %q, want the pre-rebase verdict's own digest %q reused verbatim", got.Digest, preRebaseDigest)
+	}
+	if !strings.Contains(stdout, "verdict cache HIT") {
+		t.Fatalf("stdout = %q, want it to report a verdict cache hit", stdout)
+	}
+}
+
+// TestGatherSiblingContextBaseMovementDisjointFromPRStillHitsCache is issue
+// #718's other headline acceptance criterion, at the gather-sibling-context
+// integration level (TestComputeReviewDigestIsSensitiveToEveryPinnedInput
+// already proves it at the pure-digest unit level): base advancing past
+// this PR's own merge-base does NOT invalidate a cached verdict when the
+// commits that landed on base don't touch any file this PR also changes —
+// the dominant false-invalidation case before #718 (any OTHER PR merging
+// advanced base for every open PR).
+func TestGatherSiblingContextBaseMovementDisjointFromPRStillHitsCache(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(40, "Selected PR")
+	ownFiles := []fakePRFile{{path: "cmd/goobers/foo.go", status: "modified", patch: "@@ -1,1 +1,1 @@\n-a\n+b\n"}}
+	server.addOpenPR(40, "goobers/implementation/run-40", "main", "sha40head", "shamainbase-v1", false, nil, ownFiles)
+	server.addCompare("shamainbase-v1", "sha40head", "shamainbase-v1", ownFiles)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-review")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "40")
+
+	reviewedDigest := computeReviewDigest(patchIdentity(toChangedFiles(ownFiles)), sortedFileSetDigest(nil), nil)
+	prior := apiv1.Verdict{
+		Decision: apiv1.VerdictPass, Digest: reviewedDigest, SourceRunID: "run-review",
+		HeadSHA: "sha40head", BaseSHA: "shamainbase-v1",
+	}
+	server.addComment(40, renderVerdictComment(prior))
+
+	// Base advances via a disjoint, unrelated merge — the merge-base of
+	// this PR's branch and base's NEW tip is unchanged (v1), but base's
+	// own live SHA is now v2.
+	unrelatedBaseMove := []fakePRFile{{path: "unrelated/other.go", status: "modified"}}
+	server.setPRBase(40, "shamainbase-v2")
+	server.addCompare("shamainbase-v2", "sha40head", "shamainbase-v1", ownFiles)
+	server.addCompare("shamainbase-v1", "shamainbase-v2", "shamainbase-v1", unrelatedBaseMove)
+
+	result := readSiblingContextResultAfterGather(t, root)
+	if result.CachedVerdictJSON == "" {
+		t.Fatalf("cachedVerdictJson is empty — base moved disjointly from this PR's own files and must not have invalidated the cache")
+	}
+}
+
+// TestGatherSiblingContextBaseMovementIntersectingPRMissesCache is the
+// converse of the disjoint case above: base's movement DOES touch a file
+// this PR also changes, so the cached verdict is (correctly) no longer
+// reusable — this PR's own files were never reviewed against that changed
+// content.
+func TestGatherSiblingContextBaseMovementIntersectingPRMissesCache(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(41, "Selected PR")
+	sharedPath := "shared/conflict.go"
+	ownFiles := []fakePRFile{{path: sharedPath, status: "modified", patch: "@@ -1,1 +1,1 @@\n-a\n+b\n"}}
+	server.addOpenPR(41, "goobers/implementation/run-41", "main", "sha41head", "shamainbase-v1", false, nil, ownFiles)
+	server.addCompare("shamainbase-v1", "sha41head", "shamainbase-v1", ownFiles)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-review")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "41")
+
+	reviewedDigest := computeReviewDigest(patchIdentity(toChangedFiles(ownFiles)), sortedFileSetDigest(nil), nil)
+	prior := apiv1.Verdict{
+		Decision: apiv1.VerdictPass, Digest: reviewedDigest, SourceRunID: "run-review",
+		HeadSHA: "sha41head", BaseSHA: "shamainbase-v1",
+	}
+	server.addComment(41, renderVerdictComment(prior))
+
+	// Base advances via a merge that ALSO touches shared/conflict.go — the
+	// exact file this PR itself changes.
+	intersectingBaseMove := []fakePRFile{{path: sharedPath, status: "modified"}}
+	server.setPRBase(41, "shamainbase-v2")
+	server.addCompare("shamainbase-v2", "sha41head", "shamainbase-v1", ownFiles)
+	server.addCompare("shamainbase-v1", "shamainbase-v2", "shamainbase-v1", intersectingBaseMove)
+
+	result := readSiblingContextResultAfterGather(t, root)
+	if result.CachedVerdictJSON != "" {
+		t.Fatalf("cachedVerdictJson = %q, want empty — base's movement touched this PR's own file, the verdict must not be reused", result.CachedVerdictJSON)
 	}
 }
 

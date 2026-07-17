@@ -649,7 +649,49 @@ func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRe
 	}
 	out := make([]ChangedFile, 0, len(files))
 	for _, f := range files {
-		out = append(out, ChangedFile{Path: f.Filename, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions})
+		out = append(out, ChangedFile{Path: f.Filename, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch})
+	}
+	return out, nil
+}
+
+// CompareCommits reports base and head's common ancestor plus the
+// file-level diff between them (issue #718) via GitHub's three-dot compare
+// endpoint — the same computation GitHub itself performs for a PR's own
+// "files" view (pulls/{n}/files is exactly compare(base...head) for that
+// PR's current head/base), exposed here for arbitrary ref/SHA pairs so a
+// caller can also ask "what changed on base between two points in its own
+// history" (merge-review's cache re-keying, merge-pr's delta-aware SHA-pin
+// check) without either point being a PR's live head. A read, so it does
+// not emit a mutation event.
+func (p *GitHubProvider) CompareCommits(ctx context.Context, repo RepositoryRef, base, head string) (CompareResult, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return CompareResult{}, err
+	}
+	if base == "" || head == "" {
+		return CompareResult{}, fmt.Errorf("base and head are both required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "compare", base+"..."+head)
+	if err != nil {
+		return CompareResult{}, err
+	}
+	var mergeBaseSHA string
+	var files []githubPullRequestFile
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var resp githubCompareResponse
+		if err := json.Unmarshal(page, &resp); err != nil {
+			return fmt.Errorf("decode compare page: %w", err)
+		}
+		if mergeBaseSHA == "" {
+			mergeBaseSHA = resp.MergeBaseCommit.SHA
+		}
+		files = append(files, resp.Files...)
+		return nil
+	}); err != nil {
+		return CompareResult{}, err
+	}
+	out := CompareResult{MergeBaseSHA: mergeBaseSHA, Files: make([]ChangedFile, 0, len(files))}
+	for _, f := range files {
+		out.Files = append(out.Files, ChangedFile{Path: f.Filename, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch})
 	}
 	return out, nil
 }
@@ -1481,6 +1523,20 @@ type githubPullRequestFile struct {
 	Status    string `json:"status"`
 	Additions int    `json:"additions"`
 	Deletions int    `json:"deletions"`
+	Patch     string `json:"patch"`
+}
+
+// githubCompareResponse is the shape of GET .../compare/{base}...{head}.
+// GitHub windows the top-level "files" array past a few hundred entries the
+// same way it windows pulls/{n}/files, advertised via the same Link
+// response header — CompareCommits follows it with getAllPages exactly
+// like PullRequestFiles does, re-decoding this same struct per page (the
+// mergeBaseCommit is identical on every page; only Files differs).
+type githubCompareResponse struct {
+	MergeBaseCommit struct {
+		SHA string `json:"sha"`
+	} `json:"merge_base_commit"`
+	Files []githubPullRequestFile `json:"files"`
 }
 
 type githubReview struct {

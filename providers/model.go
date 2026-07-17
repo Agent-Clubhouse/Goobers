@@ -387,6 +387,24 @@ type ChangedFile struct {
 	Status    string `json:"status"` // added|modified|removed|renamed
 	Additions int    `json:"additions,omitempty"`
 	Deletions int    `json:"deletions,omitempty"`
+	// Patch is the file's unified-diff hunk text as the provider reports it
+	// (GitHub omits this for binary files and diffs over its size cutoff —
+	// empty in that case, not an error). Issue #718: the rebase-invariant
+	// component of the merge-review verdict cache key is derived from this
+	// text (with hunk line-numbers normalized out), not from the PR's raw
+	// head SHA, so a clean rebase — which changes the head SHA but not the
+	// actual patch content — still produces a cache hit.
+	Patch string `json:"patch,omitempty"`
+}
+
+// CompareResult is the result of comparing two commits/refs: their common
+// ancestor plus the file-level diff between base and head (issue #718 —
+// the merge-base is what lets a caller compute "what changed on base SINCE
+// this PR's own merge-base," the delta-aware replacement for a raw base-SHA
+// comparison).
+type CompareResult struct {
+	MergeBaseSHA string        `json:"mergeBaseSha"`
+	Files        []ChangedFile `json:"files"`
 }
 
 // ListWorkItemsRequest filters backlog items for scheduler admission.
