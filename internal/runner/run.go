@@ -1302,7 +1302,20 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 	}
 	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream, workspaceMode)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("prepare stage %q: %w", t.Name, err), nil
+		prepErr := fmt.Errorf("prepare stage %q: %w", t.Name, err)
+		// #572: a transient network/remote failure provisioning the stage's
+		// worktree (clone/fetch/worktree-add) is retryable infrastructure,
+		// same as #613's transient built-in provider failures — classified
+		// here and marked via the identical invoke.InfrastructureFailure
+		// seam, so it flows through runTask's existing bounded
+		// infrastructure retry budget with zero changes to that loop, resume
+		// reconstruction, or journaling. Auth/missing-ref/other deterministic
+		// worktree failures are unmarked and fail the run immediately, same
+		// as before this check existed.
+		if worktree.IsTransientProvisionError(err) {
+			return apiv1.ResultEnvelope{}, nil, invoke.InfrastructureFailure(prepErr), nil
+		}
+		return apiv1.ResultEnvelope{}, nil, prepErr, nil
 	}
 	defer func() { removeErr = workspace.Remove(ctx) }()
 

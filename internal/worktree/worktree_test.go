@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -877,5 +878,56 @@ func TestWorktree_Diff_RequiresBaseRef(t *testing.T) {
 	}
 	if _, err := wt.Diff(ctx, ""); err == nil {
 		t.Fatal("expected an error for an empty baseRef, got nil")
+	}
+}
+
+// TestIsTransientProvisionError is issue #572's classification acceptance:
+// table coverage across representative git exit-128 messages, distinguishing
+// transient network/remote failures (retryable) from deterministic ones
+// (auth, missing ref/repo — never retryable, since retrying can only
+// reproduce the identical failure) and from a non-128 exit carrying
+// otherwise-transient-looking text (exit code gates the whole check first).
+func TestIsTransientProvisionError(t *testing.T) {
+	tests := []struct {
+		name     string
+		exitCode int
+		message  string
+		want     bool
+	}{
+		{name: "dns", exitCode: 128, message: "fatal: unable to access 'https://example.test/repo.git/': Could not resolve host: example.test", want: true},
+		{name: "connection refused", exitCode: 128, message: "fatal: unable to connect to example.test:\nexample.test[0: 192.0.2.1]: errno=Connection refused", want: true},
+		{name: "connection timeout", exitCode: 128, message: "fatal: unable to access 'https://example.test/repo.git/': Failed to connect to example.test port 443: Connection timed out", want: true},
+		{name: "ssl connection timeout", exitCode: 128, message: "fatal: unable to access 'https://example.test/repo.git/': SSL connection timeout", want: true},
+		{name: "empty reply", exitCode: 128, message: "fatal: unable to access 'https://example.test/repo.git/': Empty reply from server", want: true},
+		{name: "curl timeout", exitCode: 128, message: "fatal: unable to access 'https://example.test/repo.git/': Resolving timed out after 10000 milliseconds", want: true},
+		{name: "remote reset", exitCode: 128, message: "error: RPC failed; curl 56 Recv failure: Connection reset by peer\nfatal: the remote end hung up unexpectedly", want: true},
+		{name: "http 500", exitCode: 128, message: "error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500", want: true},
+		{name: "http 503", exitCode: 128, message: "fatal: unable to access 'https://example.test/repo.git/': The requested URL returned error: 503", want: true},
+		{name: "authentication", exitCode: 128, message: "remote: Invalid username or password.\nfatal: Authentication failed for 'https://example.test/repo.git/'"},
+		{name: "authorization", exitCode: 128, message: "fatal: unable to access 'https://example.test/repo.git/': The requested URL returned error: 403"},
+		{name: "missing repository", exitCode: 128, message: "remote: Repository not found.\nfatal: repository 'https://example.test/missing.git/' not found"},
+		{name: "bad remote ref", exitCode: 128, message: "fatal: couldn't find remote ref refs/heads/missing"},
+		{name: "bad local ref", exitCode: 128, message: "fatal: invalid reference: missing"},
+		{name: "transient text with non-128 exit", exitCode: 1, message: "fatal: Could not resolve host: example.test"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &gitCommandError{exitCode: tt.exitCode, output: []byte(tt.message)}
+			if got := IsTransientProvisionError(err); got != tt.want {
+				t.Fatalf("IsTransientProvisionError(%q, exit %d) = %t, want %t", tt.message, tt.exitCode, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsTransientProvisionErrorRequiresGitCommandError proves the
+// classifier only ever fires against runGit's own typed failure — an
+// unrelated error (even one whose text happens to mention a transient-
+// sounding fragment) is never misclassified as a provisioning retry
+// candidate.
+func TestIsTransientProvisionErrorRequiresGitCommandError(t *testing.T) {
+	if IsTransientProvisionError(fmt.Errorf("some other failure: connection refused")) {
+		t.Fatal("IsTransientProvisionError matched a non-gitCommandError, want false")
 	}
 }
