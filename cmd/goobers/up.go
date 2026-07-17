@@ -53,6 +53,15 @@ const sweepErrorReportEvery = 12
 
 var httpShutdownGrace = 5 * time.Second
 
+// apiListenAddress resolves the daemon's HTTP listen address from config. It is
+// a package var solely so the cmd/goobers test suite can force an ephemeral
+// loopback port (127.0.0.1:0) in place of the fixed default, keeping every
+// daemon-lifecycle test hermetic against a co-located daemon already holding
+// the default port (#798 — the self-host instance's own `goobers up` daemon).
+// Production leaves it at this identity default, so the configured address is
+// used verbatim; see testmain_test.go for the test-suite redirect.
+var apiListenAddress = func(c *instance.Config) string { return c.APIListenAddress() }
+
 // reapStaleAfter bounds how long a Keep-on-failure worktree survives before
 // Manager.Reap sweeps it up too, on top of genuine crash orphans (issue
 // #136) — nothing in the runner sets RemoveOptions.Keep yet, so this only
@@ -178,7 +187,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
 	}
-	apiServer, err := httpapi.NewServer(setup.Config.APIListenAddress(), handler, apiLog)
+	apiServer, err := httpapi.NewServer(apiListenAddress(setup.Config), handler, apiLog)
 	if err != nil {
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
