@@ -126,6 +126,15 @@ type Config struct {
 	// Escalation notifies the driving backlog item's provider when a run
 	// escalates (internal/gate.EscalationNotifier). Optional — nil is a no-op.
 	Escalation *gate.EscalationNotifier
+	// ClaimedItems resolves the backlog item id(s) a run currently claims, for
+	// runs started without an Item snapshot — scheduled/fan-out implementation
+	// runs claim their item mid-run, so in.Item is nil (#796). Used as the
+	// driving-item fallback in notifyTerminalGate, mirroring buildBlockedHandler's
+	// claim-ledger fallback (the blocked path already resolves this way, the
+	// escalation path silently did not). Called before FinalizeTerminal releases
+	// the run's claims, so the ledger still sees them. Optional — nil disables the
+	// fallback (a run with no Item snapshot then posts nothing, the prior behavior).
+	ClaimedItems func(runID string) ([]string, error)
 	// Blocked handles the instance-level consequences of a stage reporting
 	// status "blocked" (#544/#545): recording the learned dependency block for
 	// selection to skip (#552) and surfacing/parking the driving issue. Called
@@ -591,7 +600,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return r.failTerminal(in.RunID, jr, g.Name, steps, err)
 			}
 			if reason, ok := terminalGateNotificationReason(gr); ok {
-				if err := r.notifyTerminalGate(context.WithoutCancel(ctx), jr, in.Item, gr, reason); err != nil {
+				if err := r.notifyTerminalGate(context.WithoutCancel(ctx), jr, in.RunID, in.Item, gr, reason); err != nil {
 					return r.failTerminal(in.RunID, jr, g.Name, steps, err)
 				}
 			}
@@ -647,23 +656,60 @@ func terminalGateNotificationReason(gr gate.Result) (string, bool) {
 	return reason, true
 }
 
-func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, item *apiv1.BacklogItem, gr gate.Result, reason string) error {
-	if r.cfg.Escalation == nil || item == nil {
+func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID string, item *apiv1.BacklogItem, gr gate.Result, reason string) error {
+	if r.cfg.Escalation == nil {
 		return nil
 	}
-	if err := r.cfg.Escalation.NotifyEscalated(ctx, item.ID, gr, reason); err != nil {
+	itemIDs, err := r.terminalGateItemIDs(runID, item)
+	if err != nil {
+		// The claim-ledger fallback failed — journal and swallow, mirroring the
+		// NotifyEscalated best-effort contract below. Surfacing the escalation is
+		// best-effort; the run must still reach its terminal phase.
 		if aerr := jr.Append(journal.Event{
 			Type: journal.EventError,
 			Gate: gr.Gate,
 			Error: &journal.ErrorDetail{
-				Code:    "gate_terminal_notification_failed",
+				Code:    "gate_terminal_item_resolution_failed",
 				Message: err.Error(),
 			},
 		}); aerr != nil {
-			return fmt.Errorf("runner: journal terminal notification failure for gate %q: %w", gr.Gate, aerr)
+			return fmt.Errorf("runner: journal terminal item resolution failure for gate %q: %w", gr.Gate, aerr)
+		}
+		return nil
+	}
+	for _, itemID := range itemIDs {
+		if err := r.cfg.Escalation.NotifyEscalated(ctx, itemID, gr, reason); err != nil {
+			if aerr := jr.Append(journal.Event{
+				Type: journal.EventError,
+				Gate: gr.Gate,
+				Error: &journal.ErrorDetail{
+					Code:    "gate_terminal_notification_failed",
+					Message: err.Error(),
+				},
+			}); aerr != nil {
+				return fmt.Errorf("runner: journal terminal notification failure for gate %q: %w", gr.Gate, aerr)
+			}
 		}
 	}
 	return nil
+}
+
+// terminalGateItemIDs resolves the driving backlog item(s) an escalation
+// comment should post to. A run started with an Item snapshot (in.Item, e.g. an
+// item-triggered dispatch) uses it directly. A run started without one —
+// scheduled/fan-out implementation runs, which self-select their item mid-run so
+// in.Item is always nil (#796) — falls back to the claim ledger via the
+// configured ClaimedItems resolver, exactly as buildBlockedHandler does for the
+// blocked path. Nil resolver or no claims yields no ids: nothing to comment on,
+// the prior behavior for a producer run with no driving issue.
+func (r *Runner) terminalGateItemIDs(runID string, item *apiv1.BacklogItem) ([]string, error) {
+	if item != nil && item.ID != "" {
+		return []string{item.ID}, nil
+	}
+	if r.cfg.ClaimedItems == nil {
+		return nil, nil
+	}
+	return r.cfg.ClaimedItems(runID)
 }
 
 // notifyBlocked invokes the configured Blocked handler (#544/#545/#552).

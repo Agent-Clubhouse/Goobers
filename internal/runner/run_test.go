@@ -3420,6 +3420,137 @@ func TestRunnerSkipsTerminalGateNotificationWithoutDrivingItem(t *testing.T) {
 	}
 }
 
+// TestRunnerNotifiesTerminalGateEscalationViaClaimLedgerFallback is #796's core
+// acceptance scenario: a scheduled run (as `implementation` always fires) starts
+// with no Item snapshot — it self-selects its backlog item mid-run — yet its
+// escalation must still comment on the driving issue. Before the fix
+// notifyTerminalGate no-oped on the nil Item and posted nothing; now it resolves
+// the driving item id(s) via the configured ClaimedItems resolver (the same
+// claim-ledger fallback buildBlockedHandler already uses).
+func TestRunnerNotifiesTerminalGateEscalationViaClaimLedgerFallback(t *testing.T) {
+	commenter := &recordingCommenter{}
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		"run-scheduled-claimed:ci-poll": {status: apiv1.ResultSuccess},
+	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
+	r.cfg.Escalation = &gate.EscalationNotifier{
+		Poster:     commenter,
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+	}
+	var resolvedRunID string
+	r.cfg.ClaimedItems = func(runID string) ([]string, error) {
+		resolvedRunID = runID
+		return []string{"57"}, nil
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-scheduled-claimed",
+		Machine: terminalCIGateMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		// Item deliberately nil — a scheduled implementation dispatch.
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", res.Phase)
+	}
+	if resolvedRunID != "run-scheduled-claimed" {
+		t.Fatalf("ClaimedItems resolver called with run id %q, want %q", resolvedRunID, "run-scheduled-claimed")
+	}
+	if len(commenter.requests) != 1 {
+		t.Fatalf("notification calls = %d, want 1 (resolved from the claim ledger)", len(commenter.requests))
+	}
+	if got := commenter.requests[0].ID; got != "57" {
+		t.Fatalf("comment posted on item %q, want the claim-ledger-resolved %q", got, "57")
+	}
+}
+
+// TestRunnerTerminalGateEscalationFanOutsToEveryClaimedItem covers the fan-out
+// implementation case: a run that claims more than one backlog item comments on
+// each, mirroring buildBlockedHandler's per-item loop.
+func TestRunnerTerminalGateEscalationFanOutsToEveryClaimedItem(t *testing.T) {
+	commenter := &recordingCommenter{}
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		"run-multi-claimed:ci-poll": {status: apiv1.ResultSuccess},
+	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
+	r.cfg.Escalation = &gate.EscalationNotifier{
+		Poster:     commenter,
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+	}
+	r.cfg.ClaimedItems = func(string) ([]string, error) { return []string{"57", "58"}, nil }
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-multi-claimed",
+		Machine: terminalCIGateMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", res.Phase)
+	}
+	var ids []string
+	for _, req := range commenter.requests {
+		ids = append(ids, req.ID)
+	}
+	if len(ids) != 2 || ids[0] != "57" || ids[1] != "58" {
+		t.Fatalf("commented on items %v, want [57 58]", ids)
+	}
+}
+
+// TestRunnerTerminalGateItemResolutionFailureIsBestEffort proves a claim-ledger
+// resolver failure never gates the run's terminal transition: the failure is
+// journaled (gate_terminal_item_resolution_failed) and swallowed, exactly like a
+// NotifyEscalated provider error, and no comment is posted.
+func TestRunnerTerminalGateItemResolutionFailureIsBestEffort(t *testing.T) {
+	commenter := &recordingCommenter{}
+	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
+		"run-resolve-error:ci-poll": {status: apiv1.ResultSuccess},
+	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
+	r.cfg.Escalation = &gate.EscalationNotifier{
+		Poster:     commenter,
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+	}
+	r.cfg.ClaimedItems = func(string) ([]string, error) { return nil, fmt.Errorf("claim ledger unreadable") }
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-resolve-error",
+		Machine: terminalCIGateMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated despite resolution error", res.Phase)
+	}
+	if len(commenter.requests) != 0 {
+		t.Fatalf("notification calls = %d, want 0 when item resolution fails", len(commenter.requests))
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-resolve-error"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "gate_terminal_item_resolution_failed" {
+			return
+		}
+	}
+	t.Fatal("item resolution failure was not recorded in the run journal")
+}
+
 func TestRunnerNotifiesGateAbortWithReviewerRationale(t *testing.T) {
 	commenter := &recordingCommenter{}
 	r, _ := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
