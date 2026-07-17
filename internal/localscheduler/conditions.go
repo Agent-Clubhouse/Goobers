@@ -15,6 +15,14 @@ const (
 	ReasonBudget              = "conditions: budget"
 	ReasonDailyBudget         = "conditions: daily-budget"
 	ReasonOpenPRCap           = "conditions: open-pr-cap"
+	// ReasonProviderQuota prefixes a provider-quota skip's Reason (#712).
+	// Unlike the other Reason consts above (fixed strings), Admit appends the
+	// resume time after this prefix — the acceptance criteria's own phrasing
+	// ("journals tick.skipped reason:provider-quota") wants a stable,
+	// grep-able prefix, and `goobers status` (a separate process invocation
+	// that can't read the daemon's in-memory ProviderQuotaState directly)
+	// needs the resume time recoverable from the journal alone.
+	ReasonProviderQuota = "provider-quota"
 )
 
 // OpenPRCounter reports the most recently polled count of the loop's own
@@ -70,6 +78,12 @@ type Conditions struct {
 	// (fail-open). Read under c.mu in Admit, but its own OpenPRCount is a cheap
 	// in-memory read with its own lock — no network call ever runs under c.mu.
 	openPRs OpenPRCounter
+	// providerQuota backs the provider-quota circuit breaker (#712): nil
+	// means no gate is wired, so it's never enforced (fail-open), matching
+	// every other condition's "never fails a tick on missing wiring"
+	// contract. Read under c.mu in Admit; its own Exhausted is a cheap
+	// in-memory read with its own lock — no network call ever runs under c.mu.
+	providerQuota ProviderQuotaGate
 }
 
 // NewConditions returns an empty Conditions tracker.
@@ -99,6 +113,15 @@ func (c *Conditions) SetOpenPRCounter(counter OpenPRCounter) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.openPRs = counter
+}
+
+// SetProviderQuota wires the gate that backs the provider-quota circuit
+// breaker (#712). Call once at setup, before Admit is first used. Nil (the
+// default) leaves the breaker unenforced.
+func (c *Conditions) SetProviderQuota(gate ProviderQuotaGate) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.providerQuota = gate
 }
 
 // Reconcile sets the initial active-run counts after a restart (Conditions'
@@ -146,6 +169,19 @@ func (c *Conditions) ReconcileBudget(starts map[string][]time.Time) {
 func (c *Conditions) Admit(workflow string, r apiv1.ReadinessConditions, now time.Time) (ok bool, reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Provider-quota circuit breaker (#712), checked first: while a provider
+	// the run would need is known-exhausted, dispatching is pure waste
+	// regardless of what the parallelism/budget checks below would otherwise
+	// allow — every workflow today requires GitHub for its first stage (the
+	// issue's own "all four" note), so this applies unconditionally rather
+	// than per-workflow. No claim/budget/parallelism slot is reserved for a
+	// quota-skipped tick (this returns before any of those increment).
+	if c.providerQuota != nil {
+		if resetAt, exhausted := c.providerQuota.Exhausted(now); exhausted {
+			return false, ReasonProviderQuota + ": resumes at " + resetAt.UTC().Format(time.RFC3339)
+		}
+	}
 
 	maxConcurrent := r.MaxConcurrentRuns
 	if maxConcurrent <= 0 {

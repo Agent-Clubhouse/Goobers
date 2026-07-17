@@ -67,6 +67,31 @@ type BlockedOutcome struct {
 // comment on / park the driving issue. Must tolerate an empty ItemID.
 type BlockedHandler func(ctx context.Context, o BlockedOutcome) error
 
+// RateLimitedOutcome describes a stage failing with the typed
+// providers.ErrorCodeRateLimited (#614) — the value Config.RateLimited
+// receives. Unlike BlockedOutcome this never ends the run itself (the
+// ordinary failure-routing below still decides that); it's a side-channel
+// notification so the scheduler can learn the reset time before its next
+// tick (#712).
+type RateLimitedOutcome struct {
+	RunID string
+	// Stage is the stage that reported the rate-limited failure.
+	Stage string
+	// ResetAt is when the provider says its quota window rolls over, parsed
+	// from the stage's declared result file (the rateLimitReset key
+	// failProviderStage writes, cmd/goobers/providercmd.go). Never zero when
+	// the handler is called — a rate-limited failure with no parseable reset
+	// carries nothing actionable, so taskOutcome skips the call entirely.
+	ResetAt time.Time
+}
+
+// RateLimitedHandler is Config.RateLimited's shape. Implementations are
+// instance-level (composition-root) policy: record the exhausted provider
+// quota so the scheduler's dispatch loop can stop starting doomed runs
+// before the reset (#712's ProviderQuotaState.RecordExhausted is the
+// reference implementation).
+type RateLimitedHandler func(ctx context.Context, o RateLimitedOutcome) error
+
 // Config wires a Runner's dependencies: the daemon-wide singletons (worktree
 // provisioning, gate evaluation) and the per-run executor factories
 // (executor.go) — the substrate the local runner drives directly (worktrees
@@ -101,6 +126,17 @@ type Config struct {
 	// Optional — nil is a no-op; a handler error is journaled, never fatal to
 	// reaching the terminal phase.
 	Blocked BlockedHandler
+	// RateLimited handles the instance-level consequence of a stage failing
+	// with the typed providers.ErrorCodeRateLimited (#614): recording the
+	// exhausted provider quota so the scheduler's dispatch loop stops
+	// starting doomed runs before the reset (#712). Called from
+	// taskOutcome's ResultFailure case, before the ordinary failure-routing
+	// decision (repass-gate vs. terminal-fail) — a side notification, not a
+	// control-flow branch, so it never changes what the run itself does
+	// next. Optional — nil is a no-op; a handler error is journaled, never
+	// fatal to reaching whatever terminal/repass state the failure would
+	// have reached anyway.
+	RateLimited RateLimitedHandler
 	// GateGooberCapabilities resolves an agentic gate's reviewer goober name to
 	// the capabilities its definition declares. An agentic GATE has no
 	// stage-level capabilities of its own (apiv1.AgenticGate is just a Goober
@@ -590,6 +626,47 @@ func (r *Runner) notifyBlocked(ctx context.Context, jr *journal.Run, o BlockedOu
 	return nil
 }
 
+// notifyRateLimited invokes the configured RateLimited handler (#712). A
+// handler error is journaled (rate_limited_handling_failed) and swallowed —
+// unlike notifyBlocked, this never gates the run's own terminal phase, so
+// only a journal-write failure is returned.
+func (r *Runner) notifyRateLimited(ctx context.Context, jr *journal.Run, o RateLimitedOutcome) error {
+	if r.cfg.RateLimited == nil {
+		return nil
+	}
+	if err := r.cfg.RateLimited(ctx, o); err != nil {
+		if aerr := jr.Append(journal.Event{
+			Type: journal.EventError, Stage: o.Stage,
+			Error: &journal.ErrorDetail{Code: "rate_limited_handling_failed", Message: err.Error()},
+		}); aerr != nil {
+			return fmt.Errorf("runner: journal rate-limited-handling failure for %q: %w", o.Stage, aerr)
+		}
+	}
+	return nil
+}
+
+// outputRateLimitReset parses the rateLimitReset RFC3339 timestamp a stage
+// writes into its declared result file on a github_rate_limited failure
+// (failProviderStage, cmd/goobers/providercmd.go, #614). Returns zero/false
+// when the key is absent, not a string, or not parseable — a rate-limited
+// failure whose reset couldn't be recovered simply skips notifyRateLimited
+// rather than surfacing a second, unrelated parse error.
+func outputRateLimitReset(outputs map[string]interface{}) (time.Time, bool) {
+	v, ok := outputs["rateLimitReset"]
+	if !ok {
+		return time.Time{}, false
+	}
+	s, ok := v.(string)
+	if !ok {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
 // blockedReason condenses a blocked result's own explanation for the journal's
 // blocked_by_agent cause event: the structured error detail when present
 // (code-prefixed, so an agent's DEPENDENCY_NOT_MET survives into the run-level
@@ -747,6 +824,22 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
 		return "", res, false, err
 	case apiv1.ResultFailure:
+		// #712: notify before any routing decision below — a rate-limited
+		// stage failure means "the scheduler should stop dispatching more
+		// provider-dependent runs until reset", which is true regardless of
+		// whether THIS run repasses into a gate, escalates, or ends failed.
+		// A side notification, not a control-flow branch: it never changes
+		// what happens next, only journals a handler failure if the handler
+		// itself can't be recorded (fail-closed, mirrors notifyBlocked).
+		if result.Error != nil && result.Error.Code == providers.ErrorCodeRateLimited {
+			if resetAt, ok := outputRateLimitReset(result.Outputs); ok {
+				o := RateLimitedOutcome{RunID: runID, Stage: t.Name, ResetAt: resetAt}
+				if nerr := r.notifyRateLimited(context.WithoutCancel(ctx), jr, o); nerr != nil {
+					res, err = r.failTerminal(runID, jr, t.Name, steps, nerr)
+					return "", res, false, err
+				}
+			}
+		}
 		// #415: a stage that self-identifies a non-retryable business
 		// disposition — status:failure with error.retryable==false and a
 		// recognized escalate code (ISSUE_OVER_SCOPE / NEEDS_DECOMPOSITION) —
