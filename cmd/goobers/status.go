@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -111,16 +112,18 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit config warnings and run summaries as JSON")
+	daemon := fs.Bool("daemon", false, "report daemon health and identity")
 	phaseFilter := fs.String("phase", "", "filter by comma-separated run phases")
 	workflowFilter := fs.String("workflow", "", "filter by workflow name")
 	limit := fs.Int("limit", 0, "maximum number of runs to show (default: all)")
 	watch := fs.Bool("watch", false, "refresh the status board until interrupted")
 	interval := fs.Duration("interval", defaultStatusWatchInterval, "watch refresh interval")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers status [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n"+
+		pf(stderr, "Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n"+
 			"Validate active config, show warnings, and list runs under an instance's\n"+
-			"runs/ directory with their current phase (default path \".\"). Exit codes:\n"+
-			"0 = OK, 1 = validation errors, 2 = usage/IO error.\n")
+			"runs/ directory with their current phase (default path \".\"). With --daemon,\n"+
+			"report daemon health instead. Exit codes: 0 = OK/daemon running, 1 = validation\n"+
+			"errors/daemon not running, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -135,6 +138,10 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	if *watch && *jsonOutput {
 		pf(stderr, "error: --watch cannot be used with --json\n")
+		return 2
+	}
+	if *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *limit != 0 || *watch) {
+		pf(stderr, "error: --daemon cannot be combined with run-listing flags\n")
 		return 2
 	}
 
@@ -170,6 +177,10 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return 2
 	}
+	if *daemon {
+		return reportDaemonStatus(l, time.Now(), stdout, stderr)
+	}
+
 	if _, err := instance.LoadConfig(l.ConfigFile()); err != nil {
 		pf(stderr, "error: invalid instance.yaml: %v\n", err)
 		return 1
@@ -374,4 +385,42 @@ func renderStatusWatchFrame(stdout io.Writer, pauseLine string, runs []runSummar
 func statusOutputIsTerminal(stdout io.Writer) bool {
 	file, ok := stdout.(interface{ Fd() uintptr })
 	return ok && term.IsTerminal(int(file.Fd()))
+}
+
+func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writer) int {
+	running, identity, err := inspectDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	activeRuns, err := localscheduler.ActiveRunCounts(l.RunsDir())
+	if err != nil {
+		pf(stderr, "error: count live runs: %v\n", err)
+		return 2
+	}
+	liveRuns := 0
+	for _, count := range activeRuns {
+		liveRuns += count
+	}
+
+	if running {
+		if identity == nil {
+			pf(stdout, "daemon running: identity unavailable, live runs %d\n", liveRuns)
+			return 0
+		}
+		uptime := now.Sub(identity.StartedAt)
+		if uptime < 0 {
+			uptime = 0
+		}
+		pf(stdout, "daemon running: pid %d, uptime %s, version %s, live runs %d\n",
+			identity.PID, uptime.Truncate(time.Second), identity.Version, liveRuns)
+		return 0
+	}
+	if identity != nil {
+		pf(stdout, "daemon not running (last daemon: pid %d, started %s); version %s, live runs %d\n",
+			identity.PID, identity.StartedAt.Format(time.RFC3339), identity.Version, liveRuns)
+		return 1
+	}
+	pf(stdout, "daemon not running; live runs %d\n", liveRuns)
+	return 1
 }

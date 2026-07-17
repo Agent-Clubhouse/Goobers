@@ -431,6 +431,48 @@ func TestWatchStatusRepaintsFiltersAndHighlightsPhaseChangeForOneFrame(t *testin
 	}
 }
 
+func TestStatusDaemonReportsLiveIdentityAndRunCount(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	startedAt := time.Now().UTC().Add(-90 * time.Minute)
+	writeStatusRun(t, root, "live-run", "implementation", "goobers", startedAt)
+	writeStatusRunWithPhase(
+		t,
+		root,
+		"finished-run",
+		"implementation",
+		"goobers",
+		startedAt.Add(time.Minute),
+		journal.PhaseCompleted,
+	)
+	identity := daemonIdentity{
+		PID:          os.Getpid(),
+		StartedAt:    startedAt,
+		InstanceRoot: root,
+		Version:      "v0.3.0-test",
+	}
+	release, err := acquireInstanceLockWithIdentity(filepath.Join(l.SchedulerDir(), "up.lock"), &identity)
+	if err != nil {
+		t.Fatalf("acquire daemon fixture lock: %v", err)
+	}
+	defer release()
+
+	code, stdout, stderr := runArgs(t, "status", "--daemon", root)
+	if code != 0 {
+		t.Fatalf("status --daemon: code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("daemon running: pid %d", os.Getpid()),
+		"uptime 1h30m",
+		"version v0.3.0-test",
+		"live runs 1",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+		}
+	}
+}
+
 // TestWatchStatusRepaintsProviderQuotaPauseLine confirms #712's pause line
 // composes with #609's watch board: it's re-fetched (not cached) on every
 // redraw — appearing once loadPauseLine starts returning non-empty, and
@@ -476,4 +518,102 @@ func TestWatchStatusRepaintsProviderQuotaPauseLine(t *testing.T) {
 func withStatusPhase(run runSummary, phase journal.RunPhase) runSummary {
 	run.Phase = phase
 	return run
+}
+
+func TestStatusDaemonReportsStaleIdentity(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	startedAt := time.Date(2026, time.July, 16, 9, 0, 0, 0, time.UTC)
+	identity := daemonIdentity{
+		PID:          4242,
+		StartedAt:    startedAt,
+		InstanceRoot: root,
+		Version:      "v0.3.0-test",
+	}
+	release, err := acquireInstanceLockWithIdentity(filepath.Join(l.SchedulerDir(), "up.lock"), &identity)
+	if err != nil {
+		t.Fatalf("acquire daemon fixture lock: %v", err)
+	}
+	release()
+
+	code, stdout, stderr := runArgs(t, "status", "--daemon", root)
+	if code != 1 {
+		t.Fatalf("status --daemon: code = %d, want 1; stderr = %q", code, stderr)
+	}
+	want := "daemon not running (last daemon: pid 4242, started 2026-07-16T09:00:00Z); " +
+		"version v0.3.0-test, live runs 0\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+func TestStatusDaemonReportsNeverStarted(t *testing.T) {
+	root := initDemo(t)
+
+	code, stdout, stderr := runArgs(t, "status", "--daemon", root)
+	if code != 1 {
+		t.Fatalf("status --daemon: code = %d, want 1; stderr = %q", code, stderr)
+	}
+	if stdout != "daemon not running; live runs 0\n" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestStatusDaemonDoesNotMistakeManualLockForDaemon(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		t.Fatalf("acquire manual fixture lock: %v", err)
+	}
+	defer release()
+
+	code, stdout, stderr := runArgs(t, "status", "--daemon", root)
+	if code != 1 {
+		t.Fatalf("status --daemon: code = %d, want 1; stderr = %q", code, stderr)
+	}
+	if stdout != "daemon not running; live runs 0\n" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestStatusDaemonDoesNotMistakeStaleIdentityForManualHolder(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	identity := daemonIdentity{
+		PID:          os.Getpid(),
+		StartedAt:    time.Date(2026, time.July, 16, 9, 0, 0, 0, time.UTC),
+		InstanceRoot: root,
+		Version:      "v0.3.0-test",
+	}
+	lockPath := filepath.Join(l.SchedulerDir(), "up.lock")
+	release, err := acquireInstanceLockWithIdentity(lockPath, &identity)
+	if err != nil {
+		t.Fatalf("write stale daemon fixture: %v", err)
+	}
+	release()
+	release, err = acquireInstanceLock(lockPath)
+	if err != nil {
+		t.Fatalf("acquire manual fixture lock: %v", err)
+	}
+	defer release()
+
+	code, stdout, stderr := runArgs(t, "status", "--daemon", root)
+	if code != 1 {
+		t.Fatalf("status --daemon: code = %d, want 1; stderr = %q", code, stderr)
+	}
+	if !strings.HasPrefix(stdout, fmt.Sprintf("daemon not running (last daemon: pid %d, started ", os.Getpid())) {
+		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestStatusDaemonRejectsRunListingFlags(t *testing.T) {
+	root := initDemo(t)
+	code, _, stderr := runArgs(t, "status", "--daemon", "--json", root)
+	if code != 2 {
+		t.Fatalf("code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr, "--daemon cannot be combined") {
+		t.Fatalf("stderr = %q", stderr)
+	}
 }

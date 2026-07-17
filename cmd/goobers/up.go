@@ -145,7 +145,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	release, err := acquireDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"), root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
