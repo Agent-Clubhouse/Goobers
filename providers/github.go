@@ -1251,7 +1251,7 @@ func (p *GitHubProvider) contentSHA(ctx context.Context, endpoint string) (strin
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", false, fmt.Errorf("GET %s failed: status %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", false, newProviderResponseError(resp, http.MethodGet, endpoint, body)
 	}
 	var out struct {
 		SHA string `json:"sha"`

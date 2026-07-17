@@ -75,6 +75,13 @@ type PRPoller interface {
 	PollPullRequest(ctx context.Context, req providers.PullRequestPollRequest) (providers.PullRequestPollResult, error)
 }
 
+type ciPollProviderError struct {
+	cause error
+}
+
+func (e *ciPollProviderError) Error() string { return e.cause.Error() }
+func (e *ciPollProviderError) Unwrap() error { return e.cause }
+
 // CIPollConfig configures one ci-poll stage invocation.
 type CIPollConfig struct {
 	Owner, Repo, PullID            string
@@ -221,7 +228,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		result, err := e.Poller.PollPullRequest(ctx, req)
 		if err != nil {
 			if !providers.IsTransientError(err) {
-				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", err)
+				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", &ciPollProviderError{cause: err})
 			}
 			consecutiveErrors++
 			if consecutiveErrors > maxConsecutiveErrors {

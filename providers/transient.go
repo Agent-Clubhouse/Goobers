@@ -3,9 +3,12 @@ package providers
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
+	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // IsTransientError reports whether err looks like a transient/retryable
@@ -18,14 +21,14 @@ import (
 // from "stop, this will never succeed" once even that per-request budget is
 // exhausted.
 //
-// A context cancellation/deadline is never transient — it's the caller's own
-// ctx ending, not the provider's request failing — so callers must let it
-// propagate rather than retry it.
+// A caller context cancellation/deadline is never transient. A URL transport
+// timeout that wraps context.DeadlineExceeded is transient, because it is the
+// provider request rather than the caller ending.
 func IsTransientError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
 	// A typed rate-limit give-up (#614) is transient by definition: the quota
@@ -35,19 +38,77 @@ func IsTransientError(err error) bool {
 	if errors.As(err, &rl) {
 		return true
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	var urlErr *url.Error
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errors.As(err, &urlErr) && urlErr.Timeout()
+	}
+	if errors.As(err, &urlErr) && errors.Is(urlErr.Err, io.EOF) {
 		return true
 	}
-	if m := statusCodePattern.FindStringSubmatch(err.Error()); m != nil {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	var responseErr *providerResponseError
+	if errors.As(err, &responseErr) {
+		return isTransientStatus(responseErr.statusCode, responseErr.hasRetryGuidance())
+	}
+	if m := statusCodePattern.FindStringSubmatch(message); m != nil {
 		if code, convErr := strconv.Atoi(m[1]); convErr == nil {
-			return code >= 500 || code == 429
+			return isTransientStatus(code, hasRateLimitRetryGuidance(message))
+		}
+	}
+	if strings.Contains(message, "send request:") && strings.HasSuffix(strings.TrimSpace(message), ": eof") {
+		return true
+	}
+	for _, fragment := range transientMessageFragments {
+		if strings.Contains(message, fragment) {
+			return true
 		}
 	}
 	return false
 }
 
-// statusCodePattern matches the "status %d" shape readJSONResponse's error
-// messages use (see providers/http.go) — the only place a non-2xx GitHub
-// response surfaces as a plain error string rather than a typed value.
+func isTransientStatus(code int, guidedRateLimit bool) bool {
+	return code >= 500 || code == 429 || code == 403 && guidedRateLimit
+}
+
+func hasRateLimitRetryGuidance(message string) bool {
+	for _, fragment := range []string{
+		"retry after ",
+		"retry-after:",
+		"retry-after=",
+		"x-ratelimit-remaining: 0",
+		"x-ratelimit-remaining=0",
+		`x-ratelimit-remaining="0"`,
+		"x-ratelimit-reset",
+	} {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+// statusCodePattern matches provider errors that cross a subprocess boundary
+// and therefore no longer retain providerResponseError's typed metadata.
 var statusCodePattern = regexp.MustCompile(`status (\d{3})`)
+
+// transientMessageFragments covers the transport errors that cross the
+// built-in stage's subprocess boundary as stderr text and therefore no longer
+// retain their net.Error type.
+var transientMessageFragments = []string{
+	"client.timeout exceeded",
+	"connection aborted",
+	"connection refused",
+	"connection reset",
+	"connection timed out",
+	"i/o timeout",
+	"network is unreachable",
+	"no such host",
+	"server misbehaving",
+	"temporary failure",
+	"tls handshake timeout",
+	"unexpected eof",
+}

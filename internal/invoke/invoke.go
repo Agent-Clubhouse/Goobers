@@ -6,6 +6,7 @@ package invoke
 
 import (
 	"context"
+	"errors"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -31,4 +32,30 @@ type Deterministic interface {
 // (e.g. "pass"/"fail") that the gate maps to a branch.
 type Automated interface {
 	Evaluate(ctx context.Context, gate apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error)
+}
+
+// InfrastructureError marks a dispatch failure caused by transient external
+// infrastructure. The runner applies its bounded infrastructure retry path and
+// journals the retry as infrastructure rather than policy-driven.
+type InfrastructureError struct {
+	err error
+}
+
+func (e *InfrastructureError) Error() string { return e.err.Error() }
+func (e *InfrastructureError) Unwrap() error { return e.err }
+
+// InfrastructureFailure preserves err while marking it for infrastructure
+// retry classification at the runner seam.
+func InfrastructureFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &InfrastructureError{err: err}
+}
+
+// IsInfrastructureFailure reports whether err carries the infrastructure
+// marker, including through wrapping.
+func IsInfrastructureFailure(err error) bool {
+	var infrastructureErr *InfrastructureError
+	return errors.As(err, &infrastructureErr)
 }

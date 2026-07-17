@@ -59,6 +59,13 @@ type RateLimitError struct {
 	// Secondary marks a Retry-After-driven (abuse/secondary) limit rather
 	// than an exhausted primary quota.
 	Secondary bool
+	// RetryAfterRaw/RemainingRaw/ResetRaw are the unparsed header string
+	// values, carried through unchanged from RateLimitEvent — see its own
+	// doc comment for why Error() needs these alongside the parsed fields
+	// above.
+	RetryAfterRaw string
+	RemainingRaw  string
+	ResetRaw      string
 }
 
 func (e *RateLimitError) Error() string {
@@ -66,18 +73,21 @@ func (e *RateLimitError) Error() string {
 	if !e.Reset.IsZero() {
 		msg += ", resets at " + e.Reset.UTC().Format(time.RFC3339)
 	}
-	return msg
+	return msg + retryGuidanceSuffix(e.RetryAfterRaw, e.RemainingRaw, e.ResetRaw)
 }
 
 // rateLimitErrorFrom builds the typed give-up error from the same decision
 // record rateLimitPlan produced for telemetry.
 func rateLimitErrorFrom(ev RateLimitEvent) *RateLimitError {
 	return &RateLimitError{
-		Endpoint:  ev.Endpoint,
-		Status:    ev.Status,
-		Remaining: ev.Remaining,
-		Reset:     ev.Reset,
-		Secondary: ev.Secondary,
+		Endpoint:      ev.Endpoint,
+		Status:        ev.Status,
+		Remaining:     ev.Remaining,
+		Reset:         ev.Reset,
+		Secondary:     ev.Secondary,
+		RetryAfterRaw: ev.RetryAfterRaw,
+		RemainingRaw:  ev.RemainingRaw,
+		ResetRaw:      ev.ResetRaw,
 	}
 }
 
@@ -109,20 +119,23 @@ func (p *GitHubProvider) rateLimitPlan(resp *http.Response, endpoint string, att
 		Attempt:  attempt,
 	}
 	var wait time.Duration
-	if ra := resp.Header.Get("Retry-After"); ra != "" {
-		if secs, err := strconv.Atoi(strings.TrimSpace(ra)); err == nil && secs >= 0 {
+	if ra := strings.TrimSpace(resp.Header.Get("Retry-After")); ra != "" {
+		ev.RetryAfterRaw = ra
+		if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
 			wait = time.Duration(secs) * time.Second
 			ev.RetryAfter = wait
 			ev.Secondary = true
 		}
 	}
-	if rem := resp.Header.Get("X-RateLimit-Remaining"); rem != "" {
-		if n, err := strconv.Atoi(strings.TrimSpace(rem)); err == nil {
+	if rem := strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")); rem != "" {
+		ev.RemainingRaw = rem
+		if n, err := strconv.Atoi(rem); err == nil {
 			ev.Remaining = n
 		}
 	}
-	if reset := resp.Header.Get("X-RateLimit-Reset"); reset != "" {
-		if secs, err := strconv.ParseInt(strings.TrimSpace(reset), 10, 64); err == nil {
+	if reset := strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")); reset != "" {
+		ev.ResetRaw = reset
+		if secs, err := strconv.ParseInt(reset, 10, 64); err == nil {
 			ev.Reset = time.Unix(secs, 0)
 			if wait == 0 {
 				if d := ev.Reset.Sub(p.now()); d > 0 {

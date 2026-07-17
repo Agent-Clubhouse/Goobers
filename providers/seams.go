@@ -69,6 +69,16 @@ type RateLimitEvent struct {
 	Wait       time.Duration `json:"wait"`
 	Attempt    int           `json:"attempt"`
 	Secondary  bool          `json:"secondary"` // GitHub secondary (abuse) rate limit
+	// RetryAfterRaw/RemainingRaw/ResetRaw are the UNPARSED header string
+	// values (e.g. "1", "0", "1784210000"), preserved alongside the parsed
+	// Duration/int/time.Time fields above so a give-up RateLimitError's
+	// Error() string still carries GitHub's own guidance verbatim — the
+	// format IsTransientError's subprocess-crossed fallback classification
+	// (hasRateLimitRetryGuidance, providers/transient.go) string-matches on,
+	// once the typed error itself no longer survives a process boundary.
+	RetryAfterRaw string `json:"retryAfterRaw,omitempty"`
+	RemainingRaw  string `json:"remainingRaw,omitempty"`
+	ResetRaw      string `json:"resetRaw,omitempty"`
 }
 
 // digestString returns a stable, prefixed content digest of a field value. It is

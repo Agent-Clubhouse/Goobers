@@ -48,7 +48,7 @@ func readPage(resp *http.Response, method, endpoint string) ([]byte, string, err
 		return nil, "", fmt.Errorf("%s %s: read body: %w", method, endpoint, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, "", fmt.Errorf("%s %s failed: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, "", newProviderResponseError(resp, method, endpoint, body)
 	}
 	return body, parseNextLink(resp.Header.Get("Link")), nil
 }
@@ -80,6 +80,65 @@ func parseNextLink(link string) string {
 // HTTPClient sends HTTP requests for provider implementations.
 type HTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
+}
+
+type providerResponseError struct {
+	method             string
+	endpoint           string
+	statusCode         int
+	body               string
+	retryAfter         string
+	rateLimitRemaining string
+	rateLimitReset     string
+}
+
+func (e *providerResponseError) Error() string {
+	message := fmt.Sprintf("%s %s failed: status %d: %s", e.method, e.endpoint, e.statusCode, e.body)
+	return message + retryGuidanceSuffix(e.retryAfter, e.rateLimitRemaining, e.rateLimitReset)
+}
+
+func (e *providerResponseError) hasRetryGuidance() bool {
+	return e.retryAfter != "" || e.rateLimitRemaining == "0"
+}
+
+// retryGuidanceSuffix formats GitHub's raw rate-limit headers as the
+// `(Retry-After="1", X-RateLimit-Remaining="0", X-RateLimit-Reset="...")`
+// suffix shared by every error that surfaces a rate-limited response's
+// guidance verbatim — providerResponseError's generic non-2xx path and
+// RateLimitError's typed give-up (providers/github_issues.go) both append
+// this SAME format, so the string classification IsTransientError's
+// subprocess-crossed fallback depends on (hasRateLimitRetryGuidance,
+// providers/transient.go) recognizes either one identically. Returns "" when
+// none of the three raw values carry guidance (retryAfter empty and
+// remaining isn't exactly "0" — GitHub's own signal for "quota exhausted,"
+// never inferred from any other value).
+func retryGuidanceSuffix(retryAfter, remaining, reset string) string {
+	var guidance []string
+	if retryAfter != "" {
+		guidance = append(guidance, "Retry-After="+strconv.Quote(retryAfter))
+	}
+	if remaining == "0" {
+		guidance = append(guidance, `X-RateLimit-Remaining="0"`)
+		if reset != "" {
+			guidance = append(guidance, "X-RateLimit-Reset="+strconv.Quote(reset))
+		}
+	}
+	if len(guidance) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(guidance, ", ") + ")"
+}
+
+func newProviderResponseError(resp *http.Response, method, endpoint string, body []byte) error {
+	return &providerResponseError{
+		method:             method,
+		endpoint:           endpoint,
+		statusCode:         resp.StatusCode,
+		body:               strings.TrimSpace(string(body)),
+		retryAfter:         strings.TrimSpace(resp.Header.Get("Retry-After")),
+		rateLimitRemaining: strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")),
+		rateLimitReset:     strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")),
+	}
 }
 
 // CommandRunner executes external commands such as git clone.
@@ -144,7 +203,7 @@ func readJSONResponse(resp *http.Response, method, endpoint string, out interfac
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("%s %s failed: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		return newProviderResponseError(resp, method, endpoint, body)
 	}
 	if out == nil || resp.StatusCode == http.StatusNoContent {
 		return nil

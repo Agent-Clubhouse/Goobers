@@ -420,6 +420,68 @@ func TestGitHubRateLimitGivesUpAfterMaxRetries(t *testing.T) {
 	}
 }
 
+func TestGitHubForbiddenResponsePreservesRetryGuidance(t *testing.T) {
+	cases := []struct {
+		name          string
+		headers       map[string]string
+		wantTransient bool
+		wantCalls     int
+		wantGuidance  string
+	}{
+		{
+			name:          "secondary rate limit",
+			headers:       map[string]string{"Retry-After": "1"},
+			wantTransient: true,
+			wantCalls:     2,
+			wantGuidance:  `Retry-After="1"`,
+		},
+		{
+			name: "primary rate limit",
+			headers: map[string]string{
+				"X-RateLimit-Remaining": "0",
+				"X-RateLimit-Reset":     "1784210000",
+			},
+			wantTransient: true,
+			wantCalls:     2,
+			wantGuidance:  `X-RateLimit-Reset="1784210000"`,
+		},
+		{
+			name:          "authorization",
+			wantTransient: false,
+			wantCalls:     1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				for key, value := range tc.headers {
+					w.Header().Set(key, value)
+				}
+				http.Error(w, "forbidden", http.StatusForbidden)
+			}))
+			defer srv.Close()
+
+			p := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = srv.URL }, WithMaxRateLimitRetries(1))
+			p.sleep = func(context.Context, time.Duration) error { return nil }
+			_, err := p.GetWorkItem(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "7")
+			if err == nil {
+				t.Fatal("expected forbidden response to fail")
+			}
+			if got := IsTransientError(err); got != tc.wantTransient {
+				t.Fatalf("IsTransientError(%v) = %v, want %v", err, got, tc.wantTransient)
+			}
+			if calls != tc.wantCalls {
+				t.Fatalf("provider calls = %d, want %d", calls, tc.wantCalls)
+			}
+			if tc.wantGuidance != "" && !strings.Contains(err.Error(), tc.wantGuidance) {
+				t.Fatalf("error %q does not preserve %q", err, tc.wantGuidance)
+			}
+		})
+	}
+}
+
 func TestGitHubListWorkItemsFiltersAndPagination(t *testing.T) {
 	var gotQuery map[string]string
 	mux := http.NewServeMux()

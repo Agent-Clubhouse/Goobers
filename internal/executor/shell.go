@@ -16,7 +16,9 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/providers"
 )
 
 // DefaultTimeout bounds a shell stage's execution when neither the executor
@@ -157,6 +159,31 @@ func stageInvokesGoobersCLI(command []string) bool {
 	return len(command) > 0 && command[0] == "goobers"
 }
 
+// stageInvokesProviderBuiltin narrows transient stderr classification to the
+// built-in stages that call a provider. Other goobers subcommands can fail
+// with similar words but have separate retry contracts.
+func stageInvokesProviderBuiltin(command []string) bool {
+	if !stageInvokesGoobersCLI(command) || len(command) < 2 {
+		return false
+	}
+	switch command[1] {
+	case "apply-verdict",
+		"backlog-query",
+		"gather-pr-context",
+		"gather-sibling-context",
+		"issue-close-out",
+		"merge-pr",
+		"open-pr",
+		"post-merge",
+		"pr-select",
+		"rebase-pr",
+		"remediation-checkpoint":
+		return true
+	default:
+		return false
+	}
+}
+
 // Run implements invoke.Deterministic. It executes run.Command in
 // env.Workspace with a capability-scoped, non-ambient environment, enforces a
 // timeout by killing the whole process group, captures size-bounded and
@@ -165,11 +192,10 @@ func stageInvokesGoobersCLI(command []string) bool {
 // success.
 //
 // A non-nil error means the executor itself could not produce a result
-// (misconfiguration, credential resolution failure, or a journal write
-// failure) — ARCHITECTURE.md invariant 6, fail closed rather than degrade.
-// Everything the *declared command* can go wrong in (nonzero exit, timeout,
-// a missing declared result file) is a normal ResultFailure envelope for the
-// runner's retry policy to act on.
+// (misconfiguration, credential resolution failure, a journal write failure,
+// or a transient built-in provider outage) — ARCHITECTURE.md invariant 6, fail
+// closed rather than degrade. Other declared-command failures are normal
+// ResultFailure envelopes.
 func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	if len(run.Command) == 0 {
 		return apiv1.ResultEnvelope{}, errors.New("executor: DeterministicRun declares no command")
@@ -292,6 +318,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 
 	if timedOut {
+		if stageInvokesProviderBuiltin(run.Command) {
+			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+				"executor: provider stage %q exceeded timeout %s: %w",
+				run.Command[1], timeout, context.DeadlineExceeded,
+			))
+		}
 		result.Status = apiv1.ResultFailure
 		result.Error = &apiv1.ErrorInfo{
 			Code:      "timeout",
@@ -319,6 +351,76 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 
 	exitCode := exitCodeOf(waitErr)
 	result.Metrics["exitCode"] = float64(exitCode)
+
+	if exitCode != 0 && stageInvokesProviderBuiltin(run.Command) {
+		// #control precedence ruling (2026-07-17, the #613/#711/#712
+		// chokepoint): a provider-builtin stage that got far enough to
+		// self-report structurally via its declared result file
+		// (failProviderStage's OutputErrorCode, #614) is a richer, more
+		// specific signal than raw stderr text — use it, and skip stderr
+		// classification entirely, so #711's fine-grained codes and #712's
+		// result.Outputs["rateLimitReset"] read stay authoritative instead
+		// of being silently reclassified by this intercept. Only fall
+		// through to stderr-text classification below when no structured
+		// result exists at all — the residual case this intercept actually
+		// exists for: a stage that died before it could call
+		// failProviderStage (bad flags, signal kill, panic).
+		if resultFile != "" {
+			if full, perr := apiv1.ResolveContainedPath(env.Workspace, resultFile); perr == nil {
+				if data, rerr := os.ReadFile(full); rerr == nil {
+					ref, aerr := e.Journal.RecordArtifact(env.TaskID+"/result", scrubber.Scrub(data))
+					if aerr != nil {
+						return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
+					}
+					result.Artifacts = append(result.Artifacts, refToPointer(ref, mediaTypeFor(resultFile)))
+					mergeResultFileOutputs(&result, data)
+					if code, ok := result.Outputs[OutputErrorCode].(string); ok && code != "" {
+						message, _ := result.Outputs[OutputErrorMessage].(string)
+						if message == "" {
+							message = fmt.Sprintf("command exited %d", exitCode)
+						}
+						if retryable, _ := result.Outputs[OutputErrorRetryable].(bool); retryable {
+							return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+								"executor: provider stage %q reported %s: %s", run.Command[1], code, message,
+							))
+						}
+						result.Status = apiv1.ResultFailure
+						result.Error = &apiv1.ErrorInfo{Code: code, Message: message, Retryable: false}
+						result.Summary = message
+						return result, nil
+					}
+					// The file existed and parsed but carried no
+					// OutputErrorCode (the stage self-reported success
+					// shape yet still exited nonzero, or wrote an
+					// unrelated result) — its artifact/outputs stay
+					// attached to result either way; fall through to
+					// stderr classification below for the actual verdict.
+				}
+				// A read error (including not-yet-written, the common
+				// crashed-before-writing case) is not fatal here — falls
+				// through to stderr classification, exactly as before this
+				// check existed.
+			}
+		}
+		message := lastNonEmptyLine(errBytes)
+		if message == "" {
+			message = fmt.Sprintf("command exited %d", exitCode)
+		}
+		providerErr := errors.New(message)
+		if providers.IsTransientError(providerErr) {
+			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+				"executor: provider stage %q failed: %w", run.Command[1], providerErr,
+			))
+		}
+		result.Status = apiv1.ResultFailure
+		result.Error = &apiv1.ErrorInfo{
+			Code:      "provider_error",
+			Message:   providerErr.Error(),
+			Retryable: false,
+		}
+		result.Summary = fmt.Sprintf("provider stage %q failed", run.Command[1])
+		return result, nil
+	}
 
 	if resultFile != "" {
 		full, perr := apiv1.ResolveContainedPath(env.Workspace, resultFile)
@@ -409,6 +511,16 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	result.Summary = fmt.Sprintf("command exited %d", exitCode)
 	return result, nil
+}
+
+func lastNonEmptyLine(data []byte) string {
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func (e *ShellExecutor) timeoutFor(env apiv1.InvocationEnvelope) (time.Duration, error) {

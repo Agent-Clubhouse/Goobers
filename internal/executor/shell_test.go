@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -110,6 +112,194 @@ func TestShellExecutor_NonZeroExit(t *testing.T) {
 	}
 }
 
+func TestShellExecutor_ClassifiesProviderBuiltinFailures(t *testing.T) {
+	cases := []struct {
+		name               string
+		message            string
+		wantInfrastructure bool
+	}{
+		{"server error", "error: list work items: GET failed: status 503: unavailable", true},
+		{"transport timeout", "error: list work items: net/http: TLS handshake timeout", true},
+		{"authentication", "error: list work items: GET failed: status 401: bad credentials", false},
+		{"authorization", "error: list work items: GET failed: status 403: forbidden", false},
+		{"deterministic request", "error: list work items: GET failed: status 422: invalid query", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script := filepath.Join(t.TempDir(), "goobers")
+			body := "#!/bin/sh\n" +
+				"echo \"" + tc.message + "\" >&2\n" +
+				"exit 1\n"
+			if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			exec, rec := newTestExecutor(t, nil)
+			exec.SelfBin = script
+			env := baseEnvelope(t)
+			env.Inputs = map[string]interface{}{InputResultFile: "provider-result.json"}
+			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+				Command: []string{"goobers", "backlog-query", "--claim"},
+			})
+
+			if got := invoke.IsInfrastructureFailure(err); got != tc.wantInfrastructure {
+				t.Fatalf("infrastructure failure = %v, want %v (result=%+v, err=%v)", got, tc.wantInfrastructure, result, err)
+			}
+			if tc.wantInfrastructure {
+				if !strings.Contains(err.Error(), tc.message) {
+					t.Fatalf("error %q does not preserve provider cause %q", err, tc.message)
+				}
+			} else if err != nil {
+				t.Fatalf("Run returned dispatch error for non-retryable provider failure: %v", err)
+			} else if result.Error == nil || result.Error.Code != "provider_error" || result.Error.Retryable || result.Error.Message != tc.message {
+				t.Fatalf("result error = %+v, want non-retryable provider_error preserving %q", result.Error, tc.message)
+			}
+			if got := string(rec.recorded["task-1/stderr.log"]); !strings.Contains(got, tc.message) {
+				t.Fatalf("stderr artifact = %q, want provider cause %q", got, tc.message)
+			}
+		})
+	}
+}
+
+// TestShellExecutor_ProviderBuiltinPrefersStructuredErrorCodeOverStderr is
+// the #613/#711/#712 precedence ruling's core contract: when a
+// provider-builtin stage exits nonzero AND has already self-reported a
+// structured OutputErrorCode via its declared result file
+// (failProviderStage, #614), that code is authoritative — stderr text is
+// never consulted, even when it would classify differently. Retryable ->
+// InfrastructureFailure (feeding the runner's retry budget); non-retryable
+// -> a ResultFailure carrying that EXACT code, not the generic
+// "provider_error" the stderr fallback would have produced.
+func TestShellExecutor_ProviderBuiltinPrefersStructuredErrorCodeOverStderr(t *testing.T) {
+	cases := []struct {
+		name               string
+		resultJSON         string
+		wantInfrastructure bool
+		wantCode           string
+		wantMessage        string
+	}{
+		{
+			name:               "retryable code drives infrastructure failure",
+			resultJSON:         `{"errorCode":"github_rate_limited","errorMessage":"rate limited, resets soon","errorRetryable":true,"rateLimitReset":"2026-07-17T04:00:00Z"}`,
+			wantInfrastructure: true,
+			wantMessage:        "rate limited, resets soon",
+		},
+		{
+			name:               "non-retryable code stays a plain ResultFailure with its own code",
+			resultJSON:         `{"errorCode":"github_auth_failed","errorMessage":"bad credentials","errorRetryable":false}`,
+			wantInfrastructure: false,
+			wantCode:           "github_auth_failed",
+			wantMessage:        "bad credentials",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script := filepath.Join(t.TempDir(), "goobers")
+			// The stderr text says the OPPOSITE of the structured code on
+			// purpose (a 503, always transient by stderr-only rules) — if
+			// this test passes, the structured code won this decision, not
+			// stderr, proving real precedence rather than a coincidental
+			// agreement between the two signals.
+			body := "#!/bin/sh\n" +
+				"cat > provider-result.json <<'EOF'\n" + tc.resultJSON + "\nEOF\n" +
+				"echo \"error: list work items: GET failed: status 503: unavailable\" >&2\n" +
+				"exit 1\n"
+			if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			exec, rec := newTestExecutor(t, nil)
+			exec.SelfBin = script
+			env := baseEnvelope(t)
+			env.Inputs = map[string]interface{}{InputResultFile: "provider-result.json"}
+			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+				Command: []string{"goobers", "backlog-query", "--claim"},
+			})
+
+			if got := invoke.IsInfrastructureFailure(err); got != tc.wantInfrastructure {
+				t.Fatalf("infrastructure failure = %v, want %v (result=%+v, err=%v)", got, tc.wantInfrastructure, result, err)
+			}
+			if tc.wantInfrastructure {
+				if !strings.Contains(err.Error(), tc.wantMessage) {
+					t.Fatalf("error %q does not preserve structured message %q", err, tc.wantMessage)
+				}
+				if strings.Contains(err.Error(), "status 503") {
+					t.Fatalf("error %q leaked the stderr-derived message — structured code did not win", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Run returned dispatch error for a non-retryable structured code: %v", err)
+			}
+			if result.Error == nil || result.Error.Code != tc.wantCode || result.Error.Retryable || result.Error.Message != tc.wantMessage {
+				t.Fatalf("result error = %+v, want code=%s non-retryable message=%q", result.Error, tc.wantCode, tc.wantMessage)
+			}
+			if result.Error.Code == "provider_error" {
+				t.Fatalf("result error code = %q, want the structured code preserved, not the generic stderr fallback", result.Error.Code)
+			}
+			if got := string(rec.recorded["task-1/result"]); !strings.Contains(got, tc.wantCode) {
+				t.Fatalf("recorded result artifact = %q, want it to contain the structured code %q", got, tc.wantCode)
+			}
+		})
+	}
+}
+
+// TestShellExecutor_ProviderBuiltinFallsBackToStderrWithoutStructuredResult
+// proves the residual case still works exactly as before this precedence
+// check existed: a provider-builtin stage that declares a result file but
+// never writes one (died before it could call failProviderStage at all —
+// bad flags, signal kill, panic) still gets classified from stderr text,
+// not silently swallowed or misrouted.
+func TestShellExecutor_ProviderBuiltinFallsBackToStderrWithoutStructuredResult(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "goobers")
+	body := "#!/bin/sh\n" +
+		"echo \"error: list work items: GET failed: status 503: unavailable\" >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, _ := newTestExecutor(t, nil)
+	exec.SelfBin = script
+	env := baseEnvelope(t)
+	// Declares a result file the script never writes — the crashed-before-
+	// self-reporting case.
+	env.Inputs = map[string]interface{}{InputResultFile: "never-written.json"}
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "backlog-query", "--claim"},
+	})
+	if !invoke.IsInfrastructureFailure(err) {
+		t.Fatalf("Run result=%+v err=%v, want infrastructure failure from the stderr fallback", result, err)
+	}
+	if !strings.Contains(err.Error(), "status 503") {
+		t.Fatalf("error %q does not preserve the stderr-derived cause", err)
+	}
+}
+
+func TestShellExecutor_ProviderClassificationUsesTerminalError(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "goobers")
+	body := "#!/bin/sh\n" +
+		"echo \"warning: prior request failed: status 503: unavailable\" >&2\n" +
+		"echo \"error: invalid local configuration\" >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, _ := newTestExecutor(t, nil)
+	exec.SelfBin = script
+	env := baseEnvelope(t)
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "backlog-query", "--claim"},
+	})
+	if err != nil {
+		t.Fatalf("Run returned dispatch error from a stale warning: %v", err)
+	}
+	if result.Error == nil || result.Error.Code != "provider_error" || result.Error.Message != "error: invalid local configuration" {
+		t.Fatalf("result error = %+v, want terminal deterministic cause", result.Error)
+	}
+}
+
 func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 	exec, _ := newTestExecutor(t, nil)
 	env := baseEnvelope(t)
@@ -133,6 +323,28 @@ func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 	}
 	if result.Error == nil || result.Error.Code != "timeout" || !result.Error.Retryable {
 		t.Fatalf("error = %+v, want timeout, retryable", result.Error)
+	}
+}
+
+func TestShellExecutor_ProviderBuiltinTimeoutIsInfrastructureFailure(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "goobers")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, _ := newTestExecutor(t, nil)
+	exec.SelfBin = script
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputTimeout: "100ms"}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "backlog-query", "--claim"},
+	})
+	if !invoke.IsInfrastructureFailure(err) {
+		t.Fatalf("Run result=%+v err=%v, want infrastructure failure", result, err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error %q does not preserve deadline cause", err)
 	}
 }
 
