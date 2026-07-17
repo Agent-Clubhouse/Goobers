@@ -1483,7 +1483,7 @@ func TestRunnerMaxStepsExceededFailsRunClosed(t *testing.T) {
 	}
 }
 
-func TestRunnerPausesAtHumanGate(t *testing.T) {
+func TestRunnerRejectsHumanGateBeforeStarting(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "acme-web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
@@ -1497,47 +1497,10 @@ func TestRunnerPausesAtHumanGate(t *testing.T) {
 			},
 		},
 	}
-	machine, err := workflow.Compile(workflow.Definition{Name: "human-gate", Version: 1, Spec: spec})
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	r, runsDir := newTestRunner(t, nil, nil)
-
-	res, err := r.Start(context.Background(), StartInput{
-		RunID:   "run-3",
-		Machine: machine,
-		Gaggle:  "acme-web",
-		Trigger: journal.Trigger{Kind: journal.TriggerManual},
-		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if res.Phase != journal.PhaseRunning || res.FinalState != "approve" {
-		t.Fatalf("result = %+v, want paused at the human gate", res)
-	}
-
-	// A human gate executes nothing (§5): no gate.evaluated event, and
-	// state.json checkpoints exactly the pause point for a future resume.
-	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-3"))
-	if err != nil {
-		t.Fatalf("OpenRead: %v", err)
-	}
-	st, err := rd.State()
-	if err != nil {
-		t.Fatalf("State: %v", err)
-	}
-	if st.Phase != journal.PhaseRunning || st.MachineState != "approve" {
-		t.Fatalf("state.json = %+v, want running at gate approve", st)
-	}
-	events, err := rd.Events()
-	if err != nil {
-		t.Fatalf("Events: %v", err)
-	}
-	for _, e := range events {
-		if e.Type == journal.EventGateEvaluated {
-			t.Fatalf("human gate must not be dispatched through the evaluator seam, got gate.evaluated event")
-		}
+	_, err := workflow.Compile(workflow.Definition{Name: "human-gate", Version: 1, Spec: spec})
+	const want = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("compile error = %v, want actionable rejection before runner start", err)
 	}
 }
 

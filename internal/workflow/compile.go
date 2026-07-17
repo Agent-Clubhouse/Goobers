@@ -56,7 +56,8 @@ func WithKnownChecks(names []string) Option {
 //
 // It rejects: duplicate state names, a missing/undefined start, transitions to
 // undefined states, gates with no branches or branches to undefined states,
-// states unreachable from start, loops with no exit to a terminal, and — when
+// human evaluators while durable pause/resume is unavailable, states
+// unreachable from start, loops with no exit to a terminal, and — when
 // WithGoobers is supplied — a goober granting or a stage declaring a
 // capability outside the canonical registry (internal/capability, issue #74),
 // stages using capabilities their goober does not grant, and goobers on an
@@ -79,6 +80,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		problems = append(problems, reachabilityProblems(m)...)
 	}
 	problems = append(problems, scheduleProblems(def)...)
+	problems = append(problems, evaluatorSupportProblems(def)...)
 	problems = append(problems, gateOutcomeProblems(def, o.knownChecks)...)
 	problems = append(problems, triggerFieldProblems(def)...)
 	problems = append(problems, admissionProblems(def, o.goobers)...)
@@ -333,6 +335,18 @@ var automatedCheckOutcomes = map[string][]string{
 	"ci-status": {"pass", "fail", "timeout"},
 }
 
+const humanGateUnsupportedMessage = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
+
+func evaluatorSupportProblems(def Definition) []string {
+	var problems []string
+	for _, g := range def.Spec.Gates {
+		if g.Evaluator == apiv1.EvaluatorHuman {
+			problems = append(problems, fmt.Sprintf("gate %q: %s", g.Name, humanGateUnsupportedMessage))
+		}
+	}
+	return problems
+}
+
 // gateOutcomeProblems reports two distinct defect classes per gate (#124):
 //   - a branch key that is not one of the evaluator's producible outcomes —
 //     silently dead configuration, never taken;
@@ -341,12 +355,12 @@ var automatedCheckOutcomes = map[string][]string{
 //     at evaluation time instead of at compile time.
 //
 // Human gates have no evaluator outcome to check against (§5: "a human gate
-// executes nothing"; its Branches, if any, are consumed by the operator's own
-// decision, not an evaluator outcome) and are skipped. knownChecks, when
-// non-nil, additionally flags an AutomatedGate.Check name outside the
-// supplied registry (WithKnownChecks) — nil performs no such check (the
-// default; internal/gate already fails closed on an unknown check at
-// evaluation time regardless).
+// executes nothing") and are skipped here; evaluatorSupportProblems rejects
+// them until durable pause/resume ships. knownChecks, when non-nil,
+// additionally flags an AutomatedGate.Check name outside the supplied
+// registry (WithKnownChecks) — nil performs no such check (the default;
+// internal/gate already fails closed on an unknown check at evaluation time
+// regardless).
 func gateOutcomeProblems(def Definition, knownChecks map[string]bool) []string {
 	var problems []string
 	for _, g := range def.Spec.Gates {

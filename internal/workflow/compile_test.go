@@ -50,6 +50,25 @@ func TestCompileValid(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsHumanGate(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "approval",
+		Gates: []apiv1.Gate{{
+			Name:      "approval",
+			Evaluator: apiv1.EvaluatorHuman,
+			Human:     &apiv1.HumanGate{Approvers: []string{"maintainers"}},
+			Branches:  map[string]string{"pass": TerminalComplete, "fail": TargetAbort},
+		}},
+	}
+
+	_, err := Compile(Definition{Name: "human-approval", Version: 1, Spec: spec})
+	const want = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected actionable human-gate rejection, got %v", err)
+	}
+}
+
 func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
 	task := apiv1.Task{
 		Name: "query-backlog",
