@@ -1,9 +1,29 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
-describe("App prototype", () => {
+const storedValues = new Map<string, string>();
+
+beforeEach(() => {
+  storedValues.clear();
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      clear: () => storedValues.clear(),
+      getItem: (key: string) => storedValues.get(key) ?? null,
+      key: (index: number) => [...storedValues.keys()][index] ?? null,
+      get length() {
+        return storedValues.size;
+      },
+      removeItem: (key: string) => storedValues.delete(key),
+      setItem: (key: string, value: string) => storedValues.set(key, value),
+    } satisfies Storage,
+  });
+  delete document.documentElement.dataset.theme;
+});
+
+describe("portal foundation", () => {
   beforeEach(() => {
     window.location.hash = "#/overview";
   });
@@ -44,6 +64,95 @@ describe("App prototype", () => {
     expect(await screen.findByText("In progress")).toBeInTheDocument();
     expect(screen.queryByText("attempt-1-summary.md")).not.toBeInTheDocument();
     expect(container.querySelector('[data-edge="review-gate->implement"]')).not.toHaveClass("graph-edge-active");
+  });
+
+  it.each([
+    { hash: "#/overview", heading: "One run needs attention." },
+    { hash: "#/workflows", heading: "Workflows" },
+    { hash: "#/runs", heading: "Runs" },
+  ])("renders the $hash shell route from static fixtures", ({ hash, heading }) => {
+    window.location.hash = hash;
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Skip to main content" })).toHaveAttribute(
+      "href",
+      "#main-content",
+    );
+  });
+
+  it("persists independently selected themes", async () => {
+    window.localStorage.setItem("goobers-theme", "dark");
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    await user.click(screen.getByRole("button", { name: "Use light theme" }));
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(window.localStorage.getItem("goobers-theme")).toBe("light");
+  });
+
+  it("operates primary navigation from the keyboard and moves focus to the route content", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const workflowsButton = screen.getByRole("button", { name: "Workflows" });
+
+    workflowsButton.focus();
+    await user.keyboard("{Enter}");
+
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
+    expect(screen.getByRole("button", { name: "Workflows" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
+  it("skips to main content without changing the active hash route", async () => {
+    window.location.hash = "#/workflows";
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "Skip to main content" }));
+
+    expect(window.location.hash).toBe("#/workflows");
+    expect(screen.getByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(screen.getByRole("main")).toHaveFocus();
+  });
+
+  it("supports directional graph selection and exposes the compact responsive contract", () => {
+    window.location.hash = "#/workflow/implementation";
+    render(<App />);
+    const firstStage = screen.getByRole("button", { name: "Gather context, pending" });
+    const secondStage = screen.getByRole("button", { name: "Implement, pending" });
+
+    firstStage.focus();
+    fireEvent.keyDown(firstStage, { key: "ArrowRight" });
+
+    expect(secondStage).toHaveFocus();
+    expect(secondStage).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("group", { name: /Implementation execution graph/ })).toHaveAttribute(
+      "data-responsive-layout",
+      "compact-under-820",
+    );
+  });
+
+  it("gives filters and dismiss controls observable behavior", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Dismiss warning preview" }));
+    expect(
+      screen.queryByText("One workflow uses an unversioned preview field"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Runs" }));
+    await user.click(screen.getByRole("button", { name: "attention" }));
+
+    expect(screen.getByRole("button", { name: /Open run Live visual dashboard/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Open run Daemon read API/i })).not.toBeInTheDocument();
   });
 });
 
