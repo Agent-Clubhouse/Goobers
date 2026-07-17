@@ -991,7 +991,8 @@ func TestGitHubProviderMergePullRequestSucceeds(t *testing.T) {
 	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL }, WithMutationRecorder(rec))
 	result, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
 		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
-		ExpectedHeadSHA: "deadbeef", CommitMessage: "merged by merge-review",
+		ExpectedHeadSHA: "deadbeef", CommitTitle: "Improve merge history",
+		CommitMessage: "merged by merge-review", MergeMethod: MergeMethodRebase,
 	})
 	if err != nil {
 		t.Fatalf("MergePullRequest returned error: %v", err)
@@ -1002,8 +1003,14 @@ func TestGitHubProviderMergePullRequestSucceeds(t *testing.T) {
 	if gotBody["sha"] != "deadbeef" {
 		t.Fatalf("request body sha = %v, want deadbeef (the SHA-pin optimistic-concurrency guard)", gotBody["sha"])
 	}
+	if gotBody["commit_title"] != "Improve merge history" {
+		t.Fatalf("request body commit_title = %v", gotBody["commit_title"])
+	}
 	if gotBody["commit_message"] != "merged by merge-review" {
 		t.Fatalf("request body commit_message = %v", gotBody["commit_message"])
+	}
+	if gotBody["merge_method"] != "rebase" {
+		t.Fatalf("request body merge_method = %v, want rebase", gotBody["merge_method"])
 	}
 	ref, ok := rec.last()
 	if !ok {
@@ -1045,7 +1052,8 @@ func TestGitHubProviderPollPullRequestSurfacesMergeInputs(t *testing.T) {
 	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, map[string]interface{}{
 			"number": 9, "state": "open", "draft": true, "html_url": "https://github.com/acme/app/pull/9",
-			"body": "Implements the thing.\n\nFixes #42",
+			"title": "Improve merge history",
+			"body":  "Implements the thing.\n\nFixes #42",
 			"head": map[string]interface{}{
 				"ref": "feature", "sha": "headsha123",
 				"repo": map[string]interface{}{
@@ -1080,6 +1088,9 @@ func TestGitHubProviderPollPullRequestSurfacesMergeInputs(t *testing.T) {
 	}
 	if !result.Draft {
 		t.Fatal("Draft = false, want true")
+	}
+	if result.Title != "Improve merge history" {
+		t.Fatalf("Title = %q, want Improve merge history", result.Title)
 	}
 	if result.HeadSHA != "headsha123" {
 		t.Fatalf("HeadSHA = %q, want headsha123", result.HeadSHA)
