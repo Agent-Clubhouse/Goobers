@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AttemptInspector } from "../components/AttemptInspector";
+import { EscalationPanel } from "../components/EscalationPanel";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { workflowForRun, type Run } from "../prototypeData";
 import {
@@ -13,6 +14,7 @@ import {
 } from "../replay";
 import type { Navigate } from "../routing";
 import {
+  causalEventIndex,
   deriveNodeStates,
   deriveTraversedEdges,
   traversalEdgeAtEvent,
@@ -27,9 +29,14 @@ export function RunPage({ run, navigate }: { run: Run; navigate: Navigate }) {
   const workflow = workflowForRun(run);
   const events = useMemo(() => orderedReplayEvents(run.events), [run.events]);
   const lastEventIndex = Math.max(events.length - 1, 0);
+  const escalationEventIndex = causalEventIndex(run, events);
+  const initialReplayIndex =
+    run.status === "escalated" && escalationEventIndex !== undefined
+      ? escalationEventIndex
+      : lastEventIndex;
   const activeRun = run.status === "running";
   const [mode, setMode] = useState<ReplayMode>(activeRun ? "live-follow" : "replay");
-  const [replayIndex, setReplayIndex] = useState(lastEventIndex);
+  const [replayIndex, setReplayIndex] = useState(initialReplayIndex);
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState<ReplaySpeed>(1);
   const reducedMotion = usePrefersReducedMotion();
@@ -46,6 +53,13 @@ export function RunPage({ run, navigate }: { run: Run; navigate: Navigate }) {
   const replayEnded = mode === "replay" && atEnd && !isPlaying;
   const liveHistoryInspection = mode === "live-follow" && replayIndex < lastEventIndex;
   const latestSequence = events[events.length - 1]?.seq;
+  const causalEvent =
+    escalationEventIndex === undefined ? undefined : events[escalationEventIndex];
+  const escalationVisible =
+    run.status === "escalated" &&
+    (run.escalation && causalEvent
+      ? (currentEvent?.seq ?? 0) >= causalEvent.seq
+      : replayIndex === lastEventIndex);
 
   useEffect(() => {
     if (!isPlaying) {
@@ -159,31 +173,19 @@ export function RunPage({ run, navigate }: { run: Run; navigate: Navigate }) {
         </dl>
       </header>
 
-      {run.escalation && replayIndex >= run.events.length - 2 && (
-        <section className="escalation-panel">
-          <span className="escalation-icon">
-            <Icon name="alert" />
-          </span>
-          <div>
-            <span className="escalation-label">Escalation cause</span>
-            <h2>{run.escalation.title}</h2>
-            <p>{run.escalation.cause}</p>
-            <dl>
-              <div>
-                <dt>Gate</dt>
-                <dd>{run.escalation.gate}</dd>
-              </div>
-              <div>
-                <dt>Branch</dt>
-                <dd className="mono">{run.escalation.branch}</dd>
-              </div>
-              <div>
-                <dt>Budget</dt>
-                <dd>{run.escalation.attemptsUsed} / {run.escalation.attemptsAllowed} repasses</dd>
-              </div>
-            </dl>
-          </div>
-        </section>
+      {escalationVisible && (
+        <EscalationPanel
+          causalEvent={causalEvent}
+          evidenceEventSeq={run.escalation ? causalEvent?.seq : currentEvent?.seq}
+          onFocusCausalEvent={
+            escalationEventIndex === undefined
+              ? undefined
+              : () => selectReplayIndex(escalationEventIndex, true)
+          }
+          onSelectStage={setSelectedStageId}
+          run={run}
+          workflow={workflow}
+        />
       )}
 
       <section className="run-workspace" data-replay-motion={reducedMotion ? "reduced" : "animated"}>
@@ -202,6 +204,7 @@ export function RunPage({ run, navigate }: { run: Run; navigate: Navigate }) {
           >
             <TopologyGraph
               activeEdges={traversedEdges}
+              causalStageId={escalationVisible ? causalEvent?.stageId : undefined}
               onSelectStage={setSelectedStageId}
               selectedStageId={selectedStageId}
               states={nodeStates}
@@ -350,12 +353,24 @@ export function RunPage({ run, navigate }: { run: Run; navigate: Navigate }) {
             <ol>
               {events.map((event, index) => (
                 <li
-                  className={index === replayIndex ? "ledger-item ledger-item-active" : "ledger-item"}
+                  className={[
+                    "ledger-item",
+                    index === replayIndex ? "ledger-item-active" : "",
+                    escalationVisible && event.seq === run.escalation?.causalEventSeq
+                      ? "ledger-item-causal"
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                   key={event.id}
                 >
                   <button
                     aria-current={index === replayIndex ? "true" : undefined}
-                    aria-label={`Select event ${event.seq}: ${event.title}`}
+                    aria-label={`Select event ${event.seq}: ${event.title}${
+                      escalationVisible && event.seq === run.escalation?.causalEventSeq
+                        ? " (causal event)"
+                        : ""
+                    }`}
                     onClick={() => {
                       selectReplayIndex(index, !activeRun || mode === "replay");
                     }}
@@ -366,6 +381,9 @@ export function RunPage({ run, navigate }: { run: Run; navigate: Navigate }) {
                     <span className="ledger-copy">
                       <strong>{event.title}</strong>
                       <span>{event.detail}</span>
+                      {escalationVisible && event.seq === run.escalation?.causalEventSeq && (
+                        <span className="causal-event-label">Causal event</span>
+                      )}
                     </span>
                     <span className="ledger-type mono">{event.type}</span>
                     <span className="ledger-time mono">{event.elapsed}</span>

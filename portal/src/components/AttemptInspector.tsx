@@ -79,6 +79,10 @@ export function AttemptInspector({ run, stage, eventSeq }: AttemptInspectorProps
                       <span>
                         <strong>{artifact.name}</strong>
                         <small>{artifact.summary}</small>
+                        <small className="mono">
+                          {artifact.mediaType}
+                          {artifact.digest ? ` · ${artifact.digest}` : ""}
+                        </small>
                       </span>
                       <span className="artifact-size">{artifact.size}</span>
                     </div>

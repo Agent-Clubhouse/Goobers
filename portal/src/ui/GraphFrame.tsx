@@ -32,6 +32,7 @@ export function GraphFrame({
 
 interface TopologyGraphProps {
   activeEdges?: ReadonlySet<string>;
+  causalStageId?: string;
   onSelectStage: (stageId: string) => void;
   selectedStageId?: string;
   states?: Record<string, NodeState>;
@@ -45,6 +46,7 @@ export function TopologyGraph({
   activeEdges,
   traversingEdge,
   selectedStageId,
+  causalStageId,
   onSelectStage,
 }: TopologyGraphProps) {
   const stageById = useMemo(
@@ -103,13 +105,14 @@ export function TopologyGraph({
       </svg>
       {workflow.stages.map((stage, index) => {
         const state = states?.[stage.id] ?? "pending";
+        const causal = causalStageId === stage.id;
         return (
           <button
-            aria-label={`${stage.name}, ${state}`}
+            aria-label={`${stage.name}, ${state}${causal ? ", causal event" : ""}`}
             aria-pressed={selectedStageId === stage.id}
             className={`graph-node node-${stage.kind} node-${state} ${
               selectedStageId === stage.id ? "graph-node-selected" : ""
-            }`}
+            } ${causal ? "graph-node-causal" : ""}`}
             key={stage.id}
             onClick={() => onSelectStage(stage.id)}
             onKeyDown={(event) => {
@@ -130,6 +133,7 @@ export function TopologyGraph({
             <span className="graph-node-kind">{stage.kind === "gate" ? "gate" : stage.kind}</span>
             <strong>{stage.name}</strong>
             <span className="graph-node-state">{state}</span>
+            {causal && <span className="graph-node-cause">Causal event</span>}
           </button>
         );
       })}

@@ -1,7 +1,8 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { runs, type StageAttempt } from "./prototypeData";
 
 const storedValues = new Map<string, string>();
 
@@ -31,9 +32,10 @@ describe("portal foundation", () => {
   it("shows the operational overview", () => {
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "One run needs attention." })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "3 runs need attention." })).toBeInTheDocument();
     expect(screen.getByText("Daemon connected")).toBeInTheDocument();
     expect(screen.getByText("Scope could not converge within the repass budget")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
   });
 
   it("opens a run and supports replay", async () => {
@@ -67,7 +69,7 @@ describe("portal foundation", () => {
   });
 
   it.each([
-    { hash: "#/overview", heading: "One run needs attention." },
+    { hash: "#/overview", heading: "3 runs need attention." },
     { hash: "#/workflows", heading: "Workflows" },
     { hash: "#/runs", heading: "Runs" },
   ])("renders the $hash shell route from static fixtures", ({ hash, heading }) => {
@@ -153,6 +155,179 @@ describe("portal foundation", () => {
 
     expect(screen.getByRole("button", { name: /Open run Live visual dashboard/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Open run Daemon read API/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("escalation detail", () => {
+  beforeEach(() => {
+    setReducedMotion(false);
+  });
+
+  it("renders the structured gate cause and focuses its durable event", async () => {
+    const user = userEvent.setup();
+    const { container } = renderRun("01JZ402DASHBOARD");
+
+    expect(
+      screen.getByRole("heading", { name: "Scope could not converge within the repass budget" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("review-gate")).toBeInTheDocument();
+    expect(screen.getByText("@escalate")).toBeInTheDocument();
+    expect(screen.getByText("3 / 3 repass attempts")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The final needs-changes verdict remained over-scoped after every allowed repass.",
+      ),
+    ).toBeInTheDocument();
+    expectEvent(15, 16);
+
+    const causalEvent = screen.getByRole("button", {
+      name: "Select event 15: Repass budget exhausted (causal event)",
+    });
+    expect(causalEvent).toHaveAttribute("aria-current", "true");
+    expect(
+      screen.getByRole("button", { name: "Review gate, escalated, causal event" }),
+    ).toHaveClass("graph-node-causal");
+    expect(container.querySelector(".ledger-item-causal")).toContainElement(causalEvent);
+
+    const escalationRegion = screen.getByRole("region", {
+      name: "Scope could not converge within the repass budget",
+    });
+    escalationRegion.focus();
+    expect(escalationRegion).toHaveFocus();
+
+    expect(screen.getByText("Evidence at escalation")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", {
+        name: "Inspect Implement evidence: 3 attempts, 3 artifacts",
+      }),
+    );
+    expect(screen.getAllByRole("button", { name: /^Attempt [123]$/ })).toHaveLength(3);
+    expect(screen.getAllByText("attempt-1-summary.md").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("attempt-2-summary.md").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("attempt-3-summary.md").length).toBeGreaterThan(0);
+
+    expect(
+      screen.queryByRole("button", { name: /approve|override|rerun/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders retry exhaustion from structured condition data", () => {
+    renderRun("01JZ447RETRYBUDGET");
+
+    expect(
+      screen.getByRole("heading", { name: "Merge could not complete within the retry budget" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("merge retry policy")).toBeInTheDocument();
+    expect(screen.getByText("2 / 2 retry attempts")).toBeInTheDocument();
+    expectEvent(6, 7);
+    expect(
+      screen.getByRole("button", { name: "Select event 6: Retry budget exhausted (causal event)" }),
+    ).toHaveAttribute("aria-current", "true");
+    expect(screen.getAllByText("merge-attempt-1.json").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("merge-attempt-2.json").length).toBeGreaterThan(0);
+  });
+
+  it("keeps evidence anchored to the causal event as replay advances", () => {
+    const run = runs.find(({ id }) => id === "01JZ402DASHBOARD");
+    if (!run) {
+      throw new Error("Escalated run fixture is missing");
+    }
+    const postCausalAttempt = {
+      id: "review-gate-post-causal",
+      stageId: "review-gate",
+      number: 4,
+      kind: "infra",
+      status: "completed",
+      duration: "<1s",
+      startedSeq: 16,
+      endedSeq: 16,
+      summary: "Recorded terminal delivery metadata after escalation was selected.",
+      artifacts: [
+        {
+          name: "post-escalation-delivery.json",
+          mediaType: "application/json",
+          size: "1.1 KB",
+          summary: "Delivery metadata recorded after the causal event.",
+        },
+      ],
+    } satisfies StageAttempt;
+    run.attempts.push(postCausalAttempt);
+
+    try {
+      renderRun(run.id);
+      const escalationPanel = screen.getByRole("region", {
+        name: "Scope could not converge within the repass budget",
+      });
+      expect(
+        within(escalationPanel).queryByText("post-escalation-delivery.json"),
+      ).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByRole("slider", { name: "Replay position" }), {
+        target: { value: String(run.events.length - 1) },
+      });
+
+      expectEvent(16, 16);
+      expect(screen.getByText("post-escalation-delivery.json")).toBeInTheDocument();
+      expect(
+        within(escalationPanel).queryByText("post-escalation-delivery.json"),
+      ).not.toBeInTheDocument();
+    } finally {
+      run.attempts.splice(run.attempts.indexOf(postCausalAttempt), 1);
+    }
+  });
+
+  it("renders an unresolved causal event without linking or highlighting the final event", () => {
+    const run = runs.find(({ id }) => id === "01JZ402DASHBOARD");
+    if (!run?.escalation) {
+      throw new Error("Structured escalation fixture is missing");
+    }
+    const originalEscalation = run.escalation;
+    run.escalation = { ...originalEscalation, causalEventSeq: 99 };
+
+    try {
+      const { container } = renderRun(run.id);
+
+      expectEvent(16, 16);
+      expect(screen.getByText("Seq 99 · Unavailable")).toBeInTheDocument();
+      expect(
+        screen.getByText(/point-in-time evidence is unavailable because the causal event could not be resolved/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /^Causal event/i }),
+      ).not.toBeInTheDocument();
+      expect(container.querySelector(".graph-node-causal")).not.toBeInTheDocument();
+      expect(container.querySelector(".ledger-item-causal")).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Select event 16: Run escalated" }),
+      ).toHaveAttribute("aria-current", "true");
+    } finally {
+      run.escalation = originalEscalation;
+    }
+  });
+
+  it("shows an explicit unavailable state for a legacy escalation", () => {
+    renderRun("01JZ450LEGACYCAUSE");
+
+    expect(
+      screen.getByRole("heading", { name: "Escalation cause unavailable" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/legacy run has no structured cause record/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Selected branch")).not.toBeInTheDocument();
+    expect(screen.queryByText("Budget consumed")).not.toBeInTheDocument();
+    expect(screen.getByText("Evidence at escalation")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["01JZ441DAEMONAPI", "Review, active"],
+    ["01JZ455ESCALATE", "Merge, complete"],
+  ])("does not add escalation chrome to non-escalated run %s", (runId, graphNodeName) => {
+    renderRun(runId);
+
+    expect(screen.queryByText("Attention · Escalation")).not.toBeInTheDocument();
+    expect(screen.queryByText("Evidence at escalation")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: graphNodeName })).toBeInTheDocument();
   });
 });
 

@@ -34,7 +34,7 @@ export function deriveNodeStates(
       if (activeStageId === event.stageId) {
         activeStageId = undefined;
       }
-    } else if (event.type === "gate.evaluated") {
+    } else if (event.type === "gate.evaluated" || event.type === "condition.evaluated") {
       if (
         activeStageId &&
         activeStageId !== event.stageId &&
@@ -70,6 +70,7 @@ export function deriveTraversedEdges(events: RunEvent[], index: number): Set<str
       event.type === "stage.started" ||
       event.type === "stage.finished" ||
       event.type === "gate.evaluated" ||
+      event.type === "condition.evaluated" ||
       event.type === "run.finished";
     if (!entersStage) {
       continue;
@@ -86,7 +87,7 @@ export function traversalEdgeAtEvent(events: RunEvent[], index: number): string 
   const current = events[index];
   if (
     !current?.stageId ||
-    !["stage.started", "gate.evaluated", "run.finished"].includes(current.type)
+    !["stage.started", "gate.evaluated", "condition.evaluated", "run.finished"].includes(current.type)
   ) {
     return undefined;
   }
@@ -94,7 +95,7 @@ export function traversalEdgeAtEvent(events: RunEvent[], index: number): string 
     const previous = events[previousIndex];
     if (
       !previous.stageId ||
-      !["stage.started", "gate.evaluated", "run.finished"].includes(previous.type)
+      !["stage.started", "gate.evaluated", "condition.evaluated", "run.finished"].includes(previous.type)
     ) {
       continue;
     }
@@ -124,4 +125,17 @@ export function visibleAttempts(
         artifacts: [],
       };
     });
+}
+
+/**
+ * Locates the durable event that caused an escalated run to stop, so the UI
+ * can anchor its escalation explanation to a specific, replayable event
+ * instead of just "the end of the journal".
+ */
+export function causalEventIndex(run: Run, events: RunEvent[]): number | undefined {
+  if (run.status !== "escalated" || !run.escalation) {
+    return undefined;
+  }
+  const index = events.findIndex((event) => event.seq === run.escalation?.causalEventSeq);
+  return index >= 0 ? index : undefined;
 }

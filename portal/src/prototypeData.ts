@@ -45,6 +45,7 @@ export interface Artifact {
   mediaType: string;
   size: string;
   summary: string;
+  digest?: string;
 }
 
 export interface StageAttempt {
@@ -75,12 +76,19 @@ export interface RunEvent {
 }
 
 export interface Escalation {
-  title: string;
-  cause: string;
-  gate: string;
-  branch: string;
-  attemptsUsed: number;
-  attemptsAllowed: number;
+  summary: string;
+  selector: {
+    kind: "gate" | "condition";
+    name: string;
+  };
+  selectedBranch: string;
+  budget: {
+    kind: "repass" | "retry";
+    consumed: number;
+    limit: number;
+  };
+  terminalReason: string;
+  causalEventSeq: number;
 }
 
 export interface Run {
@@ -714,6 +722,126 @@ const completedRunEvents: RunEvent[] = [
   },
 ];
 
+const retryEscalatedEvents: RunEvent[] = [
+  {
+    id: "retry-escalated-1",
+    seq: 1,
+    time: "17:15:00",
+    elapsed: "0:00",
+    type: "run.started",
+    title: "Run started",
+    detail: "Issue #447 claimed by the implementation workflow.",
+    tone: "neutral",
+  },
+  {
+    id: "retry-escalated-2",
+    seq: 2,
+    time: "17:15:01",
+    elapsed: "0:01",
+    type: "stage.started",
+    title: "Merge attempt 1",
+    detail: "The first merge attempt began.",
+    tone: "active",
+    stageId: "merge",
+    attempt: 1,
+  },
+  {
+    id: "retry-escalated-3",
+    seq: 3,
+    time: "17:15:04",
+    elapsed: "0:04",
+    type: "stage.finished",
+    title: "Merge attempt 1 failed",
+    detail: "The provider rejected the merge because the branch could not be updated.",
+    tone: "danger",
+    stageId: "merge",
+    attempt: 1,
+  },
+  {
+    id: "retry-escalated-4",
+    seq: 4,
+    time: "17:15:06",
+    elapsed: "0:06",
+    type: "stage.started",
+    title: "Merge attempt 2",
+    detail: "The policy retry began.",
+    tone: "active",
+    stageId: "merge",
+    attempt: 2,
+  },
+  {
+    id: "retry-escalated-5",
+    seq: 5,
+    time: "17:15:09",
+    elapsed: "0:09",
+    type: "stage.finished",
+    title: "Merge attempt 2 failed",
+    detail: "The provider rejected the final allowed merge attempt.",
+    tone: "danger",
+    stageId: "merge",
+    attempt: 2,
+  },
+  {
+    id: "retry-escalated-6",
+    seq: 6,
+    time: "17:15:10",
+    elapsed: "0:10",
+    type: "condition.evaluated",
+    title: "Retry budget exhausted",
+    detail: "The merge retry policy selected escalation.",
+    tone: "danger",
+    stageId: "merge",
+    attempt: 2,
+  },
+  {
+    id: "retry-escalated-7",
+    seq: 7,
+    time: "17:15:11",
+    elapsed: "0:11",
+    type: "run.finished",
+    title: "Run escalated",
+    detail: "Operator attention is required to resolve the provider conflict.",
+    tone: "danger",
+    stageId: "merge",
+  },
+];
+
+const legacyEscalatedEvents: RunEvent[] = [
+  {
+    id: "legacy-escalated-1",
+    seq: 1,
+    time: "16:00:00",
+    elapsed: "0:00",
+    type: "run.started",
+    title: "Run started",
+    detail: "Issue #318 claimed.",
+    tone: "neutral",
+  },
+  {
+    id: "legacy-escalated-2",
+    seq: 2,
+    time: "16:00:01",
+    elapsed: "0:01",
+    type: "stage.started",
+    title: "Implementation started",
+    detail: "The terminal stage began.",
+    tone: "active",
+    stageId: "implement",
+    attempt: 1,
+  },
+  {
+    id: "legacy-escalated-3",
+    seq: 3,
+    time: "16:00:06",
+    elapsed: "0:06",
+    type: "run.finished",
+    title: "Run escalated",
+    detail: "The legacy journal has no structured escalation cause record.",
+    tone: "danger",
+    stageId: "implement",
+  },
+];
+
 export const runs: Run[] = [
   {
     id: "01JZ441DAEMONAPI",
@@ -793,12 +921,19 @@ export const runs: Run[] = [
     repasses: 3,
     events: escalatedRunEvents,
     escalation: {
-      title: "Scope could not converge within the repass budget",
-      cause: "The run repeatedly mixed daemon API, portal retargeting, and graph rendering without producing one coherent vertical slice.",
-      gate: "review-gate",
-      branch: "@escalate",
-      attemptsUsed: 3,
-      attemptsAllowed: 3,
+      summary: "Scope could not converge within the repass budget",
+      selector: {
+        kind: "gate",
+        name: "review-gate",
+      },
+      selectedBranch: "@escalate",
+      budget: {
+        kind: "repass",
+        consumed: 3,
+        limit: 3,
+      },
+      terminalReason: "The final needs-changes verdict remained over-scoped after every allowed repass.",
+      causalEventSeq: 15,
     },
     attempts: [
       {
@@ -811,7 +946,7 @@ export const runs: Run[] = [
         startedSeq: 2,
         endedSeq: 3,
         summary: "Pinned the deliberately broad evaluation issue and workflow definition.",
-        artifacts: [{ name: "issue-context.json", mediaType: "application/json", size: "11.4 KB", summary: "Issue #402 context and acceptance criteria." }],
+        artifacts: [{ name: "issue-context.json", mediaType: "application/json", size: "11.4 KB", summary: "Issue #402 context and acceptance criteria.", digest: "sha256:aa51a78e" }],
       },
       {
         id: "implement-1-escalated",
@@ -824,7 +959,7 @@ export const runs: Run[] = [
         endedSeq: 5,
         summary: "Produced a partial API and portal client without a complete slice.",
         output: "diff: 17 files, +812/-44",
-        artifacts: [{ name: "attempt-1-summary.md", mediaType: "text/markdown", size: "5.8 KB", summary: "Initial implementation decisions and test output." }],
+        artifacts: [{ name: "attempt-1-summary.md", mediaType: "text/markdown", size: "5.8 KB", summary: "Initial implementation decisions and test output.", digest: "sha256:15e1d012" }],
       },
       {
         id: "implement-2-escalated",
@@ -837,7 +972,7 @@ export const runs: Run[] = [
         endedSeq: 9,
         summary: "Improved endpoint coverage but retained speculative response coupling.",
         output: "diff: 21 files, +1044/-81",
-        artifacts: [{ name: "attempt-2-summary.md", mediaType: "text/markdown", size: "6.3 KB", summary: "Second-pass changes and unresolved contract notes." }],
+        artifacts: [{ name: "attempt-2-summary.md", mediaType: "text/markdown", size: "6.3 KB", summary: "Second-pass changes and unresolved contract notes.", digest: "sha256:26f2e123" }],
       },
       {
         id: "implement-3-escalated",
@@ -850,7 +985,7 @@ export const runs: Run[] = [
         endedSeq: 13,
         summary: "Recorded the final diff and explicit remaining scope boundaries.",
         output: "diff: 23 files, +1182/-96",
-        artifacts: [{ name: "attempt-3-summary.md", mediaType: "text/markdown", size: "7.1 KB", summary: "Final attempt summary and remaining blockers." }],
+        artifacts: [{ name: "attempt-3-summary.md", mediaType: "text/markdown", size: "7.1 KB", summary: "Final attempt summary and remaining blockers.", digest: "sha256:37a3f234" }],
       },
       {
         id: "review-1-escalated",
@@ -862,7 +997,7 @@ export const runs: Run[] = [
         startedSeq: 6,
         endedSeq: 7,
         summary: "Requested a coherent vertical slice.",
-        artifacts: [{ name: "verdict-1.json", mediaType: "application/json", size: "2.4 KB", summary: "Structured needs-changes verdict." }],
+        artifacts: [{ name: "verdict-1.json", mediaType: "application/json", size: "2.4 KB", summary: "Structured needs-changes verdict.", digest: "sha256:48b40456" }],
       },
       {
         id: "review-2-escalated",
@@ -874,7 +1009,7 @@ export const runs: Run[] = [
         startedSeq: 10,
         endedSeq: 11,
         summary: "Flagged mutable reconstruction of historical workflow graphs.",
-        artifacts: [{ name: "verdict-2.json", mediaType: "application/json", size: "2.8 KB", summary: "Second structured needs-changes verdict." }],
+        artifacts: [{ name: "verdict-2.json", mediaType: "application/json", size: "2.8 KB", summary: "Second structured needs-changes verdict.", digest: "sha256:59c51567" }],
       },
       {
         id: "review-3-escalated",
@@ -886,7 +1021,7 @@ export const runs: Run[] = [
         startedSeq: 14,
         endedSeq: 15,
         summary: "Escalated after the final allowed repass remained over-scoped.",
-        artifacts: [{ name: "verdict-3.json", mediaType: "application/json", size: "3.1 KB", summary: "Terminal verdict and escalation rationale." }],
+        artifacts: [{ name: "verdict-3.json", mediaType: "application/json", size: "3.1 KB", summary: "Terminal verdict and escalation rationale.", digest: "sha256:6ad62678" }],
       },
       {
         id: "review-gate-1-escalated",
@@ -899,7 +1034,7 @@ export const runs: Run[] = [
         endedSeq: 7,
         summary: "Routed the first needs-changes verdict back to implementation.",
         output: "target: implement",
-        artifacts: [{ name: "verdict-1.json", mediaType: "application/json", size: "2.4 KB", summary: "Structured needs-changes verdict." }],
+        artifacts: [{ name: "verdict-1.json", mediaType: "application/json", size: "2.4 KB", summary: "Structured needs-changes verdict.", digest: "sha256:48b40456" }],
       },
       {
         id: "review-gate-2-escalated",
@@ -912,7 +1047,7 @@ export const runs: Run[] = [
         endedSeq: 11,
         summary: "Routed the second needs-changes verdict back to implementation.",
         output: "target: implement",
-        artifacts: [{ name: "verdict-2.json", mediaType: "application/json", size: "2.8 KB", summary: "Second structured needs-changes verdict." }],
+        artifacts: [{ name: "verdict-2.json", mediaType: "application/json", size: "2.8 KB", summary: "Second structured needs-changes verdict.", digest: "sha256:59c51567" }],
       },
       {
         id: "review-gate-3-escalated",
@@ -925,7 +1060,116 @@ export const runs: Run[] = [
         endedSeq: 15,
         summary: "The final needs-changes verdict exhausted the repass budget and selected escalation.",
         output: "target: @escalate",
-        artifacts: [{ name: "verdict-3.json", mediaType: "application/json", size: "3.1 KB", summary: "Terminal verdict and escalation rationale." }],
+        artifacts: [{ name: "verdict-3.json", mediaType: "application/json", size: "3.1 KB", summary: "Terminal verdict and escalation rationale.", digest: "sha256:6ad62678" }],
+      },
+    ],
+  },
+  {
+    id: "01JZ447RETRYBUDGET",
+    shortId: "01JZ...TRY",
+    title: "Merge provider conflict",
+    issue: "#447",
+    workflowId: "implementation",
+    workflowVersion: 7,
+    workflowDigest: "sha256:a447d28aa47d62b1",
+    workflowStages: implementationStages.map((stage) => ({ ...stage })),
+    workflowEdges: implementationEdges.map((edge) => ({ ...edge })),
+    status: "escalated",
+    startedAt: "Today at 5:15 PM",
+    duration: "11s",
+    trigger: "Backlog item #447",
+    currentStage: "Merge",
+    repasses: 0,
+    events: retryEscalatedEvents,
+    escalation: {
+      summary: "Merge could not complete within the retry budget",
+      selector: {
+        kind: "condition",
+        name: "merge retry policy",
+      },
+      selectedBranch: "@escalate",
+      budget: {
+        kind: "retry",
+        consumed: 2,
+        limit: 2,
+      },
+      terminalReason: "The provider rejected both allowed merge attempts because the branch could not be updated.",
+      causalEventSeq: 6,
+    },
+    attempts: [
+      {
+        id: "merge-1-retry-escalated",
+        stageId: "merge",
+        number: 1,
+        kind: "initial",
+        status: "failed",
+        duration: "3s",
+        startedSeq: 2,
+        endedSeq: 3,
+        summary: "The provider rejected the merge while updating the branch.",
+        output: "providerStatus: conflict",
+        artifacts: [
+          {
+            name: "merge-attempt-1.json",
+            mediaType: "application/json",
+            size: "1.4 KB",
+            summary: "Structured provider response from the first attempt.",
+            digest: "sha256:447a1001",
+          },
+        ],
+      },
+      {
+        id: "merge-2-retry-escalated",
+        stageId: "merge",
+        number: 2,
+        kind: "policy",
+        status: "failed",
+        duration: "3s",
+        startedSeq: 4,
+        endedSeq: 5,
+        summary: "The policy retry encountered the same provider conflict.",
+        output: "providerStatus: conflict",
+        artifacts: [
+          {
+            name: "merge-attempt-2.json",
+            mediaType: "application/json",
+            size: "1.5 KB",
+            summary: "Structured provider response from the final retry.",
+            digest: "sha256:447a2002",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "01JZ450LEGACYCAUSE",
+    shortId: "01JZ...ACY",
+    title: "Legacy escalated implementation",
+    issue: "#318",
+    workflowId: "implementation",
+    workflowVersion: 4,
+    workflowDigest: "sha256:3180a1b2c3d4e5f6",
+    workflowStages: implementationStages.map((stage) => ({ ...stage })),
+    workflowEdges: implementationEdges.map((edge) => ({ ...edge })),
+    status: "escalated",
+    startedAt: "Yesterday at 4:00 PM",
+    duration: "6s",
+    trigger: "Backlog item #318",
+    currentStage: "Implement",
+    repasses: 0,
+    events: legacyEscalatedEvents,
+    attempts: [
+      {
+        id: "implement-1-legacy",
+        stageId: "implement",
+        number: 1,
+        kind: "initial",
+        status: "failed",
+        duration: "5s",
+        startedSeq: 2,
+        endedSeq: 3,
+        summary: "The legacy journal records the terminal attempt but not a structured cause.",
+        artifacts: [],
       },
     ],
   },
