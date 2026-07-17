@@ -767,6 +767,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// Wire the escalation notifier (#312) so a repass-budget escalation
 		// actually comments on the driving issue; nil for a repo-less instance.
 		Escalation: buildEscalationNotifier(cfg, resolver, sharedReg),
+		// Resolve the driving item(s) from the claim ledger when a run has no
+		// Item snapshot (#796): scheduled implementation runs self-select their
+		// item mid-run, so notifyTerminalGate would otherwise never comment on an
+		// escalation. Mirrors the fallback buildBlockedHandler already uses.
+		ClaimedItems: func(runID string) ([]string, error) { return claimedItemIDsForRun(l, runID) },
 		// Wire the blocked handler (#544/#552): record/park the driving issue
 		// when a stage reports blocked; nil for a repo-less instance.
 		Blocked: buildBlockedHandler(l, cfg, resolver, sharedReg),
