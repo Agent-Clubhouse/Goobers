@@ -43,10 +43,10 @@ func TestLoad_ValidExampleRepo(t *testing.T) {
 	}
 
 	// config-examples ships one Manifest/Gaggle, five Goobers (coder,
-	// curator, implementer, nominator — #26, reviewer), and five Workflows
+	// curator, implementer, nominator — #26, reviewer), and six Workflows
 	// (default-implement, backlog-curation — #25, implementation — #27,
-	// work-nomination — #26, merge-review — #568).
-	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 1, "Goober": 5, "Workflow": 5}
+	// work-nomination — #26, merge-review — #568, todo-check — #577).
+	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 1, "Goober": 5, "Workflow": 6}
 	by := objectsByKind(set.Objects)
 	for kind, want := range wantByKind {
 		if len(by[kind]) != want {
