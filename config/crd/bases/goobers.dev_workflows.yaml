@@ -195,6 +195,23 @@ spec:
                       description: Next is the name of the next state (task or gate).
                         Empty means terminal.
                       type: string
+                    onTimeout:
+                      description: |-
+                        OnTimeout selects what the runner does when this stage's agentic session
+                        hits its wall-clock timeout (the harness session timeout — currently a
+                        flat 30m, internal/harness.DefaultTimeout; not yet per-stage configurable,
+                        #151). Empty or "fail" (the default) discards the timed-out attempt and
+                        lets Task.Retry run, failing the run once the budget is exhausted —
+                        historically this discarded real, in-progress work whose only remaining
+                        step was CI (#724). "salvage" instead checks the run branch for a viable
+                        committed diff and, if present, completes the stage with that diff so the
+                        workflow continues to its Next stage rather than discarding the run. Only
+                        meaningful for an agentic stage whose deliverable is its committed diff;
+                        the compiler rejects it on a deterministic stage.
+                      enum:
+                      - fail
+                      - salvage
+                      type: string
                     run:
                       description: |-
                         Run defines the code to execute for a deterministic task. Required when

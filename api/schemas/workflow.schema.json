@@ -106,6 +106,7 @@
           }
         },
         "expectedOutputs": { "type": "array", "items": { "type": "string" } },
+        "onTimeout": { "type": "string", "enum": ["fail", "salvage"] },
         "next": { "type": "string" }
       },
       "allOf": [
@@ -116,6 +117,10 @@
         {
           "if": { "properties": { "type": { "const": "deterministic" } } },
           "then": { "required": ["run"], "not": { "required": ["goober"] } }
+        },
+        {
+          "if": { "properties": { "onTimeout": { "const": "salvage" } }, "required": ["onTimeout"] },
+          "then": { "properties": { "type": { "const": "agentic" } } }
         }
       ]
     },

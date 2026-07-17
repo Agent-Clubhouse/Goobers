@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -143,6 +144,47 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 	}
 	if string(rec.spans[0].data) != "implementing... done" {
 		t.Fatalf("span data = %q", rec.spans[0].data)
+	}
+}
+
+// TestExecutorMarksSessionTimeout is #724: a harness session timeout must
+// surface across the invoke seam as invoke.IsTimeout so the runner can apply a
+// stage's OnTimeout salvage policy without importing this package. A non-timeout
+// adapter error must NOT be marked.
+func TestExecutorMarksSessionTimeout(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			return fmt.Errorf("copilot-cli: %w after 30m0s: copilot", ErrTimeout)
+		},
+	}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+	_, err = exec.Invoke(context.Background(), testEnvelope(t.TempDir(), "repo:read"))
+	if err == nil {
+		t.Fatal("Invoke: want an error on session timeout")
+	}
+	if !invoke.IsTimeout(err) {
+		t.Fatalf("Invoke error %v not marked invoke.IsTimeout", err)
+	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("Invoke error %v does not preserve ErrTimeout", err)
+	}
+
+	// A non-timeout adapter failure must not be misclassified as a timeout.
+	other := &FakeAdapter{Act: func(ctx context.Context, req RunRequest) error {
+		return errors.New("some other harness failure")
+	}}
+	exec2, err := NewExecutor(other, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+	_, err = exec2.Invoke(context.Background(), testEnvelope(t.TempDir(), "repo:read"))
+	if err == nil || invoke.IsTimeout(err) {
+		t.Fatalf("non-timeout error misclassified: %v", err)
 	}
 }
 

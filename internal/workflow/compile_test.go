@@ -69,6 +69,48 @@ func TestCompileRejectsHumanGate(t *testing.T) {
 	}
 }
 
+func TestCompileOnTimeoutPolicy(t *testing.T) {
+	base := func(taskType apiv1.TaskType, onTimeout string) Definition {
+		task := apiv1.Task{Name: "implement", Type: taskType, Goal: "do work", OnTimeout: onTimeout, Next: TerminalComplete}
+		if taskType == apiv1.TaskAgentic {
+			task.Goober = "coder"
+		} else {
+			task.Run = &apiv1.DeterministicRun{Command: []string{"true"}}
+		}
+		return Definition{Name: "ot", Version: 1, Spec: apiv1.WorkflowSpec{
+			Gaggle:   "web",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+			Start:    "implement",
+			Tasks:    []apiv1.Task{task},
+		}}
+	}
+	cases := []struct {
+		name    string
+		def     Definition
+		wantErr string
+	}{
+		{name: "agentic salvage ok", def: base(apiv1.TaskAgentic, apiv1.TaskOnTimeoutSalvage)},
+		{name: "agentic fail ok", def: base(apiv1.TaskAgentic, apiv1.TaskOnTimeoutFail)},
+		{name: "empty ok", def: base(apiv1.TaskAgentic, "")},
+		{name: "unknown value", def: base(apiv1.TaskAgentic, "retry"), wantErr: `onTimeout "retry" is not one of fail, salvage`},
+		{name: "salvage on deterministic", def: base(apiv1.TaskDeterministic, apiv1.TaskOnTimeoutSalvage), wantErr: "onTimeout=salvage requires an agentic task"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Compile(tc.def)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Compile: unexpected error %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Compile error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
 	task := apiv1.Task{
 		Name: "query-backlog",

@@ -59,3 +59,31 @@ func IsInfrastructureFailure(err error) bool {
 	var infrastructureErr *InfrastructureError
 	return errors.As(err, &infrastructureErr)
 }
+
+// TimeoutError marks a dispatch failure caused by an agentic session hitting
+// its wall-clock timeout. The runtime (internal/harness) tags its own
+// process-level timeout with this at the invoke seam so the runner can
+// recognize a timeout — and apply a stage's OnTimeout salvage policy (#724) —
+// without importing the harness package or matching on error strings.
+type TimeoutError struct {
+	err error
+}
+
+func (e *TimeoutError) Error() string { return e.err.Error() }
+func (e *TimeoutError) Unwrap() error { return e.err }
+
+// Timeout preserves err while marking it as a session-timeout failure at the
+// runner seam. Returns nil for a nil err.
+func Timeout(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &TimeoutError{err: err}
+}
+
+// IsTimeout reports whether err carries the session-timeout marker, including
+// through wrapping.
+func IsTimeout(err error) bool {
+	var timeoutErr *TimeoutError
+	return errors.As(err, &timeoutErr)
+}

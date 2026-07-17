@@ -146,6 +146,17 @@ func structuralProblems(m *Machine) []string {
 		if !isTerminal(t.Next) && !m.has(t.Next) {
 			problems = append(problems, fmt.Sprintf("task %q next state %q is not defined", t.Name, t.Next))
 		}
+		switch t.OnTimeout {
+		case "", apiv1.TaskOnTimeoutFail, apiv1.TaskOnTimeoutSalvage:
+		default:
+			problems = append(problems, fmt.Sprintf("task %q onTimeout %q is not one of fail, salvage", t.Name, t.OnTimeout))
+		}
+		// Salvage completes a timed-out stage with its committed diff (#724) —
+		// only meaningful for an agentic stage whose deliverable is that diff; a
+		// deterministic stage has no such session to time out and salvage.
+		if t.OnTimeout == apiv1.TaskOnTimeoutSalvage && t.Type != apiv1.TaskAgentic {
+			problems = append(problems, fmt.Sprintf("task %q onTimeout=salvage requires an agentic task", t.Name))
+		}
 	}
 	for _, g := range def.Spec.Gates {
 		if len(g.Branches) == 0 {
