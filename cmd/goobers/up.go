@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -43,12 +44,51 @@ var delegationSweepInterval = 2 * time.Second
 // heartbeatInterval is a var so daemon tests do not wait a full minute.
 var heartbeatInterval = time.Minute
 
+const sweepErrorReportEvery = 12
+
 // reapStaleAfter bounds how long a Keep-on-failure worktree survives before
 // Manager.Reap sweeps it up too, on top of genuine crash orphans (issue
 // #136) — nothing in the runner sets RemoveOptions.Keep yet, so this only
 // matters once something does; a day gives an operator time to look at one
 // before it's reclaimed.
 const reapStaleAfter = 24 * time.Hour
+
+type sweepErrorReporter struct {
+	log         *journal.InstanceLog
+	code        string
+	lastMessage string
+	consecutive int
+	reportEvery int
+}
+
+func newSweepErrorReporter(log *journal.InstanceLog, code string) *sweepErrorReporter {
+	return &sweepErrorReporter{log: log, code: code, reportEvery: sweepErrorReportEvery}
+}
+
+func (r *sweepErrorReporter) report(err error) {
+	if err == nil {
+		r.lastMessage = ""
+		r.consecutive = 0
+		return
+	}
+	message := err.Error()
+	if message != r.lastMessage {
+		r.lastMessage = message
+		r.consecutive = 1
+	} else {
+		r.consecutive++
+	}
+	if r.consecutive != 1 && (r.consecutive-1)%r.reportEvery != 0 {
+		return
+	}
+	_ = r.log.Append(journal.Event{
+		Type:  journal.EventError,
+		Error: &journal.ErrorDetail{Code: r.code, Message: message},
+		Runner: map[string]any{
+			"consecutiveFailures": r.consecutive,
+		},
+	})
+}
 
 func runUp(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signals.SetupSignalContext()
@@ -216,11 +256,11 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// concurrent use, so this goroutine deliberately never writes to
 	// stdout/stderr itself (unlike the startup sweep above, which runs
 	// synchronously before this goroutine exists and so writes safely).
-	// Recovery failures are swallowed here the same way ClaimLedger's own
-	// journal() best-effort observability is (claim.go's doc) — routine
-	// background maintenance, not a run-affecting operation.
+	// Failures and non-empty recoveries go to the concurrency-safe instance
+	// journal instead.
 	claimTicker := time.NewTicker(claimRecoverInterval)
 	claimTickerDone := make(chan struct{})
+	claimSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_recovery_failed")
 	go func() {
 		defer close(claimTickerDone)
 		defer claimTicker.Stop()
@@ -229,7 +269,15 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			case <-ctx.Done():
 				return
 			case now := <-claimTicker.C:
-				_, _ = recoverExpiredClaims(now)
+				released, err := recoverExpiredClaims(now)
+				claimSweepErrors.report(err)
+				if err == nil && len(released) > 0 {
+					_ = setup.InstanceLog.Append(journal.Event{
+						Type:   journal.EventClaimReleased,
+						Reason: fmt.Sprintf("periodic recovery released %d expired claim(s)", len(released)),
+						Runner: map[string]any{"releasedClaims": len(released)},
+					})
+				}
 			}
 		}
 	}()
@@ -245,6 +293,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// rationale as the claim-recovery goroutine above.
 	delegationTicker := time.NewTicker(delegationSweepInterval)
 	delegationTickerDone := make(chan struct{})
+	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
 	go func() {
 		defer close(delegationTickerDone)
 		defer delegationTicker.Stop()
@@ -253,7 +302,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			case <-ctx.Done():
 				return
 			case <-delegationTicker.C:
-				sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now)
+				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
 			}
 		}
 	}()

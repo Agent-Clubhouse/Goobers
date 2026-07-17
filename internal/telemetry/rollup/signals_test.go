@@ -83,13 +83,10 @@ func TestIngestRunCapturesGateRunnerDetail(t *testing.T) {
 	}
 }
 
-// TestIngestSchedulerLogCapturesDecisions is issue #128's second defect:
-// scheduler decisions (trigger.fired/tick.skipped) and claim-ledger
-// transitions (claim.acquired/claim.released) live in
-// <instance-root>/scheduler/events.jsonl, but Rebuild only ever scanned run
-// directories — "why didn't a run start at tick N" was unanswerable from
-// telemetry.db no matter how long the daemon had run.
-func TestIngestSchedulerLogCapturesDecisions(t *testing.T) {
+// TestIngestSchedulerLogCapturesDecisionsAndErrors proves scheduler decisions,
+// claim transitions, and daemon maintenance errors remain queryable after
+// instance-journal ingest.
+func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	tmp := t.TempDir()
 	schedulerDir := filepath.Join(tmp, "scheduler")
 	if err := writeInstanceEvents(t, schedulerDir, []string{
@@ -99,6 +96,7 @@ func TestIngestSchedulerLogCapturesDecisions(t *testing.T) {
 		instanceEventLine(4, "run.started", `"workflow":"nominate","runId":"`+fixtureRunID+`"`),
 		instanceEventLine(5, "run.finished", `"workflow":"nominate","runId":"`+fixtureRunID+`","status":"completed"`),
 		instanceEventLine(6, "claim.released", `"runId":"`+fixtureRunID+`"`),
+		instanceEventLine(7, "error", `"error":{"code":"claim_recovery_failed","message":"corrupt claims ledger"}`),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -112,14 +110,25 @@ func TestIngestSchedulerLogCapturesDecisions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchedulerEvents: %v", err)
 	}
-	if len(events) != 6 {
-		t.Fatalf("scheduler events = %d, want 6: %#v", len(events), events)
+	if len(events) != 7 {
+		t.Fatalf("scheduler events = %d, want 7: %#v", len(events), events)
 	}
 	if events[1].Type != "tick.skipped" || events[1].Reason != "conditions: max-parallel" {
 		t.Fatalf("tick.skipped row = %#v", events[1])
 	}
 	if events[4].Type != "run.finished" || events[4].Status != "completed" || events[4].RunID != fixtureRunID {
 		t.Fatalf("run.finished row = %#v", events[4])
+	}
+	if events[6].Type != "error" || events[6].ErrorCode != "claim_recovery_failed" || events[6].ErrorClass != "unknown" {
+		t.Fatalf("error row = %#v", events[6])
+	}
+
+	signatures, err := db.TopErrorSignatures(StatsRequest{}, 10)
+	if err != nil {
+		t.Fatalf("TopErrorSignatures: %v", err)
+	}
+	if len(signatures) != 1 || signatures[0].Code != "claim_recovery_failed" || signatures[0].Count != 1 {
+		t.Fatalf("error signatures = %#v", signatures)
 	}
 
 	// Filtering to one workflow excludes claim.* events, which carry no

@@ -429,9 +429,8 @@ func (db *DB) Errors(req ErrorsRequest) ([]ErrorEvent, error) {
 	return out, rows.Err()
 }
 
-// ErrorSignature is one recurring (code, error_class) pattern across every
-// run, with its occurrence count and a representative example — #24's "top
-// recurring error signatures" the nomination workflow mines for evidence.
+// ErrorSignature is one recurring (code, error_class) pattern across run and
+// instance journals, with its occurrence count and a representative example.
 type ErrorSignature struct {
 	Code           string
 	ErrorClass     string
@@ -442,18 +441,30 @@ type ErrorSignature struct {
 	ExampleAttempt int
 }
 
-// TopErrorSignatures groups errors by (code, error_class) across every run,
-// most frequent first, optionally filtered by workflow/time window. limit<=0
-// defaults to 20.
+const telemetryErrorsCTE = `
+	WITH telemetry_errors AS (
+		SELECT e.seq, e.code, e.error_class, e.occurred_at, e.run_id, e.stage, e.attempt,
+		       r.workflow, r.gaggle
+		FROM run_errors e
+		JOIN runs r ON r.run_id = e.run_id
+		UNION ALL
+		SELECT s.seq, s.code, s.error_class, s.occurred_at, NULL, NULL, NULL,
+		       NULL, NULL
+		FROM scheduler_errors s
+	)`
+
+// TopErrorSignatures groups errors by (code, error_class), most frequent
+// first, optionally filtered by workflow/time window. Instance-level errors
+// are included in unscoped and time-scoped queries and excluded when a
+// workflow or gaggle filter is present. limit<=0 defaults to 20.
 func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	where, args := statsWhere("r.workflow", "r.gaggle", "e.occurred_at", req)
-	query := fmt.Sprintf(`
+	where, args := statsWhere("e.workflow", "e.gaggle", "e.occurred_at", req)
+	query := fmt.Sprintf(telemetryErrorsCTE+`
 		SELECT e.code, e.error_class, COUNT(*) AS cnt, MAX(e.occurred_at) AS last_seen
-		FROM run_errors e
-		JOIN runs r ON r.run_id = e.run_id
+		FROM telemetry_errors e
 		%s
 		GROUP BY e.code, e.error_class
 		ORDER BY cnt DESC, e.code
@@ -484,12 +495,9 @@ func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature,
 		return nil, err
 	}
 
-	// The example row must respect the SAME workflow/window filter the
-	// aggregate query above used — otherwise a signature filtered to one
-	// workflow/window could surface an example from a run outside it
-	// (issue #129: this previously queried run_errors bare, with no join or
-	// filter at all).
-	exampleWhere, exampleArgs := statsWhere("r.workflow", "r.gaggle", "e.occurred_at", req)
+	// The example row must respect the same workflow/window filter as the
+	// aggregate query above.
+	exampleWhere, exampleArgs := statsWhere("e.workflow", "e.gaggle", "e.occurred_at", req)
 	exampleFilter := "e.code = ? AND e.error_class = ?"
 	if exampleWhere != "" {
 		exampleFilter = strings.TrimPrefix(exampleWhere, "WHERE ") + " AND " + exampleFilter
@@ -498,9 +506,8 @@ func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature,
 		var runID, stage sql.NullString
 		var attempt sql.NullInt64
 		args := append(append([]any{}, exampleArgs...), sigs[i].Code, sigs[i].ErrorClass)
-		err := db.sql.QueryRow(fmt.Sprintf(`
-			SELECT e.run_id, e.stage, e.attempt FROM run_errors e
-			JOIN runs r ON r.run_id = e.run_id
+		err := db.sql.QueryRow(fmt.Sprintf(telemetryErrorsCTE+`
+			SELECT e.run_id, e.stage, e.attempt FROM telemetry_errors e
 			WHERE %s
 			ORDER BY e.occurred_at DESC, e.seq DESC LIMIT 1`, exampleFilter), args...).
 			Scan(&runID, &stage, &attempt)

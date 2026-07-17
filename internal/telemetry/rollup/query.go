@@ -235,26 +235,33 @@ func (db *DB) HarnessTranscripts(runID string) ([]HarnessTranscript, error) {
 // scheduler decision or claim-ledger transition from the instance journal
 // (scheduler/events.jsonl), never per-run (issue #128).
 type SchedulerEvent struct {
-	Seq        uint64
-	Type       string
-	Workflow   string
-	RunID      string
-	Reason     string
-	Status     string
-	OccurredAt time.Time
+	Seq          uint64
+	Type         string
+	Workflow     string
+	RunID        string
+	Reason       string
+	Status       string
+	ErrorCode    string
+	ErrorClass   string
+	ErrorMessage string
+	OccurredAt   time.Time
 }
 
 // SchedulerEvents returns scheduler decisions in seq order, optionally
 // filtered to one workflow (empty = every workflow) — "why didn't a run start
 // at tick N" (issue #128).
 func (db *DB) SchedulerEvents(workflow string) ([]SchedulerEvent, error) {
-	query := `SELECT seq, type, workflow, run_id, reason, status, occurred_at FROM scheduler_events`
+	query := `
+		SELECT s.seq, s.type, s.workflow, s.run_id, s.reason, s.status,
+		       e.code, e.error_class, e.message, s.occurred_at
+		FROM scheduler_events s
+		LEFT JOIN scheduler_errors e ON e.seq = s.seq`
 	args := []any{}
 	if workflow != "" {
-		query += ` WHERE workflow = ?`
+		query += ` WHERE s.workflow = ?`
 		args = append(args, workflow)
 	}
-	query += ` ORDER BY seq`
+	query += ` ORDER BY s.seq`
 
 	rows, err := db.sql.Query(query, args...)
 	if err != nil {
@@ -265,11 +272,12 @@ func (db *DB) SchedulerEvents(workflow string) ([]SchedulerEvent, error) {
 	var out []SchedulerEvent
 	for rows.Next() {
 		var e SchedulerEvent
-		var wf, runID, reason, status, occurredAt sql.NullString
-		if err := rows.Scan(&e.Seq, &e.Type, &wf, &runID, &reason, &status, &occurredAt); err != nil {
+		var wf, runID, reason, status, errorCode, errorClass, errorMessage, occurredAt sql.NullString
+		if err := rows.Scan(&e.Seq, &e.Type, &wf, &runID, &reason, &status, &errorCode, &errorClass, &errorMessage, &occurredAt); err != nil {
 			return nil, fmt.Errorf("rollup: scan scheduler_event: %w", err)
 		}
 		e.Workflow, e.RunID, e.Reason, e.Status = wf.String, runID.String, reason.String, status.String
+		e.ErrorCode, e.ErrorClass, e.ErrorMessage = errorCode.String, errorClass.String, errorMessage.String
 		if e.OccurredAt, err = parseTime(occurredAt); err != nil {
 			return nil, err
 		}
