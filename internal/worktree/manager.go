@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -223,9 +225,75 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	return strings.TrimSpace(string(out)), nil
 }
 
+// gitCommandError is runGit's typed failure: the raw exit code and combined
+// output alongside the underlying exec error, so a caller (IsTransientProvisionError)
+// can classify the failure without re-parsing runGit's formatted message string.
+type gitCommandError struct {
+	args     []string
+	cause    error
+	output   []byte
+	exitCode int
+}
+
+func (e *gitCommandError) Error() string {
+	return fmt.Sprintf("git %v: %v: %s", e.args, e.cause, e.output)
+}
+
+func (e *gitCommandError) Unwrap() error {
+	return e.cause
+}
+
+// remote5xxPattern matches git's own "HTTP 5xx"/"returned error: 5xx"
+// phrasing for a failed smart-HTTP request (curl's -f behavior surfaces the
+// remote status this way, not as a distinct git exit code).
+var remote5xxPattern = regexp.MustCompile(`\b(?:http(?:/[0-9.]+)?[\s:=-]+|error:\s*)5[0-9]{2}\b`)
+
+// IsTransientProvisionError reports whether err is a git exit-128 caused by
+// a temporary network or remote-server failure during worktree provisioning
+// (issue #572) — the shape internal/runner's dispatchTask classifies to
+// invoke.InfrastructureFailure so it retries through the runner's bounded
+// infrastructure budget instead of failing the run before an attempt even
+// exists. Git exits 128 for BOTH transient network failures and permanent
+// ones (auth, missing ref, missing repo) — the exit code alone cannot
+// distinguish them, so this matches on the combined output's own message
+// text instead. Authentication/authorization failures, bad refs, and other
+// deterministic git errors deliberately do NOT match — retrying those can
+// only reproduce the identical failure.
+func IsTransientProvisionError(err error) bool {
+	var gitErr *gitCommandError
+	if !errors.As(err, &gitErr) || gitErr.exitCode != 128 {
+		return false
+	}
+	message := strings.ToLower(string(gitErr.output))
+	for _, fragment := range []string{
+		"could not resolve host",
+		"couldn't resolve host",
+		"failed to connect to",
+		"could not connect to",
+		"connection refused",
+		"connection reset",
+		"connection timed out",
+		"ssl connection timeout",
+		"empty reply from server",
+		"network is unreachable",
+		"operation timed out",
+		"timeout was reached",
+		"timed out after",
+		"the remote end hung up unexpectedly",
+		"unexpected disconnect",
+		"early eof",
+	} {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return remote5xxPattern.MatchString(message)
+}
+
 // runGit runs git with args, using dir as the working directory (the process
-// default if dir is empty), and returns combined output on failure for
-// debuggability.
+// default if dir is empty), and returns a typed *gitCommandError (carrying
+// exit code + combined output for IsTransientProvisionError's classification)
+// on failure.
 func runGit(ctx context.Context, dir string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", bareRepoSafeArgs(args)...)
 	if dir != "" {
@@ -233,7 +301,12 @@ func runGit(ctx context.Context, dir string, args ...string) error {
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git %v: %w: %s", args, err, out)
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		return &gitCommandError{args: args, cause: err, output: out, exitCode: exitCode}
 	}
 	return nil
 }

@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -270,6 +273,213 @@ func runGit(t *testing.T, dir string, args ...string) {
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out.String())
+	}
+}
+
+// newHTTPGitRemote serves newFixtureRepo's bare repo over git's dumb-HTTP
+// protocol, failing the first `failures` requests with failureStatus (or
+// every request, when failures < 0) before serving normally — issue #572's
+// worktree-provisioning retry tests need a real transient (or persistent)
+// network failure, not a mocked classifier input, to prove the failure
+// actually reaches worktree.Create -> internal/runner's dispatchTask
+// end-to-end.
+func newHTTPGitRemote(t *testing.T, failureStatus, failures int32) string {
+	t.Helper()
+	repo := newFixtureRepo(t)
+	runGit(t, repo, "-c", "safe.bareRepository=all", "update-server-info")
+
+	files := http.FileServer(http.Dir(filepath.Dir(repo)))
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		request := requests.Add(1)
+		if failures < 0 || request <= failures {
+			if failureStatus == http.StatusUnauthorized {
+				w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+			}
+			http.Error(w, http.StatusText(int(failureStatus)), int(failureStatus))
+			return
+		}
+		files.ServeHTTP(w, req)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL + "/" + filepath.Base(repo)
+}
+
+// newWorktreeProvisioningTestRunner mirrors newTestRunnerWithDeterministic
+// but takes repoURL directly (a flaky/failing HTTP git remote, not the
+// always-healthy local bare fixture) — issue #572's tests need Worktrees.
+// Create's real clone to actually fail, which the fixed-fixtureRepo
+// constructor never exercises.
+func newWorktreeProvisioningTestRunner(t *testing.T, repoURL string, newDet NewDeterministicFunc) (*Runner, string) {
+	t.Helper()
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	runsDir := filepath.Join(instanceRoot, "runs")
+	r, err := New(Config{
+		NewDeterministic: newDet,
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return repoURL, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return r, runsDir
+}
+
+// TestRunnerRetriesTransientWorktreeProvisioningAsInfrastructure is issue
+// #572's headline acceptance: a worktree remote that fails once with a
+// transient 503 then succeeds records an infrastructure attempt followed by
+// a successful one, through #613's EXISTING invoke.InfrastructureFailure
+// retry path (internal/runner/provider_retry_test.go's own mechanism) —
+// dispatchTask's classification is the only new code; runTask's retry loop,
+// resume reconstruction, and journaling are untouched.
+func TestRunnerRetriesTransientWorktreeProvisioningAsInfrastructure(t *testing.T) {
+	repoURL := newHTTPGitRemote(t, http.StatusServiceUnavailable, 1)
+	executor := &flakyDeterministic{}
+	r, runsDir := newWorktreeProvisioningTestRunner(t, repoURL, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return executor, nil
+	})
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-worktree-flaky",
+		Machine: fixtureMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("executor called %d times, want 1 (the worktree failure never reached the executor)", executor.calls)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-worktree-flaky"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var starts, errs []journal.Event
+	for _, e := range events {
+		if e.Stage != "implement" {
+			continue
+		}
+		switch e.Type {
+		case journal.EventStageStarted:
+			starts = append(starts, e)
+		case journal.EventError:
+			errs = append(errs, e)
+		}
+	}
+	if len(starts) != 2 {
+		t.Fatalf("stage.started events for implement = %d, want 2: %+v", len(starts), starts)
+	}
+	if starts[0].AttemptClass != "" || starts[1].AttemptClass != journal.AttemptInfra {
+		t.Fatalf("start classes = [%q, %q], want [\"\", infra] (first attempt normative, retry infra-tagged)", starts[0].AttemptClass, starts[1].AttemptClass)
+	}
+	// The failing attempt's own stage.started/error events are journaled
+	// under ITS class (attempt 1 is always normative, "" — AttemptClass
+	// marks which attempt a retry belongs to, not whether the FAILURE that
+	// triggered it was infrastructure-classified). What proves the
+	// classification actually fired is starts[1]'s AttemptClass (asserted
+	// above) plus the preserved 503 cause here.
+	found := false
+	for _, e := range errs {
+		if e.Error != nil && e.Error.Code == "executor_error" {
+			found = true
+			if !strings.Contains(strings.ToLower(e.Error.Message), "503") {
+				t.Fatalf("error message = %q, want it to preserve the original 503 cause", e.Error.Message)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no executor_error event found for the worktree provisioning failure")
+	}
+}
+
+// TestRunnerFailsTerminallyAfterPersistentWorktreeProvisioningFailure proves
+// a persistent transient-looking outage still fails the run — the
+// infrastructure budget (#613's DefaultMaxInfrastructureAttempts) bounds it
+// the same way it bounds a persistent provider failure, with the original
+// network cause preserved in the terminal error.
+func TestRunnerFailsTerminallyAfterPersistentWorktreeProvisioningFailure(t *testing.T) {
+	repoURL := newHTTPGitRemote(t, http.StatusServiceUnavailable, -1)
+	executor := &flakyDeterministic{}
+	r, _ := newWorktreeProvisioningTestRunner(t, repoURL, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return executor, nil
+	})
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-worktree-persistent",
+		Machine: fixtureMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil {
+		t.Fatal("expected the persistent worktree failure to surface as a dispatch error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "503") {
+		t.Fatalf("terminal error = %q, want the original 503 cause preserved", err)
+	}
+	if res.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, want failed", res.Phase)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor called %d times, want 0 (worktree provisioning never succeeded)", executor.calls)
+	}
+}
+
+// TestRunnerNeverRetriesAuthWorktreeProvisioningFailure is #572's negative
+// acceptance criterion: a deterministic (auth) worktree failure fails on the
+// FIRST attempt, never retried — retrying can only reproduce the identical
+// 401, so treating it as infrastructure would just waste the run's time
+// budget.
+func TestRunnerNeverRetriesAuthWorktreeProvisioningFailure(t *testing.T) {
+	repoURL := newHTTPGitRemote(t, http.StatusUnauthorized, -1)
+	executor := &flakyDeterministic{}
+	r, runsDir := newWorktreeProvisioningTestRunner(t, repoURL, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return executor, nil
+	})
+
+	_, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-worktree-auth",
+		Machine: fixtureMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil {
+		t.Fatal("expected the auth worktree failure to surface as a dispatch error")
+	}
+
+	rd, rerr := journal.OpenRead(filepath.Join(runsDir, "run-worktree-auth"))
+	if rerr != nil {
+		t.Fatalf("OpenRead: %v", rerr)
+	}
+	events, eerr := rd.Events()
+	if eerr != nil {
+		t.Fatalf("Events: %v", eerr)
+	}
+	var starts int
+	for _, e := range events {
+		if e.Stage == "implement" && e.Type == journal.EventStageStarted {
+			starts++
+		}
+	}
+	if starts != 1 {
+		t.Fatalf("stage.started events for implement = %d, want exactly 1 (no retry for a deterministic auth failure)", starts)
 	}
 }
 
