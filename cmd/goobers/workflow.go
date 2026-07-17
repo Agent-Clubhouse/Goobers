@@ -96,7 +96,11 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
 }
 
 func printWorkflowDAG(w io.Writer, wf apiv1.Workflow) {
-	pf(w, "workflow: %s\nstart: %s\nstages:\n", wf.Name, wf.Spec.Start)
+	pf(w, "workflow: %s\n", wf.Name)
+	if len(wf.Spec.Triggers) == 1 && wf.Spec.Triggers[0].Type == apiv1.TriggerManual {
+		pf(w, "triggers: manual-only\n")
+	}
+	pf(w, "start: %s\nstages:\n", wf.Spec.Start)
 	for _, task := range wf.Spec.Tasks {
 		pf(w, "  %s (kind: %s) -> %s\n", task.Name, task.Type, displayWorkflowTarget(task.Next))
 	}

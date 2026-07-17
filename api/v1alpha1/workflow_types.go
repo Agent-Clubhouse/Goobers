@@ -287,9 +287,11 @@ type WorkflowSpec struct {
 	// DisplayName is the human-facing name shown on the portal.
 	// +optional
 	DisplayName string `json:"displayName,omitempty" yaml:"displayName,omitempty"`
-	// Triggers declare when the scheduler may start a run (WF-010).
+	// Triggers declare when the scheduler may start a run (WF-010). A single
+	// type=manual trigger declares a workflow that never auto-fires.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="!self.exists(t, t.type == 'manual') || size(self) == 1",message="type=manual must be the only trigger"
 	Triggers []Trigger `json:"triggers" yaml:"triggers"`
 	// Readiness bounds when a run may start (WF-011).
 	// +optional

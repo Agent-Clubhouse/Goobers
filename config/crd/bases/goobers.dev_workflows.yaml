@@ -242,7 +242,9 @@ spec:
                   type: object
                 type: array
               triggers:
-                description: Triggers declare when the scheduler may start a run (WF-010).
+                description: |-
+                  Triggers declare when the scheduler may start a run (WF-010). A single
+                  type=manual trigger declares a workflow that never auto-fires.
                 items:
                   description: |-
                     Trigger declares one condition under which the scheduler may start a run. A run
@@ -279,6 +281,9 @@ spec:
                   type: object
                 minItems: 1
                 type: array
+                x-kubernetes-validations:
+                - message: type=manual must be the only trigger
+                  rule: '!self.exists(t, t.type == ''manual'') || size(self) == 1'
             required:
             - gaggle
             - start

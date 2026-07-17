@@ -80,6 +80,46 @@ func TestExampleConfigPasses(t *testing.T) {
 	}
 }
 
+func TestWorkflowSchemaAcceptsExplicitManualOnlyTrigger(t *testing.T) {
+	v := newV(t)
+	workflow := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"metadata": {"name": "manual-flow"},
+		"spec": {
+			"gaggle": "example",
+			"triggers": TRIGGERS,
+			"start": "act",
+			"tasks": [{
+				"name": "act",
+				"type": "deterministic",
+				"goal": "Act on demand.",
+				"run": {"command": ["true"]}
+			}]
+		}
+	}`
+	cases := []struct {
+		name     string
+		triggers string
+		wantErr  bool
+	}{
+		{name: "manual-only", triggers: `[{"type": "manual"}]`},
+		{name: "empty", triggers: `[]`, wantErr: true},
+		{name: "manual mixed with schedule", triggers: `[{"type": "manual"}, {"type": "schedule", "schedule": "@daily"}]`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := v.ValidateJSON("workflow.schema.json", []byte(strings.Replace(workflow, "TRIGGERS", tc.triggers, 1)))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected schema validation to pass, got %v", err)
+			}
+		})
+	}
+}
+
 func TestConfigBadReportsCrossRefErrors(t *testing.T) {
 	v := newV(t)
 	report, err := v.ValidateDir("testdata/config-bad")

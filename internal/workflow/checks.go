@@ -56,9 +56,7 @@ func CheckSchedules(def Definition) []string {
 	return scheduleProblems(def)
 }
 
-// CheckTriggerFields reports a trigger missing the field its own type
-// requires — a signal trigger with no signal name, a backlog-item trigger
-// with no selector (#125).
+// CheckTriggerFields reports invalid trigger-specific field combinations.
 func CheckTriggerFields(def Definition) []string {
 	return triggerFieldProblems(def)
 }
@@ -172,10 +170,20 @@ func CheckGateOutcomes(def Definition) []string {
 // Selector is actually wired to real routing logic.
 func triggerFieldProblems(def Definition) []string {
 	var problems []string
+	manualIndex := -1
 	for i, tr := range def.Spec.Triggers {
-		if tr.Type == apiv1.TriggerSignal && strings.TrimSpace(tr.Signal) == "" {
+		switch tr.Type {
+		case apiv1.TriggerManual:
+			manualIndex = i
+		case apiv1.TriggerSignal:
+			if strings.TrimSpace(tr.Signal) != "" {
+				continue
+			}
 			problems = append(problems, fmt.Sprintf("trigger[%d] type=signal requires a signal name", i))
 		}
+	}
+	if manualIndex >= 0 && len(def.Spec.Triggers) != 1 {
+		problems = append(problems, fmt.Sprintf("trigger[%d] type=manual must be the only trigger", manualIndex))
 	}
 	return problems
 }

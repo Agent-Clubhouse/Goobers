@@ -117,6 +117,20 @@ func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
 	}
 }
 
+func TestCompileManualOnlyTrigger(t *testing.T) {
+	spec := linearSpec()
+	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerManual}}
+	if _, err := Compile(Definition{Name: "manual", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("manual-only workflow should compile, got %v", err)
+	}
+
+	spec.Triggers = append(spec.Triggers, apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "@daily"})
+	_, err := Compile(Definition{Name: "mixed", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "type=manual must be the only trigger") {
+		t.Fatalf("manual trigger mixed with an automatic trigger should fail, got %v", err)
+	}
+}
+
 func TestCompileStructuralErrors(t *testing.T) {
 	cases := []struct {
 		name string
