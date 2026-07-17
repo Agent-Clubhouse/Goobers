@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="init validate up run signal workflow runs status trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
+        candidates="init scaffold validate up run signal workflow runs status trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -36,6 +36,9 @@ _goobers_completion()
         apply-verdict) flags+=" --gate" ;;
         telemetry-query) flags+=" --window" ;;
         remediation-checkpoint) flags+=" --budget" ;;
+        scaffold)
+            [[ "${COMP_WORDS[2]:-}" == "goober" || "${COMP_WORDS[2]:-}" == "workflow" ]] && flags+=" --force"
+            ;;
     esac
     if [[ "${cur}" == -* ]]; then
         COMPREPLY=( $(compgen -W "${flags}" -- "${cur}") )
@@ -46,6 +49,9 @@ _goobers_completion()
     case "${command}" in
         completion)
             (( COMP_CWORD == 2 )) && candidates="bash zsh fish"
+            ;;
+        scaffold)
+            (( COMP_CWORD == 2 )) && candidates="goober workflow"
             ;;
         run)
             if (( COMP_CWORD == 2 )); then

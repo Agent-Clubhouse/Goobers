@@ -135,7 +135,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="init validate up run signal workflow runs status trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
+        candidates="init scaffold validate up run signal workflow runs status trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -165,6 +165,9 @@ _goobers_completion()
         apply-verdict) flags+=" --gate" ;;
         telemetry-query) flags+=" --window" ;;
         remediation-checkpoint) flags+=" --budget" ;;
+        scaffold)
+            [[ "${COMP_WORDS[2]:-}" == "goober" || "${COMP_WORDS[2]:-}" == "workflow" ]] && flags+=" --force"
+            ;;
     esac
     if [[ "${cur}" == -* ]]; then
         COMPREPLY=( $(compgen -W "${flags}" -- "${cur}") )
@@ -175,6 +178,9 @@ _goobers_completion()
     case "${command}" in
         completion)
             (( COMP_CWORD == 2 )) && candidates="bash zsh fish"
+            ;;
+        scaffold)
+            (( COMP_CWORD == 2 )) && candidates="goober workflow"
             ;;
         run)
             if (( COMP_CWORD == 2 )); then
@@ -236,6 +242,7 @@ _goobers_completion()
     if (( CURRENT == 2 )); then
         commands=(
             'init:scaffold an instance root'
+            'scaffold:scaffold a goober or workflow in a gaggle'
             'validate:validate instance configuration'
             'up:run the scheduler and runner daemon'
             'run:trigger or abort a run'
@@ -296,6 +303,9 @@ _goobers_completion()
         apply-verdict) flags+=(--gate) ;;
         telemetry-query) flags+=(--window) ;;
         remediation-checkpoint) flags+=(--budget) ;;
+        scaffold)
+            [[ "${words[3]:-}" == "goober" || "${words[3]:-}" == "workflow" ]] && flags+=(--force)
+            ;;
     esac
     if [[ "${PREFIX}" == -* ]]; then
         compadd -a flags
@@ -307,6 +317,13 @@ _goobers_completion()
             if (( CURRENT == 3 )); then
                 candidates=(bash zsh fish)
                 _describe 'shell' candidates
+                return
+            fi
+            ;;
+        scaffold)
+            if (( CURRENT == 3 )); then
+                candidates=(goober workflow)
+                _describe 'command' candidates
                 return
             fi
             ;;
@@ -379,11 +396,12 @@ function __goobers_completion_runs
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'init validate up run signal workflow runs status trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'init scaffold validate up run signal workflow runs status trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
 complete -c goobers -n '__fish_seen_subcommand_from completion; and test (count (commandline -opc)) -eq 2' -f -a 'bash zsh fish'
+complete -c goobers -n '__fish_seen_subcommand_from scaffold; and test (count (commandline -opc)) -eq 2' -f -a 'goober workflow'
 
 complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (commandline -opc)) -eq 2' -f -k -a 'abort (__goobers_completion_workflows)'
 complete -c goobers -n '__fish_seen_subcommand_from run; and __fish_seen_subcommand_from abort; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_runs)'
@@ -395,6 +413,7 @@ complete -c goobers -n '__fish_seen_subcommand_from runs; and test (count (comma
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'stats errors'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
 
+complete -c goobers -n '__fish_seen_subcommand_from scaffold' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-harness -d 'Check agent harnesses'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress liveness heartbeats'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show' -l dot -d 'Emit Graphviz DOT'
