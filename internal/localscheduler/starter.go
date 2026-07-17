@@ -43,4 +43,13 @@ type StartRequest struct {
 type StartResult struct {
 	Phase      journal.RunPhase
 	FinalState string
+	// FailureStage/FailureCode/FailureMessage mirror runner.Result's same-named
+	// fields (issue #710) — populated only for Phase == PhaseFailed, empty
+	// otherwise. The scheduler's dispatch echo (scheduler.go) threads these
+	// onto the instance-journal run.finished event so a business failure's
+	// actual cause is visible one level up, not just inside the run's own
+	// journal.
+	FailureStage   string
+	FailureCode    string
+	FailureMessage string
 }

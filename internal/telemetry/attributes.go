@@ -33,6 +33,12 @@ const (
 	AttrSchedulerAction = "scheduler.action"
 	// AttrSchedulerReason records the scheduler's rationale.
 	AttrSchedulerReason = "scheduler.reason"
+	// AttrBusinessStatus records a run/stage span's actual business outcome
+	// (issue #710) — set via Span.Complete, distinct from OTel's own Ok/Error
+	// status axis (which Complete also sets, but coarser: only a business
+	// failure maps to codes.Error, every other outcome — success, completed,
+	// aborted, escalated — stays codes.Ok).
+	AttrBusinessStatus = "goobers.business_status"
 )
 
 const (

@@ -74,15 +74,20 @@ type RunError struct {
 
 // SpanSummary is a queryable row from the spans table.
 type SpanSummary struct {
-	SpanID        string    `json:"spanId"`
-	ParentSpanID  string    `json:"parentSpanId,omitempty"`
-	Name          string    `json:"name"`
-	Kind          string    `json:"kind,omitempty"`
-	Status        string    `json:"status"`
-	StatusMessage string    `json:"statusMessage,omitempty"`
-	StartTime     time.Time `json:"startTime"`
-	EndTime       time.Time `json:"endTime"`
-	DurationMs    int64     `json:"durationMs"`
+	SpanID        string `json:"spanId"`
+	ParentSpanID  string `json:"parentSpanId,omitempty"`
+	Name          string `json:"name"`
+	Kind          string `json:"kind,omitempty"`
+	Status        string `json:"status"`
+	StatusMessage string `json:"statusMessage,omitempty"`
+	// BusinessStatus is the run/stage's actual business outcome (issue #710:
+	// success/failed/completed/escalated/aborted/blocked...), independent of
+	// Status's coarser OTel ok/error axis. Empty for a span predating this
+	// fix or one that never calls Span.Complete (a gate span).
+	BusinessStatus string    `json:"businessStatus,omitempty"`
+	StartTime      time.Time `json:"startTime"`
+	EndTime        time.Time `json:"endTime"`
+	DurationMs     int64     `json:"durationMs"`
 }
 
 // SpanEventSummary is a queryable row from the span_events table — a
@@ -331,8 +336,9 @@ func (db *DB) RunErrors(runID string) ([]RunError, error) {
 // Spans returns every span for runID, ordered by start time then span id.
 func (db *DB) Spans(runID string) ([]SpanSummary, error) {
 	rows, err := db.sql.Query(`
-		SELECT span_id, parent_span_id, name, kind, status, status_message, start_time, end_time, duration_ms
-		FROM spans WHERE run_id = ? ORDER BY start_time, span_id`, runID)
+		SELECT s.span_id, s.parent_span_id, s.name, s.kind, s.status, s.status_message, s.start_time, s.end_time, s.duration_ms, b.business_status
+		FROM spans s LEFT JOIN span_business_status b ON b.run_id = s.run_id AND b.span_id = s.span_id
+		WHERE s.run_id = ? ORDER BY s.start_time, s.span_id`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query spans: %w", err)
 	}
@@ -341,12 +347,12 @@ func (db *DB) Spans(runID string) ([]SpanSummary, error) {
 	var out []SpanSummary
 	for rows.Next() {
 		var s SpanSummary
-		var parent, kind, statusMsg, start, end sql.NullString
+		var parent, kind, statusMsg, start, end, businessStatus sql.NullString
 		var durationMs sql.NullInt64
-		if err := rows.Scan(&s.SpanID, &parent, &s.Name, &kind, &s.Status, &statusMsg, &start, &end, &durationMs); err != nil {
+		if err := rows.Scan(&s.SpanID, &parent, &s.Name, &kind, &s.Status, &statusMsg, &start, &end, &durationMs, &businessStatus); err != nil {
 			return nil, fmt.Errorf("rollup: scan span: %w", err)
 		}
-		s.ParentSpanID, s.Kind, s.StatusMessage = parent.String, kind.String, statusMsg.String
+		s.ParentSpanID, s.Kind, s.StatusMessage, s.BusinessStatus = parent.String, kind.String, statusMsg.String, businessStatus.String
 		if s.StartTime, err = parseTime(start); err != nil {
 			return nil, err
 		}

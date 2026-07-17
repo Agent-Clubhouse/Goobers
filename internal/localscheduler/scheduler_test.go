@@ -2,6 +2,7 @@ package localscheduler
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -100,6 +101,91 @@ func TestTickDispatchesDueWorkflow(t *testing.T) {
 	}
 	if !sawFired || !sawStarted {
 		t.Fatalf("expected trigger.fired + run.started journaled: %+v", events)
+	}
+}
+
+// waitForRunFinished polls the instance log at dir until a run.finished event
+// for workflow appears, returning it — the dispatch goroutine journals this
+// AFTER Start returns and after starter.count() is already visible to the
+// caller, so a plain waitForCount on the start call races this event.
+func waitForRunFinished(t *testing.T, dir, workflow string) journal.Event {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := journal.ReadInstanceLog(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ev := range events {
+			if ev.Type == journal.EventRunFinished && ev.Workflow == workflow {
+				return ev
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for run.finished for workflow %q", workflow)
+	return journal.Event{}
+}
+
+// TestDispatchEchoesBusinessFailureCause is issue #710's scheduler-side
+// acceptance: a business-failed StartResult (FailureStage/Code/Message
+// populated, startErr nil — exactly what runner.Result/StartResult carry for
+// a stage's own ResultFailure, per starter.go's field-for-field mirror)
+// enriches the instance-journal run.finished echo with the actual cause,
+// both as a human-readable status suffix and as structured Stage/Error
+// fields — instead of the pre-fix bare status:"failed" that made #705's real
+// cause invisible one level above the run's own journal.
+func TestDispatchEchoesBusinessFailureCause(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{
+		Phase: journal.PhaseFailed, FailureStage: "pr-select",
+		FailureCode: "github_rate_limited", FailureMessage: "list pull requests: status 403, remaining 0",
+	}}
+	sched, dir := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+		Starter:   starter,
+	}})
+
+	sched.Tick(context.Background(), time.Now().Add(2*time.Hour))
+
+	ev := waitForRunFinished(t, dir, "implement")
+	wantStatus := "failed (pr-select: github_rate_limited)"
+	if ev.Status != wantStatus {
+		t.Fatalf("run.finished status = %q, want %q", ev.Status, wantStatus)
+	}
+	if ev.Stage != "pr-select" {
+		t.Fatalf("run.finished stage = %q, want pr-select", ev.Stage)
+	}
+	if ev.Error == nil || ev.Error.Code != "github_rate_limited" || ev.Error.Message != "list pull requests: status 403, remaining 0" {
+		t.Fatalf("run.finished error = %+v, want code=github_rate_limited with the stage's own message", ev.Error)
+	}
+}
+
+// TestDispatchEchoesInfraErrorUnchanged is issue #710's negative control (AC:
+// "infra error (status:\"error: …\") unchanged"): a genuine Go dispatch error
+// from Start (startErr != nil) must keep its exact pre-#710 echo shape — no
+// Stage/Error enrichment, since FailureCode is meaningless on this path (the
+// zero-value StartResult the fakeStarter returns alongside the error proves
+// the echo doesn't accidentally read stale/zero failure fields either).
+func TestDispatchEchoesInfraErrorUnchanged(t *testing.T) {
+	starter := &fakeStarter{err: errors.New("dial tcp: connection refused")}
+	sched, dir := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+		Starter:   starter,
+	}})
+
+	sched.Tick(context.Background(), time.Now().Add(2*time.Hour))
+
+	ev := waitForRunFinished(t, dir, "implement")
+	wantStatus := "error: dial tcp: connection refused"
+	if ev.Status != wantStatus {
+		t.Fatalf("run.finished status = %q, want %q (unchanged infra-error shape)", ev.Status, wantStatus)
+	}
+	if ev.Stage != "" || ev.Error != nil {
+		t.Fatalf("run.finished stage=%q error=%+v, want both empty on the infra-error path", ev.Stage, ev.Error)
 	}
 }
 

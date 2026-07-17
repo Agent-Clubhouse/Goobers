@@ -486,16 +486,37 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 			Trigger: journal.Trigger{Kind: kind, Ref: entry.Workflow},
 			RepoRef: entry.RepoRef,
 		})
-		status := string(result.Phase)
-		if startErr != nil {
-			status = "error: " + startErr.Error()
-		}
-		s.journalEvent(journal.Event{
+		// #710: this echo used to carry only the bare phase string — a
+		// business failure (result.Phase == "failed", startErr == nil: the
+		// run completed dispatch cleanly and reported a failed OUTCOME)
+		// journaled as a content-free status:"failed", even though the real
+		// cause (a stage's own errorCode/message) was sitting one journal
+		// line above in the run's own stage.finished event the entire time
+		// (#705's root cause). result.FailureStage/Code/Message (threaded
+		// from runner.Result through StartResult, starter.go's field-for-
+		// field mirror) carry that cause here. The infra-error branch below
+		// is deliberately untouched: a genuine Go dispatch error already
+		// carries its own full detail in startErr, and FailureCode is not
+		// populated in that path anyway.
+		ev := journal.Event{
 			Type:     journal.EventRunFinished,
 			Workflow: entry.Workflow,
 			RunID:    runID,
-			Status:   status,
-		})
+			Status:   string(result.Phase),
+		}
+		switch {
+		case startErr != nil:
+			ev.Status = "error: " + startErr.Error()
+		case result.FailureCode != "":
+			ev.Stage = result.FailureStage
+			ev.Error = &journal.ErrorDetail{Code: result.FailureCode, Message: result.FailureMessage}
+			if result.FailureStage != "" {
+				ev.Status = fmt.Sprintf("%s (%s: %s)", ev.Status, result.FailureStage, result.FailureCode)
+			} else {
+				ev.Status = fmt.Sprintf("%s (%s)", ev.Status, result.FailureCode)
+			}
+		}
+		s.journalEvent(ev)
 	}()
 	return runID, true, ""
 }

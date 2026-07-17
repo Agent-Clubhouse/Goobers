@@ -289,7 +289,13 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		Item:    req.Item,
 	})
 	ingestRunTelemetry(s.tel, s.rollupDB, s.l, req.RunID, s.log)
-	return localscheduler.StartResult{Phase: res.Phase, FinalState: res.FinalState}, err
+	return localscheduler.StartResult{
+		Phase:          res.Phase,
+		FinalState:     res.FinalState,
+		FailureStage:   res.FailureStage,
+		FailureCode:    res.FailureCode,
+		FailureMessage: res.FailureMessage,
+	}, err
 }
 
 // resumeInterruptedRuns scans runsDir for any run left non-terminal by a
@@ -392,12 +398,30 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 			defer release(wfName)
 			result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, RepoRef: repoRef})
 			ingestRunTelemetry(tel, rollupDB, l, runID, log)
-			status := string(result.Phase)
-			if err != nil {
-				status = "error: " + err.Error()
+			// #710: same fix as localscheduler/scheduler.go's dispatch echo —
+			// a business failure (result.Phase == PhaseFailed, err == nil:
+			// e.g. a WF-016 refuseResume, or Resume replaying a stage's own
+			// business-failure terminal transition) used to echo a bare
+			// "failed" here too. result is runner.Result directly (this path
+			// calls Runner.Resume, not through the scheduler's Starter seam),
+			// so FailureStage/Code/Message need no extra mirroring. The
+			// infra-error branch is deliberately untouched: a genuine Go
+			// error from Resume already carries its own full detail.
+			ev := journal.Event{Type: journal.EventRunFinished, Workflow: wfName, RunID: runID, Status: string(result.Phase)}
+			switch {
+			case err != nil:
+				ev.Status = "error: " + err.Error()
+			case result.FailureCode != "":
+				ev.Stage = result.FailureStage
+				ev.Error = &journal.ErrorDetail{Code: result.FailureCode, Message: result.FailureMessage}
+				if result.FailureStage != "" {
+					ev.Status = fmt.Sprintf("%s (%s: %s)", ev.Status, result.FailureStage, result.FailureCode)
+				} else {
+					ev.Status = fmt.Sprintf("%s (%s)", ev.Status, result.FailureCode)
+				}
 			}
 			if log != nil {
-				_ = log.Append(journal.Event{Type: journal.EventRunFinished, Workflow: wfName, RunID: runID, Status: status})
+				_ = log.Append(ev)
 			}
 		}(id.RunID, id.Workflow)
 	}

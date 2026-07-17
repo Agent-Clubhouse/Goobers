@@ -57,7 +57,7 @@ func (db *DB) IngestRun(runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "stage_attempts", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts"}
+var perRunTables = []string{"runs", "stage_attempts", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "span_business_status"}
 
 func deleteRun(tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -335,6 +335,21 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 			runID, s.SpanID, nullIfEmpty(s.ParentSpanID), s.Name, nullIfEmpty(s.Kind), s.Status,
 			nullIfEmpty(s.StatusMessage), formatTime(s.StartTime), formatTime(s.EndTime), durationMillis(s.StartTime, s.EndTime)); err != nil {
 			return fmt.Errorf("rollup: insert span %s: %w", s.SpanID, err)
+		}
+		// businessStatus (issue #710) rides the span's own generic Attributes
+		// map (Span.Complete sets it as an OTel attribute; JournalSpanExporter
+		// already captures every attribute into SpanRecord.Attributes with no
+		// exporter change needed) — a satellite row, not a spans column (see
+		// schema.go's v3 migration comment): empty/absent for a span
+		// predating this fix or one that never called Complete (a gate span,
+		// still Succeed/Fail).
+		if businessStatus := s.Attributes[telemetry.AttrBusinessStatus]; businessStatus != "" {
+			if _, err := tx.Exec(`
+				INSERT INTO span_business_status (run_id, span_id, business_status)
+				VALUES (?, ?, ?)`,
+				runID, s.SpanID, businessStatus); err != nil {
+				return fmt.Errorf("rollup: insert span_business_status %s: %w", s.SpanID, err)
+			}
 		}
 		for i, ev := range s.Events {
 			attrsJSON, err := marshalAttributes(ev.Attributes)

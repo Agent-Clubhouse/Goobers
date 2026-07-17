@@ -857,6 +857,186 @@ func TestRunnerTaskFailureWithNoGateNextFailsRun(t *testing.T) {
 	}
 }
 
+// TestRunnerResultCarriesFailureCauseAtFirstStage is issue #710's core
+// acceptance: a business failure at the run's very first (and only) stage
+// threads the stage's own errorCode/message onto the returned Result and
+// appends a run_failed cause event naming the failing stage — #705's root
+// cause (a rate-limited pr-select, structurally identical to this fixture)
+// was recorded on stage.finished the whole time; this is what was missing to
+// see it at the run's own terminal event.
+func TestRunnerResultCarriesFailureCauseAtFirstStage(t *testing.T) {
+	machine := terminalFailMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-cause-first:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "github_rate_limited", Message: "list pull requests: status 403, remaining 0"}},
+	}
+	r, runsDir := newTestRunner(t, byTask, nil)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-cause-first",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, want failed", res.Phase)
+	}
+	if res.FailureStage != "implement" || res.FailureCode != "github_rate_limited" || res.FailureMessage != "list pull requests: status 403, remaining 0" {
+		t.Fatalf("failure cause = stage=%q code=%q message=%q, want implement/github_rate_limited/the stage message",
+			res.FailureStage, res.FailureCode, res.FailureMessage)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-cause-first"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var sawCause bool
+	for _, e := range events {
+		if e.Type == journal.EventError && e.Stage == "implement" && e.Error != nil && e.Error.Code == "run_failed" {
+			sawCause = true
+			if !strings.Contains(e.Error.Message, "github_rate_limited") {
+				t.Errorf("run_failed message = %q, want it to contain the stage's own code", e.Error.Message)
+			}
+		}
+	}
+	if !sawCause {
+		t.Fatal("expected a run_failed error event naming stage \"implement\" (#305 pattern)")
+	}
+}
+
+// TestRunnerResultCarriesFailureCauseAtLastStage covers the AC's second shape
+// (a close-out/post-merge-like LATER stage in a chain, not the first): the
+// first stage succeeds, the second — a stand-in for a real workflow's later
+// deterministic stage (post-merge, close-out) — fails. FailureStage must name
+// the actual failing stage ("deploy"), not the run's first stage.
+func TestRunnerResultCarriesFailureCauseAtLastStage(t *testing.T) {
+	machine := chainedNoGateMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-cause-last:implement": {status: apiv1.ResultSuccess},
+		"run-cause-last:deploy":    {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "merge_conflict", Message: "post-merge rebase failed"}},
+	}
+	r, runsDir := newTestRunner(t, byTask, nil)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-cause-last",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, want failed", res.Phase)
+	}
+	if res.FailureStage != "deploy" || res.FailureCode != "merge_conflict" {
+		t.Fatalf("failure cause = stage=%q code=%q, want deploy/merge_conflict", res.FailureStage, res.FailureCode)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-cause-last"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == journal.EventError && e.Error != nil && e.Error.Code == "run_failed" && e.Stage != "deploy" {
+			t.Fatalf("run_failed cause attributed to stage %q, want deploy", e.Stage)
+		}
+	}
+}
+
+// TestRunnerResultOmitsFailureCauseForNonRetryableEscalation proves the
+// non-retryable-escalate disposition (#415) — a DIFFERENT PhaseEscalated
+// terminal that also derives from ResultFailure — does not populate
+// FailureStage/Code/Message: those fields are reserved for a genuine
+// PhaseFailed terminal (issue #710's scope), and an escalated run already has
+// its own distinct visibility path (the escalation notifier's provider
+// comment).
+func TestRunnerResultOmitsFailureCauseForNonRetryableEscalation(t *testing.T) {
+	machine := fixtureMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-no-cause-escalate:implement": {
+			status:    apiv1.ResultFailure,
+			errorInfo: &apiv1.ErrorInfo{Code: "ISSUE_OVER_SCOPE", Message: "bundles independent changes", Retryable: false},
+		},
+	}
+	r, _ := newTestRunner(t, byTask, nil)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-no-cause-escalate",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", res.Phase)
+	}
+	if res.FailureStage != "" || res.FailureCode != "" || res.FailureMessage != "" {
+		t.Fatalf("failure cause = stage=%q code=%q message=%q, want all empty (escalated, not failed)",
+			res.FailureStage, res.FailureCode, res.FailureMessage)
+	}
+}
+
+// TestFailureCauseFrom pins the (code, message) extraction table: a present
+// code+message combines them (matching blockedReason's code-prefixed
+// convention), a present message with no code returns it bare, and a missing/
+// empty ErrorInfo falls back to a fixed marker rather than an empty string.
+func TestFailureCauseFrom(t *testing.T) {
+	cases := []struct {
+		name        string
+		err         *apiv1.ErrorInfo
+		wantCode    string
+		wantMessage string
+	}{
+		{"nil", nil, "", "stage reported failure with no error detail"},
+		{"empty message", &apiv1.ErrorInfo{Code: "x"}, "", "stage reported failure with no error detail"},
+		{"message no code", &apiv1.ErrorInfo{Message: "boom"}, "", "boom"},
+		{"code and message", &apiv1.ErrorInfo{Code: "github_rate_limited", Message: "403"}, "github_rate_limited", "403"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, message := failureCauseFrom(tc.err)
+			if code != tc.wantCode || message != tc.wantMessage {
+				t.Fatalf("failureCauseFrom(%+v) = (%q, %q), want (%q, %q)", tc.err, code, message, tc.wantCode, tc.wantMessage)
+			}
+		})
+	}
+}
+
+// TestBoundFailureMessage pins the truncation bound (issue #710: "a bounded
+// message") — a short message passes through untouched; an oversized one is
+// cut to exactly maxFailureMessageLen runes plus the truncation marker, never
+// silently dropped or left unbounded.
+func TestBoundFailureMessage(t *testing.T) {
+	short := "list pull requests: status 403"
+	if got := boundFailureMessage(short); got != short {
+		t.Fatalf("boundFailureMessage(short) = %q, want unchanged", got)
+	}
+	long := strings.Repeat("x", maxFailureMessageLen+250)
+	got := boundFailureMessage(long)
+	if !strings.HasSuffix(got, "...(truncated)") {
+		t.Fatalf("boundFailureMessage(long) = %q, want a truncation marker suffix", got)
+	}
+	if got == long {
+		t.Fatal("boundFailureMessage(long) returned the message unchanged, want it truncated")
+	}
+}
+
 // TestRunnerTaskFailureWithNonGateNextFailsRunAndSkipsDownstream proves a
 // business failure whose Next names another task (not a gate) never
 // dispatches that downstream task — "never run downstream stages on
