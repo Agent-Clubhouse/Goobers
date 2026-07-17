@@ -101,6 +101,11 @@ type RateLimitedOutcome struct {
 // reference implementation).
 type RateLimitedHandler func(ctx context.Context, o RateLimitedOutcome) error
 
+// EscalationItemIDs resolves the backlog item IDs a run owns when it was
+// started without an Item snapshot. Implementations consult instance-level
+// state such as the claim ledger.
+type EscalationItemIDs func(runID string) ([]string, error)
+
 // Config wires a Runner's dependencies: the daemon-wide singletons (worktree
 // provisioning, gate evaluation) and the per-run executor factories
 // (executor.go) — the substrate the local runner drives directly (worktrees
@@ -126,6 +131,10 @@ type Config struct {
 	// Escalation notifies the driving backlog item's provider when a run
 	// escalates (internal/gate.EscalationNotifier). Optional — nil is a no-op.
 	Escalation *gate.EscalationNotifier
+	// EscalationItemIDs resolves driving backlog items for a run started without
+	// an Item snapshot, such as a scheduled implementation run that claims its
+	// item mid-run. Optional — nil means no fallback item is available.
+	EscalationItemIDs EscalationItemIDs
 	// Blocked handles the instance-level consequences of a stage reporting
 	// status "blocked" (#544/#545): recording the learned dependency block for
 	// selection to skip (#552) and surfacing/parking the driving issue. Called
@@ -591,7 +600,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return r.failTerminal(in.RunID, jr, g.Name, steps, err)
 			}
 			if reason, ok := terminalGateNotificationReason(gr); ok {
-				if err := r.notifyTerminalGate(context.WithoutCancel(ctx), jr, in.Item, gr, reason); err != nil {
+				if err := r.notifyTerminalGate(context.WithoutCancel(ctx), jr, in.RunID, in.Item, gr, reason); err != nil {
 					return r.failTerminal(in.RunID, jr, g.Name, steps, err)
 				}
 			}
@@ -647,20 +656,43 @@ func terminalGateNotificationReason(gr gate.Result) (string, bool) {
 	return reason, true
 }
 
-func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, item *apiv1.BacklogItem, gr gate.Result, reason string) error {
-	if r.cfg.Escalation == nil || item == nil {
+func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID string, item *apiv1.BacklogItem, gr gate.Result, reason string) error {
+	if r.cfg.Escalation == nil {
 		return nil
 	}
-	if err := r.cfg.Escalation.NotifyEscalated(ctx, item.ID, gr, reason); err != nil {
-		if aerr := jr.Append(journal.Event{
-			Type: journal.EventError,
-			Gate: gr.Gate,
-			Error: &journal.ErrorDetail{
-				Code:    "gate_terminal_notification_failed",
-				Message: err.Error(),
-			},
-		}); aerr != nil {
-			return fmt.Errorf("runner: journal terminal notification failure for gate %q: %w", gr.Gate, aerr)
+
+	itemIDs := []string{}
+	if item != nil {
+		itemIDs = append(itemIDs, item.ID)
+	} else if r.cfg.EscalationItemIDs != nil {
+		ids, err := r.cfg.EscalationItemIDs(runID)
+		if err != nil {
+			if aerr := jr.Append(journal.Event{
+				Type: journal.EventError,
+				Gate: gr.Gate,
+				Error: &journal.ErrorDetail{
+					Code:    "gate_terminal_notification_failed",
+					Message: err.Error(),
+				},
+			}); aerr != nil {
+				return fmt.Errorf("runner: journal terminal notification failure for gate %q: %w", gr.Gate, aerr)
+			}
+			return nil
+		}
+		itemIDs = ids
+	}
+	for _, itemID := range itemIDs {
+		if err := r.cfg.Escalation.NotifyEscalated(ctx, itemID, gr, reason); err != nil {
+			if aerr := jr.Append(journal.Event{
+				Type: journal.EventError,
+				Gate: gr.Gate,
+				Error: &journal.ErrorDetail{
+					Code:    "gate_terminal_notification_failed",
+					Message: err.Error(),
+				},
+			}); aerr != nil {
+				return fmt.Errorf("runner: journal terminal notification failure for gate %q: %w", gr.Gate, aerr)
+			}
 		}
 	}
 	return nil
