@@ -344,6 +344,15 @@ func TestWalkingSkeletonLocalRunnerCompletesWithRepass(t *testing.T) {
 	if gateEvals != 2 {
 		t.Errorf("gate.evaluated count = %d, want 2 (needs-changes then pass)", gateEvals)
 	}
+	gateStarts := countEventType(types, journal.EventGateStarted)
+	if gateStarts != 2 {
+		t.Errorf("gate.started count = %d, want 2 (one durable marker per evaluation)", gateStarts)
+	}
+	for _, e := range events {
+		if e.Type == journal.EventGateStarted && e.IsConformanceNormative() {
+			t.Errorf("gate.started must be excluded from conformance: %+v", e)
+		}
+	}
 	stageStarts := countEventType(types, journal.EventStageStarted)
 	if stageStarts != 3 {
 		t.Errorf("stage.started count = %d, want 3 (implement x2, local-ci x1)", stageStarts)

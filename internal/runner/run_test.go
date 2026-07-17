@@ -611,6 +611,7 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 		journal.EventArtifactRecorded, // runner-assembled context manifest
 		journal.EventArtifactRecorded,
 		journal.EventStageFinished,
+		journal.EventGateStarted, // recovery marker, excluded from conformance
 		journal.EventGateEvaluated,
 		journal.EventRunFinished,
 	}
@@ -2086,6 +2087,118 @@ func TestRunnerResumeRestoresGateRepassCounter(t *testing.T) {
 	}
 	if gateEvals != 2 {
 		t.Fatalf("gate.evaluated count = %d, want 2 (1 pre-crash + exactly 1 post-resume before escalating) — a broken repass seed would allow extra passes before escalating", gateEvals)
+	}
+}
+
+func TestRunnerResumeEscalatesAfterRepeatedInterruptedGateEvaluations(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "review"},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "review",
+				Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{
+					string(apiv1.VerdictPass):         workflow.TerminalComplete,
+					string(apiv1.VerdictNeedsChanges): "implement",
+					string(apiv1.VerdictFail):         workflow.TargetAbort,
+				},
+			},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "interrupted-gate-loop", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	r, runsDir := newTestRunner(t, map[string]stubTaskResult{}, gate.NewAutomatedEvaluator())
+	r.cfg.MaxRepasses = 1
+	var preparationCalls, executorCalls int
+	r.cfg.RepoCloneURL = func(apiv1.RepoRef) (string, error) {
+		preparationCalls++
+		return "", errors.New("agentic gate preparation must not run after recovery exhausted the budget")
+	}
+	reviewer := &alwaysNeedsChangesReviewer{}
+	r.cfg.NewAgentic = func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		executorCalls++
+		return reviewer, nil
+	}
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-interrupted-gate", Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("review")
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatalf("append stage.started: %v", err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultFailure)}); err != nil {
+		t.Fatalf("append stage.finished: %v", err)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := jr.Append(journal.Event{
+			Type: journal.EventGateStarted, Gate: "review",
+			Runner: map[string]any{"repassAttempt": attempt},
+		}); err != nil {
+			t.Fatalf("append gate.started attempt %d: %v", attempt, err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	res, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-interrupted-gate",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated after interrupted attempts exhausted the budget", res.Phase)
+	}
+	if preparationCalls != 0 || executorCalls != 0 || reviewer.calls != 0 {
+		t.Fatalf("agentic work after resume: preparations=%d executor constructions=%d reviewer calls=%d, want all zero", preparationCalls, executorCalls, reviewer.calls)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-interrupted-gate"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var starts, verdicts int
+	var verdict journal.Event
+	for _, e := range events {
+		switch e.Type {
+		case journal.EventGateStarted:
+			starts++
+		case journal.EventGateEvaluated:
+			verdicts++
+			verdict = e
+		}
+	}
+	if starts != 2 || verdicts != 1 {
+		t.Fatalf("gate events: starts=%d verdicts=%d, want 2 interrupted starts and 1 synthesized verdict", starts, verdicts)
+	}
+	if verdict.Target != workflow.TargetEscalate || verdict.Verdict != gate.OutcomeFail {
+		t.Fatalf("recovery verdict = %+v, want fail -> %s", verdict, workflow.TargetEscalate)
+	}
+	if interrupted, _ := verdict.Runner["interrupted"].(bool); !interrupted {
+		t.Fatalf("recovery verdict Runner[interrupted] = %v, want true", verdict.Runner["interrupted"])
+	}
+	if attempt := int(verdict.Runner["repassAttempt"].(float64)); attempt != 2 {
+		t.Fatalf("recovery verdict repassAttempt = %d, want 2", attempt)
 	}
 }
 

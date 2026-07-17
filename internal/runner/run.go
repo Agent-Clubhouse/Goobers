@@ -379,10 +379,10 @@ type walkSeed struct {
 // gateAttempts=nil, gateDiffDigests=nil, and a zero-value seed; Resume
 // (resume.go) begins at the journal's checkpointed state, optionally with a
 // resumeContext for an interrupted task attempt, gateAttempts seeded from
-// each gate's last gate.evaluated event so a resumed run's repass budget
-// continues rather than resetting (#89), gateDiffDigests likewise seeded
-// (gateDiffSeed) so a resumed run's non-convergence detection continues too
-// (#316), and seed reconstructed from the journal (#107/#108). reg is the
+// each gate's last gate.started/gate.evaluated event so a resumed run's repass
+// budget continues rather than resetting (#89/#263), gateDiffDigests likewise
+// seeded (gateDiffSeed) so a resumed run's non-convergence detection continues
+// too (#316), and seed reconstructed from the journal (#107/#108). reg is the
 // run's SecretRegistrar (see Start), threaded to every executor constructed
 // here.
 func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, gateAttempts map[string]int, gateDiffDigests map[string]string, reg SecretRegistrar, seed walkSeed) (Result, error) {
@@ -1226,6 +1226,15 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	}
 	ctx, span := r.startGateSpan(ctx, in, g, gooberName)
 	defer span.End()
+
+	if recovered, ok, recoveryErr := gateEval.RecoverInterrupted(g.Name, ""); recoveryErr != nil {
+		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, recoveryErr)
+		span.Fail(err)
+		return gate.Result{}, err, nil
+	} else if ok {
+		span.Succeed(recovered.Outcome)
+		return recovered, nil, nil
+	}
 
 	// diffDigest (issue #316) is only ever set below for an agentic gate
 	// whose branch carries a non-empty diff — an automated/human gate, or an

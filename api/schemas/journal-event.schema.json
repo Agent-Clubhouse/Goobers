@@ -26,6 +26,7 @@
         "run.finished",
         "stage.started",
         "stage.finished",
+        "gate.started",
         "gate.evaluated",
         "artifact.recorded",
         "span.recorded",
@@ -39,7 +40,7 @@
         "claim.acquired",
         "claim.released"
       ],
-      "x-conformance": "normative"
+      "x-conformance": "conditional: gate.started is excluded; all other event types are normative unless separately excluded"
     },
     "branch": {
       "description": "Parallel-branch id. 0 at tiers 1-2; reserved for tier-3 parallel branches. Secondary ordering key.",
@@ -71,7 +72,7 @@
       "x-conformance": "conditional: excluded when 'infra'"
     },
     "gate": {
-      "description": "Gate name for gate.evaluated.",
+      "description": "Gate name for gate.* events. gate.started is recovery bookkeeping and excluded from conformance; gate.evaluated is normative.",
       "type": "string",
       "x-conformance": "normative"
     },

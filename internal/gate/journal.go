@@ -16,6 +16,21 @@ type Journal interface {
 	RecordArtifact(name string, data []byte) (journal.Ref, error)
 }
 
+// recordStart durably marks a gate evaluation before its evaluator is
+// dispatched. repassAttempt is the prospective consecutive non-pass count:
+// recordVerdict replaces it with the actual post-evaluation count, while a
+// dangling marker lets Resume charge an interrupted evaluation to the budget.
+func recordStart(j Journal, gateName string, repassAttempt int) error {
+	if j == nil {
+		return nil
+	}
+	return j.Append(journal.Event{
+		Type:   journal.EventGateStarted,
+		Gate:   gateName,
+		Runner: map[string]any{"repassAttempt": repassAttempt},
+	})
+}
+
 // recordVerdict journals one gate evaluation as a gate.evaluated event: Gate,
 // Verdict (the outcome string), and Target are the flat, conformance-normative
 // fields §4 relies on; the repass attempt count and whether the budget forced
@@ -50,7 +65,15 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 	if j == nil {
 		return nil, nil
 	}
-	runner := map[string]any{"repassAttempt": r.Attempt, "escalated": r.Escalated, "duplicateDiff": r.DuplicateDiff, "verdictCacheHit": r.CacheHit}
+	runner := map[string]any{
+		"repassAttempt":   r.Attempt,
+		"escalated":       r.Escalated,
+		"duplicateDiff":   r.DuplicateDiff,
+		"verdictCacheHit": r.CacheHit,
+	}
+	if r.Interrupted {
+		runner["interrupted"] = true
+	}
 	if diffDigest != "" {
 		runner["diffDigest"] = diffDigest
 	}
