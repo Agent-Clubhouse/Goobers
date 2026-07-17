@@ -35,6 +35,14 @@ type mergePRServerState struct {
 	baseListCalls   int
 	baseDeleteCalls int
 	mergeSHA        *string // set by the /merge handler on a successful call
+	// files is this PR's own changed files (issue #718's delta-aware
+	// baseSha conjunct: what base's movement is checked for intersecting).
+	// baseMovement maps a "oldBaseSHA...newBaseSHA" compare key to the
+	// files that moved between them — an unregistered key returns an
+	// empty file list (a disjoint move, the common steady-state case), so
+	// most test cases need no entry at all.
+	files        []fakePRFile
+	baseMovement map[string][]fakePRFile
 }
 
 func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) *httptest.Server {
@@ -111,6 +119,22 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 	})
 	mux.HandleFunc(prefix+"/issues/9/comments", func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, []map[string]interface{}{})
+	})
+	mux.HandleFunc(prefix+"/pulls/9/files", func(w http.ResponseWriter, r *http.Request) {
+		out := make([]map[string]interface{}, 0, len(st.files))
+		for _, f := range st.files {
+			out = append(out, map[string]interface{}{"filename": f.path, "status": f.status, "additions": f.additions, "deletions": f.deletions, "patch": f.patch})
+		}
+		writeFakeJSON(w, out)
+	})
+	mux.HandleFunc(prefix+"/compare/", func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.URL.Path, prefix+"/compare/")
+		files := st.baseMovement[key]
+		out := make([]map[string]interface{}, 0, len(files))
+		for _, f := range files {
+			out = append(out, map[string]interface{}{"filename": f.path, "status": f.status, "additions": f.additions, "deletions": f.deletions, "patch": f.patch})
+		}
+		writeFakeJSON(w, map[string]interface{}{"merge_base_commit": map[string]interface{}{"sha": "irrelevant-for-this-fixture"}, "files": out})
 	})
 	mux.HandleFunc(prefix+"/pulls/9/merge", func(w http.ResponseWriter, r *http.Request) {
 		st.mergeCalls++
@@ -390,8 +414,14 @@ func TestMergePRRefusesOnUnmetConjunct(t *testing.T) {
 			wantSub: "verdict is stale",
 		},
 		{
-			name:    "stale base SHA-pin",
-			mutate:  func(st *mergePRServerState, inputs map[string]string) { inputs["baseSha"] = "stale-base" },
+			name: "stale base SHA-pin, movement intersects this PR's files",
+			mutate: func(st *mergePRServerState, inputs map[string]string) {
+				inputs["baseSha"] = "stale-base"
+				st.files = []fakePRFile{{path: "shared/conflict.go", status: "modified"}}
+				st.baseMovement = map[string][]fakePRFile{
+					"stale-base...base456": {{path: "shared/conflict.go", status: "modified"}},
+				}
+			},
 			wantSub: "verdict is stale",
 		},
 	}
@@ -422,6 +452,37 @@ func TestMergePRRefusesOnUnmetConjunct(t *testing.T) {
 				t.Fatalf("result = %+v, want selectedNumber=%q", result, "9")
 			}
 		})
+	}
+}
+
+// TestMergePRAcceptsDisjointBaseMovement is issue #718's headline
+// acceptance for merge-pr's delta-aware SHA-pin: base advancing since
+// review (a bare raw-SHA mismatch) does NOT void an otherwise-valid
+// verdict when nothing that moved touches this PR's own files — the
+// dominant steady-state case, since every OTHER PR merging moves base for
+// everyone. Deliberately registers NO st.baseMovement entry for the
+// stale-base...base456 pair: an unregistered compare key returns an empty
+// file list, i.e. a genuinely disjoint move.
+func TestMergePRAcceptsDisjointBaseMovement(t *testing.T) {
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
+		files: []fakePRFile{{path: "this-pr/own-file.go", status: "modified"}},
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "stale-base",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.mergeCalls != 1 {
+		t.Fatalf("merge endpoint called %d times, want 1 — a disjoint base advance must not block an otherwise-valid merge", st.mergeCalls)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); !merged {
+		t.Fatalf("result = %+v, want merged=true (base moved, but disjointly from this PR's own files)", result)
 	}
 }
 

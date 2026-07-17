@@ -239,6 +239,11 @@ func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, 
 	return nil, fmt.Errorf("ado: pull request file listing lands in V1 parity (BL-033)")
 }
 
+// CompareCommits is not yet implemented for Azure DevOps: see PullRequestFiles.
+func (p *ADOProvider) CompareCommits(ctx context.Context, repo RepositoryRef, base, head string) (CompareResult, error) {
+	return CompareResult{}, fmt.Errorf("ado: commit comparison lands in V1 parity (BL-033)")
+}
+
 // ListWorkItems lists Azure Boards work items as unified work items.
 func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequest) ([]WorkItem, error) {
 	project := p.project(req.Repository)

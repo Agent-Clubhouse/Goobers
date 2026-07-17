@@ -128,7 +128,21 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		reasons = append(reasons, fmt.Sprintf("head moved: verdict pinned to %s, PR is now at %s — verdict is stale", expectedHeadSHA, poll.HeadSHA))
 	}
 	if poll.BaseSHA != expectedBaseSHA {
-		reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s — verdict is stale", expectedBaseSHA, poll.BaseSHA))
+		// Delta-aware (issue #718): base moving at all used to void every
+		// standing verdict, even when nothing that moved touches this PR
+		// — the dominant false-invalidation case (any OTHER PR merging
+		// advances base for everyone). Only a movement that actually
+		// intersects this PR's own files still voids it.
+		intersects, cerr := baseMovementIntersectsPR(ctx, provider, repo, pullNumber, expectedBaseSHA, poll.BaseSHA)
+		switch {
+		case cerr != nil:
+			// Can't determine whether the movement is disjoint — fail
+			// safe to the old conservative behavior rather than risk
+			// merging past a base advance we couldn't actually check.
+			reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s, and whether that movement touches this PR's files could not be determined (%v) — treating as stale", expectedBaseSHA, poll.BaseSHA, cerr))
+		case intersects:
+			reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s, and that movement touches files this PR also changes — verdict is stale", expectedBaseSHA, poll.BaseSHA))
+		}
 	}
 	if advisoryMode {
 		reasons = append(reasons, "advisory mode: no merge attempted")
@@ -211,6 +225,34 @@ func cleanupMergedBranch(ctx context.Context, headRepository *providers.Reposito
 	}
 	out.Status = "deleted"
 	return out
+}
+
+// baseMovementIntersectsPR reports whether base moving from oldBaseSHA to
+// newBaseSHA touched any file pullNumber's own PR also changes (issue
+// #718's delta-aware SHA-pin check): a disjoint base advance — the
+// dominant steady-state case, since every OTHER PR merging moves base for
+// everyone — must not void an otherwise-valid verdict, but a movement that
+// genuinely intersects this PR's own files still must (a valid review
+// against the old base says nothing about a file it never saw change).
+func baseMovementIntersectsPR(ctx context.Context, provider providers.RepoProvider, repo providers.RepositoryRef, pullNumber, oldBaseSHA, newBaseSHA string) (bool, error) {
+	prFiles, err := provider.PullRequestFiles(ctx, repo, pullNumber)
+	if err != nil {
+		return false, fmt.Errorf("list PR's own files: %w", err)
+	}
+	moved, err := provider.CompareCommits(ctx, repo, oldBaseSHA, newBaseSHA)
+	if err != nil {
+		return false, fmt.Errorf("compare base %s...%s: %w", oldBaseSHA, newBaseSHA, err)
+	}
+	prPaths := make(map[string]struct{}, len(prFiles))
+	for _, f := range prFiles {
+		prPaths[f.Path] = struct{}{}
+	}
+	for _, f := range moved.Files {
+		if _, ok := prPaths[f.Path]; ok {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // writeMergeResult writes the declared result file's flat JSON — selectedNumber
