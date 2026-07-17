@@ -8,15 +8,13 @@ import (
 )
 
 // Run status values, mirroring internal/journal.RunPhase's on-disk strings
-// (not imported — same decoupling rationale as mirror.go). The full taxonomy
-// is completed/failed/aborted/escalated/running; only the two terminal
-// success/failure values are named below because they drive rate math —
-// everything else (aborted, escalated, still running) falls out of
-// RunStats.OtherRuns by subtraction, so an in-flight or non-terminal run is
-// visible in TotalRuns without needing its own named branch here.
+// (not imported — same decoupling rationale as mirror.go).
 const (
 	runStatusCompleted = "completed"
 	runStatusFailed    = "failed"
+	runStatusAborted   = "aborted"
+	runStatusEscalated = "escalated"
+	runStatusRunning   = "running"
 )
 
 // Stage attempt status values, mirroring api/v1alpha1.ResultStatus's wire
@@ -80,6 +78,146 @@ type StageStats struct {
 type StatsResult struct {
 	Runs   []RunStats   `json:"runs"`
 	Stages []StageStats `json:"stages"`
+}
+
+// InstanceSummary is the lifetime (or Since-windowed) instance card exposed by
+// `goobers stats`. SuccessRate follows RunStats: completed / (completed +
+// failed), excluding phases that do not represent a success/failure verdict.
+type InstanceSummary struct {
+	TotalRuns     int
+	CompletedRuns int
+	FailedRuns    int
+	AbortedRuns   int
+	EscalatedRuns int
+	RunningRuns   int
+	OtherRuns     int
+	SuccessRate   float64
+
+	PullRequestsOpened int
+	PullRequestsMerged int
+	IssuesClaimed      int
+	IssuesClosed       int
+
+	BusiestWorkflow     string
+	BusiestWorkflowRuns int
+
+	AgenticStageAttempts      int
+	AvgAgenticStageDurationMs float64
+	LongestAgenticStageMs     int64
+	LongestAgenticStage       string
+	LongestAgenticWorkflow    string
+	LongestAgenticRunID       string
+}
+
+// InstanceSummaryStats computes the one-screen instance summary. Run and
+// workflow counts are windowed on runs.started_at, mutations on occurred_at,
+// and agentic attempts on stage_attempts.started_at. A harness transcript is
+// the existing rollup marker that a stage was agentic; deterministic stages do
+// not invoke the harness or produce harness_transcripts rows.
+func (db *DB) InstanceSummaryStats(since time.Time) (InstanceSummary, error) {
+	var out InstanceSummary
+
+	runWhere, runArgs := statsWhere("workflow", "gaggle", "started_at", StatsRequest{Since: since})
+	runQuery := fmt.Sprintf(`
+		SELECT COUNT(*),
+			COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0)
+		FROM runs %s`, runWhere)
+	args := append([]any{
+		runStatusCompleted,
+		runStatusFailed,
+		runStatusAborted,
+		runStatusEscalated,
+		runStatusRunning,
+	}, runArgs...)
+	if err := db.sql.QueryRow(runQuery, args...).Scan(
+		&out.TotalRuns,
+		&out.CompletedRuns,
+		&out.FailedRuns,
+		&out.AbortedRuns,
+		&out.EscalatedRuns,
+		&out.RunningRuns,
+	); err != nil {
+		return InstanceSummary{}, fmt.Errorf("rollup: query instance run summary: %w", err)
+	}
+	out.OtherRuns = out.TotalRuns - out.CompletedRuns - out.FailedRuns - out.AbortedRuns - out.EscalatedRuns - out.RunningRuns
+	if terminal := out.CompletedRuns + out.FailedRuns; terminal > 0 {
+		out.SuccessRate = float64(out.CompletedRuns) / float64(terminal)
+	}
+
+	busiestQuery := fmt.Sprintf(`
+		SELECT workflow, COUNT(*) AS run_count
+		FROM runs %s
+		GROUP BY workflow
+		ORDER BY run_count DESC, workflow
+		LIMIT 1`, runWhere)
+	err := db.sql.QueryRow(busiestQuery, runArgs...).Scan(&out.BusiestWorkflow, &out.BusiestWorkflowRuns)
+	if err != nil && err != sql.ErrNoRows {
+		return InstanceSummary{}, fmt.Errorf("rollup: query busiest workflow: %w", err)
+	}
+
+	mutationWhere, mutationArgs := statsWhere("", "", "occurred_at", StatsRequest{Since: since})
+	mutationQuery := fmt.Sprintf(`
+		SELECT
+			COALESCE(SUM(CASE WHEN kind = 'pr' AND operation = 'open' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN kind = 'pr' AND operation = 'merge' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN kind = 'issue' AND operation = 'claim' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN kind = 'issue' AND operation = 'close' THEN 1 ELSE 0 END), 0)
+		FROM provider_mutations %s`, mutationWhere)
+	if err := db.sql.QueryRow(mutationQuery, mutationArgs...).Scan(
+		&out.PullRequestsOpened,
+		&out.PullRequestsMerged,
+		&out.IssuesClaimed,
+		&out.IssuesClosed,
+	); err != nil {
+		return InstanceSummary{}, fmt.Errorf("rollup: query instance mutation summary: %w", err)
+	}
+
+	stageFilter := `
+		sa.duration_ms IS NOT NULL
+		AND EXISTS (
+			SELECT 1 FROM harness_transcripts h
+			WHERE h.run_id = sa.run_id AND h.stage = sa.stage
+		)`
+	var stageArgs []any
+	if !since.IsZero() {
+		stageFilter += ` AND sa.started_at >= ?`
+		stageArgs = append(stageArgs, formatTime(since).String)
+	}
+	stageQuery := fmt.Sprintf(`
+		SELECT COUNT(*), COALESCE(AVG(sa.duration_ms), 0), COALESCE(MAX(sa.duration_ms), 0)
+		FROM stage_attempts sa
+		WHERE %s`, stageFilter)
+	if err := db.sql.QueryRow(stageQuery, stageArgs...).Scan(
+		&out.AgenticStageAttempts,
+		&out.AvgAgenticStageDurationMs,
+		&out.LongestAgenticStageMs,
+	); err != nil {
+		return InstanceSummary{}, fmt.Errorf("rollup: query agentic stage summary: %w", err)
+	}
+	if out.AgenticStageAttempts == 0 {
+		return out, nil
+	}
+
+	longestQuery := fmt.Sprintf(`
+		SELECT sa.stage, r.workflow, sa.run_id, sa.duration_ms
+		FROM stage_attempts sa
+		JOIN runs r ON r.run_id = sa.run_id
+		WHERE %s
+		ORDER BY sa.duration_ms DESC, sa.started_at, sa.run_id, sa.attempt
+		LIMIT 1`, stageFilter)
+	if err := db.sql.QueryRow(longestQuery, stageArgs...).Scan(
+		&out.LongestAgenticStage,
+		&out.LongestAgenticWorkflow,
+		&out.LongestAgenticRunID,
+		&out.LongestAgenticStageMs,
+	); err != nil {
+		return InstanceSummary{}, fmt.Errorf("rollup: query longest agentic stage: %w", err)
+	}
+	return out, nil
 }
 
 // Stats computes success/failure rates and durations by workflow and by
