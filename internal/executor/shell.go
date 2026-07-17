@@ -246,6 +246,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	cmd.Dir = env.Workspace
 	cmd.Env = stageEnv
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := configureCommandNetwork(cmd, run.Network); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 
 	stdout := &capturingWriter{limit: maxOutput}
 	stderr := &capturingWriter{limit: maxOutput}

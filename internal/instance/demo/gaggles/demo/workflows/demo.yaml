@@ -1,0 +1,60 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: demo
+spec:
+  gaggle: demo
+  displayName: Offline triage, build, and verdict
+  triggers:
+    - type: schedule
+      schedule: "@yearly"
+  readiness:
+    maxConcurrentRuns: 1
+  start: triage
+  tasks:
+    - name: triage
+      type: deterministic
+      goal: Classify the bundled fixture item.
+      inputs:
+        fixture: README links are stale after a release
+        resultFile: triage.json
+      expectedOutputs:
+        - category
+        - priority
+      run:
+        network: none
+        workspace: scratch
+        command:
+          - sh
+          - -c
+          - 'printf ''{"item":"%s","category":"documentation","priority":2}\n'' "$GOOBERS_INPUT_FIXTURE" > triage.json'
+      next: build
+    - name: build
+      type: deterministic
+      goal: Build a deterministic demo artifact from the triage result.
+      inputs:
+        resultFile: build.json
+      inputsFrom:
+        category: category
+      expectedOutputs:
+        - artifact
+        - verdict
+      run:
+        network: none
+        workspace: scratch
+        command:
+          - sh
+          - -c
+          - 'printf ''{"artifact":"demo-binary","verdict":"ready","category":"%s"}\n'' "$GOOBERS_INPUT_CATEGORY" > build.json'
+      next: verdict
+  gates:
+    - name: verdict
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: verdict
+          equals: ready
+      branches:
+        pass: ""
+        fail: "@abort"

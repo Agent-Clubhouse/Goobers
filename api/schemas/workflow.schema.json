@@ -76,7 +76,9 @@
           "required": ["command"],
           "properties": {
             "command": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-            "image": { "type": "string" }
+            "image": { "type": "string" },
+            "network": { "type": "string", "enum": ["none"] },
+            "workspace": { "type": "string", "enum": ["repo", "scratch"] }
           }
         },
         "inputs": { "type": "object", "additionalProperties": { "type": "string" } },

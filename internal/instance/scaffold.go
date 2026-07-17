@@ -12,10 +12,13 @@ import (
 // starterFS embeds a minimal, valid starter config repo (mirrors
 // config-examples/) seeded into a freshly initialized instance's config/ dir.
 //
-//go:embed starter
+//go:embed starter demo
 var starterFS embed.FS
 
-const starterDir = "starter"
+const (
+	starterDir = "starter"
+	demoDir    = "demo"
+)
 
 // InitResult reports what Init created vs. left alone.
 type InitResult struct {
@@ -32,6 +35,16 @@ type InitResult struct {
 // left untouched and reported under Skipped, so a repeated `goobers init`
 // never clobbers user edits (INST-008).
 func Init(root string) (*InitResult, error) {
+	return initWithConfig(root, starterDir, defaultConfig())
+}
+
+// InitDemo scaffolds a credential-free instance with one runnable,
+// deterministic demo workflow.
+func InitDemo(root string) (*InitResult, error) {
+	return initWithConfig(root, demoDir, demoConfig())
+}
+
+func initWithConfig(root, configSource string, cfg *Config) (*InitResult, error) {
 	l := NewLayout(root)
 	res := &InitResult{Root: root}
 
@@ -42,7 +55,7 @@ func Init(root string) (*InitResult, error) {
 	if exists(l.ConfigFile()) {
 		res.Skipped = append(res.Skipped, ConfigFileName)
 	} else {
-		if err := WriteConfig(l.ConfigFile(), defaultConfig()); err != nil {
+		if err := WriteConfig(l.ConfigFile(), cfg); err != nil {
 			return nil, err
 		}
 		res.Created = append(res.Created, ConfigFileName)
@@ -55,7 +68,7 @@ func Init(root string) (*InitResult, error) {
 	if configSeeded {
 		res.Skipped = append(res.Skipped, ConfigDirName)
 	} else {
-		if err := copyStarterConfig(l.ConfigDir()); err != nil {
+		if err := copyConfig(l.ConfigDir(), configSource); err != nil {
 			return nil, fmt.Errorf("seed %s: %w", ConfigDirName, err)
 		}
 		res.Created = append(res.Created, ConfigDirName)
@@ -105,6 +118,14 @@ func defaultConfig() *Config {
 	}
 }
 
+func demoConfig() *Config {
+	return &Config{
+		APIVersion:    ConfigAPIVersion,
+		Kind:          ConfigKind,
+		RunConditions: RunConditions{MaxParallelRuns: 1},
+	}
+}
+
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -123,13 +144,13 @@ func dirHasFiles(dir string) (bool, error) {
 	return len(entries) > 0, nil
 }
 
-// copyStarterConfig extracts the embedded starter config tree into dir.
-func copyStarterConfig(dir string) error {
-	return fs.WalkDir(starterFS, starterDir, func(path string, d fs.DirEntry, err error) error {
+// copyConfig extracts one embedded config tree into dir.
+func copyConfig(dir, source string) error {
+	return fs.WalkDir(starterFS, source, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(starterDir, path)
+		rel, err := filepath.Rel(source, path)
 		if err != nil {
 			return err
 		}

@@ -11,12 +11,14 @@ import (
 func runInit(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers init [path]\n\n"+
+		pf(stderr, "Usage: goobers init [--demo] [path]\n\n"+
 			"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n"+
 			"(seeded with a starter example), runs/, scheduler/, workcopies/, and a\n"+
 			"telemetry.db placeholder. Re-running is safe — existing pieces are left\n"+
-			"untouched.\n")
+			"untouched. --demo seeds an offline deterministic tour requiring no repo\n"+
+			"or credentials.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -30,7 +32,13 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(0)
 	}
 
-	res, err := instance.Init(root)
+	var res *instance.InitResult
+	var err error
+	if *demo {
+		res, err = instance.InitDemo(root)
+	} else {
+		res, err = instance.Init(root)
+	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -51,5 +59,22 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	for _, s := range res.Skipped {
 		pf(stdout, "  skipped  %s (already exists)\n", s)
 	}
+	demoSeeded := false
+	for _, created := range res.Created {
+		if created == instance.ConfigDirName {
+			demoSeeded = true
+			break
+		}
+	}
+	if *demo && demoSeeded {
+		pf(stdout, demoTourBanner, abs)
+	}
 	return 0
 }
+
+const demoTourBanner = `
+Demo tour (run these from %s):
+  goobers up          # in one terminal
+  goobers run demo    # watch stages execute and gate branch
+  goobers trace <id>  # see the journal the run left behind
+`

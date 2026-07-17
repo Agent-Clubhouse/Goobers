@@ -76,6 +76,26 @@ func CheckGateVocabulary(def Definition) []string {
 	return gateVocabProblems(def)
 }
 
+func workspaceProblems(def Definition) []string {
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if task.Run == nil {
+			continue
+		}
+		switch task.Run.Workspace {
+		case "", apiv1.WorkspaceRepo, apiv1.WorkspaceScratch:
+		default:
+			problems = append(problems, fmt.Sprintf("task %q: unknown workspace %q (want repo or scratch)", task.Name, task.Run.Workspace))
+		}
+		switch task.Run.Network {
+		case "", apiv1.NetworkNone:
+		default:
+			problems = append(problems, fmt.Sprintf("task %q: unknown network mode %q (want none)", task.Name, task.Run.Network))
+		}
+	}
+	return problems
+}
+
 // checkEqualsVocab is the fixed output vocabulary a gate's params.equals
 // must be drawn from, for automated checks that have one — the compile-time
 // half of the ci-gate vocabulary fix (#132): internal/gate/automated.go's

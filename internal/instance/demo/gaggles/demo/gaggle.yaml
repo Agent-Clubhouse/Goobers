@@ -1,0 +1,16 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: demo
+spec:
+  displayName: Offline Demo
+  project:
+    provider: github
+    owner: demo
+    name: offline
+    branch: main
+  backlog:
+    provider: github
+    project: demo/offline
+  isolation:
+    namespace: gaggle-demo

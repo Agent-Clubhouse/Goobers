@@ -35,6 +35,15 @@ var newTerminalBranchDeleter = func(source providers.TokenSource) providers.Bran
 }
 
 func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, registrar terminalSecretRegistry) (runner.TerminalPreparer, error) {
+	// An instance with no configured repo (the credential-free demo, #587)
+	// never touches a branch by design — every one of its runs is
+	// legitimately branch-less, not an anomaly finalizeTerminalBranch's
+	// "branch-reference-missing" cleanup record exists to flag. Skip
+	// branch cleanup entirely rather than journal a spurious ref.touched
+	// for every single run.
+	if len(cfg.Repos) == 0 {
+		return func(string, journal.RunPhase, *journal.Run) error { return nil }, nil
+	}
 	deleteBranch, repo, err := buildTerminalBranchDelete(cfg, registrar)
 	if err != nil {
 		return nil, err

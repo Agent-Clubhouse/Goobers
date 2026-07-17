@@ -1,0 +1,10 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: demo-instance
+spec:
+  instance:
+    name: demo
+    environment: dev
+  gaggles:
+    - demo

@@ -100,7 +100,7 @@ func usage(w io.Writer) {
 
 Usage:
   goobers --version             print build version, commit, and date
-  goobers init [path]           scaffold an instance root
+  goobers init [--demo] [path]  scaffold an instance root
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
   goobers validate [path]       validate an instance's instance.yaml + config/
