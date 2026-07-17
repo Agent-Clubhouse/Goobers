@@ -78,6 +78,18 @@ SIGINT/SIGTERM. `run` remains the way to trigger one workflow manually
 without a daemon running. Full walkthrough:
 [`docs/guides/quickstart.md`](docs/guides/quickstart.md).
 
+## Shell completion
+
+Enable subcommand and flag completion, plus instance-aware workflow and recent
+run ID completion, with the line for your shell (add it to the shell's startup
+file to make it permanent):
+
+```sh
+source <(goobers completion bash)  # bash
+source <(goobers completion zsh)   # zsh
+goobers completion fish | source  # fish
+```
+
 ## Developing
 
 ```sh
