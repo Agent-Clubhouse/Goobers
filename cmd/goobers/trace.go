@@ -21,12 +21,31 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("trace", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit the run trace as JSON")
+	showTranscripts := fs.Bool("transcripts", false, "show every recorded agent-stage transcript")
+	transcriptStage := fs.String("transcript", "", "show recorded transcript data for one stage")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers trace [--json] <run-id> [path]\n\n"+
+		pf(stderr, "Usage: goobers trace [--json] [--transcripts | --transcript=<stage>] <run-id> [path]\n\n"+
 			"Show a run's journal events and, if the telemetry rollup has ingested it,\n"+
-			"its trace spans (default path \".\"). Exit codes: 0 = OK, 1 = run not found, 2 = usage/IO error.\n")
+			"its trace spans. Use --transcripts to show all recorded agent transcripts,\n"+
+			"or --transcript to select one stage (default path \".\"). Exit codes:\n"+
+			"0 = OK, 1 = run/transcript not found, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	transcriptSelected := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "transcript" {
+			transcriptSelected = true
+		}
+	})
+	if *showTranscripts && transcriptSelected {
+		pf(stderr, "error: --transcripts and --transcript cannot be used together\n")
+		return 2
+	}
+	selectedStage := strings.TrimSpace(*transcriptStage)
+	if transcriptSelected && selectedStage == "" {
+		pf(stderr, "error: --transcript requires a stage name\n")
 		return 2
 	}
 	if fs.NArg() < 1 || fs.NArg() > 2 {
@@ -81,6 +100,22 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
+	}
+
+	if *showTranscripts || transcriptSelected {
+		events, err := reader.Events()
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
+		if err := printTranscripts(stdout, reader, events, runID, selectedStage); err != nil {
+			pf(stderr, "error: %v in run %q\n", err, runID)
+			if errors.Is(err, errTranscriptNotFound) {
+				return 1
+			}
+			return 2
+		}
+		return 0
 	}
 
 	id, err := reader.Identity()
@@ -170,6 +205,57 @@ type traceJSONResult struct {
 	Escalation *escalationSummary   `json:"escalation,omitempty"`
 	Events     []journal.Event      `json:"events"`
 	Spans      []rollup.SpanSummary `json:"spans"`
+}
+
+var errTranscriptNotFound = errors.New("no recorded agent transcript")
+
+type recordedTranscript struct {
+	event journal.Event
+	stage string
+	data  []byte
+}
+
+func printTranscripts(stdout io.Writer, reader *journal.Reader, events []journal.Event, runID, stage string) error {
+	var transcripts []recordedTranscript
+	for _, ev := range events {
+		recordedStage := strings.TrimPrefix(ev.Stage, runID+":")
+		if ev.Type != journal.EventSpanRecorded ||
+			(ev.Name != "transcript" && !strings.HasSuffix(ev.Name, ".transcript")) ||
+			(stage != "" && recordedStage != stage) {
+			continue
+		}
+		if ev.Ref == nil {
+			return fmt.Errorf("transcript for stage %q at seq %d is unavailable: span event has no content reference", recordedStage, ev.Seq)
+		}
+		data, err := reader.SpanBytes(*ev.Ref)
+		if err != nil {
+			return fmt.Errorf("transcript for stage %q at seq %d is unavailable: %w", recordedStage, ev.Seq, err)
+		}
+		if len(data) == 0 {
+			return fmt.Errorf("transcript for stage %q at seq %d is unavailable: recorded content is empty", recordedStage, ev.Seq)
+		}
+		transcripts = append(transcripts, recordedTranscript{event: ev, stage: recordedStage, data: data})
+	}
+	if len(transcripts) == 0 {
+		if stage != "" {
+			return fmt.Errorf("%w for stage %q", errTranscriptNotFound, stage)
+		}
+		return errTranscriptNotFound
+	}
+
+	pln(stdout, "transcripts:")
+	for i, transcript := range transcripts {
+		if i > 0 {
+			pln(stdout, "")
+		}
+		pf(stdout, "--- stage=%q name=%q seq=%d ---\n",
+			transcript.stage, transcript.event.Name, transcript.event.Seq)
+		pf(stdout, "%s", transcript.data)
+		if transcript.data[len(transcript.data)-1] != '\n' {
+			pln(stdout, "")
+		}
+	}
+	return nil
 }
 
 type escalationSummary struct {
