@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -18,7 +19,13 @@ import (
 // carries one of these until pr-remediation/auto-merge acts on it and clears
 // it. Re-selecting it would waste a cycle re-reviewing something already in
 // flight — harmless under G3, but pointless.
-const defaultExcludeLabels = "goobers:merge-ready,goobers:needs-remediation,goobers:merge-escalated"
+//
+// goobers:merge-escalated is deliberately NOT a static entry here (#716): a
+// permanent label-based exclusion can never self-heal once a sibling merge
+// or new commits change the PR's actual situation. It is instead checked via
+// escalationStillBlocks below, which compares the PR's current head/base
+// against the snapshot recorded at escalation time.
+const defaultExcludeLabels = "goobers:merge-ready,goobers:needs-remediation"
 
 // runPRSelect implements `goobers pr-select` (issues #359 and #481):
 // merge-review's selection stage. Picks at most one eligible PR per run — the same
@@ -83,6 +90,13 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		if hasAnyLabel(pr.Labels, excludeLabels) {
+			continue
+		}
+		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("check escalation state for PR #%d", pr.Number), err, "selected-pr.json")
+		}
+		if blocked {
 			continue
 		}
 		eligible = append(eligible, pr)

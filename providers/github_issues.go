@@ -187,6 +187,25 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 	return comments, nil
 }
 
+// UpdateComment edits an existing issue/PR comment's body in place — the
+// sticky-comment pattern (#716) a caller uses so a repeated event (e.g.
+// pr-remediation's per-cycle checkpoint/escalation state) updates the SAME
+// comment instead of growing a new one every run. GitHub scopes comment IDs
+// repo-wide, not per-issue, so the edit endpoint takes no issue number.
+func (p *GitHubProvider) UpdateComment(ctx context.Context, repo RepositoryRef, commentID, body string) error {
+	if err := requireOwnerRepo(repo); err != nil {
+		return err
+	}
+	if commentID == "" {
+		return fmt.Errorf("comment id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
+	if err != nil {
+		return err
+	}
+	return p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, nil)
+}
+
 // allIssueComments fetches every comment on an issue, following pagination
 // (#139). Both ListComments and the claim protocol's claimWinner read the full
 // comment set through here: a claim breadcrumb landing on page 2+ used to be
