@@ -321,8 +321,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // prior crash or unclean daemon shutdown and restarts it via Runner.Resume,
 // each in its own goroutine tracked by wg — the daemon-startup recovery pass
 // (issue #23 AC: restart via Runner.Resume). "Interrupted" is exactly
-// journal.PhaseRunning (or an unreadable state.json, conservatively treated
-// the same way ActiveRunCounts does): no run.finished event has landed.
+// journal.PhaseRunning in the event log: no run.finished event has landed.
 // Resume itself is idempotent on an already-terminal run and safe to call on
 // one that merely paused gracefully (a human gate, or a prior clean drain),
 // not only a genuine crash — so this scan doesn't need to distinguish those
@@ -330,15 +329,13 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // (walk re-checkpoints at the same gate without evaluating anything), so its
 // reserved slot (below) is held only briefly, not for the daemon's lifetime.
 // Runs already terminal in their event log are not resumed, but their claims
-// are released idempotently to close a crash window between run.finished and
-// the runner's terminal finalizer.
+// and any reconciled concurrency slot are released idempotently to keep the
+// reconciliation and resume passes in agreement.
 //
-// release is called with each resumed run's workflow once its Resume call
-// returns (success or error) — the counterpart to Scheduler.Reconcile having
-// already seeded that run's workflow into Conditions' active count (issue
-// #135: previously nothing ever released a reconciled slot, so any restart
-// with a non-terminal run starved that workflow of new dispatches forever).
-// Pass sched.Release; a plain func so this doesn't need a *Scheduler to test.
+// release is called with each recovered run and workflow — immediately for a
+// terminal run, or once a resumed run's Resume call returns (success or
+// error). Scheduler.ReleaseReconciled only releases runs actually seeded by
+// Reconcile, so terminal cleanup cannot consume another run's slot.
 //
 // A run whose workflow no longer resolves in the current config (renamed or
 // removed, issue #135 point 2) is skipped with a warning journaled to log,
@@ -356,7 +353,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // resumeInterruptedRuns errors when the scan itself cannot proceed or when
 // terminal-run cleanup fails; claim cleanup fails closed rather than silently
 // leaving a known terminal owner in the ledger.
-func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	runsDir := l.RunsDir()
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
@@ -390,6 +387,7 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 				if err := rn.FinalizeTerminal(id.RunID, phase); err != nil {
 					return resumed, warned, fmt.Errorf("finalize terminal run %q: %w", id.RunID, err)
 				}
+				release(id.RunID, id.Workflow)
 				continue // terminal: nothing to resume
 			}
 		}
@@ -414,7 +412,7 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 		wg.Add(1)
 		go func(runID, wfName string) {
 			defer wg.Done()
-			defer release(wfName)
+			defer release(runID, wfName)
 			result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, RepoRef: repoRef})
 			ingestRunTelemetry(tel, rollupDB, l, runID, log)
 			// #710: same fix as localscheduler/scheduler.go's dispatch echo —

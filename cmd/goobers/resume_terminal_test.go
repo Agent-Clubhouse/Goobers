@@ -86,6 +86,16 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 	l := instance.NewLayout(root)
 	newStaleTerminalRun(t, l, "stale-terminal-1", "default-implement", journal.PhaseCompleted, "local-ci")
 
+	for restart := 0; restart < 3; restart++ {
+		counts, err := localscheduler.ActiveRunCounts(l.RunsDir())
+		if err != nil {
+			t.Fatalf("restart %d: count active runs: %v", restart, err)
+		}
+		if got := counts["default-implement"]; got != 0 {
+			t.Fatalf("restart %d: active count = %d, want 0", restart, got)
+		}
+	}
+
 	ctx := context.Background()
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(ctx, l, &wg)
@@ -97,7 +107,12 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg)
+	var released []string
+	release := func(runID, workflow string) {
+		released = append(released, workflow)
+		sched.ReleaseReconciled(runID, workflow)
+	}
+	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, release, &wg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +121,9 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 	}
 	if len(resumed) != 0 {
 		t.Fatalf("resumed = %v, want none — the run's journal already shows it finished despite the stale checkpoint", resumed)
+	}
+	if len(released) != 1 || released[0] != "default-implement" {
+		t.Fatalf("released = %v, want terminal workflow slot released once", released)
 	}
 	wg.Wait()
 
@@ -130,6 +148,17 @@ func TestResumeScanReleasesClaimsForAlreadyTerminalRun(t *testing.T) {
 	l := instance.NewLayout(root)
 	const runID = "stale-terminal-with-claim"
 	newStaleTerminalRun(t, l, runID, "default-implement", journal.PhaseEscalated, "review")
+	if err := os.WriteFile(filepath.Join(l.RunsDir(), runID, "state.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	counts, err := localscheduler.ActiveRunCounts(l.RunsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := counts["default-implement"]; got != 0 {
+		t.Fatalf("active count = %d, want 0 with unreadable state.json and terminal event log", got)
+	}
 
 	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
 	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
@@ -153,7 +182,7 @@ func TestResumeScanReleasesClaimsForAlreadyTerminalRun(t *testing.T) {
 
 	resumed, warned, err := resumeInterruptedRuns(
 		context.Background(), l, setup.Runner, setup.Machines, setup.RepoRefs,
-		setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.Release, &wg,
+		setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg,
 	)
 	if err != nil {
 		t.Fatal(err)
