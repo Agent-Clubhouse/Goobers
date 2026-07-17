@@ -40,6 +40,17 @@ var newGitHubProvider = providers.NewGitHubProvider
 const (
 	claimLedgerFileName = "claims.json"
 	claimLockFileName   = "claims.lock"
+	// mergeLockFileName is the cross-process flock `merge-pr` (mergepr.go)
+	// takes around its poll->decide->merge window (issue #719): once
+	// merge-review's readiness allows several concurrent runs to review
+	// DIFFERENT PRs at once, each independently reaches merge-pr, but only
+	// one PR may be inside that window at a time — serializing it is what
+	// lets a later run's re-poll (D6) actually observe an earlier run's
+	// just-landed merge instead of racing it. A dedicated lock file, not
+	// claimLockFileName, since this guards a different critical section
+	// (the merge decision, not claim-ledger mutation) with a different
+	// hold-time profile (network round-trips, not a fast local read/write).
+	mergeLockFileName = "merge.lock"
 )
 
 // layoutFor is instance.NewLayout, named for readability at each provider-

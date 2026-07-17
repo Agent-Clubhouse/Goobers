@@ -1,7 +1,13 @@
 # INTENTIONAL LIVE DIVERGENCE:
-# The checked-in reference keeps the hourly :23 cadence,
-# maxConcurrentRuns=1, and maxRunsPerHour=2. Operator-tuned live cadence and
-# budget changes are deliberately not mirrored here.
+# The checked-in reference keeps the hourly :23 cadence and maxRunsPerHour=2.
+# Operator-tuned live cadence and budget changes are deliberately not
+# mirrored here. maxConcurrentRuns is NOT part of that divergence (issue
+# #719): reviews of distinct PRs are already claim-ledger-safe (pr-select
+# leases the PR before gather-sibling-context/review run), and only the
+# merge-pr stage's own poll->decide->merge window needs serializing —
+# `cmd/goobers/mergepr.go` now does that via an instance-level flock
+# (mergeLockFileName), so raising this is a real code-level fix landing as
+# the new checked-in default, not a live-only tuning knob.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 metadata:
@@ -26,7 +32,14 @@ spec:
     - type: schedule
       schedule: "23 * * * *"
   readiness:
-    maxConcurrentRuns: 1
+    # Issue #719: distinct-PR reviews are already claim-ledger-safe, so this
+    # bound existed purely to protect the shared merge decision — now that
+    # merge-pr serializes that window itself (mergeLockFileName), it no
+    # longer needs to also serialize the (harmless-in-parallel) review work
+    # ahead of it. 4 matches the instance's observed headroom
+    # (maxParallelRuns 10, peak 8, avg 3.84 concurrent runs instance-wide)
+    # and the issue's own "×3-4 throughput" target.
+    maxConcurrentRuns: 4
     maxRunsPerHour: 2
   start: pr-select
   tasks:
