@@ -69,3 +69,31 @@ func TestVerdictSchemaRejectsUnknownFindingClass(t *testing.T) {
 		t.Fatal("expected an unknown finding class to fail schema validation")
 	}
 }
+
+// TestCrossPRBlockedVerdictWithBlockingPRsValidatesAgainstSchema is #747's
+// schema-side acceptance: a real Go-marshaled Verdict carrying a
+// cross-pr-blocked finding with BlockingPRs populated validates against
+// verdict.schema.json — the schema is closed (additionalProperties: false),
+// so a Go-side field addition with no matching schema property would fail
+// this closed, not the Go round-trip test.
+func TestCrossPRBlockedVerdictWithBlockingPRsValidatesAgainstSchema(t *testing.T) {
+	v, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	verdict := apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges,
+		Findings: []apiv1.Finding{
+			{Severity: apiv1.SeverityInfo, Message: "should land after PR #350", Class: apiv1.FindingCrossPRBlocked, BlockingPRs: []int{350}},
+		},
+		HeadSHA: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+		BaseSHA: "0123456789abcdef0123456789abcdef01234567",
+	}
+	data, err := json.Marshal(verdict)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := v.ValidateJSON("verdict.schema.json", data); err != nil {
+		t.Fatalf("cross-pr-blocked verdict with blockingPrs should validate, got: %v", err)
+	}
+}

@@ -79,7 +79,13 @@ see.
    than guessing at conflict severity.
 3. **Ordering dependency** — if the selected PR logically depends on
    another still-open PR (e.g. it extends something a sibling PR is
-   introducing), file a `cross-pr-blocked` finding naming that PR.
+   introducing), file a `cross-pr-blocked` finding naming that PR — both in
+   `message` (prose, for a human) AND in `blockingPrs` (the PR number(s) as
+   integers, for automated routing; see "Done" below). Only use this class
+   when the selected PR is correct in isolation and is purely waiting on
+   ordering — if you also found an actual defect in its own diff, file that
+   as `substantive` instead (or in addition); never let a pure ordering
+   concern hide a real one.
 4. **General readiness** — same bar as single-diff mode otherwise: is this
    PR's own state (draft, CI) actually ready, independent of siblings?
 5. Decide `pass`/`needs-changes`/`fail` with the same semantics as
@@ -139,6 +145,12 @@ populate differs.
   - `class` — **holistic mode only**: exactly one of `rebase-needed`,
     `conflict`, `substantive`, `cross-pr-blocked` (see "Holistic mode"
     above). Omit entirely in single-diff mode — do not set it there.
+  - `blockingPrs` (optional) — **`cross-pr-blocked` findings only**: the
+    sibling PR number(s) this finding names, as an array of integers (e.g.
+    `[350]`). REQUIRED whenever `class` is `cross-pr-blocked` — a
+    cross-pr-blocked finding with no `blockingPrs` is rejected outright
+    (nothing an automated unpark could ever act on). Omit entirely for
+    every other class, and always in single-diff mode.
   A finding has no `evidence` field and no other keys.
 - `summary` (optional) — a one-line summary. Both modes.
 - `headSha` / `baseSha` — **holistic mode only**: copy `selectedHeadSha`/

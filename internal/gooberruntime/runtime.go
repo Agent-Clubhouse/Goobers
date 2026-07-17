@@ -126,6 +126,9 @@ func validateVerdict(verdict apiv1.Verdict) error {
 		if strings.TrimSpace(finding.Message) == "" {
 			return fmt.Errorf("finding[%d].message is required", i)
 		}
+		if !finding.IsValid() {
+			return fmt.Errorf("finding[%d] is invalid (class %q, blockingPRs %v)", i, finding.Class, finding.BlockingPRs)
+		}
 	}
 	return nil
 }

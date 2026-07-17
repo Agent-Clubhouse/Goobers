@@ -100,7 +100,7 @@ func TestPRLifecycleVerdictRoundTrip(t *testing.T) {
 		Findings: []Finding{
 			{Severity: SeverityWarning, Message: "base advanced 3 commits", Class: FindingRebaseNeeded},
 			{Severity: SeverityError, Message: "touches internal/runner/run.go also touched by PR #237", Location: "internal/runner/run.go", Class: FindingSubstantive},
-			{Severity: SeverityInfo, Message: "should land after PR #350 per ordering policy", Class: FindingCrossPRBlocked},
+			{Severity: SeverityInfo, Message: "should land after PR #350 per ordering policy", Class: FindingCrossPRBlocked, BlockingPRs: []int{350}},
 		},
 		Summary: "rebase needed; one substantive cross-PR finding; ordering dependency",
 		HeadSHA: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
@@ -142,14 +142,14 @@ func TestOrdinaryGateVerdictHasNoPRLifecycleFields(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	s := string(data)
-	if strings.Contains(s, "headSha") || strings.Contains(s, "baseSha") || strings.Contains(s, "class") {
+	if strings.Contains(s, "headSha") || strings.Contains(s, "baseSha") || strings.Contains(s, "class") || strings.Contains(s, "blockingPrs") {
 		t.Fatalf("expected omitempty to drop unset PR-lifecycle fields, got %s", data)
 	}
 	var out Verdict
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.HeadSHA != "" || out.BaseSHA != "" || out.Findings[0].Class != "" {
+	if out.HeadSHA != "" || out.BaseSHA != "" || out.Findings[0].Class != "" || out.Findings[0].BlockingPRs != nil {
 		t.Fatalf("expected PR-lifecycle fields to stay empty on an ordinary gate verdict, got %+v", out)
 	}
 }
@@ -165,6 +165,33 @@ func TestFindingClassValidity(t *testing.T) {
 	}
 	if FindingClass("bogus-class").IsValid() {
 		t.Error("expected an unknown class to be invalid")
+	}
+}
+
+// TestFindingIsValid pins #747's fail-closed rule: a FindingCrossPRBlocked
+// finding with no named blocker is worse than not raising it at all (an
+// automated unpark can never resolve it), so Finding.IsValid() must reject
+// it — distinct from FindingClass.IsValid() above, which only checks the
+// class enum itself, not this cross-field constraint.
+func TestFindingIsValid(t *testing.T) {
+	tests := []struct {
+		name string
+		f    Finding
+		want bool
+	}{
+		{name: "ordinary in-run finding, no class", f: Finding{Severity: SeverityInfo, Message: "ok"}, want: true},
+		{name: "classed, non-cross-pr-blocked", f: Finding{Severity: SeverityWarning, Message: "x", Class: FindingSubstantive}, want: true},
+		{name: "cross-pr-blocked with blocker", f: Finding{Severity: SeverityInfo, Message: "x", Class: FindingCrossPRBlocked, BlockingPRs: []int{350}}, want: true},
+		{name: "cross-pr-blocked with no blocker", f: Finding{Severity: SeverityInfo, Message: "x", Class: FindingCrossPRBlocked}, want: false},
+		{name: "cross-pr-blocked with empty blocker slice", f: Finding{Severity: SeverityInfo, Message: "x", Class: FindingCrossPRBlocked, BlockingPRs: []int{}}, want: false},
+		{name: "unknown class", f: Finding{Severity: SeverityInfo, Message: "x", Class: FindingClass("bogus")}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.f.IsValid(); got != tt.want {
+				t.Errorf("Finding{%+v}.IsValid() = %v, want %v", tt.f, got, tt.want)
+			}
+		})
 	}
 }
 

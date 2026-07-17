@@ -239,6 +239,29 @@ func TestReviewRejectsInvalidVerdict(t *testing.T) {
 	}
 }
 
+// TestReviewRejectsCrossPRBlockedFindingWithNoBlocker is #747's fail-closed
+// rule exercised end-to-end through Review, not just Finding.IsValid() in
+// isolation: a reviewer that emits a cross-pr-blocked finding without naming
+// its blocker produces an unusable record (nothing an automated unpark could
+// ever act on) — validateVerdict must reject the whole verdict, the same way
+// it already rejects an unknown decision or a missing message.
+func TestReviewRejectsCrossPRBlockedFindingWithNoBlocker(t *testing.T) {
+	rt := New(Options{
+		Preparer: &fakePreparer{},
+		Evaluator: &fakeEvaluator{verdict: apiv1.Verdict{
+			Decision: apiv1.VerdictNeedsChanges,
+			Findings: []apiv1.Finding{
+				{Severity: apiv1.SeverityInfo, Message: "should land after a sibling PR", Class: apiv1.FindingCrossPRBlocked},
+			},
+		}},
+	})
+
+	_, err := rt.Review(context.Background(), validInvocation())
+	if err == nil || !strings.Contains(err.Error(), "finding[0] is invalid") {
+		t.Fatalf("Review error = %v, want finding[0] rejected for a missing blocker", err)
+	}
+}
+
 type fakeRepoProvider struct {
 	got providers.CloneRequest
 	err error

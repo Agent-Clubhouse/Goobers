@@ -301,6 +301,29 @@ type Finding struct {
 	// a checklist: pr-remediation must clear every classed finding, and
 	// merge-review re-verifies every one (SHA-pinned) before merge-ready.
 	Class FindingClass `json:"class,omitempty"`
+	// BlockingPRs names the sibling PR number(s) a FindingCrossPRBlocked
+	// finding is waiting behind (#747) — populated only when
+	// Class == FindingCrossPRBlocked. Before this field existed, the only
+	// record of *which* PR was blocking was free prose in Message, useless
+	// to automated routing/unparking. Empty on every other Class (including
+	// the zero value).
+	BlockingPRs []int `json:"blockingPrs,omitempty"`
+}
+
+// IsValid reports whether f is structurally usable: any set Class must be a
+// known one, and a FindingCrossPRBlocked finding must name at least one
+// blocker (#747) — a finding claiming "blocked by a sibling" with no known
+// sibling is worse than not raising it at all (it can never be resolved by
+// an automated unpark), so this fails closed rather than silently accepting
+// an unusable record.
+func (f Finding) IsValid() bool {
+	if f.Class != "" && !f.Class.IsValid() {
+		return false
+	}
+	if f.Class == FindingCrossPRBlocked && len(f.BlockingPRs) == 0 {
+		return false
+	}
+	return true
 }
 
 // IsValid reports whether s is a known result status.

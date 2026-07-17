@@ -8,7 +8,9 @@ import (
 	"io"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
@@ -16,19 +18,132 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+// blockedOnSiblingLabel marks a PR that's correct in isolation but must wait
+// behind a named sibling (#747) — see verdictLabel's doc comment.
+const blockedOnSiblingLabel = "goobers:blocked-on-sibling"
+
 // verdictLabel maps a #358 Verdict's Decision to the design doc's label
 // contract (§3): pass -> eligible to merge, needs-changes -> selected by
 // pr-remediation, fail -> a human must look (§4 D2: fail is never burned on
 // remediation budget, unlike needs-changes).
-func verdictLabel(decision apiv1.VerdictDecision) string {
+//
+// needs-changes gets one further split (#747): when every finding is a pure
+// cross-PR-ordering ask (FindingCrossPRBlocked) and there's at least one,
+// the PR isn't broken — it's waiting on a sibling. Routing that to
+// needs-remediation hands pr-remediation a defect that doesn't exist; it
+// reproduces the identical diff, checkpoints byte-identical, and escalates
+// (the stuck-loop pattern this issue exists to break). A mixed verdict —
+// any substantive/conflict/rebase-needed finding present alongside
+// cross-pr-blocked ones — still routes to needs-remediation unconditionally:
+// a real defect takes priority regardless of ordering, and remediation can
+// and should fix it.
+func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) string {
 	switch decision {
 	case apiv1.VerdictPass:
 		return "goobers:merge-ready"
 	case apiv1.VerdictFail:
 		return "goobers:merge-escalated"
 	default:
+		if allCrossPRBlocked(findings) {
+			return blockedOnSiblingLabel
+		}
 		return "goobers:needs-remediation"
 	}
+}
+
+// allCrossPRBlocked reports whether findings is non-empty and every finding
+// in it is FindingCrossPRBlocked — an empty findings slice is deliberately
+// NOT all-blocked (an empty needs-changes verdict with no findings at all is
+// not a cross-PR-ordering situation; it falls through to needs-remediation
+// like today).
+func allCrossPRBlocked(findings []apiv1.Finding) bool {
+	if len(findings) == 0 {
+		return false
+	}
+	for _, f := range findings {
+		if f.Class != apiv1.FindingCrossPRBlocked {
+			return false
+		}
+	}
+	return true
+}
+
+// unionBlockingPRs collects the deduplicated, sorted union of BlockingPRs
+// across every finding — a verdict can carry more than one cross-pr-blocked
+// finding (e.g. two independent ordering asks against two different
+// siblings), and blockedOnSiblingState.Blockers records the full set, not
+// just the first finding's.
+func unionBlockingPRs(findings []apiv1.Finding) []int {
+	seen := make(map[int]bool)
+	var out []int
+	for _, f := range findings {
+		for _, pr := range f.BlockingPRs {
+			if !seen[pr] {
+				seen[pr] = true
+				out = append(out, pr)
+			}
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+// blockedOnSiblingState is the PR-altitude analog of blockedrecords.go's
+// backlog-altitude blockedRecord (#747) — the structured record apply-verdict
+// posts when a verdict's findings are entirely cross-PR-ordering asks. This
+// is the source of truth #748's selection-exclusion/self-heal reads: which
+// PR(s) this one is genuinely waiting behind, so it can be excluded from
+// re-selection until they close and unparked once they do — without that
+// consulting a full Verdict's Findings array.
+type blockedOnSiblingState struct {
+	// Blockers is the union of BlockingPRs across every cross-pr-blocked
+	// finding in the verdict that produced this record.
+	Blockers []int `json:"blockers"`
+	// Reason is the verdict's own rationale, for a human reading the comment.
+	Reason string `json:"reason"`
+	// HeadSHA/BaseSHA pin the PR state this record was computed against —
+	// same SHA-pinning discipline as Verdict's own HeadSHA/BaseSHA (design
+	// doc §6 D6).
+	HeadSHA string `json:"headSha"`
+	BaseSHA string `json:"baseSha"`
+	// RecordedAt is when this record was posted.
+	RecordedAt time.Time `json:"recordedAt"`
+}
+
+// blockedOnSiblingPattern matches the machine-readable payload
+// blockedOnSiblingComment appends — mirrors verdictJSONPattern above.
+var blockedOnSiblingPattern = regexp.MustCompile(`(?s)<!-- blocked-on-sibling: (.*?) -->`)
+
+// blockedOnSiblingComment marshals s into the HTML-comment payload appended
+// to the posted verdict comment — mirrors verdictJSONComment above, and
+// #716's remediationState/remediationStateComment pattern
+// (cmd/goobers/remediationcheckpoint.go): always a fresh append onto the
+// SAME comment apply-verdict is already posting (renderVerdictComment's own
+// doc comment explains why: one posted comment stays the single source of
+// truth, rather than growing a second, driftable channel), never an
+// in-place edit of a prior comment.
+func blockedOnSiblingComment(s blockedOnSiblingState) (string, error) {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return "", fmt.Errorf("marshal blocked-on-sibling payload: %w", err)
+	}
+	return fmt.Sprintf("<!-- blocked-on-sibling: %s -->", data), nil
+}
+
+// parseBlockedOnSiblingComment recovers the blockedOnSiblingState a
+// prior apply-verdict run embedded in a PR comment — the read side #748's
+// selection-exclusion/self-heal uses. Returns ok=false if body has no
+// embedded payload, the normal case for any comment apply-verdict didn't
+// post as blocked-on-sibling.
+func parseBlockedOnSiblingComment(body string) (s blockedOnSiblingState, ok bool) {
+	m := blockedOnSiblingPattern.FindStringSubmatch(body)
+	if m == nil {
+		return blockedOnSiblingState{}, false
+	}
+	if err := json.Unmarshal([]byte(m[1]), &s); err != nil {
+		return blockedOnSiblingState{}, false
+	}
+	return s, true
 }
 
 // runApplyVerdict implements `goobers apply-verdict` (issue #359): reads the
@@ -157,8 +272,20 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		posted.SourceRunID = runID
 	}
 
-	label := verdictLabel(posted.Decision)
+	label := verdictLabel(posted.Decision, posted.Findings)
 	comment := renderVerdictComment(posted)
+	if label == blockedOnSiblingLabel {
+		state := blockedOnSiblingState{
+			Blockers:   unionBlockingPRs(posted.Findings),
+			Reason:     posted.Rationale,
+			HeadSHA:    posted.HeadSHA,
+			BaseSHA:    posted.BaseSHA,
+			RecordedAt: time.Now().UTC(),
+		}
+		if payload, err := blockedOnSiblingComment(state); err == nil {
+			comment += "\n\n" + payload
+		}
+	}
 	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository: repo,
 		ID:         strconv.Itoa(selectedNumber),
