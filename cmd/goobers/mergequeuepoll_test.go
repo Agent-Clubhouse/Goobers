@@ -1,0 +1,316 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+)
+
+// mergeQueuePollServerState scripts one pull request's live state across
+// repeated GET .../pulls/9 polls (issue #758's merge-queue-poll): the first
+// pendingCalls polls report open+unmerged (still queued); the poll after
+// that reports terminalState/terminalMerged. A test that never wants a
+// terminal state (the timeout case) sets pendingCalls very high relative to
+// its own short pollTimeoutSeconds input.
+type mergeQueuePollServerState struct {
+	mu sync.Mutex
+
+	pendingCalls   int
+	terminalState  string // "open" or "closed"
+	terminalMerged bool
+	headBranch     string
+	headSHA        string
+
+	pollCalls     int
+	pullListCalls int
+	deleteCalls   int
+	labelCalls    int
+	commentCalls  int
+	labelStatus   int // non-zero forces the labels endpoint to fail
+}
+
+func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePollServerState) *httptest.Server {
+	t.Helper()
+	if st.headBranch == "" {
+		st.headBranch = "goobers/implementation/run-9"
+	}
+	if st.headSHA == "" {
+		st.headSHA = "head9sha"
+	}
+	prefix := "/repos/" + owner + "/" + repo
+	mux := http.NewServeMux()
+
+	mux.HandleFunc(prefix+"/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		st.pollCalls++
+		terminal := st.pollCalls > st.pendingCalls
+		st.mu.Unlock()
+
+		state := "open"
+		merged := false
+		if terminal {
+			state = st.terminalState
+			merged = st.terminalMerged
+		}
+		writeFakeJSON(w, map[string]interface{}{
+			"number": 9, "state": state, "merged": merged,
+			"head": map[string]interface{}{"ref": st.headBranch, "sha": st.headSHA,
+				"repo": map[string]interface{}{"name": repo, "html_url": "https://github.com/" + owner + "/" + repo, "owner": map[string]string{"login": owner}}},
+			"base": map[string]interface{}{"ref": "main", "sha": "basesha"},
+		})
+	})
+	mux.HandleFunc(prefix+"/pulls", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		st.pullListCalls++
+		st.mu.Unlock()
+		writeFakeJSON(w, []map[string]interface{}{})
+	})
+	mux.HandleFunc(prefix+"/pulls/9/reviews", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, []map[string]interface{}{})
+	})
+	mux.HandleFunc(prefix+"/commits/"+st.headSHA+"/status", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []map[string]interface{}{}})
+	})
+	mux.HandleFunc(prefix+"/commits/"+st.headSHA+"/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{
+			{"name": "make-ci", "status": "completed", "conclusion": "success"},
+		}})
+	})
+	// Serves both PollPullRequest's own comments-list GET (queried while
+	// resolving the merged outcome's branch-cleanup details) and
+	// UpdateWorkItem's comment-creation POST (the eviction side effect) —
+	// one registration per net/http.ServeMux pattern, branching on method.
+	mux.HandleFunc(prefix+"/issues/9/comments", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		st.commentCalls++
+		st.mu.Unlock()
+		if r.Method == http.MethodGet {
+			writeFakeJSON(w, []map[string]interface{}{})
+			return
+		}
+		writeFakeJSON(w, map[string]interface{}{"id": 1})
+	})
+	mux.HandleFunc(prefix+"/git/refs/heads/"+st.headBranch, func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		st.deleteCalls++
+		st.mu.Unlock()
+		if r.Method != http.MethodDelete {
+			t.Errorf("branch request method = %s, want DELETE", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc(prefix+"/issues/9", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"number": 9, "state": "open", "html_url": "https://github.com/" + owner + "/" + repo + "/issues/9"})
+	})
+	mux.HandleFunc(prefix+"/issues/9/labels", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		st.labelCalls++
+		status := st.labelStatus
+		st.mu.Unlock()
+		if status != 0 {
+			http.Error(w, "label failed", status)
+			return
+		}
+		writeFakeJSON(w, []map[string]string{})
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+// mergeQueuePollEnv mirrors mergePREnv: instance root, run/workflow
+// identity, both capability tokens merge-queue-poll needs
+// (github:pr:merge for the poll itself, github:issues:write for the
+// eviction-labeling side effect), and declared Task.Inputs.
+func mergeQueuePollEnv(t *testing.T, serverURL string, inputs map[string]string) (instanceRoot, workDir string) {
+	t.Helper()
+	instanceRoot = initDemo(t)
+	prev := newGitHubProvider
+	newGitHubProvider = mergePRTestServer{url: serverURL}.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	t.Setenv("GOOBERS_RUN_ID", "run-merge-1")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_MERGE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_BRANCH_DELETE", "test-token")
+	for k, v := range inputs {
+		t.Setenv("GOOBERS_INPUT_"+strings.ToUpper(k), v)
+	}
+	workDir = t.TempDir()
+	t.Chdir(workDir)
+	return instanceRoot, workDir
+}
+
+func readQueueResult(t *testing.T, dir string) map[string]interface{} {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "queue-result.json"))
+	if err != nil {
+		t.Fatalf("read queue-result.json: %v", err)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal queue-result.json: %v", err)
+	}
+	return result
+}
+
+// TestMergeQueuePollReportsMergedAndCleansUpBranch is #758's queue-merged
+// path: once the queue actually merges the pull request, this stage
+// reports queueOutcome=merged and runs the same branch cleanup merge-pr's
+// direct-merge path already does.
+func TestMergeQueuePollReportsMergedAndCleansUpBranch(t *testing.T) {
+	st := &mergeQueuePollServerState{pendingCalls: 1, terminalState: "closed", terminalMerged: true}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, dir := mergeQueuePollEnv(t, server.URL, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "merged" {
+		t.Fatalf("result = %+v, want queueOutcome=merged", result)
+	}
+	if result["selectedNumber"] != "9" {
+		t.Fatalf("result = %+v, want selectedNumber=9", result)
+	}
+	if st.deleteCalls != 1 || st.pullListCalls != 1 {
+		t.Fatalf("cleanup calls = delete:%d list:%d, want 1 each", st.deleteCalls, st.pullListCalls)
+	}
+	if result["branchCleanup"] != "deleted" {
+		t.Fatalf("result = %+v, want branchCleanup=deleted", result)
+	}
+	if st.labelCalls != 0 {
+		t.Fatalf("label calls = %d, want 0 (a merged pull request must never be labeled needs-remediation)", st.labelCalls)
+	}
+}
+
+// TestMergeQueuePollReportsEvictedAndLabelsForRemediation is #758's headline
+// acceptance criterion: an evicted pull request is labeled
+// goobers:needs-remediation with an explanatory comment BEFORE the stage
+// reports queueOutcome=evicted — the routing itself, not just the report.
+func TestMergeQueuePollReportsEvictedAndLabelsForRemediation(t *testing.T) {
+	st := &mergeQueuePollServerState{pendingCalls: 1, terminalState: "closed", terminalMerged: false}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, dir := mergeQueuePollEnv(t, server.URL, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "evicted" {
+		t.Fatalf("result = %+v, want queueOutcome=evicted", result)
+	}
+	if st.labelCalls != 1 {
+		t.Fatalf("label calls = %d, want 1 (eviction must apply goobers:needs-remediation)", st.labelCalls)
+	}
+	if st.commentCalls != 1 {
+		t.Fatalf("comment calls = %d, want 1 (eviction must explain why)", st.commentCalls)
+	}
+	if st.deleteCalls != 0 {
+		t.Fatalf("branch delete calls = %d, want 0 (an evicted pull request was never merged, nothing to clean up)", st.deleteCalls)
+	}
+	if _, ok := result["mergeSha"]; ok {
+		t.Fatalf("result = %+v, want no mergeSha for an evicted pull request", result)
+	}
+}
+
+// TestMergeQueuePollEvictionLabelFailureFailsTheStage proves the routing IS
+// the acceptance criterion: a failure to apply goobers:needs-remediation on
+// an evicted pull request must fail the stage (exit 1, with a classified
+// error in the result file via failProviderStage — the same convention
+// every other provider-chain subcommand's genuine failures follow), not
+// silently report evicted with no actual routing having happened. 422 (not
+// 5xx) so classifyProviderError treats it as non-retryable and the
+// provider's own internal retry-with-backoff never kicks in, keeping the
+// test fast.
+func TestMergeQueuePollEvictionLabelFailureFailsTheStage(t *testing.T) {
+	st := &mergeQueuePollServerState{pendingCalls: 0, terminalState: "closed", terminalMerged: false, labelStatus: http.StatusUnprocessableEntity}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, dir := mergeQueuePollEnv(t, server.URL, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code == 0 {
+		t.Fatalf("code = 0, stderr = %q, want a stage failure when eviction labeling fails", stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "queue-result.json"))
+	if err != nil {
+		t.Fatalf("read queue-result.json: %v", err)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal queue-result.json: %v", err)
+	}
+	if _, ok := result["errorCode"]; !ok {
+		t.Fatalf("result = %+v, want a classified errorCode (failProviderStage's convention), not a queueOutcome key", result)
+	}
+	if _, ok := result["queueOutcome"]; ok {
+		t.Fatalf("result = %+v, want no queueOutcome written — the routing failed, so no outcome was actually determined", result)
+	}
+}
+
+// TestMergeQueuePollTimesOutWhenStillPending is #758's third outcome
+// (mirroring ci-status's own OutcomeTimeout, #239): a pull request that
+// never resolves within this stage's own bounded poll reports
+// queueOutcome=timeout, distinct from both merged and evicted, with exit 0
+// (still pending is not itself a stage failure).
+func TestMergeQueuePollTimesOutWhenStillPending(t *testing.T) {
+	st := &mergeQueuePollServerState{pendingCalls: 1_000_000, terminalState: "open", terminalMerged: false}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, dir := mergeQueuePollEnv(t, server.URL, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "20ms",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q, want exit 0 for a timeout (not a stage failure)", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "timeout" {
+		t.Fatalf("result = %+v, want queueOutcome=timeout", result)
+	}
+	if st.labelCalls != 0 || st.deleteCalls != 0 {
+		t.Fatalf("label/delete calls = %d/%d, want 0/0 for a timeout (no terminal outcome to act on yet)", st.labelCalls, st.deleteCalls)
+	}
+}
+
+func TestMergeQueuePollRequiresPullNumber(t *testing.T) {
+	st := &mergeQueuePollServerState{}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, _ := mergeQueuePollEnv(t, server.URL, map[string]string{})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 1 || !strings.Contains(stderr, "pullNumber") {
+		t.Fatalf("code = %d, stderr = %q, want a pullNumber-required error", code, stderr)
+	}
+}
+
+func TestMergeQueuePollRefusesWithoutCapability(t *testing.T) {
+	instanceRoot := initDemo(t)
+	prev := newGitHubProvider
+	newGitHubProvider = mergePRTestServer{url: "http://unused.invalid"}.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+	t.Setenv("GOOBERS_RUN_ID", "run-merge-1")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Setenv("GOOBERS_INPUT_PULLNUMBER", "9")
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", instanceRoot)
+	if code != 1 || !strings.Contains(stderr, "github:pr:merge") {
+		t.Fatalf("code = %d, stderr = %q, want a github:pr:merge capability error", code, stderr)
+	}
+}

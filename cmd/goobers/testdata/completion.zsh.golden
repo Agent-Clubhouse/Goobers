@@ -32,6 +32,7 @@ _goobers_completion()
             'issue-close-out:close the claimed issue'
             'reset-rate-limit:reset the run rate limit'
             'merge-pr:merge an eligible pull request'
+            'merge-queue-poll:watch an enqueued pull request until the merge queue resolves it'
             'pr-select:select a pull request'
             'gather-sibling-context:gather sibling pull request context'
             'apply-verdict:apply a review verdict'

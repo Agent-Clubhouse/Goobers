@@ -79,6 +79,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runResetRateLimit(args[1:], stdout, stderr)
 	case "merge-pr":
 		return runMergePR(args[1:], stdout, stderr)
+	case "merge-queue-poll":
+		return runMergeQueuePoll(args[1:], stdout, stderr)
 	case "pr-select":
 		return runPRSelect(args[1:], stdout, stderr)
 	case "gather-sibling-context":
@@ -140,7 +142,8 @@ Usage:
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
-  goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid (a workflow stage)
+  goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
+  goobers merge-queue-poll               watch an enqueued pull request until the merge queue merges or evicts it, labeling an eviction for remediation (a workflow stage)
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
   goobers telemetry-query [--window <d>] emit telemetry signals JSON over a window (a workflow stage)
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
@@ -155,8 +158,8 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-query/push-branch/open-pr/issue-close-out/merge-pr/pr-select/
-gather-sibling-context/apply-verdict/post-merge/gather-pr-context/
+backlog-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
+pr-select/gather-sibling-context/apply-verdict/post-merge/gather-pr-context/
 rebase-pr/remediation-checkpoint are the built-in provider-chain stage
 kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#237/#359/#360/#361/#362/
 #363/#364): invoked by the runner as a deterministic

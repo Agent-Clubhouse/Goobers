@@ -356,6 +356,101 @@ type MergePullRequestResult struct {
 	Message  string `json:"message,omitempty"`
 }
 
+// MergePolicy identifies how a repo lands an approved pull request (issue
+// #758): direct-merge calls the merge API as today; merge-queue-enqueue adds
+// the pull request to the repo's merge queue instead, deferring the actual
+// merge to GitHub's own queue processing. Different target repos run
+// different policies (the V1 milestone's arbitrary-repos mandate), so
+// merge-review/pr-remediation/auto-merge must dispatch on this rather than
+// hardcode which one is in effect — see internal/mergepolicy.
+type MergePolicy string
+
+// Supported merge policies. A third policy (e.g. a different provider's
+// queue equivalent) is a new value here plus a new internal/mergepolicy
+// Lander implementation, not a change to either existing one.
+const (
+	MergePolicyDirect     MergePolicy = "direct"
+	MergePolicyMergeQueue MergePolicy = "merge_queue"
+)
+
+// RepoMergePolicyRequest asks a provider to detect a repo's active merge
+// policy for req.Branch (the target/base branch a pull request lands on)
+// from its live branch protection/ruleset state — detected, never
+// statically configured, so a repo that later flips its GitHub settings
+// (e.g. #631/#759 enabling merge queue on Goobers' own repo) is picked up
+// without a code or config change.
+type RepoMergePolicyRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	Branch     string        `json:"branch"`
+}
+
+// RepoMergePolicyResult reports req.Branch's detected merge policy.
+type RepoMergePolicyResult struct {
+	Policy MergePolicy `json:"policy"`
+}
+
+// EnqueuePullRequestRequest adds a pull request to its repo's merge queue
+// (issue #758) — the enqueue-policy counterpart to MergePullRequestRequest.
+// Like MergePullRequest, this performs no conjunct checking of its own; the
+// caller (internal/mergepolicy's Land, driven by the same poll->decide
+// closure mergepr.go already runs) is responsible for verifying every merge
+// conjunct first.
+type EnqueuePullRequestRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	PullID     string        `json:"pullId"`
+	// ExpectedHeadSHA, if set, is the same optimistic-concurrency guard
+	// MergePullRequestRequest passes to GitHub's merge API — enqueueing
+	// uses that same API (see GitHubProvider.EnqueuePullRequest's doc).
+	ExpectedHeadSHA string `json:"expectedHeadSha,omitempty"`
+}
+
+// EnqueuePullRequestResult reports the outcome of an enqueue attempt.
+// Merged=true is the rare edge case where GitHub's merge endpoint (the same
+// endpoint enqueue calls) completed the merge immediately instead of
+// actually queuing it (e.g. an empty queue with nothing ahead of this pull
+// request) — still a genuine "merged" outcome, which internal/mergepolicy's
+// enqueueLander maps back to Outcome=merged rather than mis-reporting
+// "enqueued" for a pull request that is, in fact, already landed.
+type EnqueuePullRequestResult struct {
+	Number   int    `json:"number"`
+	Merged   bool   `json:"merged"`
+	MergeSHA string `json:"mergeSha,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
+
+// MergeQueueEntryState normalizes the possible outcomes of watching a pull
+// request already enqueued via EnqueuePullRequest resolve (issue #758).
+type MergeQueueEntryState string
+
+// Merge queue entry states a poll can report.
+const (
+	// MergeQueueEntryPending: still in the queue, no terminal outcome yet.
+	MergeQueueEntryPending MergeQueueEntryState = "pending"
+	// MergeQueueEntryMerged: the queue merged the pull request.
+	MergeQueueEntryMerged MergeQueueEntryState = "merged"
+	// MergeQueueEntryEvicted: the queue removed the pull request without
+	// merging it (its combined build against the projected merge state
+	// failed) — a first-class, explicit outcome (issue #758's acceptance
+	// criterion), never silently conflated with "still pending" or left for
+	// a generic failure path to bury.
+	MergeQueueEntryEvicted MergeQueueEntryState = "evicted"
+)
+
+// PollMergeQueueEntryRequest polls the live state of a pull request the
+// caller has already enqueued (EnqueuePullRequest), to learn whether the
+// queue has since merged or evicted it.
+type PollMergeQueueEntryRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	PullID     string        `json:"pullId"`
+}
+
+// PollMergeQueueEntryResult reports a pull request's current merge-queue
+// entry state.
+type PollMergeQueueEntryResult struct {
+	State    MergeQueueEntryState `json:"state"`
+	MergeSHA string               `json:"mergeSha,omitempty"`
+}
+
 // ListPullRequestsRequest filters open pull requests for merge-review's
 // selection stage (issue #359) — the same declarative-selection model
 // backlog-query already uses for issues, applied to PRs. Reused as-is by

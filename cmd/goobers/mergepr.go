@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/mergepolicy"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -133,10 +134,11 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	var poll providers.PullRequestPollResult
 	var pollErr error
 	var reasons []string
-	var result providers.MergePullRequestResult
+	var landResult mergepolicy.Result
 	var mergeAttempted bool
 	var mergeErr error
 	var commitErr error
+	var policyErr error
 	lockErr := withClaimLock(lockPath, func() error {
 		// Independent, live re-check (D6) — never trust a caller-supplied
 		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
@@ -201,8 +203,28 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 
+		// Merge-policy detection (issue #758): direct-merge vs.
+		// merge-queue-enqueue, detected per repo/branch from live branch
+		// protection/ruleset state (cached — mergepolicycache.go — since
+		// it's a live provider call). Resolved here, under the same lock,
+		// using this poll's own BaseBranch — not a separately (unlocked)
+		// re-fetched one — so the policy decision is made against exactly
+		// the state this run's poll->decide->merge window already
+		// serializes on, matching #528's structuredMergeCommitMessage
+		// rationale just above.
+		var policy providers.MergePolicy
+		policy, policyErr = detectMergePolicy(ctx, provider, l.SchedulerDir(), repo, poll.BaseBranch, stderr)
+		if policyErr != nil {
+			return nil
+		}
+		lander, err := mergepolicy.ForPolicy(policy)
+		if err != nil {
+			policyErr = err
+			return nil
+		}
+
 		mergeAttempted = true
-		result, mergeErr = provider.MergePullRequest(ctx, providers.MergePullRequestRequest{
+		landResult, mergeErr = lander.Land(ctx, provider, mergepolicy.Request{
 			Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA,
 			CommitTitle: commitTitle, CommitMessage: mergeCommitMessage, MergeMethod: mergeMethod,
 		})
@@ -216,7 +238,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "poll pull request", pollErr, "merge-result.json")
 	}
 	if len(reasons) > 0 {
-		if err := writeMergeResult(resultFile, pullNumber, false, "", reasons, nil); err != nil {
+		if err := writeMergeResult(resultFile, pullNumber, mergepolicy.Result{}, reasons, nil); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
@@ -227,18 +249,22 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: build merge commit message: %v\n", commitErr)
 		return 1
 	}
+	if policyErr != nil {
+		return failProviderStage(stderr, "detect merge policy", policyErr, "merge-result.json")
+	}
 	if mergeErr != nil {
 		return failProviderStage(stderr, "merge pull request", mergeErr, "merge-result.json")
 	}
 	if !mergeAttempted {
-		// Unreachable: either pollErr, reasons, commitErr, mergeErr, or a
-		// successful merge attempt always sets one of the above.
+		// Unreachable: either pollErr, reasons, commitErr, policyErr,
+		// mergeErr, or a successful landing attempt always sets one of the
+		// above.
 		pf(stderr, "error: internal: merge-pr reached no decision for pr #%s\n", pullNumber)
 		return 1
 	}
 
 	var cleanup *mergeBranchCleanup
-	if result.Merged {
+	if landResult.Outcome == mergepolicy.OutcomeMerged {
 		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)
 		cleanup = &outcome
 		if outcome.Error != "" {
@@ -247,11 +273,15 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			pf(stdout, "branch cleanup %s (%s)\n", outcome.Status, outcome.HeadBranch)
 		}
 	}
-	if err := writeMergeResult(resultFile, pullNumber, result.Merged, result.MergeSHA, nil, cleanup); err != nil {
+	if err := writeMergeResult(resultFile, pullNumber, landResult, nil, cleanup); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	pf(stdout, "merged pr #%s (%s)\n", pullNumber, result.MergeSHA)
+	if landResult.Outcome == mergepolicy.OutcomeEnqueued {
+		pf(stdout, "enqueued pr #%s (merge queue)\n", pullNumber)
+	} else {
+		pf(stdout, "merged pr #%s (%s)\n", pullNumber, landResult.MergeSHA)
+	}
 	return 0
 }
 
@@ -373,18 +403,29 @@ func baseMovementIntersectsPR(ctx context.Context, provider providers.RepoProvid
 	return false, nil
 }
 
-// writeMergeResult writes the declared result file's flat JSON — selectedNumber
-// (string, always present), merged (bool, always present), mergeSha (on success),
+// writeMergeResult writes the declared result file's flat JSON —
+// selectedNumber (string, always present), merged (bool, always present —
+// true iff land.Outcome is mergepolicy.OutcomeMerged, i.e. GitHub reports
+// this pull request actually merged; false for both the enqueued and
+// refusal cases), landOutcome (string "merged"/"enqueued", present only when
+// a landing was actually attempted — the #758 writeback distinct-state
+// requirement: merge-gate's "land-outcome" check reads this, not merged, so
+// enqueued is never conflated with merged), mergeSha (when merged),
 // reason (a semicolon-joined list of unmet conjuncts, on refusal), and
-// headBranch/branchCleanup/branchCleanupError (after a merge) — matching
+// headBranch/branchCleanup/branchCleanupError (after an actual merge; a
+// merely-enqueued pull request has nothing to clean up yet) — matching
 // InputResultFile's flat-scalar-merge convention (internal/executor/shell.go's
 // mergeResultFileOutputs). selectedNumber is echoed so the task after merge-gate
-// can receive it through InputsFrom; merged lets that gate branch with zero new
-// plumbing.
-func writeMergeResult(path, selectedNumber string, merged bool, mergeSHA string, reasons []string, cleanup *mergeBranchCleanup) error {
-	out := map[string]interface{}{"selectedNumber": selectedNumber, "merged": merged}
-	if mergeSHA != "" {
-		out["mergeSha"] = mergeSHA
+// can receive it through InputsFrom; merged is kept (unchanged meaning) so
+// existing callers/tests reading only that boolean still see correct
+// behavior for both the direct-merge and refusal cases.
+func writeMergeResult(path, selectedNumber string, land mergepolicy.Result, reasons []string, cleanup *mergeBranchCleanup) error {
+	out := map[string]interface{}{"selectedNumber": selectedNumber, "merged": land.Outcome == mergepolicy.OutcomeMerged}
+	if land.Outcome != "" {
+		out["landOutcome"] = string(land.Outcome)
+	}
+	if land.MergeSHA != "" {
+		out["mergeSha"] = land.MergeSHA
 	}
 	if len(reasons) > 0 {
 		out["reason"] = strings.Join(reasons, "; ")

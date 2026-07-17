@@ -59,7 +59,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			m, err := Compile(
 				Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 				WithGoobers(map[string]apiv1.GooberSpec{"reviewer": reviewer.Spec}),
-				WithKnownChecks([]string{"output-equals"}),
+				WithKnownChecks([]string{"output-equals", "land-outcome", "queue-outcome"}),
 			)
 			if err != nil {
 				t.Fatalf("compile workflow: %v", err)
@@ -107,18 +107,51 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !ok {
 				t.Fatal("merge-gate not found")
 			}
-			if mergeGate.Automated == nil ||
-				mergeGate.Automated.Check != "output-equals" ||
-				mergeGate.Automated.Params["key"] != "merged" ||
-				mergeGate.Automated.Params["equals"] != "true" {
-				t.Errorf("merge-gate check = %+v, want output-equals merged=true", mergeGate.Automated)
+			// Issue #758: merge-gate distinguishes an actual merge from a
+			// merge-queue enqueue via "land-outcome", not a plain
+			// output-equals(merged==true) — that could only ever say
+			// "landed or not", silently conflating "enqueued" with refusal.
+			if mergeGate.Automated == nil || mergeGate.Automated.Check != "land-outcome" {
+				t.Errorf("merge-gate check = %+v, want land-outcome", mergeGate.Automated)
 			}
-			wantMergeBranches := map[string]string{"pass": "post-merge", "fail": TerminalComplete}
+			wantMergeBranches := map[string]string{"merged": "post-merge", "enqueued": "queue-watch", "fail": TerminalComplete}
 			if !reflect.DeepEqual(mergeGate.Branches, wantMergeBranches) {
 				t.Errorf("merge-gate branches = %v, want %v", mergeGate.Branches, wantMergeBranches)
 			}
 			if mergeGate.Branches["fail"] == "apply-verdict" {
 				t.Error("merge refusal must not apply the pass verdict label; the PR must remain retryable")
+			}
+
+			queueWatch, ok := m.Task("queue-watch")
+			if !ok {
+				t.Fatal("queue-watch task not found")
+			}
+			if !reflect.DeepEqual(queueWatch.InputsFrom, map[string]string{"pullNumber": "selectedNumber"}) {
+				t.Errorf("queue-watch inputsFrom = %v, want pullNumber=selectedNumber", queueWatch.InputsFrom)
+			}
+			if queueWatch.Run == nil || !reflect.DeepEqual(queueWatch.Run.Command, []string{"goobers", "merge-queue-poll"}) {
+				t.Errorf("queue-watch command = %+v, want [goobers merge-queue-poll]", queueWatch.Run)
+			}
+			wantQueueWatchCapabilities := []string{"github:pr:merge", "github:issues:write"}
+			if !reflect.DeepEqual(queueWatch.Capabilities, wantQueueWatchCapabilities) {
+				t.Errorf("queue-watch capabilities = %v, want %v", queueWatch.Capabilities, wantQueueWatchCapabilities)
+			}
+			if queueWatch.Next != "queue-gate" {
+				t.Errorf("queue-watch.next = %q, want queue-gate", queueWatch.Next)
+			}
+
+			queueGate, ok := m.Gate("queue-gate")
+			if !ok {
+				t.Fatal("queue-gate not found")
+			}
+			if queueGate.Automated == nil || queueGate.Automated.Check != "queue-outcome" {
+				t.Errorf("queue-gate check = %+v, want queue-outcome", queueGate.Automated)
+			}
+			wantQueueBranches := map[string]string{
+				"merged": "post-merge", "evicted": TerminalComplete, "timeout": TerminalComplete, "fail": TerminalComplete,
+			}
+			if !reflect.DeepEqual(queueGate.Branches, wantQueueBranches) {
+				t.Errorf("queue-gate branches = %v, want %v", queueGate.Branches, wantQueueBranches)
 			}
 
 			postMerge, ok := m.Task("post-merge")

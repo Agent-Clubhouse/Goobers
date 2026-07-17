@@ -150,6 +150,81 @@ func TestCIGateRoutesTimeoutOutcomeToEscalate(t *testing.T) {
 	}
 }
 
+// TestLandOutcomeCheck pins issue #758's merge-policy writeback
+// distinction: merge-pr's Outputs["landOutcome"] of "merged"/"enqueued"
+// resolves to that same outcome, and anything else (including the unmet-
+// conjunct refusal case, which sets no landOutcome key at all) resolves to
+// "fail" — never a silent default to one of the two success outcomes.
+func TestLandOutcomeCheck(t *testing.T) {
+	out, err := evalCheck(t, "land-outcome", nil, map[string]interface{}{"landOutcome": "merged"})
+	if err != nil || out != OutcomeMerged {
+		t.Fatalf("got %q, %v; want %q", out, err, OutcomeMerged)
+	}
+	out, err = evalCheck(t, "land-outcome", nil, map[string]interface{}{"landOutcome": "enqueued"})
+	if err != nil || out != OutcomeEnqueued {
+		t.Fatalf("got %q, %v; want %q", out, err, OutcomeEnqueued)
+	}
+	out, err = evalCheck(t, "land-outcome", nil, nil)
+	if err != nil || out != OutcomeFail {
+		t.Fatalf("got %q, %v; want %q for a missing landOutcome (the refusal case)", out, err, OutcomeFail)
+	}
+}
+
+// TestQueueOutcomeCheck pins issue #758's three-way merge-queue-poll
+// writeback: "merged"/"evicted"/"timeout" each resolve to themselves —
+// eviction distinct from both a genuine merge and a still-pending timeout —
+// and anything else resolves to "fail".
+func TestQueueOutcomeCheck(t *testing.T) {
+	cases := []struct {
+		queueOutcome string
+		want         string
+	}{
+		{"merged", OutcomeMerged},
+		{"evicted", OutcomeEvicted},
+		{"timeout", OutcomeTimeout},
+		{"garbage", OutcomeFail},
+		{"", OutcomeFail},
+	}
+	for _, tc := range cases {
+		out, err := evalCheck(t, "queue-outcome", nil, map[string]interface{}{"queueOutcome": tc.queueOutcome})
+		if err != nil || out != tc.want {
+			t.Fatalf("queueOutcome=%q: got %q, %v; want %q", tc.queueOutcome, out, err, tc.want)
+		}
+	}
+}
+
+// TestQueueGateRoutesEvictedOutcomeToRemediation is the routing regression
+// test for #758's eviction acceptance criterion: an evicted merge-queue
+// entry must resolve to its own distinct outcome and target, not fold into
+// "fail" the same way a genuine build failure would, and not "timeout" the
+// same way a still-pending entry would.
+func TestQueueGateRoutesEvictedOutcomeToRemediation(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "queue-gate",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "queue-outcome"},
+		Branches: map[string]string{
+			OutcomeMerged:  "post-merge",
+			OutcomeEvicted: "mark-queue-evicted",
+			OutcomeTimeout: "",
+			OutcomeFail:    "",
+		},
+	}
+	e := &Evaluator{Automated: NewAutomatedEvaluator()}
+	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{"queueOutcome": "evicted"}}
+
+	result, err := e.Evaluate(context.Background(), g, env, "merge-queue-poll", apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, "", false)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Outcome != OutcomeEvicted {
+		t.Fatalf("outcome = %q, want %q", result.Outcome, OutcomeEvicted)
+	}
+	if result.Target != "mark-queue-evicted" {
+		t.Fatalf("target = %q, want %q (not silently merged into the post-merge or dead-end branches)", result.Target, "mark-queue-evicted")
+	}
+}
+
 func TestUnknownCheckErrors(t *testing.T) {
 	if _, err := evalCheck(t, "no-such-check", nil, nil); err == nil {
 		t.Fatal("want error for unknown check name")

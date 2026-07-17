@@ -47,6 +47,20 @@ type RepoProvider interface {
 	// needed to make the cache key and merge-pr's SHA-pin check delta-aware
 	// instead of raw-SHA-equality.
 	CompareCommits(ctx context.Context, repo RepositoryRef, base, head string) (CompareResult, error)
+	// DetectMergePolicy reports a repo's active merge policy for a branch
+	// (issue #758), read from its live branch protection/ruleset state —
+	// the detection half of the merge-policy abstraction internal/
+	// mergepolicy's Land dispatches on.
+	DetectMergePolicy(context.Context, RepoMergePolicyRequest) (RepoMergePolicyResult, error)
+	// EnqueuePullRequest adds a pull request to its repo's merge queue
+	// (issue #758) — the enqueue-policy counterpart to MergePullRequest;
+	// see EnqueuePullRequestRequest's doc.
+	EnqueuePullRequest(context.Context, EnqueuePullRequestRequest) (EnqueuePullRequestResult, error)
+	// PollMergeQueueEntry reports whether the merge queue has since merged
+	// or evicted a pull request previously enqueued via EnqueuePullRequest
+	// (issue #758) — the eviction-as-first-class-outcome half of the
+	// merge-policy abstraction.
+	PollMergeQueueEntry(context.Context, PollMergeQueueEntryRequest) (PollMergeQueueEntryResult, error)
 }
 
 // BranchDeleter removes remote branch refs. It is separate from RepoProvider

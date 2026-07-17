@@ -53,6 +53,22 @@ type mergePRServerState struct {
 	// most test cases need no entry at all.
 	files        []fakePRFile
 	baseMovement map[string][]fakePRFile
+	// baseBranch is the pull request's target branch name, defaulting to
+	// "main" — read by mergepr.go's #758 merge-policy detection the same
+	// way live PollPullRequestResult.BaseBranch is. mergeQueueRules, if
+	// set, is served verbatim from the rules-for-branch endpoint (issue
+	// #758's DetectMergePolicy) so a test can simulate a merge-queue-policy
+	// repo; unset means no rules apply, i.e. direct-merge — today's
+	// behavior, unchanged for every existing test.
+	baseBranch      string
+	mergeQueueRules bool
+	rulesCalls      int
+	// queueMergesImmediately, only meaningful when mergeQueueRules is set,
+	// makes the fake merge endpoint report merged=true instead of the
+	// normal enqueue response — the rare edge case where a merge queue's
+	// own merge endpoint completes the merge immediately (e.g. nothing
+	// else ahead of this pull request).
+	queueMergesImmediately bool
 }
 
 func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) *httptest.Server {
@@ -65,6 +81,9 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 	}
 	if st.headRepo == "" {
 		st.headRepo = repo
+	}
+	if st.baseBranch == "" {
+		st.baseBranch = "main"
 	}
 	prefix := "/repos/" + owner + "/" + repo
 	headPrefix := "/repos/" + st.headOwner + "/" + st.headRepo
@@ -82,8 +101,16 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 					"owner": map[string]string{"login": st.headOwner},
 				},
 			},
-			"base": map[string]interface{}{"sha": st.baseSHA},
+			"base": map[string]interface{}{"ref": st.baseBranch, "sha": st.baseSHA},
 		})
+	})
+	mux.HandleFunc(prefix+"/rules/branches/"+st.baseBranch, func(w http.ResponseWriter, r *http.Request) {
+		st.rulesCalls++
+		if st.mergeQueueRules {
+			writeFakeJSON(w, []map[string]interface{}{{"type": "merge_queue"}})
+			return
+		}
+		writeFakeJSON(w, []map[string]interface{}{})
 	})
 	mux.HandleFunc(headPrefix+"/pulls", func(w http.ResponseWriter, r *http.Request) {
 		st.pullListCalls++
@@ -169,6 +196,10 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		st.mergeCalls++
 		if err := json.NewDecoder(r.Body).Decode(&st.mergeBody); err != nil {
 			t.Errorf("decode merge request body: %v", err)
+		}
+		if st.mergeQueueRules && !st.queueMergesImmediately {
+			writeFakeJSON(w, map[string]interface{}{"merged": false, "message": "Pull Request is in merge queue"})
+			return
 		}
 		sha := "merge-commit-sha"
 		st.mergeSHA = &sha
@@ -294,6 +325,112 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 	facts := readMutationFacts(t, dir)
 	if len(facts) != 2 || facts[0].Operation != "merge" || facts[1].Kind != "branch" || facts[1].Operation != "delete" {
 		t.Fatalf("mutation facts = %+v, want merge followed by branch delete", facts)
+	}
+}
+
+// TestMergePRMergeQueuePolicyEnqueuesInsteadOfMerging is issue #758's
+// headline acceptance: a repo whose branch rules require a merge queue gets
+// its ready pull request enqueued via internal/mergepolicy's Land, not
+// direct-merged — merged stays false (GitHub has not actually merged it
+// yet), a new landOutcome="enqueued" key distinguishes this from the
+// refusal case, no branch cleanup is attempted (nothing to clean up until
+// the queue actually lands it), and the direct /merge endpoint is still the
+// one called (GitHub's own documented enqueue-via-merge-endpoint behavior)
+// but never the branch-delete endpoint.
+func TestMergePRMergeQueuePolicyEnqueuesInsteadOfMerging(t *testing.T) {
+	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456", mergeQueueRules: true}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.rulesCalls != 1 {
+		t.Fatalf("rules-for-branch endpoint called %d times, want 1", st.rulesCalls)
+	}
+	if st.mergeCalls != 1 {
+		t.Fatalf("merge/enqueue endpoint called %d times, want 1", st.mergeCalls)
+	}
+	if st.deleteCalls != 0 || st.pullListCalls != 0 {
+		t.Fatalf("cleanup calls = list:%d delete:%d, want 0 each (nothing to clean up before the queue actually merges)", st.pullListCalls, st.deleteCalls)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); merged {
+		t.Fatalf("result = %+v, want merged=false (only enqueued, not yet merged by GitHub)", result)
+	}
+	if result["landOutcome"] != "enqueued" {
+		t.Fatalf("result = %+v, want landOutcome=enqueued", result)
+	}
+	if _, ok := result["mergeSha"]; ok {
+		t.Fatalf("result = %+v, want no mergeSha for an enqueued (not yet merged) pull request", result)
+	}
+	if _, ok := result["branchCleanup"]; ok {
+		t.Fatalf("result = %+v, want no branchCleanup key for an enqueued pull request", result)
+	}
+}
+
+// TestMergePRMergeQueuePolicyReportsMergedWhenQueueLandsImmediately pins the
+// edge case documented on providers.EnqueuePullRequestResult: an enqueue
+// call whose queue happens to be empty can complete the merge immediately
+// — that must still report landOutcome=merged (and run branch cleanup),
+// not "enqueued", so a caller doesn't go on to watch a merge-queue entry
+// that no longer exists.
+func TestMergePRMergeQueuePolicyReportsMergedWhenQueueLandsImmediately(t *testing.T) {
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
+		mergeQueueRules: true, queueMergesImmediately: true,
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); !merged {
+		t.Fatalf("result = %+v, want merged=true (queue landed it immediately)", result)
+	}
+	if result["landOutcome"] != "merged" {
+		t.Fatalf("result = %+v, want landOutcome=merged, not enqueued", result)
+	}
+	if st.deleteCalls != 1 {
+		t.Fatalf("branch delete called %d times, want 1 (a real merge happened, cleanup should run)", st.deleteCalls)
+	}
+}
+
+// TestMergePRDirectPolicyUnchangedWhenNoRulesApply is the "second repo still
+// on direct-merge exercises the other path in the same codebase, unchanged"
+// half of #758's acceptance criteria: a repo whose rules-for-branch
+// endpoint returns no merge_queue rule (the default for every other test in
+// this file too) merges exactly as it did before this issue — merged=true,
+// landOutcome=merged, cleanup runs — proving the abstraction is additive,
+// not a behavior change for the common case.
+func TestMergePRDirectPolicyUnchangedWhenNoRulesApply(t *testing.T) {
+	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456"}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); !merged {
+		t.Fatalf("result = %+v, want merged=true", result)
+	}
+	if result["landOutcome"] != "merged" {
+		t.Fatalf("result = %+v, want landOutcome=merged", result)
+	}
+	if st.deleteCalls != 1 {
+		t.Fatalf("branch delete called %d times, want 1", st.deleteCalls)
 	}
 }
 

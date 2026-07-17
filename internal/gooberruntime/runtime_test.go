@@ -319,6 +319,18 @@ func (f *fakeRepoProvider) CompareCommits(context.Context, providers.RepositoryR
 	return providers.CompareResult{}, nil
 }
 
+func (f *fakeRepoProvider) DetectMergePolicy(context.Context, providers.RepoMergePolicyRequest) (providers.RepoMergePolicyResult, error) {
+	return providers.RepoMergePolicyResult{}, nil
+}
+
+func (f *fakeRepoProvider) EnqueuePullRequest(context.Context, providers.EnqueuePullRequestRequest) (providers.EnqueuePullRequestResult, error) {
+	return providers.EnqueuePullRequestResult{}, nil
+}
+
+func (f *fakeRepoProvider) PollMergeQueueEntry(context.Context, providers.PollMergeQueueEntryRequest) (providers.PollMergeQueueEntryResult, error) {
+	return providers.PollMergeQueueEntryResult{}, nil
+}
+
 func TestInProcessPreparerClonesRepoAndBuildsEnv(t *testing.T) {
 	repo := &fakeRepoProvider{}
 	preparer := InProcessPreparer{
