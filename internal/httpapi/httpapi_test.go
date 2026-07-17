@@ -18,9 +18,14 @@ import (
 )
 
 type fakeReader struct {
-	health readservice.Health
-	err    error
-	called int
+	health       readservice.Health
+	stats        readservice.TelemetryStatsResult
+	errors       readservice.TelemetryErrorsPage
+	err          error
+	telemetryErr error
+	statsReq     readservice.TelemetryStatsRequest
+	errorsReq    readservice.TelemetryErrorsRequest
+	called       int
 }
 
 func discardLogger() *log.Logger {
@@ -30,6 +35,16 @@ func discardLogger() *log.Logger {
 func (f *fakeReader) Health(context.Context) (readservice.Health, error) {
 	f.called++
 	return f.health, f.err
+}
+
+func (f *fakeReader) TelemetryStats(_ context.Context, req readservice.TelemetryStatsRequest) (readservice.TelemetryStatsResult, error) {
+	f.statsReq = req
+	return f.stats, f.telemetryErr
+}
+
+func (f *fakeReader) TelemetryErrors(_ context.Context, req readservice.TelemetryErrorsRequest) (readservice.TelemetryErrorsPage, error) {
+	f.errorsReq = req
+	return f.errors, f.telemetryErr
 }
 
 func TestHealthHandlerUsesSharedReadService(t *testing.T) {
@@ -129,6 +144,164 @@ func TestAPIErrorsUseStructuredEnvelope(t *testing.T) {
 			}
 			if test.wantCode == "read_error" && !strings.Contains(logs.String(), "disk failed") {
 				t.Fatalf("server log = %q, want underlying read error", logs.String())
+			}
+		})
+	}
+}
+
+func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
+	since := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
+	until := since.Add(2 * time.Hour)
+	rate := 0.5
+	reader := &fakeReader{
+		stats: readservice.TelemetryStatsResult{
+			Runs:   []readservice.TelemetryRunStats{{Workflow: "implement", TotalRuns: 2, SuccessRate: &rate}},
+			Stages: []readservice.TelemetryStageStats{},
+		},
+		errors: readservice.TelemetryErrorsPage{
+			Items:      []readservice.TelemetryError{{RunID: "run-1", Code: "failure"}},
+			NextCursor: "next",
+		},
+	}
+	handler, err := NewHandler(reader, AllowAll, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	statsResponse := httptest.NewRecorder()
+	statsURL := TelemetryStatsPath + "?workflow=implement&gaggle=core&since=" +
+		since.Format(time.RFC3339) + "&until=" + until.Format(time.RFC3339)
+	handler.ServeHTTP(statsResponse, httptest.NewRequest(http.MethodGet, statsURL, nil))
+	if statsResponse.Code != http.StatusOK {
+		t.Fatalf("stats status = %d, body = %s", statsResponse.Code, statsResponse.Body)
+	}
+	wantStatsReq := readservice.TelemetryStatsRequest{
+		Workflow: "implement",
+		Gaggle:   "core",
+		Since:    since,
+		Until:    until,
+	}
+	if reader.statsReq != wantStatsReq {
+		t.Fatalf("stats request = %+v, want %+v", reader.statsReq, wantStatsReq)
+	}
+	var stats readservice.TelemetryStatsResult
+	if err := json.NewDecoder(statsResponse.Body).Decode(&stats); err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.Runs) != 1 || stats.Runs[0].Workflow != "implement" {
+		t.Fatalf("stats = %+v", stats)
+	}
+
+	errorsResponse := httptest.NewRecorder()
+	errorsURL := TelemetryErrorsPath + "?workflow=implement&gaggle=core&class=timeout&limit=10&cursor=current"
+	handler.ServeHTTP(errorsResponse, httptest.NewRequest(http.MethodGet, errorsURL, nil))
+	if errorsResponse.Code != http.StatusOK {
+		t.Fatalf("errors status = %d, body = %s", errorsResponse.Code, errorsResponse.Body)
+	}
+	wantErrorsReq := readservice.TelemetryErrorsRequest{
+		Workflow:   "implement",
+		Gaggle:     "core",
+		ErrorClass: "timeout",
+		Limit:      10,
+		Cursor:     "current",
+	}
+	if reader.errorsReq != wantErrorsReq {
+		t.Fatalf("errors request = %+v, want %+v", reader.errorsReq, wantErrorsReq)
+	}
+	var page readservice.TelemetryErrorsPage
+	if err := json.NewDecoder(errorsResponse.Body).Decode(&page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Code != "failure" || page.NextCursor != "next" {
+		t.Fatalf("errors page = %+v", page)
+	}
+}
+
+func TestTelemetryQueryErrorsAreStructured(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "invalid time", path: TelemetryStatsPath + "?since=yesterday"},
+		{name: "reversed window", path: TelemetryStatsPath + "?since=2026-07-02T00:00:00Z&until=2026-07-01T00:00:00Z"},
+		{name: "unknown parameter", path: TelemetryStatsPath + "?sort=recent"},
+		{name: "duplicate parameter", path: TelemetryStatsPath + "?workflow=a&workflow=b"},
+		{name: "invalid limit", path: TelemetryErrorsPath + "?limit=0"},
+		{name: "oversized limit", path: TelemetryErrorsPath + "?limit=201"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+			}
+			var envelope ErrorEnvelope
+			if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.Error.Code != "invalid_query" || envelope.Error.Message == "" {
+				t.Fatalf("error = %+v", envelope.Error)
+			}
+		})
+	}
+}
+
+func TestTelemetryReadErrorsAreStructured(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "invalid cursor",
+			err:        readservice.ErrInvalidTelemetryRequest,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_query",
+		},
+		{
+			name:       "disabled",
+			err:        readservice.ErrTelemetryUnavailable,
+			wantStatus: http.StatusServiceUnavailable,
+			wantCode:   "telemetry_unavailable",
+		},
+		{
+			name:       "storage",
+			err:        errors.New("sqlite failed"),
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   "read_error",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			handler, err := NewHandler(
+				&fakeReader{telemetryErr: test.err},
+				AllowAll,
+				log.New(&logs, "", 0),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, TelemetryErrorsPath, nil))
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+			}
+			var envelope ErrorEnvelope
+			if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.Error.Code != test.wantCode {
+				t.Fatalf("error = %+v", envelope.Error)
+			}
+			if test.wantCode == "read_error" && !strings.Contains(logs.String(), "sqlite failed") {
+				t.Fatalf("server log = %q", logs.String())
 			}
 		})
 	}

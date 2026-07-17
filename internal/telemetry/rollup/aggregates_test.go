@@ -168,6 +168,121 @@ func TestErrorsQueryFiltersAndOrders(t *testing.T) {
 	if len(rateLimitOnly) != 1 || rateLimitOnly[0].Code != "provider.rate_limit" {
 		t.Fatalf("rate-limit-filtered errors = %#v", rateLimitOnly)
 	}
+
+	windowed, err := db.Errors(ErrorsRequest{Until: base.Add(30 * time.Minute)})
+	if err != nil {
+		t.Fatalf("Errors windowed: %v", err)
+	}
+	if len(windowed) != 1 || windowed[0].Code != "provider.rate_limit" {
+		t.Fatalf("windowed errors = %#v", windowed)
+	}
+
+	firstPage, err := db.Errors(ErrorsRequest{Limit: 1})
+	if err != nil {
+		t.Fatalf("Errors first page: %v", err)
+	}
+	secondPage, err := db.Errors(ErrorsRequest{
+		Limit: 1,
+		Cursor: &ErrorCursor{
+			OrderTimestamp: firstPage[0].OrderTimestamp,
+			RunID:          firstPage[0].RunID,
+			Sequence:       firstPage[0].Sequence,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Errors second page: %v", err)
+	}
+	if len(secondPage) != 1 || secondPage[0].Code != "provider.rate_limit" {
+		t.Fatalf("second page errors = %#v", secondPage)
+	}
+}
+
+func TestStatsPreserveUnknownMetrics(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	runID := "1111111111111111eeeeeeeeeeeeeeee"
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), minimalRunYAML(runID, fixtureStart))
+	events := strings.Join([]string{
+		eventLine(1, fixtureStart, `"type":"run.started"`),
+		eventLine(2, fixtureStart.Add(time.Second), `"type":"stage.started","stage":"active","attempt":1`),
+	}, "\n") + "\n"
+	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(dir); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := db.Stats(StatsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.Runs) != 1 || stats.Runs[0].HasDuration ||
+		stats.Runs[0].CompletedRuns != 0 || stats.Runs[0].FailedRuns != 0 {
+		t.Fatalf("run stats = %+v", stats.Runs)
+	}
+	if len(stats.Stages) != 1 || stats.Stages[0].HasDuration ||
+		stats.Stages[0].SucceededAttempts != 0 || stats.Stages[0].FailedAttempts != 0 {
+		t.Fatalf("stage stats = %+v", stats.Stages)
+	}
+}
+
+func TestErrorsOrderingBreaksTimestampTiesDeterministically(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	firstRunID := "1111111111111111ffffffffffffffff"
+	seedStatsRun(t, runsDir, firstRunID, "implement", "failed", fixtureStart, true, "first")
+	seedStatsRun(t, runsDir, "2222222222222222ffffffffffffffff", "implement", "failed", fixtureStart, true, "second")
+	eventsPath := filepath.Join(runsDir, firstRunID, fileEvents)
+	events, err := os.OpenFile(eventsPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.WriteString(eventLine(
+		8,
+		fixtureStart.Add(4*time.Second),
+		`"type":"error","stage":"deploy","attempt":1,"error":{"code":"first-later-seq"}`,
+	) + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := events.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+	errs, err := db.Errors(ErrorsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(errs) != 3 ||
+		errs[0].Code != "second" ||
+		errs[1].Code != "first-later-seq" ||
+		errs[2].Code != "first" {
+		t.Fatalf("timestamp-tied errors = %#v", errs)
+	}
+
+	var pageCodes []string
+	var cursor *ErrorCursor
+	for {
+		page, err := db.Errors(ErrorsRequest{Limit: 1, Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		pageCodes = append(pageCodes, page[0].Code)
+		cursor = &ErrorCursor{
+			OrderTimestamp: page[0].OrderTimestamp,
+			RunID:          page[0].RunID,
+			Sequence:       page[0].Sequence,
+		}
+	}
+	if got := strings.Join(pageCodes, ","); got != "second,first-later-seq,first" {
+		t.Fatalf("paginated timestamp ties = %q", got)
+	}
 }
 
 func TestTopErrorSignaturesAggregatesAcrossRuns(t *testing.T) {

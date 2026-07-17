@@ -54,6 +54,7 @@ type RunStats struct {
 	AvgDurationMs float64 `json:"avgDurationMs"`
 	MinDurationMs int64   `json:"minDurationMs"`
 	MaxDurationMs int64   `json:"maxDurationMs"`
+	HasDuration   bool    `json:"-"`
 }
 
 // StageStats is the success/failure/duration aggregate for one stage name,
@@ -70,6 +71,7 @@ type StageStats struct {
 	AvgDurationMs float64 `json:"avgDurationMs"`
 	MinDurationMs int64   `json:"minDurationMs"`
 	MaxDurationMs int64   `json:"maxDurationMs"`
+	HasDuration   bool    `json:"-"`
 }
 
 // StatsResult bundles the run-level and stage-level views a single Stats call
@@ -267,6 +269,7 @@ func (db *DB) runStats(req StatsRequest) ([]RunStats, error) {
 			s.SuccessRate = float64(s.CompletedRuns) / float64(terminal)
 		}
 		s.AvgDurationMs, s.MinDurationMs, s.MaxDurationMs = avg.Float64, min.Int64, max.Int64
+		s.HasDuration = avg.Valid
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -308,6 +311,7 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 			s.SuccessRate = float64(s.SucceededAttempts) / float64(terminal)
 		}
 		s.AvgDurationMs, s.MinDurationMs, s.MaxDurationMs = avg.Float64, min.Int64, max.Int64
+		s.HasDuration = avg.Valid
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -343,14 +347,16 @@ func statsWhere(workflowCol, gaggleCol, timeCol string, req StatsRequest) (strin
 // ErrorEvent is one run_errors row joined with its run's workflow, for the
 // cross-run "recent errors" query.
 type ErrorEvent struct {
-	RunID      string    `json:"runId"`
-	Workflow   string    `json:"workflow"`
-	Stage      string    `json:"stage"`
-	Attempt    int       `json:"attempt"`
-	Code       string    `json:"code"`
-	ErrorClass string    `json:"errorClass"`
-	Message    string    `json:"message"`
-	OccurredAt time.Time `json:"occurredAt"`
+	Sequence       uint64    `json:"-"`
+	OrderTimestamp string    `json:"-"`
+	RunID          string    `json:"runId"`
+	Workflow       string    `json:"workflow"`
+	Stage          string    `json:"stage"`
+	Attempt        int       `json:"attempt"`
+	Code           string    `json:"code"`
+	ErrorClass     string    `json:"errorClass"`
+	Message        string    `json:"message"`
+	OccurredAt     time.Time `json:"occurredAt"`
 }
 
 // ErrorsRequest filters the cross-run recent-errors query. Zero-value fields
@@ -360,7 +366,17 @@ type ErrorsRequest struct {
 	Gaggle     string
 	ErrorClass string
 	Since      time.Time
+	Until      time.Time
 	Limit      int
+	Cursor     *ErrorCursor
+}
+
+// ErrorCursor is the exclusive keyset boundary for the deterministic
+// newest-first error ordering.
+type ErrorCursor struct {
+	OrderTimestamp string
+	RunID          string
+	Sequence       uint64
 }
 
 // Errors returns recent errors across every run, newest first, each carrying
@@ -391,6 +407,21 @@ func (db *DB) Errors(req ErrorsRequest) ([]ErrorEvent, error) {
 		clauses = append(clauses, "e.occurred_at >= ?")
 		args = append(args, formatTime(req.Since).String)
 	}
+	if !req.Until.IsZero() {
+		clauses = append(clauses, "e.occurred_at <= ?")
+		args = append(args, formatTime(req.Until).String)
+	}
+	if req.Cursor != nil {
+		occurredAt := req.Cursor.OrderTimestamp
+		clauses = append(clauses, `(COALESCE(e.occurred_at, '') < ? OR
+			(COALESCE(e.occurred_at, '') = ? AND e.run_id < ?) OR
+			(COALESCE(e.occurred_at, '') = ? AND e.run_id = ? AND e.seq < ?))`)
+		args = append(args,
+			occurredAt,
+			occurredAt, req.Cursor.RunID,
+			occurredAt, req.Cursor.RunID, req.Cursor.Sequence,
+		)
+	}
 	where := ""
 	if len(clauses) > 0 {
 		where = "WHERE " + strings.Join(clauses, " AND ")
@@ -398,11 +429,11 @@ func (db *DB) Errors(req ErrorsRequest) ([]ErrorEvent, error) {
 	args = append(args, limit)
 
 	query := fmt.Sprintf(`
-		SELECT e.run_id, r.workflow, e.stage, e.attempt, e.code, e.error_class, e.message, e.occurred_at
+		SELECT e.run_id, r.workflow, e.stage, e.attempt, e.code, e.error_class, e.message, e.occurred_at, e.seq
 		FROM run_errors e
 		JOIN runs r ON r.run_id = e.run_id
 		%s
-		ORDER BY e.occurred_at DESC, e.seq DESC
+		ORDER BY COALESCE(e.occurred_at, '') DESC, e.run_id DESC, e.seq DESC
 		LIMIT ?`, where)
 
 	rows, err := db.sql.Query(query, args...)
@@ -416,10 +447,11 @@ func (db *DB) Errors(req ErrorsRequest) ([]ErrorEvent, error) {
 		var e ErrorEvent
 		var stage, class, message, occurredAt sql.NullString
 		var attempt sql.NullInt64
-		if err := rows.Scan(&e.RunID, &e.Workflow, &stage, &attempt, &e.Code, &class, &message, &occurredAt); err != nil {
+		if err := rows.Scan(&e.RunID, &e.Workflow, &stage, &attempt, &e.Code, &class, &message, &occurredAt, &e.Sequence); err != nil {
 			return nil, fmt.Errorf("rollup: scan error event: %w", err)
 		}
 		e.Stage, e.ErrorClass, e.Message = stage.String, class.String, message.String
+		e.OrderTimestamp = occurredAt.String
 		e.Attempt = int(attempt.Int64)
 		if e.OccurredAt, err = parseTime(occurredAt); err != nil {
 			return nil, err

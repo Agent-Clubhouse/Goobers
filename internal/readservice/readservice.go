@@ -27,6 +27,7 @@ const (
 // journals, definitions, or SQLite from their handlers.
 type Reader interface {
 	Health(context.Context) (Health, error)
+	TelemetryReader
 }
 
 // Health is the versioned daemon health response.
@@ -62,6 +63,7 @@ type LocalSources struct {
 // telemetry projection.
 type Local struct {
 	sources             LocalSources
+	telemetry           *Telemetry
 	identity            InstanceIdentity
 	ready               func() bool
 	now                 func() time.Time
@@ -78,8 +80,13 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 	}
 	now := time.Now
 	ref := sources.Definitions.Manifest.Spec.Instance
+	var telemetry *Telemetry
+	if sources.Telemetry != nil {
+		telemetry = &Telemetry{store: sources.Telemetry}
+	}
 	return &Local{
-		sources: sources,
+		sources:   sources,
+		telemetry: telemetry,
 		identity: InstanceIdentity{
 			Name:        ref.Name,
 			Environment: ref.Environment,

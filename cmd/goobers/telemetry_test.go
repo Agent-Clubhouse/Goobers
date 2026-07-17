@@ -1,13 +1,22 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -168,6 +177,147 @@ func TestTelemetryJSONEmptyInstance(t *testing.T) {
 				t.Fatalf("stdout = %q, want %q", stdout, test.want)
 			}
 		})
+	}
+}
+
+type telemetryParityReader struct {
+	*readservice.Telemetry
+}
+
+func (r *telemetryParityReader) Health(context.Context) (readservice.Health, error) {
+	return readservice.Health{Ready: true}, nil
+}
+
+func TestTelemetryHTTPAndCLIProjectionParity(t *testing.T) {
+	root := initDemo(t)
+	writeFixtureRunWithError(t, root)
+
+	statsCode, statsJSON, statsStderr := runArgs(
+		t,
+		"telemetry", "stats", "--json", "--workflow=default-implement", "--gaggle=example", "--rebuild", root,
+	)
+	if statsCode != 0 {
+		t.Fatalf("stats code = %d, stderr = %q", statsCode, statsStderr)
+	}
+	errorsCode, errorsJSON, errorsStderr := runArgs(
+		t,
+		"telemetry", "errors", "--json", "--workflow=default-implement", "--gaggle=example", "--limit=1", root,
+	)
+	if errorsCode != 0 {
+		t.Fatalf("errors code = %d, stderr = %q", errorsCode, errorsStderr)
+	}
+
+	db, err := rollup.Open(instance.NewLayout(root).TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	telemetry, err := readservice.NewTelemetry(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpapi.NewHandler(
+		&telemetryParityReader{Telemetry: telemetry},
+		httpapi.AllowAll,
+		log.New(io.Discard, "", 0),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	statsResponse := httptest.NewRecorder()
+	handler.ServeHTTP(statsResponse, httptest.NewRequest(
+		http.MethodGet,
+		httpapi.TelemetryStatsPath+"?workflow=default-implement&gaggle=example",
+		nil,
+	))
+	if statsResponse.Code != http.StatusOK {
+		t.Fatalf("stats HTTP status = %d, body = %s", statsResponse.Code, statsResponse.Body)
+	}
+	if statsResponse.Body.String() != statsJSON {
+		t.Fatalf("stats HTTP = %s, CLI = %s", statsResponse.Body.String(), statsJSON)
+	}
+
+	errorsResponse := httptest.NewRecorder()
+	handler.ServeHTTP(errorsResponse, httptest.NewRequest(
+		http.MethodGet,
+		httpapi.TelemetryErrorsPath+"?workflow=default-implement&gaggle=example&limit=1",
+		nil,
+	))
+	if errorsResponse.Code != http.StatusOK {
+		t.Fatalf("errors HTTP status = %d, body = %s", errorsResponse.Code, errorsResponse.Body)
+	}
+	var page readservice.TelemetryErrorsPage
+	if err := json.NewDecoder(errorsResponse.Body).Decode(&page); err != nil {
+		t.Fatal(err)
+	}
+	var cliErrors []readservice.TelemetryError
+	if err := json.Unmarshal([]byte(errorsJSON), &cliErrors); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(page.Items, cliErrors) {
+		t.Fatalf("HTTP errors = %+v, CLI errors = %+v", page.Items, cliErrors)
+	}
+}
+
+func TestTelemetryStatsKeepsMissingMetricsUnknown(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	run, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+		RunID:           "1111111111111111aaaaaaaaaaaaaaaa",
+		Workflow:        "active-workflow",
+		WorkflowVersion: 1,
+		Gaggle:          "example",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+	}, nil, journal.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "active", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "telemetry", "stats", "--json", "--rebuild", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	var document struct {
+		Runs   []map[string]json.RawMessage `json:"runs"`
+		Stages []map[string]json.RawMessage `json:"stages"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range append(document.Runs, document.Stages...) {
+		for _, metric := range []string{"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs"} {
+			if _, ok := item[metric]; ok {
+				t.Fatalf("unknown metric %q was serialized: %s", metric, stdout)
+			}
+		}
+	}
+
+	code, stdout, stderr = runArgs(t, "telemetry", "stats", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "unknown") {
+		t.Fatalf("stdout = %q, want unknown metric presentation", stdout)
+	}
+}
+
+func TestTelemetryRejectsInvalidTimeWindow(t *testing.T) {
+	code, _, stderr := runArgs(
+		t,
+		"telemetry", "stats",
+		"--since=2026-07-02T00:00:00Z",
+		"--until=2026-07-01T00:00:00Z",
+	)
+	if code != 2 || !strings.Contains(stderr, "--since must not be after --until") {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
 }
 
