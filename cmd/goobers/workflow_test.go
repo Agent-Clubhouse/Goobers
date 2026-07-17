@@ -64,10 +64,50 @@ stages:
 	}
 }
 
+// workflowDOTFixture is workflowShowFixture's gate swapped from human to
+// automated (#706: human gates are rejected at compile time until durable
+// pause/resume ships, and --dot now compiles the workflow to build its
+// graph projection — unlike the plain text DAG above, which reads
+// wf.Spec directly and never compiles, so workflowShowFixture's human gate
+// stays valid for TestWorkflowShowPrintsTextDAG). Same node/edge topology
+// (pass/fail branches to the same targets), so the expected DOT output is
+// unaffected by the swap — DOT rendering has no evaluator-specific text.
+const workflowDOTFixture = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: backlog-item
+      selector:
+        goobers: "true"
+  start: prepare
+  tasks:
+    - name: prepare
+      type: deterministic
+      goal: Prepare the change.
+      run:
+        command: ["true"]
+      next: review
+    - name: finish
+      type: agentic
+      goober: coder
+      goal: Finish the change.
+  gates:
+    - name: review
+      evaluator: automated
+      automated:
+        check: tests-pass
+      branches:
+        pass: finish
+        fail: prepare
+`
+
 func TestWorkflowShowPrintsDOT(t *testing.T) {
 	root := initDemo(t)
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	if err := os.WriteFile(workflowPath, []byte(workflowShowFixture), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(workflowDOTFixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

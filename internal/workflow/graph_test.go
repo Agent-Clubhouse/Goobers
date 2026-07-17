@@ -52,12 +52,20 @@ func graphDefinition() Definition {
 			},
 			Gates: []apiv1.Gate{
 				{
+					// #706: human gates are rejected at compile time until
+					// durable pause/resume ships — this fixture only needs a
+					// multi-branch gate to exercise graph projection, not
+					// human-gate semantics specifically, so it uses the same
+					// agentic-gate shape gatedSpec() (compile_test.go) already
+					// does. escalate's terminal-edge projection shape (the
+					// same TargetEscalate handling graphTerminal switches on)
+					// no longer has a dedicated case here since agentic gates
+					// only produce pass/fail/needs-changes outcomes.
 					Name:      "review",
-					Evaluator: apiv1.EvaluatorHuman,
-					Human:     &apiv1.HumanGate{},
+					Evaluator: apiv1.EvaluatorAgentic,
+					Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
 					Branches: map[string]string{
 						"needs-changes": "implement",
-						"escalate":      TargetEscalate,
 						"fail":          TargetAbort,
 						"pass":          "finish",
 					},
@@ -80,7 +88,7 @@ func TestGraphProjectionGolden(t *testing.T) {
 	const want = `{
   "name": "delivery",
   "version": 7,
-  "digest": "sha256:c19e45f5a6073dc6127fa873096434bfd42a4d87658ca5fd9d0b90abcefb38dd",
+  "digest": "sha256:5a33502988ae8377f3e4ca7cea1b6cf863dd10709c4affaaf52058a455570ef2",
   "start": "prepare",
   "nodes": [
     {
@@ -99,7 +107,8 @@ func TestGraphProjectionGolden(t *testing.T) {
     {
       "id": "review",
       "kind": "gate",
-      "evaluator": "human"
+      "owner": "reviewer",
+      "evaluator": "agentic"
     }
   ],
   "edges": [
@@ -129,12 +138,6 @@ func TestGraphProjectionGolden(t *testing.T) {
     },
     {
       "source": "review",
-      "target": "@escalate",
-      "outcome": "escalate",
-      "terminal": "escalate"
-    },
-    {
-      "source": "review",
       "target": "implement",
       "outcome": "needs-changes"
     }
@@ -149,7 +152,7 @@ func TestGraphSerializationIsDeterministic(t *testing.T) {
 	first := graphDefinition()
 	second := graphDefinition()
 	second.Spec.Gates[0].Branches = map[string]string{}
-	for _, outcome := range []string{"fail", "needs-changes", "pass", "escalate"} {
+	for _, outcome := range []string{"fail", "needs-changes", "pass"} {
 		second.Spec.Gates[0].Branches[outcome] = first.Spec.Gates[0].Branches[outcome]
 	}
 
