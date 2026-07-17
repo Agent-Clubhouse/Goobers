@@ -419,6 +419,76 @@ func TestSpanFailRecordsErrorStatus(t *testing.T) {
 	}
 }
 
+// TestSpanCompleteRecordsBusinessStatus is issue #710's span-fix acceptance:
+// a business failure (isFailure=true) sets OTel status codes.Error — the
+// prior span.Succeed(status) call reported codes.Ok for a failed run/stage
+// span, so `goobers trace`/rollup span queries couldn't distinguish a failed
+// run from a healthy one without reading free-text. Complete's second
+// property — the goobers.business_status attribute — is what an ok/success
+// business status ALSO needs recorded (not just the failure path), so a
+// rollup consumer can query the actual outcome vocabulary
+// (success/failed/completed/escalated/aborted) independent of OTel's own
+// coarser two-value axis.
+func TestSpanCompleteRecordsBusinessStatus(t *testing.T) {
+	ctx := context.Background()
+	exporter := NewMemoryExporter()
+	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: exporter})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := client.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown() error = %v", err)
+		}
+	})
+
+	runID := "0af7651916cd43dd8448eb211c80319c"
+	runCtx, runSpan, err := client.StartRun(ctx, RunAttributes{Gaggle: "acme-web", WorkflowID: "wf", RunID: runID})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	_, failedTask, err := client.StartTask(runCtx, TaskAttributes{Gaggle: "acme-web", WorkflowID: "wf", RunID: runID, TaskID: "pr-select"})
+	if err != nil {
+		t.Fatalf("StartTask() error = %v", err)
+	}
+	failedTask.Complete("failure", true)
+
+	_, okTask, err := client.StartTask(runCtx, TaskAttributes{Gaggle: "acme-web", WorkflowID: "wf", RunID: runID, TaskID: "implement"})
+	if err != nil {
+		t.Fatalf("StartTask() error = %v", err)
+	}
+	okTask.Complete("success", false)
+	runSpan.Complete("failed", true)
+
+	spans := exporter.Spans()
+	failed := findSpan(t, spans, "task/pr-select")
+	if failed.Status().Code != codes.Error {
+		t.Fatalf("failed task status = %s, want Error — a business failure must not report codes.Ok (#705's root cause)", failed.Status().Code)
+	}
+	if failed.Status().Description != "failure" {
+		t.Fatalf("failed task status description = %q, want failure", failed.Status().Description)
+	}
+	if got := attrMap(failed)[AttrBusinessStatus]; got != "failure" {
+		t.Fatalf("failed task %s attribute = %q, want failure", AttrBusinessStatus, got)
+	}
+
+	ok := findSpan(t, spans, "task/implement")
+	if ok.Status().Code != codes.Ok {
+		t.Fatalf("ok task status = %s, want Ok", ok.Status().Code)
+	}
+	if got := attrMap(ok)[AttrBusinessStatus]; got != "success" {
+		t.Fatalf("ok task %s attribute = %q, want success", AttrBusinessStatus, got)
+	}
+
+	run := findSpan(t, spans, "run/wf")
+	if run.Status().Code != codes.Error {
+		t.Fatalf("run status = %s, want Error — the run's OWN terminal phase was failed", run.Status().Code)
+	}
+	if got := attrMap(run)[AttrBusinessStatus]; got != "failed" {
+		t.Fatalf("run %s attribute = %q, want failed", AttrBusinessStatus, got)
+	}
+}
+
 func findSpan(t *testing.T, spans []sdktrace.ReadOnlySpan, name string) sdktrace.ReadOnlySpan {
 	t.Helper()
 	for _, span := range spans {

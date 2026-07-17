@@ -227,6 +227,43 @@ type Result struct {
 	Phase      journal.RunPhase
 	FinalState string
 	Steps      int
+	// FailureStage/FailureCode/FailureMessage carry a PhaseFailed run's actual
+	// cause (issue #710) — populated by taskOutcome's business-failure arm
+	// (FailureCode/Message from the stage's own ErrorInfo, bounded), by
+	// failTerminal (FailureCode "run_failed", FailureStage the failing
+	// stage/gate name, FailureMessage the walk-level error, bounded), and by
+	// refuseResume (FailureCode the WF-016 refusal code, FailureStage empty —
+	// a resume-time digest check, not stage-scoped). Every caller reading
+	// Phase == PhaseFailed downstream (the scheduler's and daemon's run-
+	// finished echo, cmd/goobers/daemon.go) threads these onto the echoed
+	// event so the instance journal actually says WHY a run failed, instead
+	// of a bare status:"failed" — #705's root cause was recorded in every
+	// failing run's own journal the whole time; this is what was missing to
+	// see it one level up, at the scheduler/daemon-log level. Empty for every
+	// non-failed phase and for a failed run with no attributable stage (a
+	// bare walk-level error before any task started, e.g. an unknown start
+	// state).
+	FailureStage   string
+	FailureCode    string
+	FailureMessage string
+}
+
+// maxFailureMessageLen bounds FailureMessage so a verbose provider/error
+// string (a real GitHub 403 body has run well past this) never bloats the
+// scheduler/instance-log echo it feeds (issue #710's design: "a bounded
+// message"). The full, untruncated message already lives in the run's own
+// journal (the stage.finished/error event this is derived from) — this is
+// purely a cap on the COPY threaded up to the coarser echo sites.
+const maxFailureMessageLen = 500
+
+// boundFailureMessage truncates s to maxFailureMessageLen runes, appending a
+// marker so a truncated echo is never mistaken for the complete message.
+func boundFailureMessage(s string) string {
+	r := []rune(s)
+	if len(r) <= maxFailureMessageLen {
+		return s
+	}
+	return string(r[:maxFailureMessageLen]) + "...(truncated)"
 }
 
 // Start creates a new run journal pinned to the compiled machine's identity,
@@ -299,7 +336,13 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		span.Fail(err)
 		return result, err
 	}
-	span.Succeed(string(result.Phase))
+	// #710: a business-failed run (walk returns a nil error — a Go-level
+	// dispatch error is Fail'd above instead) used to call span.Succeed here
+	// unconditionally, reporting codes.Ok with the literal message "failed".
+	// Anything reading spans (`goobers trace`, rollup span queries) then
+	// called a died run "ok" — the exact gap that made #705 a 16-hour mystery
+	// despite the real cause sitting one journal line away the whole time.
+	span.Complete(string(result.Phase), result.Phase == journal.PhaseFailed)
 	return result, nil
 }
 
@@ -684,6 +727,23 @@ func blockedReason(result apiv1.ResultEnvelope) string {
 	return "stage reported blocked with no error detail"
 }
 
+// failureCauseFrom extracts the bare (code, message) pair a business
+// ResultFailure carries (issue #710) — code feeds Result.FailureCode directly
+// (the scheduler/daemon echo's own "(stage: CODE)" suffix already shows the
+// code, so folding it into message too would be redundant there); message is
+// the bare stage-reported text, code-prefixed separately by the caller only
+// where that reads better (the run_failed journal event, matching #545's
+// blockedReason convention). Falls back to a fixed marker so neither is ever
+// empty — docs/stage-contract.md requires "error" on every failure result,
+// but a stage that violates that (a bug in the executor, not the contract)
+// must still produce a describable cause rather than an empty one.
+func failureCauseFrom(e *apiv1.ErrorInfo) (code, message string) {
+	if e == nil || e.Message == "" {
+		return "", "stage reported failure with no error detail"
+	}
+	return e.Code, e.Message
+}
+
 // parseBlockedBy extracts blocking issue numbers from the documented
 // outputs.blockedBy convention (docs/stage-contract.md): a scalar string of
 // comma-separated issue numbers — the envelope schema admits only scalars in
@@ -754,15 +814,24 @@ func (r *Runner) failTerminal(runID string, jr *journal.Run, finalState string, 
 	// couldn't show either. So a walk-level failure (a gate-eval error, an
 	// escalation-notify failure, max-steps, an unknown state) died with zero
 	// recorded explanation anywhere an operator can reach. This is a run-level
-	// failure, so the event carries no stage/gate attribution; origErr's message
-	// already names the failing state. Best-effort: the terminal marker must
-	// still be written even if this diagnostic append fails (#110), and a journal
-	// write failure of either is reported alongside origErr, never swallowing it.
+	// failure, so the JOURNALED event carries no stage/gate attribution;
+	// origErr's message already names the failing state. Best-effort: the
+	// terminal marker must still be written even if this diagnostic append
+	// fails (#110), and a journal write failure of either is reported
+	// alongside origErr, never swallowing it.
+	message := boundFailureMessage(origErr.Error())
 	appendErr := jr.Append(journal.Event{
 		Type:  journal.EventError,
 		Error: &journal.ErrorDetail{Code: "run_failed", Message: origErr.Error()},
 	})
 	res, ferr := r.finish(runID, jr, journal.PhaseFailed, finalState, steps)
+	// FailureStage/Code/Message (issue #710) are populated on the RETURNED
+	// Result regardless of the append's own outcome — even a best-effort
+	// diagnostic-append failure must not silently drop the cause the caller
+	// (the scheduler/daemon echo) needs; finalState is the failing stage/gate
+	// name where available (a gate-eval error, e.g.), empty for a genuinely
+	// state-less failure (max-steps, unknown state).
+	res.FailureStage, res.FailureCode, res.FailureMessage = finalState, "run_failed", message
 	if ferr != nil {
 		return res, fmt.Errorf("%w (additionally failed to finalize terminal failure: %w)", origErr, ferr)
 	}
@@ -858,7 +927,38 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		if _, isGate := machine.Gate(t.Next); t.Next != "" && isGate {
 			return t.Next, Result{}, true, nil
 		}
+		// #710: the stage's own business error (e.g. a deterministic
+		// pr-select surfacing errorCode:"github_rate_limited") was already
+		// journaled on stage.finished a moment ago (runTask), but the run's
+		// OWN terminal event carried nothing beyond a bare status:"failed" —
+		// #705's root cause was sitting one journal line above the
+		// terminal marker the entire 16 hours it went unseen. Append a
+		// run_failed cause event mirroring failTerminal's own pattern (#305),
+		// this time WITH stage attribution since a business failure, unlike a
+		// walk-level error, always has one, then thread the stage's own code/
+		// message onto the returned Result so the scheduler/daemon echo sites
+		// can surface "failed (pr-select: github_rate_limited)" instead of a
+		// bare "failed".
+		code, message := failureCauseFrom(result.Error)
+		journaledMessage := message
+		if code != "" {
+			// Code-prefixed for the on-disk cause event only, matching #545's
+			// blockedReason convention (a code alongside the code-named
+			// EventError.Code field would otherwise be lost to a plain grep
+			// of run_failed messages) — Result.FailureCode already carries
+			// the code on its own for the echo sites, so FailureMessage below
+			// stays bare rather than doubling up.
+			journaledMessage = code + ": " + message
+		}
+		if aerr := jr.Append(journal.Event{
+			Type: journal.EventError, Stage: t.Name,
+			Error: &journal.ErrorDetail{Code: "run_failed", Message: journaledMessage},
+		}); aerr != nil {
+			res, err = r.failTerminal(runID, jr, t.Name, steps, fmt.Errorf("runner: journal failure cause for %q: %w", t.Name, aerr))
+			return "", res, false, err
+		}
 		res, err = r.finish(runID, jr, journal.PhaseFailed, t.Name, steps)
+		res.FailureStage, res.FailureCode, res.FailureMessage = t.Name, code, boundFailureMessage(message)
 		return "", res, false, err
 	case apiv1.ResultNoWork:
 		// Short-circuits straight to PhaseCompleted, unconditionally — never
@@ -1067,7 +1167,13 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
 		}
-		span.Succeed(string(result.Status))
+		// #710: a stage returning a business "failure" ResultEnvelope is a
+		// dispatch SUCCESS (the executor ran to completion and reported a
+		// clean business outcome) — Fail'd above is reserved for a genuine Go
+		// dispatch error, never this. But span.Succeed unconditionally here
+		// meant a failed stage's own span reported codes.Ok with the literal
+		// message "failure", same defect as the run's root span above.
+		span.Complete(string(result.Status), result.Status == apiv1.ResultFailure)
 		return result, contextPointersFor(t.Name, result.Artifacts), nil
 	}
 	// Unreachable: maxAttempts >= 1 always executes the loop body at least

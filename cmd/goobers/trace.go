@@ -397,6 +397,17 @@ func printSpans(stdout io.Writer, spans []rollup.SpanSummary) {
 	}
 	pln(stdout, "\nspans:")
 	for _, sp := range spans {
-		pf(stdout, "  %s status=%s duration=%dms\n", sp.Name, sp.Status, sp.DurationMs)
+		// business=%s (issue #710) shows the run/stage's actual outcome
+		// alongside OTel's own coarser status — the two use different
+		// vocabularies (ok/error vs success/failed/completed/escalated/...),
+		// so a business-failed span now reads "status=error business=failed"
+		// instead of the pre-fix "status=ok" a failed run misleadingly wore.
+		// Empty for a span that never calls Span.Complete (a gate span,
+		// still Succeed/Fail) or one predating this fix.
+		suffix := ""
+		if sp.BusinessStatus != "" {
+			suffix = " business=" + sp.BusinessStatus
+		}
+		pf(stdout, "  %s status=%s%s duration=%dms\n", sp.Name, sp.Status, suffix, sp.DurationMs)
 	}
 }

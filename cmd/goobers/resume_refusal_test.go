@@ -135,13 +135,22 @@ func TestResumeScanFailsDigestMismatchedRunAndReleasesClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var status string
+	var finished journal.Event
 	for _, ev := range events {
 		if ev.Type == journal.EventRunFinished && ev.RunID == runID {
-			status = ev.Status
+			finished = ev
 		}
 	}
-	if status != string(journal.PhaseFailed) {
-		t.Fatalf("instance-log status = %q, want %q — the canonical phase, never a raw \"error: ...\" string", status, journal.PhaseFailed)
+	// #710: the instance-log echo now enriches the canonical phase with the
+	// refusal's own code (still never the raw, unbounded "error: <goErr>"
+	// string #520 exists to prevent) — refuseResume threads FailureCode onto
+	// the Result the same way taskOutcome/failTerminal do for a business
+	// failure, so this path gets the same visibility fix.
+	wantStatus := string(journal.PhaseFailed) + " (resume_refused_digest_mismatch)"
+	if finished.Status != wantStatus {
+		t.Fatalf("instance-log status = %q, want %q — the canonical phase enriched with its cause, never a raw \"error: ...\" string", finished.Status, wantStatus)
+	}
+	if finished.Error == nil || finished.Error.Code != "resume_refused_digest_mismatch" {
+		t.Fatalf("instance-log run.finished error = %+v, want code resume_refused_digest_mismatch", finished.Error)
 	}
 }

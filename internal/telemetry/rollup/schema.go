@@ -140,4 +140,32 @@ CREATE INDEX IF NOT EXISTS idx_harness_transcripts_run  ON harness_transcripts(r
 CREATE INDEX IF NOT EXISTS idx_scheduler_events_workflow ON scheduler_events(workflow);
 CREATE INDEX IF NOT EXISTS idx_scheduler_events_run      ON scheduler_events(run_id);
 `,
+	// v3 (issue #710): spans.status/status_message already exist, but before
+	// this issue's Span.Complete fix, every business outcome — success AND
+	// failure alike — reported codes.Ok, so status alone couldn't distinguish
+	// them even post-fix without inspecting free-text status_message. A
+	// dedicated table makes the actual business outcome (success, failed,
+	// completed, escalated, aborted...) directly queryable, independent of
+	// OTel's own coarser Ok/Error axis. A satellite table (an index over
+	// spans, not a widened spans schema) rather than ALTER TABLE spans ADD
+	// COLUMN, matching v2's own precedent and its stated reason: unlike
+	// CREATE TABLE/INDEX IF NOT EXISTS (idempotent under SQLite's own schema
+	// locking, so concurrent first-Opens of a fresh telemetry.db never
+	// collide), ALTER TABLE ADD COLUMN is NOT safe against two such
+	// first-Opens racing the SAME migration — applyMigration's transactional
+	// pairing only protects a crash between statement and version-bump, not
+	// two separate connections each reading schema_meta.version as
+	// not-yet-migrated before either commits (confirmed live: this exact
+	// migration written as ALTER TABLE flaked "duplicate column name" under
+	// TestConcurrentIngestAndQueryUnderWAL's N-way concurrent Open()).
+	`
+CREATE TABLE IF NOT EXISTS span_business_status (
+	run_id          TEXT NOT NULL,
+	span_id         TEXT NOT NULL,
+	business_status TEXT NOT NULL,
+	PRIMARY KEY (run_id, span_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_span_business_status_run ON span_business_status(run_id);
+`,
 }

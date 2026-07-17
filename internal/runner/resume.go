@@ -261,7 +261,12 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 	}); err != nil {
 		return Result{}, fmt.Errorf("runner: %s (additionally failed to journal terminal refusal: %w)", msg, err)
 	}
-	res := Result{Phase: journal.PhaseFailed}
+	// FailureCode/Message (issue #710) let the scheduler/daemon echo surface
+	// the WF-016 refusal reason too, not just a bare "failed" — the same fix
+	// as taskOutcome's business-failure arm and failTerminal, applied to this
+	// third PhaseFailed producer. FailureStage stays empty: a resume-time
+	// digest check isn't attributable to one stage.
+	res := Result{Phase: journal.PhaseFailed, FailureCode: code, FailureMessage: boundFailureMessage(msg)}
 	if err := r.finalizeTerminal(runID, journal.PhaseFailed); err != nil {
 		return res, fmt.Errorf("runner: %s (additionally failed to finalize terminal refusal: %w)", msg, err)
 	}
