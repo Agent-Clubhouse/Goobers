@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // runPollInterval bounds how often waitForRunTerminal re-reads a run's
@@ -289,6 +290,11 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 
 	l := instance.NewLayout(root)
 	dir := filepath.Join(l.RunsDir(), runID)
+	wtMgr, err := worktree.NewManager(l.WorkcopiesDir())
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 
 	if reader, err := journal.OpenRead(dir); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -300,8 +306,8 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		// already-terminal run, flipping its recorded terminal phase.
 		switch phase {
 		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-			if err := releaseClaimsForRun(l, nil, runID); err != nil {
-				pf(stderr, "error: release claims for terminal run %s: %v\n", runID, err)
+			if err := finalizeTerminalRun(l, nil, wtMgr, runID); err != nil {
+				pf(stderr, "error: finalize terminal run %s: %v\n", runID, err)
 				return 2
 			}
 			pf(stderr, "error: run %s is already terminal (phase=%s)\n", runID, phase)
@@ -323,8 +329,8 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if err := releaseClaimsForRun(l, nil, runID); err != nil {
-		pf(stderr, "error: release claims for aborted run %s: %v\n", runID, err)
+	if err := finalizeTerminalRun(l, nil, wtMgr, runID); err != nil {
+		pf(stderr, "error: finalize aborted run %s: %v\n", runID, err)
 		return 2
 	}
 

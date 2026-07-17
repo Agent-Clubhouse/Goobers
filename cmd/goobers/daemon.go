@@ -148,7 +148,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		return nil, err
 	}
 	runnerCfg.FinalizeTerminal = func(runID string, _ journal.RunPhase) error {
-		return releaseClaimsForRun(l, instanceLog, runID)
+		return finalizeTerminalRun(l, instanceLog, wtMgr, runID)
 	}
 	// #712: shared with the Scheduler via SchedulerOptions below — see
 	// schedulerSetup.ProviderQuota's doc comment for why a shared pointer,
@@ -387,8 +387,8 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 		if phase, err := rd.Phase(); err == nil {
 			switch phase {
 			case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-				if err := releaseClaimsForRun(l, log, id.RunID); err != nil {
-					return resumed, warned, fmt.Errorf("release claims for terminal run %q: %w", id.RunID, err)
+				if err := rn.FinalizeTerminal(id.RunID, phase); err != nil {
+					return resumed, warned, fmt.Errorf("finalize terminal run %q: %w", id.RunID, err)
 				}
 				continue // terminal: nothing to resume
 			}

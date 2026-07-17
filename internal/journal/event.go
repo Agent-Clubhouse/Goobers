@@ -38,6 +38,9 @@ const (
 	EventRedaction EventType = "redaction"
 	// EventRepaired records crash-recovery repair of a torn final write.
 	EventRepaired EventType = "repaired"
+	// EventRunnerAnnotation records local-runner lifecycle bookkeeping. Its
+	// payload lives entirely under Runner and is excluded from conformance.
+	EventRunnerAnnotation EventType = "runner.annotation"
 
 	// Instance-journal event types (§4/§6): scheduler decisions and
 	// claim-ledger transitions recorded to scheduler/events.jsonl, the same
@@ -193,6 +196,9 @@ func (e Event) IsConformanceNormative() bool {
 	case EventGateStarted, EventRepaired:
 		// Pre-dispatch gate markers and torn-write repair are durability
 		// mechanics, not orchestration outcomes.
+		return false
+	case EventRunnerAnnotation:
+		// Local-runner lifecycle bookkeeping lives under runner.* only.
 		return false
 	case EventSpanRecorded:
 		// Spans carry live-harness transcripts (LLM output); structural only

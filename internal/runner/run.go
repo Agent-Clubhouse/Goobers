@@ -45,8 +45,9 @@ type SpanStarter interface {
 type TerminalPreparer func(runID string, phase journal.RunPhase, jr *journal.Run) error
 
 // TerminalFinalizer performs instance-level cleanup after a run's terminal
-// event is durably journaled. It may be invoked again when Resume observes an
-// already-terminal run, so implementations must be idempotent.
+// event is durably journaled. It must not append to the closed run journal and
+// may be invoked again when startup observes an already-terminal run, so
+// implementations must be idempotent.
 type TerminalFinalizer func(runID string, phase journal.RunPhase) error
 
 // BlockedOutcome describes a run terminating because a stage reported status
@@ -1022,7 +1023,7 @@ func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, f
 		return Result{}, fmt.Errorf("runner: journal run.finished: %w", err)
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
-	if err := r.finalizeTerminal(runID, phase); err != nil {
+	if err := r.FinalizeTerminal(runID, phase); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -1038,7 +1039,9 @@ func (r *Runner) prepareTerminal(runID string, phase journal.RunPhase, jr *journ
 	return nil
 }
 
-func (r *Runner) finalizeTerminal(runID string, phase journal.RunPhase) error {
+// FinalizeTerminal runs the configured idempotent instance-level finalizer.
+// Startup recovery uses the same entrypoint after discovering a terminal run.
+func (r *Runner) FinalizeTerminal(runID string, phase journal.RunPhase) error {
 	if r.cfg.FinalizeTerminal == nil {
 		return nil
 	}
@@ -1753,10 +1756,11 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			baseRef = "main"
 		}
 		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
-			RepoURL: repoURL,
-			RunID:   in.RunID + "-" + stageName,
-			BaseRef: baseRef,
-			Branch:  providers.BranchName(in.Machine.Def.Name, in.RunID),
+			RepoURL:    repoURL,
+			RunID:      in.RunID + "-" + stageName,
+			OwnerRunID: in.RunID,
+			BaseRef:    baseRef,
+			Branch:     providers.BranchName(in.Machine.Def.Name, in.RunID),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create worktree: %w", err)

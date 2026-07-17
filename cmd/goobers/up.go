@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -228,12 +229,15 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// worktree directory that makes worktree.Create refuse forever (fixed
 	// separately by adopt-and-reset, but Reap is still what actually reclaims
 	// the disk space and the git worktree-list registration).
-	if _, warnings, err := setup.Worktrees.Reap(ctx, worktree.ReapOptions{StaleAfter: reapStaleAfter}); err != nil {
+	if _, warnings, err := setup.Worktrees.Reap(ctx, worktree.ReapOptions{
+		StaleAfter:    reapStaleAfter,
+		IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
+	}); err != nil {
 		pf(stderr, "error: reap worktrees: %v\n", err)
 		return 1
 	} else {
 		for _, w := range warnings {
-			pf(stdout, "warning: unreadable worktree marker %s: %v\n", w.Path, w.Err)
+			pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
 		}
 	}
 
@@ -252,6 +256,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if setup.OpenPRRefresher != nil {
 		opts = append(opts, localscheduler.WithOpenPRCounter(setup.OpenPRRefresher))
 	}
+
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -425,6 +430,50 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return 1
 	}
 	return 0
+}
+
+func worktreeRunTerminal(runsDir string) func(string) (bool, error) {
+	return func(worktreeID string) (bool, error) {
+		entries, err := os.ReadDir(runsDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, fmt.Errorf("read runs directory: %w", err)
+		}
+
+		var owner string
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			runID := entry.Name()
+			if worktreeID != runID && !strings.HasPrefix(worktreeID, runID+"-") {
+				continue
+			}
+			if len(runID) > len(owner) {
+				owner = runID
+			}
+		}
+		if owner == "" {
+			return false, nil
+		}
+
+		rd, err := journal.OpenRead(filepath.Join(runsDir, owner))
+		if err != nil {
+			return false, err
+		}
+		phase, err := rd.Phase()
+		if err != nil {
+			return false, err
+		}
+		switch phase {
+		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+			return true, nil
+		default:
+			return false, nil
+		}
+	}
 }
 
 type heartbeatActivity struct {
