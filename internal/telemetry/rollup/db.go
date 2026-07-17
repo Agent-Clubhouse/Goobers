@@ -63,6 +63,19 @@ func Open(path string) (*DB, error) {
 // Close closes the underlying database handle.
 func (db *DB) Close() error { return db.sql.Close() }
 
+// checkpointWAL runs a TRUNCATE-mode WAL checkpoint (#530): writes every WAL
+// frame back into the main db file and, only if that fully succeeds,
+// truncates the -wal file to zero bytes — bounding its otherwise-unbounded
+// growth across repeated incremental ingests. Best-effort: retried against
+// ordinary lock contention like every other pragma here, but a caller must
+// never fail its own operation over a checkpoint that couldn't complete
+// (e.g. a concurrent reader transaction from another process legitimately
+// held it back) — checkpointing is a maintenance step, not a correctness
+// requirement, since WAL mode already serves correct reads without it.
+func checkpointWAL(sqlDB *sql.DB) {
+	_ = execWithBusyRetry(sqlDB, `PRAGMA wal_checkpoint(TRUNCATE)`)
+}
+
 func (db *DB) migrate() error {
 	if err := execWithBusyRetry(db.sql, `CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
 		return fmt.Errorf("rollup: create schema_meta: %w", err)

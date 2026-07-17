@@ -298,6 +298,8 @@ func gateRunnerJSON(ev journalEvent) (sql.NullString, error) {
 // all). Idempotent (delete-then-insert over the whole table, since the
 // instance log is a single stream, not per-run), so it's safe to call after
 // every dispatch tick (incremental) or as part of Rebuild (full rescan).
+// Historical duplicate seq values are corruption, but retaining the first
+// occurrence keeps one bad record from permanently preventing all rollup.
 func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	events, err := readInstanceEvents(schedulerDir)
 	if err != nil {
@@ -318,13 +320,30 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 		case eventTriggerFired, eventTickSkipped, eventClaimAcquired, eventClaimReleased, eventRunStarted, eventRunFinished:
 			if _, err := tx.Exec(`
 				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(seq) DO NOTHING`,
 				ev.Seq, ev.Type, nullIfEmpty(ev.Workflow), nullIfEmpty(ev.RunID), nullIfEmpty(ev.Reason), nullIfEmpty(ev.Status), formatTime(ev.Time)); err != nil {
 				return fmt.Errorf("rollup: insert scheduler_event seq %d: %w", ev.Seq, err)
 			}
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rollup: commit scheduler ingest tx: %w", err)
+	}
+	// Checkpoint the WAL back into the main db file after every ingest
+	// (#530 maintainer ruling). WAL mode already gives a separate reader
+	// process (goobers telemetry/trace) correct read-after-commit
+	// visibility without this — what an unchecked WAL actually risks is
+	// unbounded file growth across thousands of incremental per-tick
+	// ingests, and a non-WAL-aware tool (a raw copy of just the .db file)
+	// missing not-yet-checkpointed rows. Best-effort only: this connection
+	// is the sole writer (SetMaxOpenConns(1)), so nothing else can be
+	// mid-write, but a concurrent reader transaction from another process
+	// can legitimately hold the checkpoint back — that's a maintenance
+	// delay, not a correctness problem, so its failure must never surface
+	// as an ingest failure.
+	checkpointWAL(db.sql)
+	return nil
 }
 
 func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {

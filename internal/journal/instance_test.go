@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/api/validate"
 )
@@ -67,6 +69,129 @@ func TestInstanceLogRoundTrip(t *testing.T) {
 	events, _ = ReadInstanceLog(dir)
 	if len(events) != 6 || events[5].Seq != 6 {
 		t.Fatalf("seq did not continue across reopen: %+v", events)
+	}
+}
+
+func TestInstanceLogIndependentWritersAllocateUniqueSequence(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	first, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("open first instance log: %v", err)
+	}
+	defer func() { _ = first.Close() }()
+	second, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("open second instance log: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+
+	for i, writer := range []*InstanceLog{first, second, first} {
+		if err := writer.Append(Event{Type: EventTriggerFired, Workflow: "workflow"}); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3", len(events))
+	}
+	for i, event := range events {
+		if want := uint64(i + 1); event.Seq != want {
+			t.Fatalf("event %d seq = %d, want %d", i, event.Seq, want)
+		}
+	}
+}
+
+func TestInstanceLogAppendWaitsForJournalLock(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	instanceLog, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = instanceLog.Close() }()
+
+	lock, err := acquireJournalLock(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendDone := make(chan error, 1)
+	go func() {
+		appendDone <- instanceLog.Append(Event{Type: EventTriggerFired, Workflow: "workflow"})
+	}()
+
+	select {
+	case err := <-appendDone:
+		releaseJournalLock(lock)
+		t.Fatalf("Append returned before journal lock was released: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	releaseJournalLock(lock)
+
+	select {
+	case err := <-appendDone:
+		if err != nil {
+			t.Fatalf("Append after lock release: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Append did not proceed after journal lock was released")
+	}
+}
+
+// TestInstanceLogConcurrentAppendsAllocateUniqueMonotonicSequence is #530's
+// N-goroutine acceptance test (the maintainer ruling's explicit ask): N
+// independent OpenInstanceLog calls — one per goroutine, mirroring N real
+// subprocesses (the daemon plus backlog-query/pr-claim CLI invocations, all
+// opening the SAME instance log concurrently) — each append exactly one
+// event at the same time. TestInstanceLogIndependentWritersAllocateUniqueSequence
+// above only interleaves two writers SEQUENTIALLY; this drives real
+// concurrent contention on the flock, which is what the original bug (two
+// events sharing seq:5) actually needed to reproduce.
+func TestInstanceLogConcurrentAppendsAllocateUniqueMonotonicSequence(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	const writers = 25
+
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	wg.Add(writers)
+	for i := 0; i < writers; i++ {
+		go func() {
+			defer wg.Done()
+			log, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer func() { _ = log.Close() }()
+			errs <- log.Append(Event{Type: EventTriggerFired, Workflow: "workflow"})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent open+append: %v", err)
+		}
+	}
+
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != writers {
+		t.Fatalf("events = %d, want %d (a lost/dropped append)", len(events), writers)
+	}
+	seen := make(map[uint64]bool, writers)
+	for _, ev := range events {
+		if seen[ev.Seq] {
+			t.Fatalf("duplicate seq %d among %d concurrent writers — exactly #530's original bug", ev.Seq, writers)
+		}
+		seen[ev.Seq] = true
+		if ev.Seq < 1 || ev.Seq > uint64(writers) {
+			t.Fatalf("seq %d out of the expected [1,%d] range — a gap or an out-of-order allocation", ev.Seq, writers)
+		}
 	}
 }
 
