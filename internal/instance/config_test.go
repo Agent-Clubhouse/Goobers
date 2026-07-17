@@ -47,6 +47,25 @@ runConditions:
 	if cfg.RunConditions.MaxParallelRuns != 2 {
 		t.Fatalf("expected maxParallelRuns=2, got %d", cfg.RunConditions.MaxParallelRuns)
 	}
+	if cfg.APIListenAddress() != DefaultAPIListenAddress {
+		t.Fatalf("APIListenAddress = %q, want %q", cfg.APIListenAddress(), DefaultAPIListenAddress)
+	}
+}
+
+func TestLoadConfigAPIListenAddress(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+api:
+  listen: "[::1]:9090"
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.APIListenAddress(); got != "[::1]:9090" {
+		t.Fatalf("APIListenAddress = %q, want [::1]:9090", got)
+	}
 }
 
 func TestLoadConfigFileTokenRef(t *testing.T) {
@@ -196,6 +215,38 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "valid timezone",
 			cfg:  Config{Timezone: "America/New_York"},
+		},
+		{
+			name:    "API wildcard host",
+			cfg:     Config{API: APIConfig{Listen: ":8080"}},
+			wantErr: "wildcard listeners are not allowed",
+		},
+		{
+			name:    "API all interfaces",
+			cfg:     Config{API: APIConfig{Listen: "0.0.0.0:8080"}},
+			wantErr: "is not loopback",
+		},
+		{
+			name:    "API non-loopback host",
+			cfg:     Config{API: APIConfig{Listen: "example.com:8080"}},
+			wantErr: "is not loopback",
+		},
+		{
+			name: "API localhost",
+			cfg:  Config{API: APIConfig{Listen: "localhost:8080"}},
+		},
+		{
+			name: "API IPv4 loopback",
+			cfg:  Config{API: APIConfig{Listen: "127.0.0.2:0"}},
+		},
+		{
+			name: "API IPv6 loopback",
+			cfg:  Config{API: APIConfig{Listen: "[::1]:8080"}},
+		},
+		{
+			name:    "API invalid port",
+			cfg:     Config{API: APIConfig{Listen: "127.0.0.1:70000"}},
+			wantErr: "must be a number",
 		},
 		{
 			name: "credentials unknown capability",

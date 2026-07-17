@@ -104,7 +104,7 @@ Usage:
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
   goobers validate [path]       validate an instance's instance.yaml + config/
-  goobers up [--quiet] [path]   run the daemon (scheduler + runner)
+  goobers up [--quiet] [path]   run the daemon (scheduler + runner + loopback HTTP API)
   goobers run <workflow> [path] trigger a run manually (still honors run conditions)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
   goobers signal <name> [path]  fire an external signal, dispatching every
