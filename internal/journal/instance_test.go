@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -136,6 +137,61 @@ func TestInstanceLogAppendWaitsForJournalLock(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Append did not proceed after journal lock was released")
+	}
+}
+
+// TestInstanceLogConcurrentAppendsAllocateUniqueMonotonicSequence is #530's
+// N-goroutine acceptance test (the maintainer ruling's explicit ask): N
+// independent OpenInstanceLog calls — one per goroutine, mirroring N real
+// subprocesses (the daemon plus backlog-query/pr-claim CLI invocations, all
+// opening the SAME instance log concurrently) — each append exactly one
+// event at the same time. TestInstanceLogIndependentWritersAllocateUniqueSequence
+// above only interleaves two writers SEQUENTIALLY; this drives real
+// concurrent contention on the flock, which is what the original bug (two
+// events sharing seq:5) actually needed to reproduce.
+func TestInstanceLogConcurrentAppendsAllocateUniqueMonotonicSequence(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	const writers = 25
+
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	wg.Add(writers)
+	for i := 0; i < writers; i++ {
+		go func() {
+			defer wg.Done()
+			log, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer func() { _ = log.Close() }()
+			errs <- log.Append(Event{Type: EventTriggerFired, Workflow: "workflow"})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent open+append: %v", err)
+		}
+	}
+
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != writers {
+		t.Fatalf("events = %d, want %d (a lost/dropped append)", len(events), writers)
+	}
+	seen := make(map[uint64]bool, writers)
+	for _, ev := range events {
+		if seen[ev.Seq] {
+			t.Fatalf("duplicate seq %d among %d concurrent writers — exactly #530's original bug", ev.Seq, writers)
+		}
+		seen[ev.Seq] = true
+		if ev.Seq < 1 || ev.Seq > uint64(writers) {
+			t.Fatalf("seq %d out of the expected [1,%d] range — a gap or an out-of-order allocation", ev.Seq, writers)
+		}
 	}
 }
 

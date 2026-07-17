@@ -327,7 +327,23 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 			}
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rollup: commit scheduler ingest tx: %w", err)
+	}
+	// Checkpoint the WAL back into the main db file after every ingest
+	// (#530 maintainer ruling). WAL mode already gives a separate reader
+	// process (goobers telemetry/trace) correct read-after-commit
+	// visibility without this — what an unchecked WAL actually risks is
+	// unbounded file growth across thousands of incremental per-tick
+	// ingests, and a non-WAL-aware tool (a raw copy of just the .db file)
+	// missing not-yet-checkpointed rows. Best-effort only: this connection
+	// is the sole writer (SetMaxOpenConns(1)), so nothing else can be
+	// mid-write, but a concurrent reader transaction from another process
+	// can legitimately hold the checkpoint back — that's a maintenance
+	// delay, not a correctness problem, so its failure must never surface
+	// as an ingest failure.
+	checkpointWAL(db.sql)
+	return nil
 }
 
 func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
