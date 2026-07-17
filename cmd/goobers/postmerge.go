@@ -38,9 +38,13 @@ const needsRemediationLabel = "goobers:needs-remediation"
 // runPostMerge implements the `goobers post-merge` built-in stage kind
 // (issue #361): the two actions that follow a successful merge-review merge.
 //
-//   - Post-merge fan-out (design doc §7 D7): label every OTHER open PR
-//     targeting the same base branch needs-remediation, since the base just
-//     moved out from under them — this is what feeds pr-remediation.
+//   - Post-merge fan-out (design doc §7 D7, triaged per issue #715): label
+//     ONLY the other open PRs that actually need it — conflicted with the
+//     base after the merge, or file-overlapping with the just-merged PR
+//     (fanOutNeedsRemediation's own doc comment has the full triage
+//     contract). A clean, disjoint sibling is left untouched; this is what
+//     stopped feeding pr-remediation's O(N²) churn (#715: 481 remediation
+//     runs across ~45 PRs, ≥94% no-op, before this fix).
 //   - Close-out on merge (#355): the merged PR's body is parsed for its
 //     closing-keyword issue reference(s) (the same "Fixes #N" convention
 //     `goobers open-pr` writes), and each referenced issue is marked done.
@@ -57,14 +61,15 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers post-merge [path]\n\n"+
-			"Run the two actions that follow a successful merge: label every other\n"+
-			"open PR targeting the same base branch goobers:needs-remediation (the\n"+
-			"base just moved out from under them), and mark each issue the merged\n"+
-			"PR's body references (Fixes/Closes/Resolves #N) done. Declared input:\n"+
-			"pullNumber (required — the just-merged PR). Exit codes: 0 = done\n"+
-			"(even if the PR body references no issue, or there are no other open\n"+
-			"PRs to label — both are normal outcomes, not errors), 1 = business\n"+
-			"error, 2 = usage/IO error.\n")
+			"Run the two actions that follow a successful merge: triage every\n"+
+			"other open PR targeting the same base branch and label ONLY the\n"+
+			"conflicted or file-overlapping ones goobers:needs-remediation (issue\n"+
+			"#715 — a clean disjoint sibling is left untouched), and mark each\n"+
+			"issue the merged PR's body references (Fixes/Closes/Resolves #N)\n"+
+			"done. Declared input: pullNumber (required — the just-merged PR).\n"+
+			"Exit codes: 0 = done (even if the PR body references no issue, or\n"+
+			"there are no other open PRs — both are normal outcomes, not\n"+
+			"errors), 1 = business error, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -114,7 +119,7 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "poll merged pull request", err, "")
 	}
 
-	labeled, labelErrs := fanOutNeedsRemediation(ctx, provider, repo, poll.Number, poll.BaseBranch)
+	labeled, skipped, labelErrs := fanOutNeedsRemediation(ctx, provider, repo, root, poll.Number, poll.BaseBranch, stderr)
 	for _, lerr := range labelErrs {
 		pf(stderr, "warning: %v\n", lerr)
 	}
@@ -124,41 +129,148 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "warning: %v\n", cerr)
 	}
 
-	pf(stdout, "post-merge: labeled %d pr(s) %s, closed %d issue(s)\n", len(labeled), needsRemediationLabel, len(closed))
+	pf(stdout, "post-merge: labeled %d pr(s) %s (%d clean siblings left untouched), closed %d issue(s)\n",
+		len(labeled), needsRemediationLabel, len(skipped), len(closed))
 	return 0
 }
 
-// fanOutNeedsRemediation labels every OTHER open PR targeting base
-// needs-remediation (design doc §7 D7). Best-effort per PR: one failed
-// label-apply is collected as a warning, not fatal to the others or to the
-// merge that already succeeded.
-func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, base string) (labeled []int, errs []error) {
+// fanOutNeedsRemediation triages every OTHER open PR targeting base and
+// labels needs-remediation only the ones that actually need it (issue #715):
+// conflicted with the base after the merge, or file-overlapping with the
+// just-merged PR (a semantic-collision risk the same guard the old blanket
+// fan-out existed for — design doc §7 D7's stated rationale). A clean,
+// disjoint sibling is left untouched: no label, so pr-remediation never
+// selects it, force-pushes it, or restarts its CI — the O(N²) churn issue
+// #715 measured (481 remediation runs across ~45 PRs, ≥94% no-op).
+//
+// Best-effort per PR: one failed label-apply is collected as a warning, not
+// fatal to the others or to the merge that already succeeded. A per-sibling
+// triage signal (mergeable check or files fetch) that itself fails is NOT
+// silently treated as "clean" — it conservatively labels needs-remediation
+// (the pre-#715 behavior for that one PR) rather than risk a false negative
+// on an API hiccup; see triageSibling's own doc comment.
+func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, root string, mergedNumber int, base string, stderr io.Writer) (labeled, skipped []int, errs []error) {
 	if base == "" {
 		errs = append(errs, fmt.Errorf("merged PR has no recorded base branch, skipping fan-out"))
-		return nil, errs
+		return nil, nil, errs
 	}
+
+	// The merged PR's own files are the fixed side of every overlap check
+	// below — fetched once, not per sibling. A failure here degrades every
+	// sibling's overlap check to "no overlap detected" (mergedPaths stays
+	// empty), not a fatal error: the mergeable check below still applies
+	// independently, so triage degrades gracefully rather than failing shut.
+	mergedPaths := map[string]bool{}
+	if mergedFiles, ferr := provider.PullRequestFiles(ctx, repo, strconv.Itoa(mergedNumber)); ferr != nil {
+		errs = append(errs, fmt.Errorf("list files for merged pr #%d (file-overlap triage degraded to mergeable-only for this run): %w", mergedNumber, ferr))
+	} else {
+		for _, f := range mergedFiles {
+			mergedPaths[f.Path] = true
+		}
+	}
+
 	// HeadPrefix scopes the fan-out to goober-authored siblings (G1's
 	// goober-authored-repo assumption, matching pr-select/gather-sibling-
 	// context's own default) — a human/other-agent PR sharing the same base
-	// isn't pr-remediation's to touch.
-	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: repo, Base: base, HeadPrefix: "goobers/"})
+	// isn't pr-remediation's to touch. SkipCheckState: triage needs neither
+	// field ListPullRequests would otherwise resolve per candidate.
+	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, HeadPrefix: "goobers/", SkipCheckState: true,
+	})
 	if err != nil {
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s: %w", base, err))
-		return nil, errs
+		return nil, nil, errs
 	}
+
+	// Opportunistic reuse of #523's sibling-context cache: if the SAME
+	// merge-review run's earlier gather-sibling-context stage already fetched
+	// a sibling's files this cycle (the common case — post-merge is the last
+	// stage of the same run), triageSibling reuses them at zero extra cost
+	// instead of re-fetching. A cold/corrupt/absent cache (any other
+	// workflow, or a standalone invocation) degrades to nil here, which
+	// triageSibling treats as an unconditional cache miss — never a failure.
+	cached := loadSiblingCache(layoutFor(root).SchedulerDir(), stderr)
+
 	for _, pr := range others {
 		if pr.Number == mergedNumber {
+			continue
+		}
+		reason, shouldLabel := triageSibling(ctx, provider, repo, pr, mergedPaths, cached, stderr)
+		if !shouldLabel {
+			skipped = append(skipped, pr.Number)
 			continue
 		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo, ID: strconv.Itoa(pr.Number), AddLabels: []string{needsRemediationLabel},
 		}); err != nil {
-			errs = append(errs, fmt.Errorf("label pr #%d %s: %w", pr.Number, needsRemediationLabel, err))
+			errs = append(errs, fmt.Errorf("label pr #%d %s (triage: %s): %w", pr.Number, needsRemediationLabel, reason, err))
 			continue
 		}
 		labeled = append(labeled, pr.Number)
 	}
-	return labeled, errs
+	return labeled, skipped, errs
+}
+
+// triageSibling decides whether pr needs the needs-remediation label,
+// returning a short reason string for the caller's error/log context.
+// Checked in order — mergeable first, since a real conflict is reason
+// enough regardless of file overlap:
+//
+//  1. Conflicted: GitHub's own computed mergeable=false. A nil (still
+//     computing — normal right after a merge just changed the base)
+//     is NOT treated as conflicted; that would false-positive-label a PR
+//     that turns out clean once GitHub finishes computing it.
+//  2. File-overlapping: pr's files intersect mergedPaths — the semantic-
+//     collision guard design doc §7 D7 originally motivated the blanket
+//     fan-out with, preserved here at sibling granularity instead of
+//     instance-wide.
+//
+// A provider error on EITHER check is not swallowed as "clean" — it
+// conservatively returns shouldLabel=true (matching pre-#715 behavior for
+// that one PR), since a false negative here (silently skipping a PR that
+// actually conflicts) risks exactly the "two textually-clean-looking PRs
+// break main" failure mode post-merge main CI is the last backstop for, not
+// the first.
+func triageSibling(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, mergedPaths map[string]bool, cached map[string]siblingCacheEntry, stderr io.Writer) (reason string, shouldLabel bool) {
+	mergeable, merr := provider.PullRequestMergeable(ctx, repo, strconv.Itoa(pr.Number))
+	if merr != nil {
+		pf(stderr, "warning: check mergeable state for pr #%d: %v — conservatively labeling needs-remediation\n", pr.Number, merr)
+		return "mergeable-check-failed", true
+	}
+	if mergeable != nil && !*mergeable {
+		return "conflicted", true
+	}
+
+	files, ferr := siblingFilesForTriage(ctx, provider, repo, pr, cached)
+	if ferr != nil {
+		pf(stderr, "warning: list files for pr #%d: %v — conservatively labeling needs-remediation\n", pr.Number, ferr)
+		return "files-check-failed", true
+	}
+	for _, f := range files {
+		if mergedPaths[f] {
+			return fmt.Sprintf("file-overlap:%s", f), true
+		}
+	}
+	return "", false
+}
+
+// siblingFilesForTriage returns pr's touched files, reusing cached's entry
+// when its recorded head SHA still matches pr's current one (siblingcache.go,
+// issue #523) — cached is nil-safe (a plain map miss on a nil map behaves
+// like an empty map). A cache miss or stale entry fetches fresh.
+func siblingFilesForTriage(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, cached map[string]siblingCacheEntry) ([]string, error) {
+	if entry, ok := cached[strconv.Itoa(pr.Number)]; ok && entry.HeadSHA == pr.HeadSHA {
+		return entry.Files, nil
+	}
+	files, err := provider.PullRequestFiles(ctx, repo, strconv.Itoa(pr.Number))
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	return paths, nil
 }
 
 // closeReferencedIssues marks every issue the merged PR's body references via

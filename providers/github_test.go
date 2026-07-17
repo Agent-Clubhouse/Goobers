@@ -759,6 +759,52 @@ func TestGitHubProviderPullRequestFilesListsTouchedFiles(t *testing.T) {
 	}
 }
 
+// TestGitHubProviderPullRequestMergeable is issue #715's post-merge triage
+// signal: a single-PR detail GET resolving just the mergeable field,
+// distinct from PollPullRequest's heavier review-decision/check-state/
+// comments bundle.
+func TestGitHubProviderPullRequestMergeable(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/12", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{"number": 12, "mergeable": false})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	mergeable, err := provider.PullRequestMergeable(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "12")
+	if err != nil {
+		t.Fatalf("PullRequestMergeable: %v", err)
+	}
+	if mergeable == nil || *mergeable {
+		t.Fatalf("mergeable = %v, want a pointer to false", mergeable)
+	}
+}
+
+// TestGitHubProviderPullRequestMergeableNullIsUnknown proves GitHub's
+// still-computing null response round-trips as a nil pointer, not a false
+// or true — issue #715's caller (postmerge.go's triageSibling) depends on
+// telling "unknown" apart from "known conflicted" to avoid false-positive
+// labeling a PR whose mergeability GitHub simply hasn't computed yet.
+func TestGitHubProviderPullRequestMergeableNullIsUnknown(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/13", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"number": 13, "mergeable": nil})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	mergeable, err := provider.PullRequestMergeable(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "13")
+	if err != nil {
+		t.Fatalf("PullRequestMergeable: %v", err)
+	}
+	if mergeable != nil {
+		t.Fatalf("mergeable = %v, want nil (still computing)", *mergeable)
+	}
+}
+
 func TestGitHubProviderClosePullRequestUnmerged(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {

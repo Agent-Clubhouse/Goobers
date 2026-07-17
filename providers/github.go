@@ -617,6 +617,36 @@ func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRe
 	return out, nil
 }
 
+// PullRequestMergeable resolves pullID's current GitHub-computed mergeable
+// flag via a single-PR detail GET — issue #715's post-merge triage needs
+// exactly this one field per sibling, not the review-decision/check-state/
+// comments PollPullRequest also resolves (three extra requests it has no use
+// for here). Returns nil when GitHub reports null (mergeability still being
+// computed asynchronously — a normal, common state right after a merge
+// changes a sibling's target, not an error): the caller must treat "unknown"
+// as distinct from "known conflicted", since treating a computing-in-progress
+// PR as conflicted would false-positive-label a PR that turns out clean once
+// GitHub finishes. A read, so it does not emit a mutation event.
+func (p *GitHubProvider) PullRequestMergeable(ctx context.Context, repo RepositoryRef, pullID string) (*bool, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if pullID == "" {
+		return nil, fmt.Errorf("pull id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID)
+	if err != nil {
+		return nil, err
+	}
+	var pr struct {
+		Mergeable *bool `json:"mergeable"`
+	}
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
+		return nil, err
+	}
+	return pr.Mergeable, nil
+}
+
 // reviewDecision aggregates a PR's review list into a single decision: the
 // latest review per author wins, and any outstanding CHANGES_REQUESTED beats
 // any APPROVED (BL-031 review-decision normalization).
