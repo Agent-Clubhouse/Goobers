@@ -334,6 +334,14 @@ var automatedBuiltinOutcomes = []string{"pass", "fail"}
 // branch fails closed) as pass/fail already are.
 var automatedCheckOutcomes = map[string][]string{
 	"ci-status": {"pass", "fail", "timeout"},
+	// "land-outcome"/"queue-outcome" (issue #758): merge-policy abstraction
+	// — a merge-pr stage that actually landed a pull request reports
+	// whether it merged directly or only enqueued it, and a subsequent
+	// merge-queue-poll stage reports whether the queue went on to merge,
+	// evict, or time out watching it. See internal/gate.DefaultChecks'
+	// doc comments on each check.
+	"land-outcome":  {"merged", "enqueued", "fail"},
+	"queue-outcome": {"merged", "evicted", "timeout", "fail"},
 }
 
 const humanGateUnsupportedMessage = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"

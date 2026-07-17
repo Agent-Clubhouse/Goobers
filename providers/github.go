@@ -570,6 +570,126 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 	return MergePullRequestResult{Number: number, Merged: out.Merged, MergeSHA: out.SHA, Message: out.Message}, nil
 }
 
+// DetectMergePolicy reports req.Branch's active merge policy (issue #758)
+// via GitHub's "get rules for a branch" endpoint (GET .../rules/branches/
+// {branch}), which returns every ruleset rule that actually applies to the
+// branch, regardless of which ruleset(s) define them. A "merge_queue"-typed
+// rule present in that list means GitHub requires the merge queue for this
+// branch; its absence means direct-merge (today's behavior, and classic
+// branch-protection repos that have no rulesets at all). A read, so it does
+// not emit a mutation event.
+func (p *GitHubProvider) DetectMergePolicy(ctx context.Context, req RepoMergePolicyRequest) (RepoMergePolicyResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return RepoMergePolicyResult{}, err
+	}
+	if req.Branch == "" {
+		return RepoMergePolicyResult{}, fmt.Errorf("branch is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "rules", "branches", req.Branch)
+	if err != nil {
+		return RepoMergePolicyResult{}, err
+	}
+	var rules []githubBranchRule
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &rules); err != nil {
+		return RepoMergePolicyResult{}, err
+	}
+	for _, rule := range rules {
+		if rule.Type == "merge_queue" {
+			return RepoMergePolicyResult{Policy: MergePolicyMergeQueue}, nil
+		}
+	}
+	return RepoMergePolicyResult{Policy: MergePolicyDirect}, nil
+}
+
+// EnqueuePullRequest adds a GitHub pull request to its repo's merge queue
+// (issue #758) via the SAME endpoint MergePullRequest uses (PUT
+// .../pulls/{number}/merge) — GitHub's documented behavior for that
+// endpoint is that a base branch requiring a merge queue causes the request
+// to enqueue the pull request instead of merging it directly. The response
+// still reports merged=false in the normal (now-queued) case, and
+// merged=true in the rare edge case where the queue happened to be empty
+// and completed the merge immediately — both are reported back verbatim so
+// internal/mergepolicy's Land can classify the outcome correctly rather
+// than assuming "enqueue attempted" always means "not yet merged".
+func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullRequestRequest) (EnqueuePullRequestResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	if req.PullID == "" {
+		return EnqueuePullRequestResult{}, fmt.Errorf("pull id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "merge")
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	body := map[string]interface{}{}
+	if req.ExpectedHeadSHA != "" {
+		body["sha"] = req.ExpectedHeadSHA
+	}
+	var out githubMergeResult
+	if err := p.do(ctx, http.MethodPut, endpoint, body, &out); err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	number, convErr := strconv.Atoi(req.PullID)
+	if convErr != nil {
+		number = 0
+	}
+	operation := "enqueue"
+	state := "enqueued"
+	if out.Merged {
+		operation = "merge"
+		state = "merged"
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, req.PullID),
+		Operation: operation,
+		Fields:    map[string]FieldDigest{"state": {After: digestString(state)}},
+	})
+	return EnqueuePullRequestResult{Number: number, Merged: out.Merged, MergeSHA: out.SHA, Message: out.Message}, nil
+}
+
+// PollMergeQueueEntry reports whether the merge queue has since merged or
+// evicted a pull request previously enqueued via EnqueuePullRequest (issue
+// #758), via a plain "get pull request" re-poll: merged=true is an
+// unambiguous merged outcome; state="closed" with merged=false means the
+// queue (or a human) closed it without landing it — evicted, a first-class
+// outcome, never conflated with "still pending"; anything still open is
+// reported pending, for the caller's own bounded poll loop to keep watching
+// until its timeout. A read, so it does not emit a mutation event.
+//
+// GitHub does not document a REST field that retroactively distinguishes
+// "evicted, left open" from "never queued" once a pull request is no longer
+// enqueued — reads here are deliberately just the pull request's own state,
+// not a speculative merge-queue-specific field, so a caller watching a
+// pull request that is evicted-but-left-open will see Pending until its own
+// poll times out rather than a wrong Evicted/Merged classification. Worth
+// re-validating against real merge-queue payloads once #759 actually
+// enables the queue live (this repo's queue is not yet enabled).
+func (p *GitHubProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueueEntryRequest) (PollMergeQueueEntryResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return PollMergeQueueEntryResult{}, err
+	}
+	if req.PullID == "" {
+		return PollMergeQueueEntryResult{}, fmt.Errorf("pull id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
+	if err != nil {
+		return PollMergeQueueEntryResult{}, err
+	}
+	var pr githubPullRequestDetail
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
+		return PollMergeQueueEntryResult{}, err
+	}
+	if pr.Merged {
+		return PollMergeQueueEntryResult{State: MergeQueueEntryMerged, MergeSHA: pr.Head.SHA}, nil
+	}
+	if pr.State == "closed" {
+		return PollMergeQueueEntryResult{State: MergeQueueEntryEvicted}, nil
+	}
+	return PollMergeQueueEntryResult{State: MergeQueueEntryPending}, nil
+}
+
 // ListPullRequests lists open pull requests targeting req.Base, filtered
 // client-side to those whose head branch starts with req.HeadPrefix —
 // merge-review's selection stage and sibling-set context gathering (issue
@@ -1543,6 +1663,14 @@ type githubMergeResult struct {
 	SHA     string `json:"sha"`
 	Merged  bool   `json:"merged"`
 	Message string `json:"message"`
+}
+
+// githubBranchRule is one entry in GET .../rules/branches/{branch}'s
+// response array — every ruleset rule that actually applies to the branch.
+// Only Type is read (DetectMergePolicy checks for "merge_queue"); the
+// per-type Parameters shape varies by rule and is not modeled here.
+type githubBranchRule struct {
+	Type string `json:"type"`
 }
 
 type githubPullRequestFile struct {

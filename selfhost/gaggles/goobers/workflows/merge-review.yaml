@@ -120,7 +120,7 @@ spec:
 
     - name: merge-pr
       type: deterministic
-      goal: Merge the selected PR only when every independent safety conjunct still holds.
+      goal: Land the selected PR only when every independent safety conjunct still holds.
       run:
         command: ["goobers", "merge-pr"]
       inputsFrom:
@@ -142,9 +142,43 @@ spec:
         # grant rather than silently acquiring merge authority.
         - github:pr:merge
       expectedOutputs:
+        # landOutcome ("merged"/"enqueued", issue #758) is deliberately NOT
+        # listed here — like gather-sibling-context's cachedVerdictJson, it
+        # is conditional (absent on the refusal path), and listing a key
+        # that legitimately isn't always present would misstate this
+        # stage's actual postcondition. merge-gate's "land-outcome" check
+        # reads it straight from this stage's own Outputs regardless.
         - selectedNumber
         - merged
       next: merge-gate
+
+    - name: queue-watch
+      type: deterministic
+      goal: Watch a merge-queue-enqueued PR until the queue merges or evicts it.
+      run:
+        command: ["goobers", "merge-queue-poll"]
+      inputsFrom:
+        pullNumber: selectedNumber
+      inputs:
+        resultFile: "queue-result.json"
+      capabilities:
+        # github:pr:merge for the poll itself (same PR-lifecycle altitude as
+        # merge-pr, watching a PR this workflow already committed to
+        # landing); github:issues:write for the eviction side effect
+        # (labeling goobers:needs-remediation) — a distinct authority,
+        # resolved via its own token only when an eviction actually happens
+        # (mergequeuepoll.go's mergeQueuePollEvicted).
+        - github:pr:merge
+        - github:issues:write
+      expectedOutputs:
+        - selectedNumber
+        # queueOutcome ("merged"/"evicted"/"timeout") is always present —
+        # this stage always determines one of the three before returning
+        # (mirroring ci-poll's own "always succeeds at determining an
+        # outcome" philosophy) — unlike merge-pr's conditional landOutcome,
+        # there is no refusal path here to omit it for.
+        - queueOutcome
+      next: queue-gate
 
     - name: post-merge
       type: deterministic
@@ -183,14 +217,38 @@ spec:
         fail: apply-verdict
 
     - name: merge-gate
+      # Issue #758: distinguishes an actual GitHub merge from a
+      # merge-queue-enqueue — a plain output-equals(merged==true) can only
+      # ever say "landed or not", which would silently conflate "enqueued,
+      # not yet merged" with the refusal case. "land-outcome" reads
+      # merge-pr's Outputs["landOutcome"] directly (internal/gate's
+      # DefaultChecks doc).
       evaluator: automated
       automated:
-        check: output-equals
-        params:
-          key: merged
-          equals: "true"
+        check: land-outcome
       branches:
-        pass: post-merge
-        # A conjunct that changed after review leaves the PR unlabeled. Once
-        # CI/draft state recovers, pr-select can review and retry it.
+        merged: post-merge
+        enqueued: queue-watch
+        # A conjunct that changed after review, or (now) a landOutcome the
+        # merge queue itself hasn't resolved into "merged" yet, leaves the
+        # PR unlabeled. Once CI/draft state recovers, pr-select can review
+        # and retry it.
+        fail: ""
+
+    - name: queue-gate
+      # Issue #758: the merge queue's own eventual verdict on an already-
+      # enqueued PR — merged (proceed to the same post-merge fan-out a
+      # direct merge gets), evicted (an explicit, first-class outcome —
+      # queue-watch has already labeled the PR goobers:needs-remediation by
+      # the time this gate evaluates, so no further routing happens here),
+      # or timeout (still pending past queue-watch's own bounded poll; a
+      # conjunct that changed after review leaves the PR as-is, same as
+      # merge-gate's fail branch, for a later run to reconsider).
+      evaluator: automated
+      automated:
+        check: queue-outcome
+      branches:
+        merged: post-merge
+        evicted: ""
+        timeout: ""
         fail: ""

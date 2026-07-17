@@ -233,6 +233,24 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	return MergePullRequestResult{}, fmt.Errorf("ado: pull request merge lands in V1 parity (BL-033)")
 }
 
+// DetectMergePolicy is not yet implemented for Azure DevOps (issue #758):
+// merge-policy abstraction parity is scoped to V1 (BL-033) alongside the
+// rest of ADO's pull-request surface; the GitHub provider is the V0
+// workload (#13).
+func (p *ADOProvider) DetectMergePolicy(ctx context.Context, req RepoMergePolicyRequest) (RepoMergePolicyResult, error) {
+	return RepoMergePolicyResult{}, fmt.Errorf("ado: merge policy detection lands in V1 parity (BL-033)")
+}
+
+// EnqueuePullRequest is not yet implemented for Azure DevOps: see DetectMergePolicy.
+func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullRequestRequest) (EnqueuePullRequestResult, error) {
+	return EnqueuePullRequestResult{}, fmt.Errorf("ado: pull request enqueue lands in V1 parity (BL-033)")
+}
+
+// PollMergeQueueEntry is not yet implemented for Azure DevOps: see DetectMergePolicy.
+func (p *ADOProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueueEntryRequest) (PollMergeQueueEntryResult, error) {
+	return PollMergeQueueEntryResult{}, fmt.Errorf("ado: merge queue entry polling lands in V1 parity (BL-033)")
+}
+
 // ListPullRequests lists active Azure DevOps pull requests matching the
 // provider-neutral base and head-prefix filters.
 func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequestsRequest) ([]PullRequestSummary, error) {

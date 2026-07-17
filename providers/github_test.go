@@ -1043,6 +1043,186 @@ func TestGitHubProviderMergePullRequestRefusedOnSHAMismatch(t *testing.T) {
 	}
 }
 
+// TestGitHubProviderDetectMergePolicyDirectWhenNoMergeQueueRule proves the
+// default read (#758): a branch whose rules-for-branch response has no
+// "merge_queue"-typed rule (an empty array, or any other rule types) is
+// direct-merge — the vast majority of repos today, since none has adopted
+// GitHub's merge queue yet.
+func TestGitHubProviderDetectMergePolicyDirectWhenNoMergeQueueRule(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/rules/branches/main", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, []map[string]interface{}{
+			{"type": "required_status_checks"},
+			{"type": "pull_request"},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.DetectMergePolicy(context.Background(), RepoMergePolicyRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("DetectMergePolicy returned error: %v", err)
+	}
+	if result.Policy != MergePolicyDirect {
+		t.Fatalf("Policy = %q, want %q", result.Policy, MergePolicyDirect)
+	}
+}
+
+// TestGitHubProviderDetectMergePolicyMergeQueueWhenRulePresent proves the
+// merge_queue-detection half of #758: a "merge_queue"-typed rule anywhere
+// in the rules-for-branch response means this branch requires the queue,
+// regardless of what other rule types are also present.
+func TestGitHubProviderDetectMergePolicyMergeQueueWhenRulePresent(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/rules/branches/main", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{
+			{"type": "required_status_checks"},
+			{"type": "merge_queue"},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.DetectMergePolicy(context.Background(), RepoMergePolicyRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("DetectMergePolicy returned error: %v", err)
+	}
+	if result.Policy != MergePolicyMergeQueue {
+		t.Fatalf("Policy = %q, want %q", result.Policy, MergePolicyMergeQueue)
+	}
+}
+
+func TestGitHubProviderDetectMergePolicyRequiresBranch(t *testing.T) {
+	provider := NewGitHubProvider("token")
+	if _, err := provider.DetectMergePolicy(context.Background(), RepoMergePolicyRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+	}); err == nil {
+		t.Fatal("expected an error for a missing branch")
+	}
+}
+
+// TestGitHubProviderEnqueuePullRequestReportsNotYetMerged proves the normal
+// enqueue outcome (#758): the merge endpoint's merged=false response (the
+// documented behavior when the base branch requires a merge queue) is
+// surfaced verbatim, and the mutation is recorded as "enqueue", not "merge"
+// — an operator reading the mutation journal should see this pull request
+// was queued, not that it was actually merged.
+func TestGitHubProviderEnqueuePullRequestReportsNotYetMerged(t *testing.T) {
+	mux := http.NewServeMux()
+	var gotBody map[string]interface{}
+	mux.HandleFunc("/repos/acme/app/pulls/9/merge", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPut)
+		decodeJSON(t, r, &gotBody)
+		writeJSON(t, w, map[string]interface{}{"merged": false, "message": "Pull Request is in merge queue"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	rec := &recordingRecorder{}
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL }, WithMutationRecorder(rec))
+	result, err := provider.EnqueuePullRequest(context.Background(), EnqueuePullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9", ExpectedHeadSHA: "deadbeef",
+	})
+	if err != nil {
+		t.Fatalf("EnqueuePullRequest returned error: %v", err)
+	}
+	if result.Merged || result.Number != 9 {
+		t.Fatalf("result = %#v, want Merged=false Number=9", result)
+	}
+	if gotBody["sha"] != "deadbeef" {
+		t.Fatalf("request body sha = %v, want deadbeef (the SHA-pin guard, same as MergePullRequest)", gotBody["sha"])
+	}
+	ref, ok := rec.last()
+	if !ok {
+		t.Fatalf("expected a recorded external ref")
+	}
+	if ref.Operation != "enqueue" {
+		t.Fatalf("Operation = %q, want enqueue (not merge — this pull request is not yet merged)", ref.Operation)
+	}
+}
+
+// TestGitHubProviderEnqueuePullRequestReportsMergedWhenQueueLandsImmediately
+// pins the edge case an empty queue can produce: the merge endpoint
+// reporting merged=true for what was still, from the caller's perspective,
+// an enqueue attempt — the mutation records as "merge", matching what
+// actually happened.
+func TestGitHubProviderEnqueuePullRequestReportsMergedWhenQueueLandsImmediately(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/9/merge", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"sha": "abc123", "merged": true, "message": "merged"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	rec := &recordingRecorder{}
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL }, WithMutationRecorder(rec))
+	result, err := provider.EnqueuePullRequest(context.Background(), EnqueuePullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
+	})
+	if err != nil {
+		t.Fatalf("EnqueuePullRequest returned error: %v", err)
+	}
+	if !result.Merged || result.MergeSHA != "abc123" {
+		t.Fatalf("result = %#v, want Merged=true MergeSHA=abc123", result)
+	}
+	ref, ok := rec.last()
+	if !ok {
+		t.Fatalf("expected a recorded external ref")
+	}
+	if ref.Operation != "merge" {
+		t.Fatalf("Operation = %q, want merge (the queue actually landed it)", ref.Operation)
+	}
+}
+
+// TestGitHubProviderPollMergeQueueEntryStates covers #758's three
+// classifications a poll can report: merged (pr.Merged=true), evicted
+// (closed without merging — a first-class outcome, never conflated with
+// "still pending"), and pending (still open — the caller's own bounded
+// poll loop keeps watching until its timeout).
+func TestGitHubProviderPollMergeQueueEntryStates(t *testing.T) {
+	cases := []struct {
+		name   string
+		state  string
+		merged bool
+		want   MergeQueueEntryState
+	}{
+		{name: "merged", state: "closed", merged: true, want: MergeQueueEntryMerged},
+		{name: "evicted (closed without merging)", state: "closed", merged: false, want: MergeQueueEntryEvicted},
+		{name: "still pending (open)", state: "open", merged: false, want: MergeQueueEntryPending},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, map[string]interface{}{
+					"number": 9, "state": tc.state, "merged": tc.merged,
+					"head": map[string]interface{}{"ref": "feature", "sha": "headsha"},
+				})
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+			result, err := provider.PollMergeQueueEntry(context.Background(), PollMergeQueueEntryRequest{
+				Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
+			})
+			if err != nil {
+				t.Fatalf("PollMergeQueueEntry returned error: %v", err)
+			}
+			if result.State != tc.want {
+				t.Fatalf("State = %q, want %q", result.State, tc.want)
+			}
+		})
+	}
+}
+
 // TestGitHubProviderPollPullRequestSurfacesMergeInputs is #360's regression:
 // a conjunctive auto-merge action re-checks not-draft and the SHA-pin (D6)
 // against PollPullRequest's live result. Branch cleanup also needs the head

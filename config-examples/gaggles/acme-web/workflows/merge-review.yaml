@@ -62,7 +62,7 @@ spec:
 
     - name: merge-pr
       type: deterministic
-      goal: Merge the selected PR only when every independent safety conjunct still holds.
+      goal: Land the selected PR only when every independent safety conjunct still holds.
       run:
         command: ["goobers", "merge-pr"]
       inputsFrom:
@@ -84,6 +84,23 @@ spec:
         - selectedNumber
         - merged
       next: merge-gate
+
+    - name: queue-watch
+      type: deterministic
+      goal: Watch a merge-queue-enqueued PR until the queue merges or evicts it.
+      run:
+        command: ["goobers", "merge-queue-poll"]
+      inputsFrom:
+        pullNumber: selectedNumber
+      inputs:
+        resultFile: "queue-result.json"
+      capabilities:
+        - github:pr:merge
+        - github:issues:write
+      expectedOutputs:
+        - selectedNumber
+        - queueOutcome
+      next: queue-gate
 
     - name: post-merge
       type: deterministic
@@ -107,14 +124,25 @@ spec:
         fail: apply-verdict
 
     - name: merge-gate
+      # Distinguishes an actual merge from a merge-queue enqueue (issue
+      # #758) — a plain output-equals(merged==true) would conflate
+      # "enqueued, not yet merged" with the refusal case.
       evaluator: automated
       automated:
-        check: output-equals
-        params:
-          key: merged
-          equals: "true"
+        check: land-outcome
       branches:
-        pass: post-merge
+        merged: post-merge
+        enqueued: queue-watch
         # Keep changed CI/draft state unlabeled so a later run can retry after
         # the PR becomes eligible again.
+        fail: ""
+
+    - name: queue-gate
+      evaluator: automated
+      automated:
+        check: queue-outcome
+      branches:
+        merged: post-merge
+        evicted: ""
+        timeout: ""
         fail: ""

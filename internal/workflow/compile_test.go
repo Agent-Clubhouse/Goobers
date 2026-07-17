@@ -525,6 +525,58 @@ func TestCompileGateOutcomeCoverage(t *testing.T) {
 			t.Fatalf("expected missing-fail-branch error, got %v", err)
 		}
 	})
+
+	// #758's merge-policy abstraction: "land-outcome" (merged/enqueued/fail)
+	// and "queue-outcome" (merged/evicted/timeout/fail) get the same
+	// compile-time coverage guarantee ci-status's timeout outcome already
+	// has — a workflow definition missing a branch for any producible
+	// outcome fails Compile, not just the first live run that reaches it.
+	t.Run("land-outcome missing enqueued branch", func(t *testing.T) {
+		spec := apiv1.WorkflowSpec{
+			Gaggle: "web",
+			Start:  "gate-only",
+			Tasks:  []apiv1.Task{{Name: "sink", Type: apiv1.TaskDeterministic, Goal: "g", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}},
+			Gates: []apiv1.Gate{{
+				Name: "gate-only", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "land-outcome"},
+				Branches: map[string]string{"merged": "sink", "fail": "sink"},
+			}},
+		}
+		_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+		if err == nil || !strings.Contains(err.Error(), `gate "gate-only": producible outcome "enqueued" has no branch`) {
+			t.Fatalf("expected missing-enqueued-branch error, got %v", err)
+		}
+	})
+
+	t.Run("queue-outcome full coverage compiles", func(t *testing.T) {
+		spec := apiv1.WorkflowSpec{
+			Gaggle: "web",
+			Start:  "gate-only",
+			Tasks:  []apiv1.Task{{Name: "sink", Type: apiv1.TaskDeterministic, Goal: "g", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}},
+			Gates: []apiv1.Gate{{
+				Name: "gate-only", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "queue-outcome"},
+				Branches: map[string]string{"merged": "sink", "evicted": "sink", "timeout": "", "fail": ""},
+			}},
+		}
+		if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+			t.Fatalf("full queue-outcome coverage should compile, got %v", err)
+		}
+	})
+
+	t.Run("queue-outcome missing evicted branch", func(t *testing.T) {
+		spec := apiv1.WorkflowSpec{
+			Gaggle: "web",
+			Start:  "gate-only",
+			Tasks:  []apiv1.Task{{Name: "sink", Type: apiv1.TaskDeterministic, Goal: "g", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}},
+			Gates: []apiv1.Gate{{
+				Name: "gate-only", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "queue-outcome"},
+				Branches: map[string]string{"merged": "sink", "timeout": "", "fail": ""},
+			}},
+		}
+		_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+		if err == nil || !strings.Contains(err.Error(), `gate "gate-only": producible outcome "evicted" has no branch`) {
+			t.Fatalf("expected missing-evicted-branch error, got %v", err)
+		}
+	})
 }
 
 // TestCompileWithKnownChecksRejectsUnknownCheckName is the regression test

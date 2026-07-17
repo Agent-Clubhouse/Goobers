@@ -51,6 +51,29 @@ const (
 // one.
 const OutcomeTimeout = "timeout"
 
+// OutcomeMerged/OutcomeEnqueued are "land-outcome"'s two success outcomes
+// (issue #758): a merge-pr stage that actually merged the pull request
+// reports OutcomeMerged; one that added it to the repo's merge queue
+// instead (merge-policy abstraction, internal/mergepolicy) reports
+// OutcomeEnqueued. Neither is a plain "pass" — merge-review's merge-gate
+// must route the two differently (post-merge's close-referenced-issues fan
+// out only makes sense once something is actually merged; an enqueued pull
+// request instead needs its merge-queue entry watched to a terminal
+// outcome), so this, like ci-status's OutcomeTimeout, is enforced at
+// compile time via automatedCheckOutcomes rather than left to fail closed
+// only the first time a workflow definition's gate misses a branch.
+const (
+	OutcomeMerged   = "merged"
+	OutcomeEnqueued = "enqueued"
+)
+
+// OutcomeEvicted is "queue-outcome"'s explicit eviction outcome (issue
+// #758): a merge queue that removed a previously-enqueued pull request
+// without merging it (its combined build against the projected merge state
+// failed) — a first-class outcome a workflow definition can route to
+// remediation, never silently conflated with "fail" or "timeout".
+const OutcomeEvicted = "evicted"
+
 // CheckFunc evaluates one named automated check against a gate's flattened
 // Inputs and its configured Params, returning an outcome ("pass"/"fail" for
 // the checks in DefaultChecks, though a custom check may return any outcome
@@ -130,6 +153,41 @@ func DefaultChecks() map[string]CheckFunc {
 				return OutcomeTimeout, nil
 			}
 			return boolOutcome(got == want), nil
+		},
+		// "land-outcome": reports merge-pr's Outputs["landOutcome"] (issue
+		// #758) — "merged" or "enqueued" when merge-pr actually attempted a
+		// landing via internal/mergepolicy's Land, or "fail" for every
+		// other case (an unmet merge conjunct, advisory mode — merge-pr
+		// sets neither merged=true nor landOutcome then, matching its
+		// existing "not merged" writeback). No params.
+		"land-outcome": func(inputs map[string]interface{}, params map[string]string) (string, error) {
+			switch stringField(inputs, "landOutcome") {
+			case OutcomeMerged:
+				return OutcomeMerged, nil
+			case OutcomeEnqueued:
+				return OutcomeEnqueued, nil
+			default:
+				return OutcomeFail, nil
+			}
+		},
+		// "queue-outcome": reports merge-queue-poll's
+		// Outputs["queueOutcome"] (issue #758) — "merged", "evicted", or
+		// "timeout" (mirroring ci-status's own third-outcome shape, #239,
+		// for "still pending past this stage's own bounded poll"), or
+		// "fail" for anything else (a misconfigured/absent value —
+		// merge-queue-poll itself always sets one of the first three). No
+		// params.
+		"queue-outcome": func(inputs map[string]interface{}, params map[string]string) (string, error) {
+			switch stringField(inputs, "queueOutcome") {
+			case OutcomeMerged:
+				return OutcomeMerged, nil
+			case OutcomeEvicted:
+				return OutcomeEvicted, nil
+			case OutcomeTimeout:
+				return OutcomeTimeout, nil
+			default:
+				return OutcomeFail, nil
+			}
 		},
 	}
 }
