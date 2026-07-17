@@ -111,7 +111,7 @@ Usage:
                                 subscribed type=signal-trigger workflow
   goobers workflow show <name> [path]  show a workflow as a text DAG
   goobers runs list [--json] [--limit=N] [path]  list runs, most-recent first
-  goobers status [--json] [--phase=...] [--workflow=...] [--limit=N] [path]
+  goobers status [--json] [--phase=...] [--workflow=...] [--limit=N] [--watch [--interval=2s]] [path]
                                 list runs and their current phase
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card

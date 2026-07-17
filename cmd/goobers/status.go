@@ -1,17 +1,30 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/signals"
+)
+
+const (
+	defaultStatusWatchInterval = 2 * time.Second
+	statusClearScreen          = "\x1b[H\x1b[2J"
+	statusHighlight            = "\x1b[1m"
+	statusReset                = "\x1b[0m"
+	statusWatchRowFormat       = "%-14.14s  %-18.18s  %-8.8s  %-9.9s  %-20.20s"
 )
 
 // providerQuotaResumePrefix matches the Reason string Conditions.Admit
@@ -81,6 +94,12 @@ func statusJSONSummaries(runs []runSummary) []statusJSONSummary {
 	return summaries
 }
 
+type statusOptions struct {
+	phases   map[journal.RunPhase]struct{}
+	workflow string
+	limit    int
+}
+
 func runStatus(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -88,8 +107,10 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	phaseFilter := fs.String("phase", "", "filter by comma-separated run phases")
 	workflowFilter := fs.String("workflow", "", "filter by workflow name")
 	limit := fs.Int("limit", 0, "maximum number of runs to show (default: all)")
+	watch := fs.Bool("watch", false, "refresh the status board until interrupted")
+	interval := fs.Duration("interval", defaultStatusWatchInterval, "watch refresh interval")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers status [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [path]\n\n"+
+		pf(stderr, "Usage: goobers status [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n"+
 			"List runs under an instance's runs/ directory with their current phase\n"+
 			"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
 	}
@@ -98,6 +119,14 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	if *limit < 0 {
 		pf(stderr, "error: --limit must be non-negative\n")
+		return 2
+	}
+	if *interval <= 0 {
+		pf(stderr, "error: --interval must be greater than zero\n")
+		return 2
+	}
+	if *watch && *jsonOutput {
+		pf(stderr, "error: --watch cannot be used with --json\n")
 		return 2
 	}
 
@@ -119,6 +148,10 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
+	if *watch && !statusOutputIsTerminal(stdout) {
+		pf(stderr, "error: --watch requires terminal stdout; omit --watch when piping status output\n")
+		return 2
+	}
 	root := "."
 	if fs.NArg() == 1 {
 		root = fs.Arg(0)
@@ -129,43 +162,43 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return 2
 	}
-	runs, err := listRuns(l.RunsDir())
+	options := statusOptions{
+		phases:   phases,
+		workflow: *workflowFilter,
+		limit:    *limit,
+	}
+
+	loadRuns := func() ([]runSummary, error) {
+		return listRuns(l.RunsDir())
+	}
+	// #712: surface an active provider-quota pause — best-effort (a
+	// missing/unreadable instance log just means no line, never a status
+	// failure). A closure, not a one-shot read, so the watch loop below picks
+	// up a newly-recorded (or newly-passed) pause on every redraw, the same
+	// way loadRuns re-reads runs/ each tick.
+	loadPauseLine := func() string {
+		events, err := journal.ReadInstanceLog(l.SchedulerDir())
+		if err != nil {
+			return ""
+		}
+		return providerQuotaStatusLine(events, time.Now())
+	}
+	if *watch {
+		ctx, stop := signals.SetupSignalContext()
+		defer stop()
+		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, loadPauseLine); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
+		return 0
+	}
+
+	runs, err := loadRuns()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-
-	// #712: surface an active provider-quota pause before the run table —
-	// best-effort (a missing/unreadable instance log just means no line,
-	// never a status failure) and skipped in --json mode, since the JSON
-	// output's shape is a run-summary array, not an object with room for a
-	// side channel.
-	if !*jsonOutput {
-		if events, ierr := journal.ReadInstanceLog(l.SchedulerDir()); ierr == nil {
-			if line := providerQuotaStatusLine(events, time.Now()); line != "" {
-				pf(stdout, "%s", line)
-			}
-		}
-	}
-	if len(phases) > 0 || *workflowFilter != "" {
-		filtered := runs[:0]
-		for _, run := range runs {
-			if *workflowFilter != "" && run.Workflow != *workflowFilter {
-				continue
-			}
-			if len(phases) > 0 {
-				if _, ok := phases[run.Phase]; !ok {
-					continue
-				}
-			}
-			filtered = append(filtered, run)
-		}
-		runs = filtered
-	}
-	sort.Slice(runs, func(i, j int) bool { return runs[i].StartedAt.Before(runs[j].StartedAt) })
-	if *limit > 0 && len(runs) > *limit {
-		runs = runs[len(runs)-*limit:]
-	}
+	runs = selectStatusRuns(runs, options)
 	if *jsonOutput {
 		if err := json.NewEncoder(stdout).Encode(statusJSONSummaries(runs)); err != nil {
 			pf(stderr, "error: encode status: %v\n", err)
@@ -173,9 +206,43 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+
+	// Skipped in --json mode (handled above, this point is unreached for
+	// it) since the JSON output's shape is a run-summary array, not an
+	// object with room for a side channel.
+	if line := loadPauseLine(); line != "" {
+		pf(stdout, "%s", line)
+	}
+	renderStatus(stdout, runs)
+	return 0
+}
+
+func selectStatusRuns(runs []runSummary, options statusOptions) []runSummary {
+	filtered := make([]runSummary, 0, len(runs))
+	for _, run := range runs {
+		if options.workflow != "" && run.Workflow != options.workflow {
+			continue
+		}
+		if len(options.phases) > 0 {
+			if _, ok := options.phases[run.Phase]; !ok {
+				continue
+			}
+		}
+		filtered = append(filtered, run)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].StartedAt.Before(filtered[j].StartedAt)
+	})
+	if options.limit > 0 && len(filtered) > options.limit {
+		filtered = filtered[len(filtered)-options.limit:]
+	}
+	return filtered
+}
+
+func renderStatus(stdout io.Writer, runs []runSummary) {
 	if len(runs) == 0 {
 		pln(stdout, "no runs found — trigger one with 'goobers run <workflow>'")
-		return 0
+		return
 	}
 
 	pf(stdout, "%-34s  %-24s  %-10s  %-10s  %s\n", "RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED")
@@ -183,5 +250,90 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "%-34s  %-24s  %-10s  %-10s  %s\n",
 			r.RunID, r.Workflow, r.Gaggle, r.Phase, r.StartedAt.Format(time.RFC3339))
 	}
-	return 0
+}
+
+func watchStatus(
+	ctx context.Context,
+	interval time.Duration,
+	options statusOptions,
+	stdout io.Writer,
+	loadRuns func() ([]runSummary, error),
+	loadPauseLine func() string,
+) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	var previous map[string]journal.RunPhase
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		allRuns, err := loadRuns()
+		if err != nil {
+			return err
+		}
+		current := statusRunPhases(allRuns)
+		renderStatusWatchFrame(stdout, loadPauseLine(), selectStatusRuns(allRuns, options), changedStatusRuns(previous, current))
+		previous = current
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func statusRunPhases(runs []runSummary) map[string]journal.RunPhase {
+	phases := make(map[string]journal.RunPhase, len(runs))
+	for _, run := range runs {
+		phases[run.RunID] = run.Phase
+	}
+	return phases
+}
+
+func changedStatusRuns(previous, current map[string]journal.RunPhase) map[string]struct{} {
+	changed := make(map[string]struct{})
+	for runID, phase := range current {
+		if previousPhase, ok := previous[runID]; ok && previousPhase != phase {
+			changed[runID] = struct{}{}
+		}
+	}
+	return changed
+}
+
+func renderStatusWatchFrame(stdout io.Writer, pauseLine string, runs []runSummary, changed map[string]struct{}) {
+	pf(stdout, statusClearScreen)
+	if pauseLine != "" {
+		pf(stdout, "%s", pauseLine)
+	}
+	if len(runs) == 0 {
+		pln(stdout, "no runs found — trigger one with 'goobers run <workflow>'")
+		return
+	}
+
+	pf(stdout, statusWatchRowFormat+"\n", "RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED")
+	for _, run := range runs {
+		row := fmt.Sprintf(
+			statusWatchRowFormat,
+			run.RunID,
+			run.Workflow,
+			run.Gaggle,
+			run.Phase,
+			run.StartedAt.Format(time.RFC3339),
+		)
+		if _, ok := changed[run.RunID]; ok {
+			pf(stdout, "%s%s%s\n", statusHighlight, row, statusReset)
+			continue
+		}
+		pln(stdout, row)
+	}
+}
+
+func statusOutputIsTerminal(stdout io.Writer) bool {
+	file, ok := stdout.(interface{ Fd() uintptr })
+	return ok && term.IsTerminal(int(file.Fd()))
 }

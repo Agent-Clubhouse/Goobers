@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -306,4 +308,172 @@ func TestStatusRejectsInvalidFilters(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStatusWatchRejectsInvalidOutputModes(t *testing.T) {
+	root := initDemo(t)
+	tests := []struct {
+		name       string
+		args       []string
+		wantStderr string
+	}{
+		{
+			name:       "json",
+			args:       []string{"status", "--watch", "--json", root},
+			wantStderr: "--watch cannot be used with --json",
+		},
+		{
+			name:       "non-terminal",
+			args:       []string{"status", "--watch", root},
+			wantStderr: "--watch requires terminal stdout",
+		},
+		{
+			name:       "zero interval",
+			args:       []string{"status", "--watch", "--interval=0s", root},
+			wantStderr: "--interval must be greater than zero",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, _, stderr := runArgs(t, tt.args...)
+			if code != 2 {
+				t.Fatalf("code = %d, want 2 (stderr=%q)", code, stderr)
+			}
+			if !strings.Contains(stderr, tt.wantStderr) {
+				t.Fatalf("stderr = %q, want it to contain %q", stderr, tt.wantStderr)
+			}
+		})
+	}
+}
+
+func TestWatchStatusRepaintsFiltersAndHighlightsPhaseChangeForOneFrame(t *testing.T) {
+	startedAt := time.Date(2026, time.July, 16, 12, 30, 0, 0, time.UTC)
+	target := runSummary{
+		RunID:     "target-run-with-a-long-id",
+		Workflow:  "implementation-workflow",
+		Gaggle:    "goobers",
+		Phase:     journal.PhaseRunning,
+		StartedAt: startedAt,
+	}
+	older := runSummary{
+		RunID:     "older-run",
+		Workflow:  target.Workflow,
+		Gaggle:    "goobers",
+		Phase:     journal.PhaseRunning,
+		StartedAt: startedAt.Add(-time.Minute),
+	}
+	otherWorkflow := runSummary{
+		RunID:     "other-workflow-run",
+		Workflow:  "merge-review",
+		Gaggle:    "goobers",
+		Phase:     journal.PhaseRunning,
+		StartedAt: startedAt.Add(time.Minute),
+	}
+	frames := [][]runSummary{
+		{target, older, otherWorkflow},
+		{withStatusPhase(target, journal.PhaseFailed), older, otherWorkflow},
+		{withStatusPhase(target, journal.PhaseFailed), older, otherWorkflow},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	frame := 0
+	loadRuns := func() ([]runSummary, error) {
+		runs := frames[frame]
+		frame++
+		if frame == len(frames) {
+			cancel()
+		}
+		return runs, nil
+	}
+	options := statusOptions{
+		phases: map[journal.RunPhase]struct{}{
+			journal.PhaseRunning: {},
+			journal.PhaseFailed:  {},
+		},
+		workflow: target.Workflow,
+		limit:    1,
+	}
+	var stdout bytes.Buffer
+	noPauseLine := func() string { return "" }
+	if err := watchStatus(ctx, time.Millisecond, options, &stdout, loadRuns, noPauseLine); err != nil {
+		t.Fatalf("watchStatus: %v", err)
+	}
+
+	output := stdout.String()
+	if got := strings.Count(output, statusClearScreen); got != len(frames) {
+		t.Fatalf("clear sequence count = %d, want %d (output=%q)", got, len(frames), output)
+	}
+	if strings.Contains(output, older.RunID) || strings.Contains(output, otherWorkflow.RunID) {
+		t.Fatalf("output = %q, want workflow and limit filters honored", output)
+	}
+	failedRow := fmt.Sprintf(
+		statusWatchRowFormat,
+		target.RunID,
+		target.Workflow,
+		target.Gaggle,
+		journal.PhaseFailed,
+		target.StartedAt.Format(time.RFC3339),
+	)
+	if got := strings.Count(output, statusHighlight+failedRow+statusReset); got != 1 {
+		t.Fatalf("highlighted failed row count = %d, want 1 (output=%q)", got, output)
+	}
+
+	plainOutput := strings.NewReplacer(
+		statusClearScreen, "",
+		statusHighlight, "",
+		statusReset, "",
+	).Replace(output)
+	for _, line := range strings.Split(plainOutput, "\n") {
+		if len(line) > 80 {
+			t.Fatalf("watch line is %d columns, want at most 80: %q", len(line), line)
+		}
+	}
+}
+
+// TestWatchStatusRepaintsProviderQuotaPauseLine confirms #712's pause line
+// composes with #609's watch board: it's re-fetched (not cached) on every
+// redraw — appearing once loadPauseLine starts returning non-empty, and
+// gone the moment it goes back to empty (dispatch resumed) — right after
+// the clear-screen escape, ahead of the run table.
+func TestWatchStatusRepaintsProviderQuotaPauseLine(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	loadRuns := func() ([]runSummary, error) { return nil, nil }
+
+	frame := 0
+	const pauseLine = "GitHub quota exhausted — resuming dispatch at 2026-07-17T05:00:00Z\n"
+	loadPauseLine := func() string {
+		defer func() { frame++ }()
+		switch frame {
+		case 0:
+			return pauseLine
+		case 1:
+			cancel()
+			return "" // resumed by the second frame
+		default:
+			return ""
+		}
+	}
+
+	var stdout bytes.Buffer
+	if err := watchStatus(ctx, time.Millisecond, statusOptions{}, &stdout, loadRuns, loadPauseLine); err != nil {
+		t.Fatalf("watchStatus: %v", err)
+	}
+
+	frames := strings.Split(stdout.String(), statusClearScreen)[1:] // drop the empty pre-first-clear split
+	if len(frames) != 2 {
+		t.Fatalf("got %d frames, want 2 (output=%q)", len(frames), stdout.String())
+	}
+	if !strings.HasPrefix(frames[0], pauseLine) {
+		t.Fatalf("frame 0 = %q, want it to start with the pause line", frames[0])
+	}
+	if strings.Contains(frames[1], "GitHub quota exhausted") {
+		t.Fatalf("frame 1 = %q, want no pause line once dispatch resumed", frames[1])
+	}
+}
+
+func withStatusPhase(run runSummary, phase journal.RunPhase) runSummary {
+	run.Phase = phase
+	return run
 }
