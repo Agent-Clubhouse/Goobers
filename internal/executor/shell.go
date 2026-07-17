@@ -437,25 +437,24 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 				mergeResultFileOutputs(&result, data)
 			case os.IsNotExist(rerr):
 				result.Status = apiv1.ResultFailure
-				result.Error = &apiv1.ErrorInfo{
-					Code:      "missing_result_file",
-					Message:   fmt.Sprintf("declared result file %q was not produced", resultFile),
-					Retryable: false,
-				}
+				result.Error = missingResultFileError(resultFile, exitCode, waitErr, errBytes)
 				result.Summary = "declared result file missing"
 				return result, nil
 			default:
+				// rerr here is an *fs.PathError (or similar) wrapping the
+				// underlying syscall.Errno — %w already carries that errno
+				// text (e.g. "permission denied") into this executor-level
+				// error, which internal/runner's runTask journals verbatim
+				// as an executor_error event (#711): no separate logging
+				// needed, the errno reaches the run journal through the
+				// normal error-propagation path.
 				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: read result file %q: %w", resultFile, rerr)
 			}
 		case errors.Is(perr, os.ErrNotExist):
 			// A missing component in the declared path resolves the same way
 			// EvalSymlinks reports a plain missing file — same UX as above.
 			result.Status = apiv1.ResultFailure
-			result.Error = &apiv1.ErrorInfo{
-				Code:      "missing_result_file",
-				Message:   fmt.Sprintf("declared result file %q was not produced", resultFile),
-				Retryable: false,
-			}
+			result.Error = missingResultFileError(resultFile, exitCode, waitErr, errBytes)
 			result.Summary = "declared result file missing"
 			return result, nil
 		case errors.Is(perr, apiv1.ErrPathEscape), errors.Is(perr, apiv1.ErrSymlinkEscape):
@@ -588,6 +587,71 @@ func exitCodeOf(err error) int {
 		return exitErr.ExitCode()
 	}
 	return -1
+}
+
+// missingResultFileStderrExcerptBytes bounds the stderr excerpt
+// missingResultFileError attaches (#711) — enough to show the actual cause
+// (a stack trace's top frame, a "command not found", a panic message)
+// without ballooning the journaled ErrorInfo.Message.
+const missingResultFileStderrExcerptBytes = 512
+
+// missingResultFileError builds the diagnostic ErrorInfo for a declared
+// result file that was never produced (#711). The bare "was not produced"
+// message gave an operator nothing to work with — a command that exited 0
+// but forgot to write its file, one that was SIGKILLed mid-run, and one
+// whose own logic failed before it ever reached the result-file step all
+// looked identical. This distinguishes them: exitCode (Go's exec.ExitError
+// convention: -1 when the process died to a signal, not a normal exit) is
+// replaced with the actual signal name when the process was signaled
+// (signalOf), and a bounded stderr excerpt is appended when the process
+// produced any.
+func missingResultFileError(resultFile string, exitCode int, waitErr error, errBytes []byte) *apiv1.ErrorInfo {
+	detail := fmt.Sprintf("exit code %d", exitCode)
+	if sig, ok := signalOf(waitErr); ok {
+		detail = fmt.Sprintf("killed by signal %s", sig)
+	}
+	msg := fmt.Sprintf("declared result file %q was not produced (%s)", resultFile, detail)
+	if excerpt := stderrExcerpt(errBytes); excerpt != "" {
+		msg += "; stderr: " + excerpt
+	}
+	return &apiv1.ErrorInfo{Code: "missing_result_file", Message: msg, Retryable: false}
+}
+
+// signalOf reports the signal that terminated the process behind waitErr, if
+// it died to one (as opposed to a normal, possibly nonzero, exit) — the
+// distinction exitCodeOf's -1 sentinel alone loses (a signal death and an
+// exec.ExitError of some other unexpected shape both report -1).
+func signalOf(waitErr error) (syscall.Signal, bool) {
+	var exitErr *exec.ExitError
+	if !errors.As(waitErr, &exitErr) {
+		return 0, false
+	}
+	ws, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok || !ws.Signaled() {
+		return 0, false
+	}
+	return ws.Signal(), true
+}
+
+// stderrExcerpt returns a bounded, trimmed, "…"-suffixed-when-truncated
+// prefix of errBytes (already secret-scrubbed by Run's caller) for
+// missingResultFileError. Empty input yields "" so the caller can skip
+// appending an empty "; stderr: " clause.
+func stderrExcerpt(errBytes []byte) string {
+	if len(errBytes) == 0 {
+		return ""
+	}
+	b := errBytes
+	truncated := false
+	if len(b) > missingResultFileStderrExcerptBytes {
+		b = b[:missingResultFileStderrExcerptBytes]
+		truncated = true
+	}
+	s := strings.TrimSpace(string(b))
+	if truncated {
+		s += "…"
+	}
+	return s
 }
 
 func refToPointer(ref journal.Ref, mediaType string) apiv1.ArtifactPointer {
