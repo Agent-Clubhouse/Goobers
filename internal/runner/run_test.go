@@ -3606,6 +3606,44 @@ func TestRunnerAutomaticEscalationDoesNotDoubleNotify(t *testing.T) {
 	}
 }
 
+// TestRunnerAutomaticEscalationResolvesClaimedItems proves an implementation
+// run that claims its item after Start still comments on it when the review
+// gate escalates.
+func TestRunnerAutomaticEscalationResolvesClaimedItems(t *testing.T) {
+	commenter := &recordingCommenter{}
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		"run-claimed-escalate:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "x", Message: "always fails"}},
+	}, gate.NewAutomatedEvaluator())
+	r.cfg.MaxRepasses = 1
+	r.cfg.Escalation = &gate.EscalationNotifier{
+		Poster:     commenter,
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+	}
+	r.cfg.EscalationItemIDs = func(runID string) ([]string, error) {
+		if runID != "run-claimed-escalate" {
+			t.Fatalf("run ID = %q, want run-claimed-escalate", runID)
+		}
+		return []string{"530"}, nil
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-claimed-escalate",
+		Machine: repassLoopMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", res.Phase)
+	}
+	if len(commenter.requests) != 1 || commenter.requests[0].ID != "530" {
+		t.Fatalf("notification requests = %+v, want exactly one for claimed item 530", commenter.requests)
+	}
+}
+
 // TestRunnerEmitsRunTaskAndGateSpans is issue #126's runner-level acceptance:
 // when Config.Telemetry is set, Start opens a run span before walking and a
 // task/gate span for each stage dispatched, in walk order. Before this fix,
