@@ -353,6 +353,55 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	result.Metrics["exitCode"] = float64(exitCode)
 
 	if exitCode != 0 && stageInvokesProviderBuiltin(run.Command) {
+		// #control precedence ruling (2026-07-17, the #613/#711/#712
+		// chokepoint): a provider-builtin stage that got far enough to
+		// self-report structurally via its declared result file
+		// (failProviderStage's OutputErrorCode, #614) is a richer, more
+		// specific signal than raw stderr text — use it, and skip stderr
+		// classification entirely, so #711's fine-grained codes and #712's
+		// result.Outputs["rateLimitReset"] read stay authoritative instead
+		// of being silently reclassified by this intercept. Only fall
+		// through to stderr-text classification below when no structured
+		// result exists at all — the residual case this intercept actually
+		// exists for: a stage that died before it could call
+		// failProviderStage (bad flags, signal kill, panic).
+		if resultFile != "" {
+			if full, perr := apiv1.ResolveContainedPath(env.Workspace, resultFile); perr == nil {
+				if data, rerr := os.ReadFile(full); rerr == nil {
+					ref, aerr := e.Journal.RecordArtifact(env.TaskID+"/result", scrubber.Scrub(data))
+					if aerr != nil {
+						return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
+					}
+					result.Artifacts = append(result.Artifacts, refToPointer(ref, mediaTypeFor(resultFile)))
+					mergeResultFileOutputs(&result, data)
+					if code, ok := result.Outputs[OutputErrorCode].(string); ok && code != "" {
+						message, _ := result.Outputs[OutputErrorMessage].(string)
+						if message == "" {
+							message = fmt.Sprintf("command exited %d", exitCode)
+						}
+						if retryable, _ := result.Outputs[OutputErrorRetryable].(bool); retryable {
+							return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+								"executor: provider stage %q reported %s: %s", run.Command[1], code, message,
+							))
+						}
+						result.Status = apiv1.ResultFailure
+						result.Error = &apiv1.ErrorInfo{Code: code, Message: message, Retryable: false}
+						result.Summary = message
+						return result, nil
+					}
+					// The file existed and parsed but carried no
+					// OutputErrorCode (the stage self-reported success
+					// shape yet still exited nonzero, or wrote an
+					// unrelated result) — its artifact/outputs stay
+					// attached to result either way; fall through to
+					// stderr classification below for the actual verdict.
+				}
+				// A read error (including not-yet-written, the common
+				// crashed-before-writing case) is not fatal here — falls
+				// through to stderr classification, exactly as before this
+				// check existed.
+			}
+		}
 		message := lastNonEmptyLine(errBytes)
 		if message == "" {
 			message = fmt.Sprintf("command exited %d", exitCode)
