@@ -124,8 +124,31 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "list pull requests", err, "pr-context.json")
 	}
 
+	// #716's core fix, applied upstream of #596's tier selection: a PR
+	// carrying goobers:merge-escalated only stays excluded from EVERY tier
+	// (needs-remediation, failing-CI, and the behind-base fallback alike)
+	// while its live head/base SHA still match the snapshot recorded at
+	// escalation time — escalationStillBlocks is self-heal-aware, unlike a
+	// static label check, so a PR that self-healed (new commits, or a
+	// sibling merge advancing its base) is filtered back IN here and
+	// reaches whichever tier its other signals qualify it for. Filtering
+	// here, before tiering, means an excluded top-tier PR correctly falls
+	// through to a lower tier's candidates rather than forcing a no-work
+	// cycle when a perfectly eligible lower-tier PR exists.
+	var nonBlocked []providers.PullRequestSummary
+	for _, pr := range prs {
+		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("check escalation state for PR #%d", pr.Number), err, "pr-context.json")
+		}
+		if blocked {
+			continue
+		}
+		nonBlocked = append(nonBlocked, pr)
+	}
+
 	fetchedBases := make(map[string]bool)
-	candidates, _, err := selectRemediationCandidates(prs, func(pr providers.PullRequestSummary) (bool, error) {
+	candidates, _, err := selectRemediationCandidates(nonBlocked, func(pr providers.PullRequestSummary) (bool, error) {
 		if !fetchedBases[pr.Base] {
 			if _, err := fetchExistingBranch(".", pr.Base, pushToken); err != nil {
 				return false, fmt.Errorf("fetch base branch %q: %w", pr.Base, err)
@@ -181,6 +204,33 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 			break
 		}
 	}
+
+	// Digest short-circuit (#716 design item 2): escalationStillBlocks above
+	// only excludes a PR whose LIVE goobers:merge-escalated label matches its
+	// recorded snapshot exactly — it does not fire once that label is gone
+	// (self-healed via a new head/base, or cleared by a human) OR once the
+	// PR's base has moved just enough to change its recorded base SHA. Either
+	// way, this PR was selected because ITS SELECTION criteria say "go", but
+	// if the actual `git diff base...HEAD` content is still byte-identical to
+	// what was recorded at the last escalation, running rebase-pr/remediation
+	// again cannot make progress — bail as a clean no-work tick instead of
+	// spending a cycle (worktree provision, checkout, potential agentic
+	// work) reproducing the exact escalation remediation-checkpoint already
+	// recorded.
+	if remState, _, ok := latestRemediationState(rawComments); ok && remState.Escalated && remState.LastDiffDigest != "" {
+		digest, derr := diffDigest(".", selected.BaseSHA)
+		if derr != nil {
+			pf(stderr, "error: compute diff digest for PR #%d: %v\n", selected.Number, derr)
+			return 1
+		}
+		if digest == remState.LastDiffDigest {
+			return writeNoWorkResult(stdout, stderr, fmt.Sprintf(
+				"PR #%d's diff (digest %s) is unchanged since its last recorded escalation — no progress possible this cycle",
+				selected.Number, digest,
+			))
+		}
+	}
+
 	comments := make([]prThreadComment, 0, len(rawComments))
 	for _, c := range rawComments {
 		createdAt := ""
@@ -234,13 +284,18 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 // independent of its peers — needs-remediation outranks failing CI, and
 // neither implies anything about whether the PR is merely behind its base
 // (that's a fallback tier, checked only when nothing clears these two: see
-// selectRemediationCandidates).
+// selectRemediationCandidates). Escalation exclusion is NOT this function's
+// concern: runGatherPRContext's self-heal-aware escalationStillBlocks
+// (#716) pre-filters prs before selectRemediationCandidates ever sees them,
+// so every pr reaching here has already cleared that check — a static
+// re-check of the label here would incorrectly re-exclude a PR that just
+// self-healed (still labeled merge-escalated, but its head/base moved past
+// the recorded escalation snapshot).
 func remediationPriorityFor(pr providers.PullRequestSummary) remediationPriority {
 	switch {
 	case hasAnyLabel(pr.Labels, []string{needsRemediationLabel}):
 		return remediationPriorityNeedsRemediation
-	case pr.CheckState == providers.CheckStateFailing &&
-		!hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}):
+	case pr.CheckState == providers.CheckStateFailing:
 		return remediationPriorityFailingCI
 	}
 	return remediationPriorityNone
@@ -279,9 +334,8 @@ func selectRemediationCandidates(prs []providers.PullRequestSummary, behindBase 
 	}
 
 	for _, pr := range prs {
-		if hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) {
-			continue
-		}
+		// Same rationale as remediationPriorityFor: escalation exclusion
+		// already happened upstream (self-heal-aware), so no re-check here.
 		behind, err := behindBase(pr)
 		if err != nil {
 			return nil, remediationPriorityNone, err

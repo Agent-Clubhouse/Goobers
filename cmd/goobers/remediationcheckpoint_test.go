@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -132,6 +133,35 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 			out[i] = map[string]interface{}{"id": i + 1, "user": map[string]string{"login": "goobers-bot"}, "body": c, "created_at": "2026-07-15T00:00:00Z"}
 		}
 		writeFakeJSON(w, out)
+	})
+
+	// GitHub's comment-edit endpoint is flat (repo-scoped comment IDs, not
+	// nested under an issue number) — matches providers.GitHubProvider.
+	// UpdateComment's PATCH target (#716's sticky-comment mechanism). This
+	// fake server mints comment IDs as a 1-based index into st.comments (see
+	// the POST handler above), so editing just overwrites that slot.
+	mux.HandleFunc(prefix+"/issues/comments/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+			return
+		}
+		idx, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, prefix+"/issues/comments/"))
+		if err != nil {
+			http.Error(w, "bad comment id", http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Body string `json:"body"`
+		}
+		decodeFakeJSON(r, &body)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		if idx < 1 || idx > len(st.comments) {
+			http.Error(w, "comment not found", http.StatusNotFound)
+			return
+		}
+		st.comments[idx-1] = body.Body
+		writeFakeJSON(w, map[string]interface{}{"id": idx, "body": body.Body})
 	})
 
 	server := httptest.NewServer(mux)

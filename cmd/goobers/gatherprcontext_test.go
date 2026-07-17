@@ -481,15 +481,26 @@ func TestSelectRemediationPRPriority(t *testing.T) {
 			wantProbes:   2,
 		},
 		{
-			name: "escalated PR is excluded from behind fallback",
+			// #716: escalation exclusion moved upstream of this function —
+			// runGatherPRContext's self-heal-aware escalationStillBlocks
+			// pre-filters prs before selectRemediationCandidates ever sees
+			// them (a static label check here, unlike escalationStillBlocks,
+			// couldn't tell a genuinely-still-stuck PR from one that just
+			// self-healed but hasn't had its label cleared yet). This table
+			// pins the resulting contract: a labeled PR that reaches this
+			// function is treated like any other — the label alone is not
+			// this layer's concern. See TestGatherPRContextExcludesEscalated
+			// NeedsRemediationPR/escalationlivelock716_test.go for the actual
+			// exclusion behavior, tested at the layer that owns it now.
+			name: "labeled PR reaching this layer is not itself excluded",
 			prs: []providers.PullRequestSummary{
 				{Number: 10, Labels: []string{remediationEscalatedLabel}},
 				{Number: 20},
 			},
 			behind:       map[int]bool{10: true, 20: true},
-			wantNumbers:  []int{20},
+			wantNumbers:  []int{10, 20},
 			wantPriority: remediationPriorityBehindBase,
-			wantProbes:   1,
+			wantProbes:   2,
 		},
 	}
 

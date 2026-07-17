@@ -136,6 +136,27 @@ func (m *issueMock) handler(t *testing.T) http.Handler {
 		m.labels = next
 		writeJSON(t, w, labelObjects(m.labels))
 	})
+	// PATCH /repos/acme/app/issues/comments/{id} — GitHub's comment-edit
+	// endpoint (#716): comment IDs are repo-scoped, not nested under the
+	// issue number, matching UpdateComment's PATCH target.
+	mux.HandleFunc("/repos/acme/app/issues/comments/", func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if r.Method != http.MethodPatch {
+			t.Fatalf("unexpected comment-edit method %s", r.Method)
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/repos/acme/app/issues/comments/")
+		var body map[string]string
+		decodeJSON(t, r, &body)
+		for i, c := range m.comments {
+			if fmt.Sprint(c["id"]) == id {
+				m.comments[i]["body"] = body["body"]
+				writeJSON(t, w, m.comments[i])
+				return
+			}
+		}
+		http.Error(w, "comment not found", http.StatusNotFound)
+	})
 	mux.HandleFunc("/repos/acme/app/issues/7", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -262,6 +283,42 @@ func TestGitHubUpdateWorkItemNoChangeSkipsRecord(t *testing.T) {
 	}
 	if m.patchBody != nil {
 		t.Fatalf("no-op update should not PATCH, got %#v", m.patchBody)
+	}
+}
+
+// TestGitHubUpdateCommentEditsInPlace is #716's sticky-comment primitive: a
+// caller with an existing comment's ID edits its body via PATCH rather than
+// posting a new one — GitHub's comment-edit endpoint, not previously wired.
+func TestGitHubUpdateCommentEditsInPlace(t *testing.T) {
+	m := newIssueMock()
+	p, repo := newIssueProvider(t, m)
+
+	if err := p.postComment(context.Background(), repo, "7", "original body"); err != nil {
+		t.Fatalf("postComment: %v", err)
+	}
+	m.mu.Lock()
+	commentID := fmt.Sprint(m.comments[0]["id"])
+	m.mu.Unlock()
+
+	if err := p.UpdateComment(context.Background(), repo, commentID, "edited body"); err != nil {
+		t.Fatalf("UpdateComment: %v", err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.comments) != 1 {
+		t.Fatalf("comments = %v, want exactly 1 — an edit must not create a second comment", m.comments)
+	}
+	if m.comments[0]["body"] != "edited body" {
+		t.Fatalf("comment body = %v, want %q", m.comments[0]["body"], "edited body")
+	}
+}
+
+func TestGitHubUpdateCommentRequiresID(t *testing.T) {
+	m := newIssueMock()
+	p, repo := newIssueProvider(t, m)
+	if err := p.UpdateComment(context.Background(), repo, "", "body"); err == nil {
+		t.Fatal("UpdateComment with an empty comment id: err = nil, want an error")
 	}
 }
 

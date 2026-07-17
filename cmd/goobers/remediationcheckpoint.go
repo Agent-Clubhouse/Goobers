@@ -36,6 +36,15 @@ const remediationEscalatedLabel = "goobers:merge-escalated"
 // already established that a PR comment is the only durable cross-run
 // channel available at this altitude (neither workflow shares a journal/
 // runID with the other's runs, or across its own runs).
+//
+// It is ALSO the escalation-livelock breaker's (#716) self-heal snapshot: on
+// an escalation, EscalatedHeadSHA/EscalatedBaseSHA record the PR's head/base
+// at the moment escalation was recorded, so a later selection attempt
+// (pr-select.go / gatherprcontext.go's escalationStillBlocks) can tell
+// "genuinely still stuck" (current SHAs match) from "context changed since
+// escalation — a sibling merge advanced base, or new commits landed" (SHAs
+// differ), the latter re-enabling selection automatically without needing a
+// human to clear the label.
 type remediationState struct {
 	// Cycles is the number of pr-remediation cycles recorded for this PR so
 	// far (this checkpoint's own count — incremented once per run that
@@ -46,6 +55,17 @@ type remediationState struct {
 	// current cycle's digest to detect a no-progress repeat (#316's in-run
 	// same-diff check, lifted to PR altitude per design doc §6 D5).
 	LastDiffDigest string `json:"lastDiffDigest"`
+	// Escalated marks this recorded state as an escalation event (goobers:
+	// merge-escalated was applied) rather than an ordinary advancing cycle.
+	Escalated bool `json:"escalated,omitempty"`
+	// EscalatedReason is the human-readable cause (budget exhaustion or a
+	// byte-identical repeat), carried so a later sticky-comment edit can
+	// still render it without re-deriving it.
+	EscalatedReason string `json:"escalatedReason,omitempty"`
+	// EscalatedHeadSHA / EscalatedBaseSHA are the PR's head/base SHA at the
+	// moment of escalation — the self-heal comparison snapshot (#716).
+	EscalatedHeadSHA string `json:"escalatedHeadSha,omitempty"`
+	EscalatedBaseSHA string `json:"escalatedBaseSha,omitempty"`
 }
 
 // remediationStatePattern matches the machine-readable payload
@@ -76,6 +96,109 @@ func parseRemediationStateComment(body string) (remediationState, bool) {
 		return remediationState{}, false
 	}
 	return s, true
+}
+
+// renderRemediationComment builds the full sticky-comment body for state: a
+// human-readable prose line (distinct for the escalated vs. ordinary-cycle
+// case) followed by the embedded machine payload parseRemediationStateComment
+// reads back. Escalated prose describes what ACTUALLY happens now (#716
+// design item 4) — the PR is parked, not (as the old text falsely claimed)
+// permanently excluded from ever being looked at again.
+func renderRemediationComment(state remediationState) string {
+	var prose string
+	if state.Escalated {
+		prose = fmt.Sprintf(
+			"**pr-remediation escalated**\n\n%s. Parked until this PR's head or base changes, or a human removes `%s`.",
+			state.EscalatedReason, remediationEscalatedLabel,
+		)
+	} else {
+		prose = fmt.Sprintf("pr-remediation checkpoint: cycle %d, diff digest `%s`.", state.Cycles, state.LastDiffDigest)
+	}
+	payload, err := remediationStateComment(state)
+	if err != nil {
+		// Marshaling a plain struct of strings/ints/bools does not fail in
+		// practice; if it somehow did, the prose alone is still a useful
+		// comment — just without the machine-readable tail this run's own
+		// state would otherwise carry forward.
+		return prose
+	}
+	return prose + "\n\n" + payload
+}
+
+// postOrUpdateStickyComment posts state as a new PR comment, or — when
+// existingCommentID names a comment already found on the thread (the sticky
+// remediation-state comment a prior cycle posted) — edits that comment in
+// place instead (#716 AC3: at most one escalation comment per PR per digest;
+// repeated escalations/cycles edit the sticky comment rather than growing a
+// new one every run).
+func postOrUpdateStickyComment(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, existingCommentID, body string) error {
+	if existingCommentID != "" {
+		return provider.UpdateComment(ctx, repo, existingCommentID, body)
+	}
+	_, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository: repo,
+		ID:         strconv.Itoa(prNumber),
+		Comment:    body,
+	})
+	return err
+}
+
+// escalationStillBlocks reports whether pr's CURRENT goobers:merge-escalated
+// label still blocks it from selection by merge-review's pr-select or
+// pr-remediation's gather-pr-context (#716's core fix). A PR not currently
+// carrying the label is never blocked by this check (false, nil) — this is
+// the ordinary case for the vast majority of candidates and costs nothing.
+//
+// A PR that DOES carry the label is only genuinely still stuck if its
+// current head/base SHA match the snapshot remediation-checkpoint recorded
+// at the moment it escalated: unchanged head AND unchanged base means
+// nothing about the PR's situation has moved since a human or the agent last
+// looked, so re-selecting it would just reproduce the same escalation. If
+// EITHER SHA has moved — new commits pushed, or a sibling merge advanced the
+// base (post-merge.go's fan-out sets goobers:needs-remediation on every
+// sibling targeting the same base, which is exactly the trigger) — the PR's
+// context has genuinely changed and selection re-enables automatically
+// (AC2's self-heal), without needing a human to clear the label by hand.
+//
+// Fetches comments only for PRs that carry the label — a small, by-design
+// subset once this fix is live — so this stays cheap for the common case of
+// an unlabeled candidate.
+func escalationStillBlocks(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
+	if !hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) {
+		return false, nil
+	}
+	rawComments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
+	if err != nil {
+		return false, err
+	}
+	state, _, found := latestRemediationState(rawComments)
+	if !found || !state.Escalated {
+		// Labeled but no recorded escalation snapshot — a PR escalated
+		// before this fix shipped, or a human applied the label by hand.
+		// Fail closed: still blocks until a human clears the label, since
+		// there is no snapshot to compare against.
+		return true, nil
+	}
+	if state.EscalatedHeadSHA != pr.HeadSHA || state.EscalatedBaseSHA != pr.BaseSHA {
+		return false, nil
+	}
+	return true, nil
+}
+
+// latestRemediationState scans comments (oldest first, ListComments' own
+// order) for the LAST one carrying an embedded remediation-state payload —
+// only the most recently recorded cycle/escalation is still actionable —
+// and also returns that comment's ID, so a caller can edit it in place
+// (postOrUpdateStickyComment) rather than posting a new one. found is false
+// if no comment in the thread carries a payload (the PR's first
+// pr-remediation cycle), not an error.
+func latestRemediationState(comments []providers.Comment) (state remediationState, commentID string, found bool) {
+	for i := len(comments) - 1; i >= 0; i-- {
+		if s, ok := parseRemediationStateComment(comments[i].Body); ok {
+			return s, comments[i].ID, true
+		}
+	}
+	return remediationState{}, "", false
 }
 
 // runRemediationCheckpoint implements `goobers remediation-checkpoint`
@@ -199,14 +322,10 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	}
 	// Latest comment carrying an embedded payload wins, same rationale as
 	// gather-pr-context's verdict scan: only the most recently recorded
-	// checkpoint state is still actionable.
-	var prior remediationState
-	for i := len(rawComments) - 1; i >= 0; i-- {
-		if s, ok := parseRemediationStateComment(rawComments[i].Body); ok {
-			prior = s
-			break
-		}
-	}
+	// checkpoint state is still actionable. Its comment ID (if any) is the
+	// sticky comment this cycle edits in place (#716 AC3), rather than
+	// posting a new one.
+	prior, priorCommentID, _ := latestRemediationState(rawComments)
 
 	sameDiff := prior.LastDiffDigest != "" && prior.LastDiffDigest == digest
 	cycles := prior.Cycles + 1
@@ -215,38 +334,35 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	}
 	exceeded := cycles > *budget
 
+	var state remediationState
 	if exceeded || sameDiff {
 		reason := fmt.Sprintf("repass budget exhausted (%d/%d cycles)", cycles, *budget)
 		if sameDiff {
 			reason = fmt.Sprintf("this cycle's diff is byte-identical to the immediately prior cycle's (digest %s) — an unchanged diff cannot make progress", digest)
 		}
-		comment := fmt.Sprintf("**pr-remediation escalated**\n\n%s. A human must look — this PR is no longer selected by pr-remediation.", reason)
+		state = remediationState{
+			Cycles: cycles, LastDiffDigest: digest,
+			Escalated: true, EscalatedReason: reason,
+			EscalatedHeadSHA: current.HeadSHA, EscalatedBaseSHA: current.BaseSHA,
+		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository:   repo,
 			ID:           strconv.Itoa(selectedNumber),
 			AddLabels:    []string{remediationEscalatedLabel},
 			RemoveLabels: []string{needsRemediationLabel},
-			Comment:      comment,
 		}); err != nil {
-			pf(stderr, "error: escalate PR #%d: %v\n", selectedNumber, err)
-			return 1
+			return failProviderStage(stderr, fmt.Sprintf("escalate PR #%d", selectedNumber), err, "")
+		}
+		if err := postOrUpdateStickyComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("record escalation comment on PR #%d", selectedNumber), err, "")
 		}
 		pf(stdout, "escalated PR #%d: %s\n", selectedNumber, reason)
 		return 0
 	}
 
-	stateComment, err := remediationStateComment(remediationState{Cycles: cycles, LastDiffDigest: digest})
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-		Repository: repo,
-		ID:         strconv.Itoa(selectedNumber),
-		Comment:    stateComment,
-	}); err != nil {
-		pf(stderr, "error: record checkpoint state on PR #%d: %v\n", selectedNumber, err)
-		return 1
+	state = remediationState{Cycles: cycles, LastDiffDigest: digest}
+	if err := postOrUpdateStickyComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("record checkpoint state on PR #%d", selectedNumber), err, "")
 	}
 
 	pf(stdout, "recorded checkpoint for PR #%d: cycle %d/%d, digest %s\n", selectedNumber, cycles, *budget, digest)
