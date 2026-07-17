@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="init scaffold validate up run signal workflow runs status trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
+        candidates="init scaffold validate up run signal workflow runs status stats trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -16,13 +16,19 @@ _goobers_completion()
     case "${command}" in
         validate) flags+=" --check-harness" ;;
         up) flags+=" --quiet" ;;
+        run) flags+=" --no-wait" ;;
         workflow)
             [[ "${COMP_WORDS[2]:-}" == "show" ]] && flags+=" --dot"
             ;;
         runs)
-            [[ "${COMP_WORDS[2]:-}" == "list" ]] && flags+=" --limit"
+            case "${COMP_WORDS[2]:-}" in
+                list) flags+=" --json --limit" ;;
+                du) flags+=" --json" ;;
+            esac
             ;;
-        status) flags+=" --json --phase --workflow --limit" ;;
+        status) flags+=" --daemon --json --phase --workflow --limit --watch --interval" ;;
+        stats) flags+=" --since --json" ;;
+        trace) flags+=" --json --transcripts --transcript" ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
                 stats) flags+=" --workflow --gaggle --rebuild" ;;
@@ -77,7 +83,7 @@ _goobers_completion()
             fi
             ;;
         runs)
-            (( COMP_CWORD == 2 )) && candidates="list"
+            (( COMP_CWORD == 2 )) && candidates="list du"
             ;;
         telemetry)
             (( COMP_CWORD == 2 )) && candidates="stats errors"

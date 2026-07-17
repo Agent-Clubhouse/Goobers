@@ -21,6 +21,7 @@ _goobers_completion()
             'workflow:inspect workflows'
             'runs:list runs'
             'status:show run status'
+            'stats:show the instance lifetime summary'
             'trace:show a run journal'
             'telemetry:query telemetry'
             'telemetry-query:emit telemetry signals'
@@ -54,13 +55,19 @@ _goobers_completion()
     case "${command}" in
         validate) flags+=(--check-harness) ;;
         up) flags+=(--quiet) ;;
+        run) flags+=(--no-wait) ;;
         workflow)
             [[ "${words[3]:-}" == "show" ]] && flags+=(--dot)
             ;;
         runs)
-            [[ "${words[3]:-}" == "list" ]] && flags+=(--limit)
+            case "${words[3]:-}" in
+                list) flags+=(--json --limit) ;;
+                du) flags+=(--json) ;;
+            esac
             ;;
-        status) flags+=(--json --phase --workflow --limit) ;;
+        status) flags+=(--daemon --json --phase --workflow --limit --watch --interval) ;;
+        stats) flags+=(--since --json) ;;
+        trace) flags+=(--json --transcripts --transcript) ;;
         telemetry)
             case "${words[3]:-}" in
                 stats) flags+=(--workflow --gaggle --rebuild) ;;
@@ -130,7 +137,7 @@ _goobers_completion()
             ;;
         runs)
             if (( CURRENT == 3 )); then
-                candidates=(list)
+                candidates=(list du)
                 _describe 'command' candidates
                 return
             fi
