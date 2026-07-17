@@ -81,7 +81,11 @@ func disableGitFsyncForTests() {
 			n = parsed
 		}
 	}
-	os.Setenv("GIT_CONFIG_KEY_"+strconv.Itoa(n), "core.fsync")
-	os.Setenv("GIT_CONFIG_VALUE_"+strconv.Itoa(n), "none")
-	os.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(n+1))
+	// os.Setenv only errors on a key containing '=' or NUL, which these literals
+	// never do; TestGitFsyncDisabledForSuite verifies the config actually reached
+	// a git child regardless, so an explicit discard matches the suite's
+	// os.Setenv convention (see main_test.go) without a meaningless error path.
+	_ = os.Setenv("GIT_CONFIG_KEY_"+strconv.Itoa(n), "core.fsync")
+	_ = os.Setenv("GIT_CONFIG_VALUE_"+strconv.Itoa(n), "none")
+	_ = os.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(n+1))
 }
