@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // gatherPRContextServer is a small stateful fake GitHub server for
@@ -36,6 +37,10 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc(prefix+"/pulls", func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("base"); got != s.base {
 			t.Fatalf("ListPullRequests base query = %q, want %q", got, s.base)
+		}
+		if s.prNumber == 0 {
+			writeFakeJSON(w, []map[string]interface{}{})
+			return
 		}
 		labelObjs := make([]map[string]string, len(s.labels))
 		for i, l := range s.labels {
@@ -68,6 +73,17 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/comments", prefix, s.prNumber), func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, s.comments)
+	})
+	mux.HandleFunc(fmt.Sprintf("%s/issues/%d", prefix, s.prNumber), func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "want GET", http.StatusMethodNotAllowed)
+			return
+		}
+		writeFakeJSON(w, map[string]interface{}{
+			"number": s.prNumber, "title": "test PR", "state": "open",
+			"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber),
+			"labels":   labelsJSON(s.labels),
+		})
 	})
 
 	server := httptest.NewServer(mux)
@@ -398,6 +414,133 @@ func TestGatherPRContextCountsCrossPRConflictVerdict(t *testing.T) {
 	}
 }
 
+// TestSelectRemediationPRPriority is #596's headline acceptance:
+// selectRemediationCandidates prioritizes needs-remediation, then failing
+// CI, and only falls back to "merely behind its base" when neither
+// stronger signal is present anywhere in the PR set. Unlike a single-winner
+// selector, it returns every PR at the winning tier (see the "multiple
+// needs-remediation PRs" case below) — claimEligiblePullRequest needs the
+// whole tier to preserve exactly-once selection across concurrent runs;
+// see selectRemediationCandidates' own doc comment.
+func TestSelectRemediationPRPriority(t *testing.T) {
+	tests := []struct {
+		name         string
+		prs          []providers.PullRequestSummary
+		behind       map[int]bool
+		wantNumbers  []int
+		wantPriority remediationPriority
+		wantProbes   int
+	}{
+		{
+			name:         "behind base is fallback",
+			prs:          []providers.PullRequestSummary{{Number: 12}},
+			behind:       map[int]bool{12: true},
+			wantNumbers:  []int{12},
+			wantPriority: remediationPriorityBehindBase,
+			wantProbes:   1,
+		},
+		{
+			name: "failing CI wins over behind base",
+			prs: []providers.PullRequestSummary{
+				{Number: 10},
+				{Number: 20, CheckState: providers.CheckStateFailing},
+			},
+			behind:       map[int]bool{10: true},
+			wantNumbers:  []int{20},
+			wantPriority: remediationPriorityFailingCI,
+		},
+		{
+			name: "needs remediation wins over failing CI and behind base",
+			prs: []providers.PullRequestSummary{
+				{Number: 10},
+				{Number: 20, CheckState: providers.CheckStateFailing},
+				{Number: 30, Labels: []string{needsRemediationLabel}},
+			},
+			behind:       map[int]bool{10: true},
+			wantNumbers:  []int{30},
+			wantPriority: remediationPriorityNeedsRemediation,
+		},
+		{
+			name: "multiple needs remediation PRs all returned as candidates",
+			prs: []providers.PullRequestSummary{
+				{Number: 40, Labels: []string{needsRemediationLabel}},
+				{Number: 20, Labels: []string{needsRemediationLabel}},
+			},
+			wantNumbers:  []int{40, 20},
+			wantPriority: remediationPriorityNeedsRemediation,
+		},
+		{
+			name: "multiple behind-base PRs all returned as candidates",
+			prs: []providers.PullRequestSummary{
+				{Number: 50},
+				{Number: 30},
+			},
+			behind:       map[int]bool{50: true, 30: true},
+			wantNumbers:  []int{50, 30},
+			wantPriority: remediationPriorityBehindBase,
+			wantProbes:   2,
+		},
+		{
+			name: "escalated PR is excluded from behind fallback",
+			prs: []providers.PullRequestSummary{
+				{Number: 10, Labels: []string{remediationEscalatedLabel}},
+				{Number: 20},
+			},
+			behind:       map[int]bool{10: true, 20: true},
+			wantNumbers:  []int{20},
+			wantPriority: remediationPriorityBehindBase,
+			wantProbes:   1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			probes := 0
+			candidates, priority, err := selectRemediationCandidates(tt.prs, func(pr providers.PullRequestSummary) (bool, error) {
+				probes++
+				return tt.behind[pr.Number], nil
+			})
+			if err != nil {
+				t.Fatalf("selectRemediationCandidates: %v", err)
+			}
+			if priority != tt.wantPriority {
+				t.Fatalf("priority = %d, want %d", priority, tt.wantPriority)
+			}
+			gotNumbers := make([]int, len(candidates))
+			for i, c := range candidates {
+				gotNumbers[i] = c.Number
+			}
+			if len(gotNumbers) != len(tt.wantNumbers) {
+				t.Fatalf("candidates = %v, want %v", gotNumbers, tt.wantNumbers)
+			}
+			for i, want := range tt.wantNumbers {
+				if gotNumbers[i] != want {
+					t.Fatalf("candidates = %v, want %v", gotNumbers, tt.wantNumbers)
+				}
+			}
+			if probes != tt.wantProbes {
+				t.Fatalf("behind-base probes = %d, want %d", probes, tt.wantProbes)
+			}
+		})
+	}
+}
+
+// TestSelectRemediationCandidatesNoneEligible proves an empty PR set (or a
+// set where nothing clears any tier) reports remediationPriorityNone with
+// no candidates, rather than a spurious behind-base match.
+func TestSelectRemediationCandidatesNoneEligible(t *testing.T) {
+	candidates, priority, err := selectRemediationCandidates(nil, func(providers.PullRequestSummary) (bool, error) {
+		t.Fatal("behindBase probe should not run against an empty PR set")
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("selectRemediationCandidates: %v", err)
+	}
+	if len(candidates) != 0 || priority != remediationPriorityNone {
+		t.Fatalf("candidates = %v, priority = %d, want none", candidates, priority)
+	}
+}
+
 func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 	const prBranch = "goobers/impl/run-ci-red"
 	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
@@ -460,6 +603,82 @@ func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 	}
 	if got.HasFailingCI != "true" {
 		t.Fatalf("hasFailingCI = %q, want \"true\"", got.HasFailingCI)
+	}
+}
+
+func TestGatherPRContextSelectsBehindBaseOnlyPRAndRebases(t *testing.T) {
+	const prBranch = "goobers/impl/run-behind"
+	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
+
+	srv := gatherPRContextServer{
+		owner: "your-org", repo: "your-repo",
+		prNumber: 58, head: prBranch, base: "main",
+		headSHA: headSHA, baseSHA: baseSHA,
+	}
+	server := srv.start(t)
+
+	prev := newGitHubProvider
+	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "run-behind", BaseRef: "main",
+		Branch: "goobers/pr-remediation/run-behind",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
+
+	instanceRoot := initDemo(t)
+	t.Setenv("GOOBERS_RUN_ID", "run-behind")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Chdir(wt.Path)
+
+	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
+	if code != 0 {
+		t.Fatalf("gather-pr-context code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "pr-context.json"))
+	if err != nil {
+		t.Fatalf("read pr-context.json: %v", err)
+	}
+	var contextResult struct {
+		SelectedNumber         string `json:"selectedNumber"`
+		Head                   string `json:"head"`
+		Base                   string `json:"base"`
+		HasSubstantiveFindings string `json:"hasSubstantiveFindings"`
+		HasFailingCI           string `json:"hasFailingCI"`
+	}
+	if err := json.Unmarshal(data, &contextResult); err != nil {
+		t.Fatalf("unmarshal pr-context.json: %v", err)
+	}
+	if contextResult.SelectedNumber != "58" {
+		t.Fatalf("selectedNumber = %q, want 58", contextResult.SelectedNumber)
+	}
+
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", contextResult.SelectedNumber)
+	t.Setenv("GOOBERS_INPUT_HEAD", contextResult.Head)
+	t.Setenv("GOOBERS_INPUT_BASE", contextResult.Base)
+	t.Setenv("GOOBERS_INPUT_HASSUBSTANTIVEFINDINGS", contextResult.HasSubstantiveFindings)
+	t.Setenv("GOOBERS_INPUT_HASFAILINGCI", contextResult.HasFailingCI)
+	code, stdout, stderr = runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("rebase-pr code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	verify := t.TempDir()
+	runGitT(t, verify, "clone", "--branch", prBranch, origin, filepath.Join(verify, "check"))
+	if _, err := os.Stat(filepath.Join(verify, "check", "unrelated.txt")); err != nil {
+		t.Fatalf("origin's %s branch was not rebased onto advanced main: %v", prBranch, err)
 	}
 }
 
