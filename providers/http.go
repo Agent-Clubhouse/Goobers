@@ -94,24 +94,39 @@ type providerResponseError struct {
 
 func (e *providerResponseError) Error() string {
 	message := fmt.Sprintf("%s %s failed: status %d: %s", e.method, e.endpoint, e.statusCode, e.body)
-	if !e.hasRetryGuidance() {
-		return message
-	}
-	var guidance []string
-	if e.retryAfter != "" {
-		guidance = append(guidance, "Retry-After="+strconv.Quote(e.retryAfter))
-	}
-	if e.rateLimitRemaining == "0" {
-		guidance = append(guidance, "X-RateLimit-Remaining=\"0\"")
-		if e.rateLimitReset != "" {
-			guidance = append(guidance, "X-RateLimit-Reset="+strconv.Quote(e.rateLimitReset))
-		}
-	}
-	return message + " (" + strings.Join(guidance, ", ") + ")"
+	return message + retryGuidanceSuffix(e.retryAfter, e.rateLimitRemaining, e.rateLimitReset)
 }
 
 func (e *providerResponseError) hasRetryGuidance() bool {
 	return e.retryAfter != "" || e.rateLimitRemaining == "0"
+}
+
+// retryGuidanceSuffix formats GitHub's raw rate-limit headers as the
+// `(Retry-After="1", X-RateLimit-Remaining="0", X-RateLimit-Reset="...")`
+// suffix shared by every error that surfaces a rate-limited response's
+// guidance verbatim — providerResponseError's generic non-2xx path and
+// RateLimitError's typed give-up (providers/github_issues.go) both append
+// this SAME format, so the string classification IsTransientError's
+// subprocess-crossed fallback depends on (hasRateLimitRetryGuidance,
+// providers/transient.go) recognizes either one identically. Returns "" when
+// none of the three raw values carry guidance (retryAfter empty and
+// remaining isn't exactly "0" — GitHub's own signal for "quota exhausted,"
+// never inferred from any other value).
+func retryGuidanceSuffix(retryAfter, remaining, reset string) string {
+	var guidance []string
+	if retryAfter != "" {
+		guidance = append(guidance, "Retry-After="+strconv.Quote(retryAfter))
+	}
+	if remaining == "0" {
+		guidance = append(guidance, `X-RateLimit-Remaining="0"`)
+		if reset != "" {
+			guidance = append(guidance, "X-RateLimit-Reset="+strconv.Quote(reset))
+		}
+	}
+	if len(guidance) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(guidance, ", ") + ")"
 }
 
 func newProviderResponseError(resp *http.Response, method, endpoint string, body []byte) error {
