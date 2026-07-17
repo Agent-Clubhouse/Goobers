@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 func runWorkflow(args []string, stdout, stderr io.Writer) int {
@@ -75,7 +76,14 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
 	for _, wf := range set.Workflows {
 		if wf.Name == name {
 			if *dot {
-				printWorkflowDOT(stdout, wf)
+				machine, err := workflow.Compile(workflow.Definition{
+					Name: wf.Name, Version: 1, Spec: wf.Spec,
+				})
+				if err != nil {
+					pf(stderr, "error: compile workflow %q: %v\n", wf.Name, err)
+					return 1
+				}
+				printWorkflowDOT(stdout, machine.Graph())
 			} else {
 				printWorkflowDAG(stdout, wf)
 			}
@@ -100,17 +108,25 @@ func printWorkflowDAG(w io.Writer, wf apiv1.Workflow) {
 	}
 }
 
-func printWorkflowDOT(w io.Writer, wf apiv1.Workflow) {
+func printWorkflowDOT(w io.Writer, graph workflow.Graph) {
 	pf(w, "digraph {\n")
-	for _, task := range wf.Spec.Tasks {
-		pf(w, "  %q [shape=box];\n", task.Name)
-		pf(w, "  %q -> %q;\n", task.Name, displayWorkflowTarget(task.Next))
-	}
-	for _, gate := range wf.Spec.Gates {
-		pf(w, "  %q [shape=diamond];\n", gate.Name)
-		for _, outcome := range orderedGateOutcomes(gate.Branches) {
-			pf(w, "  %q -> %q [label=%q];\n",
-				gate.Name, displayWorkflowTarget(gate.Branches[outcome]), outcome)
+	edge := 0
+	for _, node := range graph.Nodes {
+		shape := "box"
+		if node.Kind == workflow.GraphNodeGate {
+			shape = "diamond"
+		}
+		pf(w, "  %q [shape=%s];\n", node.ID, shape)
+		for edge < len(graph.Edges) && graph.Edges[edge].Source == node.ID {
+			transition := graph.Edges[edge]
+			if node.Kind == workflow.GraphNodeGate {
+				pf(w, "  %q -> %q [label=%q];\n",
+					transition.Source, displayWorkflowTarget(transition.Target), transition.Outcome)
+			} else {
+				pf(w, "  %q -> %q;\n",
+					transition.Source, displayWorkflowTarget(transition.Target))
+			}
+			edge++
 		}
 	}
 	pf(w, "}\n")
