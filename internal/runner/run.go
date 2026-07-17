@@ -306,6 +306,11 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	}
 
 	inputs := map[string][]byte{}
+	graph, err := json.Marshal(in.Machine.Graph())
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: marshal pinned workflow graph: %w", err)
+	}
+	inputs[journal.PinnedWorkflowGraphInputName] = graph
 	if in.Item != nil {
 		b, err := json.Marshal(in.Item)
 		if err != nil {

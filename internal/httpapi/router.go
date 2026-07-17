@@ -5,8 +5,10 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/goobers/goobers/internal/readservice"
 )
@@ -20,6 +22,8 @@ const (
 	TelemetryStatsPath = Prefix + "/telemetry/stats"
 	// TelemetryErrorsPath exposes paginated recent telemetry errors.
 	TelemetryErrorsPath = Prefix + "/telemetry/errors"
+	// RunsPath is the run history endpoint.
+	RunsPath = Prefix + "/runs"
 )
 
 // Authorizer preserves the authorization boundary for every API route. Tier 1
@@ -84,12 +88,12 @@ func (r *Router) Handler() http.Handler {
 		writeError(w, http.StatusNotFound, "not_found", "route not found")
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		handler, pattern := r.mux.Handler(request)
+		_, pattern := r.mux.Handler(request)
 		if pattern == "" {
 			notFound.ServeHTTP(w, request)
 			return
 		}
-		handler.ServeHTTP(w, request)
+		r.mux.ServeHTTP(w, request)
 	})
 }
 
@@ -115,7 +119,104 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		writeJSON(w, http.StatusOK, health)
 	})
 	registerTelemetryRoutes(router, reader, errorLog)
+	registerRunRoutes(router, reader, errorLog)
 	return router.Handler(), nil
+}
+
+func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
+	router.HandleGET(RunsPath, func(w http.ResponseWriter, request *http.Request) {
+		options, err := runListOptions(request)
+		if err != nil {
+			writeReadError(w, errorLog, "list runs", err)
+			return
+		}
+		runs, err := reader.ListRuns(request.Context(), options)
+		if err != nil {
+			writeReadError(w, errorLog, "list runs", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, runs)
+	})
+	router.HandleGET(RunsPath+"/{run}", func(w http.ResponseWriter, request *http.Request) {
+		run, err := reader.GetRun(request.Context(), request.PathValue("run"))
+		if err != nil {
+			writeReadError(w, errorLog, "get run", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, run)
+	})
+	router.HandleGET(RunsPath+"/{run}/events", func(w http.ResponseWriter, request *http.Request) {
+		events, err := reader.RunEvents(request.Context(), request.PathValue("run"))
+		if err != nil {
+			writeReadError(w, errorLog, "read run events", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, events)
+	})
+	router.HandleGET(RunsPath+"/{run}/stages/{stage}/attempts", func(w http.ResponseWriter, request *http.Request) {
+		attempts, err := reader.StageAttempts(
+			request.Context(),
+			request.PathValue("run"),
+			request.PathValue("stage"),
+		)
+		if err != nil {
+			writeReadError(w, errorLog, "read stage attempts", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, attempts)
+	})
+	router.HandleGET(RunsPath+"/{run}/artifacts/{digest}", func(w http.ResponseWriter, request *http.Request) {
+		artifact, err := reader.Artifact(
+			request.Context(),
+			request.PathValue("run"),
+			request.PathValue("digest"),
+		)
+		if err != nil {
+			writeReadError(w, errorLog, "read artifact", err)
+			return
+		}
+		w.Header().Set("Content-Type", artifact.Metadata.MediaType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(artifact.Bytes)))
+		w.Header().Set("ETag", `"`+artifact.Metadata.Digest+`"`)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Goobers-Digest", artifact.Metadata.Digest)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(artifact.Bytes)
+	})
+}
+
+func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
+	query := request.URL.Query()
+	options := readservice.RunListOptions{
+		Gaggle:   query.Get("gaggle"),
+		Workflow: query.Get("workflow"),
+		Phase:    readservice.RunPhase(query.Get("phase")),
+		Trigger:  readservice.TriggerKind(query.Get("trigger")),
+		Cursor:   query.Get("cursor"),
+	}
+	if value := query.Get("limit"); value != "" {
+		limit, err := strconv.Atoi(value)
+		if err != nil {
+			return readservice.RunListOptions{}, fmt.Errorf("%w: limit must be an integer", readservice.ErrInvalidArgument)
+		}
+		options.Limit = limit
+	}
+	return options, nil
+}
+
+func writeReadError(w http.ResponseWriter, errorLog *log.Logger, operation string, err error) {
+	switch {
+	case errors.Is(err, readservice.ErrInvalidArgument):
+		writeError(w, http.StatusBadRequest, "invalid_argument", "request parameters are invalid")
+	case errors.Is(err, readservice.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "requested run data was not found")
+	case errors.Is(err, readservice.ErrArtifactIntegrity):
+		errorLog.Printf("%s failed: %v", operation, err)
+		writeError(w, http.StatusConflict, "artifact_invalid", "artifact integrity verification failed")
+	default:
+		errorLog.Printf("%s failed: %v", operation, err)
+		writeError(w, http.StatusInternalServerError, "read_error", "runtime state could not be read")
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {

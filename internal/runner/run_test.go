@@ -829,8 +829,21 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	if id.WorkflowDigest != machine.Digest() {
 		t.Errorf("run.yaml workflowDigest = %q, want %q (WF-016 pin)", id.WorkflowDigest, machine.Digest())
 	}
-	if len(id.Inputs) != 1 || id.Inputs[0].Name != "item" {
-		t.Errorf("expected the backlog item snapshotted as an immutable input, got %+v", id.Inputs)
+	if len(id.Inputs) != 2 ||
+		id.Inputs[0].Name != "item" ||
+		id.Inputs[1].Name != journal.PinnedWorkflowGraphInputName {
+		t.Errorf("expected the backlog item and workflow graph snapshotted as immutable inputs, got %+v", id.Inputs)
+	}
+	graphBytes, err := rd.ArtifactBytes(id.Inputs[1].Ref)
+	if err != nil {
+		t.Fatalf("read pinned workflow graph: %v", err)
+	}
+	var pinnedGraph workflow.Graph
+	if err := json.Unmarshal(graphBytes, &pinnedGraph); err != nil {
+		t.Fatalf("parse pinned workflow graph: %v", err)
+	}
+	if !reflect.DeepEqual(pinnedGraph, machine.Graph()) {
+		t.Errorf("pinned workflow graph = %+v, want %+v", pinnedGraph, machine.Graph())
 	}
 
 	events, err := rd.Events()

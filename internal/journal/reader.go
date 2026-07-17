@@ -19,6 +19,14 @@ type Reader struct {
 	dir string
 }
 
+// EventRecord retains both the parsed shared envelope and its original JSON.
+// Future-schema events remain inspectable without requiring this build to
+// interpret fields it does not own.
+type EventRecord struct {
+	Event Event
+	Raw   json.RawMessage
+}
+
 // OpenRead opens an existing run directory for reading.
 func OpenRead(dir string) (*Reader, error) {
 	if _, err := os.Stat(filepath.Join(dir, fileRunYAML)); err != nil {
@@ -80,6 +88,12 @@ func (r *Reader) Phase() (RunPhase, error) {
 func (r *Reader) Events() ([]Event, error) {
 	events, _, err := readEvents(filepath.Join(r.dir, fileEvents))
 	return events, err
+}
+
+// EventRecords is Events with each complete record's original JSON retained.
+func (r *Reader) EventRecords() ([]EventRecord, error) {
+	records, _, err := readEventRecords(filepath.Join(r.dir, fileEvents))
+	return records, err
 }
 
 // KnownSchema reports whether an event uses the schema version this build owns.
@@ -281,6 +295,18 @@ func reconstructReason(events []Event) string {
 // newline are an interrupted write and are reported as tornBytes, never returned
 // as an event.
 func readEvents(path string) ([]Event, int, error) {
+	records, tornBytes, err := readEventRecords(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	events := make([]Event, len(records))
+	for i := range records {
+		events[i] = records[i].Event
+	}
+	return events, tornBytes, nil
+}
+
+func readEventRecords(path string) ([]EventRecord, int, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -295,7 +321,7 @@ func readEvents(path string) ([]Event, int, error) {
 		tail = data // no complete record yet
 	}
 
-	var events []Event
+	var records []EventRecord
 	sc := bufio.NewScanner(bytes.NewReader(complete))
 	sc.Buffer(make([]byte, 0, 64*1024), maxEventBytes)
 	for sc.Scan() {
@@ -318,7 +344,10 @@ func readEvents(path string) ([]Event, int, error) {
 			// surface it rather than hide it.
 			return nil, 0, fmt.Errorf("journal: corrupt event at seq boundary: %w", err)
 		}
-		events = append(events, ev)
+		records = append(records, EventRecord{
+			Event: ev,
+			Raw:   append(json.RawMessage(nil), line...),
+		})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, 0, fmt.Errorf("journal: scan events log: %w", err)
@@ -329,7 +358,7 @@ func readEvents(path string) ([]Event, int, error) {
 	// NULs from this length (as earlier code did) leaves zero-fill behind, which
 	// the next append concatenates onto — fabricating a corrupt "complete" line
 	// on the following recovery and bricking the journal (#116).
-	return events, len(tail), nil
+	return records, len(tail), nil
 }
 
 // maxEventBytes bounds a single event line during recovery scanning.
