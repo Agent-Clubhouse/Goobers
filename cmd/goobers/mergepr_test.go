@@ -19,26 +19,77 @@ import (
 // and has no /merge endpoint) so every conjunct (CI state, draft, head/base
 // SHA) is independently controllable per test case.
 type mergePRServerState struct {
-	draft      bool
-	checkState string // "success" or "failure" — maps to CheckStatePassing/Failing
-	headSHA    string
-	baseSHA    string
-	mergeCalls int
-	mergeSHA   *string // set by the /merge handler on a successful call
+	draft           bool
+	checkState      string // "success" or "failure" — maps to CheckStatePassing/Failing
+	headSHA         string
+	headBranch      string
+	headOwner       string
+	headRepo        string
+	baseSHA         string
+	stacked         bool
+	pullListStatus  int
+	deleteStatus    int
+	mergeCalls      int
+	pullListCalls   int
+	deleteCalls     int
+	baseListCalls   int
+	baseDeleteCalls int
+	mergeSHA        *string // set by the /merge handler on a successful call
 }
 
 func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) *httptest.Server {
 	t.Helper()
+	if st.headBranch == "" {
+		st.headBranch = "goobers/implementation/run-1"
+	}
+	if st.headOwner == "" {
+		st.headOwner = owner
+	}
+	if st.headRepo == "" {
+		st.headRepo = repo
+	}
 	prefix := "/repos/" + owner + "/" + repo
+	headPrefix := "/repos/" + st.headOwner + "/" + st.headRepo
 	mux := http.NewServeMux()
 	mux.HandleFunc(prefix+"/pulls/9", func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{
 			"number": 9, "state": "open", "merged": false, "draft": st.draft,
 			"html_url": "https://github.com/" + owner + "/" + repo + "/pull/9",
-			"head":     map[string]interface{}{"sha": st.headSHA},
-			"base":     map[string]interface{}{"sha": st.baseSHA},
+			"head": map[string]interface{}{
+				"ref": st.headBranch, "sha": st.headSHA,
+				"repo": map[string]interface{}{
+					"name": st.headRepo, "html_url": "https://github.com/" + st.headOwner + "/" + st.headRepo,
+					"owner": map[string]string{"login": st.headOwner},
+				},
+			},
+			"base": map[string]interface{}{"sha": st.baseSHA},
 		})
 	})
+	mux.HandleFunc(headPrefix+"/pulls", func(w http.ResponseWriter, r *http.Request) {
+		st.pullListCalls++
+		if st.pullListStatus != 0 {
+			http.Error(w, "list failed", st.pullListStatus)
+			return
+		}
+		if got := r.URL.Query().Get("base"); got != st.headBranch {
+			t.Errorf("pull-list base = %q, want %q", got, st.headBranch)
+		}
+		if !st.stacked {
+			writeFakeJSON(w, []map[string]interface{}{})
+			return
+		}
+		writeFakeJSON(w, []map[string]interface{}{{
+			"number": 10, "state": "open", "html_url": "https://github.com/" + owner + "/" + repo + "/pull/10",
+			"head": map[string]interface{}{"ref": "goobers/stacked/child", "sha": "child-sha"},
+			"base": map[string]interface{}{"ref": st.headBranch, "sha": st.headSHA},
+		}})
+	})
+	if headPrefix != prefix {
+		mux.HandleFunc(prefix+"/pulls", func(w http.ResponseWriter, r *http.Request) {
+			st.baseListCalls++
+			writeFakeJSON(w, []map[string]interface{}{})
+		})
+	}
 	mux.HandleFunc(prefix+"/pulls/9/reviews", func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, []map[string]interface{}{})
 	})
@@ -67,6 +118,23 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		st.mergeSHA = &sha
 		writeFakeJSON(w, map[string]interface{}{"sha": sha, "merged": true, "message": "merged"})
 	})
+	mux.HandleFunc(headPrefix+"/git/refs/heads/"+st.headBranch, func(w http.ResponseWriter, r *http.Request) {
+		st.deleteCalls++
+		if r.Method != http.MethodDelete {
+			t.Errorf("branch request method = %s, want DELETE", r.Method)
+		}
+		if st.deleteStatus != 0 {
+			http.Error(w, "delete failed", st.deleteStatus)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if headPrefix != prefix {
+		mux.HandleFunc(prefix+"/git/refs/heads/"+st.headBranch, func(w http.ResponseWriter, r *http.Request) {
+			st.baseDeleteCalls++
+			w.WriteHeader(http.StatusNoContent)
+		})
+	}
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server
@@ -100,6 +168,7 @@ func mergePREnv(t *testing.T, serverURL string, withoutCapability bool, inputs m
 	if !withoutCapability {
 		t.Setenv("GOOBERS_CRED_GITHUB_PR_MERGE", "test-token")
 	}
+	t.Setenv("GOOBERS_CRED_GITHUB_BRANCH_DELETE", "test-token")
 	for k, v := range inputs {
 		t.Setenv("GOOBERS_INPUT_"+strings.ToUpper(k), v)
 	}
@@ -138,6 +207,9 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 	if st.mergeCalls != 1 {
 		t.Fatalf("merge endpoint called %d times, want 1", st.mergeCalls)
 	}
+	if st.pullListCalls != 1 || st.deleteCalls != 1 {
+		t.Fatalf("cleanup calls = list:%d delete:%d, want 1 each", st.pullListCalls, st.deleteCalls)
+	}
 	result := readMergeResult(t, dir)
 	if merged, _ := result["merged"].(bool); !merged {
 		t.Fatalf("result = %+v, want merged=true", result)
@@ -147,6 +219,144 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 	}
 	if result["selectedNumber"] != "9" {
 		t.Fatalf("result = %+v, want selectedNumber=%q", result, "9")
+	}
+	if result["branchCleanup"] != "deleted" || result["headBranch"] != st.headBranch {
+		t.Fatalf("result = %+v, want deleted branch cleanup for %q", result, st.headBranch)
+	}
+	facts := readMutationFacts(t, dir)
+	if len(facts) != 2 || facts[0].Operation != "merge" || facts[1].Kind != "branch" || facts[1].Operation != "delete" {
+		t.Fatalf("mutation facts = %+v, want merge followed by branch delete", facts)
+	}
+}
+
+func TestMergePRDeletesForkHeadBranchInForkRepository(t *testing.T) {
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
+		headOwner: "contributor", headRepo: "your-repo-fork",
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.pullListCalls != 1 || st.deleteCalls != 1 {
+		t.Fatalf("fork cleanup calls = list:%d delete:%d, want 1 each", st.pullListCalls, st.deleteCalls)
+	}
+	if st.baseListCalls != 0 || st.baseDeleteCalls != 0 {
+		t.Fatalf("base repository cleanup calls = list:%d delete:%d, want 0", st.baseListCalls, st.baseDeleteCalls)
+	}
+	result := readMergeResult(t, dir)
+	if result["merged"] != true || result["branchCleanup"] != "deleted" {
+		t.Fatalf("result = %+v, want merged with deleted fork branch", result)
+	}
+	facts := readMutationFacts(t, dir)
+	if len(facts) != 2 || facts[1].Kind != "branch" || facts[1].ID != st.headBranch || facts[1].Operation != "delete" {
+		t.Fatalf("mutation facts = %+v, want fork branch deletion", facts)
+	}
+}
+
+func TestMergePRKeepsStackedHeadBranch(t *testing.T) {
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456", stacked: true,
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.deleteCalls != 0 {
+		t.Fatalf("delete endpoint called %d times, want 0 for stacked branch", st.deleteCalls)
+	}
+	result := readMergeResult(t, dir)
+	if result["merged"] != true || result["branchCleanup"] != "skipped-stacked" {
+		t.Fatalf("result = %+v, want merged with stacked cleanup skip", result)
+	}
+	facts := readMutationFacts(t, dir)
+	if len(facts) != 1 || facts[0].Operation != "merge" {
+		t.Fatalf("mutation facts = %+v, want no branch mutation for guarded skip", facts)
+	}
+}
+
+func TestMergePRDeleteFailurePreservesMergeResult(t *testing.T) {
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456", deleteStatus: http.StatusUnprocessableEntity,
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readMergeResult(t, dir)
+	if result["merged"] != true || result["mergeSha"] != "merge-commit-sha" || result["branchCleanup"] != "failed" {
+		t.Fatalf("result = %+v, want successful merge with failed cleanup", result)
+	}
+	if result["branchCleanupError"] == "" || !strings.Contains(stderr, "branch cleanup failed") {
+		t.Fatalf("cleanup failure not visible: result=%+v stderr=%q", result, stderr)
+	}
+	facts := readMutationFacts(t, dir)
+	if len(facts) != 1 || facts[0].Operation != "merge" {
+		t.Fatalf("mutation facts = %+v, want no branch mutation for failed delete", facts)
+	}
+}
+
+func TestMergePRGuardFailurePreservesMergeResult(t *testing.T) {
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456", pullListStatus: http.StatusUnprocessableEntity,
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readMergeResult(t, dir)
+	if result["merged"] != true || result["branchCleanup"] != "failed" {
+		t.Fatalf("result = %+v, want successful merge with failed cleanup guard", result)
+	}
+	if !strings.Contains(result["branchCleanupError"].(string), "check stacked pull requests") {
+		t.Fatalf("result = %+v, want visible guard provider failure", result)
+	}
+	if st.deleteCalls != 0 {
+		t.Fatalf("delete endpoint called %d times after guard failure, want 0", st.deleteCalls)
+	}
+}
+
+func TestMergePRDeleteRequiresCapabilityWithoutRewritingMerge(t *testing.T) {
+	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456"}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+	t.Setenv("GOOBERS_CRED_GITHUB_BRANCH_DELETE", "")
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readMergeResult(t, dir)
+	if result["merged"] != true || result["branchCleanup"] != "failed" {
+		t.Fatalf("result = %+v, want successful merge with capability-gated cleanup", result)
+	}
+	if !strings.Contains(result["branchCleanupError"].(string), "GOOBERS_CRED_GITHUB_BRANCH_DELETE") {
+		t.Fatalf("result = %+v, want missing branch-delete capability to be visible", result)
+	}
+	if st.deleteCalls != 0 {
+		t.Fatalf("delete endpoint called %d times without capability, want 0", st.deleteCalls)
 	}
 }
 

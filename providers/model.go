@@ -133,6 +133,12 @@ type BranchResult struct {
 	URL  string `json:"url,omitempty"`
 }
 
+// DeleteBranchRequest describes a branch ref to delete.
+type DeleteBranchRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	Name       string        `json:"name"`
+}
+
 // CommitChangeType identifies how a file changes in a commit.
 type CommitChangeType string
 
@@ -243,13 +249,17 @@ type PullRequestPollRequest struct {
 // against a previously-computed verdict's SHA-pin before acting on it — never
 // trust a caller-supplied "still valid" claim, always re-poll (design doc D6).
 type PullRequestPollResult struct {
-	Number    int    `json:"number"`
-	State     string `json:"state"`
-	Merged    bool   `json:"merged"`
-	Mergeable *bool  `json:"mergeable,omitempty"`
-	Draft     bool   `json:"draft"`
-	HeadSHA   string `json:"headSha,omitempty"`
-	BaseSHA   string `json:"baseSha,omitempty"`
+	Number     int    `json:"number"`
+	State      string `json:"state"`
+	Merged     bool   `json:"merged"`
+	Mergeable  *bool  `json:"mergeable,omitempty"`
+	Draft      bool   `json:"draft"`
+	HeadBranch string `json:"headBranch,omitempty"`
+	// HeadRepository identifies where HeadBranch actually lives. It can differ
+	// from the pull request repository for fork pull requests.
+	HeadRepository *RepositoryRef `json:"headRepository,omitempty"`
+	HeadSHA        string         `json:"headSha,omitempty"`
+	BaseSHA        string         `json:"baseSha,omitempty"`
 	// BaseBranch is the target branch name (e.g. "main") — distinct from
 	// BaseSHA (a pinned commit): issue #361's post-merge fan-out needs the
 	// branch name to find OTHER open PRs targeting the same base, not the
@@ -337,7 +347,9 @@ type ListPullRequestsRequest struct {
 	// callers that gate on CheckState (pr-select's eligibility filter)
 	// keep their fresh-by-default behavior; a caller that sets this owns
 	// resolving check state itself (RefCheckState) for the candidates it
-	// actually needs it for.
+	// actually needs it for. #605's stacked-PR guard is exactly such a
+	// caller — it only needs to know whether an open PR exists, not its
+	// check state, so it sets this too rather than duplicating the knob.
 	SkipCheckState bool `json:"skipCheckState,omitempty"`
 }
 

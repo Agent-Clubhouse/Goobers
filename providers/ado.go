@@ -101,6 +101,11 @@ func (p *ADOProvider) CreateBranch(ctx context.Context, req BranchRequest) (Bran
 	return BranchResult{Name: strings.TrimPrefix(out.Value[0].Name, "refs/heads/"), SHA: out.Value[0].ObjectID, URL: out.Value[0].URL}, nil
 }
 
+// DeleteBranch is part of the provider contract; ADO parity lands in V1.
+func (p *ADOProvider) DeleteBranch(context.Context, DeleteBranchRequest) error {
+	return fmt.Errorf("ado: branch deletion lands in V1 parity (BL-033)")
+}
+
 // Commit writes file changes to an Azure DevOps branch.
 func (p *ADOProvider) Commit(ctx context.Context, req CommitRequest) (CommitResult, error) {
 	if err := requireRepo(req.Repository); err != nil {

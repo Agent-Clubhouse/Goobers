@@ -40,7 +40,9 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			"PR's live head/base (never a bare self-approval). Declared inputs:\n"+
 			"pullNumber, verdict, headSha, baseSha (all required), advisoryMode\n"+
 			"(default false — report only, no merge attempted), commitMessage,\n"+
-			"resultFile (default merge-result.json). Exit codes: 0 = evaluated\n"+
+			"resultFile (default merge-result.json). Successful merges also report\n"+
+			"headBranch and branchCleanup (deleted, skipped-stacked, or failed).\n"+
+			"Exit codes: 0 = evaluated\n"+
 			"(merged or not — see the result file's \"merged\" field), 1 = business\n"+
 			"error (missing capability/config, malformed inputs, provider failure),\n"+
 			"2 = usage/IO error.\n")
@@ -133,7 +135,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(reasons) > 0 {
-		if err := writeMergeResult(resultFile, pullNumber, false, "", reasons); err != nil {
+		if err := writeMergeResult(resultFile, pullNumber, false, "", reasons, nil); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
@@ -147,7 +149,17 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "merge pull request", err, "merge-result.json")
 	}
-	if err := writeMergeResult(resultFile, pullNumber, result.Merged, result.MergeSHA, nil); err != nil {
+	var cleanup *mergeBranchCleanup
+	if result.Merged {
+		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)
+		cleanup = &outcome
+		if outcome.Error != "" {
+			pf(stderr, "warning: merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
+		} else {
+			pf(stdout, "branch cleanup %s (%s)\n", outcome.Status, outcome.HeadBranch)
+		}
+	}
+	if err := writeMergeResult(resultFile, pullNumber, result.Merged, result.MergeSHA, nil, cleanup); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -155,20 +167,74 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+type mergeBranchCleanup struct {
+	Status     string
+	HeadBranch string
+	Error      string
+}
+
+func cleanupMergedBranch(ctx context.Context, headRepository *providers.RepositoryRef, headBranch string, prProvider *providers.GitHubProvider) mergeBranchCleanup {
+	out := mergeBranchCleanup{HeadBranch: headBranch}
+	recorder := sidecarMutationRecorder{kind: "branch"}
+	fail := func(err error) mergeBranchCleanup {
+		out.Status = "failed"
+		out.Error = err.Error()
+		return out
+	}
+	if headBranch == "" {
+		return fail(fmt.Errorf("merged pull request did not report a head branch"))
+	}
+	if headRepository == nil {
+		return fail(fmt.Errorf("merged pull request did not report a head repository"))
+	}
+
+	stacked, err := prProvider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository:     *headRepository,
+		Base:           headBranch,
+		SkipCheckState: true,
+	})
+	if err != nil {
+		return fail(fmt.Errorf("check stacked pull requests for %q: %w", headBranch, err))
+	}
+	if len(stacked) > 0 {
+		out.Status = "skipped-stacked"
+		return out
+	}
+
+	token, err := providerToken(capability.GitHubBranchDelete)
+	if err != nil {
+		return fail(err)
+	}
+	branchProvider := newGitHubProvider(token, providers.WithMutationRecorder(recorder))
+	if err := branchProvider.DeleteBranch(ctx, providers.DeleteBranchRequest{Repository: *headRepository, Name: headBranch}); err != nil {
+		return fail(fmt.Errorf("delete branch %q: %w", headBranch, err))
+	}
+	out.Status = "deleted"
+	return out
+}
+
 // writeMergeResult writes the declared result file's flat JSON — selectedNumber
 // (string, always present), merged (bool, always present), mergeSha (on success),
-// reason (a semicolon-joined list of unmet conjuncts, on refusal) — matching
+// reason (a semicolon-joined list of unmet conjuncts, on refusal), and
+// headBranch/branchCleanup/branchCleanupError (after a merge) — matching
 // InputResultFile's flat-scalar-merge convention (internal/executor/shell.go's
 // mergeResultFileOutputs). selectedNumber is echoed so the task after merge-gate
 // can receive it through InputsFrom; merged lets that gate branch with zero new
 // plumbing.
-func writeMergeResult(path, selectedNumber string, merged bool, mergeSHA string, reasons []string) error {
+func writeMergeResult(path, selectedNumber string, merged bool, mergeSHA string, reasons []string, cleanup *mergeBranchCleanup) error {
 	out := map[string]interface{}{"selectedNumber": selectedNumber, "merged": merged}
 	if mergeSHA != "" {
 		out["mergeSha"] = mergeSHA
 	}
 	if len(reasons) > 0 {
 		out["reason"] = strings.Join(reasons, "; ")
+	}
+	if cleanup != nil {
+		out["branchCleanup"] = cleanup.Status
+		out["headBranch"] = cleanup.HeadBranch
+		if cleanup.Error != "" {
+			out["branchCleanupError"] = cleanup.Error
+		}
 	}
 	data, err := json.Marshal(out)
 	if err != nil {
