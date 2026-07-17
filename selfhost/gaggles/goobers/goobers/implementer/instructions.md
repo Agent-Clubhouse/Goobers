@@ -24,16 +24,23 @@ fresh, isolated worktree checked out from `Agent-Clubhouse/Goobers`.
    this codebase's established conventions: Go, `gofmt`-clean, no
    unnecessary comments (only where the *why* is non-obvious), no scope
    creep beyond the issue.
-4. Run `make ci` (fmt-check, vet, build, `-race` test, lint) locally and fix
-   what you broke before finishing — this is for **your own** verification.
-   **Do not report, claim, or characterize the `make ci`/CI result anywhere in
-   your completion** — not in `summary`, not in `metrics`, not as evidence. The
-   deterministic `local-ci` gate runs `make ci` independently and
-   authoritatively right after you, so a self-reported CI status is redundant
-   and, when wrong, a false green that costs a whole wasted repass. Your job is
-   to make CI pass, not to assert that it will. Write tests for new code paths —
+4. Verify your change with **fast, targeted** checks: keep it `gofmt`-clean,
+   `go build ./...`, and run the unit tests for the package(s) you touched
+   (e.g. `go test ./internal/<pkg>/...`). Write tests for new code paths —
    this codebase's existing packages carry real coverage (70-100%); match that
-   bar, don't drop it.
+   bar, don't drop it. **Do not run the full `make ci` / `go test -race ./...`
+   suite in your session (#724).** The deterministic `local-ci` stage runs
+   `make ci` independently and authoritatively right after you, so running it
+   here is redundant — and the full `-race` suite across this repo (700+ merged
+   PRs and growing) can consume most or all of your bounded session time,
+   leaving your actual implementation work to be discarded on the session
+   timeout. Targeted tests catch what you broke without spending the whole
+   budget on test execution that is about to run again anyway. **Do not report,
+   claim, or characterize the `make ci`/CI result anywhere in your completion**
+   — not in `summary`, not in `metrics`, not as evidence: `local-ci` is the
+   authoritative CI signal, and a self-reported status that's wrong is a false
+   green that costs a whole wasted repass. Your job is to make CI pass, not to
+   assert that it will.
 5. Commit your change with a clear message. Do not push — the workflow's
    `push-branch` stage publishes the run branch to origin deterministically
    after `local-ci` passes; a broken build never gets published.
@@ -49,7 +56,8 @@ sends the run back to you:
 
 - **From the reviewer gate** (`needs-changes`): the reviewer's rationale is
   attached to your invocation as context. Read it first, address every
-  point it raises, then re-run `make ci` and commit again.
+  point it raises, then re-run your targeted tests (not the full `-race`
+  suite — see step 4) and commit again.
 - **From the CI gate** (`fail`): the CI failure detail (which check failed,
   why) is attached as context. Fix the actual failure — don't just retry
   blindly.

@@ -143,6 +143,33 @@ attempt is a new journal entry, never overwritten history (§5). A business
 `failure`/`blocked` result is never retried by `Task.Retry`; it is handled
 per the table above.
 
+**Agentic session timeout & `Task.OnTimeout` (#724).** An agentic stage's
+harness session is bounded by a wall-clock timeout (currently a flat 30m,
+`internal/harness.DefaultTimeout`; not yet per-stage configurable — #151 is
+the natural home for a DSL-expressed limit). A timeout is a dispatch error
+(marked `invoke.IsTimeout`), so by default it consumes `Task.Retry` budget
+and, when exhausted, discards the run — historically throwing away real,
+committed, in-progress work whose only unfinished step was CI verification.
+`Task.OnTimeout` selects that behavior:
+
+- `""` / `fail` (default) — discard the timed-out attempt and let `Task.Retry`
+  run; fail the run once the budget is exhausted.
+- `salvage` — on a session timeout, if the run branch carries a **viable
+  committed diff** (`git diff base...HEAD` is non-empty), complete the stage
+  with that diff and advance to `Next` (normally the reviewer gate, then the
+  deterministic `local-ci` stage that owns `make ci`) instead of discarding
+  the run. A pre-commit timeout (empty diff) has nothing to salvage and falls
+  back to the `fail` path. Only valid on an **agentic** stage (the compiler
+  rejects it on a deterministic one), whose deliverable is its committed diff.
+  A salvaged completion records a `salvage-on-timeout.json` provenance marker
+  and sets `outputs.salvagedOnTimeout = true`.
+
+Salvage is the complement to bounding the implement session to *think-time*:
+the implementer is instructed to run only fast, targeted verification and let
+the deterministic `local-ci` stage own the full `-race` suite, so the session
+should not spend its budget on test wall-clock in the first place — and if it
+still times out mid-flight, the committed work is not lost.
+
 For gates, the evaluator returns a `Verdict` (`decision` ∈ `pass` / `fail` /
 `needs-changes`, plus `rationale`, `evidence[]` artifact pointers, and
 `findings[]`); the gate maps the decision to a branch. A gate outcome with no

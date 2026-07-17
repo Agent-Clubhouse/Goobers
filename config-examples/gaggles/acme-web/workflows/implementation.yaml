@@ -67,16 +67,24 @@ spec:
       goober: implementer
       goal: >-
         Implement the claimed issue end to end: read the issue and its
-        acceptance criteria, plan, implement, run the project's tests
-        locally, and commit to the run's branch (push is a separate
-        deterministic stage — see push-branch below). On a repass, first
-        read the reviewer rationale or CI failure evidence attached as
-        context and address it before making further changes.
+        acceptance criteria, plan, implement, verify with fast, targeted
+        tests for what you changed, and commit to the run's branch (push is a
+        separate deterministic stage — see push-branch below). Do NOT run the
+        full `make ci` / `go test -race ./...` suite in-session — the
+        deterministic local-ci stage below owns that authoritatively; running
+        it here only burns the session's wall-clock budget on test execution
+        that is about to run again anyway (#724). On a repass, first read the
+        reviewer rationale or CI failure evidence attached as context and
+        address it before making further changes.
       capabilities:
         - repo:push
       retry:
         maxAttempts: 2
         backoffSeconds: 15
+      # #724: bound the implement session to think-time, not test wall-clock.
+      # If the session still times out with a viable committed diff, salvage it
+      # and advance to review + local-ci instead of discarding the run.
+      onTimeout: salvage
       expectedOutputs:
         - changed-files
       next: review

@@ -95,6 +95,18 @@ const (
 	TaskAgentic TaskType = "agentic"
 )
 
+const (
+	// TaskOnTimeoutFail is the default Task.OnTimeout behavior: an agentic
+	// session that hits its wall-clock timeout discards the attempt and lets
+	// Task.Retry run, failing the run when the budget is exhausted.
+	TaskOnTimeoutFail = "fail"
+	// TaskOnTimeoutSalvage makes a timed-out agentic stage complete with
+	// whatever it committed to the run branch, when that diff is non-empty, so
+	// the workflow continues to its Next stage instead of discarding
+	// actively-progressed work (#724).
+	TaskOnTimeoutSalvage = "salvage"
+)
+
 // Task is a state in the workflow's state machine — the smallest unit of work the
 // engine tracks. It is exactly one of deterministic or agentic (TSK-002).
 type Task struct {
@@ -131,6 +143,20 @@ type Task struct {
 	// new attempt, never overwritten history.
 	// +optional
 	Retry *RetryPolicy `json:"retry,omitempty" yaml:"retry,omitempty"`
+	// OnTimeout selects what the runner does when this stage's agentic session
+	// hits its wall-clock timeout (the harness session timeout — currently a
+	// flat 30m, internal/harness.DefaultTimeout; not yet per-stage configurable,
+	// #151). Empty or "fail" (the default) discards the timed-out attempt and
+	// lets Task.Retry run, failing the run once the budget is exhausted —
+	// historically this discarded real, in-progress work whose only remaining
+	// step was CI (#724). "salvage" instead checks the run branch for a viable
+	// committed diff and, if present, completes the stage with that diff so the
+	// workflow continues to its Next stage rather than discarding the run. Only
+	// meaningful for an agentic stage whose deliverable is its committed diff;
+	// the compiler rejects it on a deterministic stage.
+	// +kubebuilder:validation:Enum=fail;salvage
+	// +optional
+	OnTimeout string `json:"onTimeout,omitempty" yaml:"onTimeout,omitempty"`
 	// ExpectedOutputs are postconditions downstream gates can validate (TSK-003).
 	// +optional
 	ExpectedOutputs []string `json:"expectedOutputs,omitempty" yaml:"expectedOutputs,omitempty"`

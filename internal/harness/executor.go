@@ -280,7 +280,15 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		}
 	}
 	if runErr != nil {
-		return Outcome{}, fmt.Errorf("harness: %s: %w", e.adapter.Name(), runErr)
+		wrapped := fmt.Errorf("harness: %s: %w", e.adapter.Name(), runErr)
+		// Tag a session timeout at the invoke seam (#724) so the runner can
+		// recognize it and apply a stage's OnTimeout salvage policy without
+		// importing this package or matching on error strings — mirroring how
+		// worktree-provision transients are marked invoke.InfrastructureFailure.
+		if errors.Is(runErr, ErrTimeout) {
+			return Outcome{}, invoke.Timeout(wrapped)
+		}
+		return Outcome{}, wrapped
 	}
 	if len(out.Payload) == 0 {
 		// Defense in depth: an Adapter contract violation (nil error, empty

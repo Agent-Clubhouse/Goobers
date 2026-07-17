@@ -1353,10 +1353,65 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err), nil
 		}
 		result, err = ag.Invoke(ctx, env)
+		// #724: a stage that opts into OnTimeout=salvage completes with its
+		// already-committed diff instead of discarding a timed-out attempt whose
+		// only remaining work was verification. Only a session timeout
+		// (invoke.IsTimeout) with a viable committed diff salvages; anything else
+		// (and a pre-commit timeout) falls through to the normal retry/fail path.
+		if err != nil && t.OnTimeout == apiv1.TaskOnTimeoutSalvage && invoke.IsTimeout(err) {
+			if salvaged, ok := r.salvageTimeout(ctx, jr, in, t, workspace, attempt, class, err); ok {
+				return salvaged, nil, nil, nil
+			}
+		}
 		return result, nil, err, nil
 	default:
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type), nil
 	}
+}
+
+// salvageTimeout implements Task.OnTimeout == salvage (#724): when an agentic
+// stage's session hits its wall-clock timeout but has already committed a
+// non-empty diff to the run branch, complete the stage with that committed diff
+// instead of discarding the attempt. The workflow then advances to the stage's
+// Next state (normally the reviewer gate, then the deterministic local-ci stage
+// that owns `make ci`) rather than burning the retry budget re-running work
+// whose only unfinished step was verification. The committed diff survives the
+// per-attempt worktree teardown because a run's stages share one branch, so
+// there is no need to persist anything here beyond a provenance marker — the
+// reviewer gate recomputes and digests the diff downstream (recordReviewerDiff).
+//
+// Returns ok=false when there is nothing viable to salvage — no worktree, a
+// diff error, or an empty diff (a pre-commit timeout) — in which case the
+// caller falls back to the normal timeout path (retry per Task.Retry, then
+// fail).
+func (r *Runner) salvageTimeout(ctx context.Context, jr *journal.Run, in StartInput, t apiv1.Task, workspace *stageWorkspace, attempt int, class journal.AttemptClass, cause error) (apiv1.ResultEnvelope, bool) {
+	if workspace == nil || workspace.worktree == nil {
+		return apiv1.ResultEnvelope{}, false
+	}
+	baseRef := in.RepoRef.Branch
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	diff, err := workspace.worktree.Diff(ctx, baseRef)
+	if err != nil || len(diff) == 0 {
+		return apiv1.ResultEnvelope{}, false
+	}
+	// Provenance only (the diff bytes are the reviewer gate's to record and
+	// digest): a small marker so a salvaged completion is distinguishable in the
+	// journal from an ordinary one. Best-effort — a recording failure must not
+	// turn a salvageable timeout back into a total loss.
+	if marker, mErr := json.Marshal(map[string]interface{}{
+		"salvagedOnTimeout": true,
+		"diffBytes":         len(diff),
+		"cause":             cause.Error(),
+	}); mErr == nil {
+		_, _ = jr.RecordStageArtifact(t.Name, attempt, class, t.Name+"/salvage-on-timeout.json", marker)
+	}
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Summary: "salvaged committed diff after agentic session timeout (#724); local-ci verifies it authoritatively",
+		Outputs: map[string]interface{}{"salvagedOnTimeout": true},
+	}, true
 }
 
 type contextManifest struct {
