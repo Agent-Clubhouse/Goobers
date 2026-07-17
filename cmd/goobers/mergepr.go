@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -106,48 +107,89 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	resultFile := providerInput("resultFile", "merge-result.json")
 
 	ctx := context.Background()
-	// Independent, live re-check (D6) — never trust a caller-supplied
-	// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
-	// actual current state right before deciding.
-	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
-	if err != nil {
-		return failProviderStage(stderr, "poll pull request", err, "merge-result.json")
-	}
 
+	// #719: with merge-review's readiness allowing several concurrent runs
+	// to review DIFFERENT PRs at once (distinct-PR concurrency is already
+	// claim-ledger-safe, per pr-select), only ONE PR may be inside the
+	// poll->decide->merge window at a time — an instance-wide flock, not a
+	// distributed/network-backed lock (cheap, purely local). Without this,
+	// two runs' polls could both observe the pre-merge base and both pass
+	// their SHA-pin conjunct, even though the first run's merge (once it
+	// lands) is exactly the kind of base movement #718's delta-aware check
+	// exists to catch — the race only disappears if each run's poll is
+	// guaranteed to see the truth AFTER any earlier run's merge already
+	// completed, which serializing the whole window (not just the final
+	// MergePullRequest call) guarantees. Branch cleanup after a successful
+	// merge is independent per-PR state and does NOT need to be serialized.
+	l := layoutFor(root)
+	lockPath := filepath.Join(l.SchedulerDir(), mergeLockFileName)
+
+	var poll providers.PullRequestPollResult
+	var pollErr error
 	var reasons []string
-	if apiv1.VerdictDecision(verdict) != apiv1.VerdictPass {
-		reasons = append(reasons, fmt.Sprintf("verdict is %q, want pass", verdict))
-	}
-	if poll.CheckState != providers.CheckStatePassing {
-		reasons = append(reasons, fmt.Sprintf("CI is %q, want passing", poll.CheckState))
-	}
-	if poll.Draft {
-		reasons = append(reasons, "pull request is a draft")
-	}
-	if poll.HeadSHA != expectedHeadSHA {
-		reasons = append(reasons, fmt.Sprintf("head moved: verdict pinned to %s, PR is now at %s — verdict is stale", expectedHeadSHA, poll.HeadSHA))
-	}
-	if poll.BaseSHA != expectedBaseSHA {
-		// Delta-aware (issue #718): base moving at all used to void every
-		// standing verdict, even when nothing that moved touches this PR
-		// — the dominant false-invalidation case (any OTHER PR merging
-		// advances base for everyone). Only a movement that actually
-		// intersects this PR's own files still voids it.
-		intersects, cerr := baseMovementIntersectsPR(ctx, provider, repo, pullNumber, expectedBaseSHA, poll.BaseSHA)
-		switch {
-		case cerr != nil:
-			// Can't determine whether the movement is disjoint — fail
-			// safe to the old conservative behavior rather than risk
-			// merging past a base advance we couldn't actually check.
-			reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s, and whether that movement touches this PR's files could not be determined (%v) — treating as stale", expectedBaseSHA, poll.BaseSHA, cerr))
-		case intersects:
-			reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s, and that movement touches files this PR also changes — verdict is stale", expectedBaseSHA, poll.BaseSHA))
+	var result providers.MergePullRequestResult
+	var mergeAttempted bool
+	var mergeErr error
+	lockErr := withClaimLock(lockPath, func() error {
+		// Independent, live re-check (D6) — never trust a caller-supplied
+		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
+		// actual current state right before deciding, now guaranteed to be
+		// the latest state relative to any other run's merge under this
+		// same lock.
+		poll, pollErr = provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
+		if pollErr != nil {
+			return nil
 		}
-	}
-	if advisoryMode {
-		reasons = append(reasons, "advisory mode: no merge attempted")
-	}
 
+		if apiv1.VerdictDecision(verdict) != apiv1.VerdictPass {
+			reasons = append(reasons, fmt.Sprintf("verdict is %q, want pass", verdict))
+		}
+		if poll.CheckState != providers.CheckStatePassing {
+			reasons = append(reasons, fmt.Sprintf("CI is %q, want passing", poll.CheckState))
+		}
+		if poll.Draft {
+			reasons = append(reasons, "pull request is a draft")
+		}
+		if poll.HeadSHA != expectedHeadSHA {
+			reasons = append(reasons, fmt.Sprintf("head moved: verdict pinned to %s, PR is now at %s — verdict is stale", expectedHeadSHA, poll.HeadSHA))
+		}
+		if poll.BaseSHA != expectedBaseSHA {
+			// Delta-aware (issue #718): base moving at all used to void every
+			// standing verdict, even when nothing that moved touches this PR
+			// — the dominant false-invalidation case (any OTHER PR merging
+			// advances base for everyone). Only a movement that actually
+			// intersects this PR's own files still voids it.
+			intersects, cerr := baseMovementIntersectsPR(ctx, provider, repo, pullNumber, expectedBaseSHA, poll.BaseSHA)
+			switch {
+			case cerr != nil:
+				// Can't determine whether the movement is disjoint — fail
+				// safe to the old conservative behavior rather than risk
+				// merging past a base advance we couldn't actually check.
+				reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s, and whether that movement touches this PR's files could not be determined (%v) — treating as stale", expectedBaseSHA, poll.BaseSHA, cerr))
+			case intersects:
+				reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s, and that movement touches files this PR also changes — verdict is stale", expectedBaseSHA, poll.BaseSHA))
+			}
+		}
+		if advisoryMode {
+			reasons = append(reasons, "advisory mode: no merge attempted")
+		}
+		if len(reasons) > 0 {
+			return nil
+		}
+
+		mergeAttempted = true
+		result, mergeErr = provider.MergePullRequest(ctx, providers.MergePullRequestRequest{
+			Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA, CommitMessage: commitMessage,
+		})
+		return nil
+	})
+	if lockErr != nil {
+		pf(stderr, "error: acquire merge lock: %v\n", lockErr)
+		return 1
+	}
+	if pollErr != nil {
+		return failProviderStage(stderr, "poll pull request", pollErr, "merge-result.json")
+	}
 	if len(reasons) > 0 {
 		if err := writeMergeResult(resultFile, pullNumber, false, "", reasons, nil); err != nil {
 			pf(stderr, "error: %v\n", err)
@@ -156,13 +198,16 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "not merged (pr #%s): %s\n", pullNumber, strings.Join(reasons, "; "))
 		return 0
 	}
-
-	result, err := provider.MergePullRequest(ctx, providers.MergePullRequestRequest{
-		Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA, CommitMessage: commitMessage,
-	})
-	if err != nil {
-		return failProviderStage(stderr, "merge pull request", err, "merge-result.json")
+	if !mergeAttempted {
+		// Unreachable: either pollErr, reasons, or a successful merge
+		// attempt always sets one of the above.
+		pf(stderr, "error: internal: merge-pr reached no decision for pr #%s\n", pullNumber)
+		return 1
 	}
+	if mergeErr != nil {
+		return failProviderStage(stderr, "merge pull request", mergeErr, "merge-result.json")
+	}
+
 	var cleanup *mergeBranchCleanup
 	if result.Merged {
 		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)

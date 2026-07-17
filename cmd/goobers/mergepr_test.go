@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/providers"
 )
@@ -579,5 +581,92 @@ func TestMergePRRefusesWithoutCapability(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "merge-result.json")); !os.IsNotExist(err) {
 		t.Fatalf("expected no result file to be written when refused for missing capability")
+	}
+}
+
+// TestMergePRWaitsForHeldMergeLock is issue #719's core acceptance: with
+// merge-review's readiness now allowing several concurrent runs to review
+// DIFFERENT PRs at once, only one PR may be inside merge-pr's poll->decide->
+// merge window at a time. Simulates a concurrent run already holding that
+// window (an external flock on the exact same instance-scoped lock file,
+// released only after a delay) and asserts this invocation's poll — and
+// therefore its whole decision, including the actual merge call — does not
+// happen until the held lock is released. A merge-pr that raced ahead
+// unlocked would return well before the release and could poll/decide
+// against state an in-flight sibling merge was about to change out from
+// under it (the exact TOCTOU the serialization exists to close).
+func TestMergePRWaitsForHeldMergeLock(t *testing.T) {
+	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456"}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	l := layoutFor(root)
+	lockPath := filepath.Join(l.SchedulerDir(), mergeLockFileName)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("pre-acquire merge lock: %v", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatalf("flock: %v", err)
+	}
+	const holdFor = 150 * time.Millisecond
+	released := make(chan time.Time, 1)
+	go func() {
+		time.Sleep(holdFor)
+		released <- time.Now()
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}()
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	returnedAt := time.Now()
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	releasedAt := <-released
+	if returnedAt.Before(releasedAt) {
+		t.Fatalf("merge-pr returned at %v, before the held lock released at %v — its poll/decide/merge window was not actually gated by the lock", returnedAt, releasedAt)
+	}
+	if st.mergeCalls != 1 {
+		t.Fatalf("merge endpoint called %d times, want 1 (merged only once the lock freed)", st.mergeCalls)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); !merged {
+		t.Fatalf("result = %+v, want merged=true once the lock freed and every conjunct still held", result)
+	}
+}
+
+// TestMergePRReleasesLockOnRefusal proves the lock is released even when the
+// stage refuses to merge (an unmet conjunct) — a leaked lock on the refusal
+// path would starve every subsequent merge-review run, turning a routine
+// "not ready yet" outcome into a wedged instance.
+func TestMergePRReleasesLockOnRefusal(t *testing.T) {
+	st := &mergePRServerState{draft: true, checkState: "success", headSHA: "head123", baseSHA: "base456"}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); merged {
+		t.Fatalf("result = %+v, want merged=false (draft PR)", result)
+	}
+
+	// A held-but-not-released lock would make this second, independent
+	// invocation hang; runArgs is synchronous, so a passing test here (within
+	// the normal test timeout) is itself proof the first call released it —
+	// still assert explicitly on the outcome, not just "it didn't hang".
+	code2, _, stderr2 := runArgs(t, "merge-pr", root)
+	if code2 != 0 {
+		t.Fatalf("second merge-pr: code = %d, stderr = %q", code2, stderr2)
+	}
+	if st.mergeCalls != 0 {
+		t.Fatalf("merge endpoint called %d times across both runs, want 0 (still a draft)", st.mergeCalls)
 	}
 }
