@@ -34,21 +34,69 @@ const (
 	Warning Severity = "warning"
 )
 
+// WarningCode is a stable machine-readable identifier for a warning class.
+type WarningCode string
+
+const (
+	// WarningDeprecatedFeature identifies use of a deprecated DSL feature.
+	WarningDeprecatedFeature WarningCode = "VER001"
+	// WarningPreviewFeature identifies use of a preview DSL feature.
+	WarningPreviewFeature WarningCode = "VER002"
+	// WarningCompatibility identifies a compatibility notice.
+	WarningCompatibility WarningCode = "VER003"
+	// WarningModelFallback identifies fallback from a requested model.
+	WarningModelFallback WarningCode = "MODEL002"
+)
+
 // Issue is a single validation finding.
 type Issue struct {
-	Severity Severity `json:"severity"`
-	File     string   `json:"file,omitempty"`
-	Kind     string   `json:"kind,omitempty"`
-	Name     string   `json:"name,omitempty"`
-	Message  string   `json:"message"`
+	Code     WarningCode `json:"code,omitempty"`
+	Severity Severity    `json:"severity"`
+	File     string      `json:"file,omitempty"`
+	Kind     string      `json:"kind,omitempty"`
+	Name     string      `json:"name,omitempty"`
+	Message  string      `json:"message"`
 }
 
 func (i Issue) String() string {
-	loc := i.File
-	if i.Kind != "" {
-		loc = fmt.Sprintf("%s %s/%s", i.File, i.Kind, i.Name)
+	code := ""
+	if i.Code != "" {
+		code = " " + string(i.Code)
 	}
-	return fmt.Sprintf("%-7s %s: %s", strings.ToUpper(string(i.Severity)), loc, i.Message)
+	return fmt.Sprintf("%-7s%s %s: %s", strings.ToUpper(string(i.Severity)), code, i.Scope(), i.Message)
+}
+
+// Scope returns the issue's stable human and machine-readable location.
+func (i Issue) Scope() string {
+	object := ""
+	if i.Kind != "" {
+		object = i.Kind
+		if i.Name != "" {
+			object += "/" + i.Name
+		}
+	}
+	switch {
+	case i.File != "" && object != "":
+		return i.File + " " + object
+	case i.File != "":
+		return i.File
+	case object != "":
+		return object
+	default:
+		return "config"
+	}
+}
+
+// CodedWarning is the stable warning shape projected by CLI and API consumers.
+type CodedWarning struct {
+	Code        WarningCode `json:"code"`
+	Severity    Severity    `json:"severity"`
+	Scope       string      `json:"scope"`
+	Explanation string      `json:"explanation"`
+}
+
+func (w CodedWarning) String() string {
+	return fmt.Sprintf("%s %s %s: %s", strings.ToUpper(string(w.Severity)), w.Code, w.Scope, w.Explanation)
 }
 
 // Report is the result of validating a directory.
@@ -66,6 +114,35 @@ func (r *Report) HasErrors() bool {
 		}
 	}
 	return false
+}
+
+// Warnings returns coded warnings in deterministic scope, code, explanation order.
+func (r *Report) Warnings() []CodedWarning {
+	warnings := make([]CodedWarning, 0)
+	if r == nil {
+		return warnings
+	}
+	for _, issue := range r.Issues {
+		if issue.Severity != Warning {
+			continue
+		}
+		warnings = append(warnings, CodedWarning{
+			Code:        issue.Code,
+			Severity:    issue.Severity,
+			Scope:       issue.Scope(),
+			Explanation: issue.Message,
+		})
+	}
+	sort.Slice(warnings, func(i, j int) bool {
+		if warnings[i].Scope != warnings[j].Scope {
+			return warnings[i].Scope < warnings[j].Scope
+		}
+		if warnings[i].Code != warnings[j].Code {
+			return warnings[i].Code < warnings[j].Code
+		}
+		return warnings[i].Explanation < warnings[j].Explanation
+	})
+	return warnings
 }
 
 func (r *Report) add(sev Severity, file, kind, name, format string, args ...interface{}) {

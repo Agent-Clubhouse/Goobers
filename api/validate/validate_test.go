@@ -172,6 +172,45 @@ func TestGateExclusivityGivesClearMessageNoCascade(t *testing.T) {
 	}
 }
 
+func TestWarningCodesAreStable(t *testing.T) {
+	got := []WarningCode{
+		WarningDeprecatedFeature,
+		WarningPreviewFeature,
+		WarningCompatibility,
+		WarningModelFallback,
+	}
+	want := []WarningCode{"VER001", "VER002", "VER003", "MODEL002"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("warning code %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestReportWarningsPreserveShapeAndSortDeterministically(t *testing.T) {
+	report := &Report{Issues: []Issue{
+		{Code: WarningPreviewFeature, Severity: Warning, File: "z.yaml", Kind: "Workflow", Name: "preview", Message: "preview feature is unstable"},
+		{Severity: Error, File: "a.yaml", Message: "remains an error"},
+		{Code: WarningModelFallback, Severity: Warning, Kind: "Goober", Name: "coder", Message: "configured model is unavailable"},
+		{Code: WarningDeprecatedFeature, Severity: Warning, File: "a.yaml", Kind: "Workflow", Name: "legacy", Message: "deprecated feature remains supported"},
+	}}
+
+	got := report.Warnings()
+	if len(got) != 3 {
+		t.Fatalf("Warnings() returned %d warnings, want 3: %+v", len(got), got)
+	}
+	want := []CodedWarning{
+		{Code: WarningModelFallback, Severity: Warning, Scope: "Goober/coder", Explanation: "configured model is unavailable"},
+		{Code: WarningDeprecatedFeature, Severity: Warning, Scope: "a.yaml Workflow/legacy", Explanation: "deprecated feature remains supported"},
+		{Code: WarningPreviewFeature, Severity: Warning, Scope: "z.yaml Workflow/preview", Explanation: "preview feature is unstable"},
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("warning %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 func joinIssues(r *Report) string {
 	var b strings.Builder
 	for _, i := range r.Issues {

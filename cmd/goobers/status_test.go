@@ -86,7 +86,7 @@ func TestStatusJSON(t *testing.T) {
 		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
 	}
 	want := fmt.Sprintf(
-		`[{"runId":"z-old","workflow":"old-workflow","gaggle":"old-gaggle","phase":"running","startedAt":%q},{"runId":"a-new","workflow":"new-workflow","gaggle":"new-gaggle","phase":"running","startedAt":%q}]`+"\n",
+		`{"warnings":[],"runs":[{"runId":"z-old","workflow":"old-workflow","gaggle":"old-gaggle","phase":"running","startedAt":%q},{"runId":"a-new","workflow":"new-workflow","gaggle":"new-gaggle","phase":"running","startedAt":%q}]}`+"\n",
 		oldStartedAt.Format(time.RFC3339), newStartedAt.Format(time.RFC3339),
 	)
 	if stdout != want {
@@ -120,8 +120,8 @@ func TestStatusJSONEmptyInstance(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
 	}
-	if stdout != "[]\n" {
-		t.Fatalf("stdout = %q, want %q", stdout, "[]\n")
+	if stdout != `{"warnings":[],"runs":[]}`+"\n" {
+		t.Fatalf("stdout = %q, want an empty warnings/runs envelope", stdout)
 	}
 }
 
@@ -233,7 +233,7 @@ func TestStatusJSONFiltersByMultiplePhases(t *testing.T) {
 		t.Fatalf("status --json --phase: code = %d, stderr = %q", code, stderr)
 	}
 	want := fmt.Sprintf(
-		`[{"runId":"failed-run","workflow":"implementation","gaggle":"goobers","phase":"failed","startedAt":%q},{"runId":"escalated-run","workflow":"implementation","gaggle":"goobers","phase":"escalated","startedAt":%q}]`+"\n",
+		`{"warnings":[],"runs":[{"runId":"failed-run","workflow":"implementation","gaggle":"goobers","phase":"failed","startedAt":%q},{"runId":"escalated-run","workflow":"implementation","gaggle":"goobers","phase":"escalated","startedAt":%q}]}`+"\n",
 		startedAt.Add(time.Minute).Format(time.RFC3339),
 		startedAt.Add(2*time.Minute).Format(time.RFC3339),
 	)
@@ -279,7 +279,7 @@ func TestStatusFiltersCompose(t *testing.T) {
 		t.Fatalf("status with composed filters: code = %d, stderr = %q", code, stderr)
 	}
 	want := fmt.Sprintf(
-		`[{"runId":"merge-new","workflow":"merge-review","gaggle":"goobers","phase":"failed","startedAt":%q}]`+"\n",
+		`{"warnings":[],"runs":[{"runId":"merge-new","workflow":"merge-review","gaggle":"goobers","phase":"failed","startedAt":%q}]}`+"\n",
 		startedAt.Add(time.Minute).Format(time.RFC3339),
 	)
 	if stdout != want {

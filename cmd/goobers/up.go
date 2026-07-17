@@ -154,10 +154,12 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(ctx, l, &wg)
 	if err != nil {
+		printValidationIssues(stderr, validationReportFromError(err))
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	defer setup.Shutdown(context.Background())
+	printValidationWarnings(stdout, setup.Validation.Warnings())
 
 	var ready atomic.Bool
 	reads, err := readservice.NewLocal(readservice.LocalSources{

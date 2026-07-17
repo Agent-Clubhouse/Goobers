@@ -89,6 +89,12 @@ the run id up front and the final phase/state once it returns.
 bin/goobers status ./my-instance
 ```
 
+`status` revalidates the active configuration before listing runs. Non-fatal
+configuration warnings use the same `WARNING <code> <scope>: <explanation>`
+lines printed during `up` startup. `status --json` returns an object with
+`warnings` and `runs` arrays; warning objects contain `code`, `severity`,
+`scope`, and `explanation`.
+
 ```
 RUN ID                              WORKFLOW                  GAGGLE      PHASE       STARTED
 a671b69fe766595e550677b91658726a    default-implement         example     completed   2026-07-12T23:37:36-07:00
