@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -121,44 +124,135 @@ func providerRunContext() (runID, workflow string, err error) {
 	return runID, workflow, nil
 }
 
+// Typed error codes a provider-chain subcommand's declared result file
+// carries via executor.OutputErrorCode (#711, generalizing #614's
+// rate-limit-only classification to every provider failure shape). Each is
+// checked in internal/executor/shell.go's OutputErrorCode convention, so a
+// classified failure journals as itself instead of the maximally-
+// uninformative missing_result_file it used to collapse into.
+const (
+	// errorCodeSecondaryRateLimited is a Retry-After-driven abuse/secondary
+	// limit (providers.RateLimitError.Secondary), distinct from a primary
+	// quota exhaustion (providers.ErrorCodeRateLimited): an operator (and
+	// the retry policy) can tell "back off briefly, this token is being
+	// abuse-throttled" from "wait for the hourly window to roll over".
+	errorCodeSecondaryRateLimited = "github_secondary_rate_limited"
+	// errorCodeServerError is a non-rate-limit 5xx / HTML error page —
+	// GitHub server-side load shedding (the "Unicorn!" page seen live in
+	// #705/#711), always retryable.
+	errorCodeServerError = "github_server_error"
+	// errorCodeAuthFailed is a 401, or a 403 that isn't itself a rate limit
+	// (isRateLimited, providers/github_issues.go, already intercepts and
+	// reports those as *RateLimitError before a plain status error can ever
+	// see one) — a real permission failure. Never retryable: retrying with
+	// the same bad or expired credential cannot succeed.
+	errorCodeAuthFailed = "github_auth_failed"
+	// errorCodeNetwork is either a transport-level failure (dial/DNS/reset/
+	// timeout) that exhausted send()'s own in-request retry budget, or any
+	// other condition providers.IsTransientError recognizes without a
+	// status code attached — retryable, since the failure is unrelated to
+	// the request's content.
+	errorCodeNetwork = "network_error"
+	// errorCodeProvider is the fallback for a provider-originated failure
+	// that doesn't classify into any of the above (e.g. a non-401/403/5xx
+	// status such as a 422 validation error). Still typed and diagnosable —
+	// never the raw missing_result_file — but not retried by default.
+	errorCodeProvider = "provider_error"
+)
+
+// statusCodePattern extracts an HTTP status code from a provider error's
+// message. providers' own non-2xx typed error (providerResponseError, #613)
+// carries the status as a struct field, but that type is unexported —
+// classifyProviderError, in a different package, can only recover it from
+// the message text, the exact same "status %d" shape providers.
+// IsTransientError's own cross-process-boundary fallback already relies on
+// (providers/transient.go) for the identical reason.
+var statusCodePattern = regexp.MustCompile(`status (\d{3})`)
+
+func statusCodeFrom(err error) (int, bool) {
+	m := statusCodePattern.FindStringSubmatch(err.Error())
+	if m == nil {
+		return 0, false
+	}
+	code, convErr := strconv.Atoi(m[1])
+	return code, convErr == nil
+}
+
+// classifyProviderError maps a provider-originated error into a stable
+// errorCode, whether the stage retry budget should apply, and any
+// classification-specific extra result-file fields (#711). Every
+// failProviderStage caller passes an error that came directly from a
+// providers.GitHubProvider call (see providercmd.go's call sites across
+// cmd/goobers), so this always has a provider-shaped error to classify —
+// there is no "not a provider error at all" case to additionally guard.
+//
+// The retryable verdict for the status-coded and residual branches
+// deliberately never disagrees with providers.IsTransientError (#613) —
+// this function only adds a finer-grained CODE on top of that same
+// retryable/non-retryable split, never a second, independent opinion on
+// whether the failure is retryable.
+func classifyProviderError(err error) (code string, retryable bool, extra map[string]interface{}) {
+	var rl *providers.RateLimitError
+	if errors.As(err, &rl) {
+		extra = map[string]interface{}{}
+		if !rl.Reset.IsZero() {
+			extra["rateLimitReset"] = rl.Reset.UTC().Format(time.RFC3339)
+		}
+		if rl.Secondary {
+			return errorCodeSecondaryRateLimited, true, extra
+		}
+		return providers.ErrorCodeRateLimited, true, extra
+	}
+	if status, ok := statusCodeFrom(err); ok {
+		switch {
+		case status == http.StatusUnauthorized, status == http.StatusForbidden:
+			return errorCodeAuthFailed, false, nil
+		case status >= 500:
+			return errorCodeServerError, true, nil
+		}
+	}
+	if providers.IsTransientError(err) {
+		return errorCodeNetwork, true, nil
+	}
+	return errorCodeProvider, false, nil
+}
+
 // failProviderStage reports a stage-fatal provider error: it prints the same
 // "error: <what>: <err>" line the call sites used to (unchanged operator UX)
-// and returns 1. Additionally, when err is a typed rate-limit error (#614),
-// it writes the declared result file with the structured errorCode fields
-// internal/executor/shell.go lifts into the stage's ErrorInfo — so a
-// quota-exhausted tick journals as github_rate_limited, with the reset time
-// in the message, instead of the missing_result_file that used to bury the
-// real cause under a raw-stderr archaeology exercise. resultFileDefault is
-// the command's own default result-file name (the same value its success
-// path passes to providerInput("resultFile", ...)); a command with no
-// declared or default result file writes nothing and keeps plain
-// nonzero_exit semantics, since shell.go has nowhere fail-closed to read a
-// structured signal from.
+// and returns 1. It also classifies err (#711, generalizing #614) and writes
+// the declared result file with the structured errorCode fields
+// internal/executor/shell.go lifts into the stage's ErrorInfo — so e.g. a
+// quota-exhausted tick journals as github_rate_limited with the reset time
+// in the message, and a 503/HTML load-shedding response journals as
+// github_server_error, instead of both collapsing into the missing_result_file
+// that used to bury the real cause under a raw-stderr archaeology exercise.
+// resultFileDefault is the command's own default result-file name (the same
+// value its success path passes to providerInput("resultFile", ...)); a
+// command with no declared or default result file writes nothing and keeps
+// plain nonzero_exit/missing_result_file semantics, since shell.go has
+// nowhere fail-closed to read a structured signal from.
 func failProviderStage(stderr io.Writer, what string, err error, resultFileDefault string) int {
 	pf(stderr, "error: %s: %v\n", what, err)
-	var rl *providers.RateLimitError
-	if !errors.As(err, &rl) {
-		return 1
-	}
 	resultFile := providerInput("resultFile", resultFileDefault)
 	if resultFile == "" {
 		return 1
 	}
+	code, retryable, extra := classifyProviderError(err)
 	payload := map[string]interface{}{
-		executor.OutputErrorCode:      providers.ErrorCodeRateLimited,
+		executor.OutputErrorCode:      code,
 		executor.OutputErrorMessage:   fmt.Sprintf("%s: %v", what, err),
-		executor.OutputErrorRetryable: true,
+		executor.OutputErrorRetryable: retryable,
 	}
-	if !rl.Reset.IsZero() {
-		payload["rateLimitReset"] = rl.Reset.UTC().Format(time.RFC3339)
+	for k, v := range extra {
+		payload[k] = v
 	}
 	data, merr := json.Marshal(payload)
 	if merr != nil {
-		pf(stderr, "warning: marshal rate-limit error result: %v\n", merr)
+		pf(stderr, "warning: marshal typed error result: %v\n", merr)
 		return 1
 	}
 	if werr := os.WriteFile(resultFile, data, 0o644); werr != nil {
-		pf(stderr, "warning: write rate-limit error result %s: %v\n", resultFile, werr)
+		pf(stderr, "warning: write typed error result %s: %v\n", resultFile, werr)
 	}
 	return 1
 }
