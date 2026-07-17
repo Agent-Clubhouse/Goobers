@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const humanGateWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
@@ -58,8 +59,14 @@ func TestValidateRejectsHumanGate(t *testing.T) {
 func TestDaemonRejectsHumanGateBeforeStarting(t *testing.T) {
 	root := humanGateInstance(t)
 
+	// The daemon must reject the unsupported human gate at startup and return 1.
+	// A bounded context is a safety net: if that rejection ever regressed, the
+	// daemon would otherwise idle forever here with no per-op deadline (#798) —
+	// the timeout turns that into a fast, legible failure instead of a hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	var stdout, stderr bytes.Buffer
-	code := runUpContext(context.Background(), []string{root}, &stdout, &stderr)
+	code := runUpContext(ctx, []string{root}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("up: code = %d, want 1; stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}

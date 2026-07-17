@@ -61,7 +61,11 @@ func TestUpServesHealthAndStopsHTTPGracefully(t *testing.T) {
 		t.Fatal("timed out waiting for daemon startup")
 	}
 
-	response, err := http.Get("http://" + address + httpapi.HealthPath)
+	// A bounded client so the request fails fast rather than blocking forever if
+	// it ever reaches a daemon that accepts the connection but never answers
+	// (e.g. a co-located foreign daemon) — #798's "fail fast, don't hang" rule.
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Get("http://" + address + httpapi.HealthPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +98,8 @@ func TestUpServesHealthAndStopsHTTPGracefully(t *testing.T) {
 		t.Fatal("daemon did not shut down")
 	}
 
-	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
-	if _, err := client.Get("http://" + address + httpapi.HealthPath); err == nil {
+	closedClient := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	if _, err := closedClient.Get("http://" + address + httpapi.HealthPath); err == nil {
 		t.Fatal("HTTP API still accepted requests after daemon shutdown")
 	}
 }
