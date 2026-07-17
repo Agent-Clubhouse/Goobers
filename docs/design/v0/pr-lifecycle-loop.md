@@ -232,6 +232,13 @@ Until winner-election lands, mutual same-line conflicts are caught by the budget
 - **Advisory mode** (comment + label only, human pulls the trigger) is a config toggle,
   and is the recommended default for any **mixed-company** repo (V1, §9).
 
+> **Merge queue (#631, prep stage).** Once GitHub's merge queue is enabled on `main`,
+> `merge-review`/auto-merge move from merging directly to enqueuing, and "pass" verdicts
+> distinguish enqueued from merged — this section's content is superseded at that point,
+> pending #758's `Land(pr)` abstraction. See
+> [`merge-queue-operational-notes.md`](merge-queue-operational-notes.md) for what's
+> known so far; not yet reconciled into this section's actual design.
+
 ## 8. Issue lifecycle — fix #355 here
 
 With this loop, closing the originating issue on **PR-open** (today's `close-out`

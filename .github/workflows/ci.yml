@@ -2,13 +2,17 @@ name: CI
 
 # Goobers control-plane CI — the enforced merge gate.
 # Ports azure-pipelines.yml to GitHub Actions: runs `make ci`
-# (fmt-check · vet · build · test · lint) on every PR to main and on push to main.
+# (fmt-check · vet · build · test · lint) on every PR to main, on push to main,
+# and on merge-group builds once GitHub's merge queue is enabled on main (#631)
+# — same job set, no separate queue-only pipeline that could drift from this one.
 # See Makefile `ci` target for the authoritative step list.
 
 on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+  merge_group:
     branches: [main]
 
 # Least privilege: CI only needs to read the checkout.
