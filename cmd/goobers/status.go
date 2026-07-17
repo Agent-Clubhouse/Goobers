@@ -109,21 +109,43 @@ type statusOptions struct {
 }
 
 func runStatus(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	return runRunTable(args, stdout, stderr, "status")
+}
+
+func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit config warnings and run summaries as JSON")
-	daemon := fs.Bool("daemon", false, "report daemon health and identity")
 	phaseFilter := fs.String("phase", "", "filter by comma-separated run phases")
 	workflowFilter := fs.String("workflow", "", "filter by workflow name")
 	limit := fs.Int("limit", 0, "maximum number of runs to show (default: all)")
-	watch := fs.Bool("watch", false, "refresh the status board until interrupted")
-	interval := fs.Duration("interval", defaultStatusWatchInterval, "watch refresh interval")
+	// Only `status` supports --daemon, --watch/--interval, and the #712 pause
+	// line — all daemon/process runtime state, not part of `runs list`'s
+	// plain, scriptable run table.
+	supportsWatch := command == "status"
+	var watch *bool
+	var interval *time.Duration
+	var daemon *bool
+	if supportsWatch {
+		watch = fs.Bool("watch", false, "refresh the status board until interrupted")
+		interval = fs.Duration("interval", defaultStatusWatchInterval, "watch refresh interval")
+		daemon = fs.Bool("daemon", false, "report daemon health and identity")
+	}
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n"+
-			"Validate active config, show warnings, and list runs under an instance's\n"+
-			"runs/ directory with their current phase (default path \".\"). With --daemon,\n"+
-			"report daemon health instead. Exit codes: 0 = OK/daemon running, 1 = validation\n"+
-			"errors/daemon not running, 2 = usage/IO error.\n")
+		if supportsWatch {
+			pf(stderr, "Usage: goobers %s [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n",
+				command)
+		} else {
+			pf(stderr, "Usage: goobers %s [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [path]\n\n",
+				command)
+			pln(stderr, "Alias for the goobers status run table, with the same flags (minus --daemon/--watch).")
+		}
+		pf(stderr, "Validate active config, show warnings, and list runs under an instance's\n"+
+			"runs/ directory with their current phase, newest first (default path \".\").\n")
+		if supportsWatch {
+			pln(stderr, "With --daemon, report daemon health instead.")
+		}
+		pf(stderr, "Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -132,15 +154,15 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: --limit must be non-negative\n")
 		return 2
 	}
-	if *interval <= 0 {
+	if supportsWatch && *interval <= 0 {
 		pf(stderr, "error: --interval must be greater than zero\n")
 		return 2
 	}
-	if *watch && *jsonOutput {
+	if supportsWatch && *watch && *jsonOutput {
 		pf(stderr, "error: --watch cannot be used with --json\n")
 		return 2
 	}
-	if *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *limit != 0 || *watch) {
+	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *limit != 0 || *watch) {
 		pf(stderr, "error: --daemon cannot be combined with run-listing flags\n")
 		return 2
 	}
@@ -163,7 +185,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
-	if *watch && !statusOutputIsTerminal(stdout) {
+	if supportsWatch && *watch && !statusOutputIsTerminal(stdout) {
 		pf(stderr, "error: --watch requires terminal stdout; omit --watch when piping status output\n")
 		return 2
 	}
@@ -177,7 +199,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return 2
 	}
-	if *daemon {
+	if supportsWatch && *daemon {
 		return reportDaemonStatus(l, time.Now(), stdout, stderr)
 	}
 
@@ -215,15 +237,19 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	// missing/unreadable instance log just means no line, never a status
 	// failure). A closure, not a one-shot read, so the watch loop below picks
 	// up a newly-recorded (or newly-passed) pause on every redraw, the same
-	// way loadRuns re-reads runs/ each tick.
+	// way loadRuns re-reads runs/ each tick. `runs list` never calls this —
+	// the pause is daemon/scheduler state, not part of its plain run table.
 	loadPauseLine := func() string {
+		if !supportsWatch {
+			return ""
+		}
 		events, err := journal.ReadInstanceLog(l.SchedulerDir())
 		if err != nil {
 			return ""
 		}
 		return providerQuotaStatusLine(events, time.Now())
 	}
-	if *watch {
+	if supportsWatch && *watch {
 		// Config warnings are a static, one-time-per-invocation check (unlike
 		// the provider-quota pause, which is live scheduler state) — printed
 		// once before entering the redraw loop, not re-shown every tick.
@@ -280,10 +306,13 @@ func selectStatusRuns(runs []runSummary, options statusOptions) []runSummary {
 		filtered = append(filtered, run)
 	}
 	sort.Slice(filtered, func(i, j int) bool {
-		return filtered[i].StartedAt.Before(filtered[j].StartedAt)
+		if filtered[i].StartedAt.Equal(filtered[j].StartedAt) {
+			return filtered[i].RunID < filtered[j].RunID
+		}
+		return filtered[i].StartedAt.After(filtered[j].StartedAt)
 	})
 	if options.limit > 0 && len(filtered) > options.limit {
-		filtered = filtered[len(filtered)-options.limit:]
+		filtered = filtered[:options.limit]
 	}
 	return filtered
 }

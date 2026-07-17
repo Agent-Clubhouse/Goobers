@@ -21,7 +21,7 @@ func runRuns(args []string, stdout, stderr io.Writer) int {
 	usage := func(w io.Writer) {
 		pf(w, "Usage: goobers runs <command> [flags] [path]\n\n"+
 			"Commands:\n"+
-			"  list    list runs, most-recent first\n"+
+			"  list    alias for the goobers status run table (same flags)\n"+
 			"  du      report per-run journal and artifact bytes, largest first\n")
 	}
 	if len(args) == 0 {
@@ -44,64 +44,7 @@ func runRuns(args []string, stdout, stderr io.Writer) int {
 }
 
 func runRunsList(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("runs list", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	jsonOutput := fs.Bool("json", false, "emit run summaries as JSON")
-	limit := fs.Int("limit", 0, "maximum number of runs to show (default: all)")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers runs list [--json] [--limit=N] [path]\n\n"+
-			"List runs under an instance's runs/ directory, most-recent first\n"+
-			"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
-	}
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if *limit < 0 || fs.NArg() > 1 {
-		fs.Usage()
-		return 2
-	}
-
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
-	}
-	l := instance.NewLayout(root)
-	if _, err := os.Stat(l.ConfigFile()); err != nil {
-		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
-		return 2
-	}
-	runs, err := listRuns(l.RunsDir())
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	sort.Slice(runs, func(i, j int) bool {
-		if runs[i].StartedAt.Equal(runs[j].StartedAt) {
-			return runs[i].RunID < runs[j].RunID
-		}
-		return runs[i].StartedAt.After(runs[j].StartedAt)
-	})
-	if *limit > 0 && len(runs) > *limit {
-		runs = runs[:*limit]
-	}
-	if *jsonOutput {
-		if err := json.NewEncoder(stdout).Encode(statusJSONSummaries(runs)); err != nil {
-			pf(stderr, "error: encode runs list: %v\n", err)
-			return 2
-		}
-		return 0
-	}
-	if len(runs) == 0 {
-		pln(stdout, "no runs found")
-		return 0
-	}
-
-	pf(stdout, "%-34s  %-24s  %-10s  %-10s  %s\n", "RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED")
-	for _, r := range runs {
-		pf(stdout, "%-34s  %-24s  %-10s  %-10s  %s\n",
-			r.RunID, r.Workflow, r.Gaggle, r.Phase, r.StartedAt.Format(time.RFC3339))
-	}
-	return 0
+	return runRunTable(args, stdout, stderr, "runs list")
 }
 
 type runDiskUsage struct {
