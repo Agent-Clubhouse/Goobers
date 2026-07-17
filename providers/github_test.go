@@ -66,6 +66,53 @@ func TestGitHubProviderMapsWorkItemsAndStatus(t *testing.T) {
 	}
 }
 
+func TestGitHubProviderDeleteBranch(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		wantDeleted bool
+		wantErr     bool
+	}{
+		{name: "deleted", status: http.StatusNoContent, wantDeleted: true},
+		{name: "already absent", status: http.StatusNotFound},
+		{name: "provider failure", status: http.StatusForbidden, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Method != http.MethodDelete {
+					t.Fatalf("method = %s, want DELETE", r.Method)
+				}
+				if r.URL.Path != "/repos/acme/app/git/refs/heads/goobers/implementation/run-1" {
+					t.Fatalf("path = %q", r.URL.Path)
+				}
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+
+			provider := NewGitHubProvider("token", func(p *GitHubProvider) {
+				p.BaseURL = server.URL
+				p.maxRetries = 0
+			})
+			result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
+				Repository: RepositoryRef{Owner: "acme", Name: "app"},
+				Name:       "goobers/implementation/run-1",
+			})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("DeleteBranch error = %v, wantErr %t", err, tc.wantErr)
+			}
+			if result.Deleted != tc.wantDeleted {
+				t.Fatalf("Deleted = %t, want %t", result.Deleted, tc.wantDeleted)
+			}
+			if calls != 1 {
+				t.Fatalf("calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
 func TestGitHubProviderRepoAndBacklogOperations(t *testing.T) {
 	// issueLabels is the live label set for issue 7; the label sub-API handlers
 	// below mutate it so the re-GET in UpdateWorkItemStatus observes the swap
@@ -292,7 +339,7 @@ func TestGitHubProviderErrorPaths(t *testing.T) {
 	if _, err := provider.CreateBranch(context.Background(), BranchRequest{Repository: repo}); err == nil {
 		t.Fatal("expected missing branch name to return an error")
 	}
-	if err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{Repository: repo}); err == nil {
+	if _, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{Repository: repo}); err == nil {
 		t.Fatal("expected missing branch name to return an error")
 	}
 	if _, err := provider.Subscribe(context.Background(), TriggerSubscription{Kind: TriggerWebhook, Repository: repo}); err == nil {
@@ -320,7 +367,7 @@ func TestGitHubProviderDeletesBranchAndRecordsMutation(t *testing.T) {
 				Repository: RepositoryRef{Owner: "acme", Name: "app"},
 				Name:       "goobers/implementation/run-1",
 			}
-			if err := provider.DeleteBranch(context.Background(), req); err != nil {
+			if _, err := provider.DeleteBranch(context.Background(), req); err != nil {
 				t.Fatalf("DeleteBranch returned error: %v", err)
 			}
 			ref, ok := recorder.last()

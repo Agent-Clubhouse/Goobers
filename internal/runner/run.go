@@ -40,6 +40,10 @@ type SpanStarter interface {
 	StartGate(ctx context.Context, attrs telemetry.GateAttributes) (context.Context, telemetry.Span, error)
 }
 
+// TerminalPreparer performs best-effort external cleanup whose outcome must be
+// journaled immediately before run.finished closes the event sequence.
+type TerminalPreparer func(runID string, phase journal.RunPhase, jr *journal.Run) error
+
 // TerminalFinalizer performs instance-level cleanup after a run's terminal
 // event is durably journaled. It may be invoked again when Resume observes an
 // already-terminal run, so implementations must be idempotent.
@@ -158,6 +162,9 @@ type Config struct {
 	Worktrees *worktree.Manager
 	// RunsDir is the journal's run directory (<instance-root>/runs).
 	RunsDir string
+	// PrepareTerminal records external cleanup immediately before run.finished.
+	// Optional; errors are surfaced before the terminal transition.
+	PrepareTerminal TerminalPreparer
 	// FinalizeTerminal performs instance-level cleanup for every terminal run,
 	// after run.finished is durable. Optional; errors are surfaced to the caller.
 	FinalizeTerminal TerminalFinalizer
@@ -1002,9 +1009,12 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 	return t.Next, Result{}, true, nil
 }
 
-// finish appends the run's terminal run.finished event, then performs the
-// configured instance-level finalization.
+// finish prepares terminal cleanup, appends run.finished, then performs the
+// configured post-terminal finalization.
 func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
+	if err := r.prepareTerminal(runID, phase, jr); err != nil {
+		return Result{}, err
+	}
 	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
 		return Result{}, fmt.Errorf("runner: journal run.finished: %w", err)
 	}
@@ -1013,6 +1023,16 @@ func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, f
 		return res, err
 	}
 	return res, nil
+}
+
+func (r *Runner) prepareTerminal(runID string, phase journal.RunPhase, jr *journal.Run) error {
+	if r.cfg.PrepareTerminal == nil {
+		return nil
+	}
+	if err := r.cfg.PrepareTerminal(runID, phase, jr); err != nil {
+		return fmt.Errorf("runner: prepare terminal run %q (%s): %w", runID, phase, err)
+	}
+	return nil
 }
 
 func (r *Runner) finalizeTerminal(runID string, phase journal.RunPhase) error {
