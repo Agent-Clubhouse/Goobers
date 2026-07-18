@@ -495,6 +495,72 @@ func TestCompileRejectsGateVocabMismatch(t *testing.T) {
 	}
 }
 
+func TestCompileAcceptsNewAutomatedCheckParams(t *testing.T) {
+	cases := []struct {
+		check  string
+		params map[string]string
+	}{
+		{"output-numeric-lte", map[string]string{"key": "changedFiles", "threshold": "50"}},
+		{"output-numeric-lt", map[string]string{"key": "warnings", "threshold": "3"}},
+		{"output-not-equals", map[string]string{"key": "status", "equals": "skipped"}},
+		{"output-matches", map[string]string{"key": "branch", "pattern": `^release/v\d+$`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.check, func(t *testing.T) {
+			spec := apiv1.WorkflowSpec{
+				Gaggle: "web",
+				Start:  "gate-only",
+				Gates: []apiv1.Gate{{
+					Name:      "gate-only",
+					Evaluator: apiv1.EvaluatorAutomated,
+					Automated: &apiv1.AutomatedGate{Check: tc.check, Params: tc.params},
+					Branches:  map[string]string{"pass": TerminalComplete, "fail": TargetAbort},
+				}},
+			}
+			if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+				t.Fatalf("Compile: unexpected error %v", err)
+			}
+		})
+	}
+}
+
+func TestCompileRejectsInvalidAutomatedCheckParams(t *testing.T) {
+	cases := []struct {
+		name    string
+		check   string
+		params  map[string]string
+		wantErr string
+	}{
+		{"gte non-numeric threshold", "output-numeric-gte", map[string]string{"key": "coverage", "threshold": "high"}, `params.threshold "high" is not numeric`},
+		{"lte missing key", "output-numeric-lte", map[string]string{"threshold": "50"}, "requires params.key"},
+		{"lte missing threshold", "output-numeric-lte", map[string]string{"key": "changedFiles"}, "requires params.threshold"},
+		{"lt non-numeric threshold", "output-numeric-lt", map[string]string{"key": "warnings", "threshold": "few"}, `params.threshold "few" is not numeric`},
+		{"not-equals missing key", "output-not-equals", map[string]string{"equals": "skipped"}, "requires params.key"},
+		{"not-equals missing equals", "output-not-equals", map[string]string{"key": "status"}, "requires params.equals"},
+		{"matches missing key", "output-matches", map[string]string{"pattern": `.*`}, "requires params.key"},
+		{"matches missing pattern", "output-matches", map[string]string{"key": "branch"}, "requires params.pattern"},
+		{"matches invalid pattern", "output-matches", map[string]string{"key": "branch", "pattern": `(`}, "is not a valid RE2 expression"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := apiv1.WorkflowSpec{
+				Gaggle: "web",
+				Start:  "gate-only",
+				Gates: []apiv1.Gate{{
+					Name:      "gate-only",
+					Evaluator: apiv1.EvaluatorAutomated,
+					Automated: &apiv1.AutomatedGate{Check: tc.check, Params: tc.params},
+					Branches:  map[string]string{"pass": TerminalComplete, "fail": TargetAbort},
+				}},
+			}
+			_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Compile error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestCompileAdmissionUnknownCapabilityGranted(t *testing.T) {
 	spec := linearSpec()
 	goobers := map[string]apiv1.GooberSpec{

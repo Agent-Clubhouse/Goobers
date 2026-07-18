@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +76,12 @@ func CheckGateVocabulary(def Definition) []string {
 	return gateVocabProblems(def)
 }
 
+// CheckGateParameters reports invalid required parameters for built-in
+// automated checks whose contracts can be validated without runtime inputs.
+func CheckGateParameters(def Definition) []string {
+	return gateParamProblems(def)
+}
+
 func workspaceProblems(def Definition) []string {
 	var problems []string
 	for _, task := range def.Spec.Tasks {
@@ -108,8 +115,7 @@ func workspaceProblems(def Definition) []string {
 // internal/gate to reuse its DefaultChecks registry directly (internal/gate
 // already imports internal/workflow, for branch-target resolution) — this
 // table is intentionally kept in sync with automated.go's DefaultChecks by
-// hand; a check absent here has no fixed vocabulary (output-equals,
-// output-numeric-gte) and is not validated.
+// hand; a check absent here has no fixed equals vocabulary.
 var checkEqualsVocab = map[string][]string{
 	"status-equals": {"success", "failure", "blocked"},
 	"ci-status":     {"passing", "failing", "pending"},
@@ -143,6 +149,51 @@ func gateVocabProblems(def Definition) []string {
 		}
 		if !valid {
 			problems = append(problems, fmt.Sprintf("gate %q: check %q params.equals %q is not one of %v", g.Name, g.Automated.Check, equals, vocab))
+		}
+	}
+	return problems
+}
+
+func gateParamProblems(def Definition) []string {
+	var problems []string
+	for _, g := range def.Spec.Gates {
+		if g.Evaluator != apiv1.EvaluatorAutomated || g.Automated == nil {
+			continue
+		}
+		check := g.Automated.Check
+		params := g.Automated.Params
+		switch check {
+		case "output-numeric-gte", "output-numeric-lte", "output-numeric-lt":
+			if params["key"] == "" {
+				problems = append(problems, fmt.Sprintf("gate %q: check %q requires params.key", g.Name, check))
+			}
+			threshold, ok := params["threshold"]
+			if !ok {
+				problems = append(problems, fmt.Sprintf("gate %q: check %q requires params.threshold", g.Name, check))
+				continue
+			}
+			if _, err := strconv.ParseFloat(threshold, 64); err != nil {
+				problems = append(problems, fmt.Sprintf("gate %q: check %q params.threshold %q is not numeric: %v", g.Name, check, threshold, err))
+			}
+		case "output-not-equals":
+			if params["key"] == "" {
+				problems = append(problems, fmt.Sprintf("gate %q: check %q requires params.key", g.Name, check))
+			}
+			if _, ok := params["equals"]; !ok {
+				problems = append(problems, fmt.Sprintf("gate %q: check %q requires params.equals", g.Name, check))
+			}
+		case "output-matches":
+			if params["key"] == "" {
+				problems = append(problems, fmt.Sprintf("gate %q: check %q requires params.key", g.Name, check))
+			}
+			pattern, ok := params["pattern"]
+			if !ok {
+				problems = append(problems, fmt.Sprintf("gate %q: check %q requires params.pattern", g.Name, check))
+				continue
+			}
+			if _, err := regexp.Compile(pattern); err != nil {
+				problems = append(problems, fmt.Sprintf("gate %q: check %q params.pattern %q is not a valid RE2 expression: %v", g.Name, check, pattern, err))
+			}
 		}
 	}
 	return problems

@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -130,6 +131,88 @@ func DefaultChecks() map[string]CheckFunc {
 			}
 			return boolOutcome(got >= threshold), nil
 		},
+		// "output-numeric-lte": pass iff the numeric value of
+		// Inputs[Params["key"]] is <= Params["threshold"]. Both params
+		// required; non-numeric values error.
+		"output-numeric-lte": func(inputs map[string]interface{}, params map[string]string) (string, error) {
+			key, ok := params["key"]
+			if !ok || key == "" {
+				return "", fmt.Errorf("gate: check %q requires params.key", "output-numeric-lte")
+			}
+			thresholdStr, ok := params["threshold"]
+			if !ok {
+				return "", fmt.Errorf("gate: check %q requires params.threshold", "output-numeric-lte")
+			}
+			threshold, err := strconv.ParseFloat(thresholdStr, 64)
+			if err != nil {
+				return "", fmt.Errorf("gate: check %q: params.threshold %q: %w", "output-numeric-lte", thresholdStr, err)
+			}
+			got, err := numericField(inputs, key)
+			if err != nil {
+				return "", fmt.Errorf("gate: check %q: %w", "output-numeric-lte", err)
+			}
+			return boolOutcome(got <= threshold), nil
+		},
+		// "output-numeric-lt": pass iff the numeric value of
+		// Inputs[Params["key"]] is < Params["threshold"]. Both params
+		// required; non-numeric values error.
+		"output-numeric-lt": func(inputs map[string]interface{}, params map[string]string) (string, error) {
+			key, ok := params["key"]
+			if !ok || key == "" {
+				return "", fmt.Errorf("gate: check %q requires params.key", "output-numeric-lt")
+			}
+			thresholdStr, ok := params["threshold"]
+			if !ok {
+				return "", fmt.Errorf("gate: check %q requires params.threshold", "output-numeric-lt")
+			}
+			threshold, err := strconv.ParseFloat(thresholdStr, 64)
+			if err != nil {
+				return "", fmt.Errorf("gate: check %q: params.threshold %q: %w", "output-numeric-lt", thresholdStr, err)
+			}
+			got, err := numericField(inputs, key)
+			if err != nil {
+				return "", fmt.Errorf("gate: check %q: %w", "output-numeric-lt", err)
+			}
+			return boolOutcome(got < threshold), nil
+		},
+		// "output-not-equals": pass iff Inputs[Params["key"]] stringifies
+		// to a value other than Params["equals"]. Both params required.
+		"output-not-equals": func(inputs map[string]interface{}, params map[string]string) (string, error) {
+			key, ok := params["key"]
+			if !ok || key == "" {
+				return "", fmt.Errorf("gate: check %q requires params.key", "output-not-equals")
+			}
+			want, ok := params["equals"]
+			if !ok {
+				return "", fmt.Errorf("gate: check %q requires params.equals", "output-not-equals")
+			}
+			got, err := outputStringField(inputs, key)
+			if err != nil {
+				return "", fmt.Errorf("gate: check %q: %w", "output-not-equals", err)
+			}
+			return boolOutcome(got != want), nil
+		},
+		// "output-matches": pass iff Inputs[Params["key"]] stringifies to
+		// a value matching the RE2 Params["pattern"]. Both params required.
+		"output-matches": func(inputs map[string]interface{}, params map[string]string) (string, error) {
+			key, ok := params["key"]
+			if !ok || key == "" {
+				return "", fmt.Errorf("gate: check %q requires params.key", "output-matches")
+			}
+			pattern, ok := params["pattern"]
+			if !ok {
+				return "", fmt.Errorf("gate: check %q requires params.pattern", "output-matches")
+			}
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				return "", fmt.Errorf("gate: check %q: params.pattern %q: %w", "output-matches", pattern, err)
+			}
+			got, err := outputStringField(inputs, key)
+			if err != nil {
+				return "", fmt.Errorf("gate: check %q: %w", "output-matches", err)
+			}
+			return boolOutcome(re.MatchString(got)), nil
+		},
 		// "ci-status": pass iff Inputs["ciStatus"] (the well-known output key
 		// a ci-poll deterministic stage — issue #18 — is expected to set,
 		// using the providers.CheckState vocabulary "passing"/"failing")
@@ -208,6 +291,21 @@ func stringField(inputs map[string]interface{}, key string) string {
 		return s
 	}
 	return fmt.Sprintf("%v", v)
+}
+
+func outputStringField(inputs map[string]interface{}, key string) (string, error) {
+	v, ok := inputs[key]
+	if !ok {
+		return "", fmt.Errorf("input %q is not set", key)
+	}
+	switch v := v.(type) {
+	case string:
+		return v, nil
+	case bool, float64, int, int64:
+		return fmt.Sprintf("%v", v), nil
+	default:
+		return "", fmt.Errorf("input %q has unsupported type %T", key, v)
+	}
 }
 
 func numericField(inputs map[string]interface{}, key string) (float64, error) {

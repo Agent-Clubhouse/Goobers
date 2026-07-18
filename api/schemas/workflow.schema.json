@@ -136,8 +136,16 @@
           "additionalProperties": false,
           "required": ["check"],
           "properties": {
-            "check": { "type": "string", "minLength": 1 },
-            "params": { "type": "object", "additionalProperties": { "type": "string" } }
+            "check": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Built-in check name: status-equals, output-equals, output-not-equals, output-numeric-gte, output-numeric-lte, output-numeric-lt, output-matches, ci-status, land-outcome, or queue-outcome."
+            },
+            "params": {
+              "type": "object",
+              "description": "Check parameters. Output equality checks use key+equals; numeric checks use key+threshold; output-matches uses key+pattern (RE2).",
+              "additionalProperties": { "type": "string" }
+            }
           }
         },
         "agentic": {

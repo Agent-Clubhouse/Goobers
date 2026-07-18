@@ -546,6 +546,9 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow) {
 	for _, msg := range wf.CheckGateOutcomes(def) {
 		r.add(Error, "", "Workflow", w.Name, "%s", msg)
 	}
+	for _, msg := range wf.CheckGateParameters(def) {
+		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+	}
 	for _, msg := range wf.CheckTriggerFields(def) {
 		r.add(Error, "", "Workflow", w.Name, "%s", msg)
 	}

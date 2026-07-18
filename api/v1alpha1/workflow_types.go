@@ -275,10 +275,11 @@ type Gate struct {
 
 // AutomatedGate runs a deterministic coded check.
 type AutomatedGate struct {
-	// Check names the coded check to run (e.g. "tests-pass", "coverage-gte").
+	// Check names a built-in coded check such as "status-equals",
+	// "output-numeric-lte", or "output-matches".
 	// +kubebuilder:validation:Required
 	Check string `json:"check" yaml:"check"`
-	// Params parameterize the check (e.g. {"threshold": "80"}).
+	// Params parameterize the check (e.g. {"key": "coverage", "threshold": "80"}).
 	// +optional
 	Params map[string]string `json:"params,omitempty" yaml:"params,omitempty"`
 }
