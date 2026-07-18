@@ -58,6 +58,11 @@ const (
 	// EventClaimReleased records a lease release (run finished, expired, or
 	// crash-recovered).
 	EventClaimReleased EventType = "claim.released"
+	// EventConfigReloaded records an atomically-applied config directory change.
+	EventConfigReloaded EventType = "config.reloaded"
+	// EventConfigReloadRejected records a changed config directory that failed
+	// validation and was not applied.
+	EventConfigReloadRejected EventType = "config.reload.rejected"
 )
 
 // AttemptClass tags why a stage attempt exists. Only policy attempts are

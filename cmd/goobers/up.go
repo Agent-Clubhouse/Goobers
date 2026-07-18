@@ -308,13 +308,8 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		}
 	}()
 
-	if setup.OpenPRRefresher != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			setup.OpenPRRefresher.Run(ctx)
-		}()
-	}
+	openPRs := newOpenPRLoop(ctx, setup.OpenPRRefresher)
+	defer openPRs.Stop()
 
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
 	// shutdown restarts now, before the scheduler starts admitting new ticks
@@ -397,6 +392,18 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		}
 	}()
 
+	configDone := make(chan error, 1)
+	reloader := &configReloader{
+		layout:         l,
+		setup:          setup,
+		scheduler:      sched,
+		openPRs:        openPRs,
+		wg:             &wg,
+		appliedDigest:  setup.ConfigDigest,
+		observedDigest: setup.ConfigDigest,
+	}
+	go func() { configDone <- reloader.Run(ctx) }()
+
 	ready.Store(true)
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at http://%s%s\n", root, len(setup.Entries), apiServer.Address(), httpapi.Prefix)
 	if diagnosticsMode {
@@ -416,8 +423,21 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	go func() { schedulerDone <- sched.Run(ctx) }()
 	var runErr error
 	apiFailed := false
+	configFailed := false
+	configWatcherDone := false
 	select {
 	case runErr = <-schedulerDone:
+	case reloadErr := <-configDone:
+		configWatcherDone = true
+		if reloadErr == nil {
+			reloadErr = errors.New("config watcher stopped unexpectedly")
+		}
+		if ctx.Err() == nil {
+			configFailed = true
+			pf(stderr, "error: config watcher stopped: %v\n", reloadErr)
+		}
+		cancel()
+		runErr = <-schedulerDone
 	case serveErr, ok := <-apiServer.Errors():
 		apiFailed = true
 		if !ok {
@@ -429,6 +449,13 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	ready.Store(false)
 	cancel()
+	if !configWatcherDone {
+		if reloadErr := <-configDone; reloadErr != nil {
+			configFailed = true
+			pf(stderr, "error: config watcher stopped: %v\n", reloadErr)
+		}
+	}
+	openPRs.Stop()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
 	shutdownErr := apiServer.Shutdown(shutdownCtx)
@@ -460,7 +487,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	} else {
 		pf(stdout, "shutdown timed out after %s: some runs may still be checkpointing\n", drainGrace)
 	}
-	if apiFailed {
+	if apiFailed || configFailed {
 		return 1
 	}
 	return 0

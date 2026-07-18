@@ -45,6 +45,7 @@ type schedulerSetup struct {
 	RepoRefs      map[string]apiv1.RepoRef
 	RunConditions instance.RunConditions
 	Validation    *validate.Report
+	ConfigDigest  string
 	// OpenPRRefresher backs the #353 MaxOpenPRs cap; nil when no workflow opts
 	// in (or no repo is configured). Only the `up` daemon starts its Run loop
 	// and wires it as a scheduler option — see up.go.
@@ -56,7 +57,18 @@ type schedulerSetup struct {
 	// Unlike OpenPRRefresher this needs no background Run loop (it's pushed to,
 	// not polled), so it's wired uniformly for both `up` and `run` in
 	// SchedulerOptions rather than needing an up.go-only branch. Never nil.
-	ProviderQuota *localscheduler.ProviderQuotaState
+	ProviderQuota  *localscheduler.ProviderQuotaState
+	SharedRegistry *journal.RegistryScrubber
+}
+
+type schedulerDefinitions struct {
+	Set             *instance.ConfigSet
+	Validation      *validate.Report
+	Runner          *runner.Runner
+	Entries         []localscheduler.WorkflowEntry
+	Machines        map[string]*workflow.Machine
+	RepoRefs        map[string]apiv1.RepoRef
+	OpenPRRefresher *localscheduler.OpenPRRefresher
 }
 
 // buildSchedulerSetup loads an instance's config, compiles its workflows,
@@ -67,6 +79,10 @@ type schedulerSetup struct {
 // foreground trigger) can track dispatched runs uniformly.
 func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGroup) (_ *schedulerSetup, err error) {
 	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		return nil, err
+	}
+	configDigest, err := configDirectoryDigest(l.ConfigDir())
 	if err != nil {
 		return nil, err
 	}
@@ -82,25 +98,6 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 			err = &configReportError{report: report, err: err}
 		}
 	}()
-
-	goobers := goobersByName(set)
-	machines, err := compiledMachines(set, goobers)
-	if err != nil {
-		return nil, err
-	}
-	// Fail fast if an agentic stage's harness isn't usable (missing/broken/
-	// signed-out CLI) — before any worktree/claim/journal side effect — rather
-	// than burning a mid-run agentic attempt (#238). Indirected through the
-	// preflightHarnesses seam so the cmd/goobers test suite (which drives up/run
-	// without a real, installed Copilot CLI) can neutralize it uniformly; the
-	// real preflight logic is covered directly by preflight_test.go.
-	if err := preflightHarnesses(goobers, set.Workflows); err != nil {
-		return nil, err
-	}
-	repoRefs, err := repoRefsByWorkflow(set)
-	if err != nil {
-		return nil, err
-	}
 
 	// telemetry.enabled defaults to true; instance.yaml can opt out (issue
 	// #129). tel/rollupDB stay nil in that case — every downstream use
@@ -139,79 +136,120 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		return nil, fmt.Errorf("open instance log: %w", err)
 	}
 
-	runnerCfg, wtMgr, err := buildRunnerConfig(l, cfg, goobers, tel, sharedReg)
-	if err != nil {
-		return nil, err
-	}
-	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg)
-	if err != nil {
-		return nil, err
-	}
-	runnerCfg.FinalizeTerminal = func(runID string, _ journal.RunPhase) error {
-		return finalizeTerminalRun(l, instanceLog, wtMgr, runID)
-	}
 	// #712: shared with the Scheduler via SchedulerOptions below — see
 	// schedulerSetup.ProviderQuota's doc comment for why a shared pointer,
 	// not a Scheduler-owned field, is needed here.
 	providerQuota := localscheduler.NewProviderQuotaState()
+	definitions, wtMgr, err := buildSchedulerDefinitions(l, cfg, set, report, wg, tel, rollupDB, instanceLog, sharedReg, nil, providerQuota)
+	if err != nil {
+		return nil, err
+	}
+	stableDigest, err := configDirectoryDigest(l.ConfigDir())
+	if err != nil || stableDigest != configDigest {
+		if tel != nil {
+			_ = tel.Shutdown(context.Background())
+		}
+		if rollupDB != nil {
+			_ = rollupDB.Close()
+		}
+		_ = instanceLog.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("config directory changed during daemon setup; retry startup")
+	}
+
+	return &schedulerSetup{
+		Runner:          definitions.Runner,
+		Telemetry:       tel,
+		RollupDB:        rollupDB,
+		Config:          cfg,
+		Definitions:     definitions.Set,
+		Worktrees:       wtMgr,
+		InstanceLog:     instanceLog,
+		Entries:         definitions.Entries,
+		Machines:        definitions.Machines,
+		RepoRefs:        definitions.RepoRefs,
+		RunConditions:   cfg.RunConditions,
+		Validation:      definitions.Validation,
+		ConfigDigest:    configDigest,
+		OpenPRRefresher: definitions.OpenPRRefresher,
+		ProviderQuota:   providerQuota,
+		SharedRegistry:  sharedReg,
+	}, nil
+}
+
+func buildSchedulerDefinitions(
+	l instance.Layout,
+	cfg *instance.Config,
+	set *instance.ConfigSet,
+	report *validate.Report,
+	wg *sync.WaitGroup,
+	tel *telemetry.Client,
+	rollupDB *rollup.DB,
+	instanceLog *journal.InstanceLog,
+	sharedReg *journal.RegistryScrubber,
+	wtMgr *worktree.Manager,
+	providerQuota *localscheduler.ProviderQuotaState,
+) (*schedulerDefinitions, *worktree.Manager, error) {
+	goobers := goobersByName(set)
+	machines, err := compiledMachines(set, goobers)
+	if err != nil {
+		return nil, wtMgr, err
+	}
+	if err := preflightHarnesses(goobers, set.Workflows); err != nil {
+		return nil, wtMgr, err
+	}
+	repoRefs, err := repoRefsByWorkflow(set)
+	if err != nil {
+		return nil, wtMgr, err
+	}
+
+	runnerCfg, wtMgr, err := buildRunnerConfig(l, cfg, goobers, tel, sharedReg, wtMgr)
+	if err != nil {
+		return nil, wtMgr, err
+	}
+	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg)
+	if err != nil {
+		return nil, wtMgr, err
+	}
+	runnerCfg.FinalizeTerminal = func(runID string, _ journal.RunPhase) error {
+		return finalizeTerminalRun(l, instanceLog, wtMgr, runID)
+	}
 	runnerCfg.RateLimited = buildRateLimitedHandler(providerQuota)
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
-		return nil, err
+		return nil, wtMgr, err
 	}
 
-	// #353: the open-PR-count refresher backing the MaxOpenPRs cap, when any
-	// workflow opts in. Built here (has cfg + the compiled workflows); the `up`
-	// daemon starts its Run loop and wires it as a scheduler option.
 	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, sharedReg)
 	if err != nil {
-		return nil, err
+		return nil, wtMgr, err
 	}
-
-	// Issue #137: every workflow's cron schedule evaluates in the
-	// instance-configured timezone (Config.Timezone, default UTC), not
-	// whatever the host process's own local zone happens to be — InLocation
-	// already does the right thing with a restart-reconstructed LastEval
-	// too, since it normalizes via time.Time.In(loc) before any wall-clock
-	// field matching, regardless of what zone that reconstructed time was
-	// itself expressed in (a JSON-round-tripped fixed UTC offset).
 	loc, err := cfg.Location()
 	if err != nil {
-		return nil, err
+		return nil, wtMgr, err
 	}
-
-	// A second resolver instance, independent of buildRunnerConfig's own
-	// internal one (buildCredentials is pure/stateless over cfg — cheap to
-	// call twice rather than widen buildRunnerConfig's return just to share
-	// one) — backs backlog-item trigger fan-out counting (#344), the same
-	// way buildEscalationNotifier's own resolver backs escalation posting.
 	credResolver, _, err := buildCredentials(cfg)
 	if err != nil {
-		return nil, err
+		return nil, wtMgr, err
 	}
 
 	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
-		// #341: a workflow may declare more than one schedule-type trigger
-		// (e.g. a weekday cadence and a separate weekend one) — collect all
-		// of them rather than stopping at the first; Scheduler.Tick fires if
-		// any is due. #342: also collect every signal-type trigger's name —
-		// previously compiled nowhere, so a type=signal trigger declared in
-		// config did nothing at runtime; Scheduler.Signal fires every
-		// workflow subscribed to a received signal name.
 		var scheds []localscheduler.Schedule
 		var sigs []string
-		for _, tr := range wf.Spec.Triggers {
-			if tr.Type == apiv1.TriggerSchedule && tr.Schedule != "" {
-				s, err := localscheduler.ParseSchedule(tr.Schedule)
+		for _, trigger := range wf.Spec.Triggers {
+			if trigger.Type == apiv1.TriggerSchedule && trigger.Schedule != "" {
+				schedule, err := localscheduler.ParseSchedule(trigger.Schedule)
 				if err != nil {
-					return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
+					return nil, wtMgr, fmt.Errorf("workflow %q: %w", wf.Name, err)
 				}
-				scheds = append(scheds, localscheduler.InLocation(s, loc))
+				scheds = append(scheds, localscheduler.InLocation(schedule, loc))
 			}
-			if tr.Type == apiv1.TriggerSignal && tr.Signal != "" {
-				sigs = append(sigs, tr.Signal)
+			if trigger.Type == apiv1.TriggerSignal && trigger.Signal != "" {
+				sigs = append(sigs, trigger.Signal)
 			}
 		}
 		entries = append(entries, localscheduler.WorkflowEntry{
@@ -226,22 +264,15 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		})
 	}
 
-	return &schedulerSetup{
+	return &schedulerDefinitions{
+		Set:             set,
+		Validation:      report,
 		Runner:          rn,
-		Telemetry:       tel,
-		RollupDB:        rollupDB,
-		Config:          cfg,
-		Definitions:     set,
-		Worktrees:       wtMgr,
-		InstanceLog:     instanceLog,
 		Entries:         entries,
 		Machines:        machines,
 		RepoRefs:        repoRefs,
-		RunConditions:   cfg.RunConditions,
-		Validation:      report,
 		OpenPRRefresher: openPRRefresher,
-		ProviderQuota:   providerQuota,
-	}, nil
+	}, wtMgr, nil
 }
 
 // SchedulerOptions returns the localscheduler.Option slice reflecting this

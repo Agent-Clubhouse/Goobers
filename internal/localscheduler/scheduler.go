@@ -88,8 +88,10 @@ type Scheduler struct {
 	telemetry  SpanStarter
 
 	mu         sync.Mutex
+	tickMu     sync.Mutex
 	triggers   map[string]TriggerState
 	dispatches sync.WaitGroup
+	wake       chan struct{}
 	// reconciledRuns identifies the pre-existing runs represented in
 	// Conditions' startup counts, so recovery releases cannot consume another
 	// run's workflow-level slot.
@@ -172,6 +174,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		triggers:         make(map[string]TriggerState),
 		reconciledRuns:   make(map[string]string),
 		backlogLastCheck: make(map[string]time.Time),
+		wake:             make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -290,6 +293,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-s.wake:
 		case <-s.after(wait):
 		}
 	}
@@ -300,6 +304,9 @@ func (s *Scheduler) Run(ctx context.Context) error {
 // <workflow>` trigger and tests can drive a single evaluation deterministically
 // without running the full timer loop.
 func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
+	s.tickMu.Lock()
+	defer s.tickMu.Unlock()
+
 	s.mu.Lock()
 	entries := make([]WorkflowEntry, 0, len(s.workflows))
 	for _, e := range s.workflows {
@@ -324,10 +331,62 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 				s.dispatch(ctx, entry, now, res, journal.TriggerSchedule)
 			}
 		}
+
 		if entry.BacklogCounter != nil {
 			s.tickBacklog(ctx, entry, now)
 		}
 	}
+}
+
+// Reload atomically replaces the configured workflows between scheduler ticks.
+// Already-dispatched runs retain the WorkflowEntry (and Starter) captured by
+// dispatch, while subsequent ticks and triggers resolve the replacement entry.
+// The accepted change is journaled before it becomes active; a journal failure
+// leaves the current configuration untouched.
+func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now time.Time, oldDigest, newDigest string) error {
+	workflows := make(map[string]WorkflowEntry, len(entries))
+	triggers := make(map[string]TriggerState, len(entries))
+	backlogLastCheck := make(map[string]time.Time, len(entries))
+
+	s.tickMu.Lock()
+	defer s.tickMu.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, entry := range entries {
+		workflows[entry.Workflow] = entry
+		state, ok := s.triggers[entry.Workflow]
+		if !ok {
+			state = TriggerState{Workflow: entry.Workflow, LastEval: now}
+		}
+		state.Workflow = entry.Workflow
+		state.Schedules = entry.Schedules
+		triggers[entry.Workflow] = state
+		if checked, ok := s.backlogLastCheck[entry.Workflow]; ok {
+			backlogLastCheck[entry.Workflow] = checked
+		}
+	}
+
+	if err := s.appendJournalEvent(journal.Event{
+		Type: journal.EventConfigReloaded,
+		Runner: map[string]any{
+			"oldDigest": oldDigest,
+			"newDigest": newDigest,
+		},
+	}); err != nil {
+		return fmt.Errorf("localscheduler: journal config reload: %w", err)
+	}
+
+	s.conditions.SetOpenPRCounter(openPRs)
+	s.workflows = workflows
+	s.triggers = triggers
+	s.backlogLastCheck = backlogLastCheck
+
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+	return nil
 }
 
 // tickBacklog polls entry's BacklogCounter at most once per

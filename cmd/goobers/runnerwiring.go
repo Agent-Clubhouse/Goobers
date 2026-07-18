@@ -696,10 +696,13 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client, sharedReg *journal.RegistryScrubber) (runner.Config, *worktree.Manager, error) {
-	wtMgr, err := worktree.NewManager(l.WorkcopiesDir())
-	if err != nil {
-		return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager) (runner.Config, *worktree.Manager, error) {
+	if wtMgr == nil {
+		var err error
+		wtMgr, err = worktree.NewManager(l.WorkcopiesDir())
+		if err != nil {
+			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
+		}
 	}
 	resolver, grants, err := buildCredentials(cfg)
 	if err != nil {
@@ -722,6 +725,14 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	adapterRegistry, err := buildHarnessRegistry(envCaps)
 	if err != nil {
 		return runner.Config{}, nil, err
+	}
+	instructionsByGoober := make(map[string]string, len(goobers))
+	for name, spec := range goobers {
+		instructions, err := os.ReadFile(instructionsPath(l.ConfigDir(), spec, name))
+		if err != nil {
+			return runner.Config{}, nil, fmt.Errorf("read goober %q instructions: %w", name, err)
+		}
+		instructionsByGoober[name] = string(instructions)
 	}
 
 	// An agentic gate's reviewer has no stage-level capabilities of its own, so
@@ -787,10 +798,6 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if err != nil {
 				return nil, err
 			}
-			instructions, err := os.ReadFile(instructionsPath(l.ConfigDir(), spec, gooberName))
-			if err != nil {
-				return nil, fmt.Errorf("read goober %q instructions: %w", gooberName, err)
-			}
 			harnessName := spec.Harness
 			if harnessName == "" {
 				harnessName = apiv1.HarnessCopilot
@@ -824,7 +831,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				return nil, fmt.Errorf("runner secret registrar does not implement journal.Scrubber")
 			}
 			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
-			return harness.NewExecutor(adapter, injector, recorder, artifacts, contextResolver, scrubber, string(instructions))
+			return harness.NewExecutor(adapter, injector, recorder, artifacts, contextResolver, scrubber, instructionsByGoober[gooberName])
 		},
 		Automated:              gate.NewAutomatedEvaluator(),
 		Worktrees:              wtMgr,

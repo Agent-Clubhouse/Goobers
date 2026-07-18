@@ -305,13 +305,12 @@ decision for a bug:
   in less common environments — tracked as #75 (V1).
 - **`instance.yaml` is loaded once, at `goobers up` startup.** Editing it
   (repos, telemetry, `runConditions`) while the daemon is running has no
-  effect until the next restart — there is no file watch or SIGHUP-style
-  reload (CFG-020/DEP-025 call for this at tiers 1–2; V0.1 scope is
-  documenting the restart-required semantics here rather than building
-  watch/reload, which is V1, #142). A config that fails `Validate()` is
+  effect until the next restart. The `config/` definition directory is watched
+  and valid edits are atomically reloaded; invalid edits keep the last-known-good
+  definitions and append `config.reload.rejected` to the instance journal
+  (CFG-020/DEP-025, #154). An `instance.yaml` that fails `Validate()` is
   caught at that startup load (`goobers up` refuses to start, per `up.go`'s
-  `os.Stat(l.ConfigFile())`/`LoadConfig` checks), not silently ignored — the
-  gap is strictly "doesn't pick up a later edit," not "runs on bad config."
+  `os.Stat(l.ConfigFile())`/`LoadConfig` checks), not silently ignored.
 - **Workflow definitions are pinned at `Version: 1` permanently.** There is no
   mechanism yet to bump a workflow's version when its definition changes;
   `trace`'s `(v1)` display and journal `Trigger.Kind`/gate-outcome comparisons
