@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -62,38 +63,61 @@ type LocalSources struct {
 // Local reads a tier 1-2 instance's provisioned definitions, journals, and
 // telemetry projection.
 type Local struct {
-	sources             LocalSources
-	telemetry           *Telemetry
-	identity            InstanceIdentity
-	ready               func() bool
-	now                 func() time.Time
-	definitionsLoadedAt time.Time
+	sources     LocalSources
+	telemetry   *Telemetry
+	ready       func() bool
+	now         func() time.Time
+	definitions atomic.Pointer[definitionSnapshot]
+}
+
+type definitionSnapshot struct {
+	set      *instance.ConfigSet
+	loadedAt time.Time
 }
 
 // NewLocal constructs the shared local read service.
 func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
-	if sources.Definitions == nil || sources.Definitions.Manifest == nil {
-		return nil, fmt.Errorf("read service: provisioned manifest is required")
-	}
 	if ready == nil {
 		return nil, fmt.Errorf("read service: readiness function is required")
 	}
 	now := time.Now
-	ref := sources.Definitions.Manifest.Spec.Instance
+	snapshot, err := newDefinitionSnapshot(sources.Definitions, now())
+	if err != nil {
+		return nil, err
+	}
 	var telemetry *Telemetry
 	if sources.Telemetry != nil {
 		telemetry = &Telemetry{store: sources.Telemetry}
 	}
-	return &Local{
+	sources.Definitions = nil
+	local := &Local{
 		sources:   sources,
 		telemetry: telemetry,
-		identity: InstanceIdentity{
-			Name:        ref.Name,
-			Environment: ref.Environment,
-		},
-		ready:               ready,
-		now:                 now,
-		definitionsLoadedAt: now().UTC(),
+		ready:     ready,
+		now:       now,
+	}
+	local.definitions.Store(snapshot)
+	return local, nil
+}
+
+// ReloadDefinitions atomically replaces the definitions exposed by the local
+// read model after the daemon accepts a config reload.
+func (s *Local) ReloadDefinitions(definitions *instance.ConfigSet, loadedAt time.Time) error {
+	snapshot, err := newDefinitionSnapshot(definitions, loadedAt)
+	if err != nil {
+		return err
+	}
+	s.definitions.Store(snapshot)
+	return nil
+}
+
+func newDefinitionSnapshot(definitions *instance.ConfigSet, loadedAt time.Time) (*definitionSnapshot, error) {
+	if definitions == nil || definitions.Manifest == nil {
+		return nil, fmt.Errorf("read service: provisioned manifest is required")
+	}
+	return &definitionSnapshot{
+		set:      definitions,
+		loadedAt: loadedAt.UTC(),
 	}, nil
 }
 
@@ -109,15 +133,20 @@ func (s *Local) Health(ctx context.Context) (Health, error) {
 	}
 
 	journalUpdatedAt := info.ModTime().UTC()
+	definitions := s.definitions.Load()
+	ref := definitions.set.Manifest.Spec.Instance
 
 	return Health{
 		APIVersion:    APIVersion,
 		SchemaVersion: SchemaVersion,
 		Ready:         s.ready(),
-		Instance:      s.identity,
+		Instance: InstanceIdentity{
+			Name:        ref.Name,
+			Environment: ref.Environment,
+		},
 		Freshness: Freshness{
 			ObservedAt:          s.now().UTC(),
-			DefinitionsLoadedAt: s.definitionsLoadedAt,
+			DefinitionsLoadedAt: definitions.loadedAt,
 			JournalUpdatedAt:    &journalUpdatedAt,
 		},
 	}, nil

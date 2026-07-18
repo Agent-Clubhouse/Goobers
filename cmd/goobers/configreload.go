@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 var configReloadInterval = time.Second
@@ -67,6 +68,7 @@ type configReloader struct {
 	setup           *schedulerSetup
 	scheduler       *localscheduler.Scheduler
 	openPRs         *openPRLoop
+	reads           *readservice.Local
 	wg              *sync.WaitGroup
 	appliedDigest   string
 	observedDigest  string
@@ -144,6 +146,9 @@ func (r *configReloader) poll(now time.Time) error {
 		return err
 	}
 	r.openPRs.Replace(definitions.OpenPRRefresher)
+	if err := r.reads.ReloadDefinitions(definitions.Set, now); err != nil {
+		return fmt.Errorf("reload read service definitions: %w", err)
+	}
 	r.appliedDigest = digest
 	return nil
 }

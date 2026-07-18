@@ -398,6 +398,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		setup:          setup,
 		scheduler:      sched,
 		openPRs:        openPRs,
+		reads:          reads,
 		wg:             &wg,
 		appliedDigest:  setup.ConfigDigest,
 		observedDigest: setup.ConfigDigest,

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
@@ -27,6 +32,9 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 
 	root := initDeterministicDemo(t)
 	layout := instance.NewLayout(root)
+	address := freeLoopbackAddress(t)
+	setAPIListenAddress(t, root, address)
+	manifestPath := filepath.Join(layout.ConfigDir(), "manifest.yaml")
 	workflowPath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -54,8 +62,24 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 		t.Fatal("timed out waiting for daemon startup")
 	}
 
-	reloadedWorkflow := strings.Replace(deterministicWorkflowYAML, "name: default-implement", "name: reloaded-implement", 1)
-	if err := os.WriteFile(workflowPath, []byte(reloadedWorkflow), 0o644); err != nil {
+	initialHealth := readDaemonHealth(t, address)
+	if initialHealth.Instance.Name != "example" || initialHealth.Instance.Environment != apiv1.EnvironmentDev {
+		t.Fatalf("initial instance = %+v", initialHealth.Instance)
+	}
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloadedManifest := strings.Replace(
+		string(manifest),
+		"    name: example\n    environment: dev",
+		"    name: reloaded-example\n    environment: staging",
+		1,
+	)
+	if reloadedManifest == string(manifest) {
+		t.Fatal("manifest identity fixture not found")
+	}
+	if err := os.WriteFile(manifestPath, []byte(reloadedManifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	reloaded := waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 1)
@@ -64,6 +88,20 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	if !oldOK || !newOK || oldDigest == "" || newDigest == "" || oldDigest == newDigest {
 		t.Fatalf("config.reloaded digests = %+v, want distinct old/new digests", reloaded.Runner)
 	}
+	reloadedHealth := waitForDaemonHealth(t, address, "reloaded-example", apiv1.EnvironmentStaging)
+	if !reloadedHealth.Freshness.DefinitionsLoadedAt.After(initialHealth.Freshness.DefinitionsLoadedAt) {
+		t.Fatalf(
+			"definitionsLoadedAt = %s, want after startup value %s",
+			reloadedHealth.Freshness.DefinitionsLoadedAt,
+			initialHealth.Freshness.DefinitionsLoadedAt,
+		)
+	}
+
+	reloadedWorkflow := strings.Replace(deterministicWorkflowYAML, "name: default-implement", "name: reloaded-implement", 1)
+	if err := os.WriteFile(workflowPath, []byte(reloadedWorkflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 2)
 
 	code, stdout, stderr := runArgs(t, "run", "reloaded-implement", root)
 	if code != 0 {
@@ -82,6 +120,42 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("last-known-good workflow unavailable after rejected edit: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
+}
+
+func readDaemonHealth(t *testing.T, address string) readservice.Health {
+	t.Helper()
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Get("http://" + address + httpapi.HealthPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		_ = response.Body.Close()
+		t.Fatalf("health status = %d", response.StatusCode)
+	}
+	var health readservice.Health
+	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+		_ = response.Body.Close()
+		t.Fatal(err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return health
+}
+
+func waitForDaemonHealth(t *testing.T, address, name string, environment apiv1.Environment) readservice.Health {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		health := readDaemonHealth(t, address)
+		if health.Instance.Name == name && health.Instance.Environment == environment {
+			return health
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for health identity %s/%s", name, environment)
+	return readservice.Health{}
 }
 
 func TestBuildSchedulerSetupRejectsConfigChangedDuringStartup(t *testing.T) {
