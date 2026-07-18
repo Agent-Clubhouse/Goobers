@@ -28,8 +28,9 @@ Use an OS-native sandbox for V1 local agentic execution:
   access, denies all filesystem writes, then permits writes only in the canonical
   worktree, terminal/null devices, and explicitly declared runtime-state roots.
 - Linux wraps the harness with bubblewrap. The prototype mounts the host root
-  read-only, provides private `/dev` and `/proc`, and bind-mounts only the
-  canonical worktree plus explicitly declared runtime-state roots read-write.
+  read-only, unshares the PID namespace before mounting a private `/proc`,
+  provides a private `/dev`, and bind-mounts only the canonical worktree plus
+  explicitly declared runtime-state roots read-write.
 - `internal/sandbox.Sandbox` is the platform-neutral seam. It rewrites an
   `exec.Cmd` while leaving environment construction, stdio, timeouts, and process
   groups with the harness runner.
@@ -44,7 +45,9 @@ sandbox boundary.
 
 `TestNativeSandboxConfinement` runs a scripted child in a temporary worktree,
 proves an in-worktree write succeeds, and proves an out-of-worktree write is
-denied. CI runs this probe with bubblewrap on Linux and Seatbelt on macOS.
+denied. On Linux, `TestNativeSandboxIsolatesHostProc` also starts a host helper
+and proves the sandbox cannot write through `/proc/<host-pid>/root`. CI runs
+these probes with bubblewrap on Linux and Seatbelt on macOS.
 
 Copilot CLI 1.0.71 does not expose a session-state directory override and
 persists resumable events beneath `~/.copilot/session-state`; `--log-dir` does

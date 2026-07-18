@@ -79,6 +79,9 @@ func validate(command *exec.Cmd, policy Policy) (validatedPolicy, error) {
 
 	validated := validatedPolicy{workspace: workspace}
 	for _, root := range policy.WritableRoots {
+		if root == "" {
+			return validatedPolicy{}, fmt.Errorf("sandbox: writable root is empty")
+		}
 		resolved, err := resolveDirectory(root)
 		if err != nil {
 			return validatedPolicy{}, fmt.Errorf("sandbox: resolve writable root %q: %w", root, err)

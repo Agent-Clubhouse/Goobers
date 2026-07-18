@@ -30,6 +30,7 @@ func (s nativeSandbox) Wrap(command *exec.Cmd, policy Policy) error {
 	args := []string{
 		"bwrap",
 		"--die-with-parent",
+		"--unshare-pid",
 		"--ro-bind", "/", "/",
 		"--dev", "/dev",
 		"--proc", "/proc",

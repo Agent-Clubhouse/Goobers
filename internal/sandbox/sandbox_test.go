@@ -157,6 +157,12 @@ func TestNativeSandboxRejectsInvalidPolicy(t *testing.T) {
 			wantError: "resolve writable root",
 		},
 		{
+			name:      "empty writable root",
+			command:   trueCommand,
+			policy:    Policy{Workspace: workspace, WritableRoots: []string{""}},
+			wantError: "writable root is empty",
+		},
+		{
 			name:      "filesystem root writable",
 			command:   trueCommand,
 			policy:    Policy{Workspace: workspace, WritableRoots: []string{string(filepath.Separator)}},
