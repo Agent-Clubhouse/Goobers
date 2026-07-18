@@ -55,8 +55,11 @@ func TestNativeApprovalIsDismissedAndNewHeadIsReviewed(t *testing.T) {
 	if first.state != "DISMISSED" {
 		t.Fatalf("approval state after push = %q, want DISMISSED", first.state)
 	}
-	if len(issue.labels) != 0 || len(issue.comments) != 0 {
-		t.Fatalf("pass handoff added labels/comments: labels=%v comments=%v", issue.labels, issue.comments)
+	if len(issue.labels) != 0 {
+		t.Fatalf("pass handoff added labels: %v", issue.labels)
+	}
+	if len(issue.comments) != 1 {
+		t.Fatalf("pass verdict comments = %v, want one structured compatibility comment", issue.comments)
 	}
 
 	t.Setenv("GOOBERS_RUN_ID", "review-run-2")
@@ -91,11 +94,15 @@ func TestNativeApprovalIsDismissedAndNewHeadIsReviewed(t *testing.T) {
 
 	server.mu.Lock()
 	reviews := append([]fakeReview(nil), server.prs[prNumber].reviews...)
+	comments := append([]string(nil), server.issues[prNumber].comments...)
 	server.mu.Unlock()
 	if len(reviews) != 2 ||
 		reviews[0].state != "DISMISSED" ||
 		reviews[1].state != "APPROVED" ||
 		reviews[1].commitSHA != "head-two" {
 		t.Fatalf("reviews = %+v, want dismissed head-one approval followed by approved head-two review", reviews)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("verdict comments = %v, want one for each reviewed head", comments)
 	}
 }

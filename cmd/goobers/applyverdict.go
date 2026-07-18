@@ -153,8 +153,9 @@ func parseBlockedOnSiblingComment(body string) (s blockedOnSiblingState, ok bool
 // new plumbing), re-checks its SHA pin against the PR's CURRENT head/base
 // before acting (design doc §6 D6: a verdict computed against a state that
 // no longer exists is void, not actionable), then publishes the verdict as a
-// SHA-pinned native GitHub review. Non-pass verdicts retain the existing
-// prose-comment + decision-label handoff consumed by pr-remediation.
+// SHA-pinned native GitHub review. Every verdict also retains the existing
+// prose-comment handoff consumed by merge, cache, and remediation paths;
+// non-pass verdicts additionally retain their decision labels.
 //
 // Before posting, a verdict missing Digest/SourceRunID (issue #523: every
 // genuinely fresh, reviewer-produced verdict — a cache-hit verdict already
@@ -172,8 +173,9 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "Usage: goobers apply-verdict [--gate name] [path]\n\n"+
 			"Read the holistic review gate's Verdict from this run's own journal,\n"+
 			"re-check its SHA pin against the PR's current head/base, and — if\n"+
-			"still valid — post the verdict as a native GitHub review. Non-pass\n"+
-			"verdicts also retain the remediation label + PR-comment handoff. A\n"+
+			"still valid — post the verdict as a native GitHub review and retain\n"+
+			"the PR-comment handoff. Non-pass verdicts also apply a remediation\n"+
+			"label. A\n"+
 			"stale SHA pin voids the verdict: no comment, no label, exit 0 (this\n"+
 			"cycle's work is simply moot, not an error — merge-review re-reviews\n"+
 			"next tick). Requires selectedNumber (Task.InputsFrom pr-select's\n"+
@@ -312,6 +314,13 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if posted.Decision == apiv1.VerdictPass {
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: repo,
+			ID:         strconv.Itoa(selectedNumber),
+			Comment:    comment,
+		}); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
+		}
 		pf(stdout, "approved PR #%d at %s\n", selectedNumber, current.HeadSHA)
 		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), stderr)
 	}

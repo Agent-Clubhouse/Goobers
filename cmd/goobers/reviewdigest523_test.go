@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -424,7 +425,7 @@ func TestApplyVerdictStampsDigestAndSourceRunIDOnFreshVerdict(t *testing.T) {
 	t.Setenv("GOOBERS_INPUT_REVIEWDIGEST", "sha256:freshly-computed")
 
 	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
-		Decision: apiv1.VerdictNeedsChanges, Summary: "needs a fix", HeadSHA: "sha20head", BaseSHA: "shamainbase",
+		Decision: apiv1.VerdictPass, Summary: "clean", HeadSHA: "sha20head", BaseSHA: "shamainbase",
 	})
 
 	applyDir := t.TempDir()
@@ -449,6 +450,19 @@ func TestApplyVerdictStampsDigestAndSourceRunIDOnFreshVerdict(t *testing.T) {
 	if posted.SourceRunID != runID {
 		t.Fatalf("posted.SourceRunID = %q, want this run's own id %q stamped in", posted.SourceRunID, runID)
 	}
+	cached, err := findCachedVerdict(
+		context.Background(),
+		server.newGitHubProvider("test-token"),
+		providers.RepositoryRef{Owner: "your-org", Name: "your-repo"},
+		20,
+		"sha256:freshly-computed",
+	)
+	if err != nil {
+		t.Fatalf("find cached pass verdict: %v", err)
+	}
+	if cached == nil || cached.SourceRunID != runID {
+		t.Fatalf("cached verdict = %+v, want pass verdict posted by %s", cached, runID)
+	}
 }
 
 // TestApplyVerdictPreservesCacheHitVerdictDigestAndSourceRunID: a verdict
@@ -469,7 +483,7 @@ func TestApplyVerdictPreservesCacheHitVerdictDigestAndSourceRunID(t *testing.T) 
 	t.Setenv("GOOBERS_INPUT_REVIEWDIGEST", "sha256:this-runs-own-digest")
 
 	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
-		Decision: apiv1.VerdictNeedsChanges, Summary: "reused", HeadSHA: "sha21head", BaseSHA: "shamainbase",
+		Decision: apiv1.VerdictPass, Summary: "reused", HeadSHA: "sha21head", BaseSHA: "shamainbase",
 		Digest: "sha256:original-producer-digest", SourceRunID: "run-original-producer",
 	})
 

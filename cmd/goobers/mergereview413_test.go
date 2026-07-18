@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/providers"
 )
 
 // threadOutput reproduces the runner's stage-to-stage handoff for a single
@@ -133,5 +134,24 @@ func TestMergeReviewThreadsSelectedNumberToApplyVerdict(t *testing.T) {
 	}
 	if hasAnyLabel(issue.labels, []string{"goobers:merge-ready"}) {
 		t.Fatalf("labels = %v, pass must stay unlabeled so a stale-dismissed approval can be re-reviewed", issue.labels)
+	}
+	if len(issue.comments) != 1 {
+		t.Fatalf("comments = %v, want one pass verdict for merge and cache consumers", issue.comments)
+	}
+	posted, ok := parseVerdictComment(issue.comments[0])
+	if !ok || posted.Decision != apiv1.VerdictPass || posted.HeadSHA != headSHA || posted.BaseSHA != baseSHA {
+		t.Fatalf("posted verdict = %+v, ok = %v, want current pass verdict", posted, ok)
+	}
+	_, commitMessage, err := structuredMergeCommitMessage(providers.PullRequestPollResult{
+		Title:         "Eligible PR",
+		HeadSHA:       headSHA,
+		BaseSHA:       baseSHA,
+		CommentsSince: []providers.PullRequestComment{{Body: issue.comments[0]}},
+	})
+	if err != nil {
+		t.Fatalf("structured merge message from posted pass verdict: %v", err)
+	}
+	if commitMessage != "no cross-PR conflicts; ready to merge" {
+		t.Fatalf("commit message = %q, want posted pass summary", commitMessage)
 	}
 }
