@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/providers"
 )
@@ -42,9 +43,10 @@ func TestTaskExecutor_RoutesToCIPoll(t *testing.T) {
 	}
 
 	env := apiv1.InvocationEnvelope{
-		TaskID:  "t1",
-		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
-		Inputs:  map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
+		TaskID:       "t1",
+		RepoRef:      apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Capabilities: []string{string(capability.GitHubPRWrite)},
+		Inputs:       map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
 	}
 	result, err := te.Run(context.Background(), env, apiv1.DeterministicRun{})
 	if err != nil {
@@ -55,13 +57,50 @@ func TestTaskExecutor_RoutesToCIPoll(t *testing.T) {
 	}
 }
 
+type dispatchCountingPoller struct {
+	calls int
+}
+
+func (p *dispatchCountingPoller) PollPullRequest(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
+	p.calls++
+	return providers.PullRequestPollResult{CheckState: providers.CheckStatePassing}, nil
+}
+
+func TestTaskExecutor_CIPollWithoutCapabilityFailsBeforePolling(t *testing.T) {
+	shell, _ := newTestExecutor(t, nil)
+	poller := &dispatchCountingPoller{}
+	ciPoll, err := NewCIPollExecutor(poller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	te, err := NewTaskExecutor(shell, ciPoll)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Inputs:  map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
+	}
+	_, err = te.Run(context.Background(), env, apiv1.DeterministicRun{})
+	if err == nil || !strings.Contains(err.Error(), `requires declared capability "github:pr:write"`) {
+		t.Fatalf("Run error = %v, want missing-capability error", err)
+	}
+	if poller.calls != 0 {
+		t.Fatalf("poller calls = %d, want 0", poller.calls)
+	}
+}
+
 func TestTaskExecutor_CIPollWithoutConfiguredExecutorFailsClosed(t *testing.T) {
 	shell, _ := newTestExecutor(t, nil)
 	te, err := NewTaskExecutor(shell, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKind: KindCIPoll}}
+	env := apiv1.InvocationEnvelope{
+		Capabilities: []string{string(capability.GitHubPRWrite)},
+		Inputs:       map[string]interface{}{InputKind: KindCIPoll},
+	}
 	if _, err := te.Run(context.Background(), env, apiv1.DeterministicRun{}); err == nil {
 		t.Fatal("expected an error when kind=ci-poll is declared but no CIPollExecutor is configured")
 	}
@@ -97,9 +136,10 @@ func TestTaskExecutor_ClassifiesCIPollProviderFailures(t *testing.T) {
 			}
 
 			env := apiv1.InvocationEnvelope{
-				TaskID:  "poll",
-				RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
-				Inputs:  map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
+				TaskID:       "poll",
+				RepoRef:      apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+				Capabilities: []string{string(capability.GitHubPRWrite)},
+				Inputs:       map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
 			}
 			result, runErr := te.Run(context.Background(), env, apiv1.DeterministicRun{})
 			if got := invoke.IsInfrastructureFailure(runErr); got != tc.wantInfrastructure {

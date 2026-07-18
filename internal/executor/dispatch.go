@@ -3,8 +3,10 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/providers"
 )
@@ -50,6 +52,10 @@ func (t *TaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, ru
 	case "", KindShell:
 		return t.Shell.Run(ctx, env, run)
 	case KindCIPoll:
+		required := string(capability.GitHubPRWrite)
+		if !containsString(env.Capabilities, required) {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q", KindCIPoll, required)
+		}
 		if t.CIPoll == nil {
 			return apiv1.ResultEnvelope{}, errors.New("executor: kind=ci-poll declared but no CIPollExecutor is configured")
 		}
@@ -79,4 +85,13 @@ func (t *TaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, ru
 	default:
 		return apiv1.ResultEnvelope{}, errors.New("executor: unknown " + InputKind + " " + stringInput(env, InputKind))
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
