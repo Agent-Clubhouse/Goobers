@@ -127,6 +127,17 @@ spec:
       goal: Run the project's local CI-equivalent (build, lint, tests) in the worktree.
       run:
         command: ["make", "ci"]
+      inputs:
+        # Serialize this stage instance-wide (executor flock, InputSerializeGroup):
+        # `make ci` runs `go test -race ./...`, and two of those at once on one
+        # machine saturate disk I/O so badly a test's own t.TempDir teardown
+        # (os.RemoveAll → unlinkat) stalls in uninterruptible kernel I/O past the
+        # 10-minute stage timeout — the suite hangs after cmd/goober-runtime,
+        # cmd/goobers never finishes, and the run opens zero PRs (the #811/#812
+        # hang, whose real cause is the Go test framework's temp-dir removal, not
+        # git fsync or :8080). Every other stage stays parallel, so raising
+        # maxConcurrentRuns above for throughput no longer reintroduces the hang.
+        serializeGroup: "local-ci"
       retry:
         maxAttempts: 1
       next: local-gate
