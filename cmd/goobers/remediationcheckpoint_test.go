@@ -264,6 +264,11 @@ func TestRemediationCheckpointRecordsFirstCycle(t *testing.T) {
 	if !ok || state.Cycles != 1 || state.LastDiffDigest == "" {
 		t.Fatalf("posted comment %q -> state=%+v ok=%v, want cycles=1 with a non-empty digest", st.comments[0], state, ok)
 	}
+	// #832: every recorded cycle carries the PR's head/base SHA so the next
+	// cycle's rebase-aware same-diff check can tell a stall from a rebase.
+	if state.HeadSHA != headSHA || state.BaseSHA != baseSHA {
+		t.Fatalf("state head/base = %q/%q, want %q/%q recorded on the cycle", state.HeadSHA, state.BaseSHA, headSHA, baseSHA)
+	}
 }
 
 // TestRemediationCheckpointEscalatesOnBudgetExhaustion is D4's headline
@@ -344,6 +349,64 @@ func TestRemediationCheckpointEscalatesOnSameDiff(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("labels = %v, want goobers:merge-escalated added on the same-diff repeat", st.labels)
+	}
+}
+
+// TestRemediationStalled is #832's core: a byte-identical diff is only a
+// no-progress stall when the base has ALSO not advanced. A clean rebase onto
+// newer main reproduces the same diff while advancing BaseSHA — that is
+// progress, not a stall, and must not escalate.
+func TestRemediationStalled(t *testing.T) {
+	const digest = "sha256:abc"
+	tests := []struct {
+		name           string
+		prior          remediationState
+		digest         string
+		currentBaseSHA string
+		want           bool
+	}{
+		{
+			name:           "identical diff, same base -> stalled",
+			prior:          remediationState{LastDiffDigest: digest, BaseSHA: "base-1"},
+			digest:         digest,
+			currentBaseSHA: "base-1",
+			want:           true,
+		},
+		{
+			name:           "identical diff but base advanced (clean rebase) -> not stalled",
+			prior:          remediationState{LastDiffDigest: digest, BaseSHA: "base-1"},
+			digest:         digest,
+			currentBaseSHA: "base-2",
+			want:           false,
+		},
+		{
+			name:           "different diff -> not stalled regardless of base",
+			prior:          remediationState{LastDiffDigest: "sha256:other", BaseSHA: "base-1"},
+			digest:         digest,
+			currentBaseSHA: "base-1",
+			want:           false,
+		},
+		{
+			name:           "no prior digest (first cycle) -> not stalled",
+			prior:          remediationState{},
+			digest:         digest,
+			currentBaseSHA: "base-1",
+			want:           false,
+		},
+		{
+			name:           "identical diff, prior has no BaseSHA (pre-#832 record) -> falls back to digest-only, stalled",
+			prior:          remediationState{LastDiffDigest: digest},
+			digest:         digest,
+			currentBaseSHA: "base-2",
+			want:           true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := remediationStalled(tt.prior, tt.digest, tt.currentBaseSHA); got != tt.want {
+				t.Fatalf("remediationStalled(%+v, %q, %q) = %v, want %v", tt.prior, tt.digest, tt.currentBaseSHA, got, tt.want)
+			}
+		})
 	}
 }
 
