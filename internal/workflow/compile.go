@@ -88,6 +88,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	problems = append(problems, triggerFieldProblems(def)...)
 	problems = append(problems, admissionProblems(def, o.goobers, o.knownHarnesses)...)
 	problems = append(problems, gateVocabProblems(def)...)
+	problems = append(problems, gateParamProblems(def)...)
 	problems = append(problems, workspaceProblems(def)...)
 
 	if len(problems) > 0 {

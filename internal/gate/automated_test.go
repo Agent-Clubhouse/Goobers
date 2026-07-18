@@ -88,6 +88,176 @@ func TestOutputNumericGTEErrorsOnBadInput(t *testing.T) {
 	}
 }
 
+func TestOutputNumericLTE(t *testing.T) {
+	cases := []struct {
+		name  string
+		value interface{}
+		want  string
+	}{
+		{"float below", 70.0, OutcomePass},
+		{"int equal", 80, OutcomePass},
+		{"string above", "81", OutcomeFail},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := evalCheck(t, "output-numeric-lte", map[string]string{"key": "changedFiles", "threshold": "80"}, map[string]interface{}{"changedFiles": tc.value})
+			if err != nil || out != tc.want {
+				t.Fatalf("got %q, %v; want %q", out, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestOutputNumericLTEErrorsOnBadInput(t *testing.T) {
+	params := map[string]string{"key": "changedFiles", "threshold": "80"}
+	cases := []struct {
+		name   string
+		params map[string]string
+		inputs map[string]interface{}
+	}{
+		{"missing key param", map[string]string{"threshold": "80"}, nil},
+		{"missing threshold param", map[string]string{"key": "changedFiles"}, nil},
+		{"non-numeric threshold", map[string]string{"key": "changedFiles", "threshold": "many"}, map[string]interface{}{"changedFiles": 10}},
+		{"non-numeric input", params, map[string]interface{}{"changedFiles": "many"}},
+		{"unsupported input type", params, map[string]interface{}{"changedFiles": true}},
+		{"missing input", params, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := evalCheck(t, "output-numeric-lte", tc.params, tc.inputs); err == nil {
+				t.Fatal("want error")
+			}
+		})
+	}
+}
+
+func TestOutputNumericLT(t *testing.T) {
+	cases := []struct {
+		name  string
+		value interface{}
+		want  string
+	}{
+		{"float below", 79.5, OutcomePass},
+		{"int equal", 80, OutcomeFail},
+		{"string above", "81", OutcomeFail},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := evalCheck(t, "output-numeric-lt", map[string]string{"key": "warnings", "threshold": "80"}, map[string]interface{}{"warnings": tc.value})
+			if err != nil || out != tc.want {
+				t.Fatalf("got %q, %v; want %q", out, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestOutputNumericLTErrorsOnBadInput(t *testing.T) {
+	params := map[string]string{"key": "warnings", "threshold": "80"}
+	cases := []struct {
+		name   string
+		params map[string]string
+		inputs map[string]interface{}
+	}{
+		{"missing key param", map[string]string{"threshold": "80"}, nil},
+		{"missing threshold param", map[string]string{"key": "warnings"}, nil},
+		{"non-numeric threshold", map[string]string{"key": "warnings", "threshold": "many"}, map[string]interface{}{"warnings": 10}},
+		{"non-numeric input", params, map[string]interface{}{"warnings": "many"}},
+		{"unsupported input type", params, map[string]interface{}{"warnings": true}},
+		{"missing input", params, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := evalCheck(t, "output-numeric-lt", tc.params, tc.inputs); err == nil {
+				t.Fatal("want error")
+			}
+		})
+	}
+}
+
+func TestOutputNotEquals(t *testing.T) {
+	cases := []struct {
+		name  string
+		value interface{}
+		want  string
+	}{
+		{"different string", "dev", OutcomePass},
+		{"equal string", "main", OutcomeFail},
+		{"flattened integer", 12, OutcomePass},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := evalCheck(t, "output-not-equals", map[string]string{"key": "branch", "equals": "main"}, map[string]interface{}{"branch": tc.value})
+			if err != nil || out != tc.want {
+				t.Fatalf("got %q, %v; want %q", out, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestOutputNotEqualsErrorsOnBadInput(t *testing.T) {
+	params := map[string]string{"key": "branch", "equals": "main"}
+	cases := []struct {
+		name   string
+		params map[string]string
+		inputs map[string]interface{}
+	}{
+		{"missing key param", map[string]string{"equals": "main"}, nil},
+		{"missing equals param", map[string]string{"key": "branch"}, nil},
+		{"unsupported input type", params, map[string]interface{}{"branch": []string{"main"}}},
+		{"missing input", params, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := evalCheck(t, "output-not-equals", tc.params, tc.inputs); err == nil {
+				t.Fatal("want error")
+			}
+		})
+	}
+}
+
+func TestOutputMatches(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   interface{}
+		pattern string
+		want    string
+	}{
+		{"matching string", "release/v2", `^release/v\d+$`, OutcomePass},
+		{"non-matching string", "main", `^release/v\d+$`, OutcomeFail},
+		{"flattened boolean", true, `^true$`, OutcomePass},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := evalCheck(t, "output-matches", map[string]string{"key": "branch", "pattern": tc.pattern}, map[string]interface{}{"branch": tc.value})
+			if err != nil || out != tc.want {
+				t.Fatalf("got %q, %v; want %q", out, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestOutputMatchesErrorsOnBadInput(t *testing.T) {
+	params := map[string]string{"key": "branch", "pattern": `^release/`}
+	cases := []struct {
+		name   string
+		params map[string]string
+		inputs map[string]interface{}
+	}{
+		{"missing key param", map[string]string{"pattern": `.*`}, nil},
+		{"missing pattern param", map[string]string{"key": "branch"}, nil},
+		{"invalid pattern", map[string]string{"key": "branch", "pattern": `(`}, map[string]interface{}{"branch": "main"}},
+		{"unsupported input type", params, map[string]interface{}{"branch": map[string]string{"name": "main"}}},
+		{"missing input", params, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := evalCheck(t, "output-matches", tc.params, tc.inputs); err == nil {
+				t.Fatal("want error")
+			}
+		})
+	}
+}
+
 func TestCIStatusCheck(t *testing.T) {
 	// Default vocabulary is providers.CheckState ("passing"/"failing"/
 	// "pending" — internal/gate does not import providers, see

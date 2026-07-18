@@ -54,6 +54,25 @@ journal events either way.
   **with stage-execution semantics** — declared env, timeout, retry policy, in the
   stage working copy — while the gate itself remains a machine state, not a stage
   (`ARCHITECTURE.md §5`).
+
+  The built-in predicates return `pass` when true and `fail` when false:
+
+  | Check | Required params | Predicate |
+  |---|---|---|
+  | `status-equals` | `equals` optional (defaults to `success`) | stage status equals the configured value |
+  | `output-equals` | `key`, `equals` | flattened output string equals the configured value |
+  | `output-not-equals` | `key`, `equals` | flattened output string differs from the configured value |
+  | `output-numeric-gte` | `key`, numeric `threshold` | numeric output is `>= threshold` |
+  | `output-numeric-lte` | `key`, numeric `threshold` | numeric output is `<= threshold` |
+  | `output-numeric-lt` | `key`, numeric `threshold` | numeric output is `< threshold` |
+  | `output-matches` | `key`, valid RE2 `pattern` | flattened output string matches the pattern |
+  | `ci-status` | `equals` optional (defaults to `passing`) | CI status equals the configured value |
+
+  Numeric thresholds and regular expressions are validated while the workflow is
+  compiled, so invalid gate configuration is rejected before a run starts. The
+  `ci-status` check additionally exposes `timeout`; the merge-specific
+  `land-outcome` and `queue-outcome` checks expose their documented multi-branch
+  outcomes rather than boolean predicates.
 - **GT-011 (MUST):** An **agentic** gate MUST invoke a scoped reviewer goober and consume
   a structured verdict; it is invoked and telemetered like an agentic task
   (`GBO-012`/`GBO-013`/`GBO-020`) — invocation/result envelopes and artifact pointers,

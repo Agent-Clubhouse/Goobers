@@ -175,6 +175,55 @@ spec:
 	}
 }
 
+func TestValidateRejectsInvalidOutputMatchesPattern(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo")
+	if code, _, stderr := runArgs(t, "init", root); code != 0 {
+		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
+	}
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	broken := `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: backlog-item
+      selector:
+        goobers: "true"
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement the backlog item.
+      next: output-check
+  gates:
+    - name: output-check
+      evaluator: automated
+      automated:
+        check: output-matches
+        params:
+          key: branch
+          pattern: "("
+      branches:
+        pass: ""
+        fail: "@abort"
+`
+	if err := os.WriteFile(workflowPath, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code == 0 {
+		t.Fatalf("validate: code = 0, want non-zero for an invalid regex; stdout = %q, stderr = %q", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "is not a valid RE2 expression") {
+		t.Fatalf("validate stdout = %q, want it to mention the invalid RE2 pattern", stdout)
+	}
+}
+
 func TestValidateWarnsForClaimStageWithoutResultFile(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "demo")
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
