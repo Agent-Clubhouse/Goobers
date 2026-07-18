@@ -625,53 +625,85 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) *Escalat
 	}
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
-		if !event.KnownSchema() {
-			continue
-		}
-		if event.Type == journal.EventRunFinished && event.Error != nil && cause.TerminalReason == "" {
-			cause.TerminalReason = event.Error.Message
-		}
-		if event.Type == journal.EventGateEvaluated && event.Target == workflow.TargetEscalate {
+		if event.KnownSchema() &&
+			event.Type == journal.EventGateEvaluated &&
+			event.Target == workflow.TargetEscalate {
 			cause.Selector = EscalationSelector{Kind: "gate", Name: event.Gate}
 			cause.SelectedBranch = event.Verdict
+			cause.TerminalReason = gateEscalationReason(event)
 			cause.CausalEventSeq = event.Seq
-			break
+			return cause
 		}
 	}
-	if cause.Selector.Name == "" {
-		for i := len(records) - 1; i >= 0; i-- {
-			event := records[i].Event
-			if event.KnownSchema() && event.Type == journal.EventError {
-				name := event.Stage
-				if name == "" {
-					name = event.Gate
-				}
-				cause.Selector = EscalationSelector{Kind: "condition", Name: name}
-				cause.CausalEventSeq = event.Seq
-				if cause.TerminalReason == "" && event.Error != nil {
-					cause.TerminalReason = event.Error.Message
-				}
-				break
-			}
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventStageFinished {
+			continue
 		}
+		cause.Selector = EscalationSelector{Kind: "stage", Name: event.Stage}
+		cause.TerminalReason = stageEscalationReason(event, records[i+1:])
+		cause.CausalEventSeq = event.Seq
+		return cause
 	}
-	if cause.Selector.Name == "" {
-		for i := len(records) - 1; i >= 0; i-- {
-			event := records[i].Event
-			if !event.KnownSchema() ||
-				event.Type != journal.EventStageFinished ||
-				event.Error == nil {
-				continue
-			}
-			cause.Selector = EscalationSelector{Kind: "stage", Name: event.Stage}
-			cause.CausalEventSeq = event.Seq
-			if cause.TerminalReason == "" {
-				cause.TerminalReason = event.Error.Message
-			}
-			break
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventError {
+			continue
 		}
+		name := event.Stage
+		if name == "" {
+			name = event.Gate
+		}
+		cause.Selector = EscalationSelector{Kind: "condition", Name: name}
+		cause.TerminalReason = eventErrorReason(event.Error)
+		cause.CausalEventSeq = event.Seq
+		break
 	}
 	return cause
+}
+
+func gateEscalationReason(event journal.Event) string {
+	escalated, _ := event.Runner["escalated"].(bool)
+	if escalated {
+		duplicateDiff, _ := event.Runner["duplicateDiff"].(bool)
+		if duplicateDiff {
+			return "repass produced a diff identical to the immediately prior attempt"
+		}
+		return "repass budget exhausted"
+	}
+	return fmt.Sprintf("gate %s resolved %s -> %s", event.Gate, event.Verdict, event.Target)
+}
+
+func stageEscalationReason(event journal.Event, subsequent []journal.EventRecord) string {
+	if reason := eventErrorReason(event.Error); reason != "" {
+		return reason
+	}
+	if event.Status == string(apiv1.ResultBlocked) {
+		for _, record := range subsequent {
+			candidate := record.Event
+			if candidate.KnownSchema() &&
+				candidate.Type == journal.EventError &&
+				candidate.Stage == event.Stage &&
+				candidate.Error != nil &&
+				candidate.Error.Code == "blocked_by_agent" {
+				return eventErrorReason(candidate.Error)
+			}
+		}
+	}
+	if event.Status != "" {
+		return fmt.Sprintf("stage %s finished with status %s", event.Stage, event.Status)
+	}
+	return fmt.Sprintf("stage %s selected escalation", event.Stage)
+}
+
+func eventErrorReason(detail *journal.ErrorDetail) string {
+	if detail == nil {
+		return ""
+	}
+	if detail.Message != "" {
+		return detail.Message
+	}
+	return detail.Code
 }
 
 func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent {

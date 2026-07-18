@@ -309,11 +309,15 @@ func TestRunDetailEventsAttemptsAndPinnedGraph(t *testing.T) {
 		Gate:    "review",
 		Verdict: "fail",
 		Target:  workflow.TargetEscalate,
+		Runner: map[string]any{
+			"repassAttempt": 4,
+			"escalated":     true,
+			"duplicateDiff": false,
+		},
 	})
 	appendEvent(journal.Event{
 		Type:   journal.EventRunFinished,
 		Status: string(journal.PhaseEscalated),
-		Error:  &journal.ErrorDetail{Code: "budget_exhausted", Message: "repass budget exhausted"},
 	})
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
@@ -351,15 +355,21 @@ func TestRunDetailEventsAttemptsAndPinnedGraph(t *testing.T) {
 		}
 	}
 	var policyStart *RunEvent
+	var escalationSeq uint64
 	for i := range events.Events {
 		event := &events.Events[i]
-		if event.Type == journal.EventStageStarted && event.AttemptClass == "policy" {
+		if policyStart == nil && event.Type == journal.EventStageStarted && event.AttemptClass == "policy" {
 			policyStart = event
-			break
+		}
+		if event.Type == journal.EventGateEvaluated && event.Target == workflow.TargetEscalate {
+			escalationSeq = event.Seq
 		}
 	}
 	if policyStart == nil || policyStart.Attempt != 2 || policyStart.Branch != 7 {
 		t.Fatalf("policy event = %+v", policyStart)
+	}
+	if detail.Escalation.CausalEventSeq != escalationSeq {
+		t.Fatalf("escalation causal event = %d, want %d", detail.Escalation.CausalEventSeq, escalationSeq)
 	}
 
 	attempts, err := service.StageAttempts(context.Background(), "run-detail", "implement")
@@ -768,6 +778,14 @@ func TestDirectStageEscalationIncludesCause(t *testing.T) {
 	}
 	clock.advance(time.Second)
 	if err := run.Append(journal.Event{
+		Type:  journal.EventError,
+		Stage: "implement",
+		Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: "cleanup failed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
 		Type:    journal.EventStageFinished,
 		Stage:   "implement",
 		Attempt: 1,
@@ -787,6 +805,109 @@ func TestDirectStageEscalationIncludesCause(t *testing.T) {
 		detail.Escalation.Selector.Name != "implement" ||
 		detail.Escalation.TerminalReason != "split this work" {
 		t.Fatalf("direct escalation = %+v", detail.Escalation)
+	}
+	events, err := service.RunEvents(context.Background(), "run-direct-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stageSeq, cleanupSeq uint64
+	for _, event := range events.Events {
+		switch {
+		case event.Type == journal.EventStageFinished:
+			stageSeq = event.Seq
+		case event.Type == journal.EventError && event.Error != nil && event.Error.Code == "worktree_remove_failed":
+			cleanupSeq = event.Seq
+		}
+	}
+	if detail.Escalation.CausalEventSeq != stageSeq || detail.Escalation.CausalEventSeq == cleanupSeq {
+		t.Fatalf("causal event = %d, stage = %d, cleanup = %d", detail.Escalation.CausalEventSeq, stageSeq, cleanupSeq)
+	}
+}
+
+func TestDuplicateDiffEscalationUsesRunnerMetadata(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-duplicate-diff",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 17, 16, 30, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerItem, Ref: "511"},
+		false,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventGateEvaluated,
+		Gate:    "review",
+		Verdict: "needs-changes",
+		Target:  workflow.TargetEscalate,
+		Runner: map[string]any{
+			"repassAttempt": 2,
+			"escalated":     true,
+			"duplicateDiff": true,
+			"diffDigest":    "sha256:aaaa",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseEscalated)
+
+	detail, err := service.GetRun(context.Background(), "run-duplicate-diff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Escalation == nil ||
+		detail.Escalation.Selector.Kind != "gate" ||
+		detail.Escalation.Selector.Name != "review" ||
+		detail.Escalation.SelectedBranch != "needs-changes" ||
+		detail.Escalation.TerminalReason != "repass produced a diff identical to the immediately prior attempt" {
+		t.Fatalf("duplicate-diff escalation = %+v", detail.Escalation)
+	}
+}
+
+func TestBlockedStageEscalationUsesRecordedReason(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-blocked",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 17, 16, 45, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerItem, Ref: "511"},
+		false,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "implement",
+		Attempt: 1,
+		Status:  string(apiv1.ResultBlocked),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:  journal.EventError,
+		Stage: "implement",
+		Error: &journal.ErrorDetail{Code: "blocked_by_agent", Message: "waiting for issue 441"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseEscalated)
+
+	detail, err := service.GetRun(context.Background(), "run-blocked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Escalation == nil ||
+		detail.Escalation.Selector.Kind != "stage" ||
+		detail.Escalation.Selector.Name != "implement" ||
+		detail.Escalation.TerminalReason != "waiting for issue 441" {
+		t.Fatalf("blocked escalation = %+v", detail.Escalation)
 	}
 }
 
