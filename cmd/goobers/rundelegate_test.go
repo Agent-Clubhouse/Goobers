@@ -533,3 +533,64 @@ func TestRunNoWaitDelegatesToLiveDaemon(t *testing.T) {
 		t.Fatalf("trace: code = %d, stdout = %q, stderr = %q", code, traceOut, stderr)
 	}
 }
+
+// TestPollTriggerResponseToleratesTornWrite pins the fix for the #745 flake:
+// the response writer uses a non-atomic os.WriteFile, so pollTriggerResponse can
+// read the file in the window between its O_TRUNC and the content landing —
+// empty or partial bytes that don't parse. It must treat that as "not ready
+// yet" and re-poll (without consuming the file), not hard-fail the delegation.
+// Pre-fix, a torn read returned an error → `goobers run` exited 1 with empty
+// stdout, which for terminal phases that also exit 1 slipped past the exit-code
+// check and failed the phase assertion intermittently under CI load.
+func TestPollTriggerResponseToleratesTornWrite(t *testing.T) {
+	oldInterval := delegationPollInterval
+	delegationPollInterval = time.Millisecond
+	t.Cleanup(func() { delegationPollInterval = oldInterval })
+
+	schedulerDir := t.TempDir()
+	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const requestID = "torn-req"
+	respPath := filepath.Join(reqDir, requestID+responseSuffix)
+
+	// Land a torn (unparseable) response first — what a reader catches mid-write.
+	if err := os.WriteFile(respPath, []byte(`{"runId":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	var gotID string
+	var gotErr error
+	go func() {
+		gotID, gotErr = pollTriggerResponse(context.Background(), schedulerDir, requestID, 5*time.Second)
+		close(done)
+	}()
+
+	// Give the poller time to observe the torn file at least once, then complete
+	// the write. A correct poller re-polls and only consumes a parseable file.
+	time.Sleep(20 * time.Millisecond)
+	data, err := json.Marshal(triggerResponse{RunID: "run-xyz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(respPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("pollTriggerResponse did not return after the complete response was written")
+	}
+	if gotErr != nil {
+		t.Fatalf("pollTriggerResponse errored on a torn-then-complete write: %v", gotErr)
+	}
+	if gotID != "run-xyz" {
+		t.Fatalf("runID = %q, want %q", gotID, "run-xyz")
+	}
+	if _, err := os.Stat(respPath); !os.IsNotExist(err) {
+		t.Errorf("response file not consumed after a successful parse (stat err = %v)", err)
+	}
+}

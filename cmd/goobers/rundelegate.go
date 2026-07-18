@@ -96,15 +96,23 @@ func pollTriggerResponse(ctx context.Context, schedulerDir, requestID string, ti
 	deadline := time.Now().Add(timeout)
 	for {
 		if data, rerr := os.ReadFile(respPath); rerr == nil {
-			_ = os.Remove(respPath)
+			// The writer (sweepPendingTriggers / a test responder) uses a plain,
+			// non-atomic os.WriteFile, so this read can land in the window between
+			// the O_TRUNC that empties the file and the content being fully
+			// written — yielding empty or partial bytes that don't parse. Treat
+			// that as "not ready yet" and re-poll rather than failing the whole
+			// delegation: a torn read is transient, and consuming (removing) the
+			// file before a clean parse would strand the real response so the next
+			// poll could never see it. Only remove once we have a complete,
+			// parseable response. The deadline still bounds a genuinely stuck writer.
 			var resp triggerResponse
-			if jerr := json.Unmarshal(data, &resp); jerr != nil {
-				return "", fmt.Errorf("delegate: malformed response for request %s: %w", requestID, jerr)
+			if jerr := json.Unmarshal(data, &resp); jerr == nil {
+				_ = os.Remove(respPath)
+				if resp.Error != "" {
+					return "", errors.New(resp.Error)
+				}
+				return resp.RunID, nil
 			}
-			if resp.Error != "" {
-				return "", errors.New(resp.Error)
-			}
-			return resp.RunID, nil
 		}
 		if time.Now().After(deadline) {
 			return "", fmt.Errorf("delegate: timed out after %s waiting for the live `goobers up` daemon to pick up the trigger request "+
