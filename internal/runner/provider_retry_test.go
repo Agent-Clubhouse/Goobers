@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
@@ -96,8 +97,9 @@ func ciPollRetryFixtureMachine(t *testing.T, maxAttempts int32) *workflow.Machin
 				executor.InputKind:     executor.KindCIPoll,
 				executor.InputPRNumber: "9",
 			},
-			Retry: &apiv1.RetryPolicy{MaxAttempts: maxAttempts},
-			Next:  "gate",
+			Capabilities: []string{string(capability.GitHubPRWrite)},
+			Retry:        &apiv1.RetryPolicy{MaxAttempts: maxAttempts},
+			Next:         "gate",
 		}},
 		Gates: []apiv1.Gate{{
 			Name:      "gate",

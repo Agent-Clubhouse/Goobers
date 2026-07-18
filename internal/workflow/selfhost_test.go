@@ -52,6 +52,30 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 	}
 }
 
+func TestSelfhostImplementationCIPollDeclaresRequiredCapability(t *testing.T) {
+	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "implementation.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read implementation workflow: %v", err)
+	}
+	var w apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &w); err != nil {
+		t.Fatalf("unmarshal implementation workflow: %v", err)
+	}
+	for _, task := range w.Spec.Tasks {
+		if task.Inputs["kind"] != "ci-poll" {
+			continue
+		}
+		for _, declared := range task.Capabilities {
+			if declared == "github:pr:write" {
+				return
+			}
+		}
+		t.Fatalf("ci-poll task %q capabilities = %v, want github:pr:write", task.Name, task.Capabilities)
+	}
+	t.Fatal("implementation workflow has no inputs.kind=ci-poll task")
+}
+
 // TestSelfhostAgentModelDeclarations is #289's regression guard: the live-loop
 // agentic TASK stages must declare agent:model (so the Copilot subprocess is
 // sourced the model token, §3.3), the curator additionally keeping

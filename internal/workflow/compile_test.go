@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 )
 
 func linearSpec() apiv1.WorkflowSpec {
@@ -404,6 +405,49 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), `uses capability "repo:push" not granted to goober "coder"`) {
 		t.Fatalf("expected undeclared-capability error, got %v", err)
+	}
+}
+
+func TestCompileCIPollRequiresGitHubPRWrite(t *testing.T) {
+	cases := []struct {
+		name    string
+		caps    []string
+		wantErr string
+	}{
+		{
+			name:    "missing required capability",
+			wantErr: `task "poll" with inputs.kind="ci-poll" must declare capability "github:pr:write"`,
+		},
+		{
+			name: "required capability declared",
+			caps: []string{string(capability.GitHubPRWrite)},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := apiv1.WorkflowSpec{
+				Gaggle: "web",
+				Start:  "poll",
+				Tasks: []apiv1.Task{{
+					Name:         "poll",
+					Type:         apiv1.TaskDeterministic,
+					Goal:         "poll CI",
+					Run:          &apiv1.DeterministicRun{Command: []string{"true"}},
+					Inputs:       map[string]string{"kind": "ci-poll"},
+					Capabilities: tc.caps,
+				}},
+			}
+			_, err := Compile(Definition{Name: "ci-poll", Version: 1, Spec: spec})
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Compile: unexpected error %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Compile error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

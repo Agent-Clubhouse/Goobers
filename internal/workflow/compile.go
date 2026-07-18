@@ -63,9 +63,9 @@ func WithKnownHarnesses(names []string) Option {
 // WithGoobers is supplied — a goober granting or a stage declaring a
 // capability outside the canonical registry (internal/capability, issue #74),
 // stages using capabilities their goober does not grant, and goobers on an
-// unknown harness when WithKnownHarnesses is also supplied. Errors are
-// aggregated so one compile reports every problem, each message actionable on
-// its own.
+// unknown harness when WithKnownHarnesses is also supplied. Built-in task
+// capability requirements are always enforced. Errors are aggregated so one
+// compile reports every problem, each message actionable on its own.
 func Compile(def Definition, opts ...Option) (*Machine, error) {
 	o := &options{}
 	for _, opt := range opts {
@@ -245,14 +245,19 @@ func reachabilityProblems(m *Machine) []string {
 	return problems
 }
 
-// admissionProblems reports capability and harness violations. It needs the
-// referenced goober definitions; with none supplied it is a no-op (the runner
-// path, where admission already happened at config-validation time).
+// admissionProblems reports capability and harness violations. Built-in task
+// requirements are intrinsic to the workflow and always checked; goober grant
+// and harness checks require the referenced goober definitions.
 func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool) []string {
-	if goobers == nil {
-		return nil
-	}
 	var problems []string
+	for _, t := range def.Spec.Tasks {
+		if t.Inputs["kind"] == "ci-poll" && !toSet(t.Capabilities)[string(capability.GitHubPRWrite)] {
+			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.GitHubPRWrite))
+		}
+	}
+	if goobers == nil {
+		return problems
+	}
 
 	// Every granted capability must be a canonical one (internal/capability,
 	// issue #74) — sorted for deterministic error ordering, since map
