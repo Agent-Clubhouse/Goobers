@@ -208,6 +208,9 @@ func buildHarnessRegistry(envCaps map[string]string) (*harness.Registry, error) 
 // grant, and one the repo token already backs is overridden — so an agentic
 // stage can hold a personal Copilot-Requests PAT for the model alongside the
 // org-repo token for the github tool, both fail-closed per capability admission.
+// The returned Grants are runner-owned (empty Goober); buildGooberCredentialGrants
+// binds these sources to each goober's own declared capabilities before an
+// agentic injector can use them.
 func buildCredentials(cfg *instance.Config) (credentials.Resolver, []credentials.Grant, error) {
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	for _, r := range cfg.Repos {
@@ -256,6 +259,35 @@ func buildCredentials(cfg *instance.Config) (credentials.Resolver, []credentials
 		grants = append(grants, credentials.Grant{Capability: cap, Ref: grantRef[cap]})
 	}
 	return resolver, grants, nil
+}
+
+// buildGooberCredentialGrants binds the configured credential sources to one
+// goober's definition-level capability grants. The resulting grants carry the
+// goober identity, so a forged stage envelope cannot make this injector reach a
+// capability granted only to another goober.
+func buildGooberCredentialGrants(gooberName string, capabilities []string, sources []credentials.Grant) []credentials.Grant {
+	refs := make(map[string]string, len(sources))
+	for _, source := range sources {
+		if source.Goober == "" {
+			refs[source.Capability] = source.Ref
+		}
+	}
+	grants := make([]credentials.Grant, 0, len(capabilities))
+	seen := make(map[string]bool, len(capabilities))
+	for _, capability := range capabilities {
+		if seen[capability] {
+			continue
+		}
+		seen[capability] = true
+		if ref, ok := refs[capability]; ok {
+			grants = append(grants, credentials.Grant{
+				Goober:     gooberName,
+				Capability: capability,
+				Ref:        ref,
+			})
+		}
+	}
+	return grants
 }
 
 // credentialRefName is the resolver ref name for a per-capability credentials:
@@ -750,7 +782,8 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// the shared instance registry (#117 Piece B). reg (not the tee) is
 			// kept below for the journal.Scrubber assertion — it still accumulates
 			// every secret, since the tee forwards to it.
-			injector, err := credentials.NewInjector(resolver, grants, teeRegistrar{run: reg, shared: sharedReg})
+			gooberGrants := buildGooberCredentialGrants(gooberName, spec.Capabilities, grants)
+			injector, err := credentials.NewGooberInjector(resolver, gooberName, gooberGrants, teeRegistrar{run: reg, shared: sharedReg})
 			if err != nil {
 				return nil, err
 			}

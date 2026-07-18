@@ -167,6 +167,24 @@ func TestBuildCredentialsOverride(t *testing.T) {
 	}
 }
 
+func TestBuildGooberCredentialGrantsScopesSourcesToIdentity(t *testing.T) {
+	sources := []credentials.Grant{
+		{Capability: "agent:model", Ref: "model-token"},
+		{Capability: "github:issues:write", Ref: "issues-token"},
+	}
+	grants := buildGooberCredentialGrants(
+		"curator",
+		[]string{"agent:model", "telemetry:read", "agent:model"},
+		sources,
+	)
+	if len(grants) != 1 {
+		t.Fatalf("grants = %+v, want one credential-backed grant", grants)
+	}
+	if got := grants[0]; got.Goober != "curator" || got.Capability != "agent:model" || got.Ref != "model-token" {
+		t.Fatalf("grant = %+v, want curator/agent:model/model-token", got)
+	}
+}
+
 // TestIngestRunTelemetryLogsForcedFailure is issue #246's third fix: a
 // swallowed rollup-ingest error used to leave nothing but a bare `_ =` — no
 // visible trace anywhere that the rollup silently fell behind. This forces
