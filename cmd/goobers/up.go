@@ -53,6 +53,19 @@ const sweepErrorReportEvery = 12
 
 var httpShutdownGrace = 5 * time.Second
 
+// diagnosticsMode is set true by `goobers up --diagnostics`. Read in
+// buildRunnerConfig to arm the executor's per-stage diagnostics watchdog and
+// un-truncate stage output. A package var (like runProcessExits) so it threads
+// to the runner wiring without changing buildSchedulerSetup's signature across
+// its many test callers; default false keeps every test and a normal daemon on
+// the zero-cost path.
+var diagnosticsMode bool
+
+// diagnosticsMaxOutputBytes is the per-stream stage output cap under
+// --diagnostics — large enough that a full goroutine dump or a verbose hung
+// stage's output is never clipped by the default 1 MiB cap.
+const diagnosticsMaxOutputBytes int64 = 64 << 20 // 64 MiB
+
 // apiListenAddress resolves the daemon's HTTP listen address from config. It is
 // a package var solely so the cmd/goobers test suite can force an ephemeral
 // loopback port (127.0.0.1:0) in place of the fixed default, keeping every
@@ -122,17 +135,24 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers up [--quiet] [path]\n\n"+
+		pf(stderr, "Usage: goobers up [--quiet] [--diagnostics] [path]\n\n"+
 			"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n"+
 			"plus the local runner and loopback HTTP API (default path \".\"). Blocks\n"+
 			"until interrupted (SIGINT/SIGTERM), then drains in-flight runs before\n"+
 			"exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,\n"+
-			"2 = usage/IO error.\n")
+			"2 = usage/IO error.\n\n"+
+			"--diagnostics turns on deep, opt-in capture for hard hangs: any\n"+
+			"deterministic stage still running past a couple of minutes gets a\n"+
+			"periodic native process sample + process tree + open-fd (lsof)\n"+
+			"snapshot recorded as a run artifact, and stage stdout/stderr are kept\n"+
+			"un-truncated. Verbose and slightly heavier; leave off for normal runs.\n")
 	}
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
+	diagnostics := fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	diagnosticsMode = *diagnostics
 	if fs.NArg() > 1 {
 		fs.Usage()
 		return 2
@@ -379,6 +399,9 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 	ready.Store(true)
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at http://%s%s\n", root, len(setup.Entries), apiServer.Address(), httpapi.Prefix)
+	if diagnosticsMode {
+		pln(stdout, "diagnostics mode: ON — long-running stages get periodic process samples + lsof + un-truncated output recorded as run artifacts")
+	}
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
 		lastSeq := uint64(0)
