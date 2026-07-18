@@ -160,11 +160,21 @@ type ExecProcessRunner struct{}
 // alongside an error (including on timeout) so the caller can still record a
 // partial transcript as a journal span even when the harness fails.
 //
-// The command runs in its own process group (Setpgid) so a timeout kills the
-// whole subprocess tree, not just the direct child (#119) — an agent-spawned
+// The command runs in its own SESSION (Setsid) so a timeout kills the whole
+// subprocess tree, not just the direct child (#119) — an agent-spawned
 // grandchild (a dev server, a test watcher) would otherwise survive the
 // direct child's death and keep holding the stage's stdout/stderr pipes
 // open, which would in turn keep cmd.Wait() from ever returning.
+//
+// Setsid, not Setpgid: a bare Setpgid child of a `goobers up` running in the
+// foreground of an interactive terminal is a *background process group on
+// that controlling terminal*, which the kernel STOPS (SIGTTOU/SIGTTIN, state
+// T, zero CPU) the moment it touches terminal state — the "local-ci hang"
+// #846 fixed in the executor's stage spawn (internal/executor/shell.go). This
+// is the twin agentic-harness spawn path (the one that launches copilot);
+// Setsid detaches the controlling terminal entirely so job control can't
+// freeze it. The session leader's pgid == pid, so the timeout path's
+// process-group kill (syscall.Kill(-cmd.Process.Pid, ...)) below is unchanged.
 func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
 	if len(req.Command) == 0 {
 		return ProcessResult{}, fmt.Errorf("harness: empty command")
@@ -187,7 +197,7 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 		env = []string{}
 	}
 	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	limit := req.MaxTranscriptBytes
 	if limit <= 0 {
