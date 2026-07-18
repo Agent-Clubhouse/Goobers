@@ -188,6 +188,26 @@ func (r *telemetryParityReader) Health(context.Context) (readservice.Health, err
 	return readservice.Health{Ready: true}, nil
 }
 
+func (r *telemetryParityReader) ListRuns(context.Context, readservice.RunListOptions) (readservice.RunList, error) {
+	return readservice.RunList{}, readservice.ErrNotFound
+}
+
+func (r *telemetryParityReader) GetRun(context.Context, string) (readservice.RunDetail, error) {
+	return readservice.RunDetail{}, readservice.ErrNotFound
+}
+
+func (r *telemetryParityReader) RunEvents(context.Context, string) (readservice.EventList, error) {
+	return readservice.EventList{}, readservice.ErrNotFound
+}
+
+func (r *telemetryParityReader) StageAttempts(context.Context, string, string) (readservice.AttemptList, error) {
+	return readservice.AttemptList{}, readservice.ErrNotFound
+}
+
+func (r *telemetryParityReader) Artifact(context.Context, string, string) (readservice.ArtifactContent, error) {
+	return readservice.ArtifactContent{}, readservice.ErrNotFound
+}
+
 func TestTelemetryHTTPAndCLIProjectionParity(t *testing.T) {
 	root := initDemo(t)
 	writeFixtureRunWithError(t, root)
