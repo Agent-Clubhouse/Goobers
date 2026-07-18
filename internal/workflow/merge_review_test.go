@@ -69,13 +69,41 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !ok {
 				t.Fatal("review gate not found")
 			}
+			// #833: needs-changes now routes through elect-lander (winner-election)
+			// before parking; pass and fail are unchanged.
 			wantReviewBranches := map[string]string{
 				"pass":          "merge-pr",
-				"needs-changes": "apply-verdict",
+				"needs-changes": "elect-lander",
 				"fail":          "apply-verdict",
 			}
 			if !reflect.DeepEqual(review.Branches, wantReviewBranches) {
 				t.Errorf("review branches = %v, want %v", review.Branches, wantReviewBranches)
+			}
+
+			// #833: elect-lander runs the deterministic winner-election and hands
+			// off to elect-gate, which routes the crowned lander to merge-pr and
+			// everything else to apply-verdict (park blocked-on-sibling /
+			// needs-remediation).
+			electLander, ok := m.Task("elect-lander")
+			if !ok {
+				t.Fatal("elect-lander task not found")
+			}
+			if electLander.Run == nil || !reflect.DeepEqual(electLander.Run.Command, []string{"goobers", "elect-lander"}) {
+				t.Errorf("elect-lander command = %+v, want [goobers elect-lander]", electLander.Run)
+			}
+			if electLander.Next != "elect-gate" {
+				t.Errorf("elect-lander.next = %q, want elect-gate", electLander.Next)
+			}
+			electGate, ok := m.Gate("elect-gate")
+			if !ok {
+				t.Fatal("elect-gate gate not found")
+			}
+			wantElectBranches := map[string]string{
+				"pass": "merge-pr",
+				"fail": "apply-verdict",
+			}
+			if !reflect.DeepEqual(electGate.Branches, wantElectBranches) {
+				t.Errorf("elect-gate branches = %v, want %v", electGate.Branches, wantElectBranches)
 			}
 
 			mergePR, ok := m.Task("merge-pr")

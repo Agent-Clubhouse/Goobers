@@ -60,6 +60,29 @@ spec:
       capabilities:
         - github:pr:write
 
+    # #833: deterministic cross-PR winner-election. Crowns one lander of a
+    # mutually-sibling-blocked cluster (lowest PR number) and routes it into
+    # merge-pr; everything else flows to apply-verdict and parks.
+    - name: elect-lander
+      type: deterministic
+      goal: Elect one lander from a mutually-sibling-blocked cluster, or park the rest.
+      run:
+        command: ["goobers", "elect-lander"]
+      inputsFrom:
+        selectedNumber: selectedNumber
+        selectedHeadSha: selectedHeadSha
+        selectedBaseSha: selectedBaseSha
+        reviewDigest: reviewDigest
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        - elected
+        - selectedNumber
+        - selectedHeadSha
+        - selectedBaseSha
+        - reviewDigest
+      next: elect-gate
+
     - name: merge-pr
       type: deterministic
       goal: Land the selected PR only when every independent safety conjunct still holds.
@@ -120,7 +143,22 @@ spec:
         goober: reviewer
       branches:
         pass: merge-pr
-        needs-changes: apply-verdict
+        # #833: needs-changes routes through elect-lander (winner-election) first.
+        needs-changes: elect-lander
+        fail: apply-verdict
+
+    - name: elect-gate
+      # #833: elected=true -> merge-pr (crowned lander; merge-pr re-verifies every
+      # safety conjunct), elected=false -> apply-verdict (park blocked-on-sibling /
+      # needs-remediation).
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: elected
+          equals: "true"
+      branches:
+        pass: merge-pr
         fail: apply-verdict
 
     - name: merge-gate
