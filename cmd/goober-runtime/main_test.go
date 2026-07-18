@@ -136,7 +136,8 @@ func TestGooberRuntimePreparerRegistersADOCredential(t *testing.T) {
 	t.Setenv("GOOBERS_ADO_ORG", "ado-org")
 	t.Setenv("GOOBERS_ADO_PROJECT", "ado-project")
 
-	preparer := gooberRuntimePreparer(config{})
+	registry, scrubber := journal.DefaultScrubber()
+	preparer := gooberRuntimePreparer(config{}, registry)
 	resolver, ok := preparer.Providers.(gooberruntime.EnvProviderResolver)
 	if !ok {
 		t.Fatalf("provider resolver = %T, want EnvProviderResolver", preparer.Providers)
@@ -144,9 +145,8 @@ func TestGooberRuntimePreparerRegistersADOCredential(t *testing.T) {
 	if _, err := resolver.RepoProvider(apiv1.ProviderADO, apiv1.RepoRef{}); err != nil {
 		t.Fatalf("RepoProvider(ADO): %v", err)
 	}
-	scrubber, ok := resolver.SecretRegistrar.(journal.Scrubber)
-	if !ok {
-		t.Fatalf("secret registrar = %T, want journal.Scrubber", resolver.SecretRegistrar)
+	if resolver.SecretRegistrar != registry {
+		t.Fatal("provider resolver is not wired to the runtime output registry")
 	}
 	encoded := base64.StdEncoding.EncodeToString([]byte("goobers:ado-token"))
 	if got := string(scrubber.Scrub([]byte(encoded))); got != journal.Redacted {

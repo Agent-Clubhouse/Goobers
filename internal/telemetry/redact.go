@@ -3,6 +3,8 @@ package telemetry
 import (
 	"regexp"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -57,3 +59,22 @@ func redactString(s string) string { return redactWith(providerNet, s) }
 // fields (defense in depth alongside #8's journal scrubber and #14's credential
 // registry, TEL-013/SEC-041), without duplicating the pattern list.
 func Redact(s string) string { return redactString(s) }
+
+func scrubAttributes(scrubber journal.Scrubber, attrs []attribute.KeyValue) []attribute.KeyValue {
+	out := make([]attribute.KeyValue, len(attrs))
+	copy(out, attrs)
+	for i := range out {
+		switch out[i].Value.Type() {
+		case attribute.STRING:
+			out[i].Value = attribute.StringValue(redactWith(scrubber, out[i].Value.AsString()))
+		case attribute.STRINGSLICE:
+			values := out[i].Value.AsStringSlice()
+			scrubbed := make([]string, len(values))
+			for j := range values {
+				scrubbed[j] = redactWith(scrubber, values[j])
+			}
+			out[i].Value = attribute.StringSliceValue(scrubbed)
+		}
+	}
+	return out
+}

@@ -137,6 +137,67 @@ func TestInvokePropagatesHarnessError(t *testing.T) {
 	}
 }
 
+func TestRuntimeScrubsRegisteredCredentialFromOutputs(t *testing.T) {
+	const secret = "opaque-encoded-ado-credential"
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(secret))
+	rt := New(Options{
+		Preparer: &fakePreparer{},
+		Harness: &fakeHarness{invokeResult: apiv1.ResultEnvelope{
+			Status:  apiv1.ResultSuccess,
+			Summary: "request used " + secret,
+			Outputs: map[string]interface{}{"authorization": secret},
+		}},
+		OutputScrubber: scrubber,
+	})
+
+	result, err := rt.Invoke(context.Background(), validInvocation())
+	if err != nil {
+		t.Fatalf("Invoke returned error: %v", err)
+	}
+	if strings.Contains(result.Summary, secret) || result.Outputs["authorization"] == secret {
+		t.Fatalf("registered credential leaked from runtime result: %+v", result)
+	}
+	if !strings.Contains(result.Summary, journal.Redacted) {
+		t.Fatalf("runtime result did not contain redaction marker: %+v", result)
+	}
+}
+
+func TestRuntimeScrubsRegisteredCredentialFromErrorsAndVerdicts(t *testing.T) {
+	const secret = "opaque-encoded-ado-credential"
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(secret))
+
+	errorRuntime := New(Options{
+		Preparer:       &fakePreparer{},
+		Harness:        &fakeHarness{err: errors.New("provider failed with " + secret)},
+		OutputScrubber: scrubber,
+	})
+	if _, err := errorRuntime.Invoke(context.Background(), validInvocation()); err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("runtime error was not scrubbed: %v", err)
+	}
+
+	reviewRuntime := New(Options{
+		Preparer: &fakePreparer{},
+		Evaluator: &fakeEvaluator{verdict: apiv1.Verdict{
+			Decision:  apiv1.VerdictNeedsChanges,
+			Rationale: "request used " + secret,
+			Findings: []apiv1.Finding{{
+				Severity: apiv1.SeverityError,
+				Message:  "credential " + secret,
+			}},
+		}},
+		OutputScrubber: scrubber,
+	})
+	verdict, err := reviewRuntime.Review(context.Background(), validInvocation())
+	if err != nil {
+		t.Fatalf("Review returned error: %v", err)
+	}
+	if strings.Contains(verdict.Rationale, secret) || strings.Contains(verdict.Findings[0].Message, secret) {
+		t.Fatalf("registered credential leaked from runtime verdict: %+v", verdict)
+	}
+}
+
 func TestInvokeRejectsInvalidResult(t *testing.T) {
 	rt := New(Options{
 		Preparer: &fakePreparer{},

@@ -11,6 +11,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
@@ -451,6 +453,46 @@ func TestSpanFailRecordsErrorStatus(t *testing.T) {
 	}
 	if task.Status().Description != "boom" {
 		t.Fatalf("task status description = %q, want boom", task.Status().Description)
+	}
+}
+
+func TestClientScrubsRegisteredCredentialBeforeExport(t *testing.T) {
+	const secret = "opaque-encoded-ado-credential"
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(secret))
+	exporter := NewMemoryExporter()
+	client, err := New(context.Background(), Config{
+		ServiceName:  "telemetry-test",
+		SpanExporter: exporter,
+		Scrubber:     scrubber,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	_, span, err := client.StartSchedulerSpan(context.Background(), SchedulerAttributes{
+		Gaggle: "acme-web", WorkflowID: "wf", Action: "dispatch", Reason: secret,
+	})
+	if err != nil {
+		t.Fatalf("StartSchedulerSpan() error = %v", err)
+	}
+	span.Event("provider.request", attribute.String("authorization", secret))
+	span.Fail(errors.New("provider failed with " + secret))
+
+	exported := findSpan(t, exporter.Spans(), "scheduler/dispatch")
+	if strings.Contains(exported.Status().Description, secret) {
+		t.Fatalf("registered credential leaked into span status: %q", exported.Status().Description)
+	}
+	if got := attrMap(exported)[AttrSchedulerReason]; got != journal.Redacted {
+		t.Fatalf("scheduler reason = %q, want redacted", got)
+	}
+	for _, event := range exported.Events() {
+		for _, attr := range event.Attributes {
+			if strings.Contains(attr.Value.Emit(), secret) {
+				t.Fatalf("registered credential leaked into span event: %+v", event)
+			}
+		}
 	}
 }
 

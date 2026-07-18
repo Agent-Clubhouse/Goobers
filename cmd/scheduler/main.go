@@ -37,7 +37,10 @@ import (
 )
 
 func main() {
-	app.Main("scheduler", run)
+	secretReg, scrubber := journal.DefaultScrubber()
+	app.MainWithScrubber("scheduler", scrubber, func(ctx context.Context, log *slog.Logger) error {
+		return runWithScrubber(ctx, log, secretReg, scrubber)
+	})
 }
 
 type config struct {
@@ -72,7 +75,7 @@ func configFromEnv() config {
 	}
 }
 
-func run(ctx context.Context, log *slog.Logger) error {
+func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.RegistryScrubber, scrubber journal.Scrubber) error {
 	cfg := configFromEnv()
 	if cfg.configDir == "" {
 		return errors.New("GOOBERS_CONFIG_DIR is required")
@@ -83,15 +86,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		return err
 	}
 
-	tel, err := telemetry.New(ctx, telemetry.Config{
-		ServiceName:    "scheduler",
-		ServiceVersion: version.Get().Version,
-		Environment:    cfg.environment,
-		Exporter:       cfg.exporter,
-		OTLPEndpoint:   cfg.otlpEndpoint,
-		OTLPInsecure:   cfg.otlpEndpoint != "",
-		Batch:          true,
-	})
+	tel, err := telemetry.New(ctx, schedulerTelemetryConfig(cfg, scrubber))
 	if err != nil {
 		return err
 	}
@@ -103,7 +98,6 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 	defer tc.Close()
 	starter := bootstrap.NewStarter(tc, cfg.taskQueue)
-	secretReg := journal.NewRegistryScrubber()
 
 	var wg sync.WaitGroup
 	for _, g := range loaded.Gaggles {
@@ -158,6 +152,19 @@ func run(ctx context.Context, log *slog.Logger) error {
 	<-ctx.Done()
 	wg.Wait()
 	return nil
+}
+
+func schedulerTelemetryConfig(cfg config, scrubber journal.Scrubber) telemetry.Config {
+	return telemetry.Config{
+		ServiceName:    "scheduler",
+		ServiceVersion: version.Get().Version,
+		Environment:    cfg.environment,
+		Exporter:       cfg.exporter,
+		OTLPEndpoint:   cfg.otlpEndpoint,
+		OTLPInsecure:   cfg.otlpEndpoint != "",
+		Batch:          true,
+		Scrubber:       scrubber,
+	}
 }
 
 // superviseTrigger runs a trigger, restarting Watch with backoff when it exits

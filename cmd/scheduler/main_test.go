@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"log/slog"
@@ -9,7 +10,11 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/scheduler"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // fakeTrigger drives superviseTrigger through a scripted sequence of Watch
@@ -109,5 +114,52 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.taskQueue == "" {
 		t.Error("taskQueue should default to the engine queue")
+	}
+}
+
+func TestSchedulerADORegistryScrubsTelemetryExporter(t *testing.T) {
+	const token = "ado-token-value"
+	registry, scrubber := journal.DefaultScrubber()
+	if _, _, err := bootstrap.BacklogProviderFor(apiv1.BacklogRef{
+		Provider: apiv1.ProviderADO,
+		Project:  "organization/project",
+	}, token, registry); err != nil {
+		t.Fatalf("BacklogProviderFor: %v", err)
+	}
+
+	exporter := telemetry.NewMemoryExporter()
+	cfg := schedulerTelemetryConfig(config{}, scrubber)
+	cfg.SpanExporter = exporter
+	cfg.Batch = false
+	client, err := telemetry.New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("telemetry.New: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	encoded := base64.StdEncoding.EncodeToString([]byte("goobers:" + token))
+	_, span, err := client.StartSchedulerSpan(context.Background(), telemetry.SchedulerAttributes{
+		Gaggle: "gaggle", WorkflowID: "workflow", Action: "dispatch", Reason: encoded,
+	})
+	if err != nil {
+		t.Fatalf("StartSchedulerSpan: %v", err)
+	}
+	span.End()
+
+	spans := exporter.Spans()
+	if len(spans) != 1 {
+		t.Fatalf("exported spans = %d, want 1", len(spans))
+	}
+	found := false
+	for _, attr := range spans[0].Attributes() {
+		if attr.Key == telemetry.AttrSchedulerReason {
+			found = true
+			if attr.Value.AsString() != journal.Redacted {
+				t.Fatalf("scheduler reason = %q, want redacted", attr.Value.AsString())
+			}
+		}
+	}
+	if !found {
+		t.Fatal("scheduler reason attribute was not exported")
 	}
 }
