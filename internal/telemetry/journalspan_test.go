@@ -174,7 +174,7 @@ func TestJournalSpanExporterRedactsRegisteredSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartTask: %v", err)
 	}
-	task.Event("provider.request", attribute.String("token", secret))
+	task.Event("provider."+secret, attribute.String("token."+secret, secret))
 	task.Fail(fmt.Errorf("stage logged %s", secret))
 	run.Fail(fmt.Errorf("run carrying %s", secret))
 

@@ -257,6 +257,19 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 	if !foundEnv {
 		t.Fatalf("expected GH_TOKEN=push-token-value in subprocess env, got %v", runner.lastReq.Env)
 	}
+	telemetryPrefix := "GOOBERS_TELEMETRY_DIR="
+	foundTelemetryDir := false
+	for _, kv := range runner.lastReq.Env {
+		if strings.HasPrefix(kv, telemetryPrefix) {
+			foundTelemetryDir = true
+			if info, err := os.Stat(strings.TrimPrefix(kv, telemetryPrefix)); err != nil || !info.IsDir() {
+				t.Fatalf("telemetry dir is not writable stage storage: %q (%v)", kv, err)
+			}
+		}
+	}
+	if !foundTelemetryDir {
+		t.Fatalf("expected GOOBERS_TELEMETRY_DIR in subprocess env, got %v", runner.lastReq.Env)
+	}
 	for _, arg := range runner.lastReq.Command {
 		if strings.Contains(arg, "push-token-value") {
 			t.Fatalf("token leaked into argv: %v", runner.lastReq.Command)

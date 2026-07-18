@@ -74,6 +74,9 @@ type RunRequest struct {
 	// CompletionPath is the workspace-relative path the harness must write
 	// its result/verdict JSON to.
 	CompletionPath string
+	// TelemetryDir is the writable, stage-scoped directory exposed to harness
+	// subprocesses as GOOBERS_TELEMETRY_DIR.
+	TelemetryDir string
 	// Credentials is pre-scoped to Envelope.Capabilities: Token(ctx, cap)
 	// fails closed for anything not declared for this stage.
 	Credentials *credentials.Set

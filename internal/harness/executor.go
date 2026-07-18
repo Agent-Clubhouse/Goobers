@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // ErrDeclaredArtifactMissing is returned when a stage declares
@@ -265,6 +266,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		Instructions:       e.instructions,
 		Workspace:          env.Workspace,
 		CompletionPath:     completionPath,
+		TelemetryDir:       telemetry.PrepareStageTelemetryDir(env.Workspace),
 		Credentials:        creds,
 		ContextPaths:       contextPaths,
 		Timeout:            e.timeout,

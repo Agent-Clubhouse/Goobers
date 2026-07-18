@@ -1215,7 +1215,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, span)
 		for _, m := range mutations {
 			// Best-effort, like ClaimLedger's own journal() (issue #228): a
 			// provider mutation already happened for real regardless of
@@ -1373,7 +1373,7 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task)
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, attempt int, class journal.AttemptClass) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, attempt int, class journal.AttemptClass, span telemetry.Span) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	workspaceMode := apiv1.WorkspaceRepo
 	if t.Run != nil && t.Run.Workspace != "" {
 		workspaceMode = t.Run.Workspace
@@ -1395,7 +1395,12 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		}
 		return apiv1.ResultEnvelope{}, nil, prepErr, nil
 	}
-	defer func() { removeErr = workspace.Remove(ctx) }()
+	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
+	defer func() {
+		telemetry.IngestStageEmissions(telemetryDir, &result, span)
+		telemetry.CleanupStageTelemetryDir(telemetryDir)
+		removeErr = workspace.Remove(ctx)
+	}()
 
 	for inputKey, outputKey := range t.InputsFrom {
 		v, ok := upstreamResult.Outputs[outputKey]
@@ -1654,6 +1659,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	// expected to commit (e.g. merge-review) still gets a real reviewer pass.
 	var emptyDiff bool
 	var env apiv1.InvocationEnvelope
+	var gateTelemetryDir string
 	if g.Evaluator == apiv1.EvaluatorAutomated {
 		env = apiv1.InvocationEnvelope{
 			TaskID:     in.RunID + ":" + g.Name,
@@ -1682,7 +1688,13 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 			span.Fail(err)
 			return gate.Result{}, err, nil
 		}
-		defer func() { removeErr = workspace.Remove(ctx) }()
+		if g.Evaluator == apiv1.EvaluatorAgentic {
+			gateTelemetryDir = telemetry.ResetStageTelemetryDir(env.Workspace)
+		}
+		defer func() {
+			telemetry.CleanupStageTelemetryDir(gateTelemetryDir)
+			removeErr = workspace.Remove(ctx)
+		}()
 		wt = workspace.worktree
 
 		// #301: give an agentic reviewer gate a runner-produced, digested diff
@@ -1769,6 +1781,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	}
 
 	result, err = gateEval.Evaluate(ctx, g, env, subjectStage, subjectResult, diffDigest, emptyDiff)
+	telemetry.IngestStageEmissions(gateTelemetryDir, nil, span)
 	if err != nil {
 		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, err)
 		span.Fail(err)

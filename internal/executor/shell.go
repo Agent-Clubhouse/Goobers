@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -252,6 +253,10 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.WorkflowID, e.InstanceRoot, injectRunContext, env.Inputs)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: resolve credentials: %w", err)
+	}
+	telemetryDir := telemetry.PrepareStageTelemetryDir(env.Workspace)
+	if telemetryDir != "" {
+		stageEnv = append(stageEnv, telemetry.StageTelemetryEnv+"="+telemetryDir)
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)

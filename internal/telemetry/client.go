@@ -76,9 +76,17 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, err
 	}
 
+	spanLimits := sdktrace.NewSpanLimits()
+	// A task span spans every retry, so keep a finite total-span budget. The
+	// SDK reports overflow through ReadOnlySpan.DroppedEvents.
+	spanLimits.EventCountLimit = maxSpanEvents
+	// Ingest rejects larger attribute maps and reserves room for required
+	// telemetry metadata, so accepted records cannot be partially truncated.
+	spanLimits.AttributePerEventCountLimit = maxSpanEventAttributes
 	options := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
 		sdktrace.WithIDGenerator(runIDGenerator{}),
+		sdktrace.WithRawSpanLimits(spanLimits),
 	}
 	if cfg.Batch {
 		options = append(options, sdktrace.WithBatcher(exporter))
