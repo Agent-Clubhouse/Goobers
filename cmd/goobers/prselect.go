@@ -99,6 +99,18 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		if blocked {
 			continue
 		}
+		// #748: a PR parked goobers:blocked-on-sibling is skipped while any of
+		// its named blocker PRs is still open — re-reviewing it would just
+		// reproduce the identical cross-PR verdict. Self-heals (selectable
+		// again) automatically once every blocker merges or closes, with no
+		// human clearing the label.
+		sibBlocked, err := blockedOnSiblingStillBlocks(ctx, provider, repo, pr)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
+		}
+		if sibBlocked {
+			continue
+		}
 		eligible = append(eligible, pr)
 	}
 	if len(eligible) == 0 {

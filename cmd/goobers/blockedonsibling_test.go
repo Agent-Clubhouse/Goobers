@@ -1,0 +1,207 @@
+package main
+
+import (
+	"context"
+	"io"
+	"strings"
+	"testing"
+
+	"github.com/goobers/goobers/providers"
+)
+
+// blockedOnSiblingCommentFor is a test helper: the sticky comment apply-verdict
+// would post for a PR blocked behind the given blocker PR numbers.
+func blockedOnSiblingCommentFor(t *testing.T, blockers ...int) string {
+	t.Helper()
+	c, err := blockedOnSiblingComment(blockedOnSiblingState{
+		Blockers: blockers, Reason: "waits behind sibling(s)", HeadSHA: "h", BaseSHA: "b",
+	})
+	if err != nil {
+		t.Fatalf("blockedOnSiblingComment: %v", err)
+	}
+	return c
+}
+
+// TestBlockedOnSiblingStillBlocks exercises #748's blocker-aware self-heal in
+// isolation: a PR not carrying the label is never blocked; a labeled PR with no
+// recorded blocker set fails OPEN (a re-review re-establishes the record); a
+// labeled PR with any still-open blocker stays blocked; and a labeled PR whose
+// every named blocker has resolved (merged or closed — both leave the blocker
+// no-longer-open) self-heals to unblocked.
+func TestBlockedOnSiblingStillBlocks(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+
+	t.Run("no label, never blocked", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(1, "pr 1")
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{Number: 1}
+
+		blocked, err := blockedOnSiblingStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("blockedOnSiblingStillBlocks: %v", err)
+		}
+		if blocked {
+			t.Fatal("blocked = true, want false — PR carries no blocked-on-sibling label")
+		}
+	})
+
+	t.Run("labeled but no recorded blocker set fails open", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(2, "pr 2")
+		server.addComment(2, "waiting on something, unspecified") // no payload
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{Number: 2, Labels: []string{blockedOnSiblingLabel}}
+
+		blocked, err := blockedOnSiblingStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("blockedOnSiblingStillBlocks: %v", err)
+		}
+		if blocked {
+			t.Fatal("blocked = true, want false — labeled with no recorded blocker set must fail open")
+		}
+	})
+
+	t.Run("open blocker stays blocked", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(3, "pr 3")
+		server.addIssue(700, "blocker still open")
+		server.addComment(3, blockedOnSiblingCommentFor(t, 700))
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{Number: 3, Labels: []string{blockedOnSiblingLabel}}
+
+		blocked, err := blockedOnSiblingStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("blockedOnSiblingStillBlocks: %v", err)
+		}
+		if !blocked {
+			t.Fatal("blocked = false, want true — named blocker #700 is still open")
+		}
+	})
+
+	t.Run("all blockers resolved self-heals", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(4, "pr 4")
+		server.addIssue(701, "merged blocker")
+		server.closeIssue(701) // merged or closed -> not open -> resolved
+		server.addComment(4, blockedOnSiblingCommentFor(t, 701))
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{Number: 4, Labels: []string{blockedOnSiblingLabel}}
+
+		blocked, err := blockedOnSiblingStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("blockedOnSiblingStillBlocks: %v", err)
+		}
+		if blocked {
+			t.Fatal("blocked = true, want false — every named blocker has resolved")
+		}
+	})
+
+	t.Run("mixed open and resolved stays blocked", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(5, "pr 5")
+		server.addIssue(702, "resolved blocker")
+		server.closeIssue(702)
+		server.addIssue(703, "still-open blocker")
+		server.addComment(5, blockedOnSiblingCommentFor(t, 702, 703))
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{Number: 5, Labels: []string{blockedOnSiblingLabel}}
+
+		blocked, err := blockedOnSiblingStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("blockedOnSiblingStillBlocks: %v", err)
+		}
+		if !blocked {
+			t.Fatal("blocked = false, want true — one of two named blockers (#703) is still open")
+		}
+	})
+}
+
+// TestUnparkResolvedSiblings is #748's post-merge push-half acceptance: after a
+// merge, a blocked-on-sibling PR whose named blocker just resolved has its
+// (now-stale) label cleared, while a PR with a still-open blocker and a PR
+// carrying no such label are both left untouched. Also covers the #542 bypass
+// path — the same live blocker-state check runs regardless of how the blocker
+// closed, so an out-of-band merge is caught too.
+func TestUnparkResolvedSiblings(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+
+	// #700 is the blocker that just merged (closed).
+	server.addIssue(700, "blocker that merged")
+	server.closeIssue(700)
+
+	// #810: parked behind the now-resolved #700 -> should be unparked.
+	server.addIssue(810, "resolved-blocker pr")
+	server.addOpenPR(810, "goobers/impl/a", "main", "h810", "b810", false, []string{blockedOnSiblingLabel}, nil)
+	server.addComment(810, blockedOnSiblingCommentFor(t, 700))
+
+	// #811: parked behind #700 AND still-open #712 -> should stay parked.
+	server.addIssue(712, "still-open blocker")
+	server.addIssue(811, "still-blocked pr")
+	server.addOpenPR(811, "goobers/impl/b", "main", "h811", "b811", false, []string{blockedOnSiblingLabel}, nil)
+	server.addComment(811, blockedOnSiblingCommentFor(t, 700, 712))
+
+	// #812: not parked at all -> untouched.
+	server.addIssue(812, "unrelated pr")
+	server.addOpenPR(812, "goobers/impl/c", "main", "h812", "b812", false, nil, nil)
+
+	provider := server.newGitHubProvider("token")
+	unparked, errs := unparkResolvedSiblings(context.Background(), provider, repo, 700, "main", io.Discard)
+	if len(errs) != 0 {
+		t.Fatalf("unparkResolvedSiblings errs = %v, want none", errs)
+	}
+	if len(unparked) != 1 || unparked[0] != 810 {
+		t.Fatalf("unparked = %v, want exactly [810]", unparked)
+	}
+}
+
+// TestPRSelectSkipsBlockedOnSibling is #748 AC1's merge-review-side acceptance:
+// a PR parked blocked-on-sibling with a still-open blocker is not selected.
+func TestPRSelectSkipsBlockedOnSibling(t *testing.T) {
+	const prNumber = 810
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(prNumber, "blocked pr")
+	server.addIssue(700, "open blocker")
+	server.addOpenPR(prNumber, "goobers/impl/blocked", "main", "h810", "b810", false, []string{blockedOnSiblingLabel}, nil)
+	server.addComment(prNumber, blockedOnSiblingCommentFor(t, 700))
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-run-810")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("stdout = %q, want no-work — a blocked-on-sibling PR with an open blocker must not be selected", stdout)
+	}
+}
+
+// TestPRSelectSelectsSelfHealedSibling is #748 AC2's merge-review-side
+// acceptance: once every named blocker resolves, the parked PR re-enters
+// selection automatically — no human clears the label.
+func TestPRSelectSelectsSelfHealedSibling(t *testing.T) {
+	const prNumber = 811
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(prNumber, "self-healed pr")
+	server.addIssue(700, "blocker that merged")
+	server.closeIssue(700) // the blocker merged since the PR was parked
+	server.addOpenPR(prNumber, "goobers/impl/healed", "main", "h811", "b811", false, []string{blockedOnSiblingLabel}, nil)
+	server.addComment(prNumber, blockedOnSiblingCommentFor(t, 700))
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-run-811")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "811") {
+		t.Fatalf("stdout = %q, want PR #811 selected — its blocker resolved, self-healing the block", stdout)
+	}
+}

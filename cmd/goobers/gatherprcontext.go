@@ -144,6 +144,17 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		if blocked {
 			continue
 		}
+		// #748: also exclude a PR parked goobers:blocked-on-sibling whose
+		// named blockers are not all resolved yet — same blocker-aware
+		// self-heal pr-select applies, so gather-pr-context (pr-remediation's
+		// selection) never spends a cycle on a PR waiting purely on a sibling.
+		sibBlocked, err := blockedOnSiblingStillBlocks(ctx, provider, repo, pr)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "pr-context.json")
+		}
+		if sibBlocked {
+			continue
+		}
 		nonBlocked = append(nonBlocked, pr)
 	}
 
