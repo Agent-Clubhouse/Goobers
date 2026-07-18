@@ -19,16 +19,20 @@ This design adds three things the current versioning epic (#426) deliberately le
 
 1. **An independently-versioned DSL** (`dslVersion: <major>.<minor>`) with defined change semantics
    per bump level, **pinned per-workflow** so one workflow can upgrade while its neighbours don't.
-2. **A version *support lifecycle*** — `preview → supported → supported-LTS → deprecated → unsupported`
-   — that the **host binary declares** and enforces at config-load time. Distinct from, and layered
-   on top of, the per-*feature* support levels in #426/#427.
+2. **A version *support lifecycle*** — `preview → supported → deprecated → unsupported` — that the
+   **host binary declares** and enforces at config-load time. Distinct from, and layered on top of,
+   the per-*feature* support levels in #426/#427. (An **LTS** tier is deliberately *not* planned at
+   this time — see Non-Goals §9 — but the level is left as a future extension point.)
 3. **Multi-version runtime coexistence** — the daemon carries **N interpreters, one per supported
    DSL minor**, and routes each workflow to the interpreter for its pinned version. We accept
    forking/copying interpreter code per minor as the *price of the "supported means it works as-is"
    guarantee*, exactly as Rust editions and Kubernetes CRD served-versions do.
 
-The runtime (the `goobers` binary itself) is **forward-fix-only**: no back-patches to old binaries;
-you get fixes by upgrading forward, and your pinned DSL versions keep working across that upgrade.
+The `goobers` **binary** is maintained **forward-only**: while the team is small, effort goes into
+fixing the main app forward, not cutting backport releases of old binaries. You get fixes by
+upgrading forward, and your pinned DSL versions keep working across that upgrade (that's what §3.4
+buys). This is a *resourcing* stance, not an architectural promise — revisit it if/when there are
+more contributors.
 
 ---
 
@@ -158,9 +162,13 @@ and the *host binary* owns the mapping (a `SupportMatrix` compiled into the bina
 |---|---|---|---|
 | **preview** | opt-in only | `DVL010` info | unstable; may change or vanish next minor. Off unless the instance explicitly enables preview versions. |
 | **supported** | yes | silent | works as-authored; the normal state. |
-| **supported-LTS** | yes | silent | works as-authored, and we commit to keeping it supported for an **extended, published window** (see §3.3.1) — the version you pin for "set it and forget it." |
 | **deprecated** | yes, warns | `DVL020` warning | still runs *exactly as before*; names the target version + the release it becomes unsupported. |
 | **unsupported** | **no — load error** | `DVL030` error | the interpreter has been removed; the workflow fails to load until migrated. |
+
+> **No LTS tier at this time** (§9). A `supported-LTS` level — a subset of supported versions with
+> an extended, published window — is an obvious future extension, and the `SupportMatrix` design
+> leaves room for it, but we are **not** committing to LTS windows now. Today there is one
+> `supported` level with one window (§3.3.1).
 
 Load-time behaviour is enforced in the config loader (`internal/configsync/loader.go`) /
 `api/validate`, so it surfaces on `goobers validate`, `goobers up`, and `goobers status` uniformly
@@ -173,8 +181,6 @@ The lifecycle is only worth something if the durations are promised, not vibes. 
 
 - A **supported** minor stays loadable (supported or deprecated) for **≥ N minor releases** after
   the release that supersedes it.
-- **supported-LTS** minors get a longer, explicitly-published window (e.g. **12 months / 4 minors**),
-  and we mark ~1 minor per major cycle as LTS.
 - A version must spend **≥1 released minor in `deprecated`** before it may go `unsupported`. No
   version jumps straight from supported to a load error.
 - The window is a *promise about the interpreter's continued existence*, which §3.4 is what actually
@@ -218,34 +224,31 @@ internal/workflow/v1_4/     → compiler + machine for DSL 1.4 (current)
 > *definitionally* version-invariant (the executor's state-walk, digest algorithm). The moment a
 > behaviour is version-observable, it lives in the versioned package. See Open Question §8.1.
 
-### 3.5 Runtime (binary) versioning — forward-fix only
+### 3.5 Runtime (binary) versioning — forward-only maintenance
 
-The `goobers` **binary** is SemVer'd independently (`goobers --version`, REL-1/#431) and is
-**forward-fix-only**:
+The `goobers` **binary** is SemVer'd independently (`goobers --version`, REL-1/#431). Its maintenance
+policy is **forward-only, as a resourcing decision**:
 
-- We do **not** back-patch old binaries. A fix ships in the next binary release; you get it by
-  upgrading the binary forward.
+- **While the team is small, effort goes into fixing the main app forward — we do not cut backport
+  releases of old binaries.** A fix ships in the next binary release; you get it by upgrading
+  forward. This is a stance about where our limited maintenance attention goes, *not* an
+  architectural promise; revisit it if/when there are more contributors.
 - Upgrading the binary **must not** break your pinned DSL versions — that's the entire point of §3.4.
-  Binary `2.7.0` still carries `v1_2/…v1_4/` interpreters if those versions are still in its
-  `SupportMatrix`.
+  A newer binary still carries the older interpreters that are still in its `SupportMatrix`.
 - A **PATCH** (§3.1) is a binary release that changes interpreter/runtime behaviour to fix a bug
   *without* changing any version's author-visible contract. If a "fix" changes what a workflow
   observes, it isn't a patch — it's a new DSL minor or major.
-- This is the standard interpreter/runtime posture (Go, Rust, browsers): you don't patch old
-  releases, you move forward, and the language contract is what's preserved across the move.
+- This is the standard interpreter/runtime posture (Go, Rust, browsers): move forward; the language
+  contract is what's preserved across the move.
 
-**The escape valve (must-fix on a frozen version).** Prior-art review (§5) surfaced that the
-*combination* we've chosen — freeze old behaviour (Rust) **and** refuse back-patches (Terraform's
-forward-only) — is genuinely novel: no surveyed system does both. Rust never drops a version;
-Terraform's old schemas are inert data with no live bugs; Kubernetes just removes. So we must
-pre-decide the one case none of them face: **a security or correctness bug *inside* a frozen
-interpreter (`v1_2/`) that authors can't migrate off quickly.** Forward-fix-only is clean until its
-first CVE in code we promised never to touch. Decision (for review): a frozen interpreter may take a
-**contract-preserving** patch (fixes the bug, provably changes no author-visible behaviour — guarded
-by that version's golden fixtures) — that's still a runtime PATCH, not a DSL change. If the fix
-*cannot* preserve the contract, we invoke a **forced-migration / version-revoke** path: mark the
-version `unsupported` out-of-band and require the `goobers fix` migration. This must be a named,
-designed path, not an improvisation under incident pressure (see Open Question §8.7).
+> **Deferred corner — must-fix inside a frozen interpreter.** Once §3.4's coexistence exists, there
+> is a theoretical case (a correctness/security bug *inside* a frozen `v1_2/` that authors can't
+> quickly migrate off) that the forward-only stance doesn't cleanly answer — and, per prior art (§5),
+> the freeze-old-behaviour + fix-forward *combination* has no off-the-shelf precedent. We are **not
+> designing for this now**: with a small team and few coexisting versions, the answer is "fix it
+> forward and migrate." If it ever bites, the likely shape is a contract-preserving patch (guarded by
+> that version's golden fixtures) or an out-of-band version revocation — but that's a *later* problem,
+> not a v1 deliverable. Tracked lightly as Open Question §8.7.
 
 ---
 
@@ -309,7 +312,7 @@ A small compiled-in table, the single authority the binary declares:
 ```go
 // internal/workflow/support.go (new)
 type Level int
-const ( Preview Level = iota; Supported; SupportedLTS; Deprecated; Unsupported )
+const ( Preview Level = iota; Supported; Deprecated; Unsupported ) // SupportedLTS deferred (§9)
 
 type SupportMatrix map[string]VersionSupport // "1.2" -> {Level, UnsupportedAfter, Replacement}
 ```
@@ -369,14 +372,19 @@ interpreter *stayed* frozen.
 - **8.6 Preview opt-in granularity.** Per-instance setting (leaning) vs per-workflow field — same
   question the companion doc left open (#426 §5.1); resolve once for both preview *features* and
   preview *versions*.
-- **8.7 Must-fix on a frozen version (the novel case, §3.5).** The contract-preserving-patch vs
-  forced-migration decision needs to be a real designed path with a runbook: who declares a version
-  revoked, how the golden-fixture "provably no behaviour change" gate works, and how an operator is
-  notified their pinned version is being force-migrated. This is the single most decision-forcing
-  interaction in the whole model and has no off-the-shelf answer.
+- **8.7 Must-fix on a frozen version (deferred, §3.5).** Once coexistence exists, a correctness/
+  security bug *inside* a frozen interpreter that authors can't quickly migrate off has no clean
+  answer under forward-only maintenance (and no off-the-shelf precedent per §5). **Explicitly out of
+  scope for v1** — with a small team and few coexisting versions the answer is "fix forward + migrate."
+  Parked here so it isn't forgotten if the version count grows.
 
 ## 9. Non-goals
 
+- **No LTS support tier at this time.** An extended-window `supported-LTS` level is a natural future
+  extension and the `SupportMatrix` leaves room for it, but we are not committing to LTS windows now
+  (§3.3). One `supported` level, one window.
+- **No backport releases of old binaries.** Binary maintenance is forward-only as a *resourcing*
+  decision while the team is small (§3.5) — not an architectural guarantee.
 - Not versioning the **HTTP read API** (`internal/readservice`) — that has its own `APIVersion` and
   is out of scope here.
 - Not changing **run-pinning** (WF-016) or the compiled-machine/digest contract — those stay shared
@@ -394,9 +402,9 @@ interpreter *stayed* frozen.
 - **DVL-4** (#864) — Version router: split `internal/workflow` into a dispatcher + first versioned interpreter package (`v_current`), with per-version golden fixtures.
 - **DVL-5** (#865) — Second interpreter (copy-forward drill): cut a `v_next`, freeze `v_current`, prove both compile independently — validates the coexistence model end-to-end.
 - **DVL-6** (#866) — `goobers fix --to <version>` migrator scaffold (one-step, diff-emitting).
-- **DVL-7** (#867) — Support-window *policy* doc + CI guard (extends #429): no straight-to-unsupported, ≥1 minor deprecated, LTS window.
+- **DVL-7** (#867) — Support-window *policy* doc + CI guard (extends #429): no straight-to-unsupported, ≥1 minor deprecated. (No LTS window — deferred, §9.)
 - **DVL-8** (#868) — Per-version feature matrix + release-note support-delta (extends #430/#433).
-- **DVL-9** (#869) — Forward-fix-only runtime policy: `--version` semantics, PATCH-means-no-contract-change guard, documented (extends #431).
+- **DVL-9** (#869) — Forward-only binary-maintenance policy (resourcing stance): `--version` semantics + PATCH-means-no-contract-change guard, documented (extends #431). The frozen-version must-fix corner (§8.7) is explicitly *not* in scope.
 
 ---
 
@@ -484,8 +492,10 @@ consumers move *toward* latest, but configs want an old document frozen against 
 makes them **unparseable by older interpreters** — breaking *from the old interpreter's view*.
 **Decide compatibility per-direction, per-interpreter — never from the author's chair.**
 
-**A.9 The one genuinely-novel gap (flagged by the research).** Our chosen combination — freeze old
-behaviour **and** forward-fix-only — is not done in full by any surveyed system: Rust never drops,
+**A.9 A gap with no precedent (parked, not solved).** Our combination — freeze old behaviour **and**
+maintain the binary forward-only — is not done in full by any surveyed system: Rust never drops,
 Terraform's frozen schemas are inert data, K8s just removes. The unanswered case is *a must-fix bug
-inside a frozen interpreter authors can't quickly migrate off.* This is designed as the §3.5 escape
-valve (contract-preserving patch, else forced-migration/revoke) and tracked as Open Q §8.7.
+inside a frozen interpreter authors can't quickly migrate off.* Since binary maintenance is
+forward-only by *resourcing* choice (§3.5) rather than architectural fiat, we don't design for this
+now — the v1 answer is "fix forward + migrate." Parked as Open Q §8.7 for if the version count ever
+grows enough to make it real.
