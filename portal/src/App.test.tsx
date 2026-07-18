@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { runs, type StageAttempt } from "./prototypeData";
+import { runs } from "./prototypeData";
 
 const storedValues = new Map<string, string>();
 
@@ -64,6 +64,10 @@ describe("portal foundation", () => {
     });
 
     expect(await screen.findByText("In progress")).toBeInTheDocument();
+    expect(screen.getByText("Attempt is still in progress at this point.")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Added the initial daemon read endpoints with fixture-backed coverage."),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("attempt-1-summary.md")).not.toBeInTheDocument();
     expect(container.querySelector('[data-edge="review-gate->implement"]')).not.toHaveClass("graph-edge-active");
   });
@@ -232,29 +236,20 @@ describe("escalation detail", () => {
     if (!run) {
       throw new Error("Escalated run fixture is missing");
     }
-    const postCausalAttempt = {
-      id: "review-gate-post-causal",
-      stageId: "review-gate",
-      number: 4,
-      kind: "infra",
-      status: "completed",
-      duration: "<1s",
-      startedSeq: 16,
-      endedSeq: 16,
-      summary: "Recorded terminal delivery metadata after escalation was selected.",
-      artifacts: [
-        {
-          name: "post-escalation-delivery.json",
-          mediaType: "application/json",
-          size: "1.1 KB",
-          summary: "Delivery metadata recorded after the causal event.",
-          digest: "sha256:2b5c8e1a9f4d7c3b6e0a2d5f8c1b4e7a0d3f6c9b2e5a8d1f4c7b0e3a6d9f2c5b",
-          digestVerified: false,
-          recordedSeq: 16,
-        },
-      ],
-    } satisfies StageAttempt;
-    run.attempts.push(postCausalAttempt);
+    const causalAttempt = run.attempts.find(({ id }) => id === "review-gate-3-escalated");
+    if (!causalAttempt) {
+      throw new Error("Causal attempt fixture is missing");
+    }
+    const postCausalArtifact = {
+      name: "post-escalation-delivery.json",
+      mediaType: "application/json",
+      size: "1.1 KB",
+      summary: "Delivery metadata recorded after the causal event.",
+      digest: "sha256:2b5c8e1a9f4d7c3b6e0a2d5f8c1b4e7a0d3f6c9b2e5a8d1f4c7b0e3a6d9f2c5b",
+      digestVerified: false,
+      recordedSeq: 16,
+    };
+    causalAttempt.artifacts.push(postCausalArtifact);
 
     try {
       renderRun(run.id);
@@ -275,7 +270,7 @@ describe("escalation detail", () => {
         within(escalationPanel).queryByText("post-escalation-delivery.json"),
       ).not.toBeInTheDocument();
     } finally {
-      run.attempts.splice(run.attempts.indexOf(postCausalAttempt), 1);
+      causalAttempt.artifacts.splice(causalAttempt.artifacts.indexOf(postCausalArtifact), 1);
     }
   });
 
@@ -332,6 +327,29 @@ describe("escalation detail", () => {
     expect(screen.queryByText("Evidence at escalation")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: graphNodeName })).toBeInTheDocument();
   });
+
+  it.each(["failed", "aborted"] as const)(
+    "does not treat a non-escalated %s run as an escalation",
+    (status) => {
+      const run = runs.find(({ id }) => id === "01JZ455ESCALATE");
+      if (!run) {
+        throw new Error("Terminal run fixture is missing");
+      }
+      const originalStatus = run.status;
+      run.status = status;
+
+      try {
+        renderRun(run.id);
+
+        expect(screen.getByText(new RegExp(`^${status}$`, "i"))).toBeInTheDocument();
+        expect(screen.queryByText("Attention · Escalation")).not.toBeInTheDocument();
+        expect(screen.queryByText("Evidence at escalation")).not.toBeInTheDocument();
+        expect(screen.queryByText("Causal event")).not.toBeInTheDocument();
+      } finally {
+        run.status = originalStatus;
+      }
+    },
+  );
 });
 
 function setReducedMotion(matches: boolean) {
