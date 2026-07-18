@@ -18,18 +18,18 @@ repos:
     # the required scopes.
     token:
       env: GOOBERS_GITHUB_TOKEN
-# The agentic goobers authenticate the Copilot model backend with a SEPARATE
-# token from the org-repo token above: a personal "Copilot Requests"
-# fine-grained PAT (that permission is personal-account-only). agent:model is
-# sourced from its own env var and injected into the subprocess as
-# COPILOT_GITHUB_TOKEN, distinct from GH_TOKEN, so one agentic stage carries
-# both at once (issue #287–#289 / multi-token credentials, §3.3). Set
-# GOOBERS_COPILOT_TOKEN before starting the instance; never an inline value
-# (CFG-009, SEC-010). See docs/guides/github-token-scopes.md.
+# Agentic goobers authenticate the Copilot model backend with a separate
+# personal "Copilot Requests" token. Native PR reviews also use a separate
+# GitHub identity because GitHub does not allow a PR author to approve its own
+# pull request. Set both env vars before starting the instance; never use
+# inline values (CFG-009, SEC-010). See docs/guides/github-token-scopes.md.
 credentials:
   - capability: agent:model
     token:
       env: GOOBERS_COPILOT_TOKEN
+  - capability: github:pr:review
+    token:
+      env: GOOBERS_GITHUB_REVIEW_TOKEN
 telemetry:
   enabled: true
 # Optional instance-level ceilings on top of each workflow's own `readiness`

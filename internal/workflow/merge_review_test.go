@@ -69,10 +69,12 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !ok {
 				t.Fatal("review gate not found")
 			}
-			// #833: needs-changes now routes through elect-lander (winner-election)
-			// before parking; pass and fail are unchanged.
+			// #833: needs-changes routes through elect-lander (winner-election)
+			// before parking. #825: pass now also routes through apply-verdict
+			// (every verdict is published as a native GitHub review before any
+			// merge decision) instead of straight to merge-pr.
 			wantReviewBranches := map[string]string{
-				"pass":          "merge-pr",
+				"pass":          "apply-verdict",
 				"needs-changes": "elect-lander",
 				"fail":          "apply-verdict",
 			}
@@ -81,7 +83,10 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			}
 
 			// #833: elect-lander runs the deterministic winner-election and hands
-			// off to elect-gate, which routes the crowned lander to merge-pr and
+			// off to elect-gate, which routes the crowned lander straight to
+			// merge-pr (deliberately bypassing #825's apply-verdict/
+			// published-verdict native-review chain on this override path —
+			// the verdict that got it here was needs-changes, not pass) and
 			// everything else to apply-verdict (park blocked-on-sibling /
 			// needs-remediation).
 			electLander, ok := m.Task("elect-lander")
@@ -104,6 +109,39 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			}
 			if !reflect.DeepEqual(electGate.Branches, wantElectBranches) {
 				t.Errorf("elect-gate branches = %v, want %v", electGate.Branches, wantElectBranches)
+			}
+
+			// #825: apply-verdict now publishes every verdict as a native
+			// GitHub review before published-verdict gates the actual merge.
+			applyVerdict, ok := m.Task("apply-verdict")
+			if !ok {
+				t.Fatal("apply-verdict task not found")
+			}
+			wantApplyCapabilities := []string{"github:pr:write", "github:pr:review"}
+			if !reflect.DeepEqual(applyVerdict.Capabilities, wantApplyCapabilities) {
+				t.Errorf("apply-verdict capabilities = %v, want %v", applyVerdict.Capabilities, wantApplyCapabilities)
+			}
+			if applyVerdict.Next != "published-verdict" {
+				t.Errorf("apply-verdict.next = %q, want published-verdict", applyVerdict.Next)
+			}
+			wantApplyOutputs := []string{"selectedNumber", "selectedHeadSha", "selectedBaseSha", "decision"}
+			if !reflect.DeepEqual(applyVerdict.ExpectedOutputs, wantApplyOutputs) {
+				t.Errorf("apply-verdict expectedOutputs = %v, want %v", applyVerdict.ExpectedOutputs, wantApplyOutputs)
+			}
+
+			publishedVerdict, ok := m.Gate("published-verdict")
+			if !ok {
+				t.Fatal("published-verdict gate not found")
+			}
+			if publishedVerdict.Automated == nil ||
+				publishedVerdict.Automated.Check != "output-equals" ||
+				publishedVerdict.Automated.Params["key"] != "decision" ||
+				publishedVerdict.Automated.Params["equals"] != "pass" {
+				t.Errorf("published-verdict check = %+v, want decision == pass", publishedVerdict.Automated)
+			}
+			wantPublishedBranches := map[string]string{"pass": "merge-pr", "fail": TerminalComplete}
+			if !reflect.DeepEqual(publishedVerdict.Branches, wantPublishedBranches) {
+				t.Errorf("published-verdict branches = %v, want %v", publishedVerdict.Branches, wantPublishedBranches)
 			}
 
 			mergePR, ok := m.Task("merge-pr")

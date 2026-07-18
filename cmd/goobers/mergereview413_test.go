@@ -67,6 +67,7 @@ func TestMergeReviewThreadsSelectedNumberToApplyVerdict(t *testing.T) {
 
 	const runID = "run-1"
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
 
 	// pr-select -> selected-pr.json.
 	selectDir := t.TempDir()
@@ -119,20 +120,18 @@ func TestMergeReviewThreadsSelectedNumberToApplyVerdict(t *testing.T) {
 		t.Fatalf("apply-verdict: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 
-	// A label was actually applied to the eligible PR — the whole point.
+	// A native approval was actually published for the eligible PR.
 	server.mu.Lock()
 	issue := server.issues[prNumber]
+	reviews := append([]fakeReview(nil), server.prs[prNumber].reviews...)
 	server.mu.Unlock()
 	if issue == nil {
 		t.Fatal("selected PR's issue record vanished")
 	}
-	hasLabel := false
-	for _, l := range issue.labels {
-		if l == "goobers:merge-ready" {
-			hasLabel = true
-		}
+	if len(reviews) != 1 || reviews[0].state != "APPROVED" || reviews[0].commitSHA != headSHA {
+		t.Fatalf("native reviews = %+v, want one APPROVED review pinned to %s", reviews, headSHA)
 	}
-	if !hasLabel {
-		t.Fatalf("labels = %v, want goobers:merge-ready applied to the eligible PR (#413)", issue.labels)
+	if hasAnyLabel(issue.labels, []string{"goobers:merge-ready"}) {
+		t.Fatalf("labels = %v, pass must stay unlabeled so a stale-dismissed approval can be re-reviewed", issue.labels)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -151,8 +152,9 @@ func parseBlockedOnSiblingComment(body string) (s blockedOnSiblingState, ok bool
 // already records it as an artifact via internal/gate's recordVerdict — no
 // new plumbing), re-checks its SHA pin against the PR's CURRENT head/base
 // before acting (design doc §6 D6: a verdict computed against a state that
-// no longer exists is void, not actionable), then posts the prose-projection
-// comment and applies the decision label.
+// no longer exists is void, not actionable), then publishes the verdict as a
+// SHA-pinned native GitHub review. Non-pass verdicts retain the existing
+// prose-comment + decision-label handoff consumed by pr-remediation.
 //
 // Before posting, a verdict missing Digest/SourceRunID (issue #523: every
 // genuinely fresh, reviewer-produced verdict — a cache-hit verdict already
@@ -170,8 +172,8 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "Usage: goobers apply-verdict [--gate name] [path]\n\n"+
 			"Read the holistic review gate's Verdict from this run's own journal,\n"+
 			"re-check its SHA pin against the PR's current head/base, and — if\n"+
-			"still valid — post the verdict as a PR comment and apply the\n"+
-			"decision label (merge-ready/needs-remediation/merge-escalated). A\n"+
+			"still valid — post the verdict as a native GitHub review. Non-pass\n"+
+			"verdicts also retain the remediation label + PR-comment handoff. A\n"+
 			"stale SHA pin voids the verdict: no comment, no label, exit 0 (this\n"+
 			"cycle's work is simply moot, not an error — merge-review re-reviews\n"+
 			"next tick). Requires selectedNumber (Task.InputsFrom pr-select's\n"+
@@ -190,6 +192,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pathArg = fs.Arg(0)
 	}
 	root := providerStageRoot(pathArg)
+	resultFile := providerInput("resultFile", "verdict-result.json")
 
 	selectedNumberStr := providerInput("selectedNumber", "")
 	if selectedNumberStr == "" {
@@ -248,7 +251,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 	if current == nil {
 		pln(stdout, "PR is no longer open (merged/closed since selection) — verdict moot, nothing to apply")
-		return 0
+		return writeApplyVerdictResult(resultFile, selectedNumber, "", "", "moot", stderr)
 	}
 
 	// D6: the verdict is void if the PR has moved since it was computed —
@@ -257,11 +260,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// against a diff that no longer exists.
 	if verdict.HeadSHA != "" && verdict.HeadSHA != current.HeadSHA {
 		pf(stdout, "verdict void: PR #%d's head moved (%s -> %s) since review — skipping, will re-review next cycle\n", selectedNumber, verdict.HeadSHA, current.HeadSHA)
-		return 0
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", stderr)
 	}
 	if verdict.BaseSHA != "" && verdict.BaseSHA != current.BaseSHA {
 		pf(stdout, "verdict void: PR #%d's base moved (%s -> %s) since review — skipping, will re-review next cycle\n", selectedNumber, verdict.BaseSHA, current.BaseSHA)
-		return 0
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", stderr)
 	}
 
 	posted := *verdict
@@ -272,8 +275,8 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		posted.SourceRunID = runID
 	}
 
-	label := verdictLabel(posted.Decision, posted.Findings)
 	comment := renderVerdictComment(posted)
+	label := verdictLabel(posted.Decision, posted.Findings)
 	if label == blockedOnSiblingLabel {
 		state := blockedOnSiblingState{
 			Blockers:   unionBlockingPRs(posted.Findings),
@@ -286,16 +289,75 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			comment += "\n\n" + payload
 		}
 	}
+
+	reviewDecision, err := nativeReviewDecision(posted.Decision)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	reviewToken, err := providerToken(capability.GitHubPRReview)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	reviewProvider := newGitHubProvider(reviewToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+	if _, err := reviewProvider.SubmitPullRequestReview(ctx, providers.PullRequestReviewRequest{
+		Repository: repo,
+		PullID:     strconv.Itoa(selectedNumber),
+		CommitSHA:  current.HeadSHA,
+		Decision:   reviewDecision,
+		Body:       comment,
+	}); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("submit native review for PR #%d", selectedNumber), err, resultFile)
+	}
+
+	if posted.Decision == apiv1.VerdictPass {
+		pf(stdout, "approved PR #%d at %s\n", selectedNumber, current.HeadSHA)
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), stderr)
+	}
+
+	// Publish the native review first. If the legacy handoff below fails, the
+	// absence of an exclusion label leaves the PR eligible for a later
+	// merge-review run instead of stranding it without a platform verdict.
 	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository: repo,
 		ID:         strconv.Itoa(selectedNumber),
 		AddLabels:  []string{label},
 		Comment:    comment,
 	}); err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, "")
+		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
 	}
 
 	pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, verdict.Decision)
+	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), stderr)
+}
+
+func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecision, error) {
+	switch decision {
+	case apiv1.VerdictPass:
+		return providers.ReviewDecisionApproved, nil
+	case apiv1.VerdictNeedsChanges, apiv1.VerdictFail:
+		return providers.ReviewDecisionChangesRequested, nil
+	default:
+		return "", fmt.Errorf("unsupported verdict decision %q", decision)
+	}
+}
+
+func writeApplyVerdictResult(path string, selectedNumber int, headSHA, baseSHA, decision string, stderr io.Writer) int {
+	data, err := json.Marshal(map[string]string{
+		"selectedNumber":  strconv.Itoa(selectedNumber),
+		"selectedHeadSha": headSHA,
+		"selectedBaseSha": baseSHA,
+		"decision":        decision,
+	})
+	if err != nil {
+		pf(stderr, "error: marshal verdict result: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		pf(stderr, "error: write %s: %v\n", path, err)
+		return 2
+	}
 	return 0
 }
 

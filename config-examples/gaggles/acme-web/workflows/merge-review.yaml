@@ -51,14 +51,23 @@ spec:
 
     - name: apply-verdict
       type: deterministic
-      goal: Apply the review verdict's label + PR comment.
+      goal: Publish the verdict as a native review and retain non-pass remediation handoffs.
       run:
         command: ["goobers", "apply-verdict"]
       inputsFrom:
         selectedNumber: selectedNumber
         reviewDigest: reviewDigest
+      inputs:
+        resultFile: "verdict-result.json"
       capabilities:
         - github:pr:write
+        - github:pr:review
+      expectedOutputs:
+        - selectedNumber
+        - selectedHeadSha
+        - selectedBaseSha
+        - decision
+      next: published-verdict
 
     # #833: deterministic cross-PR winner-election. Crowns one lander of a
     # mutually-sibling-blocked cluster (lowest PR number) and routes it into
@@ -146,14 +155,21 @@ spec:
       agentic:
         goober: reviewer
       branches:
-        pass: merge-pr
+        # #825: a pass enters apply-verdict too (every verdict is published
+        # as a native GitHub review before any merge decision) —
+        # published-verdict then gates the actual merge.
+        pass: apply-verdict
         # #833: needs-changes routes through elect-lander (winner-election) first.
         needs-changes: elect-lander
         fail: apply-verdict
 
     - name: elect-gate
-      # #833: elected=true -> merge-pr (crowned lander; merge-pr re-verifies every
-      # safety conjunct), elected=false -> apply-verdict (park blocked-on-sibling /
+      # #833: elected=true -> merge-pr directly (crowned lander; merge-pr
+      # re-verifies every safety conjunct). Deliberately does NOT route
+      # through apply-verdict/published-verdict (#825): the verdict that got
+      # it here was needs-changes, not pass — publishing a native review on
+      # this override path is a follow-up design question, not decided here.
+      # elected=false -> apply-verdict (park blocked-on-sibling /
       # needs-remediation).
       evaluator: automated
       automated:
@@ -164,6 +180,17 @@ spec:
       branches:
         pass: merge-pr
         fail: apply-verdict
+
+    - name: published-verdict
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: decision
+          equals: pass
+      branches:
+        pass: merge-pr
+        fail: ""
 
     - name: merge-gate
       # Distinguishes an actual merge from a merge-queue enqueue (issue

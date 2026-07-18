@@ -1084,6 +1084,70 @@ func (p *GitHubProvider) RequestReview(ctx context.Context, req ReviewRequest) e
 	return nil
 }
 
+// SubmitPullRequestReview publishes a SHA-pinned native GitHub review. GitHub
+// associates the review with commit_id, allowing branch-protection
+// stale-dismissal to invalidate an approval when the pull request moves.
+func (p *GitHubProvider) SubmitPullRequestReview(ctx context.Context, req PullRequestReviewRequest) (PullRequestReviewResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return PullRequestReviewResult{}, err
+	}
+	if req.PullID == "" {
+		return PullRequestReviewResult{}, fmt.Errorf("pull id is required")
+	}
+	if req.CommitSHA == "" {
+		return PullRequestReviewResult{}, fmt.Errorf("commit sha is required")
+	}
+	if req.Body == "" {
+		return PullRequestReviewResult{}, fmt.Errorf("review body is required")
+	}
+
+	var event string
+	switch req.Decision {
+	case ReviewDecisionApproved:
+		event = "APPROVE"
+	case ReviewDecisionChangesRequested:
+		event = "REQUEST_CHANGES"
+	default:
+		return PullRequestReviewResult{}, fmt.Errorf("unsupported review decision %q", req.Decision)
+	}
+
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "reviews")
+	if err != nil {
+		return PullRequestReviewResult{}, err
+	}
+	body := map[string]string{
+		"body":      req.Body,
+		"commit_id": req.CommitSHA,
+		"event":     event,
+	}
+	var out struct {
+		ID       int64  `json:"id"`
+		HTMLURL  string `json:"html_url"`
+		CommitID string `json:"commit_id"`
+		State    string `json:"state"`
+	}
+	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
+		return PullRequestReviewResult{}, err
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, req.PullID),
+		URL:       out.HTMLURL,
+		Operation: "review",
+		Fields: map[string]FieldDigest{
+			"body":      {After: digestString(req.Body)},
+			"commitSha": {After: digestString(req.CommitSHA)},
+			"decision":  {After: digestString(string(req.Decision))},
+		},
+	})
+	return PullRequestReviewResult{
+		ID:        out.ID,
+		URL:       out.HTMLURL,
+		CommitSHA: req.CommitSHA,
+		Decision:  req.Decision,
+	}, nil
+}
+
 // ListWorkItems lists GitHub issues as unified work items.
 func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequest) ([]WorkItem, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {

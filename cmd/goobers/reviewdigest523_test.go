@@ -419,11 +419,12 @@ func TestApplyVerdictStampsDigestAndSourceRunIDOnFreshVerdict(t *testing.T) {
 
 	const runID = "run-fresh"
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "20")
 	t.Setenv("GOOBERS_INPUT_REVIEWDIGEST", "sha256:freshly-computed")
 
 	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
-		Decision: apiv1.VerdictPass, Summary: "clean", HeadSHA: "sha20head", BaseSHA: "shamainbase",
+		Decision: apiv1.VerdictNeedsChanges, Summary: "needs a fix", HeadSHA: "sha20head", BaseSHA: "shamainbase",
 	})
 
 	applyDir := t.TempDir()
@@ -463,11 +464,12 @@ func TestApplyVerdictPreservesCacheHitVerdictDigestAndSourceRunID(t *testing.T) 
 
 	const runID = "run-cachehit"
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "21")
 	t.Setenv("GOOBERS_INPUT_REVIEWDIGEST", "sha256:this-runs-own-digest")
 
 	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
-		Decision: apiv1.VerdictPass, Summary: "reused", HeadSHA: "sha21head", BaseSHA: "shamainbase",
+		Decision: apiv1.VerdictNeedsChanges, Summary: "reused", HeadSHA: "sha21head", BaseSHA: "shamainbase",
 		Digest: "sha256:original-producer-digest", SourceRunID: "run-original-producer",
 	})
 

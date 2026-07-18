@@ -69,6 +69,13 @@ type BranchDeleter interface {
 	DeleteBranch(context.Context, DeleteBranchRequest) (DeleteBranchResult, error)
 }
 
+// PullRequestReviewSubmitter publishes provider-native review verdicts. It is
+// separate from RepoProvider because V1's native-review protocol is currently
+// implemented only for GitHub.
+type PullRequestReviewSubmitter interface {
+	SubmitPullRequestReview(context.Context, PullRequestReviewRequest) (PullRequestReviewResult, error)
+}
+
 // BranchName returns the run-scoped branch-name convention the repo provider
 // owns (BL-010/#13): the worktree manager pushes to it, the provider never does.
 func BranchName(workflow, runID string) string {

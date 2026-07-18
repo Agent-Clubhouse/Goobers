@@ -213,6 +213,25 @@ const (
 	ReviewDecisionChangesRequested ReviewDecision = "changes_requested"
 )
 
+// PullRequestReviewRequest describes a provider-native review verdict. CommitSHA
+// is required so the review is attached to exactly the head the reviewer saw;
+// branch-protection stale-dismissal can then invalidate it after a new push.
+type PullRequestReviewRequest struct {
+	Repository RepositoryRef  `json:"repository"`
+	PullID     string         `json:"pullId"`
+	CommitSHA  string         `json:"commitSha"`
+	Decision   ReviewDecision `json:"decision"`
+	Body       string         `json:"body"`
+}
+
+// PullRequestReviewResult describes the submitted provider-native review.
+type PullRequestReviewResult struct {
+	ID        int64          `json:"id"`
+	URL       string         `json:"url,omitempty"`
+	CommitSHA string         `json:"commitSha"`
+	Decision  ReviewDecision `json:"decision"`
+}
+
 // CheckState normalizes combined CI/check status across providers (BL-031).
 type CheckState string
 
