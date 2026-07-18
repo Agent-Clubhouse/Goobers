@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -18,7 +17,6 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
-	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
@@ -80,36 +78,7 @@ const (
 	// InputMaxOutputBytes is a decimal integer overriding the per-stream
 	// output cap.
 	InputMaxOutputBytes = "maxOutputBytes"
-	// InputSerializeGroup, when set, names an instance-wide mutex this stage
-	// holds (a blocking, cross-process exclusive flock in the instance
-	// scheduler dir) for the full duration of its command. Stages across
-	// concurrent runs that declare the same group name run one at a time; every
-	// other stage stays fully parallel.
-	//
-	// It exists for the disk-bound `make ci` local-ci gate. Two concurrent
-	// `go test -race ./...` runs on one machine saturate disk I/O badly enough
-	// that a test's own t.TempDir teardown (os.RemoveAll → unlinkat) stalls in
-	// uninterruptible kernel I/O past the 10-minute stage timeout — the whole
-	// go-test invocation hangs after cmd/goober-runtime, cmd/goobers never
-	// finishes, and the run opens zero PRs (#812/#811 targeted git fsync and
-	// the :8080 port, both real but not this: the stall is the Go test
-	// framework's own temp-dir removal, which neither fix touches). Serializing
-	// just this one stage removes the contention while implement/review/push/
-	// open-pr keep running in parallel across runs, so raising a workflow's
-	// maxConcurrentRuns for throughput no longer reintroduces the hang.
-	//
-	// Requires InstanceRoot; when it is unset (e.g. a unit test that never
-	// configures an instance) serialization is silently skipped, preserving
-	// unchanged behavior.
-	InputSerializeGroup = "serializeGroup"
 )
-
-// stageSerializationPollInterval bounds how often acquireStageSerializationLock
-// retries a contended, non-blocking flock while waiting its turn. Short enough
-// that a waiter starts promptly once the holder's `make ci` finishes (~1-2 min),
-// long enough not to spin. The wait itself is ctx-cancellable so a daemon drain
-// is never blocked behind a healthy holder.
-const stageSerializationPollInterval = 250 * time.Millisecond
 
 // OutputNoWork is the well-known InputResultFile output key a deterministic
 // command sets to boolean true to report ResultNoWork instead of
@@ -283,17 +252,6 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.WorkflowID, e.InstanceRoot, injectRunContext, env.Inputs)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: resolve credentials: %w", err)
-	}
-
-	// Serialize disk-bound stages (the local-ci `make ci` gate) instance-wide
-	// before the command timeout starts, so time spent waiting a turn does not
-	// count against the command's own budget. See InputSerializeGroup.
-	if group := stringInput(env, InputSerializeGroup); group != "" && e.InstanceRoot != "" {
-		release, lockErr := e.acquireStageSerializationLock(ctx, group)
-		if lockErr != nil {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: acquire serialize lock %q: %w", group, lockErr)
-		}
-		defer release()
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -655,44 +613,6 @@ func lastNonEmptyLine(data []byte) string {
 		}
 	}
 	return ""
-}
-
-// acquireStageSerializationLock takes a blocking, cross-process exclusive flock
-// on an instance-scoped lock file named for the group, so only one stage in
-// that group runs at a time across every concurrent run in this instance. The
-// wait is ctx-cancellable (a non-blocking flock retried on
-// stageSerializationPollInterval) rather than a bare blocking Flock, so a
-// daemon drain is never wedged behind a healthy holder still running its
-// command. The returned release func unlocks and closes the file; call it via
-// defer once the guarded command has finished.
-func (e *ShellExecutor) acquireStageSerializationLock(ctx context.Context, group string) (func(), error) {
-	dir := instance.NewLayout(e.InstanceRoot).SchedulerDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("prepare scheduler dir: %w", err)
-	}
-	f, err := os.OpenFile(filepath.Join(dir, "stage-"+group+".lock"), os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("open lock file: %w", err)
-	}
-	for {
-		lockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if lockErr == nil {
-			return func() {
-				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-				_ = f.Close()
-			}, nil
-		}
-		if !errors.Is(lockErr, syscall.EWOULDBLOCK) {
-			_ = f.Close()
-			return nil, lockErr
-		}
-		select {
-		case <-ctx.Done():
-			_ = f.Close()
-			return nil, ctx.Err()
-		case <-time.After(stageSerializationPollInterval):
-		}
-	}
 }
 
 func (e *ShellExecutor) timeoutFor(env apiv1.InvocationEnvelope) (time.Duration, error) {
