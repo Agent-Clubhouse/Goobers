@@ -124,14 +124,66 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "warning: %v\n", lerr)
 	}
 
+	unparked, unparkErrs := unparkResolvedSiblings(ctx, provider, repo, poll.Number, poll.BaseBranch, stderr)
+	for _, uerr := range unparkErrs {
+		pf(stderr, "warning: %v\n", uerr)
+	}
+
 	closed, closeErrs := closeReferencedIssues(ctx, provider, repo, poll.Body, pullNumber)
 	for _, cerr := range closeErrs {
 		pf(stderr, "warning: %v\n", cerr)
 	}
 
-	pf(stdout, "post-merge: labeled %d pr(s) %s (%d clean siblings left untouched), closed %d issue(s)\n",
-		len(labeled), needsRemediationLabel, len(skipped), len(closed))
+	pf(stdout, "post-merge: labeled %d pr(s) %s (%d clean siblings left untouched), unparked %d blocked-on-sibling pr(s), closed %d issue(s)\n",
+		len(labeled), needsRemediationLabel, len(skipped), len(unparked), len(closed))
 	return 0
+}
+
+// unparkResolvedSiblings clears goobers:blocked-on-sibling from every open
+// sibling PR whose named blocker PRs are now ALL resolved after this merge
+// (#748). The pull-based selection check (blockedOnSiblingStillBlocks) already
+// makes such a PR selectable again on the next tick regardless of the label —
+// this is the push-based half: it removes the now-stale label within one
+// post-merge cycle so a PR parked on a blocker that already landed doesn't keep
+// advertising a block that no longer exists. A PR with other, still-open
+// blockers is left parked. Best-effort per PR, mirroring fanOutNeedsRemediation:
+// a single failure is a warning, never fatal to the merge that already
+// succeeded or to the other siblings.
+func unparkResolvedSiblings(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, base string, stderr io.Writer) (unparked []int, errs []error) {
+	if base == "" {
+		return nil, nil
+	}
+	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, HeadPrefix: "goobers/", SkipCheckState: true,
+	})
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for blocked-on-sibling unpark: %w", base, err))
+		return nil, errs
+	}
+	for _, pr := range others {
+		if pr.Number == mergedNumber {
+			continue
+		}
+		if !hasAnyLabel(pr.Labels, []string{blockedOnSiblingLabel}) {
+			continue
+		}
+		stillBlocked, berr := blockedOnSiblingStillBlocks(ctx, provider, repo, pr)
+		if berr != nil {
+			errs = append(errs, fmt.Errorf("check blocked-on-sibling state for pr #%d during unpark: %w", pr.Number, berr))
+			continue
+		}
+		if stillBlocked {
+			continue
+		}
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: repo, ID: strconv.Itoa(pr.Number), RemoveLabels: []string{blockedOnSiblingLabel},
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("clear %s from pr #%d: %w", blockedOnSiblingLabel, pr.Number, err))
+			continue
+		}
+		unparked = append(unparked, pr.Number)
+	}
+	return unparked, errs
 }
 
 // fanOutNeedsRemediation triages every OTHER open PR targeting base and
