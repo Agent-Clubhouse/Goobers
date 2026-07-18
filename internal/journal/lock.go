@@ -49,8 +49,7 @@ func acquireJournalLock(dir, target string) (*os.File, error) {
 	// A non-blocking acquire retried on a short poll up to journalLockTimeout,
 	// rather than a bare blocking LOCK_EX, so a lock a live daemon holds for a
 	// run's lifetime can never wedge a second opener forever. Mirrors the
-	// bounded, retry-based flock the executor's serializeGroup and cmd/goobers's
-	// instance lock already use.
+	// bounded, retry-based flock cmd/goobers's instance lock already uses.
 	deadline := time.Now().Add(journalLockTimeout)
 	for {
 		lockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
