@@ -22,12 +22,16 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/gooberruntime"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 const defaultTaskQueue = "goobers-engine"
 
 func main() {
-	app.Main("goober-runtime", run)
+	secretReg, scrubber := journal.DefaultScrubber()
+	app.MainWithScrubber("goober-runtime", scrubber, func(ctx context.Context, log *slog.Logger) error {
+		return runWithScrubber(ctx, log, secretReg, scrubber)
+	})
 }
 
 type config struct {
@@ -56,12 +60,17 @@ func (c config) validate() error {
 }
 
 func run(ctx context.Context, log *slog.Logger) error {
+	secretReg, scrubber := journal.DefaultScrubber()
+	return runWithScrubber(ctx, log, secretReg, scrubber)
+}
+
+func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.RegistryScrubber, scrubber journal.Scrubber) error {
 	cfg := configFromEnv()
 	if err := cfg.validate(); err != nil {
 		return err
 	}
 
-	rw, err := newWorkerRunner(cfg, newRuntime(cfg))
+	rw, err := newWorkerRunner(cfg, newRuntime(cfg, secretReg, scrubber))
 	if err != nil {
 		return err
 	}
@@ -75,17 +84,20 @@ func run(ctx context.Context, log *slog.Logger) error {
 	return nil
 }
 
-func newRuntime(cfg config) *gooberruntime.Runtime {
+func newRuntime(cfg config, secretReg *journal.RegistryScrubber, scrubber journal.Scrubber) *gooberruntime.Runtime {
 	return gooberruntime.New(gooberruntime.Options{
-		Preparer: gooberRuntimePreparer(cfg),
-		Harness:  gooberruntime.NewCopilotHarness(cfg.harnessCommand),
+		Preparer:       gooberRuntimePreparer(cfg, secretReg),
+		Harness:        gooberruntime.NewCopilotHarness(cfg.harnessCommand),
+		OutputScrubber: scrubber,
 	})
 }
 
-func gooberRuntimePreparer(cfg config) gooberruntime.InProcessPreparer {
+func gooberRuntimePreparer(cfg config, secretReg *journal.RegistryScrubber) gooberruntime.InProcessPreparer {
 	return gooberruntime.InProcessPreparer{
 		WorkspaceRoot: cfg.workspaceRoot,
-		Providers:     gooberruntime.EnvProviderResolver{},
+		Providers: gooberruntime.EnvProviderResolver{
+			SecretRegistrar: secretReg,
+		},
 	}
 }
 

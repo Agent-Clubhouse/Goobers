@@ -57,6 +57,13 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 
 	started := make(chan liveAgenticAttempt, 4)
 	proceed := make(chan struct{})
+	proceedClosed := false
+	closeProceed := func() {
+		if !proceedClosed {
+			close(proceed)
+			proceedClosed = true
+		}
+	}
 	previousAdapter := newAgenticAdapter
 	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
 		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
@@ -72,34 +79,53 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 		}}
 	}
 	t.Cleanup(func() { newAgenticAdapter = previousAdapter })
-	t.Cleanup(func() { close(proceed) })
+	t.Cleanup(closeProceed)
 
 	for i := 0; i < 3; i++ {
 		ctx, cancel := context.WithCancel(context.Background())
-		var stdout, stderr bytes.Buffer
+		stdout := newDaemonOutput()
+		var stderr bytes.Buffer
 		daemonDone := make(chan int, 1)
-		go func() { daemonDone <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
+		go func() { daemonDone <- runUpContext(ctx, []string{root}, stdout, &stderr) }()
+		daemonStopped := false
+		t.Cleanup(func() {
+			if daemonStopped {
+				return
+			}
+			cancel()
+			closeProceed()
+			select {
+			case <-daemonDone:
+			case <-time.After(10 * time.Second):
+				t.Errorf("cycle %d daemon did not stop during cleanup", i)
+			}
+		})
+
+		select {
+		case <-stdout.started:
+		case code := <-daemonDone:
+			daemonStopped = true
+			t.Fatalf("cycle %d daemon exited before startup: code=%d stderr=%q", i, code, stderr.String())
+		case <-time.After(30 * time.Second):
+			t.Fatalf("cycle %d daemon did not start", i)
+		}
 
 		requestID, err := writeTriggerRequest(l.SchedulerDir(), "acceptance")
 		if err != nil {
-			cancel()
 			t.Fatalf("cycle %d write trigger request: %v", i, err)
 		}
-		runID, err := pollTriggerResponse(context.Background(), l.SchedulerDir(), requestID, 5*time.Second)
+		runID, err := pollTriggerResponse(context.Background(), l.SchedulerDir(), requestID, 30*time.Second)
 		if err != nil {
-			cancel()
 			t.Fatalf("cycle %d trigger run: %v", i, err)
 		}
 
 		var attempt liveAgenticAttempt
 		select {
 		case attempt = <-started:
-		case <-time.After(5 * time.Second):
-			cancel()
+		case <-time.After(30 * time.Second):
 			t.Fatalf("cycle %d agentic stage did not start", i)
 		}
 		if _, err := os.Stat(attempt.workspace); err != nil {
-			cancel()
 			t.Fatalf("cycle %d live worktree: %v", i, err)
 		}
 
@@ -112,6 +138,7 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 		}
 		select {
 		case code := <-daemonDone:
+			daemonStopped = true
 			if code != 0 {
 				t.Fatalf("cycle %d daemon exit code = %d, stderr=%q", i, code, stderr.String())
 			}
@@ -247,11 +274,41 @@ func TestUpReapsTerminalDeregisteredOrphanAndKeepsMarkedWorktree(t *testing.T) {
 		t.Fatalf("write orphan fixture: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	var stdout, stderr bytes.Buffer
-	if code := runUpContext(ctx, []string{root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("runUpContext: code=%d stderr=%q", code, stderr.String())
+	ctx, cancel := context.WithCancel(context.Background())
+	stdout := newDaemonOutput()
+	var stderr bytes.Buffer
+	daemonDone := make(chan int, 1)
+	go func() { daemonDone <- runUpContext(ctx, []string{root}, stdout, &stderr) }()
+	daemonStopped := false
+	t.Cleanup(func() {
+		if daemonStopped {
+			return
+		}
+		cancel()
+		select {
+		case <-daemonDone:
+		case <-time.After(10 * time.Second):
+			t.Error("runUpContext did not stop during cleanup")
+		}
+	})
+
+	select {
+	case <-stdout.started:
+	case code := <-daemonDone:
+		daemonStopped = true
+		t.Fatalf("runUpContext exited before startup: code=%d stderr=%q", code, stderr.String())
+	case <-time.After(30 * time.Second):
+		t.Fatal("runUpContext did not report daemon readiness")
+	}
+	cancel()
+	select {
+	case code := <-daemonDone:
+		daemonStopped = true
+		if code != 0 {
+			t.Fatalf("runUpContext: code=%d stderr=%q", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runUpContext did not stop after cancellation")
 	}
 	if _, err := os.Stat(orphan.Path); !os.IsNotExist(err) {
 		t.Fatalf("terminal deregistered orphan still exists: %v", err)

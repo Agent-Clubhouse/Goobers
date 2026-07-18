@@ -7,11 +7,14 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // Span is a small handle for ending or annotating a Goobers telemetry span.
 type Span struct {
-	span trace.Span
+	span     trace.Span
+	scrubber journal.Scrubber
 }
 
 // End finishes the span without changing its status.
@@ -26,7 +29,7 @@ func (s Span) Succeed(message string) {
 	if s.span == nil {
 		return
 	}
-	s.span.SetStatus(codes.Ok, message)
+	s.span.SetStatus(codes.Ok, s.scrub(message))
 	s.span.End()
 }
 
@@ -50,6 +53,7 @@ func (s Span) Complete(businessStatus string, isFailure bool) {
 	if s.span == nil {
 		return
 	}
+	businessStatus = s.scrub(businessStatus)
 	s.span.SetAttributes(attribute.String(AttrBusinessStatus, businessStatus))
 	if isFailure {
 		s.span.SetStatus(codes.Error, businessStatus)
@@ -67,23 +71,31 @@ func (s Span) Fail(err error) {
 	if err == nil {
 		err = errors.New("span failed")
 	}
-	s.span.RecordError(err)
-	s.span.SetStatus(codes.Error, err.Error())
+	message := s.scrub(err.Error())
+	s.span.RecordError(errors.New(message))
+	s.span.SetStatus(codes.Error, message)
 	s.span.End()
 }
 
 // Event records a named span event.
 func (s Span) Event(name string, attrs ...attribute.KeyValue) {
 	if s.span != nil {
-		s.span.AddEvent(name, trace.WithAttributes(attrs...))
+		s.span.AddEvent(s.scrub(name), trace.WithAttributes(scrubAttributes(s.scrubber, attrs)...))
 	}
 }
 
 // EventAt records a named span event with the timestamp supplied by the stage.
 func (s Span) EventAt(at time.Time, name string, attrs ...attribute.KeyValue) {
 	if s.span != nil {
-		s.span.AddEvent(name, trace.WithTimestamp(at), trace.WithAttributes(attrs...))
+		s.span.AddEvent(s.scrub(name), trace.WithTimestamp(at), trace.WithAttributes(scrubAttributes(s.scrubber, attrs)...))
 	}
+}
+
+func (s Span) scrub(value string) string {
+	if s.scrubber == nil {
+		return redactString(value)
+	}
+	return redactWith(s.scrubber, value)
 }
 
 func runSpanName(workflowID string) string {

@@ -21,6 +21,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 const (
@@ -46,6 +48,7 @@ type Config struct {
 	OTLPInsecure       bool
 	Stdout             io.Writer
 	SpanExporter       sdktrace.SpanExporter
+	Scrubber           journal.Scrubber
 	ResourceAttributes []attribute.KeyValue
 	Batch              bool
 }
@@ -55,6 +58,7 @@ type Client struct {
 	tracerProvider *sdktrace.TracerProvider
 	meterProvider  *metric.MeterProvider
 	tracer         trace.Tracer
+	scrubber       journal.Scrubber
 }
 
 // New configures OpenTelemetry tracing and metrics for a Goobers process.
@@ -63,9 +67,13 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	if serviceName == "" {
 		serviceName = "goobers"
 	}
+	scrubber := cfg.Scrubber
+	if scrubber == nil {
+		scrubber = providerNet
+	}
 
 	res, err := resource.New(ctx,
-		resource.WithAttributes(resourceAttrs(serviceName, cfg)...),
+		resource.WithAttributes(scrubAttributes(scrubber, resourceAttrs(serviceName, cfg))...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build telemetry resource: %w", err)
@@ -103,6 +111,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		tracerProvider: tracerProvider,
 		meterProvider:  meterProvider,
 		tracer:         tracerProvider.Tracer(ScopeName),
+		scrubber:       scrubber,
 	}, nil
 }
 
@@ -130,12 +139,12 @@ func (c *Client) StartRun(ctx context.Context, attrs RunAttributes) (context.Con
 		return ctx, Span{}, err
 	}
 	ctx = contextWithRequestedTraceID(ctx, traceID)
-	ctx, span := c.tracer.Start(ctx, runSpanName(attrs.WorkflowID),
+	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, runSpanName(attrs.WorkflowID)),
 		trace.WithNewRoot(),
 		trace.WithSpanKind(trace.SpanKindInternal),
-		trace.WithAttributes(runAttributeSet(attrs)...),
+		trace.WithAttributes(scrubAttributes(c.scrubber, runAttributeSet(attrs))...),
 	)
-	return ctx, Span{span: span}, nil
+	return ctx, Span{span: span, scrubber: c.scrubber}, nil
 }
 
 // StartTask starts a task span under the current run context.
@@ -151,11 +160,11 @@ func (c *Client) StartTask(ctx context.Context, attrs TaskAttributes) (context.C
 	if err != nil {
 		return ctx, Span{}, err
 	}
-	ctx, span := c.tracer.Start(ctx, taskSpanName(attrs.TaskID),
+	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, taskSpanName(attrs.TaskID)),
 		trace.WithSpanKind(trace.SpanKindInternal),
-		trace.WithAttributes(taskAttributeSet(attrs)...),
+		trace.WithAttributes(scrubAttributes(c.scrubber, taskAttributeSet(attrs))...),
 	)
-	return ctx, Span{span: span}, nil
+	return ctx, Span{span: span, scrubber: c.scrubber}, nil
 }
 
 // StartGate starts a gate evaluation span under the current run context.
@@ -171,11 +180,11 @@ func (c *Client) StartGate(ctx context.Context, attrs GateAttributes) (context.C
 	if err != nil {
 		return ctx, Span{}, err
 	}
-	ctx, span := c.tracer.Start(ctx, gateSpanName(attrs.GateID),
+	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, gateSpanName(attrs.GateID)),
 		trace.WithSpanKind(trace.SpanKindInternal),
-		trace.WithAttributes(gateAttributeSet(attrs)...),
+		trace.WithAttributes(scrubAttributes(c.scrubber, gateAttributeSet(attrs))...),
 	)
-	return ctx, Span{span: span}, nil
+	return ctx, Span{span: span, scrubber: c.scrubber}, nil
 }
 
 // StartSchedulerSpan starts a scheduler decision span.
@@ -196,11 +205,11 @@ func (c *Client) StartSchedulerSpan(ctx context.Context, attrs SchedulerAttribut
 			return ctx, Span{}, err
 		}
 	}
-	ctx, span := c.tracer.Start(ctx, schedulerSpanName(attrs.Action),
+	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, schedulerSpanName(attrs.Action)),
 		trace.WithSpanKind(trace.SpanKindInternal),
-		trace.WithAttributes(schedulerAttributeSet(attrs)...),
+		trace.WithAttributes(scrubAttributes(c.scrubber, schedulerAttributeSet(attrs))...),
 	)
-	return ctx, Span{span: span}, nil
+	return ctx, Span{span: span, scrubber: c.scrubber}, nil
 }
 
 // Flush forces pending telemetry through configured providers.

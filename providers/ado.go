@@ -29,6 +29,8 @@ type ADOProvider struct {
 	Username     string
 	Client       HTTPClient
 	Runner       CommandRunner
+
+	secretRegistrar SecretRegistrar
 }
 
 // NewADOProvider constructs an Azure DevOps provider with optional overrides.
@@ -45,7 +47,22 @@ func NewADOProvider(organization, project, token string, opts ...func(*ADOProvid
 	}
 	p.Client = httpClientOrDefault(p.Client)
 	p.Runner = commandRunnerOrDefault(p.Runner)
+	if p.secretRegistrar != nil && p.Token != "" {
+		p.secretRegistrar.Register([]byte(p.Token))
+		p.secretRegistrar.Register([]byte(strings.TrimPrefix(basicAuth(p.Username, p.Token), "Basic ")))
+	}
 	return p
+}
+
+// SecretRegistrar receives provider credential forms that must be scrubbed.
+type SecretRegistrar interface {
+	Register(secret []byte)
+}
+
+// WithADOSecretRegistrar registers the raw token and encoded Basic credential
+// with the scrubber used by journals and telemetry.
+func WithADOSecretRegistrar(registrar SecretRegistrar) func(*ADOProvider) {
+	return func(p *ADOProvider) { p.secretRegistrar = registrar }
 }
 
 // Kind returns the Azure DevOps provider kind.

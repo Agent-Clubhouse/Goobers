@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -172,22 +173,89 @@ func TestUpHeartbeatIsDefaultOnAndQuietSuppressesIt(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := initDeterministicDemo(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			var stdout, stderr bytes.Buffer
-			if code := runUpContext(ctx, tc.args(root), &stdout, &stderr); code != 0 {
+			stdout := newDaemonOutput()
+			var stderr bytes.Buffer
+			done := make(chan int, 1)
+			go func() {
+				done <- runUpContext(ctx, tc.args(root), stdout, &stderr)
+			}()
+
+			select {
+			case <-stdout.started:
+			case code := <-done:
 				t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+			case <-time.After(10 * time.Second):
+				t.Fatal("daemon did not start")
 			}
-			if !strings.Contains(stdout.String(), "daemon started") {
-				t.Fatalf("stdout = %q, want daemon-started message", stdout.String())
+
+			if tc.wantHeartbeat {
+				select {
+				case <-stdout.heartbeat:
+				case code := <-done:
+					t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+				case <-time.After(10 * time.Second):
+					t.Fatalf("stdout = %q, want heartbeat", stdout.String())
+				}
+			} else {
+				select {
+				case <-stdout.heartbeat:
+					t.Fatalf("stdout = %q, want no heartbeat", stdout.String())
+				case code := <-done:
+					t.Fatalf("daemon exited early with code %d, stderr = %q", code, stderr.String())
+				case <-time.After(10 * heartbeatInterval):
+				}
 			}
-			gotHeartbeat := strings.Contains(stdout.String(), "] alive — ")
-			if gotHeartbeat != tc.wantHeartbeat {
-				t.Fatalf("stdout = %q, heartbeat present = %t, want %t", stdout.String(), gotHeartbeat, tc.wantHeartbeat)
+
+			cancel()
+			select {
+			case code := <-done:
+				if code != 0 {
+					t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("runUpContext did not return after ctx cancellation")
 			}
 		})
 	}
+}
+
+type daemonOutput struct {
+	mu            sync.Mutex
+	buf           bytes.Buffer
+	started       chan struct{}
+	heartbeat     chan struct{}
+	startedOnce   sync.Once
+	heartbeatOnce sync.Once
+}
+
+func newDaemonOutput() *daemonOutput {
+	return &daemonOutput{
+		started:   make(chan struct{}),
+		heartbeat: make(chan struct{}),
+	}
+}
+
+func (o *daemonOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	n, err := o.buf.Write(p)
+	output := o.buf.String()
+	if strings.Contains(output, "daemon started") {
+		o.startedOnce.Do(func() { close(o.started) })
+	}
+	if strings.Contains(output, "] alive — ") {
+		o.heartbeatOnce.Do(func() { close(o.heartbeat) })
+	}
+	return n, err
+}
+
+func (o *daemonOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.String()
 }
 
 // TestUpResumesInterruptedRun is issue #23's crash-resume acceptance: a run
@@ -238,7 +306,12 @@ func TestUpResumesInterruptedRun(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(800*time.Millisecond, cancel) // give the resumed task time to actually dispatch and finish
+	// Wait for the resumed run to actually reach a terminal phase rather than
+	// guessing at a wall-clock window: a fixed sleep is long enough on an idle
+	// machine but not on a loaded CI runner under -race, which made this test
+	// flake with phase still "running".
+	stop := pollUntilRunTerminal(t, filepath.Join(l.RunsDir(), runID), cancel)
+	defer stop()
 
 	var stdout, stderr bytes.Buffer
 	done := make(chan int, 1)
@@ -399,5 +472,48 @@ func TestRunRejectedOverMaxConcurrentRuns(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "run conditions rejected") {
 		t.Fatalf("stderr = %q, want it to mention run conditions rejecting the trigger", stderr)
+	}
+}
+
+// pollUntilRunTerminal watches runDir until the run reaches a terminal phase
+// and then calls cancel, so a resume test stops the daemon on the run's actual
+// progress instead of a fixed wall-clock guess. It gives up after 30s so a
+// genuinely stuck run still fails the test (via the caller's phase assertion)
+// rather than hanging. The returned func stops the watcher.
+func pollUntilRunTerminal(t *testing.T, runDir string, cancel context.CancelFunc) func() {
+	t.Helper()
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		defer cancel()
+		deadline := time.After(30 * time.Second)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-deadline:
+				return
+			case <-ticker.C:
+				rd, err := journal.OpenRead(runDir)
+				if err != nil {
+					continue
+				}
+				st, err := rd.State()
+				if err != nil {
+					continue
+				}
+				switch st.Phase {
+				case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
 	}
 }

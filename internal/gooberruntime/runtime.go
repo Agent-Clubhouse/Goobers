@@ -2,6 +2,7 @@ package gooberruntime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -16,6 +17,27 @@ type Options struct {
 	Evaluator           Evaluator
 	InstructionResolver InstructionResolver
 	RequireInstructions bool
+	OutputScrubber      OutputScrubber
+}
+
+// OutputScrubber removes secrets before runtime results leave the activity.
+type OutputScrubber interface {
+	Scrub([]byte) []byte
+}
+
+type scrubbedError struct {
+	message string
+	matches func(error) bool
+}
+
+func (e *scrubbedError) Error() string {
+	return e.message
+}
+
+// Is preserves classification without exposing the secret-bearing original
+// through errors.Unwrap.
+func (e *scrubbedError) Is(target error) bool {
+	return e.matches(target)
 }
 
 // Runtime implements internal/invoke.Goober for agentic tasks and reviewer
@@ -26,6 +48,7 @@ type Runtime struct {
 	evaluator           Evaluator
 	instructionResolver InstructionResolver
 	requireInstructions bool
+	outputScrubber      OutputScrubber
 }
 
 var _ invoke.Goober = (*Runtime)(nil)
@@ -38,12 +61,14 @@ func New(opts Options) *Runtime {
 		evaluator:           opts.Evaluator,
 		instructionResolver: opts.InstructionResolver,
 		requireInstructions: opts.RequireInstructions,
+		outputScrubber:      opts.OutputScrubber,
 	}
 }
 
 // Invoke prepares a workspace, invokes the harness, and returns a valid result
 // envelope.
-func (r *Runtime) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+func (r *Runtime) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (result apiv1.ResultEnvelope, err error) {
+	defer func() { err = r.scrubError(err) }()
 	req, err := r.prepareRequest(ctx, env)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
@@ -51,10 +76,11 @@ func (r *Runtime) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (api
 	if r.harness == nil {
 		return apiv1.ResultEnvelope{}, ErrHarnessUnavailable
 	}
-	result, err := r.harness.Invoke(ctx, req)
+	result, err = r.harness.Invoke(ctx, req)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("invoke harness: %w", err)
 	}
+	r.scrubResult(&result)
 	if err := validateResult(result); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
@@ -63,7 +89,8 @@ func (r *Runtime) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (api
 
 // Review prepares a workspace, evaluates the upstream task outputs, and returns
 // a valid verdict envelope.
-func (r *Runtime) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+func (r *Runtime) Review(ctx context.Context, env apiv1.InvocationEnvelope) (verdict apiv1.Verdict, err error) {
+	defer func() { err = r.scrubError(err) }()
 	req, err := r.prepareRequest(ctx, env)
 	if err != nil {
 		return apiv1.Verdict{}, err
@@ -72,14 +99,71 @@ func (r *Runtime) Review(ctx context.Context, env apiv1.InvocationEnvelope) (api
 	if evaluator == nil {
 		evaluator = HarnessEvaluator{Harness: r.harness}
 	}
-	verdict, err := evaluator.Evaluate(ctx, req)
+	verdict, err = evaluator.Evaluate(ctx, req)
 	if err != nil {
 		return apiv1.Verdict{}, fmt.Errorf("evaluate gate: %w", err)
 	}
+	r.scrubVerdict(&verdict)
 	if err := validateVerdict(verdict); err != nil {
 		return apiv1.Verdict{}, err
 	}
 	return verdict, nil
+}
+
+func (r *Runtime) scrubResult(result *apiv1.ResultEnvelope) {
+	result.Summary = r.scrubString(result.Summary)
+	if result.Error != nil {
+		result.Error.Message = r.scrubString(result.Error.Message)
+	}
+	for key, value := range result.Outputs {
+		if text, ok := value.(string); ok {
+			result.Outputs[key] = r.scrubString(text)
+		}
+	}
+}
+
+func (r *Runtime) scrubVerdict(verdict *apiv1.Verdict) {
+	verdict.Rationale = r.scrubString(verdict.Rationale)
+	verdict.Summary = r.scrubString(verdict.Summary)
+	for i := range verdict.Findings {
+		verdict.Findings[i].Message = r.scrubString(verdict.Findings[i].Message)
+		verdict.Findings[i].Location = r.scrubString(verdict.Findings[i].Location)
+	}
+}
+
+func (r *Runtime) scrubError(err error) error {
+	if err == nil || r.outputScrubber == nil {
+		return err
+	}
+	message := r.scrubString(err.Error())
+	if message == err.Error() {
+		return err
+	}
+	var scrubbed error = &scrubbedError{
+		message: message,
+		matches: func(target error) bool {
+			return errors.Is(err, target)
+		},
+	}
+	// The scrubbed error deliberately has no Unwrap, so errors.As cannot reach
+	// the secret-bearing original. Re-apply the classification markers the
+	// runner seam matches on (invoke.IsTimeout, invoke.IsInfrastructureFailure)
+	// around the scrubbed message so retry and OnTimeout salvage policy still
+	// see a typed failure.
+	if invoke.IsInfrastructureFailure(err) {
+		scrubbed = invoke.InfrastructureFailure(scrubbed)
+	}
+	if invoke.IsTimeout(err) {
+		scrubbed = invoke.Timeout(scrubbed)
+	}
+	return scrubbed
+}
+
+func (r *Runtime) scrubString(value string) string {
+	if r.outputScrubber == nil || value == "" {
+		return value
+	}
+	return string(r.outputScrubber.Scrub([]byte(value)))
 }
 
 func (r *Runtime) prepareRequest(ctx context.Context, env apiv1.InvocationEnvelope) (HarnessRequest, error) {

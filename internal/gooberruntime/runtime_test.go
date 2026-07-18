@@ -2,7 +2,9 @@ package gooberruntime
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +12,8 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -132,6 +136,123 @@ func TestInvokePropagatesHarnessError(t *testing.T) {
 	_, err := rt.Invoke(context.Background(), validInvocation())
 	if err == nil || !strings.Contains(err.Error(), "invoke harness") {
 		t.Fatalf("Invoke error = %v, want harness context", err)
+	}
+}
+
+func TestRuntimeScrubsRegisteredCredentialFromOutputs(t *testing.T) {
+	const secret = "opaque-encoded-ado-credential"
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(secret))
+	rt := New(Options{
+		Preparer: &fakePreparer{},
+		Harness: &fakeHarness{invokeResult: apiv1.ResultEnvelope{
+			Status:  apiv1.ResultSuccess,
+			Summary: "request used " + secret,
+			Outputs: map[string]interface{}{"authorization": secret},
+		}},
+		OutputScrubber: scrubber,
+	})
+
+	result, err := rt.Invoke(context.Background(), validInvocation())
+	if err != nil {
+		t.Fatalf("Invoke returned error: %v", err)
+	}
+	if strings.Contains(result.Summary, secret) || result.Outputs["authorization"] == secret {
+		t.Fatalf("registered credential leaked from runtime result: %+v", result)
+	}
+	if !strings.Contains(result.Summary, journal.Redacted) {
+		t.Fatalf("runtime result did not contain redaction marker: %+v", result)
+	}
+}
+
+func TestRuntimeScrubsRegisteredCredentialFromErrorsAndVerdicts(t *testing.T) {
+	const secret = "opaque-encoded-ado-credential"
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(secret))
+
+	classifiedErr := errors.New("classified provider failure")
+	errorRuntime := New(Options{
+		Preparer:       &fakePreparer{},
+		Harness:        &fakeHarness{err: fmt.Errorf("provider failed with %s: %w", secret, classifiedErr)},
+		OutputScrubber: scrubber,
+	})
+	_, err := errorRuntime.Invoke(context.Background(), validInvocation())
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("runtime error was not scrubbed: %v", err)
+	}
+	if !errors.Is(err, classifiedErr) {
+		t.Fatalf("runtime error lost classification: %v", err)
+	}
+	if unwrapped := errors.Unwrap(err); unwrapped != nil {
+		t.Fatalf("runtime error exposed secret-bearing original: %v", unwrapped)
+	}
+	if formatted := fmt.Sprintf("%#v", err); strings.Contains(formatted, secret) {
+		t.Fatalf("runtime error formatting exposed registered credential: %s", formatted)
+	}
+
+	reviewRuntime := New(Options{
+		Preparer: &fakePreparer{},
+		Evaluator: &fakeEvaluator{verdict: apiv1.Verdict{
+			Decision:  apiv1.VerdictNeedsChanges,
+			Rationale: "request used " + secret,
+			Findings: []apiv1.Finding{{
+				Severity: apiv1.SeverityError,
+				Message:  "credential " + secret,
+			}},
+		}},
+		OutputScrubber: scrubber,
+	})
+	verdict, err := reviewRuntime.Review(context.Background(), validInvocation())
+	if err != nil {
+		t.Fatalf("Review returned error: %v", err)
+	}
+	if strings.Contains(verdict.Rationale, secret) || strings.Contains(verdict.Findings[0].Message, secret) {
+		t.Fatalf("registered credential leaked from runtime verdict: %+v", verdict)
+	}
+}
+
+func TestRuntimePreservesUnchangedErrorIdentityWithScrubber(t *testing.T) {
+	_, scrubber := journal.DefaultScrubber()
+	preparerErr := errors.New("preparer failed")
+	harnessErr := errors.New("harness failed")
+
+	tests := []struct {
+		name string
+		rt   *Runtime
+		want error
+	}{
+		{
+			name: "unavailable harness",
+			rt:   New(Options{Preparer: &fakePreparer{}, OutputScrubber: scrubber}),
+			want: ErrHarnessUnavailable,
+		},
+		{
+			name: "preparer error",
+			rt: New(Options{
+				Preparer:       &fakePreparer{err: preparerErr},
+				Harness:        &fakeHarness{},
+				OutputScrubber: scrubber,
+			}),
+			want: preparerErr,
+		},
+		{
+			name: "harness error",
+			rt: New(Options{
+				Preparer:       &fakePreparer{},
+				Harness:        &fakeHarness{err: harnessErr},
+				OutputScrubber: scrubber,
+			}),
+			want: harnessErr,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.rt.Invoke(context.Background(), validInvocation())
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("Invoke error = %v, want identity %v", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -384,7 +505,8 @@ func TestEnvProviderResolverBuildsConfiguredProviders(t *testing.T) {
 	t.Setenv("AZURE_DEVOPS_TOKEN", "ado-token")
 	t.Setenv("AZURE_DEVOPS_ORG", "ado-org")
 	t.Setenv("AZURE_DEVOPS_PROJECT", "ado-project")
-	resolver := EnvProviderResolver{}
+	reg := journal.NewRegistryScrubber()
+	resolver := EnvProviderResolver{SecretRegistrar: reg}
 
 	githubProvider, err := resolver.RepoProvider(apiv1.ProviderGitHub, apiv1.RepoRef{})
 	if err != nil {
@@ -399,6 +521,10 @@ func TestEnvProviderResolverBuildsConfiguredProviders(t *testing.T) {
 	}
 	if adoProvider == nil {
 		t.Fatal("RepoProvider(ADO) returned nil provider")
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte("goobers:ado-token"))
+	if got := string(reg.Scrub([]byte(encoded))); got != journal.Redacted {
+		t.Fatalf("encoded ADO credential was not registered: %q", got)
 	}
 }
 
@@ -421,6 +547,16 @@ func TestEnvProviderResolverReportsConfigurationErrors(t *testing.T) {
 	}
 	if _, err := resolver.RepoProvider(apiv1.Provider("gitlab"), apiv1.RepoRef{}); err == nil {
 		t.Fatal("RepoProvider(unsupported) error = nil, want unsupported provider error")
+	}
+}
+
+func TestEnvProviderResolverRequiresADOSecretRegistrar(t *testing.T) {
+	t.Setenv("GOOBERS_ADO_TOKEN", "ado-token")
+	t.Setenv("GOOBERS_ADO_ORG", "ado-org")
+	t.Setenv("GOOBERS_ADO_PROJECT", "ado-project")
+
+	if _, err := (EnvProviderResolver{}).RepoProvider(apiv1.ProviderADO, apiv1.RepoRef{}); err == nil || !strings.Contains(err.Error(), "secret registrar") {
+		t.Fatalf("RepoProvider(ADO) error = %v, want missing registrar error", err)
 	}
 }
 
@@ -525,5 +661,40 @@ func TestHarnessEvaluatorRequiresHarness(t *testing.T) {
 	_, err := HarnessEvaluator{}.Evaluate(context.Background(), HarnessRequest{})
 	if !errors.Is(err, ErrHarnessUnavailable) {
 		t.Fatalf("error = %v, want ErrHarnessUnavailable", err)
+	}
+}
+
+func TestRuntimeScrubbedErrorPreservesTypedClassification(t *testing.T) {
+	const secret = "opaque-encoded-ado-credential"
+
+	for _, tc := range []struct {
+		name     string
+		wrap     func(error) error
+		classify func(error) bool
+	}{
+		{"timeout", invoke.Timeout, invoke.IsTimeout},
+		{"infrastructure", invoke.InfrastructureFailure, invoke.IsInfrastructureFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry, scrubber := journal.DefaultScrubber()
+			registry.Register([]byte(secret))
+
+			rt := New(Options{
+				Preparer:       &fakePreparer{},
+				Harness:        &fakeHarness{err: tc.wrap(fmt.Errorf("harness failed with %s", secret))},
+				OutputScrubber: scrubber,
+			})
+
+			_, err := rt.Invoke(context.Background(), validInvocation())
+			if err == nil {
+				t.Fatal("Invoke returned nil error")
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("registered credential leaked from runtime error: %v", err)
+			}
+			if !tc.classify(err) {
+				t.Fatalf("scrubbing dropped %s classification: %v", tc.name, err)
+			}
+		})
 	}
 }

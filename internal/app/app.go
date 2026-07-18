@@ -21,6 +21,11 @@ import (
 // non-nil error causes the process to log it and exit non-zero.
 type RunFunc func(ctx context.Context, log *slog.Logger) error
 
+// Scrubber removes secrets from process output before it reaches the log sink.
+type Scrubber interface {
+	Scrub([]byte) []byte
+}
+
 // Main is the canonical entrypoint wrapper. Call it from a binary's main():
 //
 //	func main() {
@@ -37,9 +42,21 @@ func Main(name string, fn RunFunc) {
 	os.Exit(run(name, os.Args[1:], os.Stderr, fn))
 }
 
+// MainWithScrubber is Main with redaction applied to all process output.
+func MainWithScrubber(name string, scrubber Scrubber, fn RunFunc) {
+	os.Exit(runWithScrubber(name, os.Args[1:], os.Stderr, scrubber, fn))
+}
+
 // run holds the testable core of Main: it takes its args and log sink as
 // parameters and returns an exit code instead of calling os.Exit.
 func run(name string, args []string, logOut io.Writer, fn RunFunc) int {
+	return runWithScrubber(name, args, logOut, nil, fn)
+}
+
+func runWithScrubber(name string, args []string, logOut io.Writer, scrubber Scrubber, fn RunFunc) int {
+	if scrubber != nil {
+		logOut = scrubbedWriter{dst: logOut, scrubber: scrubber}
+	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(logOut)
 	var (
@@ -68,6 +85,23 @@ func run(name string, args []string, logOut io.Writer, fn RunFunc) int {
 	}
 	log.Info("shutdown complete")
 	return 0
+}
+
+type scrubbedWriter struct {
+	dst      io.Writer
+	scrubber Scrubber
+}
+
+func (w scrubbedWriter) Write(p []byte) (int, error) {
+	scrubbed := w.scrubber.Scrub(p)
+	n, err := w.dst.Write(scrubbed)
+	if err != nil {
+		return 0, err
+	}
+	if n != len(scrubbed) {
+		return 0, io.ErrShortWrite
+	}
+	return len(p), nil
 }
 
 // newLogger builds a slog.Logger for the requested level and format. Unknown

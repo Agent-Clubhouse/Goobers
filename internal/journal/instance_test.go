@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -298,11 +299,21 @@ func TestInstanceLogScrubsBeforeWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := log.Append(Event{Type: EventTickSkipped, Reason: "leak: " + canary}); err != nil {
+	reason := "leak: " + canary + "; Authorization: Basic " + basicAuthCredential
+	if err := log.Append(Event{Type: EventTickSkipped, Reason: reason}); err != nil {
 		t.Fatal(err)
 	}
 	_ = log.Close()
-	if hits := filesContaining(t, dir, []byte(canary)); len(hits) > 0 {
-		t.Fatalf("canary leaked into instance log: %v", hits)
+	for _, secret := range []string{canary, basicAuthCredential} {
+		if hits := filesContaining(t, dir, []byte(secret)); len(hits) > 0 {
+			t.Fatalf("credential leaked into instance log: %v", hits)
+		}
+	}
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatalf("ReadInstanceLog: %v", err)
+	}
+	if got := events[0].Reason; !strings.Contains(got, Redacted) {
+		t.Fatalf("instance log reason was not redacted: %q", got)
 	}
 }

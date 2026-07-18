@@ -69,6 +69,36 @@ func TestRun_ErrorReturnsOne(t *testing.T) {
 	}
 }
 
+func TestRunWithScrubberRedactsLogOutput(t *testing.T) {
+	const secret = "opaque-runtime-credential"
+	var buf bytes.Buffer
+	code := runWithScrubber("runtime", nil, &buf, replaceScrubber{
+		old: secret,
+		new: "[REDACTED]",
+	}, func(_ context.Context, log *slog.Logger) error {
+		log.Error("provider request failed", "authorization", secret)
+		return errors.New("worker failed with " + secret)
+	})
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if strings.Contains(buf.String(), secret) {
+		t.Fatalf("secret leaked into process output: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "[REDACTED]") {
+		t.Fatalf("redaction marker missing from process output: %q", buf.String())
+	}
+}
+
+type replaceScrubber struct {
+	old string
+	new string
+}
+
+func (s replaceScrubber) Scrub(in []byte) []byte {
+	return bytes.ReplaceAll(in, []byte(s.old), []byte(s.new))
+}
+
 func TestParseLevel(t *testing.T) {
 	cases := map[string]slog.Level{
 		"debug":   slog.LevelDebug,
