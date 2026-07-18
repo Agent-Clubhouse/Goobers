@@ -706,6 +706,13 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// binary, so a deterministic stage execs it from its fresh worktree
 			// clone (which never contains the binary) rather than failing (#229).
 			shell.SelfBin = selfBin
+			// goobers up --diagnostics: arm the per-stage diagnostics watchdog
+			// (process sample/tree/lsof of a long-running stage) and keep stage
+			// output un-truncated so a full dump is never clipped.
+			if diagnosticsMode {
+				shell.Diagnostics = true
+				shell.DefaultMaxOutputBytes = diagnosticsMaxOutputBytes
+			}
 
 			fallback, err := executor.NewTaskExecutor(shell, nil)
 			if err != nil {

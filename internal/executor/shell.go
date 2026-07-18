@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -177,6 +178,15 @@ type ShellExecutor struct {
 	// the running daemon (no version skew). Empty by default: an unset caller
 	// runs the command verbatim (unchanged behavior).
 	SelfBin string
+	// Diagnostics, when true (goobers up --diagnostics), arms a per-stage
+	// watchdog: any stage still running past diagnosticsSampleAfter gets a
+	// periodic native process sample + process tree + open-fd (lsof) snapshot
+	// recorded as a run artifact. This is the capture that actually works on a
+	// wedged `go test -race` local-ci stage — SIGQUIT/-test.timeout can't dump
+	// it (the race runtime can't stopTheWorld while a goroutine is stuck in a
+	// syscall), but an OS-level sample shows the blocked threads regardless.
+	// Off by default: zero cost and no extra files unless explicitly enabled.
+	Diagnostics bool
 }
 
 // NewShellExecutor builds a ShellExecutor. injector and journal must not be
@@ -319,6 +329,20 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}, nil
 	}
 
+	// --diagnostics watchdog: periodically snapshot a long-running stage
+	// (native sample + process tree + lsof) into a buffer recorded as an
+	// artifact below. Off (and free) unless Diagnostics is set.
+	var diag diagBuffer
+	var diagStop, diagDone chan struct{}
+	if e.Diagnostics {
+		diagStop = make(chan struct{})
+		diagDone = make(chan struct{})
+		go func() {
+			defer close(diagDone)
+			watchStageDiagnostics(cmd.Process.Pid, &diag, diagStop)
+		}()
+	}
+
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 
@@ -374,10 +398,28 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
+	if diagStop != nil {
+		// Signal the watchdog to stop and wait for it to fully exit before
+		// reading diag (below) — a clean join, so it can never touch diag or the
+		// package-level timings concurrently after Run returns. Bounded in
+		// practice: the watchdog is either idle between samples (returns at once)
+		// or mid-`sample` (returns within its ~3s duration).
+		close(diagStop)
+		<-diagDone
+	}
+
 	outBytes := scrubber.Scrub(stdout.Bytes())
 	errBytes := scrubber.Scrub(stderr.Bytes())
 
 	result := apiv1.ResultEnvelope{Outputs: map[string]interface{}{}, Metrics: map[string]float64{}}
+
+	// --diagnostics: record whatever the watchdog sampled from a long-running
+	// stage. Best-effort — a record failure here must never fail the stage.
+	if snap := diag.Bytes(); len(snap) > 0 {
+		if ref, aerr := e.Journal.RecordArtifact(env.TaskID+"/diagnostics/stage-samples.txt", scrubber.Scrub(snap)); aerr == nil {
+			result.Artifacts = append(result.Artifacts, refToPointer(ref, "text/plain"))
+		}
+	}
 
 	stdoutRef, err := e.Journal.RecordArtifact(env.TaskID+"/stdout.log", outBytes)
 	if err != nil {
@@ -833,4 +875,110 @@ func (w *capturingWriter) Truncated() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.truncated
+}
+
+// --- --diagnostics stage watchdog -------------------------------------------
+
+// diagnosticsSampleAfter is how long a stage must run before the --diagnostics
+// watchdog takes its first snapshot. Comfortably above a healthy local-ci
+// `make ci` (~1-2 min) so a normal stage is never sampled, but well below the
+// default 10m stage timeout so a hung stage is captured several times before it
+// is killed.
+// vars (not consts) so tests can shrink them; production never mutates them.
+var diagnosticsSampleAfter = 2 * time.Minute
+
+// diagnosticsSampleInterval / diagnosticsMaxSamples bound the watchdog: a few
+// snapshots spaced out, all landing before the stage timeout so the watchdog is
+// never mid-`sample` (which briefly SIGSTOPs the target) when the timeout path
+// signals it — 2m + 3×2m = 8m < 10m.
+var diagnosticsSampleInterval = 2 * time.Minute
+var diagnosticsMaxSamples = 3
+
+// diagnosticsCapture snapshots a still-running stage subprocess for the
+// --diagnostics watchdog: its process tree, its open fds (lsof — reveals the
+// pipe/self-pipe fds behind an I/O deadlock), and a native thread `sample`
+// (macOS) — the OS-level stacks that show a wedged `go test -race` stage even
+// when the Go runtime can't stopTheWorld to dump goroutines. A var so tests can
+// stub it; the default is best-effort and skips any tool that isn't present.
+var diagnosticsCapture = defaultDiagnosticsCapture
+
+func defaultDiagnosticsCapture(pid int) []byte {
+	var b bytes.Buffer
+	spid := strconv.Itoa(pid)
+	if out, err := exec.Command("ps", "-eo", "pid,ppid,pgid,etime,stat,command").Output(); err == nil {
+		b.WriteString("--- process tree (make / go test / .test / git / sandbox / goobers) ---\n")
+		for _, line := range bytes.Split(out, []byte("\n")) {
+			for _, kw := range []string{"make", "go test", ".test", "git ", "sandbox", "goobers", "PID"} {
+				if bytes.Contains(line, []byte(kw)) {
+					b.Write(line)
+					b.WriteByte('\n')
+					break
+				}
+			}
+		}
+	}
+	if out, err := exec.Command("lsof", "-p", spid).Output(); err == nil {
+		b.WriteString("\n--- lsof (open fds — PIPE/FIFO reveal I/O-deadlock partners) ---\n")
+		for _, line := range bytes.Split(out, []byte("\n")) {
+			if bytes.Contains(line, []byte("PIPE")) || bytes.Contains(line, []byte("FIFO")) ||
+				bytes.Contains(line, []byte("REG")) || bytes.Contains(line, []byte("COMMAND")) {
+				b.Write(line)
+				b.WriteByte('\n')
+			}
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		// `sample` uses the OS thread sampler (no runtime cooperation), so it
+		// captures native stacks of a stage wedged in a syscall that SIGQUIT
+		// can't dump. It briefly SIGSTOPs+SIGCONTs the target — harmless for a
+		// stage that is already hung, and the watchdog is bounded to finish
+		// before the timeout path ever signals the process.
+		if out, err := exec.Command("sample", spid, "3").Output(); err == nil {
+			b.WriteString("\n--- sample (native thread stacks) ---\n")
+			b.Write(out)
+		}
+	}
+	return b.Bytes()
+}
+
+// watchStageDiagnostics takes up to diagnosticsMaxSamples snapshots of a
+// long-running stage into dst, starting after diagnosticsSampleAfter. It stops
+// immediately when stop is closed (the stage finished or was killed).
+func watchStageDiagnostics(pid int, dst *diagBuffer, stop <-chan struct{}) {
+	select {
+	case <-stop:
+		return
+	case <-time.After(diagnosticsSampleAfter):
+	}
+	for n := 1; n <= diagnosticsMaxSamples; n++ {
+		if snap := diagnosticsCapture(pid); len(snap) > 0 {
+			dst.WriteSnapshot(n, snap)
+		}
+		select {
+		case <-stop:
+			return
+		case <-time.After(diagnosticsSampleInterval):
+		}
+	}
+}
+
+// diagBuffer is a concurrency-safe sink for watchStageDiagnostics: the watchdog
+// goroutine appends snapshots while Run proceeds, and Run reads the whole thing
+// once the stage is done to record it as an artifact.
+type diagBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (d *diagBuffer) WriteSnapshot(n int, snap []byte) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	fmt.Fprintf(&d.buf, "\n========== diagnostics sample #%d ==========\n", n)
+	d.buf.Write(snap)
+}
+
+func (d *diagBuffer) Bytes() []byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]byte(nil), d.buf.Bytes()...)
 }
