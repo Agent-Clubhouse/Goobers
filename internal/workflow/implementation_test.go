@@ -120,11 +120,12 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// #724: implement stage gained onTimeout=salvage and its goal was reworded
 	// to hand the full `make ci`/`-race` run to the deterministic local-ci
 	// stage (bounding the session to think-time, not test wall-clock).
-	// local-ci gained inputs.serializeGroup=local-ci: the executor holds an
-	// instance-wide flock for the stage so concurrent `make ci` runs can't
-	// saturate disk I/O and stall a test's t.TempDir teardown past the stage
-	// timeout (the #811/#812 hang), while every other stage stays parallel.
-	const wantDigest = "sha256:41f3812feb2da943209d7731214b08f48b6ad256019e2e570d01a915f7e09b00"
+	// local-ci previously carried inputs.serializeGroup=local-ci to throttle
+	// concurrent `make ci` runs; that mitigation targeted a disk-I/O contention
+	// theory that the #845 post-mortem falsified — the real cause was terminal
+	// job control (SIGTTOU), fixed by Setsid (#846/#850). The serialize input
+	// was removed so local-ci runs fully parallel again.
+	const wantDigest = "sha256:f10987187b4d16302017541378b4e5ec31f8fce53b53485ad66ea80597927a30"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
