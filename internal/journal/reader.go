@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"sigs.k8s.io/yaml"
 )
@@ -110,7 +111,7 @@ func (e Event) KnownSchema() bool { return e.Schema == EventSchema }
 // — the same containment guard Redact already applies to the identical
 // operation via containedBlobPath.
 func (r *Reader) ArtifactBytes(ref Ref) ([]byte, error) {
-	full, err := containedBlobPath(r.dir, ref.Path)
+	full, err := containedExistingBlobPath(r.dir, ref.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +123,39 @@ func (r *Reader) ArtifactBytes(ref Ref) ([]byte, error) {
 		return nil, fmt.Errorf("journal: digest mismatch for %q: have %s want %s", ref.Path, got, ref.Digest)
 	}
 	return b, nil
+}
+
+// ArtifactByDigest reads an artifact from its canonical content-addressed path.
+// Callers cannot steer this read with a journal-provided filesystem path.
+func (r *Reader) ArtifactByDigest(digest string) ([]byte, error) {
+	path, err := artifactPath(digest)
+	if err != nil {
+		return nil, err
+	}
+	return r.ArtifactBytes(Ref{Path: path, Digest: digest})
+}
+
+func containedExistingBlobPath(dir, relPath string) (string, error) {
+	full, err := containedBlobPath(dir, relPath)
+	if err != nil {
+		return "", err
+	}
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("journal: resolve run directory: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return "", fmt.Errorf("journal: resolve blob %q: %w", relPath, err)
+	}
+	relative, err := filepath.Rel(resolvedDir, resolved)
+	if err != nil {
+		return "", fmt.Errorf("journal: resolve blob containment %q: %w", relPath, err)
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("journal: blob path %q resolves outside the run directory", relPath)
+	}
+	return resolved, nil
 }
 
 // SpanBytes reads and verifies a stored span blob against its Ref.Digest —

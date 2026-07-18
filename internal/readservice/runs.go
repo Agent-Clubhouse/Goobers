@@ -373,31 +373,40 @@ func (s *Local) StageAttempts(ctx context.Context, runID, stage string) (Attempt
 					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
 				}
 			}
+		case journal.EventError:
+			if event.Error == nil || event.Error.Code != "executor_error" {
+				continue
+			}
+			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass)
+			if i < 0 {
+				attempts = append(attempts, StageAttempt{
+					Number:    event.Attempt,
+					Class:     attemptClass(event.AttemptClass),
+					Artifacts: []ArtifactMetadata{},
+				})
+				i = len(attempts) - 1
+			}
+			finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
 		case journal.EventStageFinished:
 			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass)
 			if i < 0 {
 				attempts = append(attempts, StageAttempt{
 					Number:    event.Attempt,
 					Class:     attemptClass(event.AttemptClass),
-					Status:    event.Status,
 					Artifacts: []ArtifactMetadata{},
 				})
 				i = len(attempts) - 1
 			}
-			finished := event.Time
-			if event.AttemptClass != "" {
-				attempts[i].Class = attemptClass(event.AttemptClass)
-			}
-			attempts[i].Status = event.Status
-			attempts[i].FinishedSeq = event.Seq
-			attempts[i].FinishedAt = &finished
-			attempts[i].Outputs = scalarOutputs(event.Outputs)
-			attempts[i].Error = event.Error
-			if attempts[i].StartedAt != nil && !finished.Before(*attempts[i].StartedAt) {
-				attempts[i].DurationMillis = finished.Sub(*attempts[i].StartedAt).Milliseconds()
-			}
+			finishAttempt(&attempts[i], event, event.Status, event.Outputs, event.Error)
 			for _, ref := range event.Artifacts {
-				if metadata, ok := artifacts.match(ref.Digest, stage, event.Attempt, event.AttemptClass); ok &&
+				if metadata, ok := artifacts.match(
+					ref.Digest,
+					stage,
+					event.Attempt,
+					event.AttemptClass,
+					attempts[i].StartedSeq,
+					event.Seq,
+				); ok &&
 					!containsArtifact(attempts[i].Artifacts, metadata.RecordedSeq, metadata.Digest) {
 					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
 				}
@@ -421,7 +430,7 @@ func (s *Local) Artifact(ctx context.Context, runID, digest string) (ArtifactCon
 	if !ok {
 		return ArtifactContent{}, fmt.Errorf("%w: artifact %q", ErrNotFound, digest)
 	}
-	data, err := run.reader.ArtifactBytes(entry.ref)
+	data, err := run.reader.ArtifactByDigest(digest)
 	if err != nil {
 		return ArtifactContent{}, fmt.Errorf("%w: %w", ErrArtifactIntegrity, err)
 	}
@@ -646,6 +655,22 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) *Escalat
 			}
 		}
 	}
+	if cause.Selector.Name == "" {
+		for i := len(records) - 1; i >= 0; i-- {
+			event := records[i].Event
+			if !event.KnownSchema() ||
+				event.Type != journal.EventStageFinished ||
+				event.Error == nil {
+				continue
+			}
+			cause.Selector = EscalationSelector{Kind: "stage", Name: event.Stage}
+			cause.CausalEventSeq = event.Seq
+			if cause.TerminalReason == "" {
+				cause.TerminalReason = event.Error.Message
+			}
+			break
+		}
+	}
 	return cause
 }
 
@@ -675,7 +700,14 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	projected.Status = event.Status
 	projected.Outputs = scalarOutputs(event.Outputs)
 	for _, ref := range event.Artifacts {
-		if metadata, ok := artifacts.match(ref.Digest, event.Stage, event.Attempt, event.AttemptClass); ok {
+		if metadata, ok := artifacts.match(
+			ref.Digest,
+			event.Stage,
+			event.Attempt,
+			event.AttemptClass,
+			0,
+			event.Seq,
+		); ok {
 			projected.Artifacts = append(projected.Artifacts, metadata)
 		}
 	}
@@ -695,78 +727,126 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 
 type artifactEntry struct {
 	metadata ArtifactMetadata
-	ref      journal.Ref
 }
 
 type artifactIndex struct {
-	entries  []artifactEntry
-	byDigest map[string]artifactEntry
-	bySeq    map[uint64]ArtifactMetadata
+	entries      []artifactEntry
+	byDigest     map[string]artifactEntry
+	bySeq        map[uint64]ArtifactMetadata
+	replacements map[string]string
 }
 
-func (i artifactIndex) match(digest, stage string, attempt int, class journal.AttemptClass) (ArtifactMetadata, bool) {
-	for _, entry := range i.entries {
-		if entry.metadata.Digest == digest &&
-			(stage == "" || entry.metadata.Stage == stage) &&
-			(attempt == 0 || entry.metadata.Attempt == attempt) &&
-			(class == "" || entry.metadata.AttemptClass == attemptClass(class)) {
-			return entry.metadata, true
-		}
-	}
-	if stage != "" || attempt != 0 || class != "" {
+func (i artifactIndex) match(
+	digest, stage string,
+	attempt int,
+	class journal.AttemptClass,
+	afterSeq, beforeSeq uint64,
+) (ArtifactMetadata, bool) {
+	index := i.matchEntryIndex(digest, stage, attempt, class, afterSeq, beforeSeq)
+	if index < 0 {
 		return ArtifactMetadata{}, false
 	}
-	entry, ok := i.byDigest[digest]
-	return entry.metadata, ok
+	return i.entries[index].metadata, true
+}
+
+func (i artifactIndex) matchEntryIndex(
+	digest, stage string,
+	attempt int,
+	class journal.AttemptClass,
+	afterSeq, beforeSeq uint64,
+) int {
+	digest = i.currentDigest(digest)
+	for index := len(i.entries) - 1; index >= 0; index-- {
+		metadata := i.entries[index].metadata
+		if metadata.Digest != digest ||
+			(stage != "" && metadata.Stage != stage) ||
+			(attempt != 0 && metadata.Attempt != attempt) ||
+			(attempt != 0 && metadata.AttemptClass != attemptClass(class)) ||
+			metadata.RecordedSeq <= afterSeq ||
+			(beforeSeq != 0 && metadata.RecordedSeq >= beforeSeq) {
+			continue
+		}
+		return index
+	}
+	return -1
+}
+
+func (i artifactIndex) currentDigest(digest string) string {
+	for count := 0; count < len(i.replacements); count++ {
+		replacement, ok := i.replacements[digest]
+		if !ok {
+			break
+		}
+		digest = replacement
+	}
+	return digest
 }
 
 func indexArtifacts(records []journal.EventRecord) artifactIndex {
 	index := artifactIndex{
-		byDigest: make(map[string]artifactEntry),
-		bySeq:    make(map[uint64]ArtifactMetadata),
+		byDigest:     make(map[string]artifactEntry),
+		bySeq:        make(map[uint64]ArtifactMetadata),
+		replacements: make(map[string]string),
 	}
+	type attemptKey struct {
+		stage   string
+		attempt int
+		class   string
+	}
+	started := make(map[attemptKey]uint64)
 	for _, record := range records {
 		event := record.Event
-		if !event.KnownSchema() || event.Type != journal.EventArtifactRecorded || event.Ref == nil {
+		if !event.KnownSchema() {
 			continue
 		}
-		path := filepath.ToSlash(filepath.Clean(event.Ref.Path))
-		if !strings.HasPrefix(path, "artifacts/") {
-			continue
+		key := attemptKey{
+			stage:   event.Stage,
+			attempt: event.Attempt,
+			class:   attemptClass(event.AttemptClass),
 		}
-		metadata := ArtifactMetadata{
-			Name:        event.Name,
-			Digest:      event.Ref.Digest,
-			Size:        event.Ref.Size,
-			MediaType:   normalizeMediaType(event.Ref.MediaType),
-			Stage:       event.Stage,
-			Attempt:     event.Attempt,
-			RecordedSeq: event.Seq,
-		}
-		if event.Attempt > 0 {
-			metadata.AttemptClass = attemptClass(event.AttemptClass)
-		}
-		entry := artifactEntry{metadata: metadata, ref: *event.Ref}
-		index.entries = append(index.entries, entry)
-		index.bySeq[event.Seq] = metadata
-		if _, exists := index.byDigest[metadata.Digest]; !exists {
-			index.byDigest[metadata.Digest] = entry
-		}
-	}
-
-	for _, record := range records {
-		event := record.Event
-		if !event.KnownSchema() || event.Type != journal.EventStageFinished {
-			continue
-		}
-		for _, ref := range event.Artifacts {
-			for i := range index.entries {
-				entry := &index.entries[i]
-				if entry.metadata.Digest != ref.Digest ||
-					entry.metadata.Stage != event.Stage ||
-					entry.metadata.Attempt != event.Attempt {
+		switch event.Type {
+		case journal.EventStageStarted:
+			started[key] = event.Seq
+		case journal.EventArtifactRecorded:
+			if event.Ref == nil {
+				continue
+			}
+			path := filepath.ToSlash(filepath.Clean(event.Ref.Path))
+			if !strings.HasPrefix(path, "artifacts/") {
+				continue
+			}
+			metadata := ArtifactMetadata{
+				Name:        event.Name,
+				Digest:      event.Ref.Digest,
+				Size:        event.Ref.Size,
+				MediaType:   normalizeMediaType(event.Ref.MediaType),
+				Stage:       event.Stage,
+				Attempt:     event.Attempt,
+				RecordedSeq: event.Seq,
+			}
+			if event.Attempt > 0 {
+				metadata.AttemptClass = attemptClass(event.AttemptClass)
+			}
+			entry := artifactEntry{metadata: metadata}
+			index.entries = append(index.entries, entry)
+			index.bySeq[event.Seq] = metadata
+			if _, exists := index.byDigest[metadata.Digest]; !exists {
+				index.byDigest[metadata.Digest] = entry
+			}
+		case journal.EventStageFinished:
+			for _, ref := range event.Artifacts {
+				entryIndex := index.matchEntryIndex(
+					ref.Digest,
+					event.Stage,
+					event.Attempt,
+					event.AttemptClass,
+					started[key],
+					event.Seq,
+				)
+				if entryIndex < 0 {
 					continue
 				}
+				entry := &index.entries[entryIndex]
 				entry.metadata.Size = ref.Size
 				entry.metadata.MediaType = normalizeMediaType(ref.MediaType)
 				index.bySeq[entry.metadata.RecordedSeq] = entry.metadata
@@ -775,9 +855,69 @@ func indexArtifacts(records []journal.EventRecord) artifactIndex {
 					index.byDigest[entry.metadata.Digest] = *entry
 				}
 			}
+			delete(started, key)
+		case journal.EventRedaction:
+			index.applyRedaction(event)
 		}
 	}
 	return index
+}
+
+func (i *artifactIndex) applyRedaction(event journal.Event) {
+	if event.Ref == nil ||
+		event.Redaction == nil ||
+		event.Ref.Digest != event.Redaction.NewDigest {
+		return
+	}
+	path := filepath.ToSlash(filepath.Clean(event.Ref.Path))
+	if !strings.HasPrefix(path, "artifacts/") {
+		return
+	}
+
+	i.replacements[event.Redaction.OldDigest] = event.Redaction.NewDigest
+	delete(i.byDigest, event.Redaction.OldDigest)
+	var replacement *artifactEntry
+	for index := range i.entries {
+		entry := &i.entries[index]
+		if entry.metadata.Digest != event.Redaction.OldDigest {
+			continue
+		}
+		entry.metadata.Digest = event.Redaction.NewDigest
+		entry.metadata.Size = event.Ref.Size
+		i.bySeq[entry.metadata.RecordedSeq] = entry.metadata
+		if replacement == nil {
+			copy := *entry
+			replacement = &copy
+		}
+	}
+	if replacement == nil {
+		return
+	}
+	if _, exists := i.byDigest[event.Redaction.NewDigest]; !exists {
+		i.byDigest[event.Redaction.NewDigest] = *replacement
+	}
+	i.bySeq[event.Seq] = replacement.metadata
+}
+
+func finishAttempt(
+	attempt *StageAttempt,
+	event journal.Event,
+	status string,
+	outputs map[string]any,
+	detail *journal.ErrorDetail,
+) {
+	finished := event.Time
+	if event.AttemptClass != "" {
+		attempt.Class = attemptClass(event.AttemptClass)
+	}
+	attempt.Status = status
+	attempt.FinishedSeq = event.Seq
+	attempt.FinishedAt = &finished
+	attempt.Outputs = scalarOutputs(outputs)
+	attempt.Error = detail
+	if attempt.StartedAt != nil && !finished.Before(*attempt.StartedAt) {
+		attempt.DurationMillis = finished.Sub(*attempt.StartedAt).Milliseconds()
+	}
 }
 
 func normalizeMediaType(value string) string {

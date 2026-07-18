@@ -577,3 +577,252 @@ func TestPinnedGraphTamperFailsClosed(t *testing.T) {
 		t.Fatalf("tampered graph error = %v", err)
 	}
 }
+
+func TestAttemptsCloseDispatchErrorsAndKeepRepassArtifactsSeparate(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-attempt-edges",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+
+	appendEvent := func(event journal.Event) {
+		t.Helper()
+		clock.advance(time.Second)
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recordTraversal := func(mediaType string) journal.Ref {
+		t.Helper()
+		appendEvent(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
+		clock.advance(time.Second)
+		ref, err := run.RecordStageArtifact("implement", 1, "", "same.json", []byte(`{"same":true}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref.MediaType = mediaType
+		appendEvent(journal.Event{
+			Type:      journal.EventStageFinished,
+			Stage:     "implement",
+			Attempt:   1,
+			Status:    string(apiv1.ResultSuccess),
+			Artifacts: []journal.Ref{ref},
+		})
+		return ref
+	}
+
+	first := recordTraversal("text/plain")
+	second := recordTraversal("application/json")
+	if first.Digest != second.Digest {
+		t.Fatal("test requires duplicate artifact content across repasses")
+	}
+	appendEvent(journal.Event{
+		Type:         journal.EventStageStarted,
+		Stage:        "implement",
+		Attempt:      2,
+		AttemptClass: journal.AttemptInfra,
+	})
+	appendEvent(journal.Event{
+		Type:         journal.EventError,
+		Stage:        "implement",
+		Attempt:      2,
+		AttemptClass: journal.AttemptInfra,
+		Error:        &journal.ErrorDetail{Code: "executor_error", Message: "worker disappeared"},
+	})
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := service.StageAttempts(context.Background(), "run-attempt-edges", "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Attempts) != 3 {
+		t.Fatalf("attempts = %+v", got.Attempts)
+	}
+	if len(got.Attempts[0].Artifacts) != 1 ||
+		got.Attempts[0].Artifacts[0].MediaType != "text/plain" ||
+		len(got.Attempts[1].Artifacts) != 1 ||
+		got.Attempts[1].Artifacts[0].MediaType != "application/json" ||
+		got.Attempts[0].Artifacts[0].RecordedSeq == got.Attempts[1].Artifacts[0].RecordedSeq {
+		t.Fatalf("repass artifacts = %+v", got.Attempts)
+	}
+	failed := got.Attempts[2]
+	if failed.Status != string(apiv1.ResultFailure) ||
+		failed.FinishedSeq == 0 ||
+		failed.Error == nil ||
+		failed.Error.Code != "executor_error" {
+		t.Fatalf("dispatch failure attempt = %+v", failed)
+	}
+}
+
+func TestArtifactRedactionReplacesDigestAndPreservesMetadata(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	registry, scrubber := journal.DefaultScrubber()
+	clock := &fixtureClock{now: time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)}
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           "run-redacted-artifact",
+		Workflow:        machine.Def.Name,
+		WorkflowVersion: machine.Def.Version,
+		WorkflowDigest:  machine.Digest(),
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+		StartedAt:       clock.now,
+	}, nil, journal.WithScrubber(scrubber), journal.WithClock(func() time.Time { return clock.now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	const leaked = "PLAINTEXT-LEAK-api-artifact"
+	clock.advance(time.Second)
+	oldRef, err := run.RecordStageArtifact("implement", 1, "", "diagnostic.json", []byte(`{"value":"`+leaked+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	typedRef := oldRef
+	typedRef.MediaType = "application/json"
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:      journal.EventStageFinished,
+		Stage:     "implement",
+		Attempt:   1,
+		Status:    string(apiv1.ResultSuccess),
+		Artifacts: []journal.Ref{typedRef},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry.Register([]byte(leaked))
+	clock.advance(time.Second)
+	newRef, err := run.Redact(oldRef, "credential remediation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.Artifact(context.Background(), "run-redacted-artifact", oldRef.Digest); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old digest error = %v", err)
+	}
+	artifact, err := service.Artifact(context.Background(), "run-redacted-artifact", newRef.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Metadata.Name != "diagnostic.json" ||
+		artifact.Metadata.MediaType != "application/json" ||
+		strings.Contains(string(artifact.Bytes), leaked) ||
+		!strings.Contains(string(artifact.Bytes), "[REDACTED]") {
+		t.Fatalf("redacted artifact = metadata %+v, bytes %q", artifact.Metadata, artifact.Bytes)
+	}
+	attempts, err := service.StageAttempts(context.Background(), "run-redacted-artifact", "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts.Attempts) != 1 ||
+		len(attempts.Attempts[0].Artifacts) != 1 ||
+		attempts.Attempts[0].Artifacts[0].Digest != newRef.Digest {
+		t.Fatalf("redacted attempt artifacts = %+v", attempts.Attempts)
+	}
+	events, err := service.RunEvents(context.Background(), "run-redacted-artifact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finishedArtifacts []ArtifactMetadata
+	for _, event := range events.Events {
+		if event.Type == journal.EventStageFinished {
+			finishedArtifacts = event.Artifacts
+			break
+		}
+	}
+	if len(finishedArtifacts) != 1 || finishedArtifacts[0].Digest != newRef.Digest {
+		t.Fatalf("redacted stage event artifacts = %+v", finishedArtifacts)
+	}
+}
+
+func TestDirectStageEscalationIncludesCause(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-direct-escalation",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 17, 16, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerItem, Ref: "511"},
+		false,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "implement",
+		Attempt: 1,
+		Status:  string(apiv1.ResultFailure),
+		Error:   &journal.ErrorDetail{Code: "ISSUE_OVER_SCOPE", Message: "split this work"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseEscalated)
+
+	detail, err := service.GetRun(context.Background(), "run-direct-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Escalation == nil ||
+		detail.Escalation.Selector.Kind != "stage" ||
+		detail.Escalation.Selector.Name != "implement" ||
+		detail.Escalation.TerminalReason != "split this work" {
+		t.Fatalf("direct escalation = %+v", detail.Escalation)
+	}
+}
+
+func TestArtifactReadRejectsSymlinkEscape(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, _ := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-artifact-symlink",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 17, 17, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	ref, err := run.RecordArtifact("outside.txt", []byte("outside"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	artifactPath := filepath.Join(layout.RunsDir(), "run-artifact-symlink", ref.Path)
+	if err := os.Remove(artifactPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, artifactPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Artifact(context.Background(), "run-artifact-symlink", ref.Digest); !errors.Is(err, ErrArtifactIntegrity) {
+		t.Fatalf("symlink artifact error = %v", err)
+	}
+}
