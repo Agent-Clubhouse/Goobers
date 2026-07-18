@@ -73,6 +73,14 @@ func baseEnv() []string {
 // closed.
 func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, workflowID, instanceRoot string, injectRunContext bool, inputs map[string]interface{}) ([]string, error) {
 	env := baseEnv()
+	// GOTRACEBACK=all makes every Go stage subprocess (go test under `make ci`,
+	// the goobers CLI, goober-runtime) print ALL goroutines — including runtime
+	// and system stacks — when it dumps on SIGQUIT (the timeout-diagnostics path
+	// in shell.go) or its own -test.timeout. No runtime/perf cost: it only
+	// changes what a crash/quit dump contains. Set here so a hung stage's
+	// captured artifact shows the complete blocked-goroutine picture, not just
+	// user goroutines.
+	env = append(env, "GOTRACEBACK=all")
 	if injectRunContext {
 		env = append(env, "GOOBERS_RUN_ID="+runID, "GOOBERS_WORKFLOW="+workflowID)
 		if instanceRoot != "" {

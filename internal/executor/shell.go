@@ -44,6 +44,20 @@ const DefaultMaxOutputBytes int64 = 1 << 20 // 1 MiB
 // wave).
 const groupKillWaitDelay = 5 * time.Second
 
+// timeoutDumpGrace bounds how long Run waits, after sending SIGQUIT to a
+// timed-out stage's process group, for the Go processes in it (go test, the
+// goobers CLI, goober-runtime) to write their FULL goroutine traces to the
+// captured stdout/stderr and exit before Run escalates to SIGKILL. Go's
+// default SIGQUIT handler dumps every goroutine's stack (regardless of
+// GOTRACEBACK level) and exits — so on the one path that matters, a stage that
+// blew its timeout, this turns an opaque "killed at 10m, no output" record
+// into a self-diagnosing artifact showing exactly which goroutine/test was
+// blocked and on what. It costs nothing on the happy path (only a timed-out
+// stage reaches here) and never removes the SIGKILL backstop below: a process
+// that ignores SIGQUIT (a non-Go child, one that installed a handler, or one
+// wedged in an uninterruptible syscall) is force-killed after this grace.
+const timeoutDumpGrace = 5 * time.Second
+
 // Well-known Task.Inputs keys a deterministic shell stage may declare. These
 // travel through InvocationEnvelope.Inputs rather than as DeterministicRun
 // fields — see doc.go.
@@ -324,18 +338,39 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		} else {
 			canceled = true
 		}
-		// Kill the whole process group (negative pid), not just the direct
-		// child, so a runaway subprocess tree can't outlive the stage.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		select {
-		case waitErr = <-waitDone:
-		case <-time.After(groupKillWaitDelay):
-			// A descendant escaped the process group (e.g. via setsid) and
-			// is still holding a stdout/stderr pipe open, so cmd.Wait()
-			// never returns (#119) — give up waiting rather than hang the
-			// stage (and graceful drain) forever. waitErr stays nil here,
-			// but it's only read below in the non-timeout/non-canceled path,
-			// so this bound never masks a real exit code.
+		// On a TIMEOUT, first SIGQUIT the whole process group so every Go
+		// process in it dumps its full goroutine trace to the captured
+		// stdout/stderr before dying — a stage that blew its timeout is exactly
+		// the case worth diagnosing, and SIGKILL alone leaves no trace of WHY
+		// it hung (the long-standing "killed at 10m, cmd/goobers never finished,
+		// no dump" record). If the group dumps and exits within timeoutDumpGrace
+		// the SIGKILL below is skipped; otherwise (a non-Go child, one that
+		// caught SIGQUIT, or one wedged in an uninterruptible syscall) it is
+		// force-killed exactly as before. A deliberate cancel (not a timeout)
+		// goes straight to SIGKILL — nothing to diagnose there.
+		dumped := false
+		if timedOut {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGQUIT)
+			select {
+			case waitErr = <-waitDone:
+				dumped = true // goroutine traces are now in the captured output
+			case <-time.After(timeoutDumpGrace):
+			}
+		}
+		if !dumped {
+			// Kill the whole process group (negative pid), not just the direct
+			// child, so a runaway subprocess tree can't outlive the stage.
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			select {
+			case waitErr = <-waitDone:
+			case <-time.After(groupKillWaitDelay):
+				// A descendant escaped the process group (e.g. via setsid) and
+				// is still holding a stdout/stderr pipe open, so cmd.Wait()
+				// never returns (#119) — give up waiting rather than hang the
+				// stage (and graceful drain) forever. waitErr stays nil here,
+				// but it's only read below in the non-timeout/non-canceled path,
+				// so this bound never masks a real exit code.
+			}
 		}
 	}
 

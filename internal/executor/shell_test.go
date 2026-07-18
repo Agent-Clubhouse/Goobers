@@ -328,7 +328,11 @@ func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if elapsed > 5*time.Second {
+	// The whole group is killed well before the 30s sleep. Allow for the
+	// timeout SIGQUIT grace: sh's backgrounded job ignores SIGQUIT (POSIX
+	// async-list disposition), so the group only dies once SIGKILL escalates
+	// after timeoutDumpGrace — still an order of magnitude under 30s.
+	if elapsed > 20*time.Second {
 		t.Fatalf("Run took %s, want well under the 30s sleep — process group was not killed", elapsed)
 	}
 	if result.Status != apiv1.ResultFailure {
@@ -336,6 +340,35 @@ func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 	}
 	if result.Error == nil || result.Error.Code != "timeout" || !result.Error.Retryable {
 		t.Fatalf("error = %+v, want timeout, retryable", result.Error)
+	}
+}
+
+// TestShellExecutor_TimeoutSIGQUITsBeforeKillForDump verifies the
+// timeout-diagnostics path: on timeout the executor SIGQUITs the process group
+// FIRST (so a real Go stage would dump its goroutines to the captured output)
+// and only escalates to SIGKILL if that doesn't exit within timeoutDumpGrace.
+// A shell that traps SIGQUIT, prints a marker (standing in for a goroutine
+// dump), and exits proves the marker reaches the captured stdout artifact —
+// i.e. SIGQUIT was delivered and its output captured before any kill. A plain
+// SIGKILL (the old behavior) would leave the marker absent.
+func TestShellExecutor_TimeoutSIGQUITsBeforeKillForDump(t *testing.T) {
+	exec, rec := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputTimeout: "100ms"}
+
+	const marker = "__SIGQUIT_DUMP_MARKER__"
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		// Trap SIGQUIT -> print the marker and exit; otherwise block forever.
+		Command: []string{"sh", "-c", `trap 'echo ` + marker + `; exit 0' QUIT; while :; do sleep 0.05; done`},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "timeout" {
+		t.Fatalf("status=%v error=%+v, want a timeout failure", result.Status, result.Error)
+	}
+	if got := string(rec.recorded["task-1/stdout.log"]); !strings.Contains(got, marker) {
+		t.Fatalf("stdout artifact = %q, want it to contain %q — SIGQUIT must precede SIGKILL so a Go stage can dump before dying", got, marker)
 	}
 }
 
@@ -390,8 +423,12 @@ func TestShellExecutor_TimeoutGivesUpOnEscapedDescendant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if elapsed > 8*time.Second {
-		t.Fatalf("Run took %s, want under ~%s (timeout + groupKillWaitDelay) — the give-up bound did not engage", elapsed, 100*time.Millisecond+groupKillWaitDelay)
+	// The escaped descendant ignores/outruns both signals, so Run gives up
+	// after the timeout SIGQUIT grace AND the SIGKILL give-up bound:
+	// ~timeout + timeoutDumpGrace + groupKillWaitDelay. Still bounded — it does
+	// not hang for the escaped process's full 30s lifetime.
+	if elapsed > timeoutDumpGrace+groupKillWaitDelay+3*time.Second {
+		t.Fatalf("Run took %s, want under ~%s (timeout + timeoutDumpGrace + groupKillWaitDelay) — the give-up bound did not engage", elapsed, 100*time.Millisecond+timeoutDumpGrace+groupKillWaitDelay)
 	}
 	if result.Status != apiv1.ResultFailure {
 		t.Fatalf("status = %v, want failure", result.Status)
