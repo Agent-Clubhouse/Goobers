@@ -35,18 +35,63 @@ func electedLander(thisPR int, blockers []int) bool {
 	return true
 }
 
+// electedNewest is the "newest" election policy (#834): highest PR number wins
+// — thisPR is the lander iff its number is above every PR it is blocked on.
+// Same exactly-one-winner guarantee as fifo under the reviewer's symmetric
+// file-overlap findings, but elects the most-recently-opened cluster member
+// (land the newest work first) rather than the oldest.
+func electedNewest(thisPR int, blockers []int) bool {
+	for _, b := range blockers {
+		if b > thisPR {
+			return false
+		}
+	}
+	return true
+}
+
+// electionPolicyFunc decides whether thisPR is the elected lander given the PRs
+// it is blocked on. Every registered policy is a pure function of
+// {thisPR, blockers} so each cluster member computes the same winner
+// independently — no central coordination (#834's seam over #833's fifo).
+type electionPolicyFunc func(thisPR int, blockers []int) bool
+
+// defaultElectionPolicy is the safe, boring, fully-reproducible default:
+// lowest PR number (fifo).
+const defaultElectionPolicy = "fifo"
+
+// electionPolicies is the pluggable registry the elect-lander stage resolves
+// its --policy / electionPolicy input against. Only purely-local deterministic
+// policies live here today; cluster-data policies (most-blockers,
+// fewest-overlaps) are tracked as follow-ups and would plug in the same way.
+var electionPolicies = map[string]electionPolicyFunc{
+	"fifo":   electedLander,
+	"newest": electedNewest,
+}
+
+// resolveElectionPolicy returns the named policy and the name actually used. An
+// unknown or empty name falls back to defaultElectionPolicy (fifo) rather than
+// failing the whole merge-review pipeline on a config typo — the caller logs
+// the fallback so a misconfigured policy is visible, not silent.
+func resolveElectionPolicy(name string) (electionPolicyFunc, string) {
+	if p, ok := electionPolicies[name]; ok {
+		return p, name
+	}
+	return electedLander, defaultElectionPolicy
+}
+
 // electionDecision reports whether the selected PR should be crowned the lander
 // of its cluster and routed to merge (#833). It is the pure core of the
 // elect-lander stage: election fires only when the verdict is entirely
 // cross-PR-ordering asks (allCrossPRBlocked — the PR is individually fine and
-// merely waiting on a sibling) AND this PR wins its cluster's election. Any
-// verdict carrying a real defect (a substantive/conflict/rebase-needed finding)
-// is never electable — it routes to apply-verdict / pr-remediation unchanged.
-func electionDecision(findings []apiv1.Finding, selectedNumber int) bool {
+// merely waiting on a sibling) AND this PR wins its cluster's election under
+// the configured policy. Any verdict carrying a real defect (a substantive/
+// conflict/rebase-needed finding) is never electable — it routes to
+// apply-verdict / pr-remediation unchanged.
+func electionDecision(findings []apiv1.Finding, selectedNumber int, policy electionPolicyFunc) bool {
 	if !allCrossPRBlocked(findings) {
 		return false
 	}
-	return electedLander(selectedNumber, unionBlockingPRs(findings))
+	return policy(selectedNumber, unionBlockingPRs(findings))
 }
 
 // runElectLander implements `goobers elect-lander` (#833): merge-review's
@@ -106,6 +151,15 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	reviewDigest := providerInput("reviewDigest", "")
 	resultFile := providerInput("resultFile", "election.json")
 
+	// #834: the lander-election policy is workflow-configurable. An unknown
+	// name falls back to the deterministic default (fifo) rather than failing
+	// the pipeline; log the fallback so a config typo is visible, not silent.
+	policyName := providerInput("electionPolicy", defaultElectionPolicy)
+	policy, resolvedPolicy := resolveElectionPolicy(policyName)
+	if resolvedPolicy != policyName {
+		pf(stderr, "warning: unknown election policy %q — falling back to %q\n", policyName, resolvedPolicy)
+	}
+
 	// writeResult emits the routing decision plus the pass-through outputs the
 	// two possible successor stages resolve their inputsFrom against.
 	writeResult := func(elected bool) int {
@@ -143,8 +197,8 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if !electionDecision(verdict.Findings, selectedNumber) {
-		pf(stdout, "PR #%d: not the elected lander (or verdict carries a real defect) — routing to apply-verdict\n", selectedNumber)
+	if !electionDecision(verdict.Findings, selectedNumber, policy) {
+		pf(stdout, "PR #%d: not the elected lander under policy %q (or verdict carries a real defect) — routing to apply-verdict\n", selectedNumber, resolvedPolicy)
 		return writeResult(false)
 	}
 
@@ -190,7 +244,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		return writeResult(false)
 	}
 
-	pf(stdout, "elected PR #%d as the lander of its blocked cluster (blockers %v) — routing to merge\n",
-		selectedNumber, unionBlockingPRs(verdict.Findings))
+	pf(stdout, "elected PR #%d as the lander of its blocked cluster (blockers %v, policy %q) — routing to merge\n",
+		selectedNumber, unionBlockingPRs(verdict.Findings), resolvedPolicy)
 	return writeResult(true)
 }
