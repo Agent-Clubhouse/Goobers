@@ -36,9 +36,15 @@ const (
 	emissionKindEvent  = "event"
 	warningEventName   = "goobers.telemetry.warning"
 
-	maxEmissionLineBytes = 1 << 20
-	maxEmissionFileBytes = 8 << 20
-	maxEmissionRecords   = 10_000
+	maxEmissionLineBytes  = 1 << 20
+	maxEmissionFileBytes  = 8 << 20
+	maxEmissionRecords    = 10_000
+	maxEmissionAttributes = 125
+
+	// Reserve three attributes for metric metadata (kind, value, and unit).
+	// Events require only kind, so the same limit is safe for both record types.
+	maxSpanEventAttributes = maxEmissionAttributes + 3
+	maxSpanEvents          = 2*maxEmissionRecords + 2
 )
 
 type stageMetric struct {
@@ -174,11 +180,15 @@ func isPlainDir(path string) bool {
 }
 
 func validMetric(metric stageMetric) bool {
-	return metric.Name != "" && metric.Value != nil && !math.IsNaN(*metric.Value) && !math.IsInf(*metric.Value, 0)
+	return metric.Name != "" &&
+		metric.Value != nil &&
+		!math.IsNaN(*metric.Value) &&
+		!math.IsInf(*metric.Value, 0) &&
+		len(metric.Attrs) <= maxEmissionAttributes
 }
 
 func validEvent(event stageEvent) bool {
-	return event.Name != "" && !event.Time.IsZero()
+	return event.Name != "" && !event.Time.IsZero() && len(event.Attrs) <= maxEmissionAttributes
 }
 
 func readEmissionFile[T any](path string, valid func(T) bool) ([]T, int) {

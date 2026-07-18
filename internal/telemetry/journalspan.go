@@ -107,14 +107,16 @@ type SpanRecord struct {
 	StatusMessage string            `json:"statusMessage,omitempty"`
 	Attributes    map[string]string `json:"attributes,omitempty"`
 	Events        []SpanEventRecord `json:"events,omitempty"`
+	DroppedEvents int               `json:"droppedEvents,omitempty"`
 }
 
 // SpanEventRecord is a within-stage harness event attached to its stage span
 // (TEL-012), recorded via Span.Event.
 type SpanEventRecord struct {
-	Name       string            `json:"name"`
-	Time       time.Time         `json:"time"`
-	Attributes map[string]string `json:"attributes,omitempty"`
+	Name              string            `json:"name"`
+	Time              time.Time         `json:"time"`
+	Attributes        map[string]string `json:"attributes,omitempty"`
+	DroppedAttributes int               `json:"droppedAttributes,omitempty"`
 }
 
 // SpanSchema is the schema id stamped on every span record, versioned
@@ -125,14 +127,15 @@ const SpanSchema = "goobers.dev/telemetry/span/v1"
 func (e *JournalSpanExporter) toSpanRecord(s sdktrace.ReadOnlySpan) SpanRecord {
 	sc := s.SpanContext()
 	rec := SpanRecord{
-		Schema:     SpanSchema,
-		TraceID:    sc.TraceID().String(),
-		SpanID:     sc.SpanID().String(),
-		Name:       redactWith(e.scrubber, s.Name()),
-		StartTime:  s.StartTime(),
-		EndTime:    s.EndTime(),
-		Status:     statusString(s.Status().Code),
-		Attributes: e.stringifyAttrs(s.Attributes()),
+		Schema:        SpanSchema,
+		TraceID:       sc.TraceID().String(),
+		SpanID:        sc.SpanID().String(),
+		Name:          redactWith(e.scrubber, s.Name()),
+		StartTime:     s.StartTime(),
+		EndTime:       s.EndTime(),
+		Status:        statusString(s.Status().Code),
+		Attributes:    e.stringifyAttrs(s.Attributes()),
+		DroppedEvents: s.DroppedEvents(),
 	}
 	if parent := s.Parent(); parent.HasSpanID() {
 		rec.ParentSpanID = parent.SpanID().String()
@@ -145,9 +148,10 @@ func (e *JournalSpanExporter) toSpanRecord(s sdktrace.ReadOnlySpan) SpanRecord {
 	}
 	for _, ev := range s.Events() {
 		rec.Events = append(rec.Events, SpanEventRecord{
-			Name:       redactWith(e.scrubber, ev.Name),
-			Time:       ev.Time,
-			Attributes: e.stringifyAttrs(ev.Attributes),
+			Name:              redactWith(e.scrubber, ev.Name),
+			Time:              ev.Time,
+			Attributes:        e.stringifyAttrs(ev.Attributes),
+			DroppedAttributes: ev.DroppedAttributeCount,
 		})
 	}
 	return rec

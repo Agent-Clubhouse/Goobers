@@ -80,7 +80,9 @@ scoped to that stage attempt. A stage may append one JSON object per line to:
 The runner ingests both files when the stage exits. Emitted metrics are merged
 into `ResultEnvelope.metrics` without replacing executor-computed values; metrics
 and events are attached to the stage span and flow through the journal rollup.
-Malformed lines are counted and dropped without changing the stage outcome.
+Agentic reviewer gates receive the same emission surface on their gate span.
+Each `attrs` object may contain at most 125 entries. Malformed or oversized
+lines are counted and dropped without changing the stage or gate outcome.
 
 ## Artifact passing (the A → B hand-off)
 

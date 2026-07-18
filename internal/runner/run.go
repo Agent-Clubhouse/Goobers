@@ -1659,6 +1659,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	// expected to commit (e.g. merge-review) still gets a real reviewer pass.
 	var emptyDiff bool
 	var env apiv1.InvocationEnvelope
+	var gateTelemetryDir string
 	if g.Evaluator == apiv1.EvaluatorAutomated {
 		env = apiv1.InvocationEnvelope{
 			TaskID:     in.RunID + ":" + g.Name,
@@ -1687,7 +1688,13 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 			span.Fail(err)
 			return gate.Result{}, err, nil
 		}
-		defer func() { removeErr = workspace.Remove(ctx) }()
+		if g.Evaluator == apiv1.EvaluatorAgentic {
+			gateTelemetryDir = telemetry.ResetStageTelemetryDir(env.Workspace)
+		}
+		defer func() {
+			telemetry.CleanupStageTelemetryDir(gateTelemetryDir)
+			removeErr = workspace.Remove(ctx)
+		}()
 		wt = workspace.worktree
 
 		// #301: give an agentic reviewer gate a runner-produced, digested diff
@@ -1774,6 +1781,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	}
 
 	result, err = gateEval.Evaluate(ctx, g, env, subjectStage, subjectResult, diffDigest, emptyDiff)
+	telemetry.IngestStageEmissions(gateTelemetryDir, nil, span)
 	if err != nil {
 		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, err)
 		span.Fail(err)

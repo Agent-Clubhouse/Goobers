@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,6 +126,71 @@ func TestReadEmissionFileContinuesAfterOversizedLine(t *testing.T) {
 	if dropped != 1 {
 		t.Fatalf("dropped = %d, want 1", dropped)
 	}
+}
+
+func TestIngestStageEmissionsRejectsOversizedAttributesWithoutTruncatingMetadata(t *testing.T) {
+	dir := PrepareStageTelemetryDir(t.TempDir())
+	acceptedAttrs := make(map[string]any, maxEmissionAttributes)
+	for i := 0; i < maxEmissionAttributes; i++ {
+		acceptedAttrs[string(rune('a'+i%26))+string(rune('A'+i/26))] = i
+	}
+	oversizedAttrs := make(map[string]any, maxEmissionAttributes+1)
+	for key, value := range acceptedAttrs {
+		oversizedAttrs[key] = value
+	}
+	oversizedAttrs["too-many"] = true
+
+	value := 42.0
+	accepted, err := json.Marshal(stageMetric{Name: "accepted", Value: &value, Unit: "count", Attrs: acceptedAttrs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized, err := json.Marshal(stageMetric{Name: "oversized", Value: &value, Unit: "count", Attrs: oversizedAttrs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, metricsFile), append(append(accepted, '\n'), append(oversized, '\n')...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	exporter := NewMemoryExporter()
+	client, err := New(context.Background(), Config{ServiceName: "stage-emission-attribute-test", SpanExporter: exporter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, span, err := client.StartTask(context.Background(), TaskAttributes{
+		Gaggle: "web", WorkflowID: "wf", RunID: runID, TaskID: "scan",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result := apiv1.ResultEnvelope{}
+	IngestStageEmissions(dir, &result, span)
+	span.End()
+
+	if got := result.Metrics["accepted"]; got != value {
+		t.Fatalf("accepted metric = %v, want %v", got, value)
+	}
+	if _, ok := result.Metrics["oversized"]; ok {
+		t.Fatal("oversized metric was merged")
+	}
+	events := exporter.Spans()[0].Events()
+	if len(events) != 2 {
+		t.Fatalf("span events = %d, want metric and warning", len(events))
+	}
+	if events[0].DroppedAttributeCount != 0 {
+		t.Fatalf("accepted metric dropped %d attributes", events[0].DroppedAttributeCount)
+	}
+	assertSpanEventAttribute(t, events[0].Attributes, emissionKindAttribute, emissionKindMetric)
+	assertSpanEventAttribute(t, events[0].Attributes, metricValueAttribute, "42")
+	assertSpanEventAttribute(t, events[0].Attributes, metricUnitAttribute, "count")
+	assertSpanEventAttribute(t, events[1].Attributes, warningCountAttribute, "1")
 }
 
 func assertSpanEventAttribute(t *testing.T, attrs []attribute.KeyValue, key, want string) {

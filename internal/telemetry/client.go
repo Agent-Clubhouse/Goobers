@@ -77,9 +77,12 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	spanLimits := sdktrace.NewSpanLimits()
-	// Emission files are bounded at ingest; the SDK must not evict valid
-	// emissions or earlier harness events from the completed stage span.
-	spanLimits.EventCountLimit = -1
+	// A task span spans every retry, so keep a finite total-span budget. The
+	// SDK reports overflow through ReadOnlySpan.DroppedEvents.
+	spanLimits.EventCountLimit = maxSpanEvents
+	// Ingest rejects larger attribute maps and reserves room for required
+	// telemetry metadata, so accepted records cannot be partially truncated.
+	spanLimits.AttributePerEventCountLimit = maxSpanEventAttributes
 	options := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
 		sdktrace.WithIDGenerator(runIDGenerator{}),

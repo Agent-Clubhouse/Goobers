@@ -130,6 +130,41 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	assertAttr(t, gateAttrs, AttrGateDecision, "pass")
 }
 
+func TestSpanEventLimitBoundsRetryAccumulation(t *testing.T) {
+	exporter := NewMemoryExporter()
+	client, err := New(context.Background(), Config{ServiceName: "telemetry-limit-test", SpanExporter: exporter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, span, err := client.StartTask(context.Background(), TaskAttributes{
+		Gaggle: "web", WorkflowID: "wf", RunID: runID, TaskID: "retrying",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxSpanEvents+7; i++ {
+		span.Event("attempt.event")
+	}
+	span.End()
+
+	got := exporter.Spans()[0]
+	if len(got.Events()) != maxSpanEvents {
+		t.Fatalf("retained events = %d, want %d", len(got.Events()), maxSpanEvents)
+	}
+	if got.DroppedEvents() != 7 {
+		t.Fatalf("dropped events = %d, want 7", got.DroppedEvents())
+	}
+	record := NewJournalSpanExporter(t.TempDir(), nil).toSpanRecord(got)
+	if record.DroppedEvents != 7 {
+		t.Fatalf("journal dropped events = %d, want 7", record.DroppedEvents)
+	}
+}
+
 func TestSchedulerSpanAttributes(t *testing.T) {
 	ctx := context.Background()
 	exporter := NewMemoryExporter()
