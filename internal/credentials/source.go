@@ -80,16 +80,27 @@ func insecureTokenFileError(name, path string, mode fs.FileMode) error {
 		"(mode %#o); tighten it to 0600", name, path, mode.Perm())
 }
 
-// Resolver resolves named token refs to secret values. It holds no secret
-// material itself — every TokenRef is re-read at resolve time so a rotated
-// env var or file takes effect without restarting the process.
-type Resolver struct {
+// Resolver resolves a named secret reference. Implementations must honor
+// context cancellation. The local implementation reads env vars and files;
+// Azure Key Vault supplies the tier-3 implementation behind this same seam
+// (SEC-010), without changes to credential consumers.
+type Resolver interface {
+	Resolve(ctx context.Context, name string) (string, error)
+}
+
+// envFileResolver holds no secret material itself. Every TokenRef is re-read
+// at resolve time so a rotated env var or file takes effect without restarting
+// the process.
+type envFileResolver struct {
 	refs map[string]TokenRef
 }
 
-// NewResolver builds a Resolver from a set of token refs. Names must be
-// unique and each ref must be well-formed (exactly one of Env/File set).
-func NewResolver(refs []TokenRef) (*Resolver, error) {
+var _ Resolver = (*envFileResolver)(nil)
+
+// NewResolver builds the local env/file Resolver from a set of token refs.
+// Names must be unique and each ref must be well-formed (exactly one of
+// Env/File set).
+func NewResolver(refs []TokenRef) (Resolver, error) {
 	byName := make(map[string]TokenRef, len(refs))
 	for _, r := range refs {
 		if err := r.validate(); err != nil {
@@ -100,13 +111,13 @@ func NewResolver(refs []TokenRef) (*Resolver, error) {
 		}
 		byName[r.Name] = r
 	}
-	return &Resolver{refs: byName}, nil
+	return &envFileResolver{refs: byName}, nil
 }
 
 // Resolve returns the secret value for the named token ref. ctx is accepted
 // for future resolvers that need it (e.g. a Key Vault client at V2); the
 // local env/file resolver is synchronous and ignores it beyond cancellation.
-func (r *Resolver) Resolve(ctx context.Context, name string) (string, error) {
+func (r *envFileResolver) Resolve(ctx context.Context, name string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

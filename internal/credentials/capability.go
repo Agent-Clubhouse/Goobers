@@ -40,7 +40,7 @@ type Grant struct {
 // and it registers every value it resolves with its SecretRegistrar before
 // handing it back — nothing bypasses the scrubber.
 type Injector struct {
-	resolver  *Resolver
+	resolver  Resolver
 	grants    map[string]string // capability -> ref name
 	registrar SecretRegistrar
 }
@@ -48,7 +48,7 @@ type Injector struct {
 // NewInjector builds an Injector over resolver, scoped by grants, registering
 // every resolved secret with registrar. registrar must not be nil; pass a
 // no-op implementation in tests that don't care about redaction.
-func NewInjector(resolver *Resolver, grants []Grant, registrar SecretRegistrar) (*Injector, error) {
+func NewInjector(resolver Resolver, grants []Grant, registrar SecretRegistrar) (*Injector, error) {
 	if resolver == nil {
 		return nil, errors.New("credentials: injector requires a non-nil resolver")
 	}

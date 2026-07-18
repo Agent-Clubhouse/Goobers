@@ -55,8 +55,11 @@ func newTestInjector(t *testing.T, capability, envVar, value string) *credential
 func newTestExecutor(t *testing.T, injector *credentials.Injector) (*ShellExecutor, *fakeRecorder) {
 	t.Helper()
 	if injector == nil {
-		var err error
-		injector, err = credentials.NewInjector(&credentials.Resolver{}, nil, noopRegistrar{})
+		resolver, err := credentials.NewResolver(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		injector, err = credentials.NewInjector(resolver, nil, noopRegistrar{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -932,7 +935,11 @@ func TestNewShellExecutor_RequiresInjectorAndJournal(t *testing.T) {
 	if _, err := NewShellExecutor(nil, newFakeRecorder()); err == nil {
 		t.Fatal("expected error for nil injector")
 	}
-	injector, err := credentials.NewInjector(&credentials.Resolver{}, nil, noopRegistrar{})
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewInjector(resolver, nil, noopRegistrar{})
 	if err != nil {
 		t.Fatal(err)
 	}

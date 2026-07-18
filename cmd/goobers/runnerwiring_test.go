@@ -27,7 +27,7 @@ import (
 // resolveGrants materializes each grant's ref through the resolver, returning a
 // capability->token-value map so tests can assert which token actually backs a
 // capability (the whole point of #287's per-capability sourcing/override).
-func resolveGrants(t *testing.T, r *credentials.Resolver, grants []credentials.Grant) map[string]string {
+func resolveGrants(t *testing.T, r credentials.Resolver, grants []credentials.Grant) map[string]string {
 	t.Helper()
 	out := make(map[string]string, len(grants))
 	for _, g := range grants {
@@ -500,7 +500,7 @@ func (f *blockedHandlerFakeCommenter) UpdateWorkItem(_ context.Context, req prov
 	return providers.WorkItem{}, nil
 }
 
-func blockedHandlerTestResolver(t *testing.T) *credentials.Resolver {
+func blockedHandlerTestResolver(t *testing.T) credentials.Resolver {
 	t.Helper()
 	t.Setenv("BLOCKED_TOK", "blocked-token-value")
 	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BLOCKED_TOK"}})

@@ -84,6 +84,61 @@ func TestMaterializeFailsClosedOnUnresolvableGrantedCapability(t *testing.T) {
 	}
 }
 
+type asyncResolver struct {
+	values <-chan string
+}
+
+func (r asyncResolver) Resolve(ctx context.Context, _ string) (string, error) {
+	select {
+	case value := <-r.values:
+		return value, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func TestInjectorAcceptsAsyncResolver(t *testing.T) {
+	values := make(chan string, 1)
+	values <- "remote-secret-value"
+	inj, err := NewInjector(
+		asyncResolver{values: values},
+		[]Grant{{Capability: "github:issues:write", Ref: "remote-secret"}},
+		&spyRegistrar{},
+	)
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	set, err := inj.Materialize(context.Background(), []string{"github:issues:write"})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	got, err := set.Token(context.Background(), "github:issues:write")
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	if got != "remote-secret-value" {
+		t.Fatalf("Token = %q, want %q", got, "remote-secret-value")
+	}
+}
+
+func TestInjectorPropagatesCancellationToResolver(t *testing.T) {
+	inj, err := NewInjector(
+		asyncResolver{values: make(chan string)},
+		[]Grant{{Capability: "github:issues:write", Ref: "remote-secret"}},
+		&spyRegistrar{},
+	)
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = inj.Materialize(ctx, []string{"github:issues:write"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Materialize error = %v, want context.Canceled", err)
+	}
+}
+
 func TestDeclaredCapabilityWithoutGrantHasNoCredential(t *testing.T) {
 	inj, _ := newTestInjector(t, []Grant{{Capability: "github:issues:write", Ref: "github-issues"}})
 	set, err := inj.Materialize(context.Background(), []string{"telemetry:read"})
