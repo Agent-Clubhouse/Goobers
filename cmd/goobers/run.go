@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -347,19 +348,55 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 // `run` holds its own instance lock) stays PhaseRunning indefinitely by
 // design; ctx cancellation (SIGINT/SIGTERM) is what lets a caller stop
 // waiting on it, reporting its phase as of that moment.
+// runTerminalWaitTimeout, when > 0, bounds how long waitForRunTerminal polls for
+// a run to reach a terminal phase before giving up with an error. It is 0
+// (unbounded) in production: a human running `goobers run` waits until the run
+// finishes or they Ctrl-C, and nothing should cut that short. The test suite
+// sets a generous bound (see cmd/goobers TestMain) so that if the
+// concurrent-make-ci journal-IO wedge (#827) ever regresses, the affected test
+// FAILS FAST — in ~2 minutes — instead of silently hanging the whole local-ci
+// stage for its full 10-minute limit and wedging the merge queue with no signal.
+// Var, not const, so only the suite opts in; production leaves it 0.
+var runTerminalWaitTimeout time.Duration
+
+// isTerminalPhase reports whether a run has reached one of the four terminal
+// phases waitForRunTerminal waits for.
+func isTerminalPhase(p journal.RunPhase) bool {
+	switch p {
+	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+		return true
+	}
+	return false
+}
+
 func waitForRunTerminal(ctx context.Context, runsDir, runID string) (journal.RunPhase, error) {
+	if runTerminalWaitTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, runTerminalWaitTimeout)
+		defer cancel()
+	}
 	dir := filepath.Join(runsDir, runID)
 	for {
 		if reader, err := journal.OpenRead(dir); err == nil {
-			switch phase := runPhase(reader); phase {
-			case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+			if phase := runPhase(reader); isTerminalPhase(phase) {
 				return phase, nil
 			}
 		}
 		select {
 		case <-ctx.Done():
 			if reader, err := journal.OpenRead(dir); err == nil {
-				return runPhase(reader), nil
+				phase := runPhase(reader)
+				// A deadline (only ever set by the test suite) firing on a
+				// still-running run is the #827-regression tripwire: surface it
+				// as an error so the caller exits non-zero and the test fails
+				// fast, rather than reporting a non-terminal phase as though the
+				// wait completed normally. A signal-driven cancel (production
+				// Ctrl-C, which sets no deadline) keeps the prior behavior:
+				// report whatever phase we can read.
+				if ctx.Err() == context.DeadlineExceeded && !isTerminalPhase(phase) {
+					return phase, fmt.Errorf("run %s did not reach a terminal phase within %s (still %s); failing fast instead of hanging — a make-ci journal-IO wedge may have regressed (#827)", runID, runTerminalWaitTimeout, phase)
+				}
+				return phase, nil
 			}
 			return journal.PhaseRunning, ctx.Err()
 		case <-time.After(runPollInterval):
