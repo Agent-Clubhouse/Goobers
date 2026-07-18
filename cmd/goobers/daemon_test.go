@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -172,22 +173,89 @@ func TestUpHeartbeatIsDefaultOnAndQuietSuppressesIt(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := initDeterministicDemo(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			var stdout, stderr bytes.Buffer
-			if code := runUpContext(ctx, tc.args(root), &stdout, &stderr); code != 0 {
+			stdout := newDaemonOutput()
+			var stderr bytes.Buffer
+			done := make(chan int, 1)
+			go func() {
+				done <- runUpContext(ctx, tc.args(root), stdout, &stderr)
+			}()
+
+			select {
+			case <-stdout.started:
+			case code := <-done:
 				t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+			case <-time.After(10 * time.Second):
+				t.Fatal("daemon did not start")
 			}
-			if !strings.Contains(stdout.String(), "daemon started") {
-				t.Fatalf("stdout = %q, want daemon-started message", stdout.String())
+
+			if tc.wantHeartbeat {
+				select {
+				case <-stdout.heartbeat:
+				case code := <-done:
+					t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+				case <-time.After(10 * time.Second):
+					t.Fatalf("stdout = %q, want heartbeat", stdout.String())
+				}
+			} else {
+				select {
+				case <-stdout.heartbeat:
+					t.Fatalf("stdout = %q, want no heartbeat", stdout.String())
+				case code := <-done:
+					t.Fatalf("daemon exited early with code %d, stderr = %q", code, stderr.String())
+				case <-time.After(10 * heartbeatInterval):
+				}
 			}
-			gotHeartbeat := strings.Contains(stdout.String(), "] alive — ")
-			if gotHeartbeat != tc.wantHeartbeat {
-				t.Fatalf("stdout = %q, heartbeat present = %t, want %t", stdout.String(), gotHeartbeat, tc.wantHeartbeat)
+
+			cancel()
+			select {
+			case code := <-done:
+				if code != 0 {
+					t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("runUpContext did not return after ctx cancellation")
 			}
 		})
 	}
+}
+
+type daemonOutput struct {
+	mu            sync.Mutex
+	buf           bytes.Buffer
+	started       chan struct{}
+	heartbeat     chan struct{}
+	startedOnce   sync.Once
+	heartbeatOnce sync.Once
+}
+
+func newDaemonOutput() *daemonOutput {
+	return &daemonOutput{
+		started:   make(chan struct{}),
+		heartbeat: make(chan struct{}),
+	}
+}
+
+func (o *daemonOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	n, err := o.buf.Write(p)
+	output := o.buf.String()
+	if strings.Contains(output, "daemon started") {
+		o.startedOnce.Do(func() { close(o.started) })
+	}
+	if strings.Contains(output, "] alive — ") {
+		o.heartbeatOnce.Do(func() { close(o.heartbeat) })
+	}
+	return n, err
+}
+
+func (o *daemonOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.String()
 }
 
 // TestUpResumesInterruptedRun is issue #23's crash-resume acceptance: a run
