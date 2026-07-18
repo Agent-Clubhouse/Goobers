@@ -87,6 +87,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runGatherSiblingContext(args[1:], stdout, stderr)
 	case "apply-verdict":
 		return runApplyVerdict(args[1:], stdout, stderr)
+	case "elect-lander":
+		return runElectLander(args[1:], stdout, stderr)
 	case "post-merge":
 		return runPostMerge(args[1:], stdout, stderr)
 	case "gather-pr-context":

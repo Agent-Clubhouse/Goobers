@@ -104,19 +104,46 @@ spec:
       run:
         command: ["goobers", "apply-verdict"]
       inputsFrom:
-        # Threads through the review gate transparently: a gate never
-        # updates the walk's lastResult/InputsFrom chain (only a task
-        # does), so this still resolves against gather-sibling-context's
-        # own Outputs, not the gate's. apply-verdict reads the gate's own
-        # Verdict back from this run's journal directly (the mechanism
-        # #358's schema + internal/gate's existing recordVerdict already
-        # provide, not new plumbing) — see its own doc comment.
+        # Threads through the preceding gate transparently: a gate never
+        # updates the walk's lastResult/InputsFrom chain (only a task does).
+        # Resolves against whichever task precedes it — gather-sibling-context
+        # on the review gate's fail branch, elect-lander on elect-gate's
+        # parked branch (#833); both emit selectedNumber+reviewDigest.
+        # apply-verdict reads the gate's own Verdict back from this run's
+        # journal directly (the mechanism #358's schema + internal/gate's
+        # existing recordVerdict already provide, not new plumbing).
         selectedNumber: selectedNumber
         reviewDigest: reviewDigest
       capabilities:
         - github:pr:write
-      # Terminal: non-pass verdicts end as PR feedback for pr-remediation or
-      # a human.
+      # Terminal: parked/failed verdicts end as PR feedback for pr-remediation
+      # or a human.
+
+    - name: elect-lander
+      type: deterministic
+      goal: Elect one lander from a mutually-sibling-blocked cluster, or park the rest.
+      run:
+        command: ["goobers", "elect-lander"]
+      inputsFrom:
+        # Same transparent-gate threading as apply-verdict above: resolves
+        # against gather-sibling-context's Outputs through the review gate.
+        selectedNumber: selectedNumber
+        selectedHeadSha: selectedHeadSha
+        selectedBaseSha: selectedBaseSha
+        reviewDigest: reviewDigest
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        # elected drives elect-gate; the rest are pass-through so BOTH successor
+        # stages resolve their single-hop inputsFrom on this branch — merge-pr
+        # on the elected path, apply-verdict on the parked path (the same
+        # convergence pattern post-merge already uses behind merge-gate/queue-gate).
+        - elected
+        - selectedNumber
+        - selectedHeadSha
+        - selectedBaseSha
+        - reviewDigest
+      next: elect-gate
 
     - name: merge-pr
       type: deterministic
@@ -213,7 +240,30 @@ spec:
         # decisions become labels/comments consumed by pr-remediation or a
         # human, rather than a same-run implementation repass.
         pass: merge-pr
-        needs-changes: apply-verdict
+        # #833: a needs-changes verdict routes through elect-lander first — if
+        # it is entirely cross-PR-ordering asks and this PR is the elected
+        # lander of its overlap cluster, elect-lander sends it on to merge-pr
+        # (breaking the symmetric-flag deadlock); otherwise it flows to
+        # apply-verdict and parks blocked-on-sibling / needs-remediation.
+        needs-changes: elect-lander
+        fail: apply-verdict
+
+    - name: elect-gate
+      # #833: routes elect-lander's deterministic winner-election decision.
+      # elected=true -> merge-pr (this PR is the crowned lander of its
+      # mutually-blocked cluster; merge-pr still independently re-verifies every
+      # safety conjunct before landing); elected=false -> apply-verdict (park
+      # blocked-on-sibling for a non-elected member, or needs-remediation for a
+      # verdict carrying a real defect). output-equals reads elect-lander's
+      # Outputs["elected"] directly, the same shape merge-gate's land-outcome uses.
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: elected
+          equals: "true"
+      branches:
+        pass: merge-pr
         fail: apply-verdict
 
     - name: merge-gate
