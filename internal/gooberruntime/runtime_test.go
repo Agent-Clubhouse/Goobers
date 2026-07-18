@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -660,5 +661,40 @@ func TestHarnessEvaluatorRequiresHarness(t *testing.T) {
 	_, err := HarnessEvaluator{}.Evaluate(context.Background(), HarnessRequest{})
 	if !errors.Is(err, ErrHarnessUnavailable) {
 		t.Fatalf("error = %v, want ErrHarnessUnavailable", err)
+	}
+}
+
+func TestRuntimeScrubbedErrorPreservesTypedClassification(t *testing.T) {
+	const secret = "opaque-encoded-ado-credential"
+
+	for _, tc := range []struct {
+		name     string
+		wrap     func(error) error
+		classify func(error) bool
+	}{
+		{"timeout", invoke.Timeout, invoke.IsTimeout},
+		{"infrastructure", invoke.InfrastructureFailure, invoke.IsInfrastructureFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry, scrubber := journal.DefaultScrubber()
+			registry.Register([]byte(secret))
+
+			rt := New(Options{
+				Preparer:       &fakePreparer{},
+				Harness:        &fakeHarness{err: tc.wrap(fmt.Errorf("harness failed with %s", secret))},
+				OutputScrubber: scrubber,
+			})
+
+			_, err := rt.Invoke(context.Background(), validInvocation())
+			if err == nil {
+				t.Fatal("Invoke returned nil error")
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("registered credential leaked from runtime error: %v", err)
+			}
+			if !tc.classify(err) {
+				t.Fatalf("scrubbing dropped %s classification: %v", tc.name, err)
+			}
+		})
 	}
 }

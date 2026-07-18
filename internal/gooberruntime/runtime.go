@@ -139,12 +139,24 @@ func (r *Runtime) scrubError(err error) error {
 	if message == err.Error() {
 		return err
 	}
-	return &scrubbedError{
+	var scrubbed error = &scrubbedError{
 		message: message,
 		matches: func(target error) bool {
 			return errors.Is(err, target)
 		},
 	}
+	// The scrubbed error deliberately has no Unwrap, so errors.As cannot reach
+	// the secret-bearing original. Re-apply the classification markers the
+	// runner seam matches on (invoke.IsTimeout, invoke.IsInfrastructureFailure)
+	// around the scrubbed message so retry and OnTimeout salvage policy still
+	// see a typed failure.
+	if invoke.IsInfrastructureFailure(err) {
+		scrubbed = invoke.InfrastructureFailure(scrubbed)
+	}
+	if invoke.IsTimeout(err) {
+		scrubbed = invoke.Timeout(scrubbed)
+	}
+	return scrubbed
 }
 
 func (r *Runtime) scrubString(value string) string {
