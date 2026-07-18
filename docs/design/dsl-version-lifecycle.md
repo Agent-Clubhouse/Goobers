@@ -387,16 +387,16 @@ interpreter *stayed* frozen.
 
 ## 10. Issue breakdown (milestone #12 — all filed **unapproved**, pending this doc's review)
 
-- **[EPIC] DVL** — DSL Version Lifecycle & Multi-Version Runtime (this doc).
-- **DVL-1** — `dslVersion` field on the Workflow CRD + parse/plumb (no behaviour yet).
-- **DVL-2** — `SupportMatrix` type + compiled-in table + `goobers versions` CLI.
-- **DVL-3** — Load-time support-level enforcement (loader + validate; `DVL0xx` codes; preview/deprecated/unsupported behaviour).
-- **DVL-4** — Version router: split `internal/workflow` into a dispatcher + first versioned interpreter package (`v_current`), with per-version golden fixtures.
-- **DVL-5** — Second interpreter (copy-forward drill): cut a `v_next`, freeze `v_current`, prove both compile independently — validates the coexistence model end-to-end.
-- **DVL-6** — `goobers fix --to <version>` migrator scaffold (one-step, diff-emitting).
-- **DVL-7** — Support-window *policy* doc + CI guard (extends #429): no straight-to-unsupported, ≥1 minor deprecated, LTS window.
-- **DVL-8** — Per-version feature matrix + release-note support-delta (extends #430/#433).
-- **DVL-9** — Forward-fix-only runtime policy: `--version` semantics, PATCH-means-no-contract-change guard, documented (extends #431).
+- **[EPIC] DVL** (#860) — DSL Version Lifecycle & Multi-Version Runtime (this doc).
+- **DVL-1** (#861) — `dslVersion` field on the Workflow CRD + parse/plumb (no behaviour yet).
+- **DVL-2** (#862) — `SupportMatrix` type + compiled-in table + `goobers versions` CLI.
+- **DVL-3** (#863) — Load-time support-level enforcement (loader + validate; `DVL0xx` codes; preview/deprecated/unsupported behaviour).
+- **DVL-4** (#864) — Version router: split `internal/workflow` into a dispatcher + first versioned interpreter package (`v_current`), with per-version golden fixtures.
+- **DVL-5** (#865) — Second interpreter (copy-forward drill): cut a `v_next`, freeze `v_current`, prove both compile independently — validates the coexistence model end-to-end.
+- **DVL-6** (#866) — `goobers fix --to <version>` migrator scaffold (one-step, diff-emitting).
+- **DVL-7** (#867) — Support-window *policy* doc + CI guard (extends #429): no straight-to-unsupported, ≥1 minor deprecated, LTS window.
+- **DVL-8** (#868) — Per-version feature matrix + release-note support-delta (extends #430/#433).
+- **DVL-9** (#869) — Forward-fix-only runtime policy: `--version` semantics, PATCH-means-no-contract-change guard, documented (extends #431).
 
 ---
 
