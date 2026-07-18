@@ -150,8 +150,7 @@ func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer) bool {
 	return ok
 }
 
-// adapterFor returns the default adapter for a goober-declared harness kind.
-// v1/V0 supports only the GitHub Copilot CLI (GBO-040).
+// adapterFor returns the registered adapter for a goober-declared harness kind.
 //
 // The CopilotAdapter carries copilotAuthCheckArgs so every preflight — the
 // operator-invoked `validate --check-harness` AND the automatic daemon-startup
@@ -160,16 +159,9 @@ func checkHarnesses(goobers []apiv1.Goober, stdout, stderr io.Writer) bool {
 // once here is what closes #238's "catch a signed-out harness at startup, not
 // mid-run" criterion.
 func adapterFor(h apiv1.Harness) (harness.Adapter, error) {
-	switch h {
-	case apiv1.HarnessCopilot:
-		return &harness.CopilotAdapter{Command: []string{"copilot"}, AuthCheckArgs: copilotAuthCheckArgs}, nil
-	default:
-		return nil, errUnknownHarness(h)
+	registry, err := buildHarnessRegistry(nil)
+	if err != nil {
+		return nil, err
 	}
-}
-
-type errUnknownHarness apiv1.Harness
-
-func (e errUnknownHarness) Error() string {
-	return "unknown harness " + string(e) + " (V0 supports \"copilot\" only)"
+	return registry.Get(string(h))
 }

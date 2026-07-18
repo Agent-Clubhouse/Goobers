@@ -61,10 +61,11 @@ func CheckTriggerFields(def Definition) []string {
 	return triggerFieldProblems(def)
 }
 
-// CheckAdmission reports capability-admission and unknown-harness violations
-// against the supplied goober definitions.
+// CheckAdmission reports capability-admission violations against the supplied
+// goober definitions. The config validator enforces its schema's harness enum;
+// Compile additionally checks the production registry via WithKnownHarnesses.
 func CheckAdmission(def Definition, goobers map[string]apiv1.GooberSpec) []string {
-	return admissionProblems(def, goobers)
+	return admissionProblems(def, goobers, nil)
 }
 
 // CheckGateVocabulary reports an automated gate whose declared

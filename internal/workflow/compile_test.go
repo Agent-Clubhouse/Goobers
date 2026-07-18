@@ -387,13 +387,21 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{
 		"coder": {Role: "coder", Harness: apiv1.HarnessCopilot, Capabilities: []string{"github:issues:write", "repo:push"}},
 	}
-	if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}, WithGoobers(goobers)); err != nil {
+	if _, err := Compile(
+		Definition{Name: "x", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
+	); err != nil {
 		t.Fatalf("granted capabilities should compile, got %v", err)
 	}
 
 	// Drop repo:push from the grant set -> admission fails closed.
 	goobers["coder"] = apiv1.GooberSpec{Role: "coder", Harness: apiv1.HarnessCopilot, Capabilities: []string{"github:issues:write"}}
-	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}, WithGoobers(goobers))
+	_, err := Compile(
+		Definition{Name: "x", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
+	)
 	if err == nil || !strings.Contains(err.Error(), `uses capability "repo:push" not granted to goober "coder"`) {
 		t.Fatalf("expected undeclared-capability error, got %v", err)
 	}
@@ -448,7 +456,11 @@ func TestCompileAdmissionUnknownCapabilityGranted(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{
 		"coder": {Role: "coder", Harness: apiv1.HarnessCopilot, Capabilities: []string{"github:prs:write"}},
 	}
-	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}, WithGoobers(goobers))
+	_, err := Compile(
+		Definition{Name: "x", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
+	)
 	if err == nil || !strings.Contains(err.Error(), `goober "coder" grants unknown capability "github:prs:write"`) {
 		t.Fatalf("expected unknown-capability-granted error, got %v", err)
 	}
@@ -469,7 +481,11 @@ func TestCompileAdmissionUnknownCapabilityDeclared(t *testing.T) {
 	// The typo'd spelling is internally consistent (granted == declared), so
 	// only the canonical-registry check catches it — the grant-membership
 	// check alone would pass this.
-	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}, WithGoobers(goobers))
+	_, err := Compile(
+		Definition{Name: "x", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
+	)
 	if err == nil || !strings.Contains(err.Error(), `task "implement" declares unknown capability "github:pulls:write"`) {
 		t.Fatalf("expected unknown-capability-declared error, got %v", err)
 	}
@@ -480,9 +496,28 @@ func TestCompileAdmissionUnknownHarness(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{
 		"coder": {Role: "coder", Harness: apiv1.Harness("nonesuch")},
 	}
-	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}, WithGoobers(goobers))
+	_, err := Compile(
+		Definition{Name: "x", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
+	)
 	if err == nil || !strings.Contains(err.Error(), `unknown harness "nonesuch"`) {
 		t.Fatalf("expected unknown-harness error, got %v", err)
+	}
+}
+
+func TestCompileAdmissionUsesRegisteredHarnessNames(t *testing.T) {
+	goobers := map[string]apiv1.GooberSpec{
+		"coder": {Role: "coder", Harness: apiv1.Harness("alternate")},
+	}
+	def := Definition{Name: "x", Version: 1, Spec: linearSpec()}
+
+	if _, err := Compile(def, WithGoobers(goobers), WithKnownHarnesses([]string{"alternate"})); err != nil {
+		t.Fatalf("registered harness should compile, got %v", err)
+	}
+	if _, err := Compile(def, WithGoobers(goobers), WithKnownHarnesses(nil)); err == nil ||
+		!strings.Contains(err.Error(), `unknown harness "alternate"`) {
+		t.Fatalf("unregistered harness should fail closed, got %v", err)
 	}
 }
 
@@ -505,7 +540,11 @@ func TestCompileDeterministicTaskUnknownCapability(t *testing.T) {
 	// WithGoobers supplied (even though this task has none) — matches the
 	// real config-validation call site (api/validate's CheckAdmission always
 	// passes the full goober set), so this must fail with goobers present.
-	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}, WithGoobers(map[string]apiv1.GooberSpec{}))
+	_, err := Compile(
+		Definition{Name: "x", Version: 1, Spec: spec},
+		WithGoobers(map[string]apiv1.GooberSpec{}),
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
+	)
 	if err == nil || !strings.Contains(err.Error(), `task "build" declares unknown capability "github:pr:wirte"`) {
 		t.Fatalf("expected unknown-capability error for the deterministic task, got %v", err)
 	}

@@ -114,8 +114,9 @@ type Outcome struct {
 // RunRequest.Credentials grants and never leak them outside the harness
 // session's environment.
 type Adapter interface {
-	// Name identifies this adapter (e.g. "copilot-cli", "fake") — the
-	// registry key and what appears in diagnostics/spans.
+	// Name identifies this adapter (e.g. "copilot-cli", "fake") in
+	// diagnostics/spans. A Registry may expose it under a distinct goober
+	// configuration name.
 	Name() string
 	// Preflight verifies the harness is installed and signed in, returning
 	// an actionable error if not (GBO-011; wired into `goobers validate`).

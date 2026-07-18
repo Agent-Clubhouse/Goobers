@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -58,6 +59,31 @@ func TestBuildEnvCapabilities(t *testing.T) {
 	}
 	if envCaps["agent:model"] == credentialGrantEnv {
 		t.Fatalf("agent:model must map to a var distinct from the github-tool var %q, else the two tokens collide", credentialGrantEnv)
+	}
+}
+
+func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
+	envCaps := buildEnvCapabilities()
+	registry, err := buildHarnessRegistry(envCaps)
+	if err != nil {
+		t.Fatalf("buildHarnessRegistry: %v", err)
+	}
+	adapter, err := registry.Get(string(apiv1.HarnessCopilot))
+	if err != nil {
+		t.Fatalf("Get(copilot): %v", err)
+	}
+	copilot, ok := adapter.(*harness.CopilotAdapter)
+	if !ok {
+		t.Fatalf("registered adapter = %T, want *harness.CopilotAdapter", adapter)
+	}
+	if copilot.Name() != "copilot-cli" {
+		t.Fatalf("adapter Name = %q, want existing diagnostic identity copilot-cli", copilot.Name())
+	}
+	if copilot.EnvCapabilities[string(capability.AgentModel)] != copilotModelEnv {
+		t.Fatalf("agent:model env = %q, want %q", copilot.EnvCapabilities[string(capability.AgentModel)], copilotModelEnv)
+	}
+	if len(copilot.AuthCheckArgs) == 0 {
+		t.Fatal("registered Copilot adapter is missing its authentication preflight")
 	}
 }
 

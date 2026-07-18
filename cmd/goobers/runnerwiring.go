@@ -127,14 +127,13 @@ func logIngestFailure(log *journal.InstanceLog, runID, code string, cause error)
 // falls back to its own github.com default.
 var repoCloneURL func(apiv1.RepoRef) (string, error)
 
-// newAgenticAdapter overrides how buildRunnerConfig constructs the harness
-// adapter for an agentic stage when non-nil. It is a test seam (mirroring
+// newAgenticAdapter overrides the adapter selected from the harness Registry
+// for an agentic stage when non-nil. It is a test seam (mirroring
 // repoCloneURL above) so the CLI-level acceptance check (acceptance_test.go)
 // can substitute a fake for the real Copilot CLI subprocess and drive the full
 // agentic loop — implement -> reviewer gate -> local-ci — through `goobers
 // run`/`up` offline, extending #29's runner-API-level walking skeleton to the
-// CLI entrypoint. Production leaves it nil and buildRunnerConfig uses the real
-// CopilotAdapter.
+// CLI entrypoint. Production leaves it nil.
 var newAgenticAdapter func(gooberName string, envCaps map[string]string) harness.Adapter
 
 // newPRPoller overrides how buildRunnerConfig constructs the ci-poll stage's
@@ -181,6 +180,22 @@ func buildEnvCapabilities() map[string]string {
 	}
 	envCaps[string(capability.AgentModel)] = copilotModelEnv
 	return envCaps
+}
+
+// buildHarnessRegistry is the production harness composition point. Registry
+// keys are goober spec.harness values; adapter names remain their diagnostic
+// identities, so Copilot continues to report "copilot-cli" in spans and errors.
+func buildHarnessRegistry(envCaps map[string]string) (*harness.Registry, error) {
+	registry := harness.NewRegistry()
+	adapter := &harness.CopilotAdapter{
+		Command:         []string{"copilot"},
+		AuthCheckArgs:   copilotAuthCheckArgs,
+		EnvCapabilities: envCaps,
+	}
+	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), adapter); err != nil {
+		return nil, fmt.Errorf("register Copilot harness: %w", err)
+	}
+	return registry, nil
 }
 
 // buildCredentials builds a Resolver and the capability->ref Grants from
@@ -629,8 +644,8 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 }
 
 // buildRunnerConfig assembles the runner.Config the daemon (`goobers up`) and
-// `goobers run` share: real worktrees, the real Copilot harness adapter and
-// shell executor, credentials scoped to instance.yaml's configured repo(s).
+// `goobers run` share: real worktrees, registry-selected harness adapters and
+// the shell executor, credentials scoped to instance.yaml's configured repo(s).
 // One Config serves every workflow/run — runner.Runner is not bound to a
 // single compiled machine. Also returns the *worktree.Manager directly (not
 // just embedded in the Config) so the daemon can call Reap on the exact same
@@ -670,6 +685,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	}
 
 	envCaps := buildEnvCapabilities()
+	adapterRegistry, err := buildHarnessRegistry(envCaps)
+	if err != nil {
+		return runner.Config{}, nil, err
+	}
 
 	// An agentic gate's reviewer has no stage-level capabilities of its own, so
 	// the runner sources them from the reviewer goober's definition (#294). Map
@@ -737,7 +756,14 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if err != nil {
 				return nil, fmt.Errorf("read goober %q instructions: %w", gooberName, err)
 			}
-			var adapter harness.Adapter = &harness.CopilotAdapter{Command: []string{"copilot"}, EnvCapabilities: envCaps}
+			harnessName := spec.Harness
+			if harnessName == "" {
+				harnessName = apiv1.HarnessCopilot
+			}
+			adapter, err := adapterRegistry.Get(string(harnessName))
+			if err != nil {
+				return nil, fmt.Errorf("resolve goober %q harness: %w", gooberName, err)
+			}
 			if newAgenticAdapter != nil {
 				adapter = newAgenticAdapter(gooberName, envCaps)
 			}
@@ -823,12 +849,18 @@ func knownAutomatedCheckNames() []string {
 func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[string]*workflow.Machine, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
+	adapterRegistry, err := buildHarnessRegistry(nil)
+	if err != nil {
+		return nil, err
+	}
 	machines := make(map[string]*workflow.Machine, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
 		m, err := workflow.Compile(
 			workflow.Definition{Name: wf.Name, Version: workflowVersion, Spec: wf.Spec},
-			workflow.WithGoobers(goobers), workflow.WithKnownChecks(knownChecks),
+			workflow.WithGoobers(goobers),
+			workflow.WithKnownChecks(knownChecks),
+			workflow.WithKnownHarnesses(adapterRegistry.Names()),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("compile workflow %q: %w", wf.Name, err)
