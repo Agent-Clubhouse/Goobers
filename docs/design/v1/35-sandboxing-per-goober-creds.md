@@ -50,8 +50,9 @@ credential plumbing break inside a clean container). The realistic rung-2 option
 **Decision:** OS-native sandbox as rung 2 — Seatbelt on
 macOS, bubblewrap on Linux — confining the agentic subprocess FS to its stage worktree,
 container deferred. S0 validated this against a real `copilot -p` run on macOS
-(auth still works while direct out-of-worktree writes are denied) and recorded the
-decision and residual risks in [ADR 0001](../../adr/0001-agentic-sandbox-mechanism.md).
+(auth still works with a fresh in-worktree `COPILOT_HOME` and no
+out-of-worktree writable roots) and recorded the decision and residual risks in
+[ADR 0001](../../adr/0001-agentic-sandbox-mechanism.md).
 
 ## 4. Missions (dispatchable, single-PR-sized)
 

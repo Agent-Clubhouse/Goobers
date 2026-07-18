@@ -27,8 +27,8 @@ type Sandbox interface {
 	Wrap(command *exec.Cmd, policy Policy) error
 }
 
-// Policy declares the stage workspace and any narrow runtime-state directories
-// the harness must also write, such as Copilot's resumable session store.
+// Policy declares the stage workspace and any isolated per-run runtime-state
+// directories the harness must also write.
 type Policy struct {
 	Workspace     string
 	WritableRoots []string

@@ -51,14 +51,16 @@ runs these probes with bubblewrap on Linux and Seatbelt on macOS. Linux
 construction executes a bounded bubblewrap preflight so a present but unusable
 installation is reported as unavailable before stage dispatch.
 
-Copilot CLI 1.0.71 does not expose a session-state directory override and
-persists resumable events beneath `~/.copilot/session-state`; `--log-dir` does
-allow logs to be redirected into the worktree. On 2026-07-18, the opt-in live probe
+Copilot CLI 1.0.71 exposes `COPILOT_HOME` to override its configuration and
+state directory and `--log-dir` to redirect logs. The probe assigns both to the
+temporary worktree while retaining the user's `HOME` for credential-store
+authentication. On 2026-07-18, the opt-in live probe
 `GOOBERS_SANDBOX_COPILOT_LIVE=1 go test ./internal/sandbox -run
-TestNativeSandboxCopilotLive -count=1` succeeded on macOS with GitHub Copilot CLI
-1.0.71: `copilot -p` authenticated, executed non-interactively under Seatbelt,
-and created its requested file inside the temporary worktree while Seatbelt
-allowed only that worktree and the CLI's session-state directory to be written.
+TestNativeSandboxCopilotLive -count=1` succeeded on macOS with GitHub Copilot
+CLI 1.0.71: `copilot -p` authenticated through the existing local login,
+executed non-interactively under Seatbelt, created its requested file, and
+persisted session state beneath the in-worktree `COPILOT_HOME`. Seatbelt
+allowed no writable root outside the temporary worktree.
 
 ## Consequences and residual risks
 
@@ -76,10 +78,9 @@ allowed only that worktree and the CLI's session-state directory to be written.
   effects. S2 must either mask those endpoints or document narrowly reviewed
   exceptions needed for local authentication; this spike does not claim a
   production-complete boundary.
-- Copilot's session-state directory is a narrow out-of-worktree write exception
-  until the CLI supports relocating it. S3 must provision a per-run state root
-  when a supported override becomes available; until then, resumable session
-  metadata is shared with the local user account and remains a residual risk.
+- S3 must provision a fresh in-worktree `COPILOT_HOME` for every sandboxed
+  Copilot run so resumable session metadata is isolated with the disposable
+  worktree.
 - The prototype does not restrict network egress. Copilot requires network
   access; V1 documents that residual risk, while tier 3 enforces network policy.
 - The wrapper deliberately avoids creating a new session so the harness

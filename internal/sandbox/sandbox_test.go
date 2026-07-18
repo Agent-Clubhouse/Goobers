@@ -197,12 +197,14 @@ func TestNativeSandboxCopilotLive(t *testing.T) {
 
 	s := requiredNativeSandbox(t)
 	workspace := t.TempDir()
+	copilotHome := filepath.Join(workspace, ".copilot")
 	temp := filepath.Join(workspace, ".tmp")
-	if err := os.Mkdir(temp, 0o700); err != nil {
-		t.Fatalf("create sandbox temp directory: %v", err)
+	for _, directory := range []string{copilotHome, temp} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatalf("create sandbox runtime directory: %v", err)
+		}
 	}
 	outputPath := filepath.Join(workspace, "SANDBOX_AUTH_OK.txt")
-	sessionState := filepath.Join(os.Getenv("HOME"), ".copilot", "session-state")
 	command := exec.Command(
 		"copilot",
 		"-p", "Create SANDBOX_AUTH_OK.txt in the current directory containing exactly: authenticated",
@@ -211,11 +213,8 @@ func TestNativeSandboxCopilotLive(t *testing.T) {
 		"--log-level", "error",
 	)
 	command.Dir = workspace
-	command.Env = liveCopilotEnv(temp)
-	if err := s.Wrap(command, Policy{
-		Workspace:     workspace,
-		WritableRoots: []string{sessionState},
-	}); err != nil {
+	command.Env = liveCopilotEnv(copilotHome, temp)
+	if err := s.Wrap(command, Policy{Workspace: workspace}); err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
 	if output, err := command.CombinedOutput(); err != nil {
@@ -228,6 +227,12 @@ func TestNativeSandboxCopilotLive(t *testing.T) {
 	}
 	if strings.TrimSpace(string(content)) != "authenticated" {
 		t.Fatalf("Copilot output = %q, want %q", content, "authenticated")
+	}
+	sessionState := filepath.Join(copilotHome, "session-state")
+	if info, err := os.Stat(sessionState); err != nil {
+		t.Fatalf("stat isolated Copilot session state: %v", err)
+	} else if !info.IsDir() {
+		t.Fatalf("isolated Copilot session state %q is not a directory", sessionState)
 	}
 }
 
@@ -249,10 +254,11 @@ func requiredNativeSandbox(t *testing.T) Sandbox {
 	return nil
 }
 
-func liveCopilotEnv(temp string) []string {
+func liveCopilotEnv(copilotHome, temp string) []string {
 	return []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
+		"COPILOT_HOME=" + copilotHome,
 		"TMPDIR=" + temp,
 	}
 }
