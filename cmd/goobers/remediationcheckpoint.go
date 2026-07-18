@@ -55,6 +55,16 @@ type remediationState struct {
 	// current cycle's digest to detect a no-progress repeat (#316's in-run
 	// same-diff check, lifted to PR altitude per design doc §6 D5).
 	LastDiffDigest string `json:"lastDiffDigest"`
+	// HeadSHA / BaseSHA are the PR's head/base SHA at the moment THIS cycle
+	// was recorded (every cycle, not only escalations) — the input the next
+	// cycle's rebase-aware same-diff check reads back (#832). A byte-identical
+	// LastDiffDigest only means "no progress" when the base has ALSO not moved
+	// since: a clean rebase onto newer main legitimately reproduces the same
+	// base...HEAD diff while advancing BaseSHA, which is progress toward
+	// mergeability, not a stall. Empty on records written before #832 shipped,
+	// in which case the check falls back to the digest-only behavior.
+	HeadSHA string `json:"headSha,omitempty"`
+	BaseSHA string `json:"baseSha,omitempty"`
 	// Escalated marks this recorded state as an escalation event (goobers:
 	// merge-escalated was applied) rather than an ordinary advancing cycle.
 	Escalated bool `json:"escalated,omitempty"`
@@ -327,7 +337,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	// posting a new one.
 	prior, priorCommentID, _ := latestRemediationState(rawComments)
 
-	sameDiff := prior.LastDiffDigest != "" && prior.LastDiffDigest == digest
+	stalled := remediationStalled(prior, digest, current.BaseSHA)
 	cycles := prior.Cycles + 1
 	if *budget <= 0 {
 		*budget = DefaultRemediationBudget
@@ -335,13 +345,14 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	exceeded := cycles > *budget
 
 	var state remediationState
-	if exceeded || sameDiff {
+	if exceeded || stalled {
 		reason := fmt.Sprintf("repass budget exhausted (%d/%d cycles)", cycles, *budget)
-		if sameDiff {
-			reason = fmt.Sprintf("this cycle's diff is byte-identical to the immediately prior cycle's (digest %s) — an unchanged diff cannot make progress", digest)
+		if stalled {
+			reason = fmt.Sprintf("this cycle's diff is byte-identical to the immediately prior cycle's on the same base (digest %s) — an unchanged diff on an unchanged base cannot make progress", digest)
 		}
 		state = remediationState{
 			Cycles: cycles, LastDiffDigest: digest,
+			HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
 			Escalated: true, EscalatedReason: reason,
 			EscalatedHeadSHA: current.HeadSHA, EscalatedBaseSHA: current.BaseSHA,
 		}
@@ -360,13 +371,37 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	state = remediationState{Cycles: cycles, LastDiffDigest: digest}
+	state = remediationState{
+		Cycles: cycles, LastDiffDigest: digest,
+		HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
+	}
 	if err := postOrUpdateStickyComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("record checkpoint state on PR #%d", selectedNumber), err, "")
 	}
 
 	pf(stdout, "recorded checkpoint for PR #%d: cycle %d/%d, digest %s\n", selectedNumber, cycles, *budget, digest)
 	return 0
+}
+
+// remediationStalled reports whether this cycle is a genuine no-progress
+// repeat that should trip the same-diff escalation (design doc §6 D5): the
+// cycle's diff is byte-identical to the prior recorded cycle's AND the base
+// has not advanced since.
+//
+// The base clause is #832's fix. A clean rebase onto newer main legitimately
+// reproduces the same `base...HEAD` diff while advancing BaseSHA — that is
+// what a clean rebase IS — and being current with main is progress toward
+// mergeability, not a stall, so a byte-identical diff after a base advance
+// must NOT escalate. Only an identical diff on the SAME base is genuinely
+// stuck. Uses base rather than head deliberately: an identical-content
+// re-push advances the head SHA without making any progress, so head
+// movement alone must not suppress escalation. When prior.BaseSHA is empty
+// (a state recorded before #832 shipped, or the PR's first cycle), the base
+// clause is inert and behavior falls back to the original digest-only check.
+func remediationStalled(prior remediationState, digest, currentBaseSHA string) bool {
+	sameDiff := prior.LastDiffDigest != "" && prior.LastDiffDigest == digest
+	rebasedSincePrior := prior.BaseSHA != "" && prior.BaseSHA != currentBaseSHA
+	return sameDiff && !rebasedSincePrior
 }
 
 // diffDigest returns the hex-encoded sha256 digest of `git diff
