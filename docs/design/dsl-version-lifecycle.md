@@ -166,9 +166,10 @@ and the *host binary* owns the mapping (a `SupportMatrix` compiled into the bina
 | **unsupported** | **no — load error** | `DVL030` error | the interpreter has been removed; the workflow fails to load until migrated. |
 
 > **No LTS tier at this time** (§9). A `supported-LTS` level — a subset of supported versions with
-> an extended, published window — is an obvious future extension, and the `SupportMatrix` design
-> leaves room for it, but we are **not** committing to LTS windows now. Today there is one
-> `supported` level with one window (§3.3.1).
+> an extended, published window — is the **likely first follow-up for the DSL** (config authors want
+> a "pin it and leave it for a long time" version sooner than the binary needs one), and the
+> `SupportMatrix` design leaves room for it. But we are **not** committing to LTS windows in this
+> pass. Today there is one `supported` level with one window (§3.3.1).
 
 Load-time behaviour is enforced in the config loader (`internal/configsync/loader.go`) /
 `api/validate`, so it surfaces on `goobers validate`, `goobers up`, and `goobers status` uniformly
@@ -380,9 +381,10 @@ interpreter *stayed* frozen.
 
 ## 9. Non-goals
 
-- **No LTS support tier at this time.** An extended-window `supported-LTS` level is a natural future
-  extension and the `SupportMatrix` leaves room for it, but we are not committing to LTS windows now
-  (§3.3). One `supported` level, one window.
+- **No LTS support tier in this pass** (§3.3). Scoped out for now, but with a clear ordering when we
+  come back to it: an LTS **DSL version** is the near-term need (authors want a long-lived pin
+  sooner), and an LTS **service/app** release is a much-later "maybe" (gated on more contributors +
+  the forward-only stance below relaxing). The `SupportMatrix` leaves room for the level either way.
 - **No backport releases of old binaries.** Binary maintenance is forward-only as a *resourcing*
   decision while the team is small (§3.5) — not an architectural guarantee.
 - Not versioning the **HTTP read API** (`internal/readservice`) — that has its own `APIVersion` and
