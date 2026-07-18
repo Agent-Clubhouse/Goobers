@@ -83,6 +83,11 @@ func (enqueueLander) Land(ctx context.Context, provider providers.RepoProvider, 
 		Repository:      req.Repository,
 		PullID:          req.PullID,
 		ExpectedHeadSHA: req.ExpectedHeadSHA,
+		// Forwarded for the same reason directLander forwards it (#877):
+		// GitHub's enqueue path IS the merge endpoint, so a dropped merge
+		// method makes GitHub apply its own default ("merge") and a
+		// squash-only ruleset 405s every landing.
+		MergeMethod: req.MergeMethod,
 	})
 	if err != nil {
 		return Result{}, err
