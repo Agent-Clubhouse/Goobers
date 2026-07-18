@@ -187,13 +187,37 @@ func configReloadErrorMessage(err error) string {
 	return strings.Join(parts, "; ")
 }
 
+// configDirectoryDigest fingerprints the config directory so the reloader can
+// tell a real change from a no-op. Its file-selection surface MUST match what
+// instance.LoadConfigDir / validate.ValidateDir actually consume (readDocs in
+// internal/instance/configdir.go: .yaml/.yml only). Hashing a wider surface is
+// a footgun: churn in non-config files (a README, a tracked repo's .git/) would
+// journal spurious config.reloaded events, and — worse — an editor's atomic
+// write-then-rename or a git checkout racing WalkDir would surface a transient
+// read error that the poll loop records as a false config.reload.rejected.
 func configDirectoryDigest(root string) (string, error) {
 	hash := sha256.New()
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
+		name := entry.Name()
 		if entry.IsDir() {
+			// Skip dotfile directories (notably .git when the config dir is a
+			// tracked repo, per the Workflow-CD epic #453) and all their churn.
+			if path != root && strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Only the file types the loader consumes contribute to the digest.
+		// This filters out dotfiles, editor swap/backup/temp files (.swp, ~,
+		// vim's 4913, #file#), and any other non-config content.
+		if strings.HasPrefix(name, ".") {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext != ".yaml" && ext != ".yml" {
 			return nil
 		}
 		relative, err := filepath.Rel(root, path)
@@ -202,6 +226,13 @@ func configDirectoryDigest(root string) (string, error) {
 		}
 		content, err := os.ReadFile(path)
 		if err != nil {
+			// A config file that vanished between the walk and the read (an
+			// editor's atomic rename, a git checkout) is a transient state, not
+			// a rejectable config. Skip it and let the next poll — with the
+			// read-validate-reread stability check — converge on settled bytes.
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
 		relative = filepath.ToSlash(relative)

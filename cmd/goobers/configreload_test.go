@@ -210,3 +210,68 @@ func waitForConfigEvent(t *testing.T, schedulerDir string, eventType journal.Eve
 	t.Fatalf("timed out waiting for %s event %d", eventType, count)
 	return journal.Event{}
 }
+
+func TestConfigDirectoryDigestOnlyTracksLoadedConfigFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "manifest.yaml"), []byte("kind: A\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := configDirectoryDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-config churn must NOT move the digest: a README, editor swap/backup
+	// files, and a .git worktree are all outside the loader's surface, so
+	// touching them must not trigger a reload or a false rejection.
+	noise := map[string]string{
+		"README.md":          "# docs\n",
+		".manifest.yaml.swp": "vim-swap-garbage",
+		"manifest.yaml~":     "editor backup",
+		"4913":               "vim probe file",
+		".git/index":         "git internals",
+		".git/HEAD":          "ref: refs/heads/main\n",
+		"config.json":        "{}",
+	}
+	for name, content := range noise {
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := configDirectoryDigest(root); err != nil {
+		t.Fatal(err)
+	} else if got != baseline {
+		t.Fatalf("non-config churn changed digest: got %s, want %s", got, baseline)
+	}
+
+	// A real change to a loaded config file MUST move the digest.
+	if err := os.WriteFile(filepath.Join(root, "manifest.yaml"), []byte("kind: B\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := configDirectoryDigest(root); err != nil {
+		t.Fatal(err)
+	} else if got == baseline {
+		t.Fatalf("config edit did not change digest: %s", got)
+	}
+}
+
+func TestConfigDirectoryDigestSkipsVanishedFileWithoutError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "manifest.yaml"), []byte("kind: A\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A dangling symlink models a config path that WalkDir enumerates but that
+	// has vanished by the time it is read (an atomic write-then-rename mid-poll).
+	// The digest must skip it and succeed, never returning an error the poll
+	// loop would journal as config.reload.rejected.
+	if err := os.Symlink(filepath.Join(root, "gone.yaml"), filepath.Join(root, "pending.yaml")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if _, err := configDirectoryDigest(root); err != nil {
+		t.Fatalf("vanished config file surfaced as error: %v", err)
+	}
+}
