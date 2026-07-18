@@ -67,7 +67,8 @@ heartbeat while retaining startup and shutdown messages.
 
 `instance.yaml` is read once, at startup — editing it while `up` is running
 (a new repo, a `runConditions` change, etc.) has no effect until you restart
-the daemon. There is no live reload yet (V1, #142).
+the daemon. Definitions under `config/` are watched and reloaded after a valid
+edit; invalid edits leave the last-known-good definitions active.
 
 ## 6. `run` — trigger one manually
 
