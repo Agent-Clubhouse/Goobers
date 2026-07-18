@@ -67,8 +67,12 @@ heartbeat while retaining startup and shutdown messages.
 
 `instance.yaml` is read once, at startup — editing it while `up` is running
 (a new repo, a `runConditions` change, etc.) has no effect until you restart
-the daemon. Definitions under `config/` are watched and reloaded after a valid
-edit; invalid edits leave the last-known-good definitions active.
+the daemon. Definitions under `config/` can be watched and reloaded live with
+the opt-in `goobers up --watch-config` flag (off by default): after a valid edit
+the new definitions swap in atomically, and an invalid edit leaves the
+last-known-good definitions active. Without the flag, `config/` is also read once
+at startup. (Live watch is experimental and will be superseded by the Workflow CD
+config source, #453.)
 
 ## 6. `run` — trigger one manually
 

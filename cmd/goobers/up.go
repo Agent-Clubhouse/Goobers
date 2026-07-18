@@ -149,6 +149,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	diagnostics := fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
+	watchConfig := fs.Bool("watch-config", false, "experimental: hot-reload config edits without a restart (default off; superseded by the Workflow CD config source, #453)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -392,18 +393,25 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		}
 	}()
 
+	// Config hot-reload is opt-in. Off by default, `goobers up` keeps the V0
+	// load-once-at-startup behavior; with --watch-config the daemon watches the
+	// config dir and swaps validated edits live. This gate is interim: the
+	// Workflow CD config source (#453) replaces both the flag and this poll loop
+	// with an instance-level workflowSource once that epic lands.
 	configDone := make(chan error, 1)
-	reloader := &configReloader{
-		layout:         l,
-		setup:          setup,
-		scheduler:      sched,
-		openPRs:        openPRs,
-		reads:          reads,
-		wg:             &wg,
-		appliedDigest:  setup.ConfigDigest,
-		observedDigest: setup.ConfigDigest,
+	if *watchConfig {
+		reloader := &configReloader{
+			layout:         l,
+			setup:          setup,
+			scheduler:      sched,
+			openPRs:        openPRs,
+			reads:          reads,
+			wg:             &wg,
+			appliedDigest:  setup.ConfigDigest,
+			observedDigest: setup.ConfigDigest,
+		}
+		go func() { configDone <- reloader.Run(ctx) }()
 	}
-	go func() { configDone <- reloader.Run(ctx) }()
 
 	ready.Store(true)
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at http://%s%s\n", root, len(setup.Entries), apiServer.Address(), httpapi.Prefix)
@@ -450,7 +458,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	ready.Store(false)
 	cancel()
-	if !configWatcherDone {
+	if *watchConfig && !configWatcherDone {
 		if reloadErr := <-configDone; reloadErr != nil {
 			configFailed = true
 			pf(stderr, "error: config watcher stopped: %v\n", reloadErr)

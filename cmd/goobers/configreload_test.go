@@ -41,7 +41,7 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	started := &daemonStartedWriter{started: make(chan struct{})}
 	daemonDone := make(chan int, 1)
 	go func() {
-		daemonDone <- runUpContext(ctx, []string{"--quiet", root}, started, io.Discard)
+		daemonDone <- runUpContext(ctx, []string{"--quiet", "--watch-config", root}, started, io.Discard)
 	}()
 	t.Cleanup(func() {
 		cancel()
