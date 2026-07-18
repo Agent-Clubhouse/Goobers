@@ -219,6 +219,7 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 		}
 		cursor = &decoded
 	}
+	observedAt := s.now().UTC()
 
 	entries, err := os.ReadDir(s.sources.Layout.RunsDir())
 	if err != nil {
@@ -243,7 +244,7 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 			}
 			return RunList{}, err
 		}
-		summary, err := summarizeRun(run)
+		summary, err := summarizeRun(run, observedAt)
 		if err != nil {
 			return RunList{}, fmt.Errorf("summarize run %q: %w", entry.Name(), err)
 		}
@@ -300,7 +301,7 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 	if err != nil {
 		return RunDetail{}, err
 	}
-	summary, err := summarizeRun(run)
+	summary, err := summarizeRun(run, s.now().UTC())
 	if err != nil {
 		return RunDetail{}, err
 	}
@@ -404,6 +405,7 @@ func (s *Local) StageAttempts(ctx context.Context, runID, stage string) (Attempt
 					stage,
 					event.Attempt,
 					event.AttemptClass,
+					event.Branch,
 					attempts[i].StartedSeq,
 					event.Seq,
 				); ok &&
@@ -479,7 +481,7 @@ func (s *Local) openRun(runID string) (runRead, error) {
 	return runRead{reader: reader, identity: identity, records: records}, nil
 }
 
-func summarizeRun(run runRead) (RunSummary, error) {
+func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	phase := journal.PhaseRunning
 	var finishedAt *time.Time
 	var lastSeq uint64
@@ -537,11 +539,9 @@ func summarizeRun(run runRead) (RunSummary, error) {
 			currentStage = state.MachineState
 		}
 	}
-	durationEnd := run.identity.StartedAt
+	durationEnd := observedAt
 	if finishedAt != nil {
 		durationEnd = *finishedAt
-	} else if len(run.records) > 0 {
-		durationEnd = run.records[len(run.records)-1].Event.Time
 	}
 	var duration int64
 	if !durationEnd.Before(run.identity.StartedAt) {
@@ -737,6 +737,7 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 			event.Stage,
 			event.Attempt,
 			event.AttemptClass,
+			event.Branch,
 			0,
 			event.Seq,
 		); ok {
@@ -759,6 +760,8 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 
 type artifactEntry struct {
 	metadata ArtifactMetadata
+	branch   int
+	inferred bool
 }
 
 type artifactIndex struct {
@@ -772,9 +775,10 @@ func (i artifactIndex) match(
 	digest, stage string,
 	attempt int,
 	class journal.AttemptClass,
+	branch int,
 	afterSeq, beforeSeq uint64,
 ) (ArtifactMetadata, bool) {
-	index := i.matchEntryIndex(digest, stage, attempt, class, afterSeq, beforeSeq)
+	index := i.matchEntryIndex(digest, stage, attempt, class, branch, afterSeq, beforeSeq)
 	if index < 0 {
 		return ArtifactMetadata{}, false
 	}
@@ -785,6 +789,7 @@ func (i artifactIndex) matchEntryIndex(
 	digest, stage string,
 	attempt int,
 	class journal.AttemptClass,
+	branch int,
 	afterSeq, beforeSeq uint64,
 ) int {
 	digest = i.currentDigest(digest)
@@ -794,6 +799,7 @@ func (i artifactIndex) matchEntryIndex(
 			(stage != "" && metadata.Stage != stage) ||
 			(attempt != 0 && metadata.Attempt != attempt) ||
 			(attempt != 0 && metadata.AttemptClass != attemptClass(class)) ||
+			(i.entries[index].inferred && i.entries[index].branch != branch) ||
 			metadata.RecordedSeq <= afterSeq ||
 			(beforeSeq != 0 && metadata.RecordedSeq >= beforeSeq) {
 			continue
@@ -824,8 +830,10 @@ func indexArtifacts(records []journal.EventRecord) artifactIndex {
 		stage   string
 		attempt int
 		class   string
+		branch  int
 	}
 	started := make(map[attemptKey]uint64)
+	active := make(map[int]attemptKey)
 	for _, record := range records {
 		event := record.Event
 		if !event.KnownSchema() {
@@ -835,10 +843,12 @@ func indexArtifacts(records []journal.EventRecord) artifactIndex {
 			stage:   event.Stage,
 			attempt: event.Attempt,
 			class:   attemptClass(event.AttemptClass),
+			branch:  event.Branch,
 		}
 		switch event.Type {
 		case journal.EventStageStarted:
 			started[key] = event.Seq
+			active[event.Branch] = key
 		case journal.EventArtifactRecorded:
 			if event.Ref == nil {
 				continue
@@ -856,10 +866,23 @@ func indexArtifacts(records []journal.EventRecord) artifactIndex {
 				Attempt:     event.Attempt,
 				RecordedSeq: event.Seq,
 			}
+			inferred := false
+			if metadata.Stage == "" {
+				if scope, ok := active[event.Branch]; ok {
+					metadata.Stage = scope.stage
+					metadata.Attempt = scope.attempt
+					metadata.AttemptClass = scope.class
+					inferred = true
+				}
+			}
 			if event.Attempt > 0 {
 				metadata.AttemptClass = attemptClass(event.AttemptClass)
 			}
-			entry := artifactEntry{metadata: metadata}
+			entry := artifactEntry{
+				metadata: metadata,
+				branch:   event.Branch,
+				inferred: inferred,
+			}
 			index.entries = append(index.entries, entry)
 			index.bySeq[event.Seq] = metadata
 			if _, exists := index.byDigest[metadata.Digest]; !exists {
@@ -872,6 +895,7 @@ func indexArtifacts(records []journal.EventRecord) artifactIndex {
 					event.Stage,
 					event.Attempt,
 					event.AttemptClass,
+					event.Branch,
 					started[key],
 					event.Seq,
 				)
@@ -888,6 +912,7 @@ func indexArtifacts(records []journal.EventRecord) artifactIndex {
 				}
 			}
 			delete(started, key)
+			delete(active, event.Branch)
 		case journal.EventRedaction:
 			index.applyRedaction(event)
 		}

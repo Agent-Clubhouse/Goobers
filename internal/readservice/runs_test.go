@@ -402,6 +402,38 @@ func TestRunDetailEventsAttemptsAndPinnedGraph(t *testing.T) {
 	}
 }
 
+func TestLiveRunDurationUsesObservationTime(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	started := time.Date(2026, 7, 17, 9, 15, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-live-duration",
+		machine.Def.Name,
+		"goobers",
+		started,
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	clock.advance(2 * time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventGateStarted, Gate: "review"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return started.Add(30 * time.Second) }
+
+	detail, err := service.GetRun(context.Background(), "run-live-duration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Terminal || detail.DurationMillis != 30_000 {
+		t.Fatalf("live run summary = %+v", detail.RunSummary)
+	}
+}
+
 func TestUnknownSchemasAndTornTailRemainInspectable(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, _ := createFixtureRun(
@@ -588,6 +620,75 @@ func TestPinnedGraphTamperFailsClosed(t *testing.T) {
 	}
 }
 
+func TestExecutorArtifactsInheritStageAttemptMetadata(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-executor-artifacts",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 17, 13, 30, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageStarted,
+		Stage:   "implement",
+		Attempt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	stdout, err := run.RecordArtifact("implement/stdout.log", []byte("done"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout.MediaType = "text/plain"
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:      journal.EventStageFinished,
+		Stage:     "implement",
+		Attempt:   1,
+		Status:    string(apiv1.ResultSuccess),
+		Artifacts: []journal.Ref{stdout},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	attempts, err := service.StageAttempts(context.Background(), "run-executor-artifacts", "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts.Attempts) != 1 || len(attempts.Attempts[0].Artifacts) != 1 {
+		t.Fatalf("attempt artifacts = %+v", attempts.Attempts)
+	}
+	artifact := attempts.Attempts[0].Artifacts[0]
+	if artifact.Name != "implement/stdout.log" ||
+		artifact.Stage != "implement" ||
+		artifact.Attempt != 1 ||
+		artifact.AttemptClass != "initial" ||
+		artifact.MediaType != "text/plain" {
+		t.Fatalf("artifact metadata = %+v", artifact)
+	}
+
+	events, err := service.RunEvents(context.Background(), "run-executor-artifacts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := events.Events[len(events.Events)-1]
+	if finished.Type != journal.EventStageFinished ||
+		len(finished.Artifacts) != 1 ||
+		finished.Artifacts[0].RecordedSeq != artifact.RecordedSeq {
+		t.Fatalf("stage finished artifacts = %+v", finished)
+	}
+}
+
 func TestAttemptsCloseDispatchErrorsAndKeepRepassArtifactsSeparate(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, clock := createFixtureRun(
@@ -695,7 +796,7 @@ func TestArtifactRedactionReplacesDigestAndPreservesMetadata(t *testing.T) {
 	}
 	const leaked = "PLAINTEXT-LEAK-api-artifact"
 	clock.advance(time.Second)
-	oldRef, err := run.RecordStageArtifact("implement", 1, "", "diagnostic.json", []byte(`{"value":"`+leaked+`"}`))
+	oldRef, err := run.RecordArtifact("diagnostic.json", []byte(`{"value":"`+leaked+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
