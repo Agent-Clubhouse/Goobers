@@ -38,7 +38,15 @@ type fakePR struct {
 	labels     []string
 	checkState string
 	files      []fakePRFile
+	reviews    []fakeReview
 	state      string
+}
+
+type fakeReview struct {
+	id        int64
+	body      string
+	commitSHA string
+	state     string
 }
 
 // fakePRFile is one file a fakePR touches, for the /pulls/{id}/files endpoint
@@ -354,6 +362,42 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 		return
 	}
 	switch {
+	case len(parts) == 2 && parts[1] == "reviews" && r.Method == http.MethodGet:
+		out := make([]map[string]interface{}, 0, len(pr.reviews))
+		for _, review := range pr.reviews {
+			out = append(out, map[string]interface{}{
+				"id": review.id, "body": review.body, "commit_id": review.commitSHA,
+				"state": review.state, "html_url": fmt.Sprintf("https://example/pull/%d#review-%d", num, review.id),
+				"user": map[string]string{"login": "goobers-reviewer"},
+			})
+		}
+		writeFakeJSON(w, out)
+	case len(parts) == 2 && parts[1] == "reviews" && r.Method == http.MethodPost:
+		var body struct {
+			Body     string `json:"body"`
+			CommitID string `json:"commit_id"`
+			Event    string `json:"event"`
+		}
+		decodeFakeJSON(r, &body)
+		state := ""
+		switch body.Event {
+		case "APPROVE":
+			state = "APPROVED"
+		case "REQUEST_CHANGES":
+			state = "CHANGES_REQUESTED"
+		default:
+			http.Error(w, "bad review event", http.StatusUnprocessableEntity)
+			return
+		}
+		review := fakeReview{
+			id: int64(len(pr.reviews) + 1), body: body.Body,
+			commitSHA: body.CommitID, state: state,
+		}
+		pr.reviews = append(pr.reviews, review)
+		writeFakeJSON(w, map[string]interface{}{
+			"id": review.id, "body": review.body, "commit_id": review.commitSHA,
+			"state": review.state, "html_url": fmt.Sprintf("https://example/pull/%d#review-%d", num, review.id),
+		})
 	case len(parts) == 2 && parts[1] == "files" && r.Method == http.MethodGet:
 		s.filesRequests++
 		out := make([]map[string]interface{}, 0, len(pr.files))
@@ -501,8 +545,14 @@ func (s *fakeGitHubServer) closeIssue(number int) {
 func (s *fakeGitHubServer) setPRHead(number int, headSHA string, files []fakePRFile) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.prs[number].headSHA = headSHA
-	s.prs[number].files = files
+	pr := s.prs[number]
+	pr.headSHA = headSHA
+	pr.files = files
+	for i := range pr.reviews {
+		if pr.reviews[i].state == "APPROVED" && pr.reviews[i].commitSHA != headSHA {
+			pr.reviews[i].state = "DISMISSED"
+		}
+	}
 }
 
 // setPRBase models base advancing under an unchanged PR (issue #718's

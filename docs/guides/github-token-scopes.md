@@ -31,6 +31,7 @@ in `instance.yaml`:
 | `github:issues:read` | Issues: Read-only | Backlog polling, triage stages. |
 | `github:issues:write` | Issues: Read and write | Claim, comment, label, close. Does not imply repo content access. |
 | `github:pr:write` | Pull requests: Read and write, Contents: Read and write | Only for stages that open/update PRs. |
+| `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
 | `repo:clone` (read-only stages) | Contents: Read-only | Curation/analysis stages that never push. |
 | `agent:model` | *(Account permissions)* Copilot Requests: Read-only — **not** a repository permission | Copilot model authentication for any agentic (`copilot`-harness) stage. Sourced from its **own** token (a personal fine-grained PAT), injected as `COPILOT_GITHUB_TOKEN`; needs no repo/issue/PR access. See ["the `agent:model` token"](#agentic-copilot-harness-stages-the-agentmodel-token) below. |
@@ -96,6 +97,9 @@ credentials:
   - capability: agent:model
     token:
       env: GOOBERS_COPILOT_TOKEN     # personal "Copilot Requests" PAT → COPILOT_GITHUB_TOKEN
+  - capability: github:pr:review
+    token:
+      env: GOOBERS_GITHUB_REVIEW_TOKEN # different GitHub identity for native reviews
 ```
 
 Each `credentials:` entry sources one capability from its own token ref; an

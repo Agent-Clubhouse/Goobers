@@ -72,7 +72,7 @@ config itself, not left to operator discretion:
 
 ## Tokens and scopes
 
-You need one GitHub personal access token (fine-grained, scoped to
+You need a GitHub personal access token (fine-grained, scoped to
 `Agent-Clubhouse/Goobers` only) with:
 
 - **Issues:** read and write (curation, nomination, and the backlog-query
@@ -81,6 +81,12 @@ You need one GitHub personal access token (fine-grained, scoped to
 - **Contents:** read and write (the implementer pushes to a
   `goobers/<workflow>/<run-id>` branch — never `main`).
 - **Checks / statuses:** read (CI-poll needs to see check results).
+
+The `merge-review` workflow also needs `GOOBERS_GITHUB_REVIEW_TOKEN`, a
+fine-grained PAT with **Pull requests: read and write** owned by a different
+GitHub identity. GitHub does not allow the identity that authored a PR to
+approve it, so `github:pr:review` cannot reuse the repo token for goober-authored
+PRs.
 
 Do **not** grant merge or admin permissions — the instance is never supposed
 to merge, and branch protection should stay something only a human/repo
@@ -117,6 +123,8 @@ admin can touch.
 
    ```sh
    export GOOBERS_GITHUB_TOKEN=ghp_...
+   export GOOBERS_GITHUB_REVIEW_TOKEN=github_pat_...
+   export GOOBERS_COPILOT_TOKEN=github_pat_...
    ```
 
 5. **Validate before starting anything:**

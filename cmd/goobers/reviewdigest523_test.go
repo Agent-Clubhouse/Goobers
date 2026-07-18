@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -419,6 +420,7 @@ func TestApplyVerdictStampsDigestAndSourceRunIDOnFreshVerdict(t *testing.T) {
 
 	const runID = "run-fresh"
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "20")
 	t.Setenv("GOOBERS_INPUT_REVIEWDIGEST", "sha256:freshly-computed")
 
@@ -448,6 +450,19 @@ func TestApplyVerdictStampsDigestAndSourceRunIDOnFreshVerdict(t *testing.T) {
 	if posted.SourceRunID != runID {
 		t.Fatalf("posted.SourceRunID = %q, want this run's own id %q stamped in", posted.SourceRunID, runID)
 	}
+	cached, err := findCachedVerdict(
+		context.Background(),
+		server.newGitHubProvider("test-token"),
+		providers.RepositoryRef{Owner: "your-org", Name: "your-repo"},
+		20,
+		"sha256:freshly-computed",
+	)
+	if err != nil {
+		t.Fatalf("find cached pass verdict: %v", err)
+	}
+	if cached == nil || cached.SourceRunID != runID {
+		t.Fatalf("cached verdict = %+v, want pass verdict posted by %s", cached, runID)
+	}
 }
 
 // TestApplyVerdictPreservesCacheHitVerdictDigestAndSourceRunID: a verdict
@@ -463,6 +478,7 @@ func TestApplyVerdictPreservesCacheHitVerdictDigestAndSourceRunID(t *testing.T) 
 
 	const runID = "run-cachehit"
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "21")
 	t.Setenv("GOOBERS_INPUT_REVIEWDIGEST", "sha256:this-runs-own-digest")
 

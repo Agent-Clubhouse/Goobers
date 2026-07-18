@@ -82,6 +82,7 @@ func TestMergeReviewNamesCrossPRConflict(t *testing.T) {
 
 	const runID = "run-1"
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
 
 	// pr-select: both PRs are open, non-draft, green-CI, and unlabeled —
 	// picks the lowest number (#10).
@@ -169,6 +170,7 @@ func TestMergeReviewNamesCrossPRConflict(t *testing.T) {
 
 	server.mu.Lock()
 	issue := server.issues[selectedNumber]
+	reviews := append([]fakeReview(nil), server.prs[selectedNumber].reviews...)
 	server.mu.Unlock()
 	if issue == nil {
 		t.Fatal("selected PR's issue record vanished")
@@ -187,5 +189,8 @@ func TestMergeReviewNamesCrossPRConflict(t *testing.T) {
 	}
 	if !strings.Contains(issue.comments[0], "#11") {
 		t.Fatalf("verdict comment = %q, want it to name PR #11", issue.comments[0])
+	}
+	if len(reviews) != 1 || reviews[0].state != "CHANGES_REQUESTED" || reviews[0].commitSHA != "sha10head" {
+		t.Fatalf("native reviews = %+v, want one CHANGES_REQUESTED review pinned to sha10head", reviews)
 	}
 }

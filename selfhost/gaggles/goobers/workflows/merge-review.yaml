@@ -100,7 +100,7 @@ spec:
 
     - name: apply-verdict
       type: deterministic
-      goal: Apply the review verdict's label + PR comment.
+      goal: Publish the verdict as a native review and retain non-pass remediation handoffs.
       run:
         command: ["goobers", "apply-verdict"]
       inputsFrom:
@@ -114,10 +114,17 @@ spec:
         # existing recordVerdict already provide, not new plumbing).
         selectedNumber: selectedNumber
         reviewDigest: reviewDigest
+      inputs:
+        resultFile: "verdict-result.json"
       capabilities:
         - github:pr:write
-      # Terminal: parked/failed verdicts end as PR feedback for pr-remediation
-      # or a human.
+        - github:pr:review
+      expectedOutputs:
+        - selectedNumber
+        - selectedHeadSha
+        - selectedBaseSha
+        - decision
+      next: published-verdict
 
     - name: elect-lander
       type: deterministic
@@ -242,23 +249,33 @@ spec:
       agentic:
         goober: reviewer
       branches:
-        # A pass enters the independently re-polled merge action. Other
-        # decisions become labels/comments consumed by pr-remediation or a
-        # human, rather than a same-run implementation repass.
-        pass: merge-pr
+        # A pass enters apply-verdict too (#825: every verdict is published as
+        # a native GitHub review before any merge decision) — published-verdict
+        # then gates the actual merge. Other decisions become labels/comments
+        # consumed by pr-remediation or a human, rather than a same-run
+        # implementation repass.
+        pass: apply-verdict
         # #833: a needs-changes verdict routes through elect-lander first — if
         # it is entirely cross-PR-ordering asks and this PR is the elected
         # lander of its overlap cluster, elect-lander sends it on to merge-pr
-        # (breaking the symmetric-flag deadlock); otherwise it flows to
+        # directly, unchanged by #825 (breaking the symmetric-flag deadlock
+        # takes priority on this path — see elect-gate for why it does not
+        # also route through apply-verdict); otherwise it flows to
         # apply-verdict and parks blocked-on-sibling / needs-remediation.
         needs-changes: elect-lander
         fail: apply-verdict
 
     - name: elect-gate
       # #833: routes elect-lander's deterministic winner-election decision.
-      # elected=true -> merge-pr (this PR is the crowned lander of its
-      # mutually-blocked cluster; merge-pr still independently re-verifies every
-      # safety conjunct before landing); elected=false -> apply-verdict (park
+      # elected=true -> merge-pr directly (this PR is the crowned lander of
+      # its mutually-blocked cluster; merge-pr still independently
+      # re-verifies every safety conjunct before landing). This path
+      # deliberately does NOT go through apply-verdict/published-verdict
+      # (#825): the verdict that routed here was needs-changes, not pass, so
+      # publishing it as a native review would either misrepresent an
+      # about-to-merge PR as changes-requested or require special-casing the
+      # override in apply-verdict's decision logic — left as a follow-up,
+      # not decided here. elected=false -> apply-verdict (park
       # blocked-on-sibling for a non-elected member, or needs-remediation for a
       # verdict carrying a real defect). output-equals reads elect-lander's
       # Outputs["elected"] directly, the same shape merge-gate's land-outcome uses.
@@ -271,6 +288,17 @@ spec:
       branches:
         pass: merge-pr
         fail: apply-verdict
+
+    - name: published-verdict
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: decision
+          equals: pass
+      branches:
+        pass: merge-pr
+        fail: ""
 
     - name: merge-gate
       # Issue #758: distinguishes an actual GitHub merge from a

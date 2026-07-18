@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/providers"
 )
 
 // threadOutput reproduces the runner's stage-to-stage handoff for a single
@@ -67,6 +68,7 @@ func TestMergeReviewThreadsSelectedNumberToApplyVerdict(t *testing.T) {
 
 	const runID = "run-1"
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
 
 	// pr-select -> selected-pr.json.
 	selectDir := t.TempDir()
@@ -119,20 +121,37 @@ func TestMergeReviewThreadsSelectedNumberToApplyVerdict(t *testing.T) {
 		t.Fatalf("apply-verdict: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 
-	// A label was actually applied to the eligible PR — the whole point.
+	// A native approval was actually published for the eligible PR.
 	server.mu.Lock()
 	issue := server.issues[prNumber]
+	reviews := append([]fakeReview(nil), server.prs[prNumber].reviews...)
 	server.mu.Unlock()
 	if issue == nil {
 		t.Fatal("selected PR's issue record vanished")
 	}
-	hasLabel := false
-	for _, l := range issue.labels {
-		if l == "goobers:merge-ready" {
-			hasLabel = true
-		}
+	if len(reviews) != 1 || reviews[0].state != "APPROVED" || reviews[0].commitSHA != headSHA {
+		t.Fatalf("native reviews = %+v, want one APPROVED review pinned to %s", reviews, headSHA)
 	}
-	if !hasLabel {
-		t.Fatalf("labels = %v, want goobers:merge-ready applied to the eligible PR (#413)", issue.labels)
+	if hasAnyLabel(issue.labels, []string{"goobers:merge-ready"}) {
+		t.Fatalf("labels = %v, pass must stay unlabeled so a stale-dismissed approval can be re-reviewed", issue.labels)
+	}
+	if len(issue.comments) != 1 {
+		t.Fatalf("comments = %v, want one pass verdict for merge and cache consumers", issue.comments)
+	}
+	posted, ok := parseVerdictComment(issue.comments[0])
+	if !ok || posted.Decision != apiv1.VerdictPass || posted.HeadSHA != headSHA || posted.BaseSHA != baseSHA {
+		t.Fatalf("posted verdict = %+v, ok = %v, want current pass verdict", posted, ok)
+	}
+	_, commitMessage, err := structuredMergeCommitMessage(providers.PullRequestPollResult{
+		Title:         "Eligible PR",
+		HeadSHA:       headSHA,
+		BaseSHA:       baseSHA,
+		CommentsSince: []providers.PullRequestComment{{Body: issue.comments[0]}},
+	})
+	if err != nil {
+		t.Fatalf("structured merge message from posted pass verdict: %v", err)
+	}
+	if commitMessage != "no cross-PR conflicts; ready to merge" {
+		t.Fatalf("commit message = %q, want posted pass summary", commitMessage)
 	}
 }
