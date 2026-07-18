@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/gooberruntime"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestConfigFromEnvDefaultsAndAliases(t *testing.T) {
@@ -126,6 +128,29 @@ func TestRunClosesWorkerWhenStartFails(t *testing.T) {
 	}
 	if fw.stops != 0 {
 		t.Errorf("stops = %d, want 0 when Start fails", fw.stops)
+	}
+}
+
+func TestGooberRuntimePreparerRegistersADOCredential(t *testing.T) {
+	t.Setenv("GOOBERS_ADO_TOKEN", "ado-token")
+	t.Setenv("GOOBERS_ADO_ORG", "ado-org")
+	t.Setenv("GOOBERS_ADO_PROJECT", "ado-project")
+
+	preparer := gooberRuntimePreparer(config{})
+	resolver, ok := preparer.Providers.(gooberruntime.EnvProviderResolver)
+	if !ok {
+		t.Fatalf("provider resolver = %T, want EnvProviderResolver", preparer.Providers)
+	}
+	if _, err := resolver.RepoProvider(apiv1.ProviderADO, apiv1.RepoRef{}); err != nil {
+		t.Fatalf("RepoProvider(ADO): %v", err)
+	}
+	scrubber, ok := resolver.SecretRegistrar.(journal.Scrubber)
+	if !ok {
+		t.Fatalf("secret registrar = %T, want journal.Scrubber", resolver.SecretRegistrar)
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte("goobers:ado-token"))
+	if got := string(scrubber.Scrub([]byte(encoded))); got != journal.Redacted {
+		t.Fatalf("encoded ADO credential was not registered: %q", got)
 	}
 }
 

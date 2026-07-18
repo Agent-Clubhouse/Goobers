@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/gooberruntime"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 const defaultTaskQueue = "goobers-engine"
@@ -85,7 +86,9 @@ func newRuntime(cfg config) *gooberruntime.Runtime {
 func gooberRuntimePreparer(cfg config) gooberruntime.InProcessPreparer {
 	return gooberruntime.InProcessPreparer{
 		WorkspaceRoot: cfg.workspaceRoot,
-		Providers:     gooberruntime.EnvProviderResolver{},
+		Providers: gooberruntime.EnvProviderResolver{
+			SecretRegistrar: journal.NewRegistryScrubber(),
+		},
 	}
 }
 

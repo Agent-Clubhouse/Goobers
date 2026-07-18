@@ -2,6 +2,7 @@ package gooberruntime
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -384,7 +386,8 @@ func TestEnvProviderResolverBuildsConfiguredProviders(t *testing.T) {
 	t.Setenv("AZURE_DEVOPS_TOKEN", "ado-token")
 	t.Setenv("AZURE_DEVOPS_ORG", "ado-org")
 	t.Setenv("AZURE_DEVOPS_PROJECT", "ado-project")
-	resolver := EnvProviderResolver{}
+	reg := journal.NewRegistryScrubber()
+	resolver := EnvProviderResolver{SecretRegistrar: reg}
 
 	githubProvider, err := resolver.RepoProvider(apiv1.ProviderGitHub, apiv1.RepoRef{})
 	if err != nil {
@@ -399,6 +402,10 @@ func TestEnvProviderResolverBuildsConfiguredProviders(t *testing.T) {
 	}
 	if adoProvider == nil {
 		t.Fatal("RepoProvider(ADO) returned nil provider")
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte("goobers:ado-token"))
+	if got := string(reg.Scrub([]byte(encoded))); got != journal.Redacted {
+		t.Fatalf("encoded ADO credential was not registered: %q", got)
 	}
 }
 
@@ -421,6 +428,16 @@ func TestEnvProviderResolverReportsConfigurationErrors(t *testing.T) {
 	}
 	if _, err := resolver.RepoProvider(apiv1.Provider("gitlab"), apiv1.RepoRef{}); err == nil {
 		t.Fatal("RepoProvider(unsupported) error = nil, want unsupported provider error")
+	}
+}
+
+func TestEnvProviderResolverRequiresADOSecretRegistrar(t *testing.T) {
+	t.Setenv("GOOBERS_ADO_TOKEN", "ado-token")
+	t.Setenv("GOOBERS_ADO_ORG", "ado-org")
+	t.Setenv("GOOBERS_ADO_PROJECT", "ado-project")
+
+	if _, err := (EnvProviderResolver{}).RepoProvider(apiv1.ProviderADO, apiv1.RepoRef{}); err == nil || !strings.Contains(err.Error(), "secret registrar") {
+		t.Fatalf("RepoProvider(ADO) error = %v, want missing registrar error", err)
 	}
 }
 

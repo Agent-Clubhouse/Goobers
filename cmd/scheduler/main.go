@@ -30,6 +30,7 @@ import (
 
 	"github.com/goobers/goobers/internal/app"
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/scheduler"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/version"
@@ -102,10 +103,11 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 	defer tc.Close()
 	starter := bootstrap.NewStarter(tc, cfg.taskQueue)
+	secretReg := journal.NewRegistryScrubber()
 
 	var wg sync.WaitGroup
 	for _, g := range loaded.Gaggles {
-		provider, repo, perr := bootstrap.BacklogProviderFor(g.Spec.Backlog, cfg.backlogToken)
+		provider, repo, perr := bootstrap.BacklogProviderFor(g.Spec.Backlog, cfg.backlogToken, secretReg)
 		if perr != nil {
 			log.Warn("skipping gaggle: backlog provider", "gaggle", g.Name, "err", perr)
 			continue

@@ -11,8 +11,9 @@ import (
 // BacklogProviderFor constructs a backlog provider for a gaggle's BacklogRef,
 // authenticated with token, and returns the RepositoryRef the scheduler polls.
 // Credentials are passed in (resolved from a Key Vault secret ref by the caller),
-// never read from config.
-func BacklogProviderFor(backlog apiv1.BacklogRef, token string) (providers.BacklogProvider, providers.RepositoryRef, error) {
+// never read from config. Credentialed ADO providers require registrar so every
+// form used on the wire is scrubbed at output boundaries.
+func BacklogProviderFor(backlog apiv1.BacklogRef, token string, registrar providers.SecretRegistrar) (providers.BacklogProvider, providers.RepositoryRef, error) {
 	switch backlog.Provider {
 	case apiv1.ProviderGitHub:
 		owner, name, ok := splitProject(backlog.Project)
@@ -26,8 +27,11 @@ func BacklogProviderFor(backlog apiv1.BacklogRef, token string) (providers.Backl
 		if !ok {
 			return nil, providers.RepositoryRef{}, fmt.Errorf("ado backlog project %q must be organization/project", backlog.Project)
 		}
+		if token != "" && registrar == nil {
+			return nil, providers.RepositoryRef{}, fmt.Errorf("ado backlog provider requires a secret registrar")
+		}
 		repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: project}
-		return providers.NewADOProvider(org, project, token), repo, nil
+		return providers.NewADOProvider(org, project, token, providers.WithADOSecretRegistrar(registrar)), repo, nil
 	default:
 		return nil, providers.RepositoryRef{}, fmt.Errorf("unsupported backlog provider %q", backlog.Provider)
 	}
