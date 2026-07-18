@@ -41,8 +41,8 @@ type schedulerSetup struct {
 	Worktrees     *worktree.Manager
 	InstanceLog   *journal.InstanceLog
 	Entries       []localscheduler.WorkflowEntry
-	Machines      map[string]*workflow.Machine
-	RepoRefs      map[string]apiv1.RepoRef
+	Machines      map[localscheduler.WorkflowIdentity]*workflow.Machine
+	RepoRefs      map[localscheduler.WorkflowIdentity]apiv1.RepoRef
 	RunConditions instance.RunConditions
 	Validation    *validate.Report
 	ConfigDigest  string
@@ -66,8 +66,8 @@ type schedulerDefinitions struct {
 	Validation      *validate.Report
 	Runner          *runner.Runner
 	Entries         []localscheduler.WorkflowEntry
-	Machines        map[string]*workflow.Machine
-	RepoRefs        map[string]apiv1.RepoRef
+	Machines        map[localscheduler.WorkflowIdentity]*workflow.Machine
+	RepoRefs        map[localscheduler.WorkflowIdentity]apiv1.RepoRef
 	OpenPRRefresher *localscheduler.OpenPRRefresher
 }
 
@@ -238,6 +238,14 @@ func buildSchedulerDefinitions(
 	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
+		identity := localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}
+		// #341: a workflow may declare more than one schedule-type trigger
+		// (e.g. a weekday cadence and a separate weekend one) — collect all
+		// of them rather than stopping at the first; Scheduler.Tick fires if
+		// any is due. #342: also collect every signal-type trigger's name —
+		// previously compiled nowhere, so a type=signal trigger declared in
+		// config did nothing at runtime; Scheduler.Signal fires every
+		// workflow subscribed to a received signal name.
 		var scheds []localscheduler.Schedule
 		var sigs []string
 		for _, trigger := range wf.Spec.Triggers {
@@ -258,9 +266,9 @@ func buildSchedulerDefinitions(
 			Readiness:      wf.Spec.Readiness,
 			Schedules:      scheds,
 			Signals:        sigs,
-			BacklogCounter: buildBacklogCounter(cfg, wf, repoRefs[wf.Name], credResolver, sharedReg),
-			Starter:        &trackedStarter{r: rn, machine: machines[wf.Name], wg: wg, l: l, tel: tel, rollupDB: rollupDB, log: instanceLog},
-			RepoRef:        repoRefs[wf.Name],
+			BacklogCounter: buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg),
+			Starter:        &trackedStarter{r: rn, machine: machines[identity], wg: wg, l: l, tel: tel, rollupDB: rollupDB, log: instanceLog},
+			RepoRef:        repoRefs[identity],
 		})
 	}
 
@@ -384,7 +392,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // resumeInterruptedRuns errors when the scan itself cannot proceed or when
 // terminal-run cleanup fails; claim cleanup fails closed rather than silently
 // leaving a known terminal owner in the ledger.
-func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[string]*workflow.Machine, repoRefs map[string]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	runsDir := l.RunsDir()
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
@@ -423,12 +431,13 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 			}
 		}
 
-		machine, ok := machines[id.Workflow]
+		identity := localscheduler.WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
+		machine, ok := machines[identity]
 		if !ok {
 			warned = append(warned, id.RunID)
 			if log != nil {
 				_ = log.Append(journal.Event{
-					Type: journal.EventError, Workflow: id.Workflow, RunID: id.RunID,
+					Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
 					Error: &journal.ErrorDetail{
 						Code:    "resume_unresolvable_workflow",
 						Message: fmt.Sprintf("run %q references unknown workflow %q — recover with `goobers run abort %s`", id.RunID, id.Workflow, id.RunID),
@@ -437,11 +446,11 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 			}
 			continue
 		}
-		repoRef := repoRefs[id.Workflow]
+		repoRef := repoRefs[identity]
 
 		resumed = append(resumed, id.RunID)
 		wg.Add(1)
-		go func(runID, wfName string) {
+		go func(runID, gaggle, wfName string) {
 			defer wg.Done()
 			defer release(runID, wfName)
 			result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, RepoRef: repoRef})
@@ -455,7 +464,7 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 			// so FailureStage/Code/Message need no extra mirroring. The
 			// infra-error branch is deliberately untouched: a genuine Go
 			// error from Resume already carries its own full detail.
-			ev := journal.Event{Type: journal.EventRunFinished, Workflow: wfName, RunID: runID, Status: string(result.Phase)}
+			ev := journal.Event{Type: journal.EventRunFinished, Gaggle: gaggle, Workflow: wfName, RunID: runID, Status: string(result.Phase)}
 			switch {
 			case err != nil:
 				ev.Status = "error: " + err.Error()
@@ -471,7 +480,7 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 			if log != nil {
 				_ = log.Append(ev)
 			}
-		}(id.RunID, id.Workflow)
+		}(id.RunID, id.Gaggle, id.Workflow)
 	}
 	return resumed, warned, nil
 }

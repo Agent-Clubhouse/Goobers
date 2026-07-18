@@ -212,6 +212,21 @@ func TestGateExclusivityGivesClearMessageNoCascade(t *testing.T) {
 	}
 }
 
+func TestWorkflowOwnerMustBelongToWorkflowGaggle(t *testing.T) {
+	report, err := newV(t).ValidateDir("testdata/config-cross-gaggle-owner")
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if !report.HasErrors() {
+		t.Fatal("expected cross-gaggle workflow owner to fail validation")
+	}
+	got := joinIssues(report)
+	if !strings.Contains(got, `targets goober "reviewer" in gaggle "beta", not workflow gaggle "alpha"`) ||
+		!strings.Contains(got, `reviewer goober "reviewer" is in gaggle "beta", not workflow gaggle "alpha"`) {
+		t.Fatalf("cross-gaggle owner errors missing:\n%s", got)
+	}
+}
+
 func TestWarningCodesAreStable(t *testing.T) {
 	got := []WarningCode{
 		WarningDeprecatedFeature,
@@ -248,6 +263,56 @@ func TestReportWarningsPreserveShapeAndSortDeterministically(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("warning %d = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+func TestWorkflowWarningPreservesLegacyCLIRepresentation(t *testing.T) {
+	issue := Issue{
+		Code:     WarningCompatibility,
+		Severity: Warning,
+		File:     "gaggles/alpha/workflows/deploy.yaml",
+		Gaggle:   "alpha",
+		Kind:     "Workflow",
+		Name:     "deploy",
+		Message:  "configuration uses a compatibility path",
+	}
+	report := &Report{Issues: []Issue{issue}}
+
+	apiWarning := report.Warnings()[0]
+	if apiWarning.Code != WarningCompatibility ||
+		apiWarning.Scope != "gaggles/alpha/workflows/deploy.yaml Gaggle/alpha Workflow/deploy" {
+		t.Fatalf("API warning = %+v, want coded source and gaggle scope", apiWarning)
+	}
+	cliWarning := report.CLIWarnings()[0]
+	if cliWarning.Code != "" || cliWarning.Scope != "Workflow/deploy" {
+		t.Fatalf("CLI warning = %+v, want legacy uncoded workflow scope", cliWarning)
+	}
+	if got := issue.CLIString(); got != "WARNING Workflow/deploy: configuration uses a compatibility path" {
+		t.Fatalf("CLIString() = %q", got)
+	}
+	cliIssue := report.CLIReport().Issues[0]
+	if cliIssue.Code != "" || cliIssue.File != "" || cliIssue.Gaggle != "" {
+		t.Fatalf("CLI report issue = %+v, want legacy JSON provenance", cliIssue)
+	}
+	if report.Issues[0] != issue {
+		t.Fatalf("CLIReport mutated source issue: %+v", report.Issues[0])
+	}
+}
+
+func TestCLIReportPreservesIssuesSliceShape(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		issues []Issue
+	}{
+		{name: "nil"},
+		{name: "empty", issues: []Issue{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := (&Report{Issues: tc.issues}).CLIReport()
+			if (report.Issues == nil) != (tc.issues == nil) {
+				t.Fatalf("CLIReport issues = %#v, want source slice shape", report.Issues)
+			}
+		})
 	}
 }
 

@@ -2,8 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/api/validate"
 )
 
 const (
@@ -74,7 +79,63 @@ func TestRunJSONOutput(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
-	if !strings.Contains(out, `"issues"`) {
-		t.Errorf("expected JSON report with issues field, got:\n%s", out)
+	const want = "{\n  \"issues\": null,\n  \"files\": 13,\n  \"objects\": 13\n}\n"
+	if out != want {
+		t.Errorf("JSON output = %q, want %q", out, want)
 	}
+}
+
+func TestRunWorkflowWarningPreservesCLIOutput(t *testing.T) {
+	dir := warningConfigDir(t)
+	const want = `WARNING Workflow/implementation: task "query-backlog" runs backlog-query --claim without inputs.resultFile; empty ticks will report success instead of no-work`
+
+	code, out, _ := runArgs(t, dir)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\n%s", code, out)
+	}
+	if !strings.Contains(out, want) {
+		t.Fatalf("output missing legacy warning:\n%s", out)
+	}
+	if strings.Contains(out, "VER003") || strings.Contains(out, "Gaggle/acme-web") ||
+		strings.Contains(out, "gaggles/acme-web/workflows/implementation.yaml") {
+		t.Fatalf("output exposed API warning provenance:\n%s", out)
+	}
+
+	code, out, _ = runArgs(t, "--json", dir)
+	if code != 0 {
+		t.Fatalf("expected JSON exit 0, got %d\n%s", code, out)
+	}
+	var report validate.Report
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, out)
+	}
+	if len(report.Issues) != 1 {
+		t.Fatalf("JSON issues = %+v, want one warning", report.Issues)
+	}
+	issue := report.Issues[0]
+	if issue.Code != "" || issue.File != "" || issue.Gaggle != "" {
+		t.Fatalf("JSON warning exposed API provenance: %+v", issue)
+	}
+}
+
+func warningConfigDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS(exampleDir)); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "gaggles", "acme-web", "workflows", "implementation.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const resultFile = `        resultFile: "claimed-item.json"`
+	updated := strings.Replace(string(raw), resultFile, "", 1)
+	if updated == string(raw) {
+		t.Fatal("workflow fixture did not contain resultFile")
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

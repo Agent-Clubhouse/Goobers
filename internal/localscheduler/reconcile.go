@@ -8,25 +8,52 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// WorkflowIdentity unambiguously identifies a workflow within its gaggle.
+type WorkflowIdentity struct {
+	Gaggle   string
+	Workflow string
+}
+
 // ActiveRunCounts scans runsDir for running runs and returns per-workflow
 // active counts — the daemon-startup reconciliation Conditions.Reconcile needs,
 // since Conditions' in-memory counters don't survive a restart. Phase comes
 // from the event log, the durable source of truth; state.json can lag a
 // crash-fsynced run.finished event.
 func ActiveRunCounts(runsDir string) (map[string]int, error) {
+	scoped, _, err := activeRuns(runsDir)
+	counts := map[string]int{}
+	for identity, count := range scoped {
+		counts[identity.Workflow] += count
+	}
+	return counts, err
+}
+
+// ActiveRunCountsByWorkflow returns active counts keyed by gaggle and workflow.
+// Inventory readers use this projection because workflow names are only unique
+// within a gaggle.
+func ActiveRunCountsByWorkflow(runsDir string) (map[WorkflowIdentity]int, error) {
 	counts, _, err := activeRuns(runsDir)
 	return counts, err
 }
 
-func activeRuns(runsDir string) (map[string]int, map[string]string, error) {
-	counts := map[string]int{}
-	runs := map[string]string{}
+func activeRuns(runsDir string) (map[WorkflowIdentity]int, map[string]WorkflowIdentity, error) {
+	counts := map[WorkflowIdentity]int{}
+	runs := map[string]WorkflowIdentity{}
+	err := visitActiveRuns(runsDir, func(id journal.RunIdentity) {
+		identity := WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
+		counts[identity]++
+		runs[id.RunID] = identity
+	})
+	return counts, runs, err
+}
+
+func visitActiveRuns(runsDir string, visit func(journal.RunIdentity)) error {
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return counts, runs, nil
+			return nil
 		}
-		return nil, nil, err
+		return err
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -43,12 +70,11 @@ func activeRuns(runsDir string) (map[string]int, map[string]string, error) {
 		}
 		phase, err := rd.Phase()
 		if err != nil {
-			return nil, nil, fmt.Errorf("read phase for run %q: %w", id.RunID, err)
+			return fmt.Errorf("read phase for run %q: %w", id.RunID, err)
 		}
 		if phase == journal.PhaseRunning {
-			counts[id.Workflow]++
-			runs[id.RunID] = id.Workflow
+			visit(id)
 		}
 	}
-	return counts, runs, nil
+	return nil
 }

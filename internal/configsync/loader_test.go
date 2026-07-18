@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -90,6 +91,54 @@ func TestLoad_InvalidConfigRejected(t *testing.T) {
 	}
 	if !report.HasErrors() {
 		t.Error("report should carry field-level errors")
+	}
+}
+
+func TestLoadRejectsCrossGaggleWorkflowNameCollision(t *testing.T) {
+	l, err := NewLoader("")
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	set, report, err := l.Load("../httpapi/testdata/scoped-inventory")
+	if err == nil || !strings.Contains(err.Error(), "Kubernetes object names collide") {
+		t.Fatalf("Load error = %v, want workflow object identity collision", err)
+	}
+	if set != nil {
+		t.Fatal("RenderSet should be nil when workflow object identities collide")
+	}
+	if report == nil || report.HasErrors() {
+		t.Fatalf("shared validation report = %+v, want duplicate names accepted by gaggle scope", report)
+	}
+}
+
+func TestLoadIgnoresWorkflowCollisionFromExcludedGaggle(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "manifest.yaml", `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata: {name: inst}
+spec:
+  instance: {name: acme, environment: dev}
+  gaggles: [alpha]
+`)
+	writeFile(t, filepath.Join(dir, "gaggles", "alpha"), "gaggle.yaml", gaggleYAML("alpha"))
+	writeFile(t, filepath.Join(dir, "gaggles", "beta"), "gaggle.yaml", gaggleYAML("beta"))
+	writeFile(t, filepath.Join(dir, "gaggles", "alpha"), "workflow.yaml", workflowYAML("alpha", "deploy"))
+	writeFile(t, filepath.Join(dir, "gaggles", "beta"), "workflow.yaml", workflowYAML("beta", "deploy"))
+
+	l, err := NewLoader("")
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	set, report, err := l.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v (report: %+v)", err, report.Issues)
+	}
+	workflows := objectsByKind(set.Objects)["Workflow"]
+	if len(workflows) != 1 {
+		t.Fatalf("rendered workflows = %d, want only manifest-listed workflow", len(workflows))
+	}
+	if workflow := workflows[0].(*v1alpha1.Workflow); workflow.Spec.Gaggle != "alpha" {
+		t.Fatalf("rendered workflow gaggle = %q, want alpha", workflow.Spec.Gaggle)
 	}
 }
 
@@ -198,6 +247,23 @@ spec:
   project: {provider: github, owner: acme, name: web}
   backlog: {provider: github, project: acme/web}
   isolation: {namespace: gaggle-` + name + `}
+`
+}
+
+func workflowYAML(gaggle, name string) string {
+	return `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: ` + name + `
+spec:
+  gaggle: ` + gaggle + `
+  triggers: [{type: manual}]
+  start: run
+  tasks:
+    - name: run
+      type: deterministic
+      goal: Run.
+      run: {command: ["true"]}
 `
 }
 

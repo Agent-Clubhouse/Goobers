@@ -44,7 +44,7 @@ func TestLocalHealthProjectsIdentityReadinessAndFreshness(t *testing.T) {
 	}
 	observedAt := eventTime.Add(time.Minute).UTC()
 	service.now = func() time.Time { return observedAt }
-	if err := service.ReloadDefinitions(testDefinitions(), eventTime); err != nil {
+	if err := service.ReloadDefinitions(testDefinitions(), nil, eventTime); err != nil {
 		t.Fatal(err)
 	}
 
@@ -92,7 +92,7 @@ func TestLocalHealthUsesReloadedDefinitionsSnapshot(t *testing.T) {
 		Name:        "reloaded-clubhouse",
 		Environment: apiv1.EnvironmentStaging,
 	}
-	if err := service.ReloadDefinitions(reloaded, loadedAt); err != nil {
+	if err := service.ReloadDefinitions(reloaded, nil, loadedAt); err != nil {
 		t.Fatal(err)
 	}
 
@@ -105,6 +105,13 @@ func TestLocalHealthUsesReloadedDefinitionsSnapshot(t *testing.T) {
 	}
 	if !got.Freshness.DefinitionsLoadedAt.Equal(loadedAt) {
 		t.Fatalf("definitionsLoadedAt = %s, want %s", got.Freshness.DefinitionsLoadedAt, loadedAt.UTC())
+	}
+	inventory, err := service.Instance(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inventory.Name != "reloaded-clubhouse" || inventory.Environment != apiv1.EnvironmentStaging {
+		t.Fatalf("inventory instance = %+v", inventory)
 	}
 }
 

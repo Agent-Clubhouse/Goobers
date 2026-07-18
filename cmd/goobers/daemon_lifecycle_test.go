@@ -176,14 +176,17 @@ func TestResumeJournalsActualPhaseNotHardcodedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var status string
+	var finished journal.Event
 	for _, ev := range events {
 		if ev.Type == journal.EventRunFinished && ev.RunID == "stuck-2" {
-			status = ev.Status
+			finished = ev
 		}
 	}
-	if status != string(journal.PhaseCompleted) {
-		t.Fatalf("instance-log status = %q, want %q (the run's real outcome, not a hardcoded \"resumed\")", status, journal.PhaseCompleted)
+	if finished.Status != string(journal.PhaseCompleted) {
+		t.Fatalf("instance-log status = %q, want %q (the run's real outcome, not a hardcoded \"resumed\")", finished.Status, journal.PhaseCompleted)
+	}
+	if finished.Gaggle != "example" || finished.Workflow != "default-implement" {
+		t.Fatalf("instance-log workflow identity = %q/%q, want example/default-implement", finished.Gaggle, finished.Workflow)
 	}
 }
 
@@ -298,6 +301,19 @@ func TestUpSkipsUnresolvableWorkflowWithWarningNotFatal(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "goobers run abort stale-1") {
 		t.Fatalf("stdout = %q, want the warning to point at the abort recovery path", stdout.String())
+	}
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovery journal.Event
+	for _, ev := range events {
+		if ev.Type == journal.EventError && ev.RunID == "stale-1" {
+			recovery = ev
+		}
+	}
+	if recovery.Gaggle != "example" || recovery.Workflow != "no-such-workflow" {
+		t.Fatalf("instance-log workflow identity = %q/%q, want example/no-such-workflow", recovery.Gaggle, recovery.Workflow)
 	}
 }
 

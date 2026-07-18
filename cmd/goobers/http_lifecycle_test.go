@@ -88,6 +88,35 @@ func TestUpServesHealthAndStopsHTTPGracefully(t *testing.T) {
 		t.Fatalf("freshness = %+v", health.Freshness)
 	}
 
+	response, err = http.Get("http://" + address + httpapi.InstancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inventory readservice.Instance
+	if err := json.NewDecoder(response.Body).Decode(&inventory); err != nil {
+		_ = response.Body.Close()
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || !inventory.Ready ||
+		inventory.Counts.Gaggles == 0 || inventory.Counts.Workflows == 0 {
+		t.Fatalf("inventory status/view = %d / %+v", response.StatusCode, inventory)
+	}
+
+	response, err = http.Get("http://" + address + httpapi.GagglesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gaggles readservice.GagglePage
+	if err := json.NewDecoder(response.Body).Decode(&gaggles); err != nil {
+		_ = response.Body.Close()
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(gaggles.Items) == 0 {
+		t.Fatalf("gaggles status/view = %d / %+v", response.StatusCode, gaggles)
+	}
+
 	cancel()
 	select {
 	case code := <-done:

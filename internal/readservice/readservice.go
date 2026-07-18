@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
@@ -34,6 +35,11 @@ type Reader interface {
 	RunEvents(context.Context, string) (EventList, error)
 	StageAttempts(context.Context, string, string) (AttemptList, error)
 	Artifact(context.Context, string, string) (ArtifactContent, error)
+	Instance(context.Context) (Instance, error)
+	Gaggles(context.Context, PageRequest) (GagglePage, error)
+	Goobers(context.Context, string, PageRequest) (GooberPage, error)
+	Workflows(context.Context, string, PageRequest) (WorkflowPage, error)
+	Workflow(context.Context, string, string) (WorkflowDetail, error)
 }
 
 // Health is the versioned daemon health response.
@@ -61,7 +67,9 @@ type Freshness struct {
 // LocalSources are the three local projections behind the shared service.
 type LocalSources struct {
 	Layout      instance.Layout
+	Config      *instance.Config
 	Definitions *instance.ConfigSet
+	Validation  *validate.Report
 	Telemetry   *rollup.DB
 }
 
@@ -76,8 +84,9 @@ type Local struct {
 }
 
 type definitionSnapshot struct {
-	set      *instance.ConfigSet
-	loadedAt time.Time
+	set       *instance.ConfigSet
+	loadedAt  time.Time
+	inventory *inventoryProjection
 }
 
 // NewLocal constructs the shared local read service.
@@ -86,7 +95,7 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 		return nil, fmt.Errorf("read service: readiness function is required")
 	}
 	now := time.Now
-	snapshot, err := newDefinitionSnapshot(sources.Definitions, now())
+	snapshot, err := newDefinitionSnapshot(sources.Definitions, sources.Validation, now())
 	if err != nil {
 		return nil, err
 	}
@@ -95,6 +104,7 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 		telemetry = &Telemetry{store: sources.Telemetry}
 	}
 	sources.Definitions = nil
+	sources.Validation = nil
 	local := &Local{
 		sources:   sources,
 		telemetry: telemetry,
@@ -107,8 +117,8 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 
 // ReloadDefinitions atomically replaces the definitions exposed by the local
 // read model after the daemon accepts a config reload.
-func (s *Local) ReloadDefinitions(definitions *instance.ConfigSet, loadedAt time.Time) error {
-	snapshot, err := newDefinitionSnapshot(definitions, loadedAt)
+func (s *Local) ReloadDefinitions(definitions *instance.ConfigSet, validation *validate.Report, loadedAt time.Time) error {
+	snapshot, err := newDefinitionSnapshot(definitions, validation, loadedAt)
 	if err != nil {
 		return err
 	}
@@ -116,13 +126,18 @@ func (s *Local) ReloadDefinitions(definitions *instance.ConfigSet, loadedAt time
 	return nil
 }
 
-func newDefinitionSnapshot(definitions *instance.ConfigSet, loadedAt time.Time) (*definitionSnapshot, error) {
+func newDefinitionSnapshot(definitions *instance.ConfigSet, validation *validate.Report, loadedAt time.Time) (*definitionSnapshot, error) {
 	if definitions == nil || definitions.Manifest == nil {
 		return nil, fmt.Errorf("read service: provisioned manifest is required")
 	}
+	inventory, err := newInventoryProjection(definitions, validation)
+	if err != nil {
+		return nil, err
+	}
 	return &definitionSnapshot{
-		set:      definitions,
-		loadedAt: loadedAt.UTC(),
+		set:       definitions,
+		loadedAt:  loadedAt.UTC(),
+		inventory: inventory,
 	}, nil
 }
 

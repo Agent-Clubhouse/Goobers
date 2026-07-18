@@ -139,19 +139,22 @@ func TestReconstructLastEval(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seen := start.Add(2 * time.Hour)
 	fired := []TriggerFiredRecord{
-		{Workflow: "a", Time: start.Add(1 * time.Hour)},
-		{Workflow: "a", Time: seen}, // most recent for "a"
+		{Gaggle: "g", Workflow: "a", Time: start.Add(1 * time.Hour)},
+		{Gaggle: "g", Workflow: "a", Time: seen}, // most recent for "a"
 		{Workflow: "b", Time: start.Add(30 * time.Minute)},
 	}
-	last := ReconstructLastEval(fired, []string{"a", "b", "c"}, start)
+	a := WorkflowIdentity{Gaggle: "g", Workflow: "a"}
+	b := WorkflowIdentity{Gaggle: "g", Workflow: "b"}
+	c := WorkflowIdentity{Gaggle: "g", Workflow: "c"}
+	last := ReconstructLastEval(fired, []WorkflowIdentity{a, b, c}, start)
 
-	if last["a"] != seen {
-		t.Errorf("workflow a: LastEval = %v, want most recent fire %v", last["a"], seen)
+	if last[a] != seen {
+		t.Errorf("workflow a: LastEval = %v, want most recent fire %v", last[a], seen)
 	}
-	if last["b"] != start.Add(30*time.Minute) {
-		t.Errorf("workflow b: LastEval = %v", last["b"])
+	if last[b] != start.Add(30*time.Minute) {
+		t.Errorf("workflow b: LastEval = %v", last[b])
 	}
-	if last["c"] != start {
-		t.Errorf("workflow c (never fired): LastEval = %v, want daemon start %v (no epoch backfill)", last["c"], start)
+	if last[c] != start {
+		t.Errorf("workflow c (never fired): LastEval = %v, want daemon start %v (no epoch backfill)", last[c], start)
 	}
 }

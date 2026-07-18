@@ -190,12 +190,14 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return 1
 	}
 	defer setup.Shutdown(context.Background())
-	printValidationWarnings(stdout, setup.Validation.Warnings())
+	printValidationWarnings(stdout, setup.Validation.CLIWarnings())
 
 	var ready atomic.Bool
 	reads, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      l,
+		Config:      setup.Config,
 		Definitions: setup.Definitions,
+		Validation:  setup.Validation,
 		Telemetry:   setup.RollupDB,
 	}, ready.Load)
 	if err != nil {

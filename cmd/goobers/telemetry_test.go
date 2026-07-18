@@ -208,6 +208,26 @@ func (r *telemetryParityReader) Artifact(context.Context, string, string) (reads
 	return readservice.ArtifactContent{}, readservice.ErrNotFound
 }
 
+func (r *telemetryParityReader) Instance(context.Context) (readservice.Instance, error) {
+	return readservice.Instance{}, nil
+}
+
+func (r *telemetryParityReader) Gaggles(context.Context, readservice.PageRequest) (readservice.GagglePage, error) {
+	return readservice.GagglePage{}, nil
+}
+
+func (r *telemetryParityReader) Goobers(context.Context, string, readservice.PageRequest) (readservice.GooberPage, error) {
+	return readservice.GooberPage{}, nil
+}
+
+func (r *telemetryParityReader) Workflows(context.Context, string, readservice.PageRequest) (readservice.WorkflowPage, error) {
+	return readservice.WorkflowPage{}, nil
+}
+
+func (r *telemetryParityReader) Workflow(context.Context, string, string) (readservice.WorkflowDetail, error) {
+	return readservice.WorkflowDetail{}, nil
+}
+
 func TestTelemetryHTTPAndCLIProjectionParity(t *testing.T) {
 	root := initDemo(t)
 	writeFixtureRunWithError(t, root)

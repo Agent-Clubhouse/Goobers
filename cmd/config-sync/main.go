@@ -53,7 +53,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	if errors.Is(err, configsync.ErrInvalidConfig) {
 		_, _ = fmt.Fprintf(stderr, "config-sync: invalid config (%d objects, %d files):\n", report.Objects, report.Files)
 		for _, iss := range report.Issues {
-			_, _ = fmt.Fprintf(stderr, "  %s\n", iss.String())
+			_, _ = fmt.Fprintf(stderr, "  %s\n", iss.CLIString())
 		}
 		return 1
 	}
@@ -63,7 +63,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	}
 	// Surface non-fatal warnings.
 	for _, iss := range report.Issues {
-		_, _ = fmt.Fprintf(stderr, "  %s\n", iss.String())
+		_, _ = fmt.Fprintf(stderr, "  %s\n", iss.CLIString())
 	}
 
 	if *apply {

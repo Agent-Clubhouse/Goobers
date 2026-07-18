@@ -209,6 +209,200 @@ func TestReloadWaitsForActiveTick(t *testing.T) {
 	sched.Wait()
 }
 
+func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
+	block := make(chan struct{})
+	alpha := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
+	beta := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, dir := newTestScheduler(t, []WorkflowEntry{
+		{Gaggle: "alpha", Workflow: "deploy", Signals: []string{"release"}, Starter: alpha},
+		{Gaggle: "beta", Workflow: "deploy", Signals: []string{"release"}, Starter: beta},
+	})
+	t.Cleanup(func() {
+		close(block)
+		sched.Wait()
+	})
+
+	runIDs := sched.Signal(context.Background(), "release", time.Now())
+	if len(runIDs) != 2 {
+		t.Fatalf("signal run IDs = %v", runIDs)
+	}
+	waitForCount(t, alpha.count, 1)
+	waitForCount(t, beta.count, 1)
+
+	events, err := journal.ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firedGaggles := map[string]bool{}
+	for _, event := range events {
+		if event.Type == journal.EventTriggerFired && event.Workflow == "deploy" {
+			firedGaggles[event.Gaggle] = true
+		}
+	}
+	if !firedGaggles["alpha"] || !firedGaggles["beta"] {
+		t.Fatalf("trigger.fired gaggle scopes = %v, want alpha and beta", firedGaggles)
+	}
+	if _, err := sched.Trigger(context.Background(), "deploy", time.Now()); err == nil ||
+		!strings.Contains(err.Error(), "ambiguous across gaggles") {
+		t.Fatalf("ambiguous manual trigger error = %v", err)
+	}
+}
+
+func TestReconcileKeepsDuplicateWorkflowTriggerHistoryDistinct(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	eventTime := now.Add(-30 * time.Minute)
+	past, _, err := journal.OpenInstanceLog(dir, journal.WithClock(func() time.Time { return eventTime }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Append(journal.Event{
+		Type: journal.EventTriggerFired, Gaggle: "beta", Workflow: "deploy",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = now.Add(-5 * time.Minute)
+	if err := past.Append(journal.Event{
+		Type: journal.EventTriggerFired, Gaggle: "alpha", Workflow: "deploy",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	alpha := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	beta := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched := New([]WorkflowEntry{
+		{Gaggle: "alpha", Workflow: "deploy", Schedules: []Schedule{fakeSchedule{d: 15 * time.Minute}}, Starter: alpha},
+		{Gaggle: "beta", Workflow: "deploy", Schedules: []Schedule{fakeSchedule{d: 15 * time.Minute}}, Starter: beta},
+	}, log)
+	if err := sched.Reconcile(filepath.Join(t.TempDir(), "runs"), now); err != nil {
+		t.Fatal(err)
+	}
+
+	sched.Tick(context.Background(), now)
+	waitForCount(t, beta.count, 1)
+	sched.Wait()
+	if got := alpha.count(); got != 0 {
+		t.Fatalf("alpha starts = %d, want 0 from its recent scoped firing", got)
+	}
+}
+
+func TestReconcileKeepsDuplicateWorkflowBudgetsDistinct(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	past, _, err := journal.OpenInstanceLog(dir, journal.WithClock(func() time.Time {
+		return now.Add(-10 * time.Minute)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Append(journal.Event{
+		Type: journal.EventRunStarted, Gaggle: "alpha", Workflow: "deploy", RunID: "alpha-prior",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	alpha := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	beta := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	readiness := apiv1.ReadinessConditions{MaxRunsPerHour: 1}
+	sched := New([]WorkflowEntry{
+		{Gaggle: "alpha", Workflow: "deploy", Signals: []string{"release"}, Readiness: readiness, Starter: alpha},
+		{Gaggle: "beta", Workflow: "deploy", Signals: []string{"release"}, Readiness: readiness, Starter: beta},
+	}, log)
+	if err := sched.Reconcile(filepath.Join(t.TempDir(), "runs"), now); err != nil {
+		t.Fatal(err)
+	}
+
+	runIDs := sched.Signal(context.Background(), "release", now)
+	if len(runIDs) != 1 {
+		t.Fatalf("signal run IDs = %v, want only beta admitted", runIDs)
+	}
+	waitForCount(t, beta.count, 1)
+	sched.Wait()
+	if got := alpha.count(); got != 0 {
+		t.Fatalf("alpha starts = %d, want 0 because only alpha spent its budget", got)
+	}
+}
+
+func TestReconcileScopesLegacyBudgetHistoryFromRunJournal(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "scheduler")
+	runsDir := filepath.Join(root, "runs")
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	runID := strings.Repeat("a", 32)
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID:           runID,
+		Gaggle:          "alpha",
+		Workflow:        "deploy",
+		WorkflowVersion: 1,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	past, _, err := journal.OpenInstanceLog(dir, journal.WithClock(func() time.Time {
+		return now.Add(-10 * time.Minute)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Append(journal.Event{
+		Type: journal.EventRunStarted, Workflow: "deploy", RunID: runID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	alpha := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	beta := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	readiness := apiv1.ReadinessConditions{MaxRunsPerHour: 1}
+	sched := New([]WorkflowEntry{
+		{Gaggle: "alpha", Workflow: "deploy", Signals: []string{"release"}, Readiness: readiness, Starter: alpha},
+		{Gaggle: "beta", Workflow: "deploy", Signals: []string{"release"}, Readiness: readiness, Starter: beta},
+	}, log)
+	if err := sched.Reconcile(runsDir, now); err != nil {
+		t.Fatal(err)
+	}
+
+	runIDs := sched.Signal(context.Background(), "release", now)
+	if len(runIDs) != 1 {
+		t.Fatalf("signal run IDs = %v, want only beta admitted", runIDs)
+	}
+	waitForCount(t, beta.count, 1)
+	sched.Wait()
+	if got := alpha.count(); got != 0 {
+		t.Fatalf("alpha starts = %d, want legacy budget attributed from run journal", got)
+	}
+}
+
 // waitForRunFinished polls the instance log at dir until a run.finished event
 // for workflow appears, returning it — the dispatch goroutine journals this
 // AFTER Start returns and after starter.count() is already visible to the

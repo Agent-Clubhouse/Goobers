@@ -33,8 +33,16 @@ type fakeReader struct {
 	runID        string
 	stage        string
 	digest       string
+	instance     readservice.Instance
+	gaggles      readservice.GagglePage
+	goobers      readservice.GooberPage
+	workflows    readservice.WorkflowPage
+	workflow     readservice.WorkflowDetail
 	err          error
 	called       int
+	lastGaggle   string
+	lastWorkflow string
+	lastPage     readservice.PageRequest
 }
 
 func discardLogger() *log.Logger {
@@ -81,6 +89,38 @@ func (f *fakeReader) Artifact(_ context.Context, runID, digest string) (readserv
 	f.runID = runID
 	f.digest = digest
 	return f.artifact, f.err
+}
+
+func (f *fakeReader) Instance(context.Context) (readservice.Instance, error) {
+	f.called++
+	return f.instance, f.err
+}
+
+func (f *fakeReader) Gaggles(_ context.Context, page readservice.PageRequest) (readservice.GagglePage, error) {
+	f.called++
+	f.lastPage = page
+	return f.gaggles, f.err
+}
+
+func (f *fakeReader) Goobers(_ context.Context, gaggle string, page readservice.PageRequest) (readservice.GooberPage, error) {
+	f.called++
+	f.lastGaggle = gaggle
+	f.lastPage = page
+	return f.goobers, f.err
+}
+
+func (f *fakeReader) Workflows(_ context.Context, gaggle string, page readservice.PageRequest) (readservice.WorkflowPage, error) {
+	f.called++
+	f.lastGaggle = gaggle
+	f.lastPage = page
+	return f.workflows, f.err
+}
+
+func (f *fakeReader) Workflow(_ context.Context, gaggle, workflow string) (readservice.WorkflowDetail, error) {
+	f.called++
+	f.lastGaggle = gaggle
+	f.lastWorkflow = workflow
+	return f.workflow, f.err
 }
 
 func TestHealthHandlerUsesSharedReadService(t *testing.T) {
@@ -204,6 +244,15 @@ func TestAPIErrorsUseStructuredEnvelope(t *testing.T) {
 			reader:     &fakeReader{},
 			method:     http.MethodGet,
 			path:       Prefix + "/missing",
+			authorizer: AllowAll,
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "non-canonical route",
+			reader:     &fakeReader{},
+			method:     http.MethodGet,
+			path:       Prefix + "/gaggles//workflows",
 			authorizer: AllowAll,
 			wantStatus: http.StatusNotFound,
 			wantCode:   "not_found",

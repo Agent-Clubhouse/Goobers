@@ -54,8 +54,8 @@ const dayWindow = 24 * time.Hour
 // true under real concurrency, not just sequential calls.
 type Conditions struct {
 	mu     sync.Mutex
-	active map[string]int
-	starts map[string][]time.Time
+	active map[WorkflowIdentity]int
+	starts map[WorkflowIdentity][]time.Time
 
 	// totalActive is the sum of active across every workflow — kept as a
 	// running counter (not recomputed from active on every Admit) so Admit
@@ -88,7 +88,10 @@ type Conditions struct {
 
 // NewConditions returns an empty Conditions tracker.
 func NewConditions() *Conditions {
-	return &Conditions{active: map[string]int{}, starts: map[string][]time.Time{}}
+	return &Conditions{
+		active: map[WorkflowIdentity]int{},
+		starts: map[WorkflowIdentity][]time.Time{},
+	}
 }
 
 // SetInstanceLimits applies instance-level run conditions (instance.yaml's
@@ -131,6 +134,17 @@ func (c *Conditions) SetProviderQuota(gate ProviderQuotaGate) {
 // Reconcile only seeds the starting point, exactly like Admit's own
 // reserve-then-Release contract.
 func (c *Conditions) Reconcile(active map[string]int) {
+	scoped := make(map[WorkflowIdentity]int, len(active))
+	for workflow, count := range active {
+		scoped[WorkflowIdentity{Workflow: workflow}] = count
+	}
+	c.ReconcileWorkflows(scoped)
+}
+
+// ReconcileWorkflows sets initial active-run counts keyed by gaggle and
+// workflow. Scheduler recovery uses this form so duplicate workflow names do
+// not share concurrency slots.
+func (c *Conditions) ReconcileWorkflows(active map[WorkflowIdentity]int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for wf, n := range active {
@@ -153,6 +167,16 @@ func (c *Conditions) Reconcile(active map[string]int) {
 // a restart) — Admit's own pruneStarts drops the rest lazily on first use,
 // but callers may filter before calling this too.
 func (c *Conditions) ReconcileBudget(starts map[string][]time.Time) {
+	scoped := make(map[WorkflowIdentity][]time.Time, len(starts))
+	for workflow, times := range starts {
+		scoped[WorkflowIdentity{Workflow: workflow}] = times
+	}
+	c.ReconcileWorkflowBudgets(scoped)
+}
+
+// ReconcileWorkflowBudgets restores rolling budget history keyed by gaggle and
+// workflow.
+func (c *Conditions) ReconcileWorkflowBudgets(starts map[WorkflowIdentity][]time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for wf, ts := range starts {
@@ -167,6 +191,11 @@ func (c *Conditions) ReconcileBudget(starts map[string][]time.Time) {
 // hold under simultaneous ticks. A reserved admission MUST be paired with a
 // later Release once the run finishes.
 func (c *Conditions) Admit(workflow string, r apiv1.ReadinessConditions, now time.Time) (ok bool, reason string) {
+	return c.AdmitWorkflow(WorkflowIdentity{Workflow: workflow}, r, now)
+}
+
+// AdmitWorkflow applies run conditions to one gaggle-scoped workflow.
+func (c *Conditions) AdmitWorkflow(identity WorkflowIdentity, r apiv1.ReadinessConditions, now time.Time) (ok bool, reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -187,7 +216,7 @@ func (c *Conditions) Admit(workflow string, r apiv1.ReadinessConditions, now tim
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1 // spec default (ReadinessConditions.MaxConcurrentRuns)
 	}
-	if c.active[workflow] >= int(maxConcurrent) {
+	if c.active[identity] >= int(maxConcurrent) {
 		return false, ReasonMaxParallel
 	}
 	if c.instanceMaxParallel > 0 && c.totalActive >= c.instanceMaxParallel {
@@ -207,7 +236,7 @@ func (c *Conditions) Admit(workflow string, r apiv1.ReadinessConditions, now tim
 	}
 
 	maxRunsPerHour := r.MaxRunsPerHour
-	if override, ok := c.workflowBudgets[workflow]; ok && override > 0 {
+	if override, ok := c.workflowBudgets[identity.Workflow]; ok && override > 0 {
 		maxRunsPerHour = int32(override)
 	} else if maxRunsPerHour <= 0 {
 		// spec default (ReadinessConditions.MaxRunsPerHour, #339): unset used
@@ -221,45 +250,55 @@ func (c *Conditions) Admit(workflow string, r apiv1.ReadinessConditions, now tim
 		maxRunsPerHour = 10
 	}
 	maxRunsPerDay := r.MaxRunsPerDay
-	if override, ok := c.dayBudgets[workflow]; ok && override > 0 {
+	if override, ok := c.dayBudgets[identity.Workflow]; ok && override > 0 {
 		maxRunsPerDay = int32(override)
 	}
 
 	// Retained at dayWindow width (a strict superset of budgetWindow) so one
 	// starts history serves both checks (#340) — hourlyCount is a sub-count
 	// of the same slice, not a second tracked list.
-	starts := pruneStarts(c.starts[workflow], now, dayWindow)
+	starts := pruneStarts(c.starts[identity], now, dayWindow)
 	hourlyCount := countSince(starts, now.Add(-budgetWindow))
 	if hourlyCount >= int(maxRunsPerHour) {
-		c.starts[workflow] = starts
+		c.starts[identity] = starts
 		return false, ReasonBudget
 	}
 	if maxRunsPerDay > 0 && len(starts) >= int(maxRunsPerDay) {
-		c.starts[workflow] = starts
+		c.starts[identity] = starts
 		return false, ReasonDailyBudget
 	}
-	c.starts[workflow] = append(starts, now)
+	c.starts[identity] = append(starts, now)
 
-	c.active[workflow]++
+	c.active[identity]++
 	c.totalActive++
 	return true, ""
 }
 
 // Release returns a workflow's admitted slot once its run finishes.
 func (c *Conditions) Release(workflow string) {
+	c.ReleaseWorkflow(WorkflowIdentity{Workflow: workflow})
+}
+
+// ReleaseWorkflow returns a gaggle-scoped workflow's admitted slot.
+func (c *Conditions) ReleaseWorkflow(identity WorkflowIdentity) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.active[workflow] > 0 {
-		c.active[workflow]--
+	if c.active[identity] > 0 {
+		c.active[identity]--
 		c.totalActive--
 	}
 }
 
 // Active reports the current active-run count for workflow (test/inspection).
 func (c *Conditions) Active(workflow string) int {
+	return c.ActiveWorkflow(WorkflowIdentity{Workflow: workflow})
+}
+
+// ActiveWorkflow reports the active-run count for a gaggle-scoped workflow.
+func (c *Conditions) ActiveWorkflow(identity WorkflowIdentity) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.active[workflow]
+	return c.active[identity]
 }
 
 // pruneStarts drops start times older than window before now. starts is

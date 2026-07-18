@@ -72,10 +72,10 @@ func runDir(v *validate.Validator, dir string, asJSON bool, stdout, stderr io.Wr
 		return 2
 	}
 	if asJSON {
-		writeJSON(stdout, report)
+		writeJSON(stdout, report.CLIReport())
 	} else {
 		for _, issue := range report.Issues {
-			pln(stdout, issue.String())
+			pln(stdout, issue.CLIString())
 		}
 		errs := 0
 		for _, i := range report.Issues {

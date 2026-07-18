@@ -35,6 +35,22 @@ type ConfigSet struct {
 	Gaggles   []apiv1.Gaggle
 	Goobers   []apiv1.Goober
 	Workflows []apiv1.Workflow
+
+	workflowSources map[workflowIdentity]string
+}
+
+type workflowIdentity struct {
+	gaggle string
+	name   string
+}
+
+// WorkflowSource returns the config-relative source file for a loaded workflow.
+func (s *ConfigSet) WorkflowSource(gaggle, name string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	source, ok := s.workflowSources[workflowIdentity{gaggle: gaggle, name: name}]
+	return source, ok
 }
 
 // LoadConfigDir validates the config directory at dir against the canonical
@@ -76,6 +92,7 @@ var docSep = regexp.MustCompile(`(?m)^---\s*$`)
 type rawDoc struct {
 	kind string
 	name string
+	file string
 	yaml []byte
 }
 
@@ -113,7 +130,9 @@ func readDocs(root string) ([]rawDoc, error) {
 				// Schema validation already reported malformed docs; skip here.
 				continue
 			}
-			docs = append(docs, rawDoc{kind: meta.Kind, name: meta.Metadata.Name, yaml: []byte(seg)})
+			rel, _ := filepath.Rel(root, path)
+			rel = filepath.ToSlash(rel)
+			docs = append(docs, rawDoc{kind: meta.Kind, name: meta.Metadata.Name, file: rel, yaml: []byte(seg)})
 		}
 		return nil
 	})
@@ -127,11 +146,15 @@ func readDocs(root string) ([]rawDoc, error) {
 // desired state (only manifest-listed gaggles and the goobers/workflows bound
 // to them).
 func assemble(docs []rawDoc) (*ConfigSet, error) {
+	type sourcedWorkflow struct {
+		definition apiv1.Workflow
+		source     string
+	}
 	var (
 		manifest *apiv1.Manifest
 		gaggles  []apiv1.Gaggle
 		goobers  []apiv1.Goober
-		flows    []apiv1.Workflow
+		flows    []sourcedWorkflow
 	)
 	for _, d := range docs {
 		switch d.kind {
@@ -161,7 +184,7 @@ func assemble(docs []rawDoc) (*ConfigSet, error) {
 			if err := yaml.Unmarshal(d.yaml, &w); err != nil {
 				return nil, fmt.Errorf("parse Workflow %s: %w", d.name, err)
 			}
-			flows = append(flows, w)
+			flows = append(flows, sourcedWorkflow{definition: w, source: d.file})
 		}
 	}
 	if manifest == nil {
@@ -173,7 +196,7 @@ func assemble(docs []rawDoc) (*ConfigSet, error) {
 		included[name] = true
 	}
 
-	set := &ConfigSet{Manifest: manifest}
+	set := &ConfigSet{Manifest: manifest, workflowSources: map[workflowIdentity]string{}}
 	for i := range gaggles {
 		if included[gaggles[i].Name] {
 			set.Gaggles = append(set.Gaggles, gaggles[i])
@@ -185,8 +208,10 @@ func assemble(docs []rawDoc) (*ConfigSet, error) {
 		}
 	}
 	for i := range flows {
-		if included[flows[i].Spec.Gaggle] {
-			set.Workflows = append(set.Workflows, flows[i])
+		workflow := flows[i].definition
+		if included[workflow.Spec.Gaggle] {
+			set.Workflows = append(set.Workflows, workflow)
+			set.workflowSources[workflowIdentity{gaggle: workflow.Spec.Gaggle, name: workflow.Name}] = flows[i].source
 		}
 	}
 	return set, nil

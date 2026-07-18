@@ -884,18 +884,18 @@ func knownAutomatedCheckNames() []string {
 
 // compiledMachines compiles every workflow in set, admission-checked against
 // goobers (capabilities, harness, gate-outcome coverage, and known automated
-// check names — #124), keyed by workflow name. WorkflowVersion is registry-
-// assigned (per-name monotonic, WF-016); no registry is wired at the instance
-// level yet, so this pins version 1 for every workflow, matching run.go's
-// existing limitation until a follow-up introduces one.
-func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[string]*workflow.Machine, error) {
+// check names — #124), keyed by gaggle and workflow name. WorkflowVersion is
+// registry-assigned (per-name monotonic, WF-016); no registry is wired at the
+// instance level yet, so this pins version 1 for every workflow, matching
+// run.go's existing limitation until a follow-up introduces one.
+func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[localscheduler.WorkflowIdentity]*workflow.Machine, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	adapterRegistry, err := buildHarnessRegistry(nil)
 	if err != nil {
 		return nil, err
 	}
-	machines := make(map[string]*workflow.Machine, len(set.Workflows))
+	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
 		m, err := workflow.Compile(
@@ -907,7 +907,7 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 		if err != nil {
 			return nil, fmt.Errorf("compile workflow %q: %w", wf.Name, err)
 		}
-		machines[wf.Name] = m
+		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
 	}
 	return machines, nil
 }
@@ -915,19 +915,19 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 // repoRefsByWorkflow resolves each workflow's RepoRef via its Gaggle's
 // declared project (apiv1.GaggleSpec.Project) — a workflow only names its
 // gaggle, not a repo directly.
-func repoRefsByWorkflow(set *instance.ConfigSet) (map[string]apiv1.RepoRef, error) {
+func repoRefsByWorkflow(set *instance.ConfigSet) (map[localscheduler.WorkflowIdentity]apiv1.RepoRef, error) {
 	gagglesByName := make(map[string]apiv1.Gaggle, len(set.Gaggles))
 	for _, g := range set.Gaggles {
 		gagglesByName[g.Name] = g
 	}
-	refs := make(map[string]apiv1.RepoRef, len(set.Workflows))
+	refs := make(map[localscheduler.WorkflowIdentity]apiv1.RepoRef, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
 		g, ok := gagglesByName[wf.Spec.Gaggle]
 		if !ok {
 			return nil, fmt.Errorf("workflow %q references unknown gaggle %q", wf.Name, wf.Spec.Gaggle)
 		}
-		refs[wf.Name] = g.Spec.Project
+		refs[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = g.Spec.Project
 	}
 	return refs, nil
 }
