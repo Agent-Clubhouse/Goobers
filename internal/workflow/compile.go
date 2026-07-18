@@ -12,16 +12,10 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 )
 
-// knownHarnesses is the set of agent harnesses the compiler admits. v0 ships the
-// Copilot CLI adapter only; other harnesses are additional adapters behind the
-// same contract (ARCHITECTURE.md §5), added here as they land.
-var knownHarnesses = map[apiv1.Harness]bool{
-	apiv1.HarnessCopilot: true,
-}
-
 type options struct {
-	goobers     map[string]apiv1.GooberSpec
-	knownChecks map[string]bool
+	goobers        map[string]apiv1.GooberSpec
+	knownChecks    map[string]bool
+	knownHarnesses map[string]bool
 }
 
 // Option customizes compilation.
@@ -29,11 +23,11 @@ type Option func(*options)
 
 // WithGoobers supplies the goober definitions a workflow's agentic stages and
 // reviewer gates reference, keyed by goober name. Passing it enables capability
-// admission (a stage may only use capabilities granted to its goober) and
-// unknown-harness rejection (ARCHITECTURE.md §5). Without it, compilation
-// validates only the workflow-intrinsic state machine — which is all the runner
-// needs at run time, since capability/harness admission happens at config-
-// validation time.
+// admission (a stage may only use capabilities granted to its goober).
+// WithKnownHarnesses additionally enables unknown-harness rejection
+// (ARCHITECTURE.md §5). Without goober definitions, compilation validates only
+// the workflow-intrinsic state machine — which is all the runner needs at run
+// time, since capability/harness admission happens at config-validation time.
 func WithGoobers(goobers map[string]apiv1.GooberSpec) Option {
 	return func(o *options) { o.goobers = goobers }
 }
@@ -50,6 +44,14 @@ func WithKnownChecks(names []string) Option {
 	return func(o *options) { o.knownChecks = toSet(names) }
 }
 
+// WithKnownHarnesses supplies the names registered in the production harness
+// Registry. When WithGoobers is used, a referenced goober's harness must be in
+// this set; callers should pass Registry.Names() so runtime lookup and compile
+// admission use the same source of truth.
+func WithKnownHarnesses(names []string) Option {
+	return func(o *options) { o.knownHarnesses = toSet(names) }
+}
+
 // Compile validates a Definition and returns the compiled Machine. It is pure
 // (no I/O, no wall clock, no Temporal) and deterministic: the same definition
 // always yields the same machine and the same content digest.
@@ -61,8 +63,9 @@ func WithKnownChecks(names []string) Option {
 // WithGoobers is supplied — a goober granting or a stage declaring a
 // capability outside the canonical registry (internal/capability, issue #74),
 // stages using capabilities their goober does not grant, and goobers on an
-// unknown harness. Errors are aggregated so one compile reports every
-// problem, each message actionable on its own.
+// unknown harness when WithKnownHarnesses is also supplied. Errors are
+// aggregated so one compile reports every problem, each message actionable on
+// its own.
 func Compile(def Definition, opts ...Option) (*Machine, error) {
 	o := &options{}
 	for _, opt := range opts {
@@ -83,7 +86,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	problems = append(problems, evaluatorSupportProblems(def)...)
 	problems = append(problems, gateOutcomeProblems(def, o.knownChecks)...)
 	problems = append(problems, triggerFieldProblems(def)...)
-	problems = append(problems, admissionProblems(def, o.goobers)...)
+	problems = append(problems, admissionProblems(def, o.goobers, o.knownHarnesses)...)
 	problems = append(problems, gateVocabProblems(def)...)
 	problems = append(problems, workspaceProblems(def)...)
 
@@ -245,7 +248,7 @@ func reachabilityProblems(m *Machine) []string {
 // admissionProblems reports capability and harness violations. It needs the
 // referenced goober definitions; with none supplied it is a no-op (the runner
 // path, where admission already happened at config-validation time).
-func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec) []string {
+func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool) []string {
 	if goobers == nil {
 		return nil
 	}
@@ -276,7 +279,7 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec) []st
 		if h == "" {
 			h = apiv1.HarnessCopilot // schema default
 		}
-		if !knownHarnesses[h] {
+		if knownHarnesses != nil && !knownHarnesses[string(h)] {
 			problems = append(problems, fmt.Sprintf("%s goober %q uses unknown harness %q", ctx, gooberName, h))
 		}
 	}

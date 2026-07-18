@@ -36,6 +36,27 @@ func TestRegistryRejectsDuplicateName(t *testing.T) {
 	}
 }
 
+func TestRegistryRegisterAsPreservesAdapterIdentity(t *testing.T) {
+	reg := NewRegistry()
+	adapter := &FakeAdapter{AdapterName: "diagnostic-name"}
+	if err := reg.RegisterAs("config-name", adapter); err != nil {
+		t.Fatalf("RegisterAs: %v", err)
+	}
+	got, err := reg.Get("config-name")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != adapter {
+		t.Fatalf("Get returned %T %p, want original adapter %p", got, got, adapter)
+	}
+	if got.Name() != "diagnostic-name" {
+		t.Fatalf("adapter Name = %q, want diagnostic-name", got.Name())
+	}
+	if names := reg.Names(); len(names) != 1 || names[0] != "config-name" {
+		t.Fatalf("Names = %v, want [config-name]", names)
+	}
+}
+
 // thirdAdapter simulates adding a brand-new harness (e.g. "claude-code") to
 // prove GBO-051's swappability claim: a new Adapter implementation, wired
 // through the same Registry + Executor, with zero changes to either type.

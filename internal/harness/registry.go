@@ -1,6 +1,9 @@
 package harness
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // Registry maps a harness name (a Goober's `spec.harness`, e.g. "copilot" or
 // "fake") to its Adapter. It is the concrete proof of GBO-051's swappability
@@ -22,9 +25,17 @@ func (r *Registry) Register(adapter Adapter) error {
 	if adapter == nil {
 		return fmt.Errorf("harness: cannot register a nil adapter")
 	}
-	name := adapter.Name()
+	return r.RegisterAs(adapter.Name(), adapter)
+}
+
+// RegisterAs adds adapter under the goober configuration name. The key may
+// differ from Adapter.Name(), which remains the harness's diagnostic identity.
+func (r *Registry) RegisterAs(name string, adapter Adapter) error {
+	if adapter == nil {
+		return fmt.Errorf("harness: cannot register a nil adapter")
+	}
 	if name == "" {
-		return fmt.Errorf("harness: adapter has an empty Name()")
+		return fmt.Errorf("harness: cannot register an empty name")
 	}
 	if _, dup := r.adapters[name]; dup {
 		return fmt.Errorf("harness: adapter %q already registered", name)
@@ -55,5 +66,6 @@ func (r *Registry) Names() []string {
 	for name := range r.adapters {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
