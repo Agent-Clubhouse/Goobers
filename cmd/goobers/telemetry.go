@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -60,9 +63,11 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	jsonOutput := fs.Bool("json", false, "emit telemetry statistics as JSON")
 	workflow := fs.String("workflow", "", "filter to one workflow name")
 	gaggle := fs.String("gaggle", "", "filter to one gaggle")
+	sinceValue := fs.String("since", "", "include runs started at or after this RFC3339 timestamp")
+	untilValue := fs.String("until", "", "include runs started at or before this RFC3339 timestamp")
 	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--rebuild] [path]\n\n"+
+		pf(stderr, "Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]\n\n"+
 			"Success rate and duration aggregates per workflow and per stage,\n"+
 			"across every run (default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
 	}
@@ -71,6 +76,11 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
+		return 2
+	}
+	since, until, err := parseTelemetryWindow(*sinceValue, *untilValue)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	root := "."
@@ -85,20 +95,24 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	defer func() { _ = db.Close() }()
+	queries, err := readservice.NewTelemetry(db)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 
-	result, err := db.Stats(rollup.StatsRequest{Workflow: *workflow, Gaggle: *gaggle})
+	result, err := queries.TelemetryStats(context.Background(), readservice.TelemetryStatsRequest{
+		Workflow: *workflow,
+		Gaggle:   *gaggle,
+		Since:    since,
+		Until:    until,
+	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 
 	if *jsonOutput {
-		if result.Runs == nil {
-			result.Runs = []rollup.RunStats{}
-		}
-		if result.Stages == nil {
-			result.Stages = []rollup.StageStats{}
-		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
 			pf(stderr, "error: encode telemetry stats: %v\n", err)
 			return 2
@@ -113,18 +127,20 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	pf(stdout, "%-24s  %6s  %9s  %6s  %6s  %8s  %8s  %8s  %8s\n",
 		"WORKFLOW", "TOTAL", "COMPLETED", "FAILED", "OTHER", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
 	for _, r := range result.Runs {
-		pf(stdout, "%-24s  %6d  %9d  %6d  %6d  %7.1f%%  %8.0f  %8d  %8d\n",
+		pf(stdout, "%-24s  %6d  %9d  %6d  %6d  %8s  %8s  %8s  %8s\n",
 			r.Workflow, r.TotalRuns, r.CompletedRuns, r.FailedRuns, r.OtherRuns,
-			r.SuccessRate*100, r.AvgDurationMs, r.MinDurationMs, r.MaxDurationMs)
+			formatTelemetryRate(r.SuccessRate), formatTelemetryFloat(r.AvgDurationMs),
+			formatTelemetryInt(r.MinDurationMs), formatTelemetryInt(r.MaxDurationMs))
 	}
 
 	pln(stdout, "\nSTAGE STATS")
 	pf(stdout, "%-16s  %9s  %9s  %6s  %8s  %8s  %8s  %8s\n",
 		"STAGE", "ATTEMPTS", "SUCCEEDED", "FAILED", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
 	for _, s := range result.Stages {
-		pf(stdout, "%-16s  %9d  %9d  %6d  %7.1f%%  %8.0f  %8d  %8d\n",
+		pf(stdout, "%-16s  %9d  %9d  %6d  %8s  %8s  %8s  %8s\n",
 			s.Stage, s.TotalAttempts, s.SucceededAttempts, s.FailedAttempts,
-			s.SuccessRate*100, s.AvgDurationMs, s.MinDurationMs, s.MaxDurationMs)
+			formatTelemetryRate(s.SuccessRate), formatTelemetryFloat(s.AvgDurationMs),
+			formatTelemetryInt(s.MinDurationMs), formatTelemetryInt(s.MaxDurationMs))
 	}
 	return 0
 }
@@ -137,9 +153,11 @@ func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
 	gaggle := fs.String("gaggle", "", "filter to one gaggle")
 	class := fs.String("class", "", "filter to one error class")
 	limit := fs.Int("limit", 50, "max errors to show (newest first)")
+	sinceValue := fs.String("since", "", "include errors at or after this RFC3339 timestamp")
+	untilValue := fs.String("until", "", "include errors at or before this RFC3339 timestamp")
 	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers telemetry errors [--json] [--workflow=name] [--gaggle=name] [--class=name] [--limit=N] [--rebuild] [path]\n\n"+
+		pf(stderr, "Usage: goobers telemetry errors [--json] [--workflow=name] [--gaggle=name] [--class=name] [--since=RFC3339] [--until=RFC3339] [--limit=N] [--rebuild] [path]\n\n"+
 			"Recent errors across every run, newest first, with run/stage refs\n"+
 			"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
 	}
@@ -148,6 +166,11 @@ func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
+		return 2
+	}
+	since, until, err := parseTelemetryWindow(*sinceValue, *untilValue)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	root := "."
@@ -162,28 +185,37 @@ func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	defer func() { _ = db.Close() }()
+	queries, err := readservice.NewTelemetry(db)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 
-	errs, err := db.Errors(rollup.ErrorsRequest{Workflow: *workflow, Gaggle: *gaggle, ErrorClass: *class, Limit: *limit})
+	result, err := queries.TelemetryErrors(context.Background(), readservice.TelemetryErrorsRequest{
+		Workflow:   *workflow,
+		Gaggle:     *gaggle,
+		ErrorClass: *class,
+		Since:      since,
+		Until:      until,
+		Limit:      *limit,
+	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	if *jsonOutput {
-		if errs == nil {
-			errs = []rollup.ErrorEvent{}
-		}
-		if err := json.NewEncoder(stdout).Encode(errs); err != nil {
+		if err := json.NewEncoder(stdout).Encode(result.Items); err != nil {
 			pf(stderr, "error: encode telemetry errors: %v\n", err)
 			return 2
 		}
 		return 0
 	}
-	if len(errs) == 0 {
+	if len(result.Items) == 0 {
 		pln(stdout, "no errors found")
 		return 0
 	}
 	pf(stdout, "%-34s  %-20s  %-12s  %-24s  %-7s  %s\n", "RUN ID", "WORKFLOW", "STAGE", "CODE", "CLASS", "OCCURRED")
-	for _, e := range errs {
+	for _, e := range result.Items {
 		pf(stdout, "%-34s  %-20s  %-12s  %-24s  %-7s  %s\n",
 			e.RunID, e.Workflow, e.Stage, e.Code, e.ErrorClass, e.OccurredAt.Format(time.RFC3339))
 		if e.Message != "" {
@@ -191,4 +223,50 @@ func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
+}
+
+func parseTelemetryWindow(sinceValue, untilValue string) (time.Time, time.Time, error) {
+	parse := func(name, value string) (time.Time, error) {
+		if value == "" {
+			return time.Time{}, nil
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("--%s must be an RFC3339 timestamp", name)
+		}
+		return parsed, nil
+	}
+	since, err := parse("since", sinceValue)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	until, err := parse("until", untilValue)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if !since.IsZero() && !until.IsZero() && since.After(until) {
+		return time.Time{}, time.Time{}, fmt.Errorf("--since must not be after --until")
+	}
+	return since, until, nil
+}
+
+func formatTelemetryRate(value *float64) string {
+	if value == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%.1f%%", *value*100)
+}
+
+func formatTelemetryFloat(value *float64) string {
+	if value == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%.0f", *value)
+}
+
+func formatTelemetryInt(value *int64) string {
+	if value == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%d", *value)
 }

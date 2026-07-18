@@ -16,6 +16,10 @@ const (
 	Prefix = "/api/v1"
 	// HealthPath is the daemon health endpoint.
 	HealthPath = Prefix + "/health"
+	// TelemetryStatsPath exposes workflow and stage telemetry aggregates.
+	TelemetryStatsPath = Prefix + "/telemetry/stats"
+	// TelemetryErrorsPath exposes paginated recent telemetry errors.
+	TelemetryErrorsPath = Prefix + "/telemetry/errors"
 )
 
 // Authorizer preserves the authorization boundary for every API route. Tier 1
@@ -110,6 +114,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		}
 		writeJSON(w, http.StatusOK, health)
 	})
+	registerTelemetryRoutes(router, reader, errorLog)
 	return router.Handler(), nil
 }
 
