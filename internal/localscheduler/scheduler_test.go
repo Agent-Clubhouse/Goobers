@@ -90,6 +90,7 @@ func TestTickDispatchesDueWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	var sawFired, sawStarted bool
 	for _, ev := range events {
 		if ev.Type == journal.EventTriggerFired && ev.Workflow == "implement" {
@@ -102,6 +103,110 @@ func TestTickDispatchesDueWorkflow(t *testing.T) {
 	if !sawFired || !sawStarted {
 		t.Fatalf("expected trigger.fired + run.started journaled: %+v", events)
 	}
+}
+
+func TestReloadUsesNewStarterWithoutChangingInflightRun(t *testing.T) {
+	oldBlock := make(chan struct{})
+	oldStarter := &fakeStarter{block: oldBlock, result: StartResult{Phase: journal.PhaseCompleted}}
+	newStarter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, dir := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
+		Starter:   oldStarter,
+	}})
+
+	if _, err := sched.Trigger(context.Background(), "implement", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	waitForCount(t, func() int { return oldStarter.count() }, 1)
+
+	oldDigest := journal.Digest([]byte("old config"))
+	newDigest := journal.Digest([]byte("new config"))
+	if err := sched.Reload([]WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
+		Starter:   newStarter,
+	}}, nil, time.Now(), oldDigest, newDigest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sched.Trigger(context.Background(), "implement", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	waitForCount(t, func() int { return newStarter.count() }, 1)
+	if oldStarter.count() != 1 {
+		t.Fatalf("old starter calls = %d, want the single in-flight run only", oldStarter.count())
+	}
+
+	close(oldBlock)
+	sched.Wait()
+
+	events, err := journal.ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type != journal.EventConfigReloaded {
+			continue
+		}
+		if event.Runner["oldDigest"] != oldDigest || event.Runner["newDigest"] != newDigest {
+			t.Fatalf("config.reloaded digests = %+v, want %s -> %s", event.Runner, oldDigest, newDigest)
+		}
+		return
+	}
+	t.Fatal("config.reloaded event not journaled")
+}
+
+type blockingBacklogCounter struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingBacklogCounter) EligibleCount(context.Context) (int, error) {
+	close(c.started)
+	<-c.release
+	return 0, nil
+}
+
+func TestReloadWaitsForActiveTick(t *testing.T) {
+	counter := &blockingBacklogCounter{started: make(chan struct{}), release: make(chan struct{})}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:       "old",
+		BacklogCounter: counter,
+		Starter:        &fakeStarter{},
+	}})
+
+	tickDone := make(chan struct{})
+	go func() {
+		sched.Tick(context.Background(), time.Now())
+		close(tickDone)
+	}()
+	<-counter.started
+
+	reloadDone := make(chan error, 1)
+	go func() {
+		reloadDone <- sched.Reload([]WorkflowEntry{{
+			Workflow: "new",
+			Starter:  &fakeStarter{},
+		}}, nil, time.Now(), journal.Digest([]byte("old")), journal.Digest([]byte("new")))
+	}()
+	select {
+	case err := <-reloadDone:
+		t.Fatalf("Reload returned during an active tick: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(counter.release)
+	<-tickDone
+	if err := <-reloadDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sched.Trigger(context.Background(), "new", time.Now()); err != nil {
+		t.Fatalf("new workflow unavailable after reload: %v", err)
+	}
+	if _, err := sched.Trigger(context.Background(), "old", time.Now()); err == nil {
+		t.Fatal("old workflow remained available after reload")
+	}
+	sched.Wait()
 }
 
 // waitForRunFinished polls the instance log at dir until a run.finished event

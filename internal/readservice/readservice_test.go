@@ -44,7 +44,9 @@ func TestLocalHealthProjectsIdentityReadinessAndFreshness(t *testing.T) {
 	}
 	observedAt := eventTime.Add(time.Minute).UTC()
 	service.now = func() time.Time { return observedAt }
-	service.definitionsLoadedAt = eventTime.UTC()
+	if err := service.ReloadDefinitions(testDefinitions(), eventTime); err != nil {
+		t.Fatal(err)
+	}
 
 	got, err := service.Health(context.Background())
 	if err != nil {
@@ -64,6 +66,45 @@ func TestLocalHealthProjectsIdentityReadinessAndFreshness(t *testing.T) {
 	}
 	if got.Freshness.JournalUpdatedAt == nil || !got.Freshness.JournalUpdatedAt.Equal(eventTime) {
 		t.Fatalf("journalUpdatedAt = %v, want %s", got.Freshness.JournalUpdatedAt, eventTime.UTC())
+	}
+	if !got.Freshness.DefinitionsLoadedAt.Equal(eventTime) {
+		t.Fatalf("definitionsLoadedAt = %s, want %s", got.Freshness.DefinitionsLoadedAt, eventTime.UTC())
+	}
+}
+
+func TestLocalHealthUsesReloadedDefinitionsSnapshot(t *testing.T) {
+	l := instance.NewLayout(t.TempDir())
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocal(LocalSources{Layout: l, Definitions: testDefinitions()}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loadedAt := time.Date(2026, 7, 18, 12, 0, 0, 0, time.FixedZone("test", -7*60*60))
+	reloaded := testDefinitions()
+	reloaded.Manifest.Spec.Instance = apiv1.InstanceRef{
+		Name:        "reloaded-clubhouse",
+		Environment: apiv1.EnvironmentStaging,
+	}
+	if err := service.ReloadDefinitions(reloaded, loadedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := service.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Instance.Name != "reloaded-clubhouse" || got.Instance.Environment != apiv1.EnvironmentStaging {
+		t.Fatalf("instance = %+v", got.Instance)
+	}
+	if !got.Freshness.DefinitionsLoadedAt.Equal(loadedAt) {
+		t.Fatalf("definitionsLoadedAt = %s, want %s", got.Freshness.DefinitionsLoadedAt, loadedAt.UTC())
 	}
 }
 

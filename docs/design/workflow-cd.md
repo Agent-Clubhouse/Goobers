@@ -7,10 +7,11 @@
 
 ## 1. Why this exists
 
-Today the local daemon loads its workflow/gaggle config **once at startup from a local directory** and
-never looks again. The PO wants to formalize a **continuous-delivery model** where a *separate*
-workflow-config repo is the source of truth, mirroring how ArgoCD tracks a git repo — but for the local
-(tier-1/2) daemon, not just the tier-3 operator. This is brain-dump **item 12**.
+Today the local daemon watches workflow/gaggle config in its provisioned local
+directory. The PO wants to formalize a **continuous-delivery model** where a
+*separate* workflow-config repo is the source of truth, mirroring how ArgoCD
+tracks a git repo — but for the local (tier-1/2) daemon, not just the tier-3
+operator. This is brain-dump **item 12**.
 
 Core properties the PO specified:
 
@@ -26,10 +27,10 @@ Core properties the PO specified:
 
 ## 2. Current state (grounded)
 
-- **Local daemon (tiers 1–2): no CD, no watch, no reconcile-from-git.** `goobers up` calls
-  `LoadConfig` + `LoadConfigDir` **once** (`cmd/goobers/up.go:78-87`) over `<instance-root>/config`
-  (`internal/instance/instance.go`). No fsnotify, no polling of config, no hot-reload (grep confirms).
-  Invalid config **aborts startup** (`ErrInvalidConfig`); there is **no last-known-good** retention.
+- **Local daemon (tiers 1–2): direct-directory watch, but no CD or reconcile-from-git.**
+  `goobers up` polls `<instance-root>/config`, validates changed definitions, and
+  atomically reloads them between scheduler ticks. Invalid edits retain the
+  last-known-good definitions and are recorded in the instance journal.
 - The only "reconcile" in the local path is `localscheduler.Reconcile` reconciling in-memory run counters
   against on-disk run journals at startup — **not** config-vs-git.
 - **Tier-3 GitOps exists but is operator/ArgoCD-based:** `cmd/config-sync` renders a config repo into CRs
@@ -40,7 +41,8 @@ Core properties the PO specified:
   *specific* ref — but `cmd/goobers/runnerwiring.go:62` **collapses all capabilities onto `Repos[0]`'s
   single token** (self-described "known simplification"). There is **no capability string** for
   config-repo access in `internal/capability`.
-- `#336 goobers apply`, `#337 CD daemon mode`, `#154 hot-reload` are all unbuilt.
+- `#336 goobers apply` and `#337 CD daemon mode` are unbuilt; `#154` supplies
+  direct-directory hot reload but not Git reconciliation.
 
 ## 3. Design
 
