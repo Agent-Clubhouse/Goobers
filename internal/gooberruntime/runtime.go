@@ -25,6 +25,21 @@ type OutputScrubber interface {
 	Scrub([]byte) []byte
 }
 
+type scrubbedError struct {
+	message string
+	matches func(error) bool
+}
+
+func (e *scrubbedError) Error() string {
+	return e.message
+}
+
+// Is preserves classification without exposing the secret-bearing original
+// through errors.Unwrap.
+func (e *scrubbedError) Is(target error) bool {
+	return e.matches(target)
+}
+
 // Runtime implements internal/invoke.Goober for agentic tasks and reviewer
 // gates.
 type Runtime struct {
@@ -120,7 +135,16 @@ func (r *Runtime) scrubError(err error) error {
 	if err == nil || r.outputScrubber == nil {
 		return err
 	}
-	return errors.New(r.scrubString(err.Error()))
+	message := r.scrubString(err.Error())
+	if message == err.Error() {
+		return err
+	}
+	return &scrubbedError{
+		message: message,
+		matches: func(target error) bool {
+			return errors.Is(err, target)
+		},
+	}
 }
 
 func (r *Runtime) scrubString(value string) string {

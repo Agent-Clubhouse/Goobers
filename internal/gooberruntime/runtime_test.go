@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -168,13 +169,24 @@ func TestRuntimeScrubsRegisteredCredentialFromErrorsAndVerdicts(t *testing.T) {
 	registry, scrubber := journal.DefaultScrubber()
 	registry.Register([]byte(secret))
 
+	classifiedErr := errors.New("classified provider failure")
 	errorRuntime := New(Options{
 		Preparer:       &fakePreparer{},
-		Harness:        &fakeHarness{err: errors.New("provider failed with " + secret)},
+		Harness:        &fakeHarness{err: fmt.Errorf("provider failed with %s: %w", secret, classifiedErr)},
 		OutputScrubber: scrubber,
 	})
-	if _, err := errorRuntime.Invoke(context.Background(), validInvocation()); err == nil || strings.Contains(err.Error(), secret) {
+	_, err := errorRuntime.Invoke(context.Background(), validInvocation())
+	if err == nil || strings.Contains(err.Error(), secret) {
 		t.Fatalf("runtime error was not scrubbed: %v", err)
+	}
+	if !errors.Is(err, classifiedErr) {
+		t.Fatalf("runtime error lost classification: %v", err)
+	}
+	if unwrapped := errors.Unwrap(err); unwrapped != nil {
+		t.Fatalf("runtime error exposed secret-bearing original: %v", unwrapped)
+	}
+	if formatted := fmt.Sprintf("%#v", err); strings.Contains(formatted, secret) {
+		t.Fatalf("runtime error formatting exposed registered credential: %s", formatted)
 	}
 
 	reviewRuntime := New(Options{
@@ -195,6 +207,51 @@ func TestRuntimeScrubsRegisteredCredentialFromErrorsAndVerdicts(t *testing.T) {
 	}
 	if strings.Contains(verdict.Rationale, secret) || strings.Contains(verdict.Findings[0].Message, secret) {
 		t.Fatalf("registered credential leaked from runtime verdict: %+v", verdict)
+	}
+}
+
+func TestRuntimePreservesUnchangedErrorIdentityWithScrubber(t *testing.T) {
+	_, scrubber := journal.DefaultScrubber()
+	preparerErr := errors.New("preparer failed")
+	harnessErr := errors.New("harness failed")
+
+	tests := []struct {
+		name string
+		rt   *Runtime
+		want error
+	}{
+		{
+			name: "unavailable harness",
+			rt:   New(Options{Preparer: &fakePreparer{}, OutputScrubber: scrubber}),
+			want: ErrHarnessUnavailable,
+		},
+		{
+			name: "preparer error",
+			rt: New(Options{
+				Preparer:       &fakePreparer{err: preparerErr},
+				Harness:        &fakeHarness{},
+				OutputScrubber: scrubber,
+			}),
+			want: preparerErr,
+		},
+		{
+			name: "harness error",
+			rt: New(Options{
+				Preparer:       &fakePreparer{},
+				Harness:        &fakeHarness{err: harnessErr},
+				OutputScrubber: scrubber,
+			}),
+			want: harnessErr,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.rt.Invoke(context.Background(), validInvocation())
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("Invoke error = %v, want identity %v", err, tt.want)
+			}
+		})
 	}
 }
 
