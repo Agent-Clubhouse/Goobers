@@ -306,7 +306,12 @@ func TestUpResumesInterruptedRun(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(800*time.Millisecond, cancel) // give the resumed task time to actually dispatch and finish
+	// Wait for the resumed run to actually reach a terminal phase rather than
+	// guessing at a wall-clock window: a fixed sleep is long enough on an idle
+	// machine but not on a loaded CI runner under -race, which made this test
+	// flake with phase still "running".
+	stop := pollUntilRunTerminal(t, filepath.Join(l.RunsDir(), runID), cancel)
+	defer stop()
 
 	var stdout, stderr bytes.Buffer
 	done := make(chan int, 1)
@@ -467,5 +472,48 @@ func TestRunRejectedOverMaxConcurrentRuns(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "run conditions rejected") {
 		t.Fatalf("stderr = %q, want it to mention run conditions rejecting the trigger", stderr)
+	}
+}
+
+// pollUntilRunTerminal watches runDir until the run reaches a terminal phase
+// and then calls cancel, so a resume test stops the daemon on the run's actual
+// progress instead of a fixed wall-clock guess. It gives up after 30s so a
+// genuinely stuck run still fails the test (via the caller's phase assertion)
+// rather than hanging. The returned func stops the watcher.
+func pollUntilRunTerminal(t *testing.T, runDir string, cancel context.CancelFunc) func() {
+	t.Helper()
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		defer cancel()
+		deadline := time.After(30 * time.Second)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-deadline:
+				return
+			case <-ticker.C:
+				rd, err := journal.OpenRead(runDir)
+				if err != nil {
+					continue
+				}
+				st, err := rd.State()
+				if err != nil {
+					continue
+				}
+				switch st.Phase {
+				case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
 	}
 }
