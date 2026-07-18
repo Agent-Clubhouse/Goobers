@@ -56,8 +56,6 @@ spec:
         # Same open-PR eligibility backstop as implementation.yaml's
         # query-backlog (issue #414).
         - github:pr:write
-      expectedOutputs:
-        - claimed-items
       next: curate
     # Agentic curation: dedupe, prune stale, tag, and split oversized items.
     # Issues-only — the curator goober is granted no repo capability (issue #25

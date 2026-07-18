@@ -81,8 +81,6 @@ spec:
         timeout: "30s"
         maxOutputBytes: "65536"
       capabilities: []
-      expectedOutputs:
-        - todoCount
       next: todos-found
     - name: report-todos
       type: deterministic

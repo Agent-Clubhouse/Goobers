@@ -193,7 +193,12 @@ func (r *Report) CLIReport() *Report {
 }
 
 func (r *Report) add(sev Severity, file, kind, name, format string, args ...interface{}) {
+	r.addCoded("", sev, file, kind, name, format, args...)
+}
+
+func (r *Report) addCoded(code WarningCode, sev Severity, file, kind, name, format string, args ...interface{}) {
 	r.Issues = append(r.Issues, Issue{
+		Code:     code,
 		Severity: sev,
 		File:     file,
 		Kind:     kind,
@@ -623,7 +628,11 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 	// checks the inline field-by-field pass above deliberately does not duplicate.
 	def := wf.Definition{Name: w.Name, Version: 1, Spec: w.Spec}
 	for _, msg := range wf.CheckWarnings(def) {
+<<<<<<< HEAD
 		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
+=======
+		r.addCoded(WarningCompatibility, Warning, "", "Workflow", w.Name, "%s", msg)
+>>>>>>> 97647b8 (fix(validate): warn on inert workflow fields)
 	}
 	for _, msg := range wf.CheckReachability(def) {
 		r.add(Error, "", "Workflow", w.Name, "%s", msg)

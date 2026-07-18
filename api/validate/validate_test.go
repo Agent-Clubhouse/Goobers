@@ -75,6 +75,9 @@ func TestExampleConfigPasses(t *testing.T) {
 	if report.HasErrors() {
 		t.Fatalf("expected /config-examples to be valid, got issues:\n%s", joinIssues(report))
 	}
+	if warnings := report.Warnings(); len(warnings) != 0 {
+		t.Fatalf("expected /config-examples to be warning-clean, got %+v", warnings)
+	}
 	if report.Objects < 4 {
 		t.Errorf("expected at least 4 objects, got %d", report.Objects)
 	}
@@ -164,6 +167,38 @@ func TestCompilerChecksSurfaceInValidate(t *testing.T) {
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("expected an error mentioning %q; full report:\n%s", want, all)
+		}
+	}
+}
+
+func TestAcceptedButInertWorkflowFieldsEmitCodedWarnings(t *testing.T) {
+	v := newV(t)
+	report, err := v.ValidateDir("testdata/config-warnings")
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if report.HasErrors() {
+		t.Fatalf("warnings must not fail validation:\n%s", joinIssues(report))
+	}
+
+	warnings := report.Warnings()
+	if len(warnings) != 2 {
+		t.Fatalf("Warnings() = %+v, want expectedOutputs and deterministicRun.image warnings", warnings)
+	}
+	all := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		if warning.Code != WarningCompatibility {
+			t.Errorf("warning code = %q, want %q", warning.Code, WarningCompatibility)
+		}
+		all = append(all, warning.Explanation)
+	}
+	explanations := strings.Join(all, "\n")
+	for _, want := range []string{
+		"expectedOutputs is declared but not enforced at V0",
+		"deterministicRun.image is not honored by the local runner",
+	} {
+		if !strings.Contains(explanations, want) {
+			t.Errorf("warnings = %+v, want explanation containing %q", warnings, want)
 		}
 	}
 }

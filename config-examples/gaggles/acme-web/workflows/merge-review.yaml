@@ -25,10 +25,6 @@ spec:
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write
-      expectedOutputs:
-        - number
-        - head
-        - base
       next: gather-sibling-context
 
     - name: gather-sibling-context
@@ -42,11 +38,6 @@ spec:
         resultFile: "sibling-context.json"
       capabilities:
         - github:pr:write
-      expectedOutputs:
-        - selectedNumber
-        - selectedHeadSha
-        - selectedBaseSha
-        - reviewDigest
       next: review
 
     - name: apply-verdict
@@ -62,11 +53,6 @@ spec:
       capabilities:
         - github:pr:write
         - github:pr:review
-      expectedOutputs:
-        - selectedNumber
-        - selectedHeadSha
-        - selectedBaseSha
-        - decision
       next: published-verdict
 
     # #833: deterministic cross-PR winner-election. Crowns one lander of a
@@ -88,12 +74,6 @@ spec:
         electionPolicy: "fifo"
       capabilities:
         - github:pr:write
-      expectedOutputs:
-        - elected
-        - selectedNumber
-        - selectedHeadSha
-        - selectedBaseSha
-        - reviewDigest
       next: elect-gate
 
     - name: merge-pr
@@ -116,9 +96,6 @@ spec:
         # it, remove this three-stage chain and route review:pass directly to
         # apply-verdict; merge-pr never acquires merge authority implicitly.
         - github:pr:merge
-      expectedOutputs:
-        - selectedNumber
-        - merged
       next: merge-gate
 
     - name: queue-watch
@@ -147,9 +124,6 @@ spec:
       capabilities:
         - github:pr:merge
         - github:issues:write
-      expectedOutputs:
-        - selectedNumber
-        - queueOutcome
       next: queue-gate
 
     - name: post-merge

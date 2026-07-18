@@ -43,6 +43,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
+	if warnings := CheckWarnings(def); len(warnings) != 0 {
+		t.Fatalf("backlog-curation warnings = %v, want warning-clean reference config", warnings)
+	}
 
 	// Structural shape: query-backlog (deterministic) -> curate (agentic) ->
 	// release-claim (deterministic, terminal). No gates — curation is
@@ -87,9 +90,8 @@ func TestBacklogCurationCompiles(t *testing.T) {
 		t.Errorf("curator capabilities = %v, want exactly [github:issues:write]", curator.Spec.Capabilities)
 	}
 
-	// Bumped for #302 after removing the structured curation-summary output
-	// expectation from the curate stage.
-	const wantDigest = "sha256:3bddb18b564a7a5c59f5d08af8751d1530c39f2301f092ef83fb4a6507fc8613"
+	// Bumped when intentional workflow contract changes alter the machine.
+	const wantDigest = "sha256:be68b201091477dc3ee4e2d9da583d4066e680ea0bf3fe8b597aac0d6f95ccc8"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

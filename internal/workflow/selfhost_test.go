@@ -48,6 +48,11 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 			if _, err := Compile(def, WithGoobers(goobers)); err != nil {
 				t.Fatalf("compile %s against selfhost's real goobers: %v", file, err)
 			}
+			if file == "backlog-curation.yaml" {
+				if warnings := CheckWarnings(def); len(warnings) != 0 {
+					t.Fatalf("%s warnings = %v, want warning-clean reference config", file, warnings)
+				}
+			}
 		})
 	}
 }

@@ -1,0 +1,18 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: inert-fields
+spec:
+  gaggle: web
+  triggers:
+    - type: manual
+  start: build
+  tasks:
+    - name: build
+      type: deterministic
+      goal: Build the project.
+      run:
+        command: ["true"]
+        image: alpine:3.20
+      expectedOutputs:
+        - artifact

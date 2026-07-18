@@ -57,10 +57,6 @@ spec:
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write
-      expectedOutputs:
-        - number
-        - head
-        - base
       next: gather-sibling-context
 
     # The cross-PR value stage (design doc §3): "this is where the cross-PR
@@ -79,23 +75,6 @@ spec:
         resultFile: "sibling-context.json"
       capabilities:
         - github:pr:write
-      expectedOutputs:
-        # selectedNumber is threaded to apply-verdict's inputsFrom (#413) — its
-        # omission here left the declared postcondition out of sync with the
-        # stage's actual result JSON. (The load-bearing fix is emitting it as a
-        # string so buildStageEnv actually threads it; see prsiblingcontext.go.)
-        - selectedNumber
-        - selectedHeadSha
-        - selectedBaseSha
-        # reviewDigest (#523) is threaded to apply-verdict's inputsFrom too —
-        # apply-verdict stamps it onto a genuinely fresh verdict before
-        # posting, so the NEXT gather-sibling-context can find and reuse it.
-        # cachedVerdictJson (present only on a cache hit) is deliberately NOT
-        # listed here: the runner reads it straight from this stage's
-        # Outputs (evaluateGate), never through a declared inputsFrom edge,
-        # and it is conditional — listing a key that legitimately isn't
-        # always present would misstate this stage's actual postcondition.
-        - reviewDigest
       next: review
 
     - name: apply-verdict
@@ -119,11 +98,6 @@ spec:
       capabilities:
         - github:pr:write
         - github:pr:review
-      expectedOutputs:
-        - selectedNumber
-        - selectedHeadSha
-        - selectedBaseSha
-        - decision
       next: published-verdict
 
     - name: elect-lander
@@ -146,16 +120,6 @@ spec:
         electionPolicy: "fifo"
       capabilities:
         - github:pr:write
-      expectedOutputs:
-        # elected drives elect-gate; the rest are pass-through so BOTH successor
-        # stages resolve their single-hop inputsFrom on this branch — merge-pr
-        # on the elected path, apply-verdict on the parked path (the same
-        # convergence pattern post-merge already uses behind merge-gate/queue-gate).
-        - elected
-        - selectedNumber
-        - selectedHeadSha
-        - selectedBaseSha
-        - reviewDigest
       next: elect-gate
 
     - name: merge-pr
@@ -181,15 +145,6 @@ spec:
         # review:pass to apply-verdict; merge-pr refuses to run without the
         # grant rather than silently acquiring merge authority.
         - github:pr:merge
-      expectedOutputs:
-        # landOutcome ("merged"/"enqueued", issue #758) is deliberately NOT
-        # listed here — like gather-sibling-context's cachedVerdictJson, it
-        # is conditional (absent on the refusal path), and listing a key
-        # that legitimately isn't always present would misstate this
-        # stage's actual postcondition. merge-gate's "land-outcome" check
-        # reads it straight from this stage's own Outputs regardless.
-        - selectedNumber
-        - merged
       next: merge-gate
 
     - name: queue-watch
@@ -224,14 +179,6 @@ spec:
         # (mergequeuepoll.go's mergeQueuePollEvicted).
         - github:pr:merge
         - github:issues:write
-      expectedOutputs:
-        - selectedNumber
-        # queueOutcome ("merged"/"evicted"/"timeout") is always present —
-        # this stage always determines one of the three before returning
-        # (mirroring ci-poll's own "always succeeds at determining an
-        # outcome" philosophy) — unlike merge-pr's conditional landOutcome,
-        # there is no refusal path here to omit it for.
-        - queueOutcome
       next: queue-gate
 
     - name: post-merge
