@@ -57,7 +57,12 @@ func TestShellStageTelemetryRoundTripsToRollup(t *testing.T) {
 'malformed' > "$GOOBERS_TELEMETRY_DIR/metrics.jsonl"
 printf '%s\n' \
 '{"ts":"` + eventTime + `","name":"scan.complete","attrs":{"authorization":"` + canary + `"}}' \
-> "$GOOBERS_TELEMETRY_DIR/events.jsonl"`
+> "$GOOBERS_TELEMETRY_DIR/events.jsonl"
+i=0
+while [ "$i" -lt 130 ]; do
+  printf '{"ts":"` + eventTime + `","name":"batch.%03d","attrs":{"index":%d}}\n' "$i" "$i"
+  i=$((i + 1))
+done >> "$GOOBERS_TELEMETRY_DIR/events.jsonl"`
 	machine, err := workflow.Compile(workflow.Definition{
 		Name:    "stage-telemetry",
 		Version: 1,
@@ -125,8 +130,8 @@ printf '%s\n' \
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 4 {
-		t.Fatalf("span events = %d, want 4: %#v", len(events), events)
+	if len(events) != 134 {
+		t.Fatalf("span events = %d, want 134", len(events))
 	}
 	if events[0].Name != "exitCode" || events[0].Attributes["goobers.metric.value"] != "99" {
 		t.Fatalf("exitCode metric event = %#v", events[0])
@@ -137,9 +142,15 @@ printf '%s\n' \
 	if events[2].Name != "scan.complete" || events[2].Attributes["authorization"] != journal.Redacted {
 		t.Fatalf("custom event = %#v", events[2])
 	}
-	if events[3].Name != "goobers.telemetry.warning" ||
-		events[3].Attributes["goobers.telemetry.file"] != "metrics.jsonl" ||
-		events[3].Attributes["goobers.telemetry.dropped_lines"] != "1" {
-		t.Fatalf("malformed-line warning = %#v", events[3])
+	if events[3].Name != "batch.000" || events[3].Attributes["index"] != "0" {
+		t.Fatalf("first batch event = %#v", events[3])
+	}
+	if events[132].Name != "batch.129" || events[132].Attributes["index"] != "129" {
+		t.Fatalf("last batch event = %#v", events[132])
+	}
+	if events[133].Name != "goobers.telemetry.warning" ||
+		events[133].Attributes["goobers.telemetry.file"] != "metrics.jsonl" ||
+		events[133].Attributes["goobers.telemetry.dropped_lines"] != "1" {
+		t.Fatalf("malformed-line warning = %#v", events[133])
 	}
 }

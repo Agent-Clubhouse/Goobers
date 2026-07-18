@@ -76,9 +76,14 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, err
 	}
 
+	spanLimits := sdktrace.NewSpanLimits()
+	// Emission files are bounded at ingest; the SDK must not evict valid
+	// emissions or earlier harness events from the completed stage span.
+	spanLimits.EventCountLimit = -1
 	options := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
 		sdktrace.WithIDGenerator(runIDGenerator{}),
+		sdktrace.WithRawSpanLimits(spanLimits),
 	}
 	if cfg.Batch {
 		options = append(options, sdktrace.WithBatcher(exporter))
