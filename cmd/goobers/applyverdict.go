@@ -310,7 +310,21 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		Decision:   reviewDecision,
 		Body:       comment,
 	}); err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("submit native review for PR #%d", selectedNumber), err, resultFile)
+		// #870: on a single-GitHub-identity instance the review token is also
+		// the PR's author, and GitHub categorically refuses a self-authored
+		// native Review — which is every daemon-authored PR here. The native
+		// Review is not a merge prerequisite: merge-pr reads the verdict from
+		// the comment/label handoff posted below (the verdict-json payload
+		// gather-pr-context recovers), never from a platform Review, and GitHub
+		// would not honor a self-approval toward branch protection anyway. So
+		// degrade to the comment/label handoff instead of failing the stage.
+		// If a distinct review identity is ever provisioned
+		// (GOOBERS_CRED_GITHUB_PR_REVIEW backed by a second token), this call
+		// simply succeeds and no degradation happens.
+		if !providers.IsSelfReviewError(err) {
+			return failProviderStage(stderr, fmt.Sprintf("submit native review for PR #%d", selectedNumber), err, resultFile)
+		}
+		pf(stdout, "native review skipped for PR #%d: reviewing identity authored the PR (GitHub refuses self-review) — publishing verdict via comment/label handoff instead\n", selectedNumber)
 	}
 
 	if posted.Decision == apiv1.VerdictPass {

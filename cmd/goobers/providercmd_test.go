@@ -40,6 +40,10 @@ type fakePR struct {
 	files      []fakePRFile
 	reviews    []fakeReview
 	state      string
+	// selfReview, when set, makes POST /pulls/{n}/reviews return GitHub's
+	// categorical self-review 422 — the #870 single-identity case where the
+	// reviewing token is also the PR author.
+	selfReview bool
 }
 
 type fakeReview struct {
@@ -379,6 +383,16 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 			Event    string `json:"event"`
 		}
 		decodeFakeJSON(r, &body)
+		if pr.selfReview {
+			// GitHub's exact categorical refusal (#870): author == reviewer.
+			verb := "approve"
+			if body.Event == "REQUEST_CHANGES" {
+				verb = "request changes on"
+			}
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = fmt.Fprintf(w, `{"message":"Unprocessable Entity","errors":["Review Can not %s your own pull request"],"documentation_url":"https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request"}`, verb)
+			return
+		}
 		state := ""
 		switch body.Event {
 		case "APPROVE":
@@ -528,6 +542,15 @@ func (s *fakeGitHubServer) setPRBody(number int, body string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prs[number].body = body
+}
+
+// setPRSelfReview marks a fixture PR so POST .../reviews returns GitHub's
+// self-review 422 — the #870 single-identity case (reviewing token authored
+// the PR).
+func (s *fakeGitHubServer) setPRSelfReview(number int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].selfReview = true
 }
 
 // closeIssue flips a fixture issue's state to closed — for #552's
