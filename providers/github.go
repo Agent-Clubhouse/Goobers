@@ -626,6 +626,9 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 	if req.ExpectedHeadSHA != "" {
 		body["sha"] = req.ExpectedHeadSHA
 	}
+	if req.MergeMethod != "" {
+		body["merge_method"] = string(req.MergeMethod)
+	}
 	var out githubMergeResult
 	if err := p.do(ctx, http.MethodPut, endpoint, body, &out); err != nil {
 		return EnqueuePullRequestResult{}, err

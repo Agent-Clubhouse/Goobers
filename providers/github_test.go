@@ -1129,6 +1129,7 @@ func TestGitHubProviderEnqueuePullRequestReportsNotYetMerged(t *testing.T) {
 	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL }, WithMutationRecorder(rec))
 	result, err := provider.EnqueuePullRequest(context.Background(), EnqueuePullRequestRequest{
 		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9", ExpectedHeadSHA: "deadbeef",
+		MergeMethod: MergeMethodSquash,
 	})
 	if err != nil {
 		t.Fatalf("EnqueuePullRequest returned error: %v", err)
@@ -1138,6 +1139,13 @@ func TestGitHubProviderEnqueuePullRequestReportsNotYetMerged(t *testing.T) {
 	}
 	if gotBody["sha"] != "deadbeef" {
 		t.Fatalf("request body sha = %v, want deadbeef (the SHA-pin guard, same as MergePullRequest)", gotBody["sha"])
+	}
+	// #877: the enqueue endpoint IS the merge endpoint, so merge_method has
+	// to be on the wire here exactly as MergePullRequest sends it —
+	// otherwise GitHub defaults to a merge commit and a squash-only ruleset
+	// 405s the landing.
+	if gotBody["merge_method"] != string(MergeMethodSquash) {
+		t.Fatalf("request body merge_method = %v, want squash", gotBody["merge_method"])
 	}
 	ref, ok := rec.last()
 	if !ok {

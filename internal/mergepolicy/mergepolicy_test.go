@@ -103,7 +103,7 @@ func TestDirectLanderPropagatesError(t *testing.T) {
 
 func TestEnqueueLanderReportsEnqueuedWhenNotMerged(t *testing.T) {
 	fake := &fakeRepoProvider{enqueueResult: providers.EnqueuePullRequestResult{Merged: false}}
-	req := Request{Repository: providers.RepositoryRef{Owner: "acme", Name: "widgets"}, PullID: "7", ExpectedHeadSHA: "cafef00d"}
+	req := Request{Repository: providers.RepositoryRef{Owner: "acme", Name: "widgets"}, PullID: "7", ExpectedHeadSHA: "cafef00d", MergeMethod: providers.MergeMethodSquash}
 	result, err := enqueueLander{}.Land(context.Background(), fake, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -120,6 +120,13 @@ func TestEnqueueLanderReportsEnqueuedWhenNotMerged(t *testing.T) {
 	got := fake.enqueueCalls[0]
 	if got.Repository != req.Repository || got.PullID != req.PullID || got.ExpectedHeadSHA != req.ExpectedHeadSHA {
 		t.Fatalf("EnqueuePullRequest request = %+v, want fields threaded through from %+v", got, req)
+	}
+	// #877: MergeMethod is threaded through here for the same reason
+	// directLander threads it — the enqueue path is the merge endpoint, so
+	// dropping it lets GitHub apply its own default and a restricted-method
+	// ruleset rejects the landing outright.
+	if got.MergeMethod != req.MergeMethod {
+		t.Fatalf("EnqueuePullRequest MergeMethod = %q, want %q threaded through", got.MergeMethod, req.MergeMethod)
 	}
 }
 

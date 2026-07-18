@@ -372,6 +372,32 @@ func TestMergePRMergeQueuePolicyEnqueuesInsteadOfMerging(t *testing.T) {
 	}
 }
 
+// TestMergePRMergeQueuePolicySendsMergeMethod is issue #877's regression,
+// shaped exactly like the live failure: on a repo whose detected policy is
+// merge-queue AND whose ruleset restricts merge methods to squash, the
+// enqueue request must carry merge_method — the enqueue path goes through
+// the same PUT .../merge endpoint, so dropping it made GitHub apply its own
+// default ("merge") and reject every landing with a 405 ("Merge commits are
+// not allowed on this repository"). The direct-merge path never had this
+// bug; only the queue path did, which is every repo gated behind #759.
+func TestMergePRMergeQueuePolicySendsMergeMethod(t *testing.T) {
+	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456", mergeQueueRules: true}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, _ := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	// No mergeMethod input above on purpose: squash is mergepr.go's default,
+	// which is exactly the configuration the live 405 fired under.
+	if st.mergeBody["merge_method"] != string(providers.MergeMethodSquash) {
+		t.Fatalf("enqueue request body = %+v, want merge_method=squash (omitting it makes GitHub default to a merge commit, which a squash-only ruleset 405s)", st.mergeBody)
+	}
+}
+
 // TestMergePRMergeQueuePolicyReportsMergedWhenQueueLandsImmediately pins the
 // edge case documented on providers.EnqueuePullRequestResult: an enqueue
 // call whose queue happens to be empty can complete the merge immediately

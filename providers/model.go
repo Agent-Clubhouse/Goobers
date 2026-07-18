@@ -421,6 +421,14 @@ type EnqueuePullRequestRequest struct {
 	// MergePullRequestRequest passes to GitHub's merge API — enqueueing
 	// uses that same API (see GitHubProvider.EnqueuePullRequest's doc).
 	ExpectedHeadSHA string `json:"expectedHeadSha,omitempty"`
+	// MergeMethod is the same merge-method selection
+	// MergePullRequestRequest carries, and for the same reason: because
+	// enqueueing goes through GitHub's merge API, omitting it makes GitHub
+	// fall back to its own default ("merge"), which a repo whose ruleset
+	// restricts merge methods (e.g. squash-only) rejects outright with a
+	// 405 (issue #877). Empty means "let the provider decide", matching
+	// MergePullRequestRequest.
+	MergeMethod MergeMethod `json:"mergeMethod,omitempty"`
 }
 
 // EnqueuePullRequestResult reports the outcome of an enqueue attempt.
