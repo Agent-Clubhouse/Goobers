@@ -150,6 +150,43 @@ func TestDeclaredCapabilityWithoutGrantHasNoCredential(t *testing.T) {
 	}
 }
 
+func TestGooberInjectorCannotResolveAnotherGoobersGrant(t *testing.T) {
+	t.Setenv("GOOBER_A_TOKEN", "goober-a-token")
+	t.Setenv("GOOBER_B_TOKEN", "goober-b-token")
+	resolver, err := NewResolver([]TokenRef{
+		{Name: "goober-a", Env: "GOOBER_A_TOKEN"},
+		{Name: "goober-b", Env: "GOOBER_B_TOKEN"},
+	})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	grants := []Grant{
+		{Goober: "goober-a", Capability: "agent:model", Ref: "goober-a"},
+		{Goober: "goober-b", Capability: "agent:model", Ref: "goober-b"},
+		{Goober: "goober-b", Capability: "repo:push", Ref: "goober-b"},
+	}
+	reg := &spyRegistrar{}
+	inj, err := NewGooberInjector(resolver, "goober-a", grants, reg)
+	if err != nil {
+		t.Fatalf("NewGooberInjector: %v", err)
+	}
+
+	set, err := inj.Materialize(context.Background(), []string{"agent:model", "repo:push"})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	tok, err := set.Token(context.Background(), "agent:model")
+	if err != nil || tok != "goober-a-token" {
+		t.Fatalf("Token(agent:model) = %q, %v; want goober-a-token, nil", tok, err)
+	}
+	if _, err := set.Token(context.Background(), "repo:push"); !errors.Is(err, ErrNoCredentialForCapability) {
+		t.Fatalf("Token(repo:push) error = %v, want ErrNoCredentialForCapability", err)
+	}
+	if len(reg.registered) != 1 || string(reg.registered[0]) != "goober-a-token" {
+		t.Fatalf("registered secrets = %q, want only goober-a-token", reg.registered)
+	}
+}
+
 func TestScopedTokenSourceMatchesTokenSourceShape(t *testing.T) {
 	inj, _ := newTestInjector(t, []Grant{{Capability: "github:issues:write", Ref: "github-issues"}})
 	set, err := inj.Materialize(context.Background(), []string{"github:issues:write"})
@@ -176,7 +213,18 @@ func TestScopedTokenSourceMatchesTokenSourceShape(t *testing.T) {
 // appear anywhere in bytes a journal/telemetry writer would scrub before
 // persisting — the acceptance criterion for issue #14.
 func TestCanaryTokenNeverSurvivesScrub(t *testing.T) {
-	inj, reg := newTestInjector(t, []Grant{{Capability: "github:issues:write", Ref: "github-issues"}})
+	t.Setenv("GH_ISSUES_TOKEN", "ghp_canaryTokenValue123456789")
+	resolver, err := NewResolver([]TokenRef{{Name: "github-issues", Env: "GH_ISSUES_TOKEN"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	reg := &spyRegistrar{}
+	inj, err := NewGooberInjector(resolver, "curator", []Grant{
+		{Goober: "curator", Capability: "github:issues:write", Ref: "github-issues"},
+	}, reg)
+	if err != nil {
+		t.Fatalf("NewGooberInjector: %v", err)
+	}
 	set, err := inj.Materialize(context.Background(), []string{"github:issues:write"})
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
@@ -210,6 +258,9 @@ func TestInjectorRejectsNilDependencies(t *testing.T) {
 	if _, err := NewInjector(resolver, nil, nil); err == nil {
 		t.Fatal("NewInjector: want error for nil registrar")
 	}
+	if _, err := NewGooberInjector(resolver, "", nil, &spyRegistrar{}); err == nil {
+		t.Fatal("NewGooberInjector: want error for empty goober identity")
+	}
 }
 
 func TestNewInjectorRejectsMalformedGrants(t *testing.T) {
@@ -223,5 +274,11 @@ func TestNewInjectorRejectsMalformedGrants(t *testing.T) {
 		if _, err := NewInjector(resolver, grants, &spyRegistrar{}); err == nil {
 			t.Fatalf("NewInjector(%+v): want error, got nil", grants)
 		}
+	}
+	if _, err := NewGooberInjector(resolver, "a", []Grant{
+		{Goober: "a", Capability: "x", Ref: "a"},
+		{Goober: "b", Capability: "x", Ref: "b"},
+	}, &spyRegistrar{}); err != nil {
+		t.Fatalf("NewGooberInjector should allow the same capability for distinct goobers: %v", err)
 	}
 }

@@ -138,6 +138,46 @@ func TestCopilotAdapterInjectsModelAndGitHubTokensTogether(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterRejectsAnotherGoobersGrant(t *testing.T) {
+	t.Setenv("OTHER_GOOBER_TOKEN", "other-goober-token")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{
+		{Name: "other-goober", Env: "OTHER_GOOBER_TOKEN"},
+	})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	injector, err := credentials.NewGooberInjector(resolver, "goober-a", []credentials.Grant{
+		{Goober: "goober-b", Capability: "agent:model", Ref: "other-goober"},
+	}, noopRegistrar{})
+	if err != nil {
+		t.Fatalf("NewGooberInjector: %v", err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model"})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{}
+	adapter := &CopilotAdapter{
+		Command:         []string{"copilot"},
+		Runner:          runner,
+		EnvCapabilities: map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+	}
+	_, err = adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	})
+	if !errors.Is(err, credentials.ErrNoCredentialForCapability) {
+		t.Fatalf("Run error = %v, want ErrNoCredentialForCapability", err)
+	}
+	if len(runner.lastReq.Command) != 0 {
+		t.Fatalf("Copilot subprocess ran with another goober's grant: %+v", runner.lastReq)
+	}
+}
+
 func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 	workspace := t.TempDir()
 	runner := &fakeProcessRunner{

@@ -27,28 +27,43 @@ type SecretRegistrar interface {
 	Register(secret []byte)
 }
 
-// Grant maps a capability name (e.g. "github:issues:write", as declared on a
-// Goober/Task — docs/requirements/goober.md GBO-052) to the token ref that
-// backs it.
+// Grant maps one goober's capability name (e.g. "github:issues:write", as
+// declared on a Goober/Task — docs/requirements/goober.md GBO-052) to the token
+// ref that backs it. Goober is empty only for runner-owned deterministic work.
 type Grant struct {
+	Goober     string
 	Capability string
 	Ref        string
 }
 
-// Injector resolves credentials scoped to a stage's declared capabilities.
-// It never materializes a credential for a capability that was not declared,
-// and it registers every value it resolves with its SecretRegistrar before
-// handing it back — nothing bypasses the scrubber.
+// Injector resolves credentials scoped to one identity and a stage's declared
+// capabilities. It never materializes another goober's grant or a credential
+// for a capability that was not declared, and it registers every value it
+// resolves with its SecretRegistrar before handing it back — nothing bypasses
+// the scrubber.
 type Injector struct {
 	resolver  Resolver
 	grants    map[string]string // capability -> ref name
 	registrar SecretRegistrar
 }
 
-// NewInjector builds an Injector over resolver, scoped by grants, registering
-// every resolved secret with registrar. registrar must not be nil; pass a
-// no-op implementation in tests that don't care about redaction.
+// NewInjector builds an Injector for runner-owned deterministic work. Only
+// grants with an empty Goober are in scope.
 func NewInjector(resolver Resolver, grants []Grant, registrar SecretRegistrar) (*Injector, error) {
+	return newInjector(resolver, "", grants, registrar)
+}
+
+// NewGooberInjector builds an Injector scoped to exactly goober. Grants for
+// every other goober, and runner-owned grants with an empty Goober, remain
+// unreachable even if the stage declares the same capability.
+func NewGooberInjector(resolver Resolver, goober string, grants []Grant, registrar SecretRegistrar) (*Injector, error) {
+	if goober == "" {
+		return nil, errors.New("credentials: goober injector requires a non-empty goober identity")
+	}
+	return newInjector(resolver, goober, grants, registrar)
+}
+
+func newInjector(resolver Resolver, goober string, grants []Grant, registrar SecretRegistrar) (*Injector, error) {
 	if resolver == nil {
 		return nil, errors.New("credentials: injector requires a non-nil resolver")
 	}
@@ -56,12 +71,22 @@ func NewInjector(resolver Resolver, grants []Grant, registrar SecretRegistrar) (
 		return nil, errors.New("credentials: injector requires a non-nil registrar")
 	}
 	byCap := make(map[string]string, len(grants))
+	type grantKey struct {
+		goober     string
+		capability string
+	}
+	seen := make(map[grantKey]bool, len(grants))
 	for _, g := range grants {
 		if g.Capability == "" || g.Ref == "" {
 			return nil, fmt.Errorf("credentials: grant with empty capability or ref: %+v", g)
 		}
-		if _, dup := byCap[g.Capability]; dup {
-			return nil, fmt.Errorf("credentials: duplicate grant for capability %q", g.Capability)
+		key := grantKey{goober: g.Goober, capability: g.Capability}
+		if seen[key] {
+			return nil, fmt.Errorf("credentials: duplicate grant for goober %q capability %q", g.Goober, g.Capability)
+		}
+		seen[key] = true
+		if g.Goober != goober {
+			continue
 		}
 		byCap[g.Capability] = g.Ref
 	}
