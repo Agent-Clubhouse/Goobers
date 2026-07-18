@@ -311,7 +311,20 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	cmd := exec.Command(name, run.Command[1:]...)
 	cmd.Dir = env.Workspace
 	cmd.Env = stageEnv
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Setsid, not Setpgid: put the stage in a NEW SESSION with no controlling
+	// terminal. When `goobers up` runs in the foreground of an interactive
+	// terminal, a bare Setpgid child is a *background process group on that
+	// controlling terminal* — and a stage that touches terminal state (e.g. the
+	// nested-daemon tests under `make ci` doing a tcsetattr/tcsetpgrp ioctl, or
+	// opening /dev/tty) then takes SIGTTOU/SIGTTIN and the kernel STOPS the whole
+	// group. It sits frozen (state T, zero CPU) until the stage timeout SIGKILLs
+	// it — the real "local-ci hang": not fsync, not disk, not a deadlock (a
+	// stopped group ignores SIGQUIT, which is why no goroutine dump ever
+	// appeared). Setsid detaches the controlling terminal entirely, matching how
+	// CI (and the copilot-spawned stages that never hung) run, so job control
+	// can't touch it. The session leader's pgid == pid, so the timeout path's
+	// process-group kill (syscall.Kill(-pid, ...)) is unchanged.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := configureCommandNetwork(cmd, run.Network); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
