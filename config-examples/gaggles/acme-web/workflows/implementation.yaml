@@ -95,6 +95,13 @@ spec:
       goal: Run the project's local CI-equivalent (build, lint, tests) in the worktree.
       run:
         command: ["make", "ci"]
+      inputs:
+        # Serialize this stage instance-wide (executor flock, InputSerializeGroup):
+        # concurrent `make ci` (`go test -race ./...`) runs on one machine
+        # saturate disk I/O enough to stall a test's t.TempDir teardown past the
+        # stage timeout, hanging the gate. Every other stage stays parallel, so
+        # raising maxConcurrentRuns for throughput stays safe.
+        serializeGroup: "local-ci"
       retry:
         maxAttempts: 1
       next: local-gate
