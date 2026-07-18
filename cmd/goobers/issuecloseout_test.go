@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -212,8 +215,126 @@ func TestIssueCloseOutInReviewStatusDoesNotClose(t *testing.T) {
 	}
 }
 
+func TestIssueCloseOutNeedsHumanParksAndNextTickClaimsDifferentIssue(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Rejected implementation", "goobers:approved", "goobers:ready", "goobers:claimed")
+	server.addIssue(8, "Next ready issue", "goobers:approved", "goobers:ready")
+
+	const runID = "run-rejected"
+	const reason = "The implementation weakens the fail-closed contract."
+	schedulerDir := filepath.Join(root, "scheduler")
+	if err := (func() error {
+		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+		if err != nil {
+			return err
+		}
+		_, _, err = ledger.Claim("7", runID, "implementation", time.Hour)
+		return err
+	})(); err != nil {
+		t.Fatalf("seed claim ledger: %v", err)
+	}
+
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	verdictData, err := json.Marshal(apiv1.Verdict{
+		Decision: apiv1.VerdictFail,
+		Summary:  reason,
+	})
+	if err != nil {
+		t.Fatalf("marshal verdict: %v", err)
+	}
+	verdictRef, err := run.RecordArtifact("verdict/review-1.json", verdictData)
+	if err != nil {
+		t.Fatalf("record verdict: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: string(apiv1.VerdictFail),
+		Target: "park-needs-human", Name: "verdict/review-1.json", Ref: &verdictRef,
+	}); err != nil {
+		t.Fatalf("record review event: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "issue-close-out", root)
+	if code != 0 {
+		t.Fatalf("issue-close-out: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "parked 7 needs-human") {
+		t.Fatalf("stdout = %q, want parked issue message", stdout)
+	}
+
+	server.mu.Lock()
+	parked := server.issues[7]
+	labels := append([]string{}, parked.labels...)
+	comments := append([]string{}, parked.comments...)
+	server.mu.Unlock()
+	if !hasAnyLabel(labels, []string{providers.LabelNeedsHuman}) {
+		t.Fatalf("issue labels = %v, want %s", labels, providers.LabelNeedsHuman)
+	}
+	if hasAnyLabel(labels, []string{providers.LabelReady, providers.LabelClaimed}) {
+		t.Fatalf("issue labels = %v, want ready and claimed removed", labels)
+	}
+	if len(comments) != 1 || !strings.Contains(comments[0], reason) {
+		t.Fatalf("issue comments = %v, want exactly one containing reviewer reason %q", comments, reason)
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if _, ok := ledger.ForRun(runID); ok {
+		t.Fatal("expected rejected run's claim to be released")
+	}
+
+	t.Setenv("GOOBERS_RUN_ID", "run-next")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", "goobers/status:in-review")
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("next backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "claimed 8") {
+		t.Fatalf("next backlog-query stdout = %q, want issue 8 claimed instead of parked FIFO head", stdout)
+	}
+}
+
+func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
+	runsDir := t.TempDir()
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-local-ci", Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: "fail", Target: "park-needs-human",
+		Runner: map[string]any{"escalated": true, "repassAttempt": 4},
+	}); err != nil {
+		t.Fatalf("record local gate event: %v", err)
+	}
+
+	reason, err := issueCloseOutGateReason(runsDir, "run-local-ci", "")
+	if err != nil {
+		t.Fatalf("issueCloseOutGateReason: %v", err)
+	}
+	if !strings.Contains(reason, "local-gate") || !strings.Contains(reason, "attempt 4") {
+		t.Fatalf("reason = %q, want local-gate and repass attempt", reason)
+	}
+}
+
 // TestIssueCloseOutRejectsUnknownStatus proves a typo'd status input fails
-// closed rather than silently defaulting to done or in-review.
+// closed rather than silently defaulting to done, in-review, or needs-human.
 func TestIssueCloseOutRejectsUnknownStatus(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")

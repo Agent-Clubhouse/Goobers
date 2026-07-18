@@ -25,6 +25,9 @@ const (
 	TargetAbort = "@abort"
 	// TargetEscalate ends the run as needing escalation/human intervention.
 	TargetEscalate = "@escalate"
+	// BranchEscalate optionally routes a gate's runner-forced escalation
+	// through a workflow state before termination.
+	BranchEscalate = "escalate"
 )
 
 // IsReservedTarget reports whether a transition target is a reserved terminal

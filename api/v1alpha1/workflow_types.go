@@ -268,7 +268,9 @@ type Gate struct {
 	// +optional
 	Human *HumanGate `json:"human,omitempty" yaml:"human,omitempty"`
 	// Branches maps an outcome to the next state name. Supports more than two
-	// branches (GT-004). The "pass" key is the success branch.
+	// branches (GT-004). The "pass" key is the success branch. The optional
+	// "escalate" control branch routes runner-forced repass escalation through
+	// a workflow state; when absent, escalation terminates at @escalate.
 	// +kubebuilder:validation:Required
 	Branches map[string]string `json:"branches" yaml:"branches"`
 }

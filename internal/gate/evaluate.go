@@ -27,8 +27,8 @@ type Result struct {
 	// outcome for an interrupted-budget escalation.
 	Outcome string
 	// Target is the branch actually taken — the gate's configured branch for
-	// Outcome, unless the repass budget was exhausted, in which case it is
-	// workflow.TargetEscalate.
+	// Outcome, unless the repass budget was exhausted, in which case it is the
+	// optional escalate control branch or workflow.TargetEscalate.
 	Target string
 	// Attempt is this gate's consecutive non-pass evaluation count,
 	// including this one when Outcome != OutcomePass (0 when Outcome ==
@@ -174,7 +174,7 @@ type Evaluator struct {
 // to mean "no digest supplied, still call the reviewer" — emptiness is an
 // explicit signal, never inferred from an empty digest.
 func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, diffDigest string, emptyDiff bool) (Result, error) {
-	if r, recovered, err := e.RecoverInterrupted(g.Name, diffDigest); err != nil || recovered {
+	if r, recovered, err := e.RecoverInterrupted(g, diffDigest); err != nil || recovered {
 		return r, err
 	}
 
@@ -275,7 +275,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	attempt, exceeded := e.trackRepass(g.Name, outcome)
 	escalated := exceeded || duplicateDiff
 	if escalated {
-		target = wf.TargetEscalate
+		target = escalationTarget(g)
 	}
 
 	r := Result{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated, DuplicateDiff: duplicateDiff, CacheHit: cacheHit, Verdict: verdict}
@@ -291,25 +291,32 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 // when restored dangling gate.started markers have already exhausted a gate's
 // repass budget. Callers must check this before preparing a side-effecting
 // evaluator; Evaluate also checks it as a fail-safe for direct callers.
-func (e *Evaluator) RecoverInterrupted(gateName, diffDigest string) (Result, bool, error) {
-	attempt := e.Attempts[gateName]
+func (e *Evaluator) RecoverInterrupted(g apiv1.Gate, diffDigest string) (Result, bool, error) {
+	attempt := e.Attempts[g.Name]
 	if attempt <= e.maxRepasses() {
 		return Result{}, false, nil
 	}
 	r := Result{
-		Gate:        gateName,
+		Gate:        g.Name,
 		Outcome:     OutcomeFail,
-		Target:      wf.TargetEscalate,
+		Target:      escalationTarget(g),
 		Attempt:     attempt,
 		Escalated:   true,
 		Interrupted: true,
 	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
-		return Result{}, true, fmt.Errorf("gate %q: journal interrupted escalation: %w", gateName, err)
+		return Result{}, true, fmt.Errorf("gate %q: journal interrupted escalation: %w", g.Name, err)
 	}
 	r.VerdictArtifact = artifact
 	return r, true, nil
+}
+
+func escalationTarget(g apiv1.Gate) string {
+	if target, ok := wf.BranchTarget(g, wf.BranchEscalate); ok {
+		return target
+	}
+	return wf.TargetEscalate
 }
 
 // trackRepass updates gate g's consecutive non-pass counter: a "pass" outcome

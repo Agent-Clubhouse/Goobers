@@ -1642,7 +1642,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	ctx, span := r.startGateSpan(ctx, in, g, gooberName)
 	defer span.End()
 
-	if recovered, ok, recoveryErr := gateEval.RecoverInterrupted(g.Name, ""); recoveryErr != nil {
+	if recovered, ok, recoveryErr := gateEval.RecoverInterrupted(g, ""); recoveryErr != nil {
 		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, recoveryErr)
 		span.Fail(err)
 		return gate.Result{}, err, nil
