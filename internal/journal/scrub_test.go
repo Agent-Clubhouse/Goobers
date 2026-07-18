@@ -6,10 +6,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 const canary = "SUPER-SECRET-CANARY-9f8e7d6c5b4a3210"
+const basicAuthCredential = "YnVpbGQtYWdlbnQ6YWRvLXBhdC0wMTIzNDU2Nzg5"
 
 // escCanary contains characters JSON-escapes — a quote, a backslash, and the
 // HTML-escaped <, >, & — so once an event is marshaled the secret appears ONLY
@@ -209,17 +211,56 @@ func TestPatternNetCatchesUnregistered(t *testing.T) {
 }
 
 func TestPatternNetRedactsBasicAuth(t *testing.T) {
-	encoded := "YnVpbGQtYWdlbnQ6YWRvLXBhdC0wMTIzNDU2Nzg5"
 	scrub := NewPatternScrubber()
 
-	header := []byte("Authorization: Basic " + encoded)
-	if got, want := scrub.Scrub(header), []byte("Authorization: "+Redacted); !bytes.Equal(got, want) {
-		t.Fatalf("scrubbed Basic authorization header = %q, want %q", got, want)
+	for _, tc := range []struct {
+		header string
+		want   string
+	}{
+		{"Authorization: Basic " + basicAuthCredential, "Authorization: " + Redacted},
+		{"authorization: bAsIc " + basicAuthCredential, "authorization: " + Redacted},
+	} {
+		if got := string(scrub.Scrub([]byte(tc.header))); got != tc.want {
+			t.Fatalf("scrubbed Basic authorization header = %q, want %q", got, tc.want)
+		}
 	}
 
-	ordinary := []byte("artifact digest: " + encoded)
+	ordinary := []byte("artifact digest: " + basicAuthCredential)
 	if got := scrub.Scrub(ordinary); !bytes.Equal(got, ordinary) {
 		t.Fatalf("ordinary base64-looking text was redacted: %q", got)
+	}
+}
+
+func TestBasicAuthNeverLandsInRunJournal(t *testing.T) {
+	root := t.TempDir()
+	run, err := Create(root, testIdentity(), nil, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := run.Append(Event{
+		Type:  EventError,
+		Error: &ErrorDetail{Code: "provider_error", Message: "request failed with Authorization: Basic " + basicAuthCredential},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	dir := filepath.Join(root, testIdentity().RunID)
+	if hits := filesContaining(t, dir, []byte(basicAuthCredential)); len(hits) > 0 {
+		t.Fatalf("Basic credential leaked into run journal: %v", hits)
+	}
+	rd, err := OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if got := events[len(events)-1].Error.Message; !strings.Contains(got, Redacted) {
+		t.Fatalf("run journal error was not redacted: %q", got)
 	}
 }
 

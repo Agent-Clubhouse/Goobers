@@ -193,6 +193,7 @@ func TestJournalSpanExporterRedactsRegisteredSecret(t *testing.T) {
 func TestJournalSpanExporterRedactsSecrets(t *testing.T) {
 	dir := t.TempDir()
 	client, runID := newTestClient(t, dir)
+	const basicCredential = "YnVpbGQtYWdlbnQ6YWRvLXBhdC0wMTIzNDU2Nzg5"
 
 	// A realistic GitHub token shape: ghp_ + 36 chars (journal's canonical net,
 	// now shared by this package, matches the real 36+ length — #117).
@@ -210,8 +211,9 @@ func TestJournalSpanExporterRedactsSecrets(t *testing.T) {
 		t.Fatalf("StartTask: %v", err)
 	}
 	task.Event("provider.request", attribute.String("authorization", "Bearer "+canary))
-	task.Fail(fmt.Errorf("token leaked: %s", canary))
-	run.Fail(fmt.Errorf("child task failed carrying %s", canary))
+	task.Event("provider.basic_request", attribute.String("authorization", "Basic "+basicCredential))
+	task.Fail(fmt.Errorf("tokens leaked: %s; Basic %s", canary, basicCredential))
+	run.Fail(fmt.Errorf("child task failed carrying %s; Basic %s", canary, basicCredential))
 
 	// Read the raw file bytes, not just decoded records: the canary must never
 	// touch disk, in any field.
@@ -219,20 +221,33 @@ func TestJournalSpanExporterRedactsSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read spans file: %v", err)
 	}
-	if strings.Contains(string(raw), canary) {
-		t.Fatalf("canary secret found at rest in spans.jsonl:\n%s", raw)
+	for _, secret := range []string{canary, basicCredential} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("credential found at rest in spans.jsonl:\n%s", raw)
+		}
 	}
 	recs := readSpanRecords(t, dir, runID)
+	basicAuthRedacted := false
 	for _, r := range recs {
-		if strings.Contains(r.StatusMessage, canary) {
-			t.Fatalf("canary leaked into status message: %q", r.StatusMessage)
+		for _, secret := range []string{canary, basicCredential} {
+			if strings.Contains(r.StatusMessage, secret) {
+				t.Fatalf("credential leaked into status message: %q", r.StatusMessage)
+			}
 		}
 		for _, ev := range r.Events {
 			for k, v := range ev.Attributes {
-				if strings.Contains(v, canary) {
-					t.Fatalf("canary leaked into event attribute %q: %q", k, v)
+				for _, secret := range []string{canary, basicCredential} {
+					if strings.Contains(v, secret) {
+						t.Fatalf("credential leaked into event attribute %q: %q", k, v)
+					}
+				}
+				if ev.Name == "provider.basic_request" && k == "authorization" && v == RedactedPlaceholder {
+					basicAuthRedacted = true
 				}
 			}
 		}
+	}
+	if !basicAuthRedacted {
+		t.Fatal("Basic authorization span event was not redacted")
 	}
 }
