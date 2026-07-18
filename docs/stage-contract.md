@@ -71,6 +71,17 @@ The stage returns a `ResultEnvelope`:
   when `status == failure`**.
 - `summary`, `metrics` — human and telemetry detail.
 
+Every stage process also receives `GOOBERS_TELEMETRY_DIR`, a writable directory
+scoped to that stage attempt. A stage may append one JSON object per line to:
+
+- `metrics.jsonl`: `{"name":"items","value":42,"unit":"count","attrs":{"source":"scan"}}`
+- `events.jsonl`: `{"ts":"2026-07-18T18:00:00Z","name":"scan.complete","attrs":{"files":42}}`
+
+The runner ingests both files when the stage exits. Emitted metrics are merged
+into `ResultEnvelope.metrics` without replacing executor-computed values; metrics
+and events are attached to the stage span and flow through the journal rollup.
+Malformed lines are counted and dropped without changing the stage outcome.
+
 ## Artifact passing (the A → B hand-off)
 
 Non-scalar data moves **only** by pointer:

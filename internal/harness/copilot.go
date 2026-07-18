@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // defaultPromptFlag is the flag CopilotAdapter passes before the rendered
@@ -197,13 +198,20 @@ func baseEnv() []string {
 }
 
 // credentialEnv builds the subprocess environment: baseEnv() (PATH/HOME/
-// TMPDIR — never a secret store, never the full os.Environ()) plus exactly
-// the capability tokens this adapter is configured to inject and that were
-// actually declared for this invocation. A capability this adapter is
-// configured to inject but that fails to resolve is a hard stop — the
-// harness never runs half-credentialed.
+// TMPDIR — never a secret store, never the full os.Environ()), the stage
+// telemetry directory, and exactly the capability tokens this adapter is
+// configured to inject and that were actually declared for this invocation.
+// A configured capability that fails to resolve is a hard stop — the harness
+// never runs half-credentialed.
 func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]string, error) {
 	env := baseEnv()
+	telemetryDir := req.TelemetryDir
+	if telemetryDir == "" {
+		telemetryDir = telemetry.PrepareStageTelemetryDir(req.Workspace)
+	}
+	if telemetryDir != "" {
+		env = append(env, telemetry.StageTelemetryEnv+"="+telemetryDir)
+	}
 	for _, capability := range req.Envelope.Capabilities {
 		envVar, ok := c.EnvCapabilities[capability]
 		if !ok {

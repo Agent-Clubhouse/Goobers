@@ -128,7 +128,7 @@ func (e *JournalSpanExporter) toSpanRecord(s sdktrace.ReadOnlySpan) SpanRecord {
 		Schema:     SpanSchema,
 		TraceID:    sc.TraceID().String(),
 		SpanID:     sc.SpanID().String(),
-		Name:       s.Name(),
+		Name:       redactWith(e.scrubber, s.Name()),
 		StartTime:  s.StartTime(),
 		EndTime:    s.EndTime(),
 		Status:     statusString(s.Status().Code),
@@ -145,7 +145,7 @@ func (e *JournalSpanExporter) toSpanRecord(s sdktrace.ReadOnlySpan) SpanRecord {
 	}
 	for _, ev := range s.Events() {
 		rec.Events = append(rec.Events, SpanEventRecord{
-			Name:       ev.Name,
+			Name:       redactWith(e.scrubber, ev.Name),
 			Time:       ev.Time,
 			Attributes: e.stringifyAttrs(ev.Attributes),
 		})
@@ -170,7 +170,7 @@ func (e *JournalSpanExporter) stringifyAttrs(kvs []attribute.KeyValue) map[strin
 	}
 	out := make(map[string]string, len(kvs))
 	for _, kv := range kvs {
-		out[string(kv.Key)] = redactWith(e.scrubber, kv.Value.Emit())
+		out[redactWith(e.scrubber, string(kv.Key))] = redactWith(e.scrubber, kv.Value.Emit())
 	}
 	return out
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // fakeRecorder is an in-memory ArtifactRecorder for tests: no real journal
@@ -93,6 +94,28 @@ func TestShellExecutor_RunSuccess(t *testing.T) {
 	}
 	if got := string(rec.recorded["task-1/stdout.log"]); !strings.Contains(got, "hello") {
 		t.Fatalf("stdout artifact = %q, want it to contain %q", got, "hello")
+	}
+}
+
+func TestShellExecutor_ExposesWritableTelemetryDir(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `test -d "$GOOBERS_TELEMETRY_DIR" && printf '{"name":"items","value":1}\n' > "$GOOBERS_TELEMETRY_DIR/metrics.jsonl"`},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success: %+v", result.Status, result)
+	}
+	data, err := os.ReadFile(filepath.Join(telemetry.StageTelemetryDir(env.Workspace), "metrics.jsonl"))
+	if err != nil {
+		t.Fatalf("read emitted metric: %v", err)
+	}
+	if got := string(data); got != "{\"name\":\"items\",\"value\":1}\n" {
+		t.Fatalf("metrics.jsonl = %q", got)
 	}
 }
 

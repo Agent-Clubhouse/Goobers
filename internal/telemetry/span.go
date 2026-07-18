@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"errors"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -75,6 +76,13 @@ func (s Span) Fail(err error) {
 func (s Span) Event(name string, attrs ...attribute.KeyValue) {
 	if s.span != nil {
 		s.span.AddEvent(name, trace.WithAttributes(attrs...))
+	}
+}
+
+// EventAt records a named span event with the timestamp supplied by the stage.
+func (s Span) EventAt(at time.Time, name string, attrs ...attribute.KeyValue) {
+	if s.span != nil {
+		s.span.AddEvent(name, trace.WithTimestamp(at), trace.WithAttributes(attrs...))
 	}
 }
 
