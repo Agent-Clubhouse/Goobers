@@ -250,13 +250,9 @@ func requiredNativeSandbox(t *testing.T) Sandbox {
 }
 
 func liveCopilotEnv(temp string) []string {
-	env := []string{
+	return []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
 		"TMPDIR=" + temp,
 	}
-	if value, ok := os.LookupEnv("COPILOT_GITHUB_TOKEN"); ok {
-		env = append(env, "COPILOT_GITHUB_TOKEN="+value)
-	}
-	return env
 }

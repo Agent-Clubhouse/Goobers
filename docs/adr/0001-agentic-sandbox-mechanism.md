@@ -44,10 +44,12 @@ sandbox boundary.
 ## Evidence
 
 `TestNativeSandboxConfinement` runs a scripted child in a temporary worktree,
-proves an in-worktree write succeeds, and proves an out-of-worktree write is
-denied. On Linux, `TestNativeSandboxIsolatesHostProc` also starts a host helper
-and proves the sandbox cannot write through `/proc/<host-pid>/root`. CI runs
-these probes with bubblewrap on Linux and Seatbelt on macOS.
+proves an in-worktree write succeeds, and proves a direct out-of-worktree write
+is denied. On Linux, `TestNativeSandboxIsolatesHostProc` also starts a host
+helper and proves the sandbox cannot write through `/proc/<host-pid>/root`. CI
+runs these probes with bubblewrap on Linux and Seatbelt on macOS. Linux
+construction executes a bounded bubblewrap preflight so a present but unusable
+installation is reported as unavailable before stage dispatch.
 
 Copilot CLI 1.0.71 does not expose a session-state directory override and
 persists resumable events beneath `~/.copilot/session-state`; `--log-dir` does
@@ -70,6 +72,10 @@ allowed only that worktree and the CLI's session-state directory to be written.
   shared libraries, certificates, and local Copilot authentication remain
   readable. S2 should narrow read access where platform testing proves it does
   not break authentication.
+- Host IPC endpoints outside private `/dev` and `/proc` may still delegate side
+  effects. S2 must either mask those endpoints or document narrowly reviewed
+  exceptions needed for local authentication; this spike does not claim a
+  production-complete boundary.
 - Copilot's session-state directory is a narrow out-of-worktree write exception
   until the CLI supports relocating it. S3 must provision a per-run state root
   when a supported override becomes available; until then, resumable session

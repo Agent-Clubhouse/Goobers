@@ -10,7 +10,7 @@
 
 ## 1. Verdict
 
-**Half-built, and gated on one open decision.** Credential injection is already
+**Half-built, with the sandbox mechanism decided.** Credential injection is already
 **capability-scoped and fail-closed** ([`internal/credentials/capability.go`](../../../internal/credentials/capability.go):
 `Injector`, `Grant`, `ErrUndeclaredCapability`, `ErrNoCredentialForCapability`) — nothing
 is materialized for an undeclared capability. What's missing is **isolation rung 2**:
@@ -19,10 +19,10 @@ is materialized for an undeclared capability. What's missing is **isolation rung
   be scoped to a goober identity.
 - **Sandboxed agentic execution (SEC-044) is unbuilt.** [`internal/harness/copilot.go`](../../../internal/harness/copilot.go)
   runs `copilot` as a bare subprocess and explicitly notes isolation is "deferred to V1."
-- **The sandbox mechanism is an OPEN question (SEC-Q6)** — container vs OS-native vs
-  harness-native, per platform. This must be resolved by a **spike (S0) before the impl
-  missions are dispatchable.** Sending sandbox impl to devs without S0 would violate the
-  PO's "no vague work" rule.
+- **The sandbox mechanism is resolved (SEC-Q6):** OS-native Seatbelt on macOS and
+  bubblewrap on Linux, with containers deferred. See
+  [ADR 0001](../../adr/0001-agentic-sandbox-mechanism.md). The S0 spike established the
+  seam and residual risks before the implementation missions became dispatchable.
 
 ## 2. Scope boundary
 
@@ -35,7 +35,7 @@ sandbox is unavailable.
 egress enforcement (SEC-Q5 is resolved as tier-3/V2), Key Vault/managed identity (that's
 the #38 secret-resolver seam).
 
-## 3. The gating decision: SEC-Q6 sandbox mechanism (spike S0)
+## 3. The SEC-Q6 sandbox mechanism decision (spike S0)
 
 The Copilot CLI runs as a **locally signed-in binary** that needs `HOME`, `PATH`, and
 keychain/token access to function — which makes full containerization awkward (auth and
@@ -47,15 +47,15 @@ credential plumbing break inside a clean container). The realistic rung-2 option
 | Container | Docker/Apple container | Docker/Podman | Strong isolation but breaks Copilot's local auth; heavyweight |
 | Harness-native | limited | limited | Only as strong as the CLI's own flags |
 
-**Recommendation (to be confirmed by S0):** OS-native sandbox as rung 2 — Seatbelt on
+**Decision:** OS-native sandbox as rung 2 — Seatbelt on
 macOS, bubblewrap on Linux — confining the agentic subprocess FS to its stage worktree,
-container deferred. S0 must validate this against a real `copilot -p` run on macOS
-(auth still works, FS confined) and produce an ADR. **This is the key call for PO/PM /
-Special-Agent-security** — see OQ-1.
+container deferred. S0 validated this against a real `copilot -p` run on macOS
+(auth still works while direct out-of-worktree writes are denied) and recorded the
+decision and residual risks in [ADR 0001](../../adr/0001-agentic-sandbox-mechanism.md).
 
 ## 4. Missions (dispatchable, single-PR-sized)
 
-### S0 — Sandbox mechanism spike (SEC-Q6) — gates S2/S3/S4
+### S0 — Sandbox mechanism spike (SEC-Q6) — complete; gates S2/S3/S4
 - Evaluate OS-native vs container vs harness-native for confining the `copilot` subprocess
   on **macOS and Linux**; validate a real `copilot -p` run still authenticates under the
   chosen mechanism with FS confined to the worktree; write an ADR + a thin prototype seam.
@@ -114,9 +114,9 @@ sandbox-unavailable. Journal-only assertions.
 
 ## 7. Open questions (for PM / PO / Special-Agent-security)
 
-- **OQ-1 — SEC-Q6 mechanism (the big one):** OK to adopt OS-native (Seatbelt/macOS,
-  bubblewrap/Linux) as rung 2 with container deferred, accepting the documented
-  Seatbelt-deprecation residual? *(Recommend: yes, pending S0 validation.)*
+- **OQ-1 — SEC-Q6 mechanism: Resolved.** Adopt OS-native Seatbelt/macOS and
+  bubblewrap/Linux as rung 2 with containers deferred, accepting the residual risks
+  recorded in [ADR 0001](../../adr/0001-agentic-sandbox-mechanism.md).
 - **OQ-2 — sandbox-unavailable behavior:** fail-closed/block (recommend) vs. warn-and-proceed?
   *(Recommend: fail-closed, with a logged trusted-local opt-out.)*
 - **OQ-3 — credential granularity:** per-goober (SEC-045) sufficient for V1, or per-goober
