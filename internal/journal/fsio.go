@@ -109,7 +109,7 @@ func writeFileSynced(path string, data []byte, perm os.FileMode) error {
 		_ = f.Close()
 		return err
 	}
-	if err := f.Sync(); err != nil {
+	if err := syncFile(f); err != nil {
 		_ = f.Close()
 		return err
 	}
@@ -118,6 +118,9 @@ func writeFileSynced(path string, data []byte, perm os.FileMode) error {
 
 // fsyncDir fsyncs a directory so a rename into it is durable across a crash.
 func fsyncDir(dir string) error {
+	if fsyncDisabled() {
+		return nil
+	}
 	d, err := os.Open(dir)
 	if err != nil {
 		return err

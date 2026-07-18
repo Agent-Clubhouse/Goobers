@@ -28,7 +28,7 @@ func appendEvent(f *os.File, seq *uint64, scrubber Scrubber, now func() time.Tim
 	if _, err := f.Write(line); err != nil {
 		return Event{}, fmt.Errorf("journal: append event: %w", err)
 	}
-	if err := f.Sync(); err != nil {
+	if err := syncFile(f); err != nil {
 		return Event{}, fmt.Errorf("journal: fsync event: %w", err)
 	}
 	return ev, nil

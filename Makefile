@@ -108,10 +108,24 @@ build-%:
 # git's combined output). Unknown to older git, the key is simply ignored.
 GIT_TEST_FSYNC_OFF := GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsync GIT_CONFIG_VALUE_0=none
 
+# Disable the goobers journal's OWN fsync for the whole test run — the journal
+# twin of GIT_TEST_FSYNC_OFF, for the identical #811 reason. The cmd/goobers
+# suite spins up real in-process `goobers run`/`signal`/`up` executions that
+# fsync every journal event, checkpoint, and artifact; under the disk saturation
+# of several concurrent cold `make ci` a single such fsync (and even the atomic
+# rename that follows it, once the disk queue backs up) wedges in uninterruptible
+# I/O for the entire 10-minute stage, so waitForRunTerminal polls a run that
+# never reaches a terminal phase and the stage times out having opened 0 PRs.
+# It MUST be set test-wide, not just in cmd/goobers: the shared disk queue stays
+# saturated by every package's test fsync, so a per-package opt-out still stalls.
+# Test instances are ephemeral t.TempDir scratch with zero durability needs, so
+# nothing observable changes; production leaves the env unset and keeps fsync on.
+JOURNAL_TEST_FSYNC_OFF := GOOBERS_DISABLE_FSYNC=1
+
 ## test: Run unit tests with race detector and coverage.
 .PHONY: test
 test:
-	$(GIT_TEST_FSYNC_OFF) $(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
+	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
 
 ## cover: Show total test coverage.
 .PHONY: cover

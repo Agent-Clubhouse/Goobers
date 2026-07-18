@@ -48,6 +48,7 @@ func TestMain(m *testing.M) {
 	}
 
 	disableGitFsyncForTests()
+	disableJournalFsyncForTests()
 
 	os.Exit(m.Run())
 }
@@ -88,4 +89,28 @@ func disableGitFsyncForTests() {
 	_ = os.Setenv("GIT_CONFIG_KEY_"+strconv.Itoa(n), "core.fsync")
 	_ = os.Setenv("GIT_CONFIG_VALUE_"+strconv.Itoa(n), "none")
 	_ = os.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(n+1))
+}
+
+// disableJournalFsyncForTests makes the run/instance journal skip its own
+// os.File.Sync() for this test process — the journal-side twin of
+// disableGitFsyncForTests, and for the same #811 reason. These tests spin up
+// real in-process `goobers run`/`up`/`signal` executions that fsync every
+// journal event, checkpoint, and artifact write. Under the disk saturation of
+// several concurrent `make ci` (each a cold `go test -race ./...`), one of those
+// journal fsyncs wedges in uninterruptible I/O for the whole 10-minute stage, so
+// `waitForRunTerminal` polls a run that never reaches a terminal phase and the
+// stage times out having opened 0 PRs (the live hang that made runs unusable).
+//
+// Setting the env here (not in the Makefile) scopes the change precisely to the
+// cmd/goobers test binary and any subprocess it re-execs (which inherit the
+// env), leaving every other package's fsync-dependent tests — and all of
+// production — untouched. The journal reads the env per call, so setting it in
+// TestMain (after journal package init) takes effect. Scratch t.TempDir
+// instances have no durability requirement, so nothing a test can observe
+// changes.
+func disableJournalFsyncForTests() {
+	// os.Setenv only errors on a key containing '=' or NUL, neither of which
+	// this literal has; the suite's convention (see disableGitFsyncForTests) is
+	// to discard that impossible error explicitly.
+	_ = os.Setenv("GOOBERS_DISABLE_FSYNC", "1")
 }
