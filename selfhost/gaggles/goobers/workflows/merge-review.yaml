@@ -131,6 +131,12 @@ spec:
         selectedHeadSha: selectedHeadSha
         selectedBaseSha: selectedBaseSha
         reviewDigest: reviewDigest
+      inputs:
+        # #834: lander-election policy — "fifo" (lowest PR#, default) or
+        # "newest" (highest PR#). An unknown value falls back to fifo. Cluster-
+        # data policies (most-blockers, fewest-overlaps) are follow-ups that
+        # plug into the same registry.
+        electionPolicy: "fifo"
       capabilities:
         - github:pr:write
       expectedOutputs:

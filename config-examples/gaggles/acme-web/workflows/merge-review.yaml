@@ -73,6 +73,10 @@ spec:
         selectedHeadSha: selectedHeadSha
         selectedBaseSha: selectedBaseSha
         reviewDigest: reviewDigest
+      inputs:
+        # #834: lander-election policy — "fifo" (lowest PR#, default) or
+        # "newest" (highest PR#). Unknown values fall back to fifo.
+        electionPolicy: "fifo"
       capabilities:
         - github:pr:write
       expectedOutputs:
