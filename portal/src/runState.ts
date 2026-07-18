@@ -114,15 +114,20 @@ export function visibleAttempts(
   return run.attempts
     .filter((attempt) => attempt.stageId === stageId && attempt.startedSeq <= eventSeq)
     .map((attempt) => {
+      const artifacts = attempt.artifacts.filter((artifact) => artifact.recordedSeq <= eventSeq);
       if (attempt.endedSeq !== undefined && attempt.endedSeq <= eventSeq) {
-        return attempt;
+        return { ...attempt, artifacts };
       }
       return {
         ...attempt,
         status: "running",
         duration: "In progress",
+        summary:
+          attempt.endedSeq === undefined
+            ? attempt.summary
+            : "Attempt is still in progress at this point.",
         output: undefined,
-        artifacts: [],
+        artifacts,
       };
     });
 }
