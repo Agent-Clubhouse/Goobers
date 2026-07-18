@@ -87,7 +87,16 @@ jobs:
 
       - name: Install bubblewrap
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install --yes bubblewrap
+          # Ubuntu 24.04 (ubuntu-latest) restricts unprivileged user
+          # namespaces via AppArmor, which bubblewrap needs to set up its
+          # uid map. Relax it so the confinement probe can create the
+          # sandbox namespace on the hosted runner. Tolerate the knob being
+          # absent (future runner images / kernels): the confinement test
+          # itself, run with GOOBERS_REQUIRE_SANDBOX_TEST=1, remains the
+          # authoritative gate.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Exercise native sandbox
         env:
