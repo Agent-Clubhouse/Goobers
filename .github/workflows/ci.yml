@@ -67,3 +67,29 @@ jobs:
           name: coverage
           path: coverage.out
           if-no-files-found: ignore
+
+  sandbox:
+    name: sandbox confinement (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install bubblewrap
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+
+      - name: Exercise native sandbox
+        env:
+          GOOBERS_REQUIRE_SANDBOX_TEST: "1"
+        run: go test -race ./internal/sandbox
