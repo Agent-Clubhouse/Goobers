@@ -29,9 +29,15 @@ func TestShellStageTelemetryRoundTripsToRollup(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
 
+	// These stages declare no capabilities, so no ref is ever resolved.
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatalf("new resolver: %v", err)
+	}
+
 	r, err := New(Config{
 		NewDeterministic: func(rec ArtifactRecorder, reg SecretRegistrar) (invoke.Deterministic, error) {
-			injector, err := credentials.NewInjector(&credentials.Resolver{}, nil, reg)
+			injector, err := credentials.NewInjector(resolver, nil, reg)
 			if err != nil {
 				return nil, err
 			}
@@ -188,9 +194,15 @@ func TestAgenticGateTelemetryRoundTripsToRollup(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
 
+	// These stages declare no capabilities, so no ref is ever resolved.
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatalf("new resolver: %v", err)
+	}
+
 	r, err := New(Config{
 		NewDeterministic: func(rec ArtifactRecorder, reg SecretRegistrar) (invoke.Deterministic, error) {
-			injector, err := credentials.NewInjector(&credentials.Resolver{}, nil, reg)
+			injector, err := credentials.NewInjector(resolver, nil, reg)
 			if err != nil {
 				return nil, err
 			}
