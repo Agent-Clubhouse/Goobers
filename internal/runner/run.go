@@ -610,6 +610,27 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			case workflow.TargetEscalate:
 				return r.finish(in.RunID, jr, journal.PhaseEscalated, g.Name, steps)
 			case workflow.TerminalComplete:
+				// #849: a gate can route a stage that reported ResultFailure
+				// into a terminal-complete branch, and two very different
+				// things look alike here:
+				//   - merge-review's merge-gate: merge-pr ERRORED, its
+				//     land-outcome check found no landOutcome → "fail" → ""
+				//     (complete). The failure dead-ended unresolved, yet the
+				//     run reported `completed` — the 23/23 merge-pr masking
+				//     that hid the merge blocker for four rounds.
+				//   - the implement→review loop: implement reported failure,
+				//     but the reviewer evaluated the actual diff and PASSED it
+				//     → "pass" → complete. The gate affirmatively cleared the
+				//     failure; the run legitimately completed.
+				// The discriminator is the gate's own outcome: a non-pass
+				// outcome reaching complete while still carrying a ResultFailure
+				// is unresolved → fail the run with the stage's own cause; a
+				// pass outcome resolved it → complete. A designed negative
+				// outcome (merge-pr's exit-0 `reasons` refusal, ci-poll's
+				// status output) is a ResultSuccess and never trips this.
+				if lastResult.Status == apiv1.ResultFailure && gr.Outcome != gate.OutcomePass {
+					return r.finishStageFailure(in.RunID, jr, lastStage, steps, lastResult.Error)
+				}
 				return r.finish(in.RunID, jr, journal.PhaseCompleted, g.Name, steps)
 			}
 			if gr.VerdictArtifact != nil {
@@ -904,6 +925,36 @@ func (r *Runner) failTerminal(runID string, jr *journal.Run, finalState string, 
 	return res, origErr
 }
 
+// finishStageFailure terminates the run as PhaseFailed because a STAGE reported
+// ResultFailure, journaling a run_failed cause event WITH stage attribution (a
+// stage-level failure, unlike a walk-level error, always has one — #710/#305)
+// and threading the stage's own code/message onto the Result so the
+// scheduler/daemon echo sites can surface "failed (merge-pr: …)" instead of a
+// bare "failed". Shared by the two places a failed stage ends a run: its own
+// Next terminating the run (taskOutcome), and a gate absorbing it into a
+// terminal-complete branch (walk's gate handling, #849).
+func (r *Runner) finishStageFailure(runID string, jr *journal.Run, stage string, steps int, cause *apiv1.ErrorInfo) (Result, error) {
+	code, message := failureCauseFrom(cause)
+	journaledMessage := message
+	if code != "" {
+		// Code-prefixed for the on-disk cause event only (matching #545's
+		// blockedReason convention — a code alongside the code-named
+		// EventError.Code field would otherwise be lost to a plain grep of
+		// run_failed messages); Result.FailureCode carries the code on its own
+		// for the echo sites, so FailureMessage below stays bare.
+		journaledMessage = code + ": " + message
+	}
+	if aerr := jr.Append(journal.Event{
+		Type: journal.EventError, Stage: stage,
+		Error: &journal.ErrorDetail{Code: "run_failed", Message: journaledMessage},
+	}); aerr != nil {
+		return r.failTerminal(runID, jr, stage, steps, fmt.Errorf("runner: journal failure cause for %q: %w", stage, aerr))
+	}
+	res, err := r.finish(runID, jr, journal.PhaseFailed, stage, steps)
+	res.FailureStage, res.FailureCode, res.FailureMessage = stage, code, boundFailureMessage(message)
+	return res, err
+}
+
 // taskOutcome applies the #110 stage-status ruling to a finished task's
 // result: success advances to Next; failure advances only if Next is a gate
 // (which branches on it), otherwise ends the run PhaseFailed; blocked ends
@@ -1002,26 +1053,7 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		// message onto the returned Result so the scheduler/daemon echo sites
 		// can surface "failed (pr-select: github_rate_limited)" instead of a
 		// bare "failed".
-		code, message := failureCauseFrom(result.Error)
-		journaledMessage := message
-		if code != "" {
-			// Code-prefixed for the on-disk cause event only, matching #545's
-			// blockedReason convention (a code alongside the code-named
-			// EventError.Code field would otherwise be lost to a plain grep
-			// of run_failed messages) — Result.FailureCode already carries
-			// the code on its own for the echo sites, so FailureMessage below
-			// stays bare rather than doubling up.
-			journaledMessage = code + ": " + message
-		}
-		if aerr := jr.Append(journal.Event{
-			Type: journal.EventError, Stage: t.Name,
-			Error: &journal.ErrorDetail{Code: "run_failed", Message: journaledMessage},
-		}); aerr != nil {
-			res, err = r.failTerminal(runID, jr, t.Name, steps, fmt.Errorf("runner: journal failure cause for %q: %w", t.Name, aerr))
-			return "", res, false, err
-		}
-		res, err = r.finish(runID, jr, journal.PhaseFailed, t.Name, steps)
-		res.FailureStage, res.FailureCode, res.FailureMessage = t.Name, code, boundFailureMessage(message)
+		res, err = r.finishStageFailure(runID, jr, t.Name, steps, result.Error)
 		return "", res, false, err
 	case apiv1.ResultNoWork:
 		// Short-circuits straight to PhaseCompleted, unconditionally — never

@@ -1094,6 +1094,115 @@ func TestRunnerTaskFailureWithNoGateNextFailsRun(t *testing.T) {
 	}
 }
 
+// gateAbsorbedCompleteMachine is implement -> a status-equals gate whose "fail"
+// branch terminates-complete (""), the exact shape of merge-review's merge-gate
+// (land-outcome "fail" -> ""). params.equals is "blocked" — never matched by an
+// ordinary success/failure status — so BOTH a succeeding and a failing feeding
+// stage route through the SAME "fail" outcome to complete, mirroring merge-pr:
+// its exit-0 refusal (ResultSuccess, no landOutcome) and its error (#003,
+// ResultFailure) both land on merge-gate's "fail" -> "". That isolates the one
+// variable the fix keys on — the feeding stage's status — while holding the
+// gate outcome ("fail") constant, so the run status must diverge on the stage
+// status alone, not on the branch taken.
+func gateAbsorbedCompleteMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "review"},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "review",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals", Params: map[string]string{"equals": "blocked"}},
+				Branches: map[string]string{
+					"pass": workflow.TargetAbort,
+					"fail": workflow.TerminalComplete,
+				},
+			},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "gate-absorbed-complete", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile gate-absorbed-complete machine: %v", err)
+	}
+	return m
+}
+
+// TestRunnerGateAbsorbedStageFailureFailsRun is #849's regression: a stage that
+// reports ResultFailure and is then routed by its gate to a terminal-complete
+// branch must journal PhaseFailed, not PhaseCompleted. This is the exact shape
+// that hid merge-review's merge-pr blocker for four rounds — merge-pr errored
+// 23/23 times, its gate routed the failure to "", and every run reported
+// `completed`, so health metrics read green on a 100%-failing stage.
+func TestRunnerGateAbsorbedStageFailureFailsRun(t *testing.T) {
+	machine := gateAbsorbedCompleteMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-849:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "merge_failed", Message: "no current pass verdict found in pull request comments"}},
+	}
+	r, runsDir := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-849",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, want failed (a gate must not launder a stage failure into a completed run)", res.Phase)
+	}
+	if res.FailureStage != "implement" || res.FailureCode != "merge_failed" {
+		t.Fatalf("failure attribution = {stage:%q code:%q}, want {implement merge_failed} threaded from the failed stage", res.FailureStage, res.FailureCode)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-849"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	st, err := rd.State()
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.Phase != journal.PhaseFailed {
+		t.Fatalf("state.json phase = %q, want failed", st.Phase)
+	}
+}
+
+// TestRunnerGateRoutedSuccessToCompleteStaysCompleted guards the other side of
+// #849: a stage that SUCCEEDS but whose gate routes it to a terminal-complete
+// branch must stay PhaseCompleted. This is the legitimate-refusal path — a
+// designed negative outcome (merge-pr's exit-0 `reasons` refusal, ci-poll's
+// status output) is a ResultSuccess, and the fix must not mislabel it as a
+// failed run just because the gate routed it to "".
+func TestRunnerGateRoutedSuccessToCompleteStaysCompleted(t *testing.T) {
+	machine := gateAbsorbedCompleteMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-849-ok:implement": {status: apiv1.ResultSuccess, summary: "reviewed, correctly declined to merge"},
+	}
+	r, _ := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-849-ok",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed (a successful stage routed to a completing branch is a designed outcome, not a failure)", res.Phase)
+	}
+}
+
 // TestRunnerResultCarriesFailureCauseAtFirstStage is issue #710's core
 // acceptance: a business failure at the run's very first (and only) stage
 // threads the stage's own errorCode/message onto the returned Result and
