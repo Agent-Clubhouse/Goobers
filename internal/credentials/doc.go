@@ -14,7 +14,7 @@
 // the shape it needs (SecretRegistrar) and returns values that satisfy the
 // shapes other packages need (a Token(ctx) (string, error) method matches
 // providers.TokenSource structurally) so build order across concurrent
-// missions does not gate this one. A Key Vault resolver is a drop-in
-// implementation of the same TokenRef-resolution seam at V2 (ARCHITECTURE.md
-// §10); no caller changes.
+// missions does not gate this one. Resolver is the SEC-010 drop-in point: a
+// Key Vault implementation replaces the local env/file implementation at V2
+// (ARCHITECTURE.md §10) without caller changes.
 package credentials

@@ -118,7 +118,11 @@ func TestCustomStageExampleDryRun(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			injector, err := credentials.NewInjector(&credentials.Resolver{}, nil, customStageRegistrar{})
+			resolver, err := credentials.NewResolver(nil)
+			if err != nil {
+				t.Fatalf("create credential resolver: %v", err)
+			}
+			injector, err := credentials.NewInjector(resolver, nil, customStageRegistrar{})
 			if err != nil {
 				t.Fatalf("create credential injector: %v", err)
 			}

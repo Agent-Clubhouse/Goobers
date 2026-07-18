@@ -76,6 +76,21 @@ func TestResolverUnknownRefFailsClosed(t *testing.T) {
 	}
 }
 
+func TestResolverHonorsCanceledContext(t *testing.T) {
+	t.Setenv("GH_TOKEN_CANCELED_TEST", "secret")
+	r, err := NewResolver([]TokenRef{{Name: "gh", Env: "GH_TOKEN_CANCELED_TEST"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = r.Resolve(ctx, "gh")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Resolve error = %v, want context.Canceled", err)
+	}
+}
+
 func TestNewResolverRejectsMalformedRefs(t *testing.T) {
 	cases := []struct {
 		name string

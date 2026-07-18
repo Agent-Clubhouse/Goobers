@@ -198,15 +198,17 @@ func buildHarnessRegistry(envCaps map[string]string) (*harness.Registry, error) 
 	return registry, nil
 }
 
-// buildCredentials builds a Resolver and the capability->ref Grants from
-// instance.yaml. By default the first configured repo's token backs every
+// buildCredentials is the composition root for the secret-resolver seam. It
+// selects the local env/file implementation; a tier-3 deployment substitutes
+// its SEC-010 Key Vault Resolver here while all downstream wiring stays
+// unchanged. By default the first configured repo's token backs every
 // credentialed capability (V0 single-target-repo simplification, ARCHITECTURE.md
 // §6). instance.yaml's credentials: block then sources individual capabilities
 // from their own token refs (#287): a new capability (e.g. agent:model) gains a
 // grant, and one the repo token already backs is overridden — so an agentic
 // stage can hold a personal Copilot-Requests PAT for the model alongside the
 // org-repo token for the github tool, both fail-closed per capability admission.
-func buildCredentials(cfg *instance.Config) (*credentials.Resolver, []credentials.Grant, error) {
+func buildCredentials(cfg *instance.Config) (credentials.Resolver, []credentials.Grant, error) {
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	for _, r := range cfg.Repos {
 		refs = append(refs, credentials.TokenRef{
@@ -327,7 +329,7 @@ var newEscalationPoster = func(token string) gate.Commenter { return providers.N
 // for scrubbing, then posts through a freshly-authenticated provider.
 type escalationCommenter struct {
 	ref      string
-	resolver *credentials.Resolver
+	resolver credentials.Resolver
 	reg      runner.SecretRegistrar
 }
 
@@ -352,7 +354,7 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 // (#63); #20's escalation surfacing is a provider comment on the driving issue,
 // not a label change (the goobers:needs-human marker is the curator's output,
 // a distinct flow).
-func buildEscalationNotifier(cfg *instance.Config, resolver *credentials.Resolver, reg runner.SecretRegistrar) *gate.EscalationNotifier {
+func buildEscalationNotifier(cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) *gate.EscalationNotifier {
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
@@ -389,7 +391,7 @@ func buildEscalationNotifier(cfg *instance.Config, resolver *credentials.Resolve
 // run id. Best-effort per item: one item's provider failure doesn't skip the
 // rest; the joined error is journaled by the runner (blocked_handling_failed),
 // never fatal to the terminal transition.
-func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver *credentials.Resolver, reg runner.SecretRegistrar) runner.BlockedHandler {
+func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) runner.BlockedHandler {
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
@@ -518,7 +520,7 @@ var newOpenPRProvider = func(token string) localscheduler.OpenPRLister {
 // OpenPRLister the #353 open-PR-count refresher polls off-tick.
 type resolvingOpenPRLister struct {
 	ref      string
-	resolver *credentials.Resolver
+	resolver credentials.Resolver
 	reg      runner.SecretRegistrar
 }
 
@@ -570,7 +572,7 @@ type backlogCounter struct {
 	ref      string
 	repo     providers.RepositoryRef
 	labels   []string
-	resolver *credentials.Resolver
+	resolver credentials.Resolver
 	reg      runner.SecretRegistrar
 }
 
@@ -602,7 +604,7 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
-func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver *credentials.Resolver, reg runner.SecretRegistrar) localscheduler.BacklogCounter {
+func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar) localscheduler.BacklogCounter {
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
