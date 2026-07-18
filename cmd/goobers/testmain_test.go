@@ -4,10 +4,21 @@ import (
 	"os"
 	"strconv"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 )
+
+// suiteRunWaitTimeout is the generous ceiling every wait-mode `goobers run`/
+// `signal` in this suite gets (via runTerminalWaitTimeout, set in TestMain). A
+// nested demo run's trivial stages finish in seconds even under heavy concurrent
+// make-ci load, so 2 minutes only ever fires on a genuine wedge — yet it fails
+// ~5x faster than the 10-minute local-ci stage limit, turning a silent
+// queue-wedging hang into a loud, diagnosable test failure (#827 recurrence
+// guard). Deliberately not tight (e.g. 5s) so a merely-slow-under-load run never
+// false-fails.
+const suiteRunWaitTimeout = 2 * time.Minute
 
 // hermeticEphemeralListen is the address every daemon-lifecycle test binds in
 // place of the fixed default, so the OS hands out a free port instead (#798).
@@ -49,8 +60,25 @@ func TestMain(m *testing.M) {
 
 	disableGitFsyncForTests()
 	disableJournalFsyncForTests()
+	runTerminalWaitTimeout = suiteRunWaitTimeout
 
 	os.Exit(m.Run())
+}
+
+// TestJournalFsyncDisabledForSuite is the #827 recurrence guard, the journal-side
+// twin of TestGitFsyncDisabledForSuite (#811): it asserts the journal
+// fsync-disable seam is actually in effect for this suite. If someone drops
+// disableJournalFsyncForTests() from TestMain or JOURNAL_TEST_FSYNC_OFF from the
+// Makefile's test target, this test goes red instead of the whole local-ci stage
+// silently wedging under concurrent make-ci disk saturation again. It asserts the
+// env only (the journal package reads it per call; internal/journal/fsync_test.go
+// covers that the env actually short-circuits the fsync).
+func TestJournalFsyncDisabledForSuite(t *testing.T) {
+	if got := os.Getenv("GOOBERS_DISABLE_FSYNC"); got != "1" {
+		t.Fatalf("GOOBERS_DISABLE_FSYNC = %q, want \"1\" — the #827 journal fsync-disable seam "+
+			"(disableJournalFsyncForTests / Makefile JOURNAL_TEST_FSYNC_OFF) is not in effect; "+
+			"concurrent make ci can wedge on a journal fsync again", got)
+	}
 }
 
 // disableGitFsyncForTests makes every git subprocess this suite spawns — the
