@@ -265,4 +265,9 @@ spec:
         # didn't finish in time — so it escalates for a human decision
         # instead of spending an agentic repass re-implementing a change
         # that was never actually reviewed as failing.
-        timeout: "@escalate"
+        #
+        # Via park-escalated, NOT straight to "@escalate" (#929): both reach
+        # the same terminal phase, but routing at the terminal state directly
+        # skips the stage that releases the issue's claim and applies
+        # goobers:needs-human, orphaning it silently.
+        timeout: park-escalated

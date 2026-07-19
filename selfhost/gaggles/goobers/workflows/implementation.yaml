@@ -303,4 +303,13 @@ spec:
         # didn't finish in time — so it escalates for a human decision
         # instead of spending an agentic repass re-implementing a change
         # that was never actually reviewed as failing.
-        timeout: "@escalate"
+        #
+        # Via park-escalated, NOT straight to "@escalate" (#929). Both reach
+        # the same terminal phase — park-escalated's own next is "@escalate" —
+        # but the issue-side bookkeeping only runs if the stage does. Routing
+        # timeout directly at the terminal state left the driving issue
+        # permanently orphaned: still goobers:ready, still goobers:claimed,
+        # never goobers:needs-human. Still claimed means query-backlog will
+        # not re-offer it, and no needs-human means no human sees it either,
+        # so it silently left the workable backlog with no signal at all.
+        timeout: park-escalated
