@@ -247,6 +247,47 @@ func TestFilterBlockedEligibilityProviderFailureKeepsAffectedItemParked(t *testi
 	}
 }
 
+func TestFilterBlockedEligibilityProviderFailureKeepsUnresolvedItemParked(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/issues/510") {
+			http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(api.Close)
+	provider := providers.NewGitHubProvider("test-token", func(p *providers.GitHubProvider) {
+		p.BaseURL = api.URL
+	})
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	recs := map[string]blockedRecord{
+		"510": {Blockers: []string{"441"}, RunID: "run-1"},
+	}
+
+	filtered, skipped, changed, warnings := filterBlockedEligibility(
+		context.Background(),
+		provider,
+		repo,
+		[]providers.WorkItem{{ID: "510"}, {ID: "511"}},
+		recs,
+	)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "check blocked item 510") {
+		t.Fatalf("warnings = %v, want blocked-item lookup failure", warnings)
+	}
+	if changed {
+		t.Fatal("changed = true, want unresolved record preserved unchanged")
+	}
+	if len(filtered) != 1 || filtered[0].ID != "511" {
+		t.Fatalf("filtered = %v, want unresolved issue 510 parked and unrelated issue 511 eligible", filtered)
+	}
+	if len(skipped) != 1 || skipped[0].reason() != "learned block: item 510 parked; item state unresolved" {
+		t.Fatalf("skipped = %+v, want issue 510 parked on unresolved item state", skipped)
+	}
+	if _, ok := recs["510"]; !ok {
+		t.Fatal("record for unresolved issue 510 was removed")
+	}
+}
+
 // TestFilterBlockedEligibilitySelfHealsWhenBlockersClose is QA-1's required
 // self-heal test (gate condition 1): once every one of a record's blockers
 // closes, the record clears and the item becomes eligible again — the actual
