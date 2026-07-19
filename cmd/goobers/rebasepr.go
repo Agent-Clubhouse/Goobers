@@ -29,6 +29,9 @@ import (
 // checkoutExistingBranch's doc comment — so it cannot assume gather-pr-
 // context's checkout survived.
 func runRebasePR(args []string, stdout, stderr io.Writer) int {
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+
 	fs := flag.NewFlagSet("rebase-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
@@ -111,8 +114,6 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		provider := newGitHubProvider(issuesToken)
-		ctx, cancel := providerCommandContext()
-		defer cancel()
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo, ID: selectedNumber, RemoveLabels: []string{needsRemediationLabel},
 		}); err != nil {

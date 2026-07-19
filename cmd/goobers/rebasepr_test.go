@@ -215,6 +215,41 @@ func TestRebasePRCleanNoSubstantiveForcePushesAndClearsLabel(t *testing.T) {
 	}
 }
 
+func TestRebasePRProviderDeadlineIncludesGitWork(t *testing.T) {
+	const prBranch = "goobers/impl/run-deadline"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	hook := filepath.Join(origin, "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nsleep 0.2\n"), 0o755); err != nil {
+		t.Fatalf("write pre-receive hook: %v", err)
+	}
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 59)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "59",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+		"timeout":                "100ms",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 1 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q, want provider deadline failure after Git work consumed the stage budget", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "deadline exceeded") {
+		t.Fatalf("stderr = %q, want deadline exceeded", stderr)
+	}
+
+	st.mu.Lock()
+	labels := append([]string(nil), st.labels...)
+	st.mu.Unlock()
+	if len(labels) != 1 || labels[0] != needsRemediationLabel {
+		t.Fatalf("labels = %v, want %s unchanged after the stage budget expired", labels, needsRemediationLabel)
+	}
+}
+
 // TestRebasePRSubstantiveFindingDefersEvenWithCleanRebase proves routing is
 // finding-driven, never rebase-driven (design doc §5 D3): a clean rebase
 // must NOT suppress a known substantive finding — no push, label untouched.
