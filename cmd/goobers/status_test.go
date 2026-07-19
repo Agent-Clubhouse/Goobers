@@ -70,7 +70,8 @@ func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
-	const want = "no runs found — trigger one with 'goobers run <workflow>'\n"
+	const want = "Issues parked on learned dependencies: 0\n" +
+		"no runs found — trigger one with 'goobers run <workflow>'\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
@@ -230,7 +231,8 @@ func TestStatusDefaultTableOutputUnchanged(t *testing.T) {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
 	want := fmt.Sprintf(
-		"%-34s  %-24s  %-10s  %-10s  %s\n%-34s  %-24s  %-10s  %-10s  %s\n",
+		"Issues parked on learned dependencies: 0\n"+
+			"%-34s  %-24s  %-10s  %-10s  %s\n%-34s  %-24s  %-10s  %-10s  %s\n",
 		"RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED",
 		"fixture-run", "fixture-workflow", "fixture", "running", startedAt.Format(time.RFC3339),
 	)
@@ -490,8 +492,8 @@ func TestWatchStatusRepaintsFiltersAndHighlightsPhaseChangeForOneFrame(t *testin
 		limit:    1,
 	}
 	var stdout bytes.Buffer
-	noPauseLine := func() string { return "" }
-	if err := watchStatus(ctx, time.Millisecond, options, &stdout, loadRuns, noPauseLine); err != nil {
+	noStatusText := func() (string, error) { return "", nil }
+	if err := watchStatus(ctx, time.Millisecond, options, &stdout, loadRuns, noStatusText); err != nil {
 		t.Fatalf("watchStatus: %v", err)
 	}
 
@@ -580,21 +582,21 @@ func TestWatchStatusRepaintsProviderQuotaPauseLine(t *testing.T) {
 
 	frame := 0
 	const pauseLine = "GitHub quota exhausted — resuming dispatch at 2026-07-17T05:00:00Z\n"
-	loadPauseLine := func() string {
+	loadStatusText := func() (string, error) {
 		defer func() { frame++ }()
 		switch frame {
 		case 0:
-			return pauseLine
+			return pauseLine, nil
 		case 1:
 			cancel()
-			return "" // resumed by the second frame
+			return "", nil // resumed by the second frame
 		default:
-			return ""
+			return "", nil
 		}
 	}
 
 	var stdout bytes.Buffer
-	if err := watchStatus(ctx, time.Millisecond, statusOptions{}, &stdout, loadRuns, loadPauseLine); err != nil {
+	if err := watchStatus(ctx, time.Millisecond, statusOptions{}, &stdout, loadRuns, loadStatusText); err != nil {
 		t.Fatalf("watchStatus: %v", err)
 	}
 

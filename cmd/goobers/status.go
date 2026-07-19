@@ -39,6 +39,19 @@ func providerQuotaStatusLine(status readservice.SchedulerStatus, now time.Time) 
 		status.ProviderQuotaResumeAt.UTC().Format(time.RFC3339) + "\n"
 }
 
+func parkedDependencyStatusText(parked []parkedDependency) string {
+	var text strings.Builder
+	pf(&text, "Issues parked on learned dependencies: %d\n", len(parked))
+	for _, dependency := range parked {
+		blockers := make([]string, len(dependency.Blockers))
+		for i, blocker := range dependency.Blockers {
+			blockers[i] = "#" + blocker
+		}
+		pf(&text, "  #%s blocked by %s\n", dependency.ItemID, strings.Join(blockers, ", "))
+	}
+	return text.String()
+}
+
 type statusJSONSummary struct {
 	RunID     string    `json:"runId"`
 	Workflow  string    `json:"workflow"`
@@ -125,6 +138,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "Validate active config, show warnings, and list runs under an instance's\n"+
 			"runs/ directory with their current phase, newest first (default path \".\").\n")
 		if supportsWatch {
+			pln(stderr, "Status also reports issues parked on learned dependencies and their recorded blockers.")
 			pln(stderr, "With --daemon, report daemon health instead.")
 		}
 		pf(stderr, "Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n")
@@ -226,21 +240,23 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	loadRuns := func() ([]runSummary, error) {
 		return listStatusRuns(context.Background(), reads)
 	}
-	// #712: surface an active provider-quota pause — best-effort (a
-	// missing/unreadable instance log just means no line, never a status
-	// failure). A closure, not a one-shot read, so the watch loop below picks
-	// up a newly-recorded (or newly-passed) pause on every redraw, the same
-	// way loadRuns re-reads runs/ each tick. `runs list` never calls this —
-	// the pause is daemon/scheduler state, not part of its plain run table.
-	loadPauseLine := func() string {
+	// Scheduler state is loaded per redraw so watch reflects both quota
+	// transitions and backlog-query's learned-dependency refresh.
+	loadStatusText := func() (string, error) {
 		if !supportsWatch {
-			return ""
+			return "", nil
 		}
+		var text strings.Builder
 		status, err := reads.SchedulerStatus(context.Background())
-		if err != nil {
-			return ""
+		if err == nil {
+			text.WriteString(providerQuotaStatusLine(status, time.Now()))
 		}
-		return providerQuotaStatusLine(status, time.Now())
+		parked, err := listParkedDependencies(l)
+		if err != nil {
+			return "", err
+		}
+		text.WriteString(parkedDependencyStatusText(parked))
+		return text.String(), nil
 	}
 	if supportsWatch && *watch {
 		// Config warnings are a static, one-time-per-invocation check (unlike
@@ -249,7 +265,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		printValidationWarnings(stdout, warnings)
 		ctx, stop := signals.SetupSignalContext()
 		defer stop()
-		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, loadPauseLine); err != nil {
+		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, loadStatusText); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}
@@ -278,9 +294,12 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	// it) since the JSON output's shape is a warnings+runs object, not an
 	// array with room for a plain-text side channel.
 	printValidationWarnings(stdout, warnings)
-	if line := loadPauseLine(); line != "" {
-		pf(stdout, "%s", line)
+	statusText, err := loadStatusText()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
 	}
+	pf(stdout, "%s", statusText)
 	renderStatus(stdout, runs)
 	return 0
 }
@@ -329,7 +348,7 @@ func watchStatus(
 	options statusOptions,
 	stdout io.Writer,
 	loadRuns func() ([]runSummary, error),
-	loadPauseLine func() string,
+	loadStatusText func() (string, error),
 ) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -347,7 +366,11 @@ func watchStatus(
 			return err
 		}
 		current := statusRunPhases(allRuns)
-		renderStatusWatchFrame(stdout, loadPauseLine(), selectStatusRuns(allRuns, options), changedStatusRuns(previous, current))
+		statusText, err := loadStatusText()
+		if err != nil {
+			return err
+		}
+		renderStatusWatchFrame(stdout, statusText, selectStatusRuns(allRuns, options), changedStatusRuns(previous, current))
 		previous = current
 
 		select {
@@ -376,10 +399,10 @@ func changedStatusRuns(previous, current map[string]journal.RunPhase) map[string
 	return changed
 }
 
-func renderStatusWatchFrame(stdout io.Writer, pauseLine string, runs []runSummary, changed map[string]struct{}) {
+func renderStatusWatchFrame(stdout io.Writer, statusText string, runs []runSummary, changed map[string]struct{}) {
 	pf(stdout, statusClearScreen)
-	if pauseLine != "" {
-		pf(stdout, "%s", pauseLine)
+	if statusText != "" {
+		pf(stdout, "%s", statusText)
 	}
 	if len(runs) == 0 {
 		pln(stdout, "no runs found — trigger one with 'goobers run <workflow>'")
