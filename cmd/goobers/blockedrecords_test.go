@@ -310,6 +310,120 @@ func TestFilterBlockedEligibilityPrunesRecordForClosedItem(t *testing.T) {
 	}
 }
 
+// TestBacklogQueryRechecksBlockedRecordsBeforeClaim recreates #722's race:
+// provider eligibility has finished, but a learned block arrives before the
+// ledger acquisition. The blocked-record check must observe that write in the
+// same transaction that would otherwise claim the issue.
+func TestBacklogQueryRechecksBlockedRecordsBeforeClaim(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(441, "open prerequisite", "goobers:approved")
+	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
+
+	l := layoutFor(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-race")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	claimReady := make(chan struct{})
+	resumeClaim := make(chan struct{})
+	defer func() {
+		select {
+		case <-resumeClaim:
+		default:
+			close(resumeClaim)
+		}
+	}()
+
+	type queryResult struct {
+		code   int
+		stdout string
+		stderr string
+	}
+	queryDone := make(chan queryResult, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		code := runBacklogQueryWithClaimBarrier([]string{"--claim", root}, &stdout, &stderr, func() {
+			close(claimReady)
+			<-resumeClaim
+		})
+		queryDone <- queryResult{code: code, stdout: stdout.String(), stderr: stderr.String()}
+	}()
+
+	select {
+	case <-claimReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("backlog-query did not reach the claim transaction")
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
+			recs["510"] = blockedRecord{Blockers: []string{"441"}, RunID: "prior-run"}
+			return true
+		})
+	}()
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("write concurrent blocked record: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent blocked-record writer did not finish before claim")
+	}
+	close(resumeClaim)
+
+	var result queryResult
+	select {
+	case result = <-queryDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("backlog-query did not finish after blocked record was written")
+	}
+	if result.code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", result.code, result.stdout, result.stderr)
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if entry, ok := ledger.Lookup("510"); ok {
+		t.Fatalf("issue 510 was claimed after its blocked record arrived: %+v", entry)
+	}
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatalf("read instance journal: %v", err)
+	}
+	skipFound := false
+	for _, event := range events {
+		if event.Type == journal.EventClaimAcquired && event.Name == "510" {
+			t.Fatal("journal contains a claim for issue 510 after its blocked record arrived")
+		}
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["annotation"] == blockedEligibilitySkipAnnotation &&
+			event.Runner["itemId"] == "510" {
+			skipFound = true
+		}
+	}
+	if !skipFound {
+		t.Fatal("journal does not contain the blocked eligibility skip for issue 510")
+	}
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("load blocked records: %v", err)
+	}
+	if _, ok := recs["510"]; !ok {
+		t.Fatal("concurrent blocked record for issue 510 was not preserved")
+	}
+}
+
 // TestBacklogQuerySkipsKnownBlockedThenSelfHeals is the end-to-end CLI
 // acceptance for #552: a blocked.json record for issue 510 blocks it from
 // `backlog-query --claim` while any recorded blocker is open, and

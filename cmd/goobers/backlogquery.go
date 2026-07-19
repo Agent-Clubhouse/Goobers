@@ -50,6 +50,12 @@ const backlogScanCeiling = 250
 const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
 
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
+	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
+}
+
+// runBacklogQueryWithClaimBarrier lets concurrency tests pause at the former
+// split-lock gap without changing the command's production path.
+func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, beforeClaimTransaction func()) int {
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
@@ -341,6 +347,9 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// batch (maxItems 20), implementation a single item (maxItems 1). All claims
 	// share this run's id; each item gets its own ledger entry.
 	var claimed []providers.WorkItem
+	if beforeClaimTransaction != nil {
+		beforeClaimTransaction()
+	}
 	err = withClaimLock(lockPath, func() error {
 		var lerr error
 		eligible, observedSkips, lerr = reconcileBlockedEligibilityLocked(
