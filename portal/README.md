@@ -4,8 +4,9 @@ This directory contains the production UI foundation and static fixture views
 for the Dashboard / Portal milestone (#14, epic #440).
 
 It is a React/Vite application with reusable shell, navigation, dense-list,
-graph, inspector, status, icon, theme, and accessibility modules. The current
-routes remain backed by static fixtures; no daemon client is connected yet.
+graph, inspector, status, icon, theme, accessibility, query-state, and typed
+daemon-client modules. The current routes remain backed by static fixtures; the
+daemon client is intentionally not connected to production pages yet.
 
 ## Run it
 
@@ -52,7 +53,9 @@ The full product and architecture authority is
 
 ## Current boundaries
 
-- Data is static and intentionally shaped around representative runs.
+- Production pages still use static data intentionally shaped around
+  representative runs; the HTTP and fixture daemon adapters are data-foundation
+  seams for later vertical slices.
 - The graph layout is fixture-specific, not a general layout engine.
 - Artifact rows demonstrate hierarchy but do not open real journal content.
 - The graph layout remains fixture-specific; narrow layouts use an equivalent
