@@ -19,7 +19,7 @@ export function OverviewPage({ client }: { client: DaemonClient }) {
   if (query.state.status === "error") {
     return <DaemonErrorState error={query.state.error} retry={query.retry} />;
   }
-  if (query.state.status !== "ready") {
+  if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
   }
 
@@ -142,7 +142,7 @@ function InstanceStrip({ snapshot }: { snapshot: OperationalSnapshot }) {
     <section aria-label="Daemon connection and instance counts" className="instance-strip">
       <div>
         <span aria-hidden="true" className={snapshot.health.ready ? "live-mark" : "live-mark pending"} />
-        <strong>{snapshot.health.ready ? "Daemon connected" : "Daemon not ready"}</strong>
+        <strong>{snapshot.health.ready ? "Daemon ready" : "Daemon starting"}</strong>
         <span>
           observed{" "}
           <time dateTime={snapshot.health.freshness.observedAt}>

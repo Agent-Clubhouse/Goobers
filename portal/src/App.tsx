@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { HttpDaemonClient } from "./api/httpClient";
 import type { DaemonClient } from "./api/types";
+import { LiveDataProvider } from "./liveData";
 import { OverviewPage } from "./pages/OverviewPage";
 import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
@@ -13,6 +14,14 @@ import { PortalShell } from "./shell/PortalShell";
 const daemonClient = new HttpDaemonClient();
 
 export function App({ client = daemonClient }: { client?: DaemonClient }) {
+  return (
+    <LiveDataProvider client={client}>
+      <Portal client={client} />
+    </LiveDataProvider>
+  );
+}
+
+function Portal({ client }: { client: DaemonClient }) {
   const [route, setRoute] = useState<Route>(() => parseRoute());
   const initialRoute = useRef(true);
 
