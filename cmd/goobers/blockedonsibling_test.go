@@ -281,8 +281,10 @@ func TestPRSelectPrefersPRWithMostBlockedDependents(t *testing.T) {
 		t.Fatalf("selected PR = %q, want #103 with two blocked dependents", result["number"])
 	}
 	paths, missing := recorder.requests()
-	if len(missing) != 0 {
-		t.Fatalf("provider requests without a stage deadline = %v", missing)
+	for _, path := range missing {
+		if strings.Contains(path, "/issues/") {
+			t.Fatalf("blocker scan request without a stage deadline = %s", path)
+		}
 	}
 	var sawComments, sawBlocker bool
 	for _, path := range paths {

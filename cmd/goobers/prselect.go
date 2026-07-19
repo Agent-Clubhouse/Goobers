@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -73,8 +74,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	headPrefix := providerInput("headPrefix", "goobers/")
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
 
-	ctx, cancel := providerCommandContext()
-	defer cancel()
+	ctx := context.Background()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})
@@ -82,10 +82,12 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "list pull requests", err, "selected-pr.json")
 	}
 
+	blockerScanCtx, cancelBlockerScan := context.WithTimeout(ctx, stageTimeout())
+	defer cancelBlockerScan()
 	siblingBlocked := make(map[int]bool)
 	blockedDependents := make(map[int]int)
 	for _, pr := range prs {
-		blockers, err := liveBlockedOnSiblingBlockers(ctx, provider, repo, pr)
+		blockers, err := liveBlockedOnSiblingBlockers(blockerScanCtx, provider, repo, pr)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
