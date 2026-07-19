@@ -19,7 +19,7 @@ export function WorkflowsPage({ client }: { client: DaemonClient }) {
   if (query.state.status === "error") {
     return <DaemonErrorState error={query.state.error} retry={query.retry} />;
   }
-  if (query.state.status !== "ready") {
+  if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
   }
 

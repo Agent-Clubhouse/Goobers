@@ -36,7 +36,7 @@ describe("portal foundation", () => {
     expect(
       await screen.findByRole("heading", { name: "2 runs need attention." }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Daemon connected")).toBeInTheDocument();
+    expect(screen.getByText("Daemon ready")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
   });
 

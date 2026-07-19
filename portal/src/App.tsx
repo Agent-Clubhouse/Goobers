@@ -7,6 +7,7 @@ import {
   type ConfigurationWarningSource,
   useConfigurationWarnings,
 } from "./configurationWarnings";
+import { LiveDataProvider } from "./liveData";
 import { OverviewPage } from "./pages/OverviewPage";
 import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
@@ -27,6 +28,20 @@ export function App({
   client = daemonClient,
   warningClient = client,
 }: { client?: DaemonClient; warningClient?: ConfigurationWarningClient } = {}) {
+  return (
+    <LiveDataProvider client={client}>
+      <Portal client={client} warningClient={warningClient} />
+    </LiveDataProvider>
+  );
+}
+
+function Portal({
+  client,
+  warningClient,
+}: {
+  client: DaemonClient;
+  warningClient: ConfigurationWarningClient;
+}) {
   const [route, setRoute] = useState<Route>(() => parseRoute());
   const initialRoute = useRef(true);
 
