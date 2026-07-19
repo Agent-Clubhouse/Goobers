@@ -9,8 +9,6 @@ import type {
 import type { QueryState } from "./api/queryState";
 import { useLiveData } from "./liveData";
 
-export const ACTIVE_RUN_REFRESH_INTERVAL_MS = 2_000;
-
 export type RunNodeState =
   | "pending"
   | "running"
@@ -33,15 +31,10 @@ export interface RunDetailQuery {
 export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuery {
   const [state, setState] = useState<QueryState<RunDetailSnapshot>>({ status: "loading" });
   const request = useRef<AbortController | undefined>(undefined);
-  const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const { subscribe } = useLiveData();
 
   const refresh = useCallback((): Promise<boolean> => {
     request.current?.abort();
-    if (refreshTimer.current !== undefined) {
-      clearTimeout(refreshTimer.current);
-      refreshTimer.current = undefined;
-    }
     const controller = new AbortController();
     request.current = controller;
 
@@ -54,12 +47,6 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
           request.current = undefined;
         }
         setState({ status: "ready", data });
-        if (!data.run.terminal) {
-          refreshTimer.current = setTimeout(() => {
-            refreshTimer.current = undefined;
-            void refresh();
-          }, ACTIVE_RUN_REFRESH_INTERVAL_MS);
-        }
         return true;
       },
       (error: unknown) => {
@@ -85,10 +72,6 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
       unsubscribe();
       request.current?.abort();
       request.current = undefined;
-      if (refreshTimer.current !== undefined) {
-        clearTimeout(refreshTimer.current);
-        refreshTimer.current = undefined;
-      }
     };
   }, [refresh, subscribe]);
 

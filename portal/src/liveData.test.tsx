@@ -298,6 +298,46 @@ describe("live page integration", () => {
     await waitFor(() => expect(getRun.mock.calls.length).toBeGreaterThan(initialReads));
   });
 
+  it("stops active run detail refreshes while hidden and after unmount", async () => {
+    window.location.hash = "#/run/01JZ441DAEMONAPI";
+    const client = new MutableFixtureClient();
+    const getRun = vi.spyOn(client, "getRun");
+    const { unmount } = render(<App client={client} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await settle();
+    });
+    expect(
+      screen.getByRole("heading", { name: "Run 01JZ441DAEMONAPI" }),
+    ).toBeInTheDocument();
+    const visibleReads = getRun.mock.calls.length;
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(getRun).toHaveBeenCalledTimes(visibleReads);
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(0);
+      await settle();
+    });
+    expect(getRun.mock.calls.length).toBeGreaterThan(visibleReads);
+
+    const readsBeforeUnmount = getRun.mock.calls.length;
+    unmount();
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(getRun).toHaveBeenCalledTimes(readsBeforeUnmount);
+  });
+
   it("refreshes configuration warnings for their instance and workflow models", async () => {
     vi.useRealTimers();
     const client = new MutableFixtureClient();
