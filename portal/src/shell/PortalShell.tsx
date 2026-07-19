@@ -1,5 +1,4 @@
 import { useRef } from "react";
-import { runs, workflows } from "../prototypeData";
 import type { Navigate, PrimaryArea } from "../routing";
 import { useTheme } from "../theme";
 import { Icon } from "../ui/Icon";
@@ -58,7 +57,6 @@ export function PortalShell({ activeArea, children, navigate }: PortalShellProps
           >
             <Icon name="workflow" />
             <span className="nav-label">Workflows</span>
-            <span aria-hidden="true" className="nav-count">{workflows.length}</span>
           </button>
           <button
             aria-current={activeArea === "runs" ? "page" : undefined}
@@ -69,19 +67,16 @@ export function PortalShell({ activeArea, children, navigate }: PortalShellProps
           >
             <Icon name="run" />
             <span className="nav-label">Runs</span>
-            <span aria-hidden="true" className="nav-count">{runs.length}</span>
           </button>
         </nav>
 
         <div className="sidebar-status">
           <div>
-            <span aria-hidden="true" className="live-mark" />
             <span>
-              <strong>local-dev</strong>
-              <small>127.0.0.1 · connected</small>
+              <strong>Daemon API</strong>
+              <small>Connection state appears in each live view</small>
             </span>
           </div>
-          <span className="version">v0.6</span>
         </div>
       </aside>
 
@@ -91,11 +86,10 @@ export function PortalShell({ activeArea, children, navigate }: PortalShellProps
             <span className="scope-mark">G</span>
             <span>
               <strong>goobers</strong>
-              <small>1 gaggle · 4 goobers</small>
+              <small>operations workbench</small>
             </span>
           </div>
           <div className="topbar-actions">
-            <span className="fixture-label">Static fixture data</span>
             <button
               aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
               className="theme-button"

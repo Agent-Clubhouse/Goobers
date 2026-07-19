@@ -25,17 +25,36 @@ export function DataList({ ariaLabel, children, columns, gridClassName = "" }: D
 
 interface DataRowProps {
   children: React.ReactNode;
+  href?: string;
   label: string;
-  onClick: () => void;
+  onClick?: () => void;
 }
 
-export function DataRow({ children, label, onClick }: DataRowProps) {
-  return (
-    <button aria-label={label} className="data-row" onClick={onClick} type="button">
+export function DataRow({ children, href, label, onClick }: DataRowProps) {
+  const content = (
+    <>
       {children}
       <span className="row-arrow">
         <Icon name="chevron" size={16} />
       </span>
+    </>
+  );
+
+  if (href) {
+    return (
+      <a aria-label={label} className="data-row" href={href}>
+        {content}
+      </a>
+    );
+  }
+
+  if (!onClick) {
+    throw new TypeError("DataRow requires either href or onClick.");
+  }
+
+  return (
+    <button aria-label={label} className="data-row" onClick={onClick} type="button">
+      {content}
     </button>
   );
 }

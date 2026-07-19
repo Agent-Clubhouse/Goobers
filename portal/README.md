@@ -5,8 +5,8 @@ for the Dashboard / Portal milestone (#14, epic #440).
 
 It is a React/Vite application with reusable shell, navigation, dense-list,
 graph, inspector, status, icon, theme, accessibility, query-state, and typed
-daemon-client modules. The current routes remain backed by static fixtures; the
-daemon client is intentionally not connected to production pages yet.
+daemon-client modules. Overview and Workflows read the live daemon API; detail
+routes remain backed by static fixtures until their vertical slices land.
 
 ## Run it
 
@@ -53,9 +53,9 @@ The full product and architecture authority is
 
 ## Current boundaries
 
-- Production pages still use static data intentionally shaped around
-  representative runs; the HTTP and fixture daemon adapters are data-foundation
-  seams for later vertical slices.
+- Workflow and run detail pages still use static data intentionally shaped around
+  representative runs. Overview, workflow inventory, and gaggle rosters use the
+  HTTP daemon adapter, with the fixture adapter reserved for tests.
 - The graph layout is fixture-specific, not a general layout engine.
 - Artifact rows demonstrate hierarchy but do not open real journal content.
 - The graph layout remains fixture-specific; narrow layouts use an equivalent
