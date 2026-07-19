@@ -1,13 +1,15 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act, useState } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import type { QueryState } from "../api/queryState";
 import type { ValidationWarning } from "../api/types";
 import { configurationWarningKey } from "../configurationWarnings";
 import { instanceWarnings, workflowWarnings } from "../prototypeData";
+import styles from "../styles.css?inline";
+import tokens from "../tokens.css?inline";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
 import { ConfigurationWarnings } from "./ConfigurationWarnings";
 
@@ -48,6 +50,47 @@ const workflowWarning: ValidationWarning = {
     "expectedOutputs is declared but the stage has no inputs.resultFile to emit it through",
 };
 
+function resolveComputedColor(element: Element, property: "background" | "color"): string {
+  const computed = window.getComputedStyle(element).getPropertyValue(property).trim();
+  const customProperty = computed.match(/^var\((--[\w-]+)\)$/)?.[1];
+  const resolved = customProperty
+    ? window.getComputedStyle(document.documentElement).getPropertyValue(customProperty).trim()
+    : computed;
+
+  if (!/^#[\da-f]{6}$/i.test(resolved)) {
+    throw new Error(`Expected ${property} to resolve to a six-digit hex color, received "${resolved}".`);
+  }
+  return resolved;
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const luminance = (color: string) => {
+    const channels = color
+      .slice(1)
+      .match(/.{2}/g)!
+      .map((channel) => Number.parseInt(channel, 16) / 255)
+      .map((channel) =>
+        channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+      );
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  };
+  const foregroundLuminance = luminance(foreground);
+  const backgroundLuminance = luminance(background);
+  const lighter = Math.max(foregroundLuminance, backgroundLuminance);
+  const darker = Math.min(foregroundLuminance, backgroundLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function expectWarningCodeContrast(warning: HTMLElement) {
+  const code = warning.querySelector(".warning-code");
+  if (!code) {
+    throw new Error("Expected warning code.");
+  }
+  const foreground = resolveComputedColor(code, "color");
+  const background = resolveComputedColor(code, "background");
+  expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5);
+}
+
 function renderWarnings(
   state: QueryState<readonly ValidationWarning[]>,
   options: {
@@ -70,6 +113,17 @@ function renderWarnings(
 }
 
 describe("ConfigurationWarnings", () => {
+  const portalStyles = document.createElement("style");
+
+  beforeAll(() => {
+    portalStyles.textContent = `${tokens}\n${styles}`;
+    document.head.append(portalStyles);
+  });
+
+  afterAll(() => {
+    portalStyles.remove();
+  });
+
   beforeEach(() => {
     window.location.hash = "#/overview";
     delete document.documentElement.dataset.theme;
@@ -291,7 +345,7 @@ describe("ConfigurationWarnings", () => {
     expect(getInstance).toHaveBeenCalledTimes(2);
   });
 
-  it("retains warning semantics in light and dark themes below run attention", async () => {
+  it("keeps warning contrast accessible in light and dark themes below run attention", async () => {
     const user = userEvent.setup();
     render(<App client={daemonClient()} warningClient={prototypeWarningClient()} />);
 
@@ -302,10 +356,10 @@ describe("ConfigurationWarnings", () => {
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
     expect(document.documentElement.dataset.theme).toBe("light");
-    expect(warning).toHaveClass("configuration-warning");
+    expectWarningCodeContrast(warning);
 
     await user.click(screen.getByRole("button", { name: "Use dark theme" }));
     expect(document.documentElement.dataset.theme).toBe("dark");
-    expect(warning).toHaveClass("configuration-warning");
+    expectWarningCodeContrast(warning);
   });
 });

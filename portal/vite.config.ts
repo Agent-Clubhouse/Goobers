@@ -19,6 +19,7 @@ export function createViteConfig(environment: PortalEnvironment = process.env) {
       },
     },
     test: {
+      css: true,
       environment: "jsdom",
       globals: true,
       setupFiles: "./src/test/setup.ts",
