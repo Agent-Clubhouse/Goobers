@@ -33,14 +33,15 @@ it exercises the same checks as those required jobs.
 |---|---|---|---|
 | `ubuntu-latest` | `make ci` | Required via the aggregate CI check | The full Linux build, test, race, format, vet, and lint gate |
 | `macos-latest` | `make ci` | Required via the aggregate CI check | The full macOS build, test, race, format, vet, and lint gate |
-| `windows-latest` | `go vet ./...` and `go build ./...` | Advisory (allowed to fail) | Windows compilation while the platform abstractions and portable toolchain tracked by #620, #623, #625, #627, and #630 land |
+| `windows-latest` | `go build ./...` and `go vet ./...` | Advisory (failures surface as warnings) | Windows compilation while the platform abstractions and portable toolchain tracked by #620, #623, #625, #627, and #630 land |
 
 All three statuses are reported on every pull request, and one platform failure
 does not cancel the others. The required `make ci (fmt-check · vet · build ·
 test · lint)` status aggregates the matrix and fails when either Ubuntu or macOS
-fails. Go module and build caches are scoped to each runner OS. Once the listed
-Windows prerequisites land and the job is stable, Windows will run `make ci`
-and become a required check.
+fails. Windows smoke failures remain visible as step warnings without publishing
+an expected-red check that blocks merges. Go module and build caches are scoped
+to each runner OS. Once the listed Windows prerequisites land and the job is
+stable, Windows will run `make ci` and become a required check.
 
 ## Workflow
 
