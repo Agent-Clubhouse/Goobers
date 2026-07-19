@@ -1,11 +1,10 @@
 name: CI
 
 # Goobers control-plane CI — the enforced merge gate.
-# Ports azure-pipelines.yml to GitHub Actions: runs `make ci`
-# (fmt-check · vet · build · test · lint) on every PR to main, on push to main,
-# and on merge-group builds once GitHub's merge queue is enabled on main (#631)
-# — same job set, no separate queue-only pipeline that could drift from this one.
-# See Makefile `ci` target for the authoritative step list.
+# Runs `make ci` (fmt-check · vet · build · test · lint) on Ubuntu and macOS,
+# plus an advisory Windows compile smoke, on every PR to main, push to main, and
+# merge-group build. See Makefile `ci` target for the authoritative full-gate
+# step list.
 
 on:
   push:
@@ -30,14 +29,19 @@ env:
 
 jobs:
   ci:
-    name: make ci (fmt-check · vet · build · test · lint)
-    runs-on: ubuntu-latest
+    name: platform gate (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
       # Track the toolchain declared in go.mod (currently go 1.26) rather than a
       # hardcoded version, so CI can't drift from the module's `go` directive.
+      # setup-go scopes its module/build cache key by runner OS and architecture.
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -64,9 +68,54 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5
         with:
-          name: coverage
+          name: coverage-${{ runner.os }}
           path: coverage.out
           if-no-files-found: ignore
+
+  # Advisory only. Windows cannot pass `make ci` until the platform
+  # abstractions and portable toolchain tracked by #620, #623, #625, #627, and
+  # #630 have landed; until then this reports a visible status on every PR
+  # without gating merges. It is deliberately NOT a `needs` of required-ci —
+  # needs.<job>.result aggregates a whole matrix, so keeping Windows in the `ci`
+  # matrix would let an expected-red leg fail the required gate. Flip this job
+  # into the `ci` matrix and mark it required once #630 lands (#633).
+  windows-smoke:
+    name: windows compile smoke (advisory)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Build smoke
+        run: go build ./...
+
+      - name: Vet smoke
+        run: go vet ./...
+
+  required-ci:
+    name: make ci (fmt-check · vet · build · test · lint)
+    if: ${{ always() }}
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required platform gates
+        env:
+          MATRIX_RESULT: ${{ needs.ci.result }}
+        run: |
+          if [ "$MATRIX_RESULT" != "success" ]; then
+            echo "A required platform gate did not pass."
+            exit 1
+          fi
 
   sandbox:
     name: sandbox confinement (${{ matrix.os }})
