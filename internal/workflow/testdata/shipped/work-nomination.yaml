@@ -20,6 +20,8 @@ spec:
       goal: Collect telemetry and repo signals worth acting on.
       run:
         command: ["goobers", "telemetry-query", "--window", "24h"]
+      inputs:
+        resultFile: "telemetry-signals.json"
       next: nominate
     - name: nominate
       type: agentic

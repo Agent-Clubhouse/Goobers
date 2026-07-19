@@ -52,6 +52,31 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 	}
 }
 
+func TestSelfhostTelemetryQueriesDeclareResultFile(t *testing.T) {
+	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows")
+	for _, file := range []string{"work-nomination.yaml", "tutor.yaml"} {
+		t.Run(file, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(root, file))
+			if err != nil {
+				t.Fatalf("read %s: %v", file, err)
+			}
+			var w apiv1.Workflow
+			if err := yaml.Unmarshal(raw, &w); err != nil {
+				t.Fatalf("unmarshal %s: %v", file, err)
+			}
+			for _, task := range w.Spec.Tasks {
+				if task.Name == "gather-signals" {
+					if got := task.Inputs["resultFile"]; got != "telemetry-signals.json" {
+						t.Fatalf("gather-signals resultFile = %q, want telemetry-signals.json", got)
+					}
+					return
+				}
+			}
+			t.Fatal("gather-signals task not found")
+		})
+	}
+}
+
 func TestSelfhostImplementationCIPollDeclaresRequiredCapability(t *testing.T) {
 	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "implementation.yaml")
 	raw, err := os.ReadFile(path)

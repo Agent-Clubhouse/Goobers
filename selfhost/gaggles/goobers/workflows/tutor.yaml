@@ -45,6 +45,8 @@ spec:
       goal: Query cross-run telemetry for recurring failure/noise/coverage problems.
       run:
         command: ["goobers", "telemetry-query", "--window", "168h"]
+      inputs:
+        resultFile: "telemetry-signals.json"
       capabilities:
         - telemetry:read
       next: analyze
