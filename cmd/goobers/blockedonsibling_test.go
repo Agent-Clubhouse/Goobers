@@ -4,13 +4,38 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/goobers/goobers/providers"
 )
+
+type deadlineRecordingClient struct {
+	client  providers.HTTPClient
+	mu      sync.Mutex
+	paths   []string
+	missing []string
+}
+
+func (c *deadlineRecordingClient) Do(req *http.Request) (*http.Response, error) {
+	c.mu.Lock()
+	c.paths = append(c.paths, req.URL.Path)
+	if _, ok := req.Context().Deadline(); !ok {
+		c.missing = append(c.missing, req.URL.Path)
+	}
+	c.mu.Unlock()
+	return c.client.Do(req)
+}
+
+func (c *deadlineRecordingClient) requests() (paths, missing []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.paths...), append([]string(nil), c.missing...)
+}
 
 // blockedOnSiblingCommentFor is a test helper: the sticky comment apply-verdict
 // would post for a PR blocked behind the given blocker PR numbers.
@@ -230,6 +255,15 @@ func TestPRSelectPrefersPRWithMostBlockedDependents(t *testing.T) {
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-run-priority")
 	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
 	t.Chdir(t.TempDir())
+	recorder := &deadlineRecordingClient{}
+	baseConstructor := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		provider := baseConstructor(token, opts...)
+		recorder.client = provider.Client
+		provider.Client = recorder
+		return provider
+	}
+	t.Cleanup(func() { newGitHubProvider = baseConstructor })
 
 	code, stdout, stderr := runArgs(t, "pr-select", root)
 	if code != 0 {
@@ -245,6 +279,18 @@ func TestPRSelectPrefersPRWithMostBlockedDependents(t *testing.T) {
 	}
 	if result["number"] != "103" {
 		t.Fatalf("selected PR = %q, want #103 with two blocked dependents", result["number"])
+	}
+	paths, missing := recorder.requests()
+	if len(missing) != 0 {
+		t.Fatalf("provider requests without a stage deadline = %v", missing)
+	}
+	var sawComments, sawBlocker bool
+	for _, path := range paths {
+		sawComments = sawComments || strings.HasSuffix(path, "/issues/201/comments")
+		sawBlocker = sawBlocker || strings.HasSuffix(path, "/issues/103")
+	}
+	if !sawComments || !sawBlocker {
+		t.Fatalf("provider requests = %v, want blocker comment and live-blocker lookups", paths)
 	}
 }
 

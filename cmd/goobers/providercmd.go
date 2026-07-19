@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,6 +114,25 @@ func providerInput(key, def string) string {
 		return v
 	}
 	return def
+}
+
+const providerCommandMargin = time.Second
+
+// providerCommandBudget leaves time to report the stage result before the
+// shell executor terminates the process.
+func providerCommandBudget(stage time.Duration) time.Duration {
+	margin := providerCommandMargin
+	if margin >= stage {
+		margin = stage / 10
+	}
+	if budget := stage - margin; budget > 0 {
+		return budget
+	}
+	return stage / 2
+}
+
+func providerCommandContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), providerCommandBudget(stageTimeout()))
 }
 
 // providerRunContext reads the run/workflow identity the runner injects for
