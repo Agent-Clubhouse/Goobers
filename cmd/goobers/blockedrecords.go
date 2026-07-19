@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,6 +32,32 @@ type blockedRecord struct {
 	Stage      string    `json:"stage,omitempty"`
 	Reason     string    `json:"reason,omitempty"`
 	RecordedAt time.Time `json:"recordedAt"`
+}
+
+type blockedEligibilitySkip struct {
+	ItemID              string
+	ItemStateUnresolved bool
+	OpenBlockers        []string
+	UnresolvedBlockers  []string
+	VerificationPending bool
+	record              blockedRecord
+}
+
+func (s blockedEligibilitySkip) reason() string {
+	if s.ItemStateUnresolved {
+		return fmt.Sprintf("learned block: item %s parked; item state unresolved", s.ItemID)
+	}
+	if s.VerificationPending {
+		return fmt.Sprintf("learned block: item %s parked; blocked record changed during eligibility check", s.ItemID)
+	}
+	if len(s.UnresolvedBlockers) != 0 {
+		return fmt.Sprintf(
+			"learned block: item %s parked; blocker state unresolved: %s",
+			s.ItemID,
+			strings.Join(s.UnresolvedBlockers, ","),
+		)
+	}
+	return fmt.Sprintf("learned block: item %s parked on open blocker(s): %s", s.ItemID, strings.Join(s.OpenBlockers, ","))
 }
 
 func blockedRecordsPath(l instance.Layout) string {
@@ -103,15 +130,15 @@ func snapshotBlockedRecords(l instance.Layout) (map[string]blockedRecord, error)
 
 // reconcileBlockedEligibilityLocked applies provider-resolved removals to the
 // latest blocked-record state, then excludes every item that is still recorded
-// as blocked. An unchanged record whose own provider lookup failed remains
-// eligible, preserving per-record degradation; a concurrent replacement does
-// not inherit that exception. The caller must hold claims.lock through any
-// subsequent claim so a concurrent blocked-record update cannot race the
-// eligibility decision.
-func reconcileBlockedEligibilityLocked(path string, eligible []providers.WorkItem, resolved, unresolved map[string]blockedRecord) ([]providers.WorkItem, error) {
+// as blocked. verifiedSkips contains provider-backed reasons for records from
+// the earlier snapshot. A concurrent addition or replacement stays parked for
+// this cycle because its blocker state has not been verified. The caller must
+// hold claims.lock through any subsequent claim so a blocked-record update
+// cannot race the eligibility decision.
+func reconcileBlockedEligibilityLocked(path string, eligible []providers.WorkItem, resolved map[string]blockedRecord, verifiedSkips map[string]blockedEligibilitySkip) ([]providers.WorkItem, []blockedEligibilitySkip, error) {
 	current, err := loadBlockedRecords(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	changed := false
@@ -125,25 +152,32 @@ func reconcileBlockedEligibilityLocked(path string, eligible []providers.WorkIte
 	}
 	if changed {
 		if err := saveBlockedRecords(path, current); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
 	if len(current) == 0 {
-		return eligible, nil
+		return eligible, nil, nil
 	}
 	filtered := eligible[:0]
+	var skipped []blockedEligibilitySkip
 	for _, item := range eligible {
 		record, blocked := current[item.ID]
 		if !blocked {
 			filtered = append(filtered, item)
 			continue
 		}
-		if observed, ok := unresolved[item.ID]; ok && sameBlockedRecord(record, observed) {
-			filtered = append(filtered, item)
+		if skip, ok := verifiedSkips[item.ID]; ok && sameBlockedRecord(record, skip.record) {
+			skipped = append(skipped, skip)
+			continue
 		}
+		skipped = append(skipped, blockedEligibilitySkip{
+			ItemID:              item.ID,
+			VerificationPending: true,
+			record:              record,
+		})
 	}
-	return filtered, nil
+	return filtered, skipped, nil
 }
 
 func sameBlockedRecord(a, b blockedRecord) bool {
@@ -169,17 +203,13 @@ func sameBlockedRecord(a, b blockedRecord) bool {
 // GetWorkItem calls are memoized per call (issue ids repeat across records/
 // blockers) and scoped to just the recorded items/blockers — a small,
 // bounded set proportional to how many items are CURRENTLY blocked, never to
-// backlog size. recs is mutated in place; changed reports whether the caller
-// must persist it.
-// It returns warnings rather than an error: no per-record lookup failure is
-// fatal here (see the degradation note below), so an error return would only
-// ever be nil. The caller surfaces warnings on stderr so a malformed record
-// stays visible instead of silently degrading selection forever. unresolved
-// identifies records whose own item lookup failed so the locked reconciliation
-// can preserve that per-record degradation if the record is still unchanged.
-func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, eligible []providers.WorkItem, recs map[string]blockedRecord) (filtered []providers.WorkItem, changed bool, warnings []string, unresolved map[string]blockedRecord) {
+// backlog size. A lookup failure affects only its record: unresolved items
+// stay untouched, unresolved blockers keep their item parked, and resolvable
+// records continue to self-heal or prune. The caller surfaces returned
+// warnings so malformed records remain visible without stalling every tick.
+func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, eligible []providers.WorkItem, recs map[string]blockedRecord) (filtered []providers.WorkItem, skipped []blockedEligibilitySkip, changed bool, warnings []string) {
 	if len(recs) == 0 {
-		return eligible, false, nil, nil
+		return eligible, nil, false, nil
 	}
 
 	openCache := map[string]bool{}
@@ -196,72 +226,83 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 		return open, nil
 	}
 
-	// A lookup that cannot be resolved must not fail the whole stage. This
-	// function runs on every query-backlog tick, and query-backlog is the
-	// shared first stage of implementation and backlog-curation, so returning
-	// an error here halts all backlog progress over a single unresolvable key
-	// — which is exactly how one malformed "pr/"-prefixed record took the
-	// self-hosting loop down for ~45 minutes (#971). The blocked file is a
-	// selection OPTIMIZATION (skip work a prior run already proved blocked),
-	// never a correctness gate: the worst case from ignoring one bad record is
-	// that one item gets re-attempted and re-discovers its own block, which is
-	// strictly better than starving every workflow. So degrade per-record and
-	// keep going.
-	//
-	// Conservative in both directions: an unresolvable record is neither
-	// pruned (we cannot prove its item closed) nor treated as skippable (we
-	// cannot prove it still blocked), so it survives untouched for a later
-	// tick — or for a human reading the file — to resolve.
+	itemIDs := make([]string, 0, len(recs))
+	for itemID := range recs {
+		itemIDs = append(itemIDs, itemID)
+	}
+	sort.Strings(itemIDs)
+	eligibleIDs := make(map[string]bool, len(eligible))
+	for _, item := range eligible {
+		eligibleIDs[item.ID] = true
+	}
+
 	skip := make(map[string]bool, len(recs))
-	var lookupErrs []string
-	for itemID, rec := range recs {
+	var remove []string
+	var lookupWarnings []string
+	for _, itemID := range itemIDs {
+		rec := recs[itemID]
 		open, oerr := isOpen(itemID)
 		if oerr != nil {
-			lookupErrs = append(lookupErrs, fmt.Sprintf("check blocked item %s: %v", itemID, oerr))
-			if unresolved == nil {
-				unresolved = make(map[string]blockedRecord)
+			lookupWarnings = append(lookupWarnings, fmt.Sprintf("check blocked item %s: %v", itemID, oerr))
+			if eligibleIDs[itemID] {
+				skip[itemID] = true
+				skipped = append(skipped, blockedEligibilitySkip{
+					ItemID:              itemID,
+					ItemStateUnresolved: true,
+					record:              rec,
+				})
 			}
-			unresolved[itemID] = rec
 			continue
 		}
 		if !open {
-			delete(recs, itemID)
-			changed = true
+			remove = append(remove, itemID)
 			continue
 		}
 
-		allClosed := true
-		unresolved := false
-		for _, blockerID := range rec.Blockers {
+		blockerIDs := append([]string(nil), rec.Blockers...)
+		sort.Strings(blockerIDs)
+		var openBlockers []string
+		var unresolvedBlockers []string
+		for _, blockerID := range blockerIDs {
 			blockerOpen, berr := isOpen(blockerID)
 			if berr != nil {
-				// Same degradation as above, one level down. An unresolvable
-				// blocker must not self-heal the record: "we could not check"
-				// is not "it closed", and treating it as closed would silently
-				// unblock an item whose dependency may still be open.
-				lookupErrs = append(lookupErrs, fmt.Sprintf("check blocker %s for %s: %v", blockerID, itemID, berr))
-				unresolved = true
-				break
+				lookupWarnings = append(lookupWarnings, fmt.Sprintf("check blocker %s for %s: %v", blockerID, itemID, berr))
+				unresolvedBlockers = append(unresolvedBlockers, blockerID)
+				continue
 			}
 			if blockerOpen {
-				allClosed = false
-				break
+				openBlockers = append(openBlockers, blockerID)
 			}
 		}
-		if unresolved {
+		if len(unresolvedBlockers) != 0 {
+			if eligibleIDs[itemID] {
+				skip[itemID] = true
+				skipped = append(skipped, blockedEligibilitySkip{
+					ItemID:             itemID,
+					OpenBlockers:       openBlockers,
+					UnresolvedBlockers: unresolvedBlockers,
+					record:             rec,
+				})
+			}
+			continue
+		}
+		if len(openBlockers) == 0 {
+			remove = append(remove, itemID)
+			continue
+		}
+		if eligibleIDs[itemID] {
 			skip[itemID] = true
-			continue
+			skipped = append(skipped, blockedEligibilitySkip{ItemID: itemID, OpenBlockers: openBlockers, record: rec})
 		}
-		if allClosed {
-			delete(recs, itemID)
-			changed = true
-			continue
-		}
-		skip[itemID] = true
+	}
+
+	for _, itemID := range remove {
+		delete(recs, itemID)
+		changed = true
 	}
 
 	if len(skip) == 0 {
-		return eligible, changed, lookupErrs, unresolved
+		return eligible, skipped, changed, lookupWarnings
 	}
 	out := eligible[:0]
 	for _, item := range eligible {
@@ -270,7 +311,7 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 		}
 		out = append(out, item)
 	}
-	return out, changed, lookupErrs, unresolved
+	return out, skipped, changed, lookupWarnings
 }
 
 // updateBlockedRecords applies fn to the records map under the instance's
