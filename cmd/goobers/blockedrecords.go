@@ -101,19 +101,42 @@ func snapshotBlockedRecords(l instance.Layout) (map[string]blockedRecord, error)
 	return recs, err
 }
 
-func clearResolvedBlockedRecords(l instance.Layout, resolved map[string]blockedRecord) error {
-	return updateBlockedRecords(l, func(current map[string]blockedRecord) bool {
-		changed := false
-		for itemID, observed := range resolved {
-			record, ok := current[itemID]
-			if !ok || !sameBlockedRecord(record, observed) {
-				continue
-			}
-			delete(current, itemID)
-			changed = true
+// reconcileBlockedEligibilityLocked applies provider-resolved removals to the
+// latest blocked-record state, then excludes every item that is still recorded
+// as blocked. The caller must hold claims.lock through any subsequent claim so
+// a concurrent blocked-record update cannot race the eligibility decision.
+func reconcileBlockedEligibilityLocked(path string, eligible []providers.WorkItem, resolved map[string]blockedRecord) ([]providers.WorkItem, error) {
+	current, err := loadBlockedRecords(path)
+	if err != nil {
+		return nil, err
+	}
+
+	changed := false
+	for itemID, observed := range resolved {
+		record, ok := current[itemID]
+		if !ok || !sameBlockedRecord(record, observed) {
+			continue
 		}
-		return changed
-	})
+		delete(current, itemID)
+		changed = true
+	}
+	if changed {
+		if err := saveBlockedRecords(path, current); err != nil {
+			return nil, err
+		}
+	}
+
+	if len(current) == 0 {
+		return eligible, nil
+	}
+	filtered := eligible[:0]
+	for _, item := range eligible {
+		if _, blocked := current[item.ID]; blocked {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
 }
 
 func sameBlockedRecord(a, b blockedRecord) bool {

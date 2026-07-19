@@ -373,8 +373,14 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 	}
 }
 
-func TestResolvedBlockedRecordDoesNotDeleteConcurrentReplacement(t *testing.T) {
+func TestBacklogQueryDoesNotClaimConcurrentBlockedRecordReplacement(t *testing.T) {
 	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(441, "resolved prerequisite", "goobers:approved")
+	server.closeIssue(441)
+	server.addIssue(442, "new prerequisite", "goobers:approved")
+	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
+
 	l := layoutFor(root)
 	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
 		t.Fatal(err)
@@ -388,9 +394,45 @@ func TestResolvedBlockedRecordDoesNotDeleteConcurrentReplacement(t *testing.T) {
 	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{"510": observed}); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := snapshotBlockedRecords(l)
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if ok, _, err := ledger.Claim("510", "old-run", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed old claim: ok=%v err=%v", ok, err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "query-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	stalled := &stalledIssueClient{
+		path:    "/issues/441",
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	releaseProvider := sync.OnceFunc(func() { close(stalled.release) })
+	defer releaseProvider()
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		provider := baseFactory(token, opts...)
+		stalled.next = provider.Client
+		provider.Client = stalled
+		return provider
+	}
+	t.Cleanup(func() { newGitHubProvider = baseFactory })
+
+	var stdout, stderr bytes.Buffer
+	queryDone := make(chan int, 1)
+	go func() {
+		queryDone <- runBacklogQuery([]string{"--claim", root}, &stdout, &stderr)
+	}()
+	select {
+	case <-stalled.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for old blocker resolution")
 	}
 
 	replacement := blockedRecord{
@@ -404,8 +446,13 @@ func TestResolvedBlockedRecordDoesNotDeleteConcurrentReplacement(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := clearResolvedBlockedRecords(l, snapshot); err != nil {
+	if err := releaseClaimsForRun(l, nil, "old-run"); err != nil {
 		t.Fatal(err)
+	}
+
+	releaseProvider()
+	if code := <-queryDone; code != 0 {
+		t.Fatalf("backlog query code = %d, stderr = %q", code, stderr.String())
 	}
 
 	recs, err := snapshotBlockedRecords(l)
@@ -414,6 +461,24 @@ func TestResolvedBlockedRecordDoesNotDeleteConcurrentReplacement(t *testing.T) {
 	}
 	if got, ok := recs["510"]; !ok || !sameBlockedRecord(got, replacement) {
 		t.Fatalf("concurrent replacement = (%+v, %v), want preserved %+v", got, ok, replacement)
+	}
+	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := reopened.Lookup("510"); held {
+		t.Fatalf("concurrently re-blocked item was claimed: %+v", entry)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["claimed"] != false {
+		t.Fatalf("claimed = %v, want false for concurrently re-blocked item", result["claimed"])
 	}
 }
 
