@@ -425,11 +425,15 @@ func reconcileMergeReviewStatusComment(ctx context.Context, provider *providers.
 func mergeReviewStatusComments(comments []providers.Comment, author string) []providers.Comment {
 	marked := make([]providers.Comment, 0, len(comments))
 	for _, comment := range comments {
-		if strings.EqualFold(comment.Author, author) && isMergeReviewStatusComment(comment.Body) {
+		if isTrustedMergeReviewAuthor(comment.Author, author) && isMergeReviewStatusComment(comment.Body) {
 			marked = append(marked, comment)
 		}
 	}
 	return marked
+}
+
+func isTrustedMergeReviewAuthor(commentAuthor, authenticatedAuthor string) bool {
+	return authenticatedAuthor != "" && strings.EqualFold(commentAuthor, authenticatedAuthor)
 }
 
 func isMergeReviewStatusComment(body string) bool {
@@ -760,4 +764,11 @@ func parseVerdictComment(body string) (v apiv1.Verdict, ok bool) {
 		return apiv1.Verdict{}, false
 	}
 	return v, true
+}
+
+func parseTrustedVerdictComment(commentAuthor, body, authenticatedAuthor string) (apiv1.Verdict, bool) {
+	if !isTrustedMergeReviewAuthor(commentAuthor, authenticatedAuthor) {
+		return apiv1.Verdict{}, false
+	}
+	return parseVerdictComment(body)
 }

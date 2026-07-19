@@ -205,12 +205,16 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selected.Number), err, "pr-context.json")
 	}
-	// Latest comment carrying an embedded payload wins (a PR can accumulate
-	// several merge-review cycles' worth of comments; only the most recent
-	// verdict is still actionable).
+	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return failProviderStage(stderr, "resolve merge-review verdict author", err, "pr-context.json")
+	}
+	// Latest trusted comment carrying an embedded payload wins (a PR can
+	// accumulate several merge-review cycles; only the most recent verdict
+	// from the authenticated provider identity is actionable).
 	var verdict *apiv1.Verdict
 	for i := len(rawComments) - 1; i >= 0; i-- {
-		if v, ok := parseVerdictComment(rawComments[i].Body); ok {
+		if v, ok := parseTrustedVerdictComment(rawComments[i].Author, rawComments[i].Body, verdictAuthor); ok {
 			verdict = &v
 			break
 		}

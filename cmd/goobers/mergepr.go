@@ -197,7 +197,12 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		commitTitle := ""
 		mergeCommitMessage := commitMessage
 		if strings.TrimSpace(mergeCommitMessage) == "" {
-			commitTitle, mergeCommitMessage, commitErr = structuredMergeCommitMessage(poll)
+			verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+			if err != nil {
+				commitErr = fmt.Errorf("resolve merge-review verdict author: %w", err)
+				return nil
+			}
+			commitTitle, mergeCommitMessage, commitErr = structuredMergeCommitMessage(poll, verdictAuthor)
 			if commitErr != nil {
 				return nil
 			}
@@ -285,7 +290,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func structuredMergeCommitMessage(poll providers.PullRequestPollResult) (string, string, error) {
+func structuredMergeCommitMessage(poll providers.PullRequestPollResult, verdictAuthor string) (string, string, error) {
 	title := strings.TrimSpace(poll.Title)
 	if title == "" {
 		return "", "", fmt.Errorf("pull request title is empty")
@@ -293,7 +298,7 @@ func structuredMergeCommitMessage(poll providers.PullRequestPollResult) (string,
 
 	var verdict *apiv1.Verdict
 	for i := len(poll.CommentsSince) - 1; i >= 0; i-- {
-		candidate, ok := parseVerdictComment(poll.CommentsSince[i].Body)
+		candidate, ok := parseTrustedVerdictComment(poll.CommentsSince[i].Author, poll.CommentsSince[i].Body, verdictAuthor)
 		if !ok || candidate.Decision != apiv1.VerdictPass {
 			continue
 		}
