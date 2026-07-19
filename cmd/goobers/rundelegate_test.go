@@ -740,6 +740,20 @@ func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
 	if _, err := pollTriggerResponse(context.Background(), schedulerDir, firstID, testResponseWait); err != nil {
 		t.Fatalf("first pollTriggerResponse: %v", err)
 	}
+	// The first request's RESPONSE lands as soon as Trigger returns a run id,
+	// which is strictly before that run's slot is released: dispatch hands the
+	// Starter call to a goroutine and only its `defer ReleaseWorkflow` frees
+	// the max-parallel slot (see TriggerRejectedError.Transient's doc). So
+	// polling the response above proves nothing about capacity. Without this
+	// Wait the second trigger races that release and, whenever the goroutine
+	// is slow to be scheduled (ordinary CI load), is refused for max-parallel
+	// — a TRANSIENT reason, which the sweep requeues rather than answering,
+	// leaving this test to burn the full testResponseWait failsafe and fail
+	// on a timeout instead of the budget refusal it is actually about
+	// (#958/#962). Waiting for the dispatch to finish makes the slot
+	// deterministically free, so the only refusal left to observe is the
+	// spent hourly budget.
+	sched.Wait()
 
 	secondID, err := writeTriggerRequest(schedulerDir, "implement")
 	if err != nil {
