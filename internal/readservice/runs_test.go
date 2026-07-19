@@ -344,6 +344,13 @@ func TestRunDetailEventsAttemptsAndPinnedGraph(t *testing.T) {
 		detail.Escalation.TerminalReason != "repass budget exhausted" {
 		t.Fatalf("escalation = %+v", detail.Escalation)
 	}
+	traceEscalation, err := service.RunEscalation(context.Background(), "run-detail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traceEscalation == nil || traceEscalation.RepassCount != 4 {
+		t.Fatalf("trace escalation = %+v", traceEscalation)
+	}
 
 	events, err := service.RunEvents(context.Background(), "run-detail")
 	if err != nil {
@@ -906,6 +913,13 @@ func TestDirectStageEscalationIncludesCause(t *testing.T) {
 		detail.Escalation.Selector.Name != "implement" ||
 		detail.Escalation.TerminalReason != "split this work" {
 		t.Fatalf("direct escalation = %+v", detail.Escalation)
+	}
+	traceEscalation, err := service.RunEscalation(context.Background(), "run-direct-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traceEscalation == nil || traceEscalation.RepassCount != 0 {
+		t.Fatalf("trace escalation = %+v", traceEscalation)
 	}
 	events, err := service.RunEvents(context.Background(), "run-direct-escalation")
 	if err != nil {

@@ -16,7 +16,9 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -39,6 +41,32 @@ type RunPhase = journal.RunPhase
 
 // TriggerKind keeps HTTP adapters on the shared read contract.
 type TriggerKind = journal.TriggerKind
+
+// OfflineRuns is the shared run-diagnostics boundary used by CLI adapters
+// when no daemon is running.
+type OfflineRuns interface {
+	ListRuns(context.Context, RunListOptions) (RunList, error)
+	RunIDs(context.Context) ([]string, error)
+	GetRun(context.Context, string) (RunDetail, error)
+	RunMetadata(context.Context, string) (journal.RunIdentity, *journal.State, error)
+	RunEvents(context.Context, string) (EventList, error)
+	StageAttempts(context.Context, string, string) (AttemptList, error)
+	Artifact(context.Context, string, string) (ArtifactContent, error)
+	RunTranscripts(context.Context, string, string) ([]TranscriptContent, error)
+	RunSpans(context.Context, string) ([]rollup.SpanSummary, error)
+	RunEscalation(context.Context, string) (*TraceEscalation, error)
+	RunTraceRepassCount(context.Context, string) (int, error)
+}
+
+// NewOfflineRuns constructs the in-process run reader used for historic CLI
+// inspection. Run reads depend only on the journal layout, not current config.
+func NewOfflineRuns(layout instance.Layout) (OfflineRuns, error) {
+	return &Local{
+		sources: LocalSources{Layout: layout},
+		ready:   func() bool { return false },
+		now:     time.Now,
+	}, nil
+}
 
 // RunListOptions controls deterministic run filtering and keyset pagination.
 type RunListOptions struct {
@@ -139,6 +167,7 @@ type RunEvent struct {
 	RunID        string                 `json:"runId,omitempty"`
 	Reason       string                 `json:"reason,omitempty"`
 	Raw          json.RawMessage        `json:"raw,omitempty"`
+	JournalEvent *journal.Event         `json:"-"`
 }
 
 // ArtifactMetadata deliberately omits journal-relative paths. Content is
@@ -181,6 +210,21 @@ type StageAttempt struct {
 type ArtifactContent struct {
 	Metadata ArtifactMetadata
 	Bytes    []byte
+}
+
+// TranscriptContent is one verified agent transcript recorded in a run.
+type TranscriptContent struct {
+	Seq   uint64
+	Stage string
+	Name  string
+	Bytes []byte
+}
+
+// TraceEscalation retains the legacy CLI's gate-specific repass count and
+// reviewer rationale without extending the HTTP run-detail contract.
+type TraceEscalation struct {
+	RepassCount            int
+	LastNeedsChangesReason string
 }
 
 type runCursor struct {
@@ -307,6 +351,32 @@ func (s *Local) runSummaries(ctx context.Context, skipUnreadable bool) ([]RunSum
 	return summaries, nil
 }
 
+// RunIDs returns valid run directory names in lexical order without opening
+// their journals. It supports prefix resolution without making unrelated
+// corrupt journals block an otherwise valid trace lookup.
+func (s *Local) RunIDs(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(s.sources.Layout.RunsDir())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("read runs directory: %w", err)
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if entry.IsDir() && apiv1.ValidRunID(entry.Name()) {
+			ids = append(ids, entry.Name())
+		}
+	}
+	return ids, nil
+}
+
 // GetRun returns one journal-derived run detail.
 func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 	if err := ctx.Err(); err != nil {
@@ -330,6 +400,23 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 		GraphStatus: status,
 		Escalation:  escalationCause(summary, run.records),
 	}, nil
+}
+
+// RunMetadata returns the exact recorded identity and optional checkpoint used
+// by legacy CLI presentation. RunDetail remains the canonical product model.
+func (s *Local) RunMetadata(ctx context.Context, runID string) (journal.RunIdentity, *journal.State, error) {
+	if err := ctx.Err(); err != nil {
+		return journal.RunIdentity{}, nil, err
+	}
+	run, err := s.openRun(runID)
+	if err != nil {
+		return journal.RunIdentity{}, nil, err
+	}
+	state, err := run.reader.State()
+	if err != nil {
+		return run.identity, nil, nil
+	}
+	return run.identity, &state, nil
 }
 
 // RunEvents returns ordered event projections for a run.
@@ -452,6 +539,168 @@ func (s *Local) Artifact(ctx context.Context, runID, digest string) (ArtifactCon
 		return ArtifactContent{}, fmt.Errorf("%w: %w", ErrArtifactIntegrity, err)
 	}
 	return ArtifactContent{Metadata: entry.metadata, Bytes: data}, nil
+}
+
+// RunTranscripts returns verified transcript blobs in durable event order. An
+// optional stage limits reads before any blob is opened.
+func (s *Local) RunTranscripts(ctx context.Context, runID, stage string) ([]TranscriptContent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	run, err := s.openRun(runID)
+	if err != nil {
+		return nil, err
+	}
+	transcripts := make([]TranscriptContent, 0)
+	for _, record := range run.records {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		event := record.Event
+		recordedStage := strings.TrimPrefix(event.Stage, runID+":")
+		if !event.KnownSchema() ||
+			event.Type != journal.EventSpanRecorded ||
+			(event.Name != "transcript" && !strings.HasSuffix(event.Name, ".transcript")) ||
+			(stage != "" && recordedStage != stage) {
+			continue
+		}
+		if event.Ref == nil {
+			return nil, fmt.Errorf(
+				"transcript for stage %q at seq %d is unavailable: span event has no content reference",
+				recordedStage,
+				event.Seq,
+			)
+		}
+		data, err := run.reader.SpanBytes(*event.Ref)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"transcript for stage %q at seq %d is unavailable: %w",
+				recordedStage,
+				event.Seq,
+				err,
+			)
+		}
+		if len(data) == 0 {
+			return nil, fmt.Errorf(
+				"transcript for stage %q at seq %d is unavailable: recorded content is empty",
+				recordedStage,
+				event.Seq,
+			)
+		}
+		transcripts = append(transcripts, TranscriptContent{
+			Seq:   event.Seq,
+			Stage: recordedStage,
+			Name:  event.Name,
+			Bytes: data,
+		})
+	}
+	return transcripts, nil
+}
+
+// RunSpans returns rollup-ingested spans for one run. A missing telemetry
+// database is a valid empty result for telemetry-disabled instances.
+func (s *Local) RunSpans(ctx context.Context, runID string) ([]rollup.SpanSummary, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := s.openRun(runID); err != nil {
+		return nil, err
+	}
+	empty := []rollup.SpanSummary{}
+	db := s.sources.Telemetry
+	if db == nil {
+		if _, err := os.Stat(s.sources.Layout.TelemetryDB()); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return empty, nil
+			}
+			return nil, err
+		}
+		var err error
+		db, err = rollup.Open(s.sources.Layout.TelemetryDB())
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = db.Close() }()
+	}
+	spans, err := db.Spans(runID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if spans == nil {
+		return empty, nil
+	}
+	return spans, nil
+}
+
+// RunEscalation returns the gate-specific values required by the legacy trace
+// summary. The canonical RunDetail remains unchanged for HTTP consumers.
+func (s *Local) RunEscalation(ctx context.Context, runID string) (*TraceEscalation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	run, err := s.openRun(runID)
+	if err != nil {
+		return nil, err
+	}
+	summary, err := summarizeRun(run, s.now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if summary.Phase != journal.PhaseEscalated {
+		return nil, nil
+	}
+	result := &TraceEscalation{}
+	for i := len(run.records) - 1; i >= 0; i-- {
+		event := run.records[i].Event
+		if !event.KnownSchema() ||
+			event.Type != journal.EventGateEvaluated ||
+			event.Target != workflow.TargetEscalate {
+			continue
+		}
+		result.RepassCount, err = gateRepassCount(run.records[:i+1], event.Gate)
+		if err != nil {
+			return nil, err
+		}
+		result.LastNeedsChangesReason, err = lastNeedsChangesReason(run.reader, run.records[:i+1], event.Gate)
+		if err != nil {
+			return nil, err
+		}
+		break
+	}
+	return result, nil
+}
+
+// RunTraceRepassCount preserves the V0 trace contract, where a repass is a
+// gate transition back to "implement". Journals for workflows with a different
+// repass target use the canonical repeated-stage count.
+func (s *Local) RunTraceRepassCount(ctx context.Context, runID string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	run, err := s.openRun(runID)
+	if err != nil {
+		return 0, err
+	}
+	summary, err := summarizeRun(run, s.now().UTC())
+	if err != nil {
+		return 0, err
+	}
+	legacyCount := 0
+	for _, record := range run.records {
+		event := record.Event
+		if event.KnownSchema() &&
+			event.Type == journal.EventGateEvaluated &&
+			event.Target == "implement" {
+			legacyCount++
+		}
+	}
+	if legacyCount > 0 {
+		return legacyCount, nil
+	}
+	return summary.RepassCount, nil
 }
 
 func (s *Local) openRun(runID string) (runRead, error) {
@@ -677,6 +926,76 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) *Escalat
 	return cause
 }
 
+func gateRepassCount(records []journal.EventRecord, gate string) (int, error) {
+	if len(records) == 0 {
+		return 0, fmt.Errorf("repass count for gate %q: no events", gate)
+	}
+	if raw, ok := records[len(records)-1].Event.Runner["repassAttempt"]; ok {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return 0, fmt.Errorf("marshal repass count for gate %q: %w", gate, err)
+		}
+		var count int
+		if err := json.Unmarshal(data, &count); err != nil {
+			return 0, fmt.Errorf("parse repass count for gate %q: %w", gate, err)
+		}
+		if count < 0 {
+			return 0, fmt.Errorf("invalid repass count %d for gate %q", count, gate)
+		}
+		return count, nil
+	}
+
+	count := 0
+	for _, record := range records {
+		event := record.Event
+		if !event.KnownSchema() || event.Type != journal.EventGateEvaluated || event.Gate != gate {
+			continue
+		}
+		if event.Verdict == string(apiv1.VerdictPass) {
+			count = 0
+		} else {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func lastNeedsChangesReason(reader *journal.Reader, records []journal.EventRecord, gate string) (string, error) {
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() ||
+			event.Type != journal.EventGateEvaluated ||
+			event.Gate != gate ||
+			event.Verdict != string(apiv1.VerdictNeedsChanges) {
+			continue
+		}
+		if event.Ref == nil {
+			break
+		}
+		data, err := reader.ArtifactBytes(*event.Ref)
+		if err != nil {
+			return "", fmt.Errorf("read verdict for gate %q: %w", gate, err)
+		}
+		var verdict apiv1.Verdict
+		if err := json.Unmarshal(data, &verdict); err != nil {
+			return "", fmt.Errorf("parse verdict for gate %q: %w", gate, err)
+		}
+		if verdict.Decision != apiv1.VerdictNeedsChanges {
+			return "", fmt.Errorf(
+				"verdict artifact for gate %q has decision %q, want %q",
+				gate,
+				verdict.Decision,
+				apiv1.VerdictNeedsChanges,
+			)
+		}
+		if reason := strings.TrimSpace(verdict.Rationale); reason != "" {
+			return reason, nil
+		}
+		return strings.TrimSpace(verdict.Summary), nil
+	}
+	return "", nil
+}
+
 func gateEscalationReason(event journal.Event) string {
 	escalated, _ := event.Runner["escalated"].(bool)
 	if escalated {
@@ -735,6 +1054,8 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 		projected.Raw = append(json.RawMessage(nil), record.Raw...)
 		return projected
 	}
+	journalEvent := event
+	projected.JournalEvent = &journalEvent
 
 	projected.Stage = event.Stage
 	projected.Attempt = event.Attempt
