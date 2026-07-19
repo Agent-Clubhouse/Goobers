@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,6 +31,11 @@ type blockedRecord struct {
 	Stage      string    `json:"stage,omitempty"`
 	Reason     string    `json:"reason,omitempty"`
 	RecordedAt time.Time `json:"recordedAt"`
+}
+
+type parkedDependency struct {
+	ItemID   string
+	Blockers []string
 }
 
 func blockedRecordsPath(l instance.Layout) string {
@@ -201,6 +207,46 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 		out = append(out, item)
 	}
 	return out, changed, lookupErrs
+}
+
+func refreshBlockedEligibility(
+	ctx context.Context,
+	l instance.Layout,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	eligible []providers.WorkItem,
+) ([]providers.WorkItem, error) {
+	filtered := eligible
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
+		recs, err := loadBlockedRecords(blockedRecordsPath(l))
+		if err != nil {
+			return err
+		}
+		var changed bool
+		filtered, changed, _ = filterBlockedEligibility(ctx, provider, repo, eligible, recs)
+		if !changed {
+			return nil
+		}
+		return saveBlockedRecords(blockedRecordsPath(l), recs)
+	})
+	return filtered, err
+}
+
+func listParkedDependencies(l instance.Layout) ([]parkedDependency, error) {
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		return nil, err
+	}
+	parked := make([]parkedDependency, 0, len(recs))
+	for itemID, rec := range recs {
+		blockers := append([]string(nil), rec.Blockers...)
+		sort.Strings(blockers)
+		parked = append(parked, parkedDependency{ItemID: itemID, Blockers: blockers})
+	}
+	sort.Slice(parked, func(i, j int) bool {
+		return parked[i].ItemID < parked[j].ItemID
+	})
+	return parked, nil
 }
 
 // updateBlockedRecords applies fn to the records map under the instance's

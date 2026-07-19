@@ -29,8 +29,12 @@ func TestStatusAndRunsListShareRunTable(t *testing.T) {
 		t.Fatalf("status code = %d, stderr = %q; runs list code = %d, stderr = %q",
 			statusCode, statusStderr, runsCode, runsStderr)
 	}
-	if runsStdout != statusStdout {
-		t.Fatalf("runs list stdout = %q, want byte-identical status output %q", runsStdout, statusStdout)
+	const parkedSummary = "Issues parked on learned dependencies: 0\n"
+	if !strings.HasPrefix(statusStdout, parkedSummary) {
+		t.Fatalf("status stdout = %q, want parked dependency summary", statusStdout)
+	}
+	if runsStdout != strings.TrimPrefix(statusStdout, parkedSummary) {
+		t.Fatalf("runs list stdout = %q, want status run table %q", runsStdout, statusStdout)
 	}
 	newIndex := strings.Index(statusStdout, "new-run")
 	middleIndex := strings.Index(statusStdout, "middle-run")
