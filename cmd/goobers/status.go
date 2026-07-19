@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/signals"
 )
 
@@ -30,49 +31,12 @@ const (
 	statusWatchRowFormat       = "%-14.14s  %-18.18s  %-8.8s  %-9.9s  %-20.20s"
 )
 
-// providerQuotaResumePrefix matches the Reason string Conditions.Admit
-// writes for a #712 provider-quota skip (internal/localscheduler/
-// conditions.go): the stable ReasonProviderQuota prefix, plus the resume
-// time this package needs to recover from the journal — `goobers status` is
-// a separate process invocation from the live daemon, so it can't read
-// ProviderQuotaState's in-memory value directly and must reconstruct it from
-// what was durably journaled.
-const providerQuotaResumePrefix = localscheduler.ReasonProviderQuota + ": resumes at "
-
-// parseProviderQuotaResumeTime extracts the resume time from a tick.skipped
-// event's Reason, when it's a #712 provider-quota skip. ok is false for any
-// other reason string, or one that doesn't parse.
-func parseProviderQuotaResumeTime(reason string) (t time.Time, ok bool) {
-	if !strings.HasPrefix(reason, providerQuotaResumePrefix) {
-		return time.Time{}, false
-	}
-	t, err := time.Parse(time.RFC3339, strings.TrimPrefix(reason, providerQuotaResumePrefix))
-	if err != nil {
-		return time.Time{}, false
-	}
-	return t, true
-}
-
-// providerQuotaStatusLine scans the instance journal's events (in seq order)
-// for the most recent tick.skipped provider-quota skip and, only while its
-// resume time is still ahead of now, renders a status line for it — "" when
-// the quota was never recorded exhausted, or its resume time already passed
-// (dispatch has resumed; no line needed).
-func providerQuotaStatusLine(events []journal.Event, now time.Time) string {
-	var resetAt time.Time
-	var found bool
-	for _, ev := range events {
-		if ev.Type != journal.EventTickSkipped {
-			continue
-		}
-		if t, ok := parseProviderQuotaResumeTime(ev.Reason); ok {
-			resetAt, found = t, true
-		}
-	}
-	if !found || !now.Before(resetAt) {
+func providerQuotaStatusLine(status readservice.SchedulerStatus, now time.Time) string {
+	if status.ProviderQuotaResumeAt == nil || !now.Before(*status.ProviderQuotaResumeAt) {
 		return ""
 	}
-	return "GitHub quota exhausted — resuming dispatch at " + resetAt.UTC().Format(time.RFC3339) + "\n"
+	return "GitHub quota exhausted — resuming dispatch at " +
+		status.ProviderQuotaResumeAt.UTC().Format(time.RFC3339) + "\n"
 }
 
 type statusJSONSummary struct {
@@ -106,6 +70,24 @@ type statusOptions struct {
 	phases   map[journal.RunPhase]struct{}
 	workflow string
 	limit    int
+}
+
+func listStatusRuns(ctx context.Context, reads readservice.StatusReader) ([]runSummary, error) {
+	summaries, err := reads.ListStatusRuns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runs := make([]runSummary, len(summaries))
+	for i, run := range summaries {
+		runs[i] = runSummary{
+			RunID:     run.ID,
+			Workflow:  run.Workflow,
+			Gaggle:    run.Gaggle,
+			Phase:     run.Phase,
+			StartedAt: run.StartedAt,
+		}
+	}
+	return runs, nil
 }
 
 func runStatus(args []string, stdout, stderr io.Writer) int {
@@ -203,7 +185,8 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return reportDaemonStatus(l, time.Now(), stdout, stderr)
 	}
 
-	if _, err := instance.LoadConfig(l.ConfigFile()); err != nil {
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
 		pf(stderr, "error: invalid instance.yaml: %v\n", err)
 		return 1
 	}
@@ -223,6 +206,16 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: invalid workflow: %v\n", err)
 		return 1
 	}
+	reads, err := readservice.NewLocal(readservice.LocalSources{
+		Layout:      l,
+		Config:      cfg,
+		Definitions: set,
+		Validation:  report,
+	}, func() bool { return true })
+	if err != nil {
+		pf(stderr, "error: initialize read service: %v\n", err)
+		return 2
+	}
 
 	options := statusOptions{
 		phases:   phases,
@@ -231,7 +224,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 
 	loadRuns := func() ([]runSummary, error) {
-		return listRuns(l.RunsDir())
+		return listStatusRuns(context.Background(), reads)
 	}
 	// #712: surface an active provider-quota pause — best-effort (a
 	// missing/unreadable instance log just means no line, never a status
@@ -243,11 +236,11 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		if !supportsWatch {
 			return ""
 		}
-		events, err := journal.ReadInstanceLog(l.SchedulerDir())
+		status, err := reads.SchedulerStatus(context.Background())
 		if err != nil {
 			return ""
 		}
-		return providerQuotaStatusLine(events, time.Now())
+		return providerQuotaStatusLine(status, time.Now())
 	}
 	if supportsWatch && *watch {
 		// Config warnings are a static, one-time-per-invocation check (unlike

@@ -219,35 +219,13 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 		}
 		cursor = &decoded
 	}
-	observedAt := s.now().UTC()
 
-	entries, err := os.ReadDir(s.sources.Layout.RunsDir())
+	allSummaries, err := s.runSummaries(ctx, false)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return RunList{Runs: []RunSummary{}}, nil
-		}
-		return RunList{}, fmt.Errorf("read runs directory: %w", err)
+		return RunList{}, err
 	}
-
-	summaries := make([]RunSummary, 0, len(entries))
-	for _, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return RunList{}, err
-		}
-		if !entry.IsDir() {
-			continue
-		}
-		run, err := s.openRun(entry.Name())
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				continue
-			}
-			return RunList{}, err
-		}
-		summary, err := summarizeRun(run, observedAt)
-		if err != nil {
-			return RunList{}, fmt.Errorf("summarize run %q: %w", entry.Name(), err)
-		}
+	summaries := make([]RunSummary, 0, len(allSummaries))
+	for _, summary := range allSummaries {
 		if options.Gaggle != "" && summary.Gaggle != options.Gaggle {
 			continue
 		}
@@ -262,13 +240,6 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 		}
 		summaries = append(summaries, summary)
 	}
-
-	sort.Slice(summaries, func(i, j int) bool {
-		if summaries[i].StartedAt.Equal(summaries[j].StartedAt) {
-			return summaries[i].ID < summaries[j].ID
-		}
-		return summaries[i].StartedAt.After(summaries[j].StartedAt)
-	})
 
 	if cursor != nil {
 		start := sort.Search(len(summaries), func(i int) bool {
@@ -290,6 +261,50 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 		result.Runs = []RunSummary{}
 	}
 	return result, nil
+}
+
+func (s *Local) runSummaries(ctx context.Context, skipUnreadable bool) ([]RunSummary, error) {
+	entries, err := os.ReadDir(s.sources.Layout.RunsDir())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []RunSummary{}, nil
+		}
+		return nil, fmt.Errorf("read runs directory: %w", err)
+	}
+
+	observedAt := s.now().UTC()
+	summaries := make([]RunSummary, 0, len(entries))
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		run, err := s.openRun(entry.Name())
+		if err != nil {
+			if skipUnreadable || errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		summary, err := summarizeRun(run, observedAt)
+		if err != nil {
+			if skipUnreadable {
+				continue
+			}
+			return nil, fmt.Errorf("summarize run %q: %w", entry.Name(), err)
+		}
+		summaries = append(summaries, summary)
+	}
+
+	sort.Slice(summaries, func(i, j int) bool {
+		if summaries[i].StartedAt.Equal(summaries[j].StartedAt) {
+			return summaries[i].ID < summaries[j].ID
+		}
+		return summaries[i].StartedAt.After(summaries[j].StartedAt)
+	})
+	return summaries, nil
 }
 
 // GetRun returns one journal-derived run detail.
