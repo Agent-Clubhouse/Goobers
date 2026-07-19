@@ -149,7 +149,12 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// theory that the #845 post-mortem falsified — the real cause was terminal
 	// job control (SIGTTOU), fixed by Setsid (#846/#850). The serialize input
 	// was removed so local-ci runs fully parallel again.
-	const wantDigest = "sha256:9d2105113119af5d1826ed72aa50401a8678ab3e0d7565f66aa30f5de3cac2cc"
+	// #929: ci-gate's timeout branch now routes through park-escalated rather
+	// than straight at "@escalate". The run's terminal phase is unchanged, but
+	// the issue-side bookkeeping (clear ready, release claimed, apply
+	// needs-human) only runs if that stage does — see
+	// TestImplementationEscalatingBranchesRunIssueBookkeeping.
+	const wantDigest = "sha256:892985d152be241747ab4896487aa974b5c099c3f86eff3f4435b1f4300ae536"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
