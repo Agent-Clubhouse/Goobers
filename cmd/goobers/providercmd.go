@@ -268,28 +268,23 @@ func failProviderStage(stderr io.Writer, what string, err error, resultFileDefau
 	return 1
 }
 
-// withClaimLock serializes fn against every other process (a concurrent
-// `goobers backlog-query` from a racing run, or `goobers up`'s periodic
-// RecoverExpired) touching the same instance's claim ledger, via a blocking
-// exclusive flock on lockPath. localscheduler.ClaimLedger's own mutex is
-// documented as in-process only ("designed for one embedded scheduler per
-// instance... not cross-process file locking") — but backlog-query runs as
-// its own OS process per stage dispatch, so two concurrent runs'
-// backlog-query subprocesses each open an independent ClaimLedger instance
-// against the SAME claims.json file: without this lock, both could read the
-// file before either persists, and the second write would silently clobber
-// the first's claim (a lost update), defeating "one claim wins" (#131's
-// acceptance criterion). A blocking (not acquireInstanceLock's non-blocking)
-// flock is deliberate: the loser here should wait its turn and get a
-// consistent read, not fail outright the way a second `goobers up` should.
+// withClaimLock protects only local claim-ledger and blocked-record access.
+// Callers must resolve provider and other network state before entering fn.
 func withClaimLock(lockPath string, fn func() error) error {
+	return withFileLock(lockPath, fn)
+}
+
+// withFileLock serializes fn against every other process touching lockPath.
+// A blocking flock is deliberate: the loser waits for a consistent local
+// read/write rather than failing like a second `goobers up` process should.
+func withFileLock(lockPath string, fn func() error) error {
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		return fmt.Errorf("open claim lock file: %w", err)
+		return fmt.Errorf("open lock file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("acquire claim lock: %w", err)
+		return fmt.Errorf("acquire lock: %w", err)
 	}
 	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
 	return fn()

@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -88,6 +93,26 @@ func blockedFilterFixture(t *testing.T) (*fakeGitHubServer, *providers.GitHubPro
 	provider := server.newGitHubProvider("test-token")
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	return server, provider, repo
+}
+
+type stalledIssueClient struct {
+	next    providers.HTTPClient
+	path    string
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *stalledIssueClient) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, c.path) {
+		c.once.Do(func() { close(c.started) })
+		select {
+		case <-c.release:
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		}
+	}
+	return c.next.Do(req)
 }
 
 func TestFilterBlockedEligibilityNoRecordsIsNoop(t *testing.T) {
@@ -345,5 +370,133 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 	// only itself, which is the entire point of the change.
 	if len(filtered) != 1 || filtered[0].ID != "511" {
 		t.Fatalf("filtered = %v, want only 511 — record 510 must still skip despite the bad sibling key", filtered)
+	}
+}
+
+func TestResolvedBlockedRecordDoesNotDeleteConcurrentReplacement(t *testing.T) {
+	root := initDemo(t)
+	l := layoutFor(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	observed := blockedRecord{
+		Blockers:   []string{"441"},
+		RunID:      "old-run",
+		RecordedAt: time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC),
+	}
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{"510": observed}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := snapshotBlockedRecords(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replacement := blockedRecord{
+		Blockers:   []string{"442"},
+		RunID:      "new-run",
+		RecordedAt: time.Date(2026, 7, 18, 11, 0, 0, 0, time.UTC),
+	}
+	if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
+		recs["510"] = replacement
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearResolvedBlockedRecords(l, snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	recs, err := snapshotBlockedRecords(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := recs["510"]; !ok || !sameBlockedRecord(got, replacement) {
+		t.Fatalf("concurrent replacement = (%+v, %v), want preserved %+v", got, ok, replacement)
+	}
+}
+
+func TestStalledBlockedStateProviderCallDoesNotDelayFinalizer(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(441, "prerequisite", "goobers:approved")
+	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
+
+	l := layoutFor(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
+		"510": {Blockers: []string{"441"}, RunID: "prior-run"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.Claim("900", "terminal-run", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed terminal claim: ok=%v err=%v", ok, err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "query-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	t.Chdir(t.TempDir())
+
+	stalled := &stalledIssueClient{
+		path:    "/issues/510",
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	releaseProvider := sync.OnceFunc(func() { close(stalled.release) })
+	defer releaseProvider()
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		provider := baseFactory(token, opts...)
+		stalled.next = provider.Client
+		provider.Client = stalled
+		return provider
+	}
+	t.Cleanup(func() { newGitHubProvider = baseFactory })
+
+	var stdout, stderr bytes.Buffer
+	queryDone := make(chan int, 1)
+	go func() {
+		queryDone <- runBacklogQuery([]string{"--claim", root}, &stdout, &stderr)
+	}()
+
+	select {
+	case <-stalled.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for blocked-state provider call")
+	}
+
+	finalizerDone := make(chan error, 1)
+	go func() {
+		finalizerDone <- releaseClaimsForRun(l, nil, "terminal-run")
+	}()
+	select {
+	case err := <-finalizerDone:
+		if err != nil {
+			t.Fatalf("finalize terminal claim: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		releaseProvider()
+		<-queryDone
+		t.Fatal("terminal finalizer waited for a stalled provider call to release the claims lock")
+	}
+
+	releaseProvider()
+	if code := <-queryDone; code != 0 {
+		t.Fatalf("backlog query code = %d, stderr = %q", code, stderr.String())
+	}
+	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := reopened.Lookup("900"); held {
+		t.Fatalf("terminal claim still held after finalizer: %+v", entry)
 	}
 }

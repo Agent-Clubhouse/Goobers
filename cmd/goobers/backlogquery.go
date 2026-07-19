@@ -221,29 +221,34 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		eligible = backstopped
 	}
 
-	// Dependency-aware skip (#552): an item already reported blocked (#545)
-	// on a still-open prerequisite is never re-claimed to re-derive the
-	// identical conclusion every tick — self-heals the moment every blocker
-	// closes, no human involved. Shares claims.lock with the ledger below
-	// (blocked.json's own convention) since a concurrent tick's claim and a
-	// concurrent tick's blocked-write must not race each other.
-	err = withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
-		recs, lerr := loadBlockedRecords(blockedRecordsPath(l))
-		if lerr != nil {
-			return lerr
+	// Dependency-aware skip (#552): snapshot blocked.json under its local
+	// lock, resolve every provider-backed issue state after releasing it, then
+	// conditionally clear only records that were not concurrently replaced.
+	// A stalled provider must never prevent terminal claim finalization.
+	observedRecords, err := snapshotBlockedRecords(l)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	remainingRecords := make(map[string]blockedRecord, len(observedRecords))
+	for itemID, record := range observedRecords {
+		remainingRecords[itemID] = record
+	}
+	eligible, changed, blockedWarnings := filterBlockedEligibility(ctx, provider, repo, eligible, remainingRecords)
+	for _, warning := range blockedWarnings {
+		// Warn, never fail: blocked.json is a selection optimization, and a
+		// record we cannot resolve must not stall every backlog tick (#971).
+		pf(stderr, "warning: blocked records: %s\n", warning)
+	}
+	if changed {
+		resolvedRecords := make(map[string]blockedRecord)
+		for itemID, record := range observedRecords {
+			if _, remains := remainingRecords[itemID]; !remains {
+				resolvedRecords[itemID] = record
+			}
 		}
-		filtered, changed, blockedWarnings := filterBlockedEligibility(ctx, provider, repo, eligible, recs)
-		for _, w := range blockedWarnings {
-			// Warn, never fail: blocked.json is a selection optimization, and a
-			// record we cannot resolve must not stall every backlog tick (#971).
-			pf(stderr, "warning: blocked records: %s\n", w)
-		}
-		eligible = filtered
-		if !changed {
-			return nil
-		}
-		return saveBlockedRecords(blockedRecordsPath(l), recs)
-	})
+		err = clearResolvedBlockedRecords(l, resolvedRecords)
+	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

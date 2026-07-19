@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -88,6 +89,39 @@ func saveBlockedRecords(path string, recs map[string]blockedRecord) error {
 		return fmt.Errorf("rename %s: %w", tmp, err)
 	}
 	return nil
+}
+
+func snapshotBlockedRecords(l instance.Layout) (map[string]blockedRecord, error) {
+	var recs map[string]blockedRecord
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
+		var err error
+		recs, err = loadBlockedRecords(blockedRecordsPath(l))
+		return err
+	})
+	return recs, err
+}
+
+func clearResolvedBlockedRecords(l instance.Layout, resolved map[string]blockedRecord) error {
+	return updateBlockedRecords(l, func(current map[string]blockedRecord) bool {
+		changed := false
+		for itemID, observed := range resolved {
+			record, ok := current[itemID]
+			if !ok || !sameBlockedRecord(record, observed) {
+				continue
+			}
+			delete(current, itemID)
+			changed = true
+		}
+		return changed
+	})
+}
+
+func sameBlockedRecord(a, b blockedRecord) bool {
+	return slices.Equal(a.Blockers, b.Blockers) &&
+		a.RunID == b.RunID &&
+		a.Stage == b.Stage &&
+		a.Reason == b.Reason &&
+		a.RecordedAt.Equal(b.RecordedAt)
 }
 
 // filterBlockedEligibility removes from eligible any item with a recorded
