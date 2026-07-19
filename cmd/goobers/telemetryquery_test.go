@@ -58,11 +58,11 @@ func TestTelemetryQueryMissingRollupIsNoWork(t *testing.T) {
 	if err := os.Remove(instance.NewLayout(root).TelemetryDB()); err != nil {
 		t.Fatal(err)
 	}
-	assertTelemetryQueryNoWork(t, root, "24h")
+	assertTelemetryQueryNoWork(t, root, "24h", telemetryQueryNoRollupNote)
 }
 
 func TestTelemetryQueryFreshRollupIsNoWork(t *testing.T) {
-	assertTelemetryQueryNoWork(t, initDemo(t), "24h")
+	assertTelemetryQueryNoWork(t, initDemo(t), "24h", telemetryQueryEmptyWindowNote)
 }
 
 func TestTelemetryQueryEmptyWindowIsNoWork(t *testing.T) {
@@ -72,7 +72,7 @@ func TestTelemetryQueryEmptyWindowIsNoWork(t *testing.T) {
 	if err := rollup.Rebuild(l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
 		t.Fatalf("rebuild rollup: %v", err)
 	}
-	assertTelemetryQueryNoWork(t, root, "1ns")
+	assertTelemetryQueryNoWork(t, root, "1ns", telemetryQueryEmptyWindowNote)
 }
 
 func TestTelemetryQueryCorruptRollupIsError(t *testing.T) {
@@ -89,7 +89,7 @@ func TestTelemetryQueryCorruptRollupIsError(t *testing.T) {
 	}
 }
 
-func assertTelemetryQueryNoWork(t *testing.T, root, window string) {
+func assertTelemetryQueryNoWork(t *testing.T, root, window, wantNote string) {
 	t.Helper()
 	workDir := t.TempDir()
 	t.Chdir(workDir)
@@ -113,8 +113,8 @@ func assertTelemetryQueryNoWork(t *testing.T, root, window string) {
 	if !got.NoWork {
 		t.Fatalf("noWork = false, want true: %s", data)
 	}
-	if got.Note != telemetryQueryNoWorkNote {
-		t.Fatalf("note = %q, want %q", got.Note, telemetryQueryNoWorkNote)
+	if got.Note != wantNote {
+		t.Fatalf("note = %q, want %q", got.Note, wantNote)
 	}
 }
 
