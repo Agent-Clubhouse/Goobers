@@ -31,6 +31,7 @@ func TestRuntimeMutationCapabilityParity(t *testing.T) {
 func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	assertActionClass(t, cliSurfaceActions(), "init", apicontract.ActionConfigTime)
 	assertActionClass(t, cliSurfaceActions(), "up", apicontract.ActionDaemonLifecycle)
+	assertActionClass(t, cliSurfaceActions(), "dashboard", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, cliSurfaceActions(), "run", apicontract.ActionWorkflowExecution)
 	assertActionClass(t, cliSurfaceActions(), "run abort", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "scaffold goober", apicontract.ActionConfigTime)

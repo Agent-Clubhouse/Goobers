@@ -11,6 +11,19 @@ remaining prototype routes use static fixtures until their vertical slices land.
 
 ## Run it
 
+From an instance root, the production portal is one command:
+
+```bash
+goobers dashboard
+```
+
+Use `--no-open` to print the URL without launching a browser, `--port=auto` to
+increment past a conflict, and `--dev-assets=<dir>` to serve an alternate portal
+build. The command attaches to a live `goobers up` API when available and
+otherwise starts a standalone read-only service.
+
+For Vite development:
+
 ```bash
 npm --prefix portal install
 npm --prefix portal run dev
@@ -30,6 +43,9 @@ The production build and component tests are:
 npm --prefix portal test
 npm --prefix portal run build
 ```
+
+The production build writes `cmd/goobers/portal-dist`, which is embedded in the
+`goobers` binary.
 
 ## Feedback paths
 

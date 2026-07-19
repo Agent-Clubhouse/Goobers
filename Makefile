@@ -97,6 +97,8 @@ build: $(addprefix build-,$(CMDS))
 build-%:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/$* ./cmd/$*
 
+build-goobers: portal-build
+
 # Disable git fsync for the whole test run (#811). Every git subprocess the
 # suite spawns (throwaway fixtures + the runner's real worktree clones/commits)
 # operates on ephemeral scratch repos with zero durability needs, and fsync is
@@ -130,11 +132,17 @@ test:
 	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
 
 ## portal-ci: Install, type-check, build, and test the portal.
-.PHONY: portal-ci
-portal-ci:
+.PHONY: portal-install portal-build portal-test portal-ci
+portal-install:
 	$(NPM) --prefix portal ci --no-audit --no-fund
+
+portal-build: portal-install
 	$(NPM) --prefix portal run build
+
+portal-test: portal-install
 	$(NPM) --prefix portal test
+
+portal-ci: portal-build portal-test
 
 ## cover: Show total test coverage.
 .PHONY: cover

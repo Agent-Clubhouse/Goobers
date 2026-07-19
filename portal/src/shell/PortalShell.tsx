@@ -12,6 +12,10 @@ interface PortalShellProps {
 export function PortalShell({ activeArea, children, navigate }: PortalShellProps) {
   const { theme, toggleTheme } = useTheme();
   const mainContent = useRef<HTMLElement>(null);
+  const standalone =
+    document
+      .querySelector('meta[name="goobers-dashboard-mode"]')
+      ?.getAttribute("content") === "standalone";
 
   const skipToMainContent = (event: React.MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
@@ -73,8 +77,12 @@ export function PortalShell({ activeArea, children, navigate }: PortalShellProps
         <div className="sidebar-status">
           <div>
             <span>
-              <strong>Daemon API</strong>
-              <small>Connection state appears in each live view</small>
+              <strong>{standalone ? "Standalone read-only" : "Daemon API"}</strong>
+              <small>
+                {standalone
+                  ? "Daemon not running; reading this instance locally"
+                  : "Connection state appears in each live view"}
+              </small>
             </span>
           </div>
         </div>

@@ -23,6 +23,7 @@ beforeEach(() => {
     } satisfies Storage,
   });
   delete document.documentElement.dataset.theme;
+  document.querySelector('meta[name="goobers-dashboard-mode"]')?.remove();
 });
 
 describe("portal foundation", () => {
@@ -38,6 +39,18 @@ describe("portal foundation", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Daemon connected")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
+  });
+
+  it("labels standalone read-only mode in the portal chrome", async () => {
+    const mode = document.createElement("meta");
+    mode.name = "goobers-dashboard-mode";
+    mode.content = "standalone";
+    document.head.append(mode);
+
+    renderLiveApp();
+
+    expect(await screen.findByText("Standalone read-only")).toBeInTheDocument();
+    expect(screen.getByText("Daemon not running; reading this instance locally")).toBeInTheDocument();
   });
 
   it("opens a run from daemon data without later-slice controls", async () => {
