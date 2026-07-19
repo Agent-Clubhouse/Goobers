@@ -531,14 +531,16 @@ type ListPullRequestsRequest struct {
 	SkipCheckState bool `json:"skipCheckState,omitempty"`
 }
 
-// PullRequestSummary is one open PR as merge-review's selection stage sees
-// it — enough to filter eligibility (draft, labels, CI) without a second
-// round-trip per candidate. Reused as-is by #361's post-merge fan-out, which
-// only reads Number.
+// PullRequestSummary is one PR as merge-review's selection stage sees it —
+// enough to filter eligibility (draft, labels, CI) without a second round-trip
+// per candidate. ListPullRequests returns open PRs; bounded terminal-PR queries
+// also populate State and Merged for consumers that need current sibling state.
 type PullRequestSummary struct {
 	ID         string     `json:"id"`
 	Number     int        `json:"number"`
 	URL        string     `json:"url"`
+	State      string     `json:"state"`
+	Merged     bool       `json:"merged"`
 	Head       string     `json:"head"`
 	Base       string     `json:"base"`
 	HeadSHA    string     `json:"headSha"`
