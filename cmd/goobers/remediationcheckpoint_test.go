@@ -408,6 +408,7 @@ func TestRemediationCheckpointEscalationIncludesKnownSiblingOverlaps(t *testing.
 	now := time.Now().UTC()
 	mergedFinding := "Sibling PR #77 concurrently changes resume.go and must be reconciled."
 	openFinding := "PR #77 overlaps the same scheduler architecture."
+	legacyFinding := "PR #77 must wait for this branch to land first."
 	st := &remediationCheckpointServerState{
 		number: 77, headSHA: headSHA, baseSHA: baseSHA,
 		labels: []string{"goobers:needs-remediation"},
@@ -435,6 +436,16 @@ func TestRemediationCheckpointEscalationIncludesKnownSiblingOverlaps(t *testing.
 					}},
 				})},
 			},
+			{
+				number: 615, state: "open", updatedAt: now,
+				comments: []string{renderVerdictComment(apiv1.Verdict{
+					Decision: apiv1.VerdictNeedsChanges,
+					Findings: []apiv1.Finding{{
+						Severity: apiv1.SeverityInfo, Class: apiv1.FindingCrossPRBlocked,
+						Message: legacyFinding,
+					}},
+				})},
+			},
 		},
 	}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
@@ -456,14 +467,18 @@ func TestRemediationCheckpointEscalationIncludesKnownSiblingOverlaps(t *testing.
 	for _, want := range []string{
 		"Sibling PR #613 is **merged**", mergedFinding,
 		"Sibling PR #614 is **open**", openFinding,
+		"Sibling PR #615 is **open**", legacyFinding,
 	} {
 		if !strings.Contains(comment, want) {
 			t.Fatalf("escalation comment = %q, want %q", comment, want)
 		}
 	}
 	state, ok := parseRemediationStateComment(comment)
-	if !ok || !strings.Contains(state.SiblingOverlapContext, "PR #613") || !strings.Contains(state.SiblingOverlapContext, "PR #614") {
-		t.Fatalf("escalation state = %+v, ok = %v, want both persisted sibling overlaps", state, ok)
+	if !ok ||
+		!strings.Contains(state.SiblingOverlapContext, "PR #613") ||
+		!strings.Contains(state.SiblingOverlapContext, "PR #614") ||
+		!strings.Contains(state.SiblingOverlapContext, "PR #615") {
+		t.Fatalf("escalation state = %+v, ok = %v, want all persisted sibling overlaps", state, ok)
 	}
 }
 
