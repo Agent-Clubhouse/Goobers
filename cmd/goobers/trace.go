@@ -1,20 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
-	"github.com/goobers/goobers/internal/workflow"
 )
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
@@ -57,58 +56,50 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
 	}
-	// runID is raw CLI input, joined onto RunsDir below — a traversal id
-	// (e.g. "../../x") must not read journal-shaped files anywhere outside
-	// the instance (#244).
+	// Reject traversal-shaped prefixes before asking the shared service to
+	// inspect or list any run.
 	if !apiv1.ValidRunID(runID) {
 		pf(stderr, "error: invalid run id %q\n", runID)
 		return 2
 	}
 
 	l := instance.NewLayout(root)
-	runDir := filepath.Join(l.RunsDir(), runID)
-	runInfo, err := os.Stat(runDir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	if err != nil || !runInfo.IsDir() {
-		entries, readErr := os.ReadDir(l.RunsDir())
-		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-			pf(stderr, "error: %v\n", readErr)
-			return 2
-		}
-		var matches []string
-		for _, entry := range entries {
-			if entry.IsDir() && strings.HasPrefix(entry.Name(), runID) {
-				matches = append(matches, entry.Name())
-			}
-		}
-		switch len(matches) {
-		case 0:
-			pf(stderr, "error: no run %q found in %s; list runs with 'goobers status'\n", runID, root)
-			return 1
-		case 1:
-			runID = matches[0]
-			runDir = filepath.Join(l.RunsDir(), runID)
-		default:
-			pf(stderr, "error: ambiguous prefix %q matches %d runs: %s\n", runID, len(matches), strings.Join(matches, ", "))
-			return 2
-		}
-	}
-	reader, err := journal.OpenRead(runDir)
+	reads, err := readservice.NewOfflineRuns(l)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-
-	if *showTranscripts || transcriptSelected {
-		events, err := reader.Events()
+	ctx := context.Background()
+	detail, matches, err := resolveTraceRun(ctx, reads, runID)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	switch len(matches) {
+	case 0:
+		if detail.ID == "" {
+			pf(stderr, "error: no run %q found in %s; list runs with 'goobers status'\n", runID, root)
+			return 1
+		}
+	case 1:
+		detail, err = reads.GetRun(ctx, matches[0])
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}
-		if err := printTranscripts(stdout, reader, events, runID, selectedStage); err != nil {
+	default:
+		pf(stderr, "error: ambiguous prefix %q matches %d runs: %s\n", runID, len(matches), strings.Join(matches, ", "))
+		return 2
+	}
+	runID = detail.ID
+
+	if *showTranscripts || transcriptSelected {
+		transcripts, err := reads.RunTranscripts(ctx, runID, selectedStage)
+		if err != nil {
+			pf(stderr, "error: %v in run %q\n", err, runID)
+			return 2
+		}
+		if err := printTranscripts(stdout, transcripts, selectedStage); err != nil {
 			pf(stderr, "error: %v in run %q\n", err, runID)
 			if errors.Is(err, errTranscriptNotFound) {
 				return 1
@@ -118,52 +109,41 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	id, err := reader.Identity()
+	ledger, err := reads.RunEvents(ctx, runID)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	st, stateErr := reader.State()
-	phase, err := reader.Phase()
+	identity, state, err := reads.RunMetadata(ctx, runID)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	events, err := reader.Events()
+	spans, err := reads.RunSpans(ctx, runID)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
+		// Spans are informational and have always been best-effort for
+		// telemetry-disabled, missing, or unreadable rollups.
+		spans = []rollup.SpanSummary{}
+	}
+	traceEscalationDetail, err := reads.RunEscalation(ctx, runID)
+	if err != nil {
+		pf(stderr, "error: escalation summary: %v\n", err)
 		return 2
 	}
-
-	var escalation *escalationSummary
-	if phase == journal.PhaseEscalated {
-		summary, err := readEscalationSummary(reader, events)
-		if err != nil {
-			pf(stderr, "error: escalation summary: %v\n", err)
-			return 2
-		}
-		escalation = &summary
-	}
-
-	repasses, err := repassCount(events, "")
+	repasses, err := reads.RunTraceRepassCount(ctx, runID)
 	if err != nil {
 		pf(stderr, "error: repass count: %v\n", err)
 		return 2
 	}
-	spans := spanSummaries(l.TelemetryDB(), id.RunID)
-
-	var state *journal.State
-	if stateErr == nil {
-		state = &st
-	}
+	escalation := traceEscalation(detail, traceEscalationDetail, ledger.Events)
 	if *jsonOutput {
 		result := traceJSONResult{
-			Identity:   id,
-			Phase:      phase,
+			Identity:   identity,
+			Phase:      detail.Phase,
 			State:      state,
 			Repasses:   repasses,
 			Escalation: escalation,
-			Events:     events,
+			Events:     traceJSONEvents(ledger.Events),
 			Spans:      spans,
 		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
@@ -176,21 +156,21 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	if escalation != nil {
 		printEscalationSummary(stdout, *escalation)
 	}
-	pf(stdout, "run:      %s\n", id.RunID)
-	pf(stdout, "workflow: %s (v%d)\n", id.Workflow, id.WorkflowVersion)
-	if id.WorkflowDigest != "" {
-		pf(stdout, "digest:   %s\n", id.WorkflowDigest)
+	pf(stdout, "run:      %s\n", detail.ID)
+	pf(stdout, "workflow: %s (v%d)\n", detail.Workflow, detail.WorkflowVersion)
+	if detail.WorkflowDigest != "" {
+		pf(stdout, "digest:   %s\n", detail.WorkflowDigest)
 	}
-	pf(stdout, "gaggle:   %s\n", id.Gaggle)
-	pf(stdout, "trigger:  %s %s\n", id.Trigger.Kind, id.Trigger.Ref)
-	pf(stdout, "started:  %s\n", id.StartedAt.Format("2006-01-02T15:04:05Z07:00"))
+	pf(stdout, "gaggle:   %s\n", detail.Gaggle)
+	pf(stdout, "trigger:  %s %s\n", detail.Trigger.Kind, detail.Trigger.Ref)
+	pf(stdout, "started:  %s\n", detail.StartedAt.Format("2006-01-02T15:04:05Z07:00"))
 	if state != nil {
 		pf(stdout, "phase:    %s (machineState=%q, lastSeq=%d)\n", state.Phase, state.MachineState, state.LastSeq)
 	}
 	pf(stdout, "repasses: %d\n", repasses)
 	pln(stdout, "\nevents:")
-	for _, ev := range events {
-		pln(stdout, "  "+formatEvent(ev))
+	for _, event := range ledger.Events {
+		pln(stdout, "  "+formatEvent(traceJournalEvent(event)))
 	}
 
 	printSpans(stdout, spans)
@@ -203,39 +183,19 @@ type traceJSONResult struct {
 	State      *journal.State       `json:"state,omitempty"`
 	Repasses   int                  `json:"repasses"`
 	Escalation *escalationSummary   `json:"escalation,omitempty"`
-	Events     []journal.Event      `json:"events"`
+	Events     []traceJSONEvent     `json:"events"`
 	Spans      []rollup.SpanSummary `json:"spans"`
+}
+
+type traceJSONEvent struct {
+	journal.Event
+	KnownSchema *bool           `json:"knownSchema,omitempty"`
+	Raw         json.RawMessage `json:"raw,omitempty"`
 }
 
 var errTranscriptNotFound = errors.New("no recorded agent transcript")
 
-type recordedTranscript struct {
-	event journal.Event
-	stage string
-	data  []byte
-}
-
-func printTranscripts(stdout io.Writer, reader *journal.Reader, events []journal.Event, runID, stage string) error {
-	var transcripts []recordedTranscript
-	for _, ev := range events {
-		recordedStage := strings.TrimPrefix(ev.Stage, runID+":")
-		if ev.Type != journal.EventSpanRecorded ||
-			(ev.Name != "transcript" && !strings.HasSuffix(ev.Name, ".transcript")) ||
-			(stage != "" && recordedStage != stage) {
-			continue
-		}
-		if ev.Ref == nil {
-			return fmt.Errorf("transcript for stage %q at seq %d is unavailable: span event has no content reference", recordedStage, ev.Seq)
-		}
-		data, err := reader.SpanBytes(*ev.Ref)
-		if err != nil {
-			return fmt.Errorf("transcript for stage %q at seq %d is unavailable: %w", recordedStage, ev.Seq, err)
-		}
-		if len(data) == 0 {
-			return fmt.Errorf("transcript for stage %q at seq %d is unavailable: recorded content is empty", recordedStage, ev.Seq)
-		}
-		transcripts = append(transcripts, recordedTranscript{event: ev, stage: recordedStage, data: data})
-	}
+func printTranscripts(stdout io.Writer, transcripts []readservice.TranscriptContent, stage string) error {
 	if len(transcripts) == 0 {
 		if stage != "" {
 			return fmt.Errorf("%w for stage %q", errTranscriptNotFound, stage)
@@ -249,9 +209,9 @@ func printTranscripts(stdout io.Writer, reader *journal.Reader, events []journal
 			pln(stdout, "")
 		}
 		pf(stdout, "--- stage=%q name=%q seq=%d ---\n",
-			transcript.stage, transcript.event.Name, transcript.event.Seq)
-		pf(stdout, "%s", transcript.data)
-		if transcript.data[len(transcript.data)-1] != '\n' {
+			transcript.Stage, transcript.Name, transcript.Seq)
+		pf(stdout, "%s", transcript.Bytes)
+		if transcript.Bytes[len(transcript.Bytes)-1] != '\n' {
 			pln(stdout, "")
 		}
 	}
@@ -265,147 +225,46 @@ type escalationSummary struct {
 	LastNeedsChangesReason string `json:"lastNeedsChangesReason"`
 }
 
-func readEscalationSummary(reader *journal.Reader, events []journal.Event) (escalationSummary, error) {
+func traceEscalation(
+	detail readservice.RunDetail,
+	traceDetail *readservice.TraceEscalation,
+	events []readservice.RunEvent,
+) *escalationSummary {
+	if detail.Escalation == nil {
+		return nil
+	}
 	const notRecorded = "(not recorded)"
 	summary := escalationSummary{
 		Stage:                  notRecorded,
 		Gate:                   notRecorded,
+		RepassCount:            detail.Escalation.RepassCount,
 		LastNeedsChangesReason: notRecorded,
 	}
-
-	gateIndex := -1
-	for i := len(events) - 1; i >= 0; i-- {
-		ev := events[i]
-		if ev.Type == journal.EventGateEvaluated && ev.Target == workflow.TargetEscalate {
-			gateIndex = i
-			summary.Gate = ev.Gate
-			break
+	if traceDetail != nil {
+		summary.RepassCount = traceDetail.RepassCount
+		if traceDetail.LastNeedsChangesReason != "" {
+			summary.LastNeedsChangesReason = traceDetail.LastNeedsChangesReason
 		}
 	}
-	if gateIndex < 0 {
+	switch detail.Escalation.Selector.Kind {
+	case "gate":
+		summary.Gate = detail.Escalation.Selector.Name
+	case "stage":
+		summary.Stage = detail.Escalation.Selector.Name
+	}
+	if summary.Stage == notRecorded {
 		for i := len(events) - 1; i >= 0; i-- {
-			if events[i].Type == journal.EventStageFinished {
-				summary.Stage = events[i].Stage
-				break
+			event := events[i]
+			if event.Seq >= detail.Escalation.CausalEventSeq ||
+				!event.KnownSchema ||
+				event.Type != journal.EventStageFinished {
+				continue
 			}
-		}
-		return summary, nil
-	}
-
-	for i := gateIndex - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventStageFinished {
-			summary.Stage = events[i].Stage
+			summary.Stage = event.Stage
 			break
 		}
 	}
-
-	count, err := repassCount(events[:gateIndex+1], summary.Gate)
-	if err != nil {
-		return escalationSummary{}, err
-	}
-	summary.RepassCount = count
-
-	for i := gateIndex; i >= 0; i-- {
-		ev := events[i]
-		if ev.Type != journal.EventGateEvaluated ||
-			ev.Gate != summary.Gate ||
-			ev.Verdict != string(apiv1.VerdictNeedsChanges) {
-			continue
-		}
-		if ev.Ref == nil {
-			break
-		}
-		data, err := reader.ArtifactBytes(*ev.Ref)
-		if err != nil {
-			return escalationSummary{}, fmt.Errorf("read verdict for gate %q: %w", summary.Gate, err)
-		}
-		var verdict apiv1.Verdict
-		if err := json.Unmarshal(data, &verdict); err != nil {
-			return escalationSummary{}, fmt.Errorf("parse verdict for gate %q: %w", summary.Gate, err)
-		}
-		if verdict.Decision != apiv1.VerdictNeedsChanges {
-			return escalationSummary{}, fmt.Errorf(
-				"verdict artifact for gate %q has decision %q, want %q",
-				summary.Gate, verdict.Decision, apiv1.VerdictNeedsChanges,
-			)
-		}
-		summary.LastNeedsChangesReason = strings.TrimSpace(verdict.Rationale)
-		if summary.LastNeedsChangesReason == "" {
-			summary.LastNeedsChangesReason = strings.TrimSpace(verdict.Summary)
-		}
-		if summary.LastNeedsChangesReason == "" {
-			summary.LastNeedsChangesReason = notRecorded
-		}
-		break
-	}
-	return summary, nil
-}
-
-// repassTargetStage is the stage a gate's non-pass verdict routes back to
-// for another implementation attempt. Hardcoded rather than derived from the
-// workflow definition — trace.go reads only the run's journal, never the
-// workflow config, and every V0 workflow on the repass path today names its
-// retry stage "implement". Revisit if a future workflow gives its repass
-// target a different name (#354).
-const repassTargetStage = "implement"
-
-// repassCount is the single source of truth for "how many times has this
-// run repassed," used both for the whole-run header line (gate == "") and
-// the escalation-block per-gate count (gate == the escalating gate's name),
-// so the two numbers are computed by one rule instead of two independently
-// maintained implementations that could silently disagree (#354).
-//
-// gate == "": a whole-run total — every gate.evaluated event, from any gate,
-// whose Target routes back to repassTargetStage. This can exceed a single
-// gate's own count when more than one gate repassed during the run.
-//
-// gate != "": scoped to one gate, restricted to the given events (callers
-// pass the prefix up to and including that gate's terminal evaluation).
-// Prefers the terminal event's Runner["repassAttempt"] when present — the
-// runner's own authoritative count — else counts that gate's own
-// needs-changes verdicts sequentially, resetting to 0 on a pass (a streak
-// since the last pass, not a running total).
-func repassCount(events []journal.Event, gate string) (int, error) {
-	if gate == "" {
-		count := 0
-		for _, ev := range events {
-			if ev.Type == journal.EventGateEvaluated && ev.Target == repassTargetStage {
-				count++
-			}
-		}
-		return count, nil
-	}
-
-	if len(events) == 0 {
-		return 0, fmt.Errorf("repass count for gate %q: no events", gate)
-	}
-	if raw, ok := events[len(events)-1].Runner["repassAttempt"]; ok {
-		data, err := json.Marshal(raw)
-		if err != nil {
-			return 0, fmt.Errorf("marshal repass count for gate %q: %w", gate, err)
-		}
-		var count int
-		if err := json.Unmarshal(data, &count); err != nil {
-			return 0, fmt.Errorf("parse repass count for gate %q: %w", gate, err)
-		}
-		if count < 0 {
-			return 0, fmt.Errorf("invalid repass count %d for gate %q", count, gate)
-		}
-		return count, nil
-	}
-
-	count := 0
-	for _, ev := range events {
-		if ev.Type != journal.EventGateEvaluated || ev.Gate != gate {
-			continue
-		}
-		if ev.Verdict == string(apiv1.VerdictPass) {
-			count = 0
-		} else {
-			count++
-		}
-	}
-	return count, nil
+	return &summary
 }
 
 func printEscalationSummary(stdout io.Writer, summary escalationSummary) {
@@ -475,34 +334,80 @@ func formatEvent(ev journal.Event) string {
 	}
 }
 
-// spanSummaries best-effort loads rollup-ingested spans. It
-// reads telemetry.db directly (no Rebuild call here) — that used to mean a
-// fresh `goobers trace` right after `goobers run` showed nothing until a
-// separate `goobers telemetry stats/errors` had rebuilt the db first (issue
-// #129's checklist). That gap closed as a side effect of #127/#128's
-// incremental-ingest wiring: `goobers run`/`up` now call IngestRun on every
-// run finish, so telemetry.db already has this run's spans by the time
-// `trace` reads it — no explicit rebuild step needed. A missing telemetry.db
-// (telemetry disabled, issue #129's telemetry.enabled) is still not an
-// error — spans are informational only (ARCHITECTURE.md §3.3 excludes them
-// from conformance) — so this silently does nothing rather than requiring
-// rollup setup just to read a run's journal.
-func spanSummaries(dbPath, runID string) []rollup.SpanSummary {
-	empty := []rollup.SpanSummary{}
-	if _, err := os.Stat(dbPath); err != nil {
-		return empty
+func resolveTraceRun(ctx context.Context, reads readservice.OfflineRuns, runID string) (readservice.RunDetail, []string, error) {
+	detail, err := reads.GetRun(ctx, runID)
+	if err == nil {
+		return detail, nil, nil
 	}
-	db, err := rollup.Open(dbPath)
-	if err != nil {
-		return empty
+	if !errors.Is(err, readservice.ErrNotFound) {
+		return readservice.RunDetail{}, nil, err
 	}
-	defer func() { _ = db.Close() }()
 
-	spans, err := db.Spans(runID)
-	if err != nil || spans == nil {
-		return empty
+	ids, err := reads.RunIDs(ctx)
+	if err != nil {
+		return readservice.RunDetail{}, nil, err
 	}
-	return spans
+	matches := make([]string, 0)
+	for _, id := range ids {
+		if strings.HasPrefix(id, runID) {
+			matches = append(matches, id)
+		}
+	}
+	return readservice.RunDetail{}, matches, nil
+}
+
+func traceJSONEvents(events []readservice.RunEvent) []traceJSONEvent {
+	result := make([]traceJSONEvent, len(events))
+	for i, event := range events {
+		result[i].Event = traceJournalEvent(event)
+		if !event.KnownSchema {
+			known := false
+			result[i].KnownSchema = &known
+			result[i].Raw = event.Raw
+		}
+	}
+	return result
+}
+
+func traceJournalEvent(event readservice.RunEvent) journal.Event {
+	if event.JournalEvent != nil {
+		return *event.JournalEvent
+	}
+	attemptClass := journal.AttemptClass(event.AttemptClass)
+	if event.AttemptClass == "initial" {
+		attemptClass = ""
+	}
+	projected := journal.Event{
+		Schema:       event.Schema,
+		Seq:          event.Seq,
+		Type:         event.Type,
+		Branch:       event.Branch,
+		Time:         event.Time,
+		Stage:        event.Stage,
+		Attempt:      event.Attempt,
+		AttemptClass: attemptClass,
+		Gate:         event.Gate,
+		Verdict:      event.Verdict,
+		Target:       event.Target,
+		Status:       event.Status,
+		Outputs:      event.Outputs,
+		Name:         event.Name,
+		ExternalRef:  event.ExternalRef,
+		Error:        event.Error,
+		Redaction:    event.Redaction,
+		Runner:       event.Runner,
+		Workflow:     event.Workflow,
+		RunID:        event.RunID,
+		Reason:       event.Reason,
+	}
+	if event.Artifact != nil {
+		projected.Ref = &journal.Ref{
+			Digest:    event.Artifact.Digest,
+			Size:      event.Artifact.Size,
+			MediaType: event.Artifact.MediaType,
+		}
+	}
+	return projected
 }
 
 func printSpans(stdout io.Writer, spans []rollup.SpanSummary) {

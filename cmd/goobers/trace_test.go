@@ -105,6 +105,101 @@ func TestTraceJSONIncludesFailedRunErrorAndSpans(t *testing.T) {
 	}
 }
 
+func TestTraceJSONPreservesAttemptClassCompatibility(t *testing.T) {
+	root := t.TempDir()
+	const runID = "attempt-projection"
+	run := newTraceTestRun(t, root, runID)
+	for _, event := range []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultFailure)},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptPolicy},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptPolicy, Status: string(apiv1.ResultSuccess)},
+	} {
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", "--json", runID, root)
+	if code != 0 {
+		t.Fatalf("trace --json: code = %d, stderr = %q", code, stderr)
+	}
+	var got traceJSONResult
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("trace --json produced invalid JSON: %v\n%s", err, stdout)
+	}
+	var classes []string
+	for _, event := range got.Events {
+		if event.Type == journal.EventStageStarted {
+			classes = append(classes, string(event.AttemptClass))
+		}
+	}
+	if strings.Join(classes, ",") != ",policy" {
+		t.Fatalf("attempt classes = %v, want empty initial class then policy", classes)
+	}
+}
+
+func TestTraceJSONPreservesIdentityRefsAndMissingState(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	const runID = "json-compatibility"
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "goobers",
+		Trigger: journal.Trigger{Kind: journal.TriggerItem, Ref: "512"},
+	}, map[string][]byte{"item": []byte(`{"number":512}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.RecordSpan("implement", "copilot-cli.transcript", []byte("done")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.RecordArtifact("result.json", []byte(`{"status":"success"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(layout.RunsDir(), runID, "state.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", "--json", runID, root)
+	if code != 0 {
+		t.Fatalf("trace --json: code = %d, stderr = %q", code, stderr)
+	}
+	var got traceJSONResult
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("trace --json produced invalid JSON: %v\n%s", err, stdout)
+	}
+	if got.State != nil {
+		t.Fatalf("state = %+v, want omitted for missing checkpoint", got.State)
+	}
+	if len(got.Identity.Inputs) != 1 ||
+		got.Identity.Inputs[0].Name != "item" ||
+		!strings.HasPrefix(got.Identity.Inputs[0].Ref.Path, "inputs/") ||
+		got.Identity.Inputs[0].Ref.Digest == "" {
+		t.Fatalf("identity inputs = %+v", got.Identity.Inputs)
+	}
+	var artifactRef, spanRef *journal.Ref
+	for i := range got.Events {
+		switch got.Events[i].Type {
+		case journal.EventArtifactRecorded:
+			artifactRef = got.Events[i].Ref
+		case journal.EventSpanRecorded:
+			spanRef = got.Events[i].Ref
+		}
+	}
+	if artifactRef == nil || !strings.HasPrefix(artifactRef.Path, "artifacts/") || artifactRef.Digest == "" {
+		t.Fatalf("artifact ref = %+v", artifactRef)
+	}
+	if spanRef == nil || !strings.HasPrefix(spanRef.Path, "spans/") || spanRef.Digest == "" {
+		t.Fatalf("span ref = %+v", spanRef)
+	}
+}
+
 func TestTraceListsRecordedTranscripts(t *testing.T) {
 	root := t.TempDir()
 	const runID = "transcript-list"
@@ -396,6 +491,94 @@ func TestTracePrefersExactRunIDOverPrefixMatches(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "run:      "+exact+"\n") {
 		t.Fatalf("trace stdout missing exact run id: %q", stdout)
+	}
+}
+
+func TestTracePrefixIgnoresCorruptUnrelatedRun(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	const runID = "dd57a3c2f0d27ea99ca7fa84db6ecab4"
+	createTraceRun(t, root, runID)
+	corruptDir := filepath.Join(layout.RunsDir(), "unrelated-corrupt-run")
+	if err := os.MkdirAll(corruptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(corruptDir, "run.yaml"), []byte("not: [valid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", "dd57a3c2", root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "run:      "+runID+"\n") {
+		t.Fatalf("trace stdout missing resolved run id: %q", stdout)
+	}
+}
+
+func TestTracePreservesUnknownEventSchemas(t *testing.T) {
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	const runID = "future-events"
+	createTraceRun(t, root, runID)
+
+	eventsPath := filepath.Join(l.RunsDir(), runID, "events.jsonl")
+	file, err := os.OpenFile(eventsPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := `{"schema":"goobers.dev/journal/event/v99","seq":2,"type":"future.event","branch":4,"time":"2026-07-18T12:00:00Z","future":{"answer":42}}`
+	if _, err := file.WriteString(unknown + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", "--json", runID, root)
+	if code != 0 {
+		t.Fatalf("trace --json: code = %d, stderr = %q", code, stderr)
+	}
+	var got traceJSONResult
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("trace --json produced invalid JSON: %v\n%s", err, stdout)
+	}
+	if len(got.Events) != 2 ||
+		got.Events[1].KnownSchema == nil ||
+		*got.Events[1].KnownSchema ||
+		got.Events[1].Seq != 2 ||
+		got.Events[1].Branch != 4 ||
+		!strings.Contains(string(got.Events[1].Raw), `"answer":42`) {
+		t.Fatalf("future event = %+v", got.Events)
+	}
+}
+
+func TestTraceRejectsSymlinkedRunDirectory(t *testing.T) {
+	root := t.TempDir()
+	outsideRoot := t.TempDir()
+	const runID = "symlinked-run"
+	createTraceRun(t, outsideRoot, runID)
+
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join(instance.NewLayout(outsideRoot).RunsDir(), runID),
+		filepath.Join(layout.RunsDir(), runID),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", runID, root)
+	if code != 1 {
+		t.Fatalf("trace: code = %d, want 1; stderr = %q", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("trace stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, `no run "symlinked-run" found`) {
+		t.Fatalf("trace stderr = %q", stderr)
 	}
 }
 
