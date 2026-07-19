@@ -209,18 +209,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, "pr-context.json")
 	}
-	// Reconciliation retains the oldest trusted marked comment as the
-	// canonical status and updates it in place.
-	var verdict *apiv1.Verdict
-	for _, comment := range rawComments {
-		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, verdictAuthor) {
-			continue
-		}
-		if v, ok := parseVerdictComment(comment.Body); ok {
-			verdict = &v
-		}
-		break
-	}
+	verdict := gatherPRVerdict(rawComments, verdictAuthor)
 
 	// Digest short-circuit (#716 design item 2): escalationStillBlocks above
 	// only excludes a PR whose LIVE goobers:merge-escalated label matches its
@@ -310,6 +299,30 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "gathered context for PR #%d (%s): behind=%v, %d comment(s)\n", selected.Number, selected.Head, behind, len(comments))
 	return 0
+}
+
+// gatherPRVerdict prefers the oldest trusted marked comment because
+// reconciliation keeps that comment as the canonical status. Before marked
+// comments existed, each review appended a new comment, so the migration
+// fallback uses the newest parseable verdict from the trusted author.
+func gatherPRVerdict(comments []providers.Comment, author string) *apiv1.Verdict {
+	var legacy *apiv1.Verdict
+	for _, comment := range comments {
+		if !isTrustedMergeReviewAuthor(comment.Author, author) {
+			continue
+		}
+		candidate, ok := parseVerdictComment(comment.Body)
+		if isMergeReviewStatusComment(comment.Body) {
+			if !ok {
+				return nil
+			}
+			return &candidate
+		}
+		if ok {
+			legacy = &candidate
+		}
+	}
+	return legacy
 }
 
 // remediationPriorityFor classifies a single PR's remediation urgency,
