@@ -139,6 +139,15 @@ spec:
         selectedBaseSha: selectedBaseSha
         reviewDigest: reviewDigest
       inputs:
+        # Outputs reach the runner ONLY through a declared result file: the
+        # shell executor harvests them inside `if resultFile != ""` and a
+        # stage without one always reports empty Outputs, however much its
+        # expectedOutputs promises. Omitting this made every expectedOutput
+        # below silently vanish — `elected` never reached elect-gate, which
+        # read it as false and routed every needs-changes review down the
+        # fail branch into apply-verdict, where the equally-vanished
+        # reviewDigest crashed the run.
+        resultFile: "election.json"
         # #834: lander-election policy — "fifo" (lowest PR#, default) or
         # "newest" (highest PR#). An unknown value falls back to fifo. Cluster-
         # data policies (most-blockers, fewest-overlaps) are follow-ups that

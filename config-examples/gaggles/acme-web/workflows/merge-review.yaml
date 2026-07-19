@@ -83,6 +83,10 @@ spec:
         selectedBaseSha: selectedBaseSha
         reviewDigest: reviewDigest
       inputs:
+        # Outputs reach the runner ONLY through a declared result file — a
+        # stage without one always reports empty Outputs, however much its
+        # expectedOutputs promises.
+        resultFile: "election.json"
         # #834: lander-election policy — "fifo" (lowest PR#, default) or
         # "newest" (highest PR#). Unknown values fall back to fifo.
         electionPolicy: "fifo"

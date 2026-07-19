@@ -234,6 +234,35 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !reflect.DeepEqual(postMerge.Capabilities, wantPostMergeCapabilities) {
 				t.Errorf("post-merge capabilities = %v, want %v", postMerge.Capabilities, wantPostMergeCapabilities)
 			}
+
+			// A shell stage's Outputs are harvested ONLY from a declared
+			// result file (internal/executor/shell.go: the whole harvest
+			// lives inside `if resultFile != ""`, and its own comment notes
+			// "a stage with no declared resultFile has result.Outputs empty
+			// here"). expectedOutputs is documentation, not enforcement —
+			// nothing cross-checks the two.
+			//
+			// elect-lander declared five expectedOutputs and no resultFile,
+			// so it emitted NONE of them while still exiting 0. `elected`
+			// never reached elect-gate, whose output-equals check read the
+			// missing key as false and routed EVERY needs-changes review
+			// down the fail branch into apply-verdict — where the equally
+			// missing reviewDigest failed inputsFrom and killed the run.
+			// 100% of needs-changes cycles died there, which severed the
+			// only path from merge-review to pr-remediation and stalled the
+			// instance for three days.
+			//
+			// Asserted for every shell stage, not just elect-lander: the
+			// defect is silent by construction, so the guard has to be a
+			// property of the workflow rather than a spot check.
+			for _, task := range w.Spec.Tasks {
+				if task.Run == nil || len(task.ExpectedOutputs) == 0 {
+					continue
+				}
+				if task.Inputs["resultFile"] == "" {
+					t.Errorf("stage %q declares expectedOutputs %v but no resultFile input — it will emit no outputs at all, silently", task.Name, task.ExpectedOutputs)
+				}
+			}
 		})
 	}
 }
