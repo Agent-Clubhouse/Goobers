@@ -420,6 +420,9 @@ func TestRemediationCheckpointEscalationIncludesKnownSiblingOverlaps(t *testing.
 						Severity: apiv1.SeverityError, Class: apiv1.FindingSubstantive,
 						Message: mergedFinding, Location: "cmd/goobers/resume.go",
 					}},
+				}), renderVerdictComment(apiv1.Verdict{
+					Decision: apiv1.VerdictPass,
+					Summary:  "The sibling was updated and is ready to merge.",
 				})},
 			},
 			{

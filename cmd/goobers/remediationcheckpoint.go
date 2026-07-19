@@ -525,24 +525,25 @@ func knownSiblingOverlapFindings(
 		if err != nil {
 			return nil, fmt.Errorf("list comments on sibling PR #%d: %w", candidate.Number, err)
 		}
-		var verdict *apiv1.Verdict
 		for i := len(comments) - 1; i >= 0; i-- {
-			if parsed, ok := parseVerdictComment(comments[i].Body); ok {
-				verdict = &parsed
-				break
-			}
-		}
-		if verdict == nil {
-			continue
-		}
-		for _, finding := range verdict.Findings {
-			if !siblingFindingReferencesPR(finding, selectedNumber, referencePattern) {
+			verdict, ok := parseVerdictComment(comments[i].Body)
+			if !ok {
 				continue
 			}
-			overlaps = append(overlaps, siblingOverlapFinding{
-				Number: candidate.Number, State: pullRequestState(candidate),
-				Message: finding.Message, Location: finding.Location,
-			})
+			matched := false
+			for _, finding := range verdict.Findings {
+				if !siblingFindingReferencesPR(finding, selectedNumber, referencePattern) {
+					continue
+				}
+				overlaps = append(overlaps, siblingOverlapFinding{
+					Number: candidate.Number, State: pullRequestState(candidate),
+					Message: finding.Message, Location: finding.Location,
+				})
+				matched = true
+			}
+			if matched {
+				break
+			}
 		}
 	}
 	sort.Slice(overlaps, func(i, j int) bool {
