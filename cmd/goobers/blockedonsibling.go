@@ -24,39 +24,61 @@ func latestBlockedOnSiblingState(comments []providers.Comment) (state blockedOnS
 	return blockedOnSiblingState{}, "", false
 }
 
-// blockedOnSiblingStillBlocks reports whether pr's goobers:blocked-on-sibling
-// parking still holds (#748): it carries the label, has a recorded set of
-// named blocker PRs, and at least one of those blockers is still open. This is
-// the blocker-aware analog of escalationStillBlocks — where that self-heals on
-// "did my own SHAs move," this self-heals on "are all the specific PRs I'm
-// waiting behind resolved," which is what blocked-on-sibling actually means
-// (#747). A blocker is resolved when it is no longer open: merged (done) or
-// closed without merging (nothing left to wait for) — both leave GitHub's
-// issue state "closed", so a single open/closed check covers both.
-//
-// Fails OPEN (returns false, not blocked) for a PR labeled but carrying no
-// recorded blocker set — a manual label, or a record post that never landed:
-// there is no concrete condition to wait on, and a re-review will re-establish
-// the record or clear the label, so parking forever on an unknowable state is
-// the wrong default (contrast escalationStillBlocks, which fails closed because
-// its snapshot self-heal has a well-defined "SHAs unchanged" fallback).
-//
-// Like escalationStillBlocks, it only fetches comments/blocker states for PRs
-// that actually carry the label — a small by-design subset — so it costs
-// nothing for the common unlabeled candidate.
-func blockedOnSiblingStillBlocks(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
+// recordedBlockedOnSiblingBlockers fails open for an absent record: without
+// named blockers there is no concrete condition that can keep a PR parked.
+func recordedBlockedOnSiblingBlockers(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) ([]int, error) {
 	if !hasAnyLabel(pr.Labels, []string{blockedOnSiblingLabel}) {
-		return false, nil
+		return nil, nil
 	}
 	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	state, _, found := latestBlockedOnSiblingState(comments)
 	if !found || len(state.Blockers) == 0 {
-		return false, nil
+		return nil, nil
 	}
-	for _, blocker := range state.Blockers {
+	return state.Blockers, nil
+}
+
+func blockedOnSiblingScanContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, stageTimeout())
+}
+
+// liveBlockedOnSiblingBlockers returns the named blocker PRs that are still
+// open for a parked PR. A blocker is resolved when it is no longer open:
+// merged (done) or closed without merging (nothing left to wait for).
+func liveBlockedOnSiblingBlockers(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) ([]int, error) {
+	blockers, err := recordedBlockedOnSiblingBlockers(ctx, provider, repo, pr)
+	if err != nil {
+		return nil, err
+	}
+	var open []int
+	seen := make(map[int]bool)
+	for _, blocker := range blockers {
+		if seen[blocker] {
+			continue
+		}
+		seen[blocker] = true
+		item, err := provider.GetWorkItem(ctx, repo, strconv.Itoa(blocker))
+		if err != nil {
+			return nil, err
+		}
+		if strings.EqualFold(item.State, "open") {
+			open = append(open, blocker)
+		}
+	}
+	return open, nil
+}
+
+// blockedOnSiblingStillBlocks reports whether pr's blocker-aware parking still
+// holds (#748). It is also used by post-merge unpark and pr-remediation.
+func blockedOnSiblingStillBlocks(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
+	blockers, err := recordedBlockedOnSiblingBlockers(ctx, provider, repo, pr)
+	if err != nil {
+		return false, err
+	}
+	for _, blocker := range blockers {
 		item, err := provider.GetWorkItem(ctx, repo, strconv.Itoa(blocker))
 		if err != nil {
 			return false, err
