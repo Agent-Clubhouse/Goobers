@@ -156,6 +156,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	seed := walkSeed{pointers: reconstructPointers(events)}
 	lastStage, lastResult, hasLast := lastFinishedSubject(events)
 	seed.lastStage, seed.lastResult = lastStage, lastResult
+	seed.workspaceBranch = lastWorkspaceBranch(events)
 
 	// state.json's MachineState is a checked hint, not a requirement
 	// (#242): read it when available, but a missing/corrupt checkpoint no
@@ -340,6 +341,29 @@ func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
 		}
 	}
 	return out
+}
+
+// lastWorkspaceBranch rebuilds walk's run-scoped workspace-branch binding
+// (#392, WorkspaceBranchOutput) from the journal — the newest real
+// stage.finished event that actually emitted the key wins, mirroring the live
+// walk's "sticky, last non-empty emission" accumulation. Without this, a crash
+// anywhere after the rebinding stage would resume the rest of the chain
+// against the run's DEFAULT branch — for pr-remediation, a pristine branch off
+// main instead of the PR being remediated, which would silently discard the
+// rebase and hand the reviewer somebody else's diff. Returns "" when no stage
+// ever rebound (every workflow but pr-remediation today), which is exactly the
+// zero value a fresh walk starts from.
+func lastWorkspaceBranch(events []journal.Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		if e.Type != journal.EventStageFinished || isInterruptedAttemptMarker(e) {
+			continue
+		}
+		if b := workspaceBranchFrom(e.Outputs); b != "" {
+			return b
+		}
+	}
+	return ""
 }
 
 func isInterruptedAttemptMarker(e journal.Event) bool {

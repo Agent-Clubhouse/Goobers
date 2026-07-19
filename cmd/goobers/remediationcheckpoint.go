@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -242,6 +243,11 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 			"error, 2 = usage/IO error.\n")
 	}
 	budget := fs.Int("budget", DefaultRemediationBudget, "liberal per-PR repass-cycle budget before escalating (D4)")
+	// --escalate is the reviewer-verdict=fail path (design doc §4 D2: "a
+	// fundamentally wrong approach is not burned on remediation budget"), not
+	// a loop-control outcome: escalate unconditionally with the caller's
+	// reason, skipping the budget and same-diff checks entirely. Issue #392.
+	escalateReason := fs.String("escalate", "", "escalate unconditionally with this reason, skipping the D4/D5 checks")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -255,15 +261,31 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	}
 	root := providerStageRoot(pathArg)
 
-	selectedNumberStr := providerInput("selectedNumber", "")
-	if selectedNumberStr == "" {
-		pf(stderr, "error: selectedNumber is required (inputsFrom gather-pr-context's selectedNumber output)\n")
-		return 1
-	}
-	selectedNumber, err := strconv.Atoi(selectedNumberStr)
-	if err != nil {
-		pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumberStr, err)
-		return 1
+	var selectedNumber int
+	if selectedNumberStr := providerInput("selectedNumber", ""); selectedNumberStr != "" {
+		n, err := strconv.Atoi(selectedNumberStr)
+		if err != nil {
+			pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumberStr, err)
+			return 1
+		}
+		selectedNumber = n
+	} else {
+		// Ledger fallback (#392): in --escalate mode this stage runs after the
+		// agentic chain, where Task.InputsFrom can no longer reach
+		// gather-pr-context's selectedNumber — implement and local-ci each
+		// became the upstream in turn. The run's own PR claim is the durable
+		// answer. Still an error if there is no claim either: escalating
+		// without knowing WHICH PR would label an arbitrary one.
+		n, ok, err := claimedPullRequestNumber(root)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		if !ok {
+			pf(stderr, "error: selectedNumber is required (inputsFrom gather-pr-context's selectedNumber output, or a PR claim held by this run)\n")
+			return 1
+		}
+		selectedNumber = n
 	}
 
 	repo, err := providerRepo(root)
@@ -304,6 +326,11 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	}
 	if current == nil {
 		pln(stdout, "PR is no longer open (merged/closed since selection) — checkpoint moot, nothing to record")
+		// Halt, don't continue: there is no longer a PR to remediate, so
+		// spending an agentic session on it would be pure waste (#392).
+		if err := writeCheckpointResult(stderr, false, selectedNumber, "", ""); err != nil {
+			return 1
+		}
 		return 0
 	}
 
@@ -343,12 +370,20 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		*budget = DefaultRemediationBudget
 	}
 	exceeded := cycles > *budget
+	forced := *escalateReason != ""
 
 	var state remediationState
-	if exceeded || stalled {
+	if exceeded || stalled || forced {
 		reason := fmt.Sprintf("repass budget exhausted (%d/%d cycles)", cycles, *budget)
 		if stalled {
 			reason = fmt.Sprintf("this cycle's diff is byte-identical to the immediately prior cycle's on the same base (digest %s) — an unchanged diff on an unchanged base cannot make progress", digest)
+		}
+		// Checked last so an explicit caller-supplied reason always wins the
+		// prose, even on a cycle that also happens to be stalled or over
+		// budget — the reviewer's terminal verdict is the more specific and
+		// more actionable cause to show a human.
+		if forced {
+			reason = *escalateReason
 		}
 		state = remediationState{
 			Cycles: cycles, LastDiffDigest: digest,
@@ -367,6 +402,9 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		if err := postOrUpdateStickyComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("record escalation comment on PR #%d", selectedNumber), err, "")
 		}
+		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA); err != nil {
+			return 1
+		}
 		pf(stdout, "escalated PR #%d: %s\n", selectedNumber, reason)
 		return 0
 	}
@@ -378,9 +416,56 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	if err := postOrUpdateStickyComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("record checkpoint state on PR #%d", selectedNumber), err, "")
 	}
+	if err := writeCheckpointResult(stderr, true, selectedNumber, current.Head, current.HeadSHA); err != nil {
+		return 1
+	}
 
 	pf(stdout, "recorded checkpoint for PR #%d: cycle %d/%d, digest %s\n", selectedNumber, cycles, *budget, digest)
 	return 0
+}
+
+// writeCheckpointResult emits this stage's routing output (issue #392).
+//
+// continueRemediation is what checkpoint-gate branches on: "true" means this
+// cycle may spend the agentic chain on the PR, "false" means it must not —
+// because the checkpoint escalated it (budget exhausted, a no-progress
+// repeat, or a caller-forced reviewer "fail"), or because the PR is no
+// longer open. It is a "true"/"false" STRING for the same reason
+// gather-pr-context stringifies its own booleans: only string-valued
+// top-level result-file keys survive into a downstream stage's GOOBERS_INPUT_*
+// env var.
+//
+// selectedNumber/head/headSha are echoed forward because a gate never updates
+// Task.InputsFrom's upstream-Outputs chain (rebase-pr's writeRebaseResult doc
+// establishes the convention) — push-remediated sits two hops past
+// checkpoint-gate, so anything it needs from here must be re-emitted here.
+// headSha in particular is the PR's remote tip BEFORE this cycle pushes
+// anything, which is exactly the non-tautological --force-with-lease
+// expectation push-remediated requires.
+//
+// A resultFile is only written when the stage declares one; a caller running
+// this command outside a workflow (or a workflow that does not route on the
+// outcome) is unaffected.
+func writeCheckpointResult(stderr io.Writer, continueRemediation bool, selectedNumber int, head, headSHA string) error {
+	resultFile := providerInput("resultFile", "")
+	if resultFile == "" {
+		return nil
+	}
+	data, err := json.Marshal(map[string]string{
+		"continueRemediation": strconv.FormatBool(continueRemediation),
+		"selectedNumber":      strconv.Itoa(selectedNumber),
+		"head":                head,
+		"headSha":             headSHA,
+	})
+	if err != nil {
+		pf(stderr, "error: marshal checkpoint result: %v\n", err)
+		return err
+	}
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		pf(stderr, "error: write %s: %v\n", resultFile, err)
+		return err
+	}
+	return nil
 }
 
 // remediationStalled reports whether this cycle is a genuine no-progress

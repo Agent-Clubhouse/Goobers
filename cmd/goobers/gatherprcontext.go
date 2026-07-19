@@ -267,8 +267,23 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 
 	resultFile := providerInput("resultFile", "pr-context.json")
 	data, err := json.MarshalIndent(map[string]interface{}{
-		"selectedNumber":         strconv.Itoa(selected.Number),
-		"head":                   selected.Head,
+		"selectedNumber": strconv.Itoa(selected.Number),
+		"head":           selected.Head,
+		// The runner's well-known branch-rebinding output (issue #392,
+		// runner.WorkspaceBranchOutput): every stage AFTER this one gets its
+		// worktree provisioned on the PR's own head branch instead of a fresh
+		// branch cut from base. That is what lets pr-remediation reuse
+		// implementation's implement/review/local-ci chain verbatim — those
+		// stages, and the agentic reviewer gate, have no way to re-checkout
+		// anything for themselves the way this stage and rebase-pr do, and the
+		// reviewer's runner-computed `git diff base...HEAD` evidence is only
+		// the PR's real diff if its worktree is on the PR's branch.
+		//
+		// Same value as "head" deliberately: the rebinding is a distinct
+		// CONTRACT with the runner, not a second name for a field a stage
+		// happens to also thread to rebase-pr via inputsFrom, and renaming or
+		// dropping "head" must not silently un-wire the chain.
+		"workspaceBranch":        selected.Head,
 		"base":                   selected.Base,
 		"headSha":                selected.HeadSHA,
 		"baseSha":                selected.BaseSHA,

@@ -97,6 +97,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runRebasePR(args[1:], stdout, stderr)
 	case "remediation-checkpoint":
 		return runRemediationCheckpoint(args[1:], stdout, stderr)
+	case "push-remediated":
+		return runPushRemediated(args[1:], stdout, stderr)
 	case "--version", "version":
 		pf(stdout, "goobers %s\n", version.Get())
 		return 0
@@ -153,7 +155,8 @@ Usage:
   goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
-  goobers remediation-checkpoint [--budget N]  durable per-PR repass budget + same-diff escalation (a workflow stage)
+  goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)
+  goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)
 
 path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
 business errors, 2 = usage/IO error. After waiting for a run, run/signal use
@@ -162,9 +165,9 @@ modes exit 0 before a terminal outcome is known.
 
 backlog-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/apply-verdict/post-merge/gather-pr-context/
-rebase-pr/remediation-checkpoint are the built-in provider-chain stage
-kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#237/#359/#360/#361/#362/
-#363/#364): invoked by the runner as a deterministic
+rebase-pr/remediation-checkpoint/push-remediated are the built-in provider-chain
+stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#237/#359/#360/#361/#362/
+#363/#364/#392): invoked by the runner as a deterministic
 stage's shell command, not
 typically run by hand. They read their run context (instance root, run id,
 workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
