@@ -41,6 +41,10 @@ func recordedBlockedOnSiblingBlockers(ctx context.Context, provider *providers.G
 	return state.Blockers, nil
 }
 
+func blockedOnSiblingScanContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, stageTimeout())
+}
+
 // liveBlockedOnSiblingBlockers returns the named blocker PRs that are still
 // open for a parked PR. A blocker is resolved when it is no longer open:
 // merged (done) or closed without merging (nothing left to wait for).

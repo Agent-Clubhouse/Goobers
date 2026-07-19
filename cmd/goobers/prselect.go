@@ -82,7 +82,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "list pull requests", err, "selected-pr.json")
 	}
 
-	blockerScanCtx, cancelBlockerScan := context.WithTimeout(ctx, stageTimeout())
+	blockerScanCtx, cancelBlockerScan := blockedOnSiblingScanContext(ctx)
 	defer cancelBlockerScan()
 	siblingBlocked := make(map[int]bool)
 	blockedDependents := make(map[int]int)
