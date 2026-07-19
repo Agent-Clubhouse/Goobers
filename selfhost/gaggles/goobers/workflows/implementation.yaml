@@ -215,6 +215,25 @@ spec:
       # merge stage anywhere in this workflow: merge-review owns that
       # separate, explicitly capability-gated path.
 
+    - name: park-escalated
+      type: deterministic
+      goal: Park an escalated issue with the terminal escalation reason.
+      run:
+        command: ["goobers", "issue-close-out"]
+      inputs:
+        status: "needs-human"
+      capabilities:
+        - github:issues:write
+      # Terminal @escalate, NOT @abort. The issue still has to leave
+      # goobers:ready (that is this PR's whole point), but the run's phase is
+      # what every escalation surface selects on: `goobers run` exit 3, the
+      # read API's escalationCause, and `goobers trace`'s escalation summary
+      # all key on PhaseEscalated. Collapsing this into park-needs-human's
+      # @abort would make a repass-exhausted or non-retryable-disposition run
+      # indistinguishable from an ordinary failure — and would regress #415,
+      # which exists precisely so these terminate escalated.
+      next: "@escalate"
+
     - name: park-needs-human
       type: deterministic
       goal: Park a reviewer-rejected issue with the terminal review reason.
@@ -249,7 +268,7 @@ spec:
         pass: local-ci
         needs-changes: implement
         fail: park-needs-human
-        escalate: park-needs-human
+        escalate: park-escalated
 
     # local-ci's ResultEnvelope.Status is flattened into this gate's
     # Inputs[status] by the runner (internal/gate's documented
@@ -262,7 +281,7 @@ spec:
       branches:
         pass: push-branch
         fail: implement
-        escalate: park-needs-human
+        escalate: park-escalated
 
     # ci-poll sets Outputs[ciStatus] to the normalized providers.CheckState
     # value ("passing"/"failing"/"pending" — providers/model.go); the
@@ -279,7 +298,7 @@ spec:
         # (checks/failure detail) attached as context by the runner, the
         # same evidence-pointer mechanism the reviewer gate uses.
         fail: implement
-        escalate: park-needs-human
+        escalate: park-escalated
         # A poll timeout (#239) is not evidence CI failed — just that it
         # didn't finish in time — so it escalates for a human decision
         # instead of spending an agentic repass re-implementing a change

@@ -75,7 +75,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 		"pass":          "local-ci",
 		"needs-changes": "implement",
 		"fail":          "park-needs-human",
-		BranchEscalate:  "park-needs-human",
+		BranchEscalate:  "park-escalated",
 	}
 	for outcome, want := range wantBranches {
 		got, ok := BranchTarget(review, outcome)
@@ -101,8 +101,8 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s not found", gateName)
 		}
-		if target, ok := BranchTarget(g, BranchEscalate); !ok || target != "park-needs-human" {
-			t.Errorf("%s escalation branch = %q,%v; want park-needs-human,true", gateName, target, ok)
+		if target, ok := BranchTarget(g, BranchEscalate); !ok || target != "park-escalated" {
+			t.Errorf("%s escalation branch = %q,%v; want park-escalated,true", gateName, target, ok)
 		}
 	}
 
@@ -149,7 +149,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// theory that the #845 post-mortem falsified — the real cause was terminal
 	// job control (SIGTTOU), fixed by Setsid (#846/#850). The serialize input
 	// was removed so local-ci runs fully parallel again.
-	const wantDigest = "sha256:a96fba02979b4c8edc2dab49adeb75962c27a349b0f40848bd17acfdbaf91c74"
+	const wantDigest = "sha256:9d2105113119af5d1826ed72aa50401a8678ab3e0d7565f66aa30f5de3cac2cc"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

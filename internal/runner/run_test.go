@@ -522,6 +522,11 @@ func escalationParkingMachine(t *testing.T) *workflow.Machine {
 		Tasks: []apiv1.Task{
 			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "review"},
 			{Name: "park-needs-human", Type: apiv1.TaskDeterministic, Goal: "park the issue", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: workflow.TargetAbort},
+			// The escalate branch parks and then terminates @escalate, mirroring
+			// the shipped implementation workflow: parking must not downgrade an
+			// escalation to an abort, which is what every escalation surface
+			// (run exit 3, escalationCause, trace) selects on.
+			{Name: "park-escalated", Type: apiv1.TaskDeterministic, Goal: "park the escalated issue", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: workflow.TargetEscalate},
 		},
 		Gates: []apiv1.Gate{{
 			Name:      "review",
@@ -529,8 +534,8 @@ func escalationParkingMachine(t *testing.T) *workflow.Machine {
 			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
 			Branches: map[string]string{
 				"pass":                  workflow.TerminalComplete,
-				"fail":                  workflow.TargetAbort,
-				workflow.BranchEscalate: "park-needs-human",
+				"fail":                  "park-needs-human",
+				workflow.BranchEscalate: "park-escalated",
 			},
 		}},
 	}
@@ -4582,7 +4587,7 @@ func TestRunnerRoutesNonRetryableFailureThroughGateEscalationBranch(t *testing.T
 				Code: "NEEDS_DECOMPOSITION", Message: "implementation cannot continue", Retryable: false,
 			},
 		},
-		runID + ":park-needs-human": {status: apiv1.ResultSuccess},
+		runID + ":park-escalated": {status: apiv1.ResultSuccess},
 	}
 	r, runsDir := newTestRunner(t, byTask, nil)
 
@@ -4595,8 +4600,8 @@ func TestRunnerRoutesNonRetryableFailureThroughGateEscalationBranch(t *testing.T
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if res.Phase != journal.PhaseAborted || res.FinalState != "park-needs-human" {
-		t.Fatalf("result = %+v, want aborted after park-needs-human", res)
+	if res.Phase != journal.PhaseEscalated || res.FinalState != "park-escalated" {
+		t.Fatalf("result = %+v, want escalated after park-escalated", res)
 	}
 
 	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
@@ -4620,8 +4625,8 @@ func TestRunnerRoutesNonRetryableFailureThroughGateEscalationBranch(t *testing.T
 			t.Fatalf("implement error = %+v, want retained summary %q", event.Error, summary)
 		}
 	}
-	if !reflect.DeepEqual(finished, []string{"implement", "park-needs-human"}) {
-		t.Fatalf("finished stages = %v, want implement then park-needs-human", finished)
+	if !reflect.DeepEqual(finished, []string{"implement", "park-escalated"}) {
+		t.Fatalf("finished stages = %v, want implement then park-escalated", finished)
 	}
 }
 

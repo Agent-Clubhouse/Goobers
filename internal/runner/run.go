@@ -659,7 +659,12 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 }
 
 func terminalGateNotificationReason(gr gate.Result) (string, bool) {
-	if gr.Target != workflow.TargetAbort && gr.Target != workflow.TargetEscalate {
+	// An escalation still notifies the driving issue when the gate's escalate
+	// control branch routes disposition work (a parking stage) before the
+	// terminal, rather than naming @escalate directly: the repass-attempt count
+	// and gate attribution are the point of the notification, and keying only
+	// on the control-branch targets would silently drop them.
+	if gr.Target != workflow.TargetAbort && gr.Target != workflow.TargetEscalate && !gr.Escalated {
 		return "", false
 	}
 	if gr.Escalated {
