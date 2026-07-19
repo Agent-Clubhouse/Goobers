@@ -2,9 +2,8 @@ name: CI
 
 # Goobers control-plane and portal CI — the enforced merge gate.
 # Runs `make ci` (Go fmt/vet/build/test/lint + portal build/test) on Ubuntu and
-# macOS, plus an advisory Windows compile smoke, on every PR to main, push to
-# main, and merge-group build. See Makefile `ci` target for the authoritative
-# full-gate step list.
+# macOS on every PR to main, push to main, and merge-group build. See Makefile
+# `ci` target for the authoritative full-gate step list.
 
 on:
   push:
@@ -79,35 +78,14 @@ jobs:
           path: coverage.out
           if-no-files-found: ignore
 
-  # Advisory only. Windows cannot pass `make ci` until the platform
-  # abstractions and portable toolchain tracked by #620, #623, #625, #627, and
-  # #630 have landed; until then this reports a visible status on every PR
-  # without gating merges. It is deliberately NOT a `needs` of required-ci —
-  # needs.<job>.result aggregates a whole matrix, so keeping Windows in the `ci`
-  # matrix would let an expected-red leg fail the required gate. Flip this job
-  # into the `ci` matrix and mark it required once #630 lands (#633).
-  windows-smoke:
-    name: windows compile smoke (advisory)
-    runs-on: windows-latest
-    continue-on-error: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          check-latest: true
-
-      - name: Download modules
-        run: go mod download
-
-      - name: Build smoke
-        run: go build ./...
-
-      - name: Vet smoke
-        run: go vet ./...
+  # NOTE: an advisory `windows-smoke` job lived here. It was `continue-on-error`
+  # and deliberately excluded from `required-ci`, so it never gated merges from
+  # GitHub's point of view — but it still published a red check status on every
+  # PR, and the Goobers merge flow has no notion of an advisory check, so it
+  # read that red as a hard block. Removed until Windows can actually pass
+  # `make ci` (#620, #623, #625, #627, #630), at which point it joins the `ci`
+  # matrix as a required leg (#633). Do not reintroduce it as an expected-red
+  # advisory job while the merge flow still treats every check as gating.
 
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
