@@ -288,6 +288,13 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		posted.SourceRunID = runID
 	}
 
+	// Election resolves an all-ordering verdict into a real pass (#833/#834,
+	// reframed). See electedLanderPassRationale.
+	if elected, rationale := electedLanderPass(selectedNumber, posted); elected {
+		posted.Decision = apiv1.VerdictPass
+		posted.Rationale = rationale
+	}
+
 	comment := renderVerdictComment(posted)
 	label := verdictLabel(posted.Decision, posted.Findings)
 	if label == blockedOnSiblingLabel {
@@ -364,6 +371,76 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, verdict.Decision)
 	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), stderr)
+}
+
+// electedLanderPass resolves an entirely-cross-PR-ordering `needs-changes`
+// verdict into a genuine `pass` when this PR is its cluster's elected lander.
+//
+// WHAT ELECTION MEANS. Being elected does not mean "merge this regardless of
+// review". It means "stop counting those siblings as blockers." And once that
+// is said out loud, the verdict follows deterministically rather than by fiat:
+// every finding was a pure ordering ask (allCrossPRBlocked — the PR is
+// individually fine and merely waiting its turn), and this PR is the one whose
+// turn it is. There is no defect left to fix, so there is nothing for
+// `needs-changes` to describe. The decision is derived, not overridden.
+//
+// WHY NOT THE PREVIOUS SHAPE. elect-gate's pass branch used to route straight
+// to merge-pr, deliberately bypassing this stage — which produced three
+// problems at once:
+//
+//  1. merge-pr builds its commit message from a `pass` verdict comment pinned
+//     to the current head/base SHA (structuredMergeCommitMessage, mergepr.go).
+//     The bypass means no verdict comment is ever posted on this path and the
+//     verdict was needs-changes anyway, so that lookup finds nothing and
+//     merge-pr exits 1 — a hard stage failure, every cycle, for as long as the
+//     cluster exists. The elected path could not actually merge anything.
+//  2. merge-pr's "was this reviewed favorably" conjunct compares against the
+//     workflow's hardcoded `verdict: "pass"` input rather than the real
+//     verdict, so on this path the safety check was satisfied by a constant
+//     string.
+//  3. An about-to-merge PR published no verdict at all, so nothing recorded
+//     why it merged.
+//
+// Deriving the pass here fixes all three by construction: the ordinary
+// apply-verdict -> published-verdict -> merge-pr path now carries a real,
+// SHA-pinned pass verdict comment, and no separate merge authority exists.
+// It also costs no extra cycle — the PR still merges on this pass.
+//
+// Requiring an independent `pass` verdict instead would deadlock the exact
+// situation election exists to break: mutually-blocked PRs cannot each earn a
+// pass while each is waiting on the other.
+//
+// The findings are deliberately left intact on the published verdict. The
+// ordering asks were real observations and stay visible; only the decision they
+// rolled up to changes, and the rationale states exactly why.
+func electedLanderPass(selectedNumber int, posted apiv1.Verdict) (bool, string) {
+	if posted.Decision != apiv1.VerdictNeedsChanges {
+		return false, ""
+	}
+	policy, policyName := resolveElectionPolicy(providerInput("electionPolicy", defaultElectionPolicy))
+	if !electionDecision(posted.Findings, selectedNumber, policy) {
+		return false, ""
+	}
+	return true, electedLanderPassRationale(selectedNumber, posted, policyName)
+}
+
+// electedLanderPassRationale explains a derived pass in the published comment.
+// A reader must be able to see that the decision changed, that a deterministic
+// rule changed it, and which rule — never discover a `pass` on a PR whose
+// findings all say "blocked".
+func electedLanderPassRationale(selectedNumber int, posted apiv1.Verdict, policyName string) string {
+	blockers := unionBlockingPRs(posted.Findings)
+	rendered := make([]string, 0, len(blockers))
+	for _, b := range blockers {
+		rendered = append(rendered, "#"+strconv.Itoa(b))
+	}
+	out := fmt.Sprintf(
+		"Elected lander (policy: %s). Every finding on this pull request is a pure cross-PR ordering ask against %s — no defect in this change itself — and this pull request is the one elected to go first, so those siblings no longer block it. The reviewer's `needs-changes` was entirely about waiting its turn; it is now its turn.",
+		policyName, strings.Join(rendered, ", "))
+	if r := strings.TrimSpace(posted.Rationale); r != "" {
+		out += "\n\nOriginal reviewer rationale:\n\n> " + strings.ReplaceAll(r, "\n", "\n> ")
+	}
+	return out
 }
 
 // resolvedIssuePattern matches every way a goober-authored PR body states the

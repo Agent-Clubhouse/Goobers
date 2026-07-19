@@ -103,8 +103,19 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !ok {
 				t.Fatal("elect-gate gate not found")
 			}
+			// BOTH branches route to apply-verdict. Election means "those
+			// siblings no longer block you", not "merge regardless of review",
+			// so the crowned lander resolves into an ordinary verdict rather
+			// than acquiring a separate merge authority: apply-verdict derives
+			// the pass (electedLanderPass) and published-verdict routes it on
+			// to merge-pr, same run, same path every other merged PR takes.
+			//
+			// The former pass -> merge-pr bypass could not work — merge-pr
+			// builds its commit message from a pass verdict comment pinned to
+			// the current SHAs, and the bypass posted no verdict comment at
+			// all, so merge-pr exited 1 every cycle a cluster existed.
 			wantElectBranches := map[string]string{
-				"pass": "merge-pr",
+				"pass": "apply-verdict",
 				"fail": "apply-verdict",
 			}
 			if !reflect.DeepEqual(electGate.Branches, wantElectBranches) {
