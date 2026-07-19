@@ -192,7 +192,7 @@ func TestPRSelectSkipsBlockedOnSibling(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(prNumber, "blocked pr")
 	server.addIssue(700, "open blocker")
-	server.addOpenPR(prNumber, "goobers/impl/blocked", "main", "h810", "b810", false, []string{blockedOnSiblingLabel}, nil)
+	server.addOpenPR(prNumber, "goobers/implementation/blocked", "main", "h810", "b810", false, []string{blockedOnSiblingLabel}, nil)
 	server.addComment(prNumber, blockedOnSiblingCommentFor(t, 700))
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-run-810")
@@ -218,7 +218,7 @@ func TestPRSelectSelectsSelfHealedSibling(t *testing.T) {
 	server.addIssue(prNumber, "self-healed pr")
 	server.addIssue(700, "blocker that merged")
 	server.closeIssue(700) // the blocker merged since the PR was parked
-	server.addOpenPR(prNumber, "goobers/impl/healed", "main", "h811", "b811", false, []string{blockedOnSiblingLabel}, nil)
+	server.addOpenPR(prNumber, "goobers/implementation/healed", "main", "h811", "b811", false, []string{blockedOnSiblingLabel}, nil)
 	server.addComment(prNumber, blockedOnSiblingCommentFor(t, 700))
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-run-811")
@@ -240,7 +240,7 @@ func TestPRSelectPrefersPRWithMostBlockedDependents(t *testing.T) {
 
 	for _, number := range []int{101, 102, 103} {
 		server.addIssue(number, "eligible pr")
-		server.addOpenPR(number, "goobers/impl/"+strconv.Itoa(number), "main", "head", "base", false, nil, nil)
+		server.addOpenPR(number, "goobers/implementation/"+strconv.Itoa(number), "main", "head", "base", false, nil, nil)
 	}
 	for number, blockers := range map[int][]int{
 		201: {103},
@@ -248,7 +248,7 @@ func TestPRSelectPrefersPRWithMostBlockedDependents(t *testing.T) {
 		203: {102},
 	} {
 		server.addIssue(number, "blocked pr")
-		server.addOpenPR(number, "goobers/impl/"+strconv.Itoa(number), "main", "head", "base", false, []string{blockedOnSiblingLabel}, nil)
+		server.addOpenPR(number, "goobers/implementation/"+strconv.Itoa(number), "main", "head", "base", false, []string{blockedOnSiblingLabel}, nil)
 		server.addComment(number, blockedOnSiblingCommentFor(t, blockers...))
 	}
 
@@ -301,7 +301,7 @@ func TestPRSelectWithoutBlockedDependentsPreservesNumberOrder(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	for _, number := range []int{112, 111} {
 		server.addIssue(number, "eligible pr")
-		server.addOpenPR(number, "goobers/impl/"+strconv.Itoa(number), "main", "head", "base", false, nil, nil)
+		server.addOpenPR(number, "goobers/implementation/"+strconv.Itoa(number), "main", "head", "base", false, nil, nil)
 	}
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-run-no-priority")

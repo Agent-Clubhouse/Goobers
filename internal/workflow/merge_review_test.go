@@ -65,6 +65,14 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				t.Fatalf("compile workflow: %v", err)
 			}
 
+			prSelect, ok := m.Task("pr-select")
+			if !ok {
+				t.Fatal("pr-select task not found")
+			}
+			if got := prSelect.Inputs["headPrefix"]; got != "goobers/implementation/" {
+				t.Errorf("pr-select headPrefix = %q, want goobers/implementation/", got)
+			}
+
 			review, ok := m.Gate("review")
 			if !ok {
 				t.Fatal("review gate not found")
