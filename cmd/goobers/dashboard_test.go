@@ -198,6 +198,7 @@ func TestDashboardCancellationWhileAttachingExitsCleanlyBeforeURL(t *testing.T) 
 	defer release()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	var stdout, stderr bytes.Buffer
 	done := make(chan int, 1)
 	go func() {
