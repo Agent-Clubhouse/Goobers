@@ -123,8 +123,10 @@ export class LiveDataController {
   private generation = 0;
   private invalidationRevision = 0;
   private invalidationTimer: ReturnType<typeof setTimeout> | undefined;
-  private pollingTimer: ReturnType<typeof setInterval> | undefined;
+  private polling = false;
+  private pollingTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private refreshQueue: Promise<void> = Promise.resolve();
   private started = false;
   freshness: LiveFreshness = "reconnecting";
 
@@ -136,18 +138,21 @@ export class LiveDataController {
   readonly isFresh = (): boolean => this.freshness === "connected";
 
   readonly refresh = (models: readonly UpdateModel[] = ALL_MODELS): void => {
+    this.queueRefresh(models, this.config.invalidationWindowMs);
+  };
+
+  private queueRefresh(models: readonly UpdateModel[], delay: number): void {
     this.invalidationRevision += 1;
     for (const model of models) {
       this.pendingModels.add(model);
     }
-    if (this.invalidationTimer !== undefined) {
+    if (delay === 0) {
+      this.clearInvalidationTimer();
+      void this.flushInvalidations();
       return;
     }
-    this.invalidationTimer = setTimeout(
-      () => void this.flushInvalidations(),
-      this.config.invalidationWindowMs,
-    );
-  };
+    this.scheduleInvalidationFlush(delay);
+  }
 
   readonly subscribe = (
     models: readonly UpdateModel[],
@@ -198,10 +203,7 @@ export class LiveDataController {
     this.closeConnection();
     this.clearReconnectTimer();
     this.clearPollingTimer();
-    if (this.invalidationTimer !== undefined) {
-      clearTimeout(this.invalidationTimer);
-      this.invalidationTimer = undefined;
-    }
+    this.clearInvalidationTimer();
     this.pendingModels.clear();
   }
 
@@ -220,6 +222,8 @@ export class LiveDataController {
     this.closeConnection();
     this.clearReconnectTimer();
     this.clearPollingTimer();
+    this.clearInvalidationTimer();
+    this.pendingModels.clear();
     this.setFreshness("offline");
   };
 
@@ -231,6 +235,8 @@ export class LiveDataController {
       this.closeConnection();
       this.clearReconnectTimer();
       this.clearPollingTimer();
+      this.clearInvalidationTimer();
+      this.pendingModels.clear();
       this.setFreshness("stale");
       return;
     }
@@ -269,11 +275,7 @@ export class LiveDataController {
       this.activeStream = stream;
       this.clearPollingTimer();
       this.setFreshness("stale");
-      const refreshed = await this.notifyListeners(new Set(ALL_MODELS));
-      if (!this.isCurrent(generation, controller)) {
-        return;
-      }
-      this.setFreshness(refreshed ? "connected" : "stale");
+      this.queueRefresh(ALL_MODELS, 0);
 
       for await (const event of stream) {
         if (!this.isCurrent(generation, controller)) {
@@ -383,10 +385,22 @@ export class LiveDataController {
 
   private startPollingFallback(): void {
     this.setFreshness("polling-fallback");
-    this.refresh();
-    if (this.pollingTimer === undefined) {
-      this.pollingTimer = setInterval(() => this.refresh(), this.config.pollingIntervalMs);
+    if (this.polling) {
+      return;
     }
+    this.polling = true;
+    void this.runPollingCycle();
+  }
+
+  private async runPollingCycle(): Promise<void> {
+    await this.runRefresh(new Set(ALL_MODELS));
+    if (!this.polling || !this.started) {
+      return;
+    }
+    this.pollingTimer = setTimeout(() => {
+      this.pollingTimer = undefined;
+      void this.runPollingCycle();
+    }, this.config.pollingIntervalMs);
   }
 
   private scheduleReconnect(delay: number): void {
@@ -413,10 +427,25 @@ export class LiveDataController {
   }
 
   private clearPollingTimer(): void {
+    this.polling = false;
     if (this.pollingTimer !== undefined) {
-      clearInterval(this.pollingTimer);
+      clearTimeout(this.pollingTimer);
       this.pollingTimer = undefined;
     }
+  }
+
+  private clearInvalidationTimer(): void {
+    if (this.invalidationTimer !== undefined) {
+      clearTimeout(this.invalidationTimer);
+      this.invalidationTimer = undefined;
+    }
+  }
+
+  private scheduleInvalidationFlush(delay: number): void {
+    if (this.invalidationTimer !== undefined) {
+      return;
+    }
+    this.invalidationTimer = setTimeout(() => void this.flushInvalidations(), delay);
   }
 
   private async flushInvalidations(): Promise<void> {
@@ -432,15 +461,36 @@ export class LiveDataController {
     if (restoreConnected) {
       this.setFreshness("stale");
     }
-    const refreshed = await this.notifyListeners(models);
+    const refreshed = await this.runRefresh(models);
+    if (!this.started) {
+      return;
+    }
+    if (!refreshed && stream === this.activeStream) {
+      this.invalidationRevision += 1;
+      for (const model of models) {
+        this.pendingModels.add(model);
+      }
+      this.scheduleInvalidationFlush(this.config.pollingIntervalMs);
+      return;
+    }
     if (
       restoreConnected &&
       refreshed &&
       stream === this.activeStream &&
+      this.pendingModels.size === 0 &&
       revision === this.invalidationRevision
     ) {
       this.setFreshness("connected");
     }
+  }
+
+  private runRefresh(models: ReadonlySet<UpdateModel>): Promise<boolean> {
+    const refresh = this.refreshQueue.then(() => this.notifyListeners(models));
+    this.refreshQueue = refresh.then(
+      () => undefined,
+      () => undefined,
+    );
+    return refresh;
   }
 
   private async notifyListeners(models: ReadonlySet<UpdateModel>): Promise<boolean> {
