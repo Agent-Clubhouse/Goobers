@@ -35,13 +35,27 @@ type mergeQueuePollServerState struct {
 	// entry. Left unset, pending polls report a normal queued entry.
 	pendingEntryAbsent bool
 
+	// graphqlScript, when non-empty, drives the queue-entry poll from an
+	// explicit per-call sequence instead of the pendingCalls counter, so a
+	// test can script a state TRANSITION the counter cannot express (#924
+	// needs absent-then-merged: the exact instant a queue merge removes the
+	// entry before `merged` has propagated to the replica the read lands on).
+	// Recognized values: "pending", "absent", "merged", "closed". The last
+	// entry repeats for any further polls.
+	graphqlScript []string
+
 	pollCalls     int
 	graphqlPolls  int
 	pullListCalls int
 	deleteCalls   int
 	labelCalls    int
 	commentCalls  int
-	labelStatus   int // non-zero forces the labels endpoint to fail
+	// commentPostCalls counts only comment CREATION (POST). commentCalls
+	// lumps in PollPullRequest's own benign comments-list GET, so it cannot
+	// answer "did we post a comment onto this pull request?" — which is the
+	// question #924's assertions actually need.
+	commentPostCalls int
+	labelStatus      int // non-zero forces the labels endpoint to fail
 }
 
 func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePollServerState) *httptest.Server {
@@ -82,9 +96,40 @@ func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePol
 	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		st.graphqlPolls++
+		call := st.graphqlPolls
 		terminal := st.graphqlPolls > st.pendingCalls
 		terminalState, terminalMerged, entryAbsent := st.terminalState, st.terminalMerged, st.pendingEntryAbsent
+		script := st.graphqlScript
 		st.mu.Unlock()
+
+		// Explicitly scripted sequence (#924) takes precedence over the
+		// pendingCalls counter; the last step repeats once exhausted.
+		if len(script) > 0 {
+			step := script[len(script)-1]
+			if call <= len(script) {
+				step = script[call-1]
+			}
+			pr := map[string]interface{}{"state": "OPEN", "merged": false, "mergeCommit": nil, "mergeQueueEntry": nil}
+			switch step {
+			case "pending":
+				pr["mergeQueueEntry"] = map[string]interface{}{"state": "QUEUED", "position": 1}
+			case "absent":
+				// Open, unmerged, no entry — indistinguishable on a single
+				// read from both a real eviction and a just-landed merge.
+			case "merged":
+				pr["state"] = "MERGED"
+				pr["merged"] = true
+				pr["mergeCommit"] = map[string]interface{}{"oid": "queuemergesha"}
+			case "closed":
+				pr["state"] = "CLOSED"
+			default:
+				t.Errorf("unknown graphqlScript step %q", step)
+			}
+			writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{
+				"repository": map[string]interface{}{"pullRequest": pr},
+			}})
+			return
+		}
 
 		pr := map[string]interface{}{"state": "OPEN", "merged": false, "mergeCommit": nil}
 		switch {
@@ -136,6 +181,9 @@ func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePol
 			writeFakeJSON(w, []map[string]interface{}{})
 			return
 		}
+		st.mu.Lock()
+		st.commentPostCalls++
+		st.mu.Unlock()
 		writeFakeJSON(w, map[string]interface{}{"id": 1})
 	})
 	mux.HandleFunc(prefix+"/git/refs/heads/"+st.headBranch, func(w http.ResponseWriter, r *http.Request) {
@@ -304,6 +352,87 @@ func TestMergeQueuePollDetectsEvictionWhileThePullRequestStaysOpen(t *testing.T)
 	}
 	if st.deleteCalls != 0 {
 		t.Fatalf("branch delete calls = %d, want 0 (an evicted pull request was never merged)", st.deleteCalls)
+	}
+}
+
+// TestMergeQueuePollDoesNotCallAJustLandedMergeAnEviction is #924, and it is
+// the sequence that actually happened to PR #922 on 2026-07-19.
+//
+// A queue merge removes the entry at the instant it lands. PollMergeQueueEntry
+// does check pr.Merged before it reports Absent — but that GraphQL read is not
+// atomic, so a poll can land on a replica where the entry is already gone and
+// `merged` has not yet flipped true. On that single read a successful merge is
+// byte-for-byte indistinguishable from an eviction.
+//
+// Committing on that read is what went wrong live: PR #922 merged at 04:04:16Z
+// (merge commit 4f1a7665, merge_group CI green at 04:03:44Z) and its own run
+// posted a "its combined build against the projected merge state failed"
+// comment plus goobers:needs-remediation onto it one second later, at
+// 04:04:17Z. The pull request is genuinely on main and is permanently
+// mislabeled, because nothing downstream ever clears either.
+//
+// So the scripted sequence here is the race verbatim: entry visible, then the
+// absent instant, then merged. The assertions that matter are the side effects
+// — a merge must produce zero label calls, because the label is the damage.
+func TestMergeQueuePollDoesNotCallAJustLandedMergeAnEviction(t *testing.T) {
+	st := &mergeQueuePollServerState{
+		graphqlScript: []string{"pending", "absent", "merged"},
+		// PollPullRequest (the merged path's branch-cleanup lookup) reads
+		// REST, which is driven separately by pendingCalls; go terminal
+		// immediately so cleanup resolves.
+		pendingCalls: 0, terminalState: "closed", terminalMerged: true,
+	}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, dir := mergeQueuePollEnv(t, server.URL, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "merged" {
+		t.Fatalf("result = %+v, want queueOutcome=merged — the entry vanished because the queue MERGED it, "+
+			"and the very next poll says so; committing to an eviction on the single absent read is #924", result)
+	}
+	if st.labelCalls != 0 {
+		t.Fatalf("label calls = %d, want 0 — labeling a merged pull request goobers:needs-remediation is the "+
+			"damage this test exists to prevent; nothing downstream ever removes it", st.labelCalls)
+	}
+	if st.commentPostCalls != 0 {
+		t.Fatalf("comment POSTs = %d, want 0 — no false 'build failed' comment on a pull request that merged", st.commentPostCalls)
+	}
+}
+
+// TestMergeQueuePollStillDetectsAnEvictionThatPersists is the other half of
+// #924: the confirmation requirement must not blunt real eviction detection.
+// A genuine eviction leaves the pull request open and unmerged indefinitely,
+// so absence persists across polls and still routes to remediation — one extra
+// poll interval later, which is negligible against the stage's own budget.
+func TestMergeQueuePollStillDetectsAnEvictionThatPersists(t *testing.T) {
+	st := &mergeQueuePollServerState{
+		// Absent from the second poll onward and never merging — a real
+		// eviction, distinguished from the case above only by persistence.
+		graphqlScript: []string{"pending", "absent", "absent"},
+		pendingCalls:  1, terminalState: "open", terminalMerged: false,
+	}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, dir := mergeQueuePollEnv(t, server.URL, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "evicted" {
+		t.Fatalf("result = %+v, want queueOutcome=evicted — persistent absence IS an eviction, and #924's "+
+			"confirmation must not stop it being detected", result)
+	}
+	if st.labelCalls != 1 {
+		t.Fatalf("label calls = %d, want 1 — routing an eviction to remediation is the acceptance criterion", st.labelCalls)
 	}
 }
 

@@ -116,13 +116,32 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 	deadline := time.Now().Add(timeout)
 	// An absent queue entry is how a real eviction presents — GitHub leaves
 	// the pull request open and just removes it from the queue (#885) — but
-	// it is also how the gap between merge-pr's enqueue and the entry
-	// becoming visible presents. These two track which one this is: once an
-	// entry has been seen, absence can only mean the entry went away.
-	// Before then, absence is tolerated for a short grace window so a
-	// propagation lag is never mistaken for an eviction.
+	// it is ALSO how two entirely different, benign situations present, and
+	// absence alone cannot tell the three apart:
+	//
+	//   1. the entry has not become visible yet after merge-pr's enqueue
+	//      (propagation lag, before any entry has ever been seen), and
+	//   2. the queue just MERGED the pull request, which removes the entry
+	//      in the same instant (#924).
+	//
+	// entrySeen distinguishes (1): once an entry has been seen, absence can
+	// no longer be pre-enqueue lag. absentSince handles (2), which entrySeen
+	// cannot, because it looks identical to a real eviction on a single read.
+	// PollMergeQueueEntry does check pr.Merged before reporting Absent, but
+	// that read is not atomic: the entry is gone and `merged` has not yet
+	// flipped true on the replica the query happened to land on, so the poll
+	// returns Absent for a pull request that is in fact already on main.
+	//
+	// So absence is never conclusive on first sight — it must PERSIST. A real
+	// eviction leaves the pull request open and unmerged indefinitely, so
+	// absence persists trivially; a merge resolves to Merged on the very next
+	// poll. Costing one extra poll interval to tell them apart is the whole
+	// mechanism.
 	entrySeen := false
 	graceUntil := time.Now().Add(mergeQueueEntryGrace)
+	// Length of the current unbroken streak of absent reads; reset by any
+	// conclusive non-absent read.
+	absentStreak := 0
 	for attempt := 0; ; attempt++ {
 		result, pollErr := provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: repo, PullID: pullNumber})
 		if pollErr != nil && !providers.IsTransientError(pollErr) {
@@ -136,13 +155,27 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 				return mergeQueuePollEvicted(ctx, provider, repo, pullNumber, resultFile, stdout, stderr)
 			case providers.MergeQueueEntryPending:
 				entrySeen = true
+				// A conclusive non-absent read breaks the absence streak.
+				absentStreak = 0
 			case providers.MergeQueueEntryAbsent:
-				if entrySeen || time.Now().After(graceUntil) {
-					pf(stdout, "pr #%s is open and unmerged with no merge queue entry — evicted\n", pullNumber)
+				absentStreak++
+				switch {
+				case !entrySeen && time.Now().Before(graceUntil):
+					// No entry has ever been seen and we are still inside the
+					// enqueue-propagation grace window: treat as pending.
+				case absentStreak >= mergeQueueAbsenceConfirmPolls:
+					// Absence held across independent reads. A merge landing
+					// in the gap would have resolved to Merged by now, so this
+					// is a real eviction.
+					pf(stdout, "pr #%s is open and unmerged with no merge queue entry across %d polls — evicted\n", pullNumber, absentStreak)
 					return mergeQueuePollEvicted(ctx, provider, repo, pullNumber, resultFile, stdout, stderr)
+				default:
+					// First absent read of this streak. Do NOT commit to an
+					// eviction yet — this is exactly what a successful merge
+					// also looks like for an instant (#924). Poll again and
+					// let the merge become visible if that is what happened.
+					pf(stdout, "pr #%s has no merge queue entry; re-polling to confirm before calling it an eviction\n", pullNumber)
 				}
-				// Still inside the grace window and no entry has ever been
-				// seen: treat as pending and poll again.
 			}
 		}
 		if time.Now().After(deadline) {
@@ -306,6 +339,31 @@ func mergeQueuePollBudget(stage time.Duration) time.Duration {
 // genuine eviction still routes to remediation well inside the stage's own
 // poll budget.
 const mergeQueueEntryGrace = 90 * time.Second
+
+// mergeQueueAbsenceConfirmPolls is how many CONSECUTIVE polls must find the
+// merge queue entry absent before that is read as an eviction (#924). Unlike
+// mergeQueueEntryGrace it applies whether or not an entry has been seen,
+// because the case it exists for happens after the entry has been seen: the
+// queue merges the pull request, which removes the entry, and a poll landing
+// before `merged` propagates to the replica it reads sees exactly what an
+// eviction looks like.
+//
+// Expressed in polls rather than wall-clock deliberately. The quantity that
+// actually matters is "never commit to an eviction on a single read"; a
+// duration is only a proxy for it, and a proxy that silently stops holding
+// whenever an operator retunes pollIntervalSeconds. Two polls also scales the
+// right way on its own — a longer configured interval buys proportionally more
+// propagation time — and keeps the guard meaningful at the sub-second intervals
+// tests drive it at.
+//
+// The cost is bounded and one-sided. A real eviction leaves the pull request
+// open and unmerged indefinitely, so its absence persists and it still routes
+// to remediation one poll interval later — negligible against the stage's 25m
+// budget. A merge resolves to Merged on the very next poll and is never
+// mislabeled. The error is not symmetric: guessing eviction wrongly posts a
+// "build failed" comment and a goobers:needs-remediation label onto a pull
+// request that is already on main, and nothing downstream ever removes either.
+const mergeQueueAbsenceConfirmPolls = 2
 
 func pollDurationInput(key string, def time.Duration) (time.Duration, error) {
 	v := providerInput(key, "")
