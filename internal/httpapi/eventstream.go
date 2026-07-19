@@ -681,6 +681,13 @@ func (s *EventStream) Close() {
 	})
 }
 
+// Done reports stream shutdown. It closes when Close is called, letting write
+// paths abandon in-flight replay and buffered events instead of holding an
+// HTTP shutdown open for a slow or non-reading client.
+func (s *EventStream) Done() <-chan struct{} {
+	return s.ctx.Done()
+}
+
 // Wait blocks until journal scanning exits or ctx expires.
 func (s *EventStream) Wait(ctx context.Context) error {
 	select {
@@ -717,7 +724,18 @@ func registerEventRoute(router *Router, stream *EventStream) {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(http.StatusOK)
+		// Flush the headers before any event so a resume whose cursor is
+		// already up to date — and therefore has no initial events — still
+		// establishes immediately instead of waiting for the heartbeat.
+		if err := controller.Flush(); err != nil {
+			return
+		}
+
+		shutdown := stream.Done()
 		for _, event := range initial {
+			if stopped(shutdown, request.Context()) {
+				return
+			}
 			if err := writeAndFlushSSE(controller, w, event, stream.config.writeTimeout); err != nil {
 				return
 			}
@@ -726,7 +744,14 @@ func registerEventRoute(router *Router, stream *EventStream) {
 		heartbeat := time.NewTicker(stream.config.heartbeat)
 		defer heartbeat.Stop()
 		for {
+			// Checked ahead of the select so a closed-but-buffered event
+			// channel cannot keep draining past shutdown.
+			if stopped(shutdown, request.Context()) {
+				return
+			}
 			select {
+			case <-shutdown:
+				return
 			case <-request.Context().Done():
 				return
 			case event, ok := <-events:
@@ -747,6 +772,19 @@ func registerEventRoute(router *Router, stream *EventStream) {
 			}
 		}
 	})
+}
+
+// stopped reports whether the stream is shutting down or the client has gone
+// away, without blocking on either.
+func stopped(shutdown <-chan struct{}, request context.Context) bool {
+	select {
+	case <-shutdown:
+		return true
+	case <-request.Done():
+		return true
+	default:
+		return false
+	}
 }
 
 func writeAndFlushSSE(controller *http.ResponseController, w io.Writer, event StreamEvent, timeout time.Duration) error {

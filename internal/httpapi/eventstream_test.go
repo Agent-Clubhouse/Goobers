@@ -593,3 +593,131 @@ func errorsIsEOFOrClosed(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) ||
 		(err != nil && strings.Contains(err.Error(), "closed"))
 }
+
+// An up-to-date resume has no events to replay, so the response only arrives if
+// the handler flushes the SSE headers on its own rather than waiting for the
+// next heartbeat.
+func TestResumeWithUpToDateCursorEstablishesBeforeHeartbeat(t *testing.T) {
+	_, instanceLog, stream := newEventStreamFixture(
+		t,
+		withEventSession("test"),
+		withEventPollInterval(5*time.Millisecond),
+		withHeartbeatInterval(30*time.Second),
+	)
+	server := newEventTestServer(t, stream, &fakeReader{})
+	client := &http.Client{Timeout: 3 * time.Second}
+
+	if err := instanceLog.Append(journal.Event{
+		Type:     journal.EventRunStarted,
+		Gaggle:   "core",
+		Workflow: "implementation",
+		RunID:    "run-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForCursor(t, stream, "test:1")
+
+	openedAt := time.Now()
+	response, _ := openEventResponse(t, client, server.URL+EventsPath, "test:1")
+	elapsed := time.Since(openedAt)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+	if got := response.Header.Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("idle resume handshake took %s, want well under the heartbeat", elapsed)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// slowResponseWriter models a client that reads steadily but slowly: every
+// write succeeds, so the per-write deadline never trips and only an explicit
+// shutdown check can stop the handler.
+type slowResponseWriter struct {
+	header   http.Header
+	interval time.Duration
+
+	mu     sync.Mutex
+	writes int
+}
+
+func (w *slowResponseWriter) Header() http.Header { return w.header }
+
+func (w *slowResponseWriter) WriteHeader(int) {}
+
+func (w *slowResponseWriter) Write(p []byte) (int, error) {
+	time.Sleep(w.interval)
+	w.mu.Lock()
+	w.writes++
+	w.mu.Unlock()
+	return len(p), nil
+}
+
+func (w *slowResponseWriter) Flush() {}
+
+func (w *slowResponseWriter) SetWriteDeadline(time.Time) error { return nil }
+
+func (w *slowResponseWriter) writeCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writes
+}
+
+// A slow-but-live client keeps resetting the per-write deadline, so a large
+// queued replay must be abandoned when the stream closes rather than written
+// out in full.
+func TestShutdownAbandonsQueuedReplayForSlowClient(t *testing.T) {
+	const backlog = 400
+	_, instanceLog, stream := newEventStreamFixture(
+		t,
+		withEventSession("test"),
+		withEventPollInterval(5*time.Millisecond),
+		withHeartbeatInterval(30*time.Second),
+		withEventHistoryLimit(backlog+64),
+	)
+	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithEventStream(stream))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < backlog; i++ {
+		if err := instanceLog.Append(journal.Event{
+			Type:     journal.EventRunStarted,
+			Gaggle:   "core",
+			Workflow: "implementation",
+			RunID:    "run-" + strconv.Itoa(i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForCursor(t, stream, "test:"+strconv.Itoa(backlog))
+
+	request := httptest.NewRequest(http.MethodGet, EventsPath, nil)
+	request.Header.Set("Last-Event-ID", "test:0")
+	writer := &slowResponseWriter{header: http.Header{}, interval: 5 * time.Millisecond}
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		handler.ServeHTTP(writer, request)
+	}()
+
+	waitForSubscribers(t, stream, 1)
+	for writer.writeCount() < 5 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	closedAt := time.Now()
+	stream.Close()
+	select {
+	case <-served:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("handler still writing %s after stream close", time.Since(closedAt))
+	}
+	if got := writer.writeCount(); got >= backlog {
+		t.Fatalf("handler wrote %d of %d queued events, want the replay abandoned", got, backlog)
+	}
+}
