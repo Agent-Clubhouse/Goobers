@@ -18,8 +18,6 @@ func runWorkflow(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
-	case "show":
-		return runWorkflowShow(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		workflowUsage(stdout)
 		return 0

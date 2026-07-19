@@ -10,31 +10,102 @@ import (
 type cliCommandHandler func([]string, io.Writer, io.Writer) int
 
 type cliCommand struct {
-	names  []string
-	action apicontract.SurfaceAction
-	run    cliCommandHandler
+	names            []string
+	action           apicontract.SurfaceAction
+	actionRegistered bool
+	subcommands      []cliCommand
+	run              cliCommandHandler
 }
 
 var cliCommands = []cliCommand{
 	command("init", apicontract.ActionConfigTime, runInit),
-	command("scaffold", apicontract.ActionConfigTime, runScaffold),
+	groupCommand(
+		"scaffold",
+		runScaffold,
+		subcommand(
+			"scaffold goober",
+			"goober",
+			apicontract.ActionConfigTime,
+			func(args []string, stdout, stderr io.Writer) int {
+				return runScaffoldKind("goober", args, stdout, stderr)
+			},
+		),
+		subcommand(
+			"scaffold workflow",
+			"workflow",
+			apicontract.ActionConfigTime,
+			func(args []string, stdout, stderr io.Writer) int {
+				return runScaffoldKind("workflow", args, stdout, stderr)
+			},
+		),
+	),
 	command("validate", apicontract.ActionConfigTime, runValidate),
 	command("up", apicontract.ActionDaemonLifecycle, runUp),
-	command("run", apicontract.ActionWorkflowExecution, runRun),
+	commandWithSubcommands(
+		"run",
+		apicontract.ActionWorkflowExecution,
+		runRun,
+		subcommand("run abort", "abort", apicontract.ActionMaintenance, runRunAbort),
+	),
 	command(detachedRunWorkerCommand, apicontract.ActionWorkflowExecution, runDetachedWorker),
 	command("signal", apicontract.ActionWorkflowExecution, runSignal),
-	command("workflow", apicontract.ActionReadOnlyNavigation, runWorkflow),
-	command("runs", apicontract.ActionReadOnlyNavigation, runRuns),
+	groupCommand(
+		"workflow",
+		runWorkflow,
+		subcommand("workflow show", "show", apicontract.ActionReadOnlyNavigation, runWorkflowShow),
+	),
+	groupCommand(
+		"runs",
+		runRuns,
+		subcommand("runs list", "list", apicontract.ActionReadOnlyNavigation, runRunsList),
+		subcommand("runs du", "du", apicontract.ActionReadOnlyNavigation, runRunsDU),
+	),
 	command("status", apicontract.ActionReadOnlyNavigation, runStatus),
 	command("stats", apicontract.ActionReadOnlyNavigation, runStats),
 	command("trace", apicontract.ActionReadOnlyNavigation, runTrace),
-	command("completion", apicontract.ActionConfigTime, runCompletion),
+	groupCommand(
+		"completion",
+		runCompletion,
+		subcommand(
+			"completion bash",
+			"bash",
+			apicontract.ActionConfigTime,
+			func(args []string, stdout, stderr io.Writer) int {
+				return runCompletionScript(bashCompletion, args, stdout, stderr)
+			},
+		),
+		subcommand(
+			"completion zsh",
+			"zsh",
+			apicontract.ActionConfigTime,
+			func(args []string, stdout, stderr io.Writer) int {
+				return runCompletionScript(zshCompletion, args, stdout, stderr)
+			},
+		),
+		subcommand(
+			"completion fish",
+			"fish",
+			apicontract.ActionConfigTime,
+			func(args []string, stdout, stderr io.Writer) int {
+				return runCompletionScript(fishCompletion, args, stdout, stderr)
+			},
+		),
+	),
 	command("__complete", apicontract.ActionConfigTime, func(args []string, stdout, _ io.Writer) int {
 		return runCompletionCandidates(args, stdout)
 	}),
-	command("telemetry", apicontract.ActionReadOnlyNavigation, runTelemetry),
+	groupCommand(
+		"telemetry",
+		runTelemetry,
+		subcommand("telemetry stats", "stats", apicontract.ActionReadOnlyNavigation, runTelemetryStats),
+		subcommand("telemetry errors", "errors", apicontract.ActionReadOnlyNavigation, runTelemetryErrors),
+	),
 	command("telemetry-query", apicontract.ActionWorkflowExecution, runTelemetryQuery),
-	command("journal", apicontract.ActionMaintenance, runJournal),
+	groupCommand(
+		"journal",
+		runJournal,
+		subcommand("journal redact", "redact", apicontract.ActionMaintenance, runJournalRedact),
+	),
 	command("backlog-query", apicontract.ActionWorkflowExecution, runBacklogQuery),
 	command("push-branch", apicontract.ActionWorkflowExecution, runPushBranch),
 	command("open-pr", apicontract.ActionWorkflowExecution, runOpenPR),
@@ -79,12 +150,65 @@ func command(
 	return aliasCommand(name, []string{name}, class, handler)
 }
 
+func commandWithSubcommands(
+	name string,
+	class apicontract.ActionClass,
+	handler cliCommandHandler,
+	subcommands ...cliCommand,
+) cliCommand {
+	registration := command(name, class, handler)
+	registration.subcommands = subcommands
+	return registration
+}
+
+func groupCommand(
+	name string,
+	handler cliCommandHandler,
+	subcommands ...cliCommand,
+) cliCommand {
+	return cliCommand{
+		names:       []string{name},
+		subcommands: subcommands,
+		run:         handler,
+	}
+}
+
+func subcommand(
+	id string,
+	name string,
+	class apicontract.ActionClass,
+	handler cliCommandHandler,
+) cliCommand {
+	return aliasCommand(id, []string{name}, class, handler)
+}
+
 func runtimeCommand(
 	name string,
 	capability apicontract.CapabilityID,
 	handler cliCommandHandler,
 ) cliCommand {
-	registration := command(name, apicontract.ActionRuntimeMutation, handler)
+	return withRuntimeCapability(
+		command(name, apicontract.ActionRuntimeMutation, handler),
+		capability,
+	)
+}
+
+func runtimeSubcommand(
+	id string,
+	name string,
+	capability apicontract.CapabilityID,
+	handler cliCommandHandler,
+) cliCommand {
+	return withRuntimeCapability(
+		subcommand(id, name, apicontract.ActionRuntimeMutation, handler),
+		capability,
+	)
+}
+
+func withRuntimeCapability(
+	registration cliCommand,
+	capability apicontract.CapabilityID,
+) cliCommand {
 	registration.action.Capability = capability
 	return registration
 }
@@ -101,12 +225,17 @@ func aliasCommand(
 			ID:    apicontract.ActionID(id),
 			Class: class,
 		},
-		run: handler,
+		actionRegistered: true,
+		run:              handler,
 	}
 }
 
 func findCLICommand(name string) (cliCommand, bool) {
-	for _, command := range cliCommands {
+	return findCLICommandIn(cliCommands, name)
+}
+
+func findCLICommandIn(commands []cliCommand, name string) (cliCommand, bool) {
+	for _, command := range commands {
 		for _, candidate := range command.names {
 			if candidate == name {
 				return command, true
@@ -116,10 +245,26 @@ func findCLICommand(name string) (cliCommand, bool) {
 	return cliCommand{}, false
 }
 
+func (command cliCommand) dispatch(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 {
+		if subcommand, ok := findCLICommandIn(command.subcommands, args[0]); ok {
+			return subcommand.dispatch(args[1:], stdout, stderr)
+		}
+	}
+	return command.run(args, stdout, stderr)
+}
+
 func cliSurfaceActions() []apicontract.SurfaceAction {
-	actions := make([]apicontract.SurfaceAction, 0, len(cliCommands))
-	for _, command := range cliCommands {
-		actions = append(actions, command.action)
+	return cliSurfaceActionsFrom(cliCommands)
+}
+
+func cliSurfaceActionsFrom(commands []cliCommand) []apicontract.SurfaceAction {
+	var actions []apicontract.SurfaceAction
+	for _, command := range commands {
+		if command.actionRegistered {
+			actions = append(actions, command.action)
+		}
+		actions = append(actions, cliSurfaceActionsFrom(command.subcommands)...)
 	}
 	return actions
 }

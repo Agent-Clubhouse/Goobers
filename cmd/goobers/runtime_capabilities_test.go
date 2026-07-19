@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,6 +31,19 @@ func TestRuntimeMutationCapabilityParity(t *testing.T) {
 func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	assertActionClass(t, cliSurfaceActions(), "init", apicontract.ActionConfigTime)
 	assertActionClass(t, cliSurfaceActions(), "up", apicontract.ActionDaemonLifecycle)
+	assertActionClass(t, cliSurfaceActions(), "run", apicontract.ActionWorkflowExecution)
+	assertActionClass(t, cliSurfaceActions(), "run abort", apicontract.ActionMaintenance)
+	assertActionClass(t, cliSurfaceActions(), "scaffold goober", apicontract.ActionConfigTime)
+	assertActionClass(t, cliSurfaceActions(), "scaffold workflow", apicontract.ActionConfigTime)
+	assertActionClass(t, cliSurfaceActions(), "workflow show", apicontract.ActionReadOnlyNavigation)
+	assertActionClass(t, cliSurfaceActions(), "runs list", apicontract.ActionReadOnlyNavigation)
+	assertActionClass(t, cliSurfaceActions(), "runs du", apicontract.ActionReadOnlyNavigation)
+	assertActionClass(t, cliSurfaceActions(), "completion bash", apicontract.ActionConfigTime)
+	assertActionClass(t, cliSurfaceActions(), "completion zsh", apicontract.ActionConfigTime)
+	assertActionClass(t, cliSurfaceActions(), "completion fish", apicontract.ActionConfigTime)
+	assertActionClass(t, cliSurfaceActions(), "telemetry stats", apicontract.ActionReadOnlyNavigation)
+	assertActionClass(t, cliSurfaceActions(), "telemetry errors", apicontract.ActionReadOnlyNavigation)
+	assertActionClass(t, cliSurfaceActions(), "journal redact", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "status", apicontract.ActionReadOnlyNavigation)
 
 	apiActions := httpapi.SurfaceActions()
@@ -57,6 +71,54 @@ func TestRuntimeCommandRegistersTypedCapability(t *testing.T) {
 		Capability: "approve",
 	}) {
 		t.Fatalf("runtime command action = %+v", registration.action)
+	}
+}
+
+func TestNestedRuntimeCommandRegistersTypedCapabilityAndDispatches(t *testing.T) {
+	called := false
+	registration := commandWithSubcommands(
+		"run",
+		apicontract.ActionWorkflowExecution,
+		nil,
+		runtimeSubcommand(
+			"run approve",
+			"approve",
+			"approve",
+			func(_ []string, _, _ io.Writer) int {
+				called = true
+				return 7
+			},
+		),
+	)
+
+	if code := registration.dispatch([]string{"approve"}, io.Discard, io.Discard); code != 7 {
+		t.Fatalf("dispatch exit code = %d, want 7", code)
+	}
+	if !called {
+		t.Fatal("nested runtime command was not dispatched")
+	}
+	actions := cliSurfaceActionsFrom([]cliCommand{registration})
+	if len(actions) != 2 {
+		t.Fatalf("surface actions = %d, want parent and nested command", len(actions))
+	}
+	if actions[1] != (apicontract.SurfaceAction{
+		ID:         "run approve",
+		Class:      apicontract.ActionRuntimeMutation,
+		Capability: "approve",
+	}) {
+		t.Fatalf("nested runtime command action = %+v", actions[1])
+	}
+
+	err := apicontract.ValidateRuntimeParity(
+		[]apicontract.Capability{{ID: "approve", Class: apicontract.ActionRuntimeMutation}},
+		[]apicontract.SurfaceRegistry{
+			{Surface: apicontract.SurfaceCLI, Actions: actions},
+			{Surface: apicontract.SurfaceAPI},
+			{Surface: apicontract.SurfaceUI},
+		},
+	)
+	if err == nil || err.Error() != `capability "approve" is missing api registration` {
+		t.Fatalf("parity error = %v, want missing API registration", err)
 	}
 }
 

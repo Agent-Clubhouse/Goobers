@@ -51,6 +51,7 @@ const clientRoutes = {
   runArtifact: apiRoutes.runArtifact,
   telemetryStats: apiRoutes.telemetryStats,
   telemetryErrors: apiRoutes.telemetryErrors,
+  events: apiRoutes.events,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {

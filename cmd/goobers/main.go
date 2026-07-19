@@ -31,7 +31,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if command, ok := findCLICommand(args[0]); ok {
-		return command.run(args[1:], stdout, stderr)
+		return command.dispatch(args[1:], stdout, stderr)
 	}
 	pf(stderr, "goobers: unknown command %q\n\n", args[0])
 	usage(stderr)
