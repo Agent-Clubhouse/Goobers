@@ -56,10 +56,17 @@ and become a required check.
 
 ## Merge requirements
 
-`main` is protected. A PR merges once:
+`main` is protected. The active repository rules require:
 
 - **CI is green** — the required Ubuntu and macOS `make ci` checks pass on the latest commit.
-- **Review** — approval from a [CODEOWNER](.github/CODEOWNERS) where required.
+- **Approvals** — none. The required approval count is zero, and
+  [CODEOWNER](.github/CODEOWNERS) approval is not required. CODEOWNERS are still
+  requested for review, but those requests are advisory.
+
+Required-review enforcement is the repository policy decision tracked in
+[#763](https://github.com/Agent-Clubhouse/Goobers/issues/763). If that decision changes
+the repository rules, update this section as part of the same settings change so the
+documented and enforced policies do not drift.
 
 Prefer small, reviewable PRs. Squash-merge is the default so `main` stays linear.
 
