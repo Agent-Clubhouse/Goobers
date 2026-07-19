@@ -99,7 +99,7 @@ func saveBlockedRecords(path string, recs map[string]blockedRecord) error {
 
 func snapshotBlockedRecords(l instance.Layout) (map[string]blockedRecord, error) {
 	var recs map[string]blockedRecord
-	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogFilterBlocked, func() error {
 		var err error
 		recs, err = loadBlockedRecords(blockedRecordsPath(l))
 		return err
@@ -292,7 +292,7 @@ func refreshBlockedEligibility(
 	eligible []providers.WorkItem,
 ) ([]providers.WorkItem, error) {
 	filtered := eligible
-	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogFilterBlocked, func() error {
 		recs, err := loadBlockedRecords(blockedRecordsPath(l))
 		if err != nil {
 			return err
@@ -330,7 +330,7 @@ func listParkedDependencies(l instance.Layout) ([]parkedDependency, error) {
 // result. fn returns false to skip the write (nothing changed).
 func updateBlockedRecords(l instance.Layout, fn func(recs map[string]blockedRecord) bool) error {
 	path := blockedRecordsPath(l)
-	return withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
+	return withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBlockedUpdate, func() error {
 		recs, err := loadBlockedRecords(path)
 		if err != nil {
 			return err

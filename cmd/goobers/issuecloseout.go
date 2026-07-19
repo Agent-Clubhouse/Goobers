@@ -142,7 +142,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	var claim localscheduler.ClaimEntry
 	var claimHeld bool
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	err = withClaimLock(lockPath, func() error {
+	err = withClaimLock(lockPath, claimLockOperationCloseOutLookup, func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
@@ -250,7 +250,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// Release the lease now rather than waiting for it to expire — the run
 	// is finished with this item, and RecoverExpired's periodic sweep
 	// (goobers up, #131) should not have to reclaim it later.
-	err = withClaimLock(lockPath, func() error {
+	err = withClaimLock(lockPath, claimLockOperationCloseOutRelease, func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)

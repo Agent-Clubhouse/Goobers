@@ -264,7 +264,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	if !*claim {
-		err = withClaimLock(lockPath, func() error {
+		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
 			var rerr error
 			eligible, rerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords, unresolvedRecords)
 			return rerr
@@ -284,7 +284,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(eligible) == 0 {
-		err = withClaimLock(lockPath, func() error {
+		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
 			_, rerr := reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords, unresolvedRecords)
 			return rerr
 		})
@@ -330,7 +330,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// batch (maxItems 20), implementation a single item (maxItems 1). All claims
 	// share this run's id; each item gets its own ledger entry.
 	var claimed []providers.WorkItem
-	err = withClaimLock(lockPath, func() error {
+	err = withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName), localscheduler.WithInstanceLog(instanceLog))
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
@@ -480,7 +480,7 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 	l := layoutFor(root)
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	var released []string
-	err = withClaimLock(lockPath, func() error {
+	err = withClaimLock(lockPath, claimLockOperationBacklogRelease, func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
