@@ -189,10 +189,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 	}
-	if native, ok := readCopilotSessionTranscript(nativeTranscriptHome, req.MaxTranscriptBytes); ok {
-		out.Transcript = native.data
-		out.TranscriptTruncated = native.truncated
-		out.TranscriptDroppedBytes = native.droppedBytes
+	if nativeTranscriptHome != "" {
+		if native, ok := readCopilotSessionTranscript(nativeTranscriptHome, req.MaxTranscriptBytes); ok {
+			out.Transcript = native.data
+			out.TranscriptTruncated = native.truncated
+			out.TranscriptDroppedBytes = native.droppedBytes
+		}
 	}
 	if err != nil {
 		return out, err

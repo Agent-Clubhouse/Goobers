@@ -130,6 +130,49 @@ func TestCopilotAdapterFallsBackWhenNativeSessionLogUnavailable(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterSkipsNativeTranscriptForSelectedSession(t *testing.T) {
+	native := readTestData(t, "copilot-session-events.jsonl")
+	daemonDir := t.TempDir()
+	t.Chdir(daemonDir)
+	path := copilotSessionLogPath("", "unrelated-session")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("prepare unrelated session log: %v", err)
+	}
+	if err := os.WriteFile(path, native, 0o600); err != nil {
+		t.Fatalf("write unrelated session log: %v", err)
+	}
+
+	workspace := t.TempDir()
+	floor := []byte("stdout compatibility floor")
+	runner := &fakeProcessRunner{
+		result: ProcessResult{Transcript: floor, ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:   []string{"copilot"},
+		ExtraArgs: []string{"--session-id", "existing-session"},
+		Runner:    runner,
+	}
+
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    pushCredentials(t, "unused", "unused"),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, ok := nativeSessionHome(runner.lastReq); ok {
+		t.Fatalf("selected-session command unexpectedly received COPILOT_HOME: %+v", runner.lastReq.Env)
+	}
+	if !bytes.Equal(out.Transcript, floor) {
+		t.Fatalf("Transcript = %q, want floor %q", out.Transcript, floor)
+	}
+}
+
 func TestCopilotAdapterBoundsNativeSessionTranscript(t *testing.T) {
 	const limit = int64(80)
 	workspace := t.TempDir()
