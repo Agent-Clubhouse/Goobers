@@ -183,7 +183,7 @@ func TestAcceptedButInertWorkflowFieldsEmitCodedWarnings(t *testing.T) {
 
 	warnings := report.Warnings()
 	if len(warnings) != 2 {
-		t.Fatalf("Warnings() = %+v, want expectedOutputs and deterministicRun.image warnings", warnings)
+		t.Fatalf("Warnings() = %+v, want expectedOutputs and run.image warnings", warnings)
 	}
 	all := make([]string, 0, len(warnings))
 	for _, warning := range warnings {
@@ -195,7 +195,7 @@ func TestAcceptedButInertWorkflowFieldsEmitCodedWarnings(t *testing.T) {
 	explanations := strings.Join(all, "\n")
 	for _, want := range []string{
 		"expectedOutputs is declared but not enforced at V0",
-		"deterministicRun.image is not honored by the local runner",
+		"run.image is not honored by the local runner",
 	} {
 		if !strings.Contains(explanations, want) {
 			t.Errorf("warnings = %+v, want explanation containing %q", warnings, want)

@@ -179,12 +179,12 @@ func TestCheckWarningsAcceptedButInertFields(t *testing.T) {
 	}
 	warnings := CheckWarnings(def)
 	if len(warnings) != 2 {
-		t.Fatalf("warnings = %v, want expectedOutputs and deterministicRun.image warnings", warnings)
+		t.Fatalf("warnings = %v, want expectedOutputs and run.image warnings", warnings)
 	}
 	all := strings.Join(warnings, "\n")
 	for _, want := range []string{
 		"expectedOutputs is declared but not enforced at V0",
-		"deterministicRun.image is not honored by the local runner",
+		"run.image is not honored by the local runner",
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("warnings = %v, want warning containing %q", warnings, want)

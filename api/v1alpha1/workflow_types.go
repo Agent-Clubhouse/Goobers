@@ -157,7 +157,8 @@ type Task struct {
 	// +kubebuilder:validation:Enum=fail;salvage
 	// +optional
 	OnTimeout string `json:"onTimeout,omitempty" yaml:"onTimeout,omitempty"`
-	// ExpectedOutputs are postconditions downstream gates can validate (TSK-003).
+	// ExpectedOutputs declares intended task postconditions. The V0 local runner
+	// accepts but does not enforce this field; validation emits VER003 when set.
 	// +optional
 	ExpectedOutputs []string `json:"expectedOutputs,omitempty" yaml:"expectedOutputs,omitempty"`
 	// InputsFrom declares an explicit, small output->input handoff from the
@@ -200,7 +201,9 @@ type DeterministicRun struct {
 	// Command is the command + args to execute.
 	// +kubebuilder:validation:Required
 	Command []string `json:"command" yaml:"command"`
-	// Image optionally overrides the container image the command runs in.
+	// Image optionally selects the command's container image. The V0 local
+	// runner executes commands directly and does not honor this field;
+	// validation emits VER003 when set.
 	// +optional
 	Image string `json:"image,omitempty" yaml:"image,omitempty"`
 	// Network selects the command's network access. Empty inherits the host

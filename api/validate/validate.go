@@ -628,11 +628,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 	// checks the inline field-by-field pass above deliberately does not duplicate.
 	def := wf.Definition{Name: w.Name, Version: 1, Spec: w.Spec}
 	for _, msg := range wf.CheckWarnings(def) {
-<<<<<<< HEAD
 		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
-=======
-		r.addCoded(WarningCompatibility, Warning, "", "Workflow", w.Name, "%s", msg)
->>>>>>> 97647b8 (fix(validate): warn on inert workflow fields)
 	}
 	for _, msg := range wf.CheckReachability(def) {
 		r.add(Error, "", "Workflow", w.Name, "%s", msg)

@@ -30,7 +30,7 @@ func CheckWarnings(def Definition) []string {
 		}
 		if task.Run != nil && strings.TrimSpace(task.Run.Image) != "" {
 			warnings = append(warnings, fmt.Sprintf(
-				`task %q: deterministicRun.image is not honored by the local runner`,
+				`task %q: run.image is not honored by the local runner`,
 				task.Name,
 			))
 		}

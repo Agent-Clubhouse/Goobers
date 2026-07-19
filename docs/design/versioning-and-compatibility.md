@@ -107,7 +107,10 @@ The compatibility registry also tracks accepted-but-inert fields. At V0,
 `task.expectedOutputs` is **declared-not-enforced** and
 `task.run.image` is not honored by the local runner; declaring either emits
 `VER003` rather than failing validation. Enforcing `expectedOutputs` remains a
-later contract change once shipped declarations are trustworthy.
+later contract change once shipped declarations are trustworthy. The code and
+file/gaggle provenance are carried on the `--json`/API surface; `goobers
+validate`'s human output prints these workflow compatibility notices as
+`WARNING  <scope>: <explanation>`, without the code.
 
 Human output from both commands is `WARNING <code> <scope>: <explanation>`.
 `goobers status --json` emits one object with `warnings` and `runs` arrays:
