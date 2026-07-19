@@ -36,7 +36,7 @@ func issueCloseOutStatus(raw string) (providers.WorkItemStatus, error) {
 	}
 }
 
-func issueCloseOutGateReason(runsDir, runID, gateName string) (string, error) {
+func issueCloseOutReason(runsDir, runID, gateName string) (string, error) {
 	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
 	if err != nil {
 		return "", err
@@ -47,36 +47,52 @@ func issueCloseOutGateReason(runsDir, runID, gateName string) (string, error) {
 	}
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
-		if event.Type != journal.EventGateEvaluated || (gateName != "" && event.Gate != gateName) {
-			continue
-		}
-		if event.Ref != nil {
-			data, err := reader.ArtifactBytes(*event.Ref)
-			if err != nil {
-				return "", fmt.Errorf("read verdict for gate %q: %w", event.Gate, err)
+		switch event.Type {
+		case journal.EventGateEvaluated:
+			if gateName != "" && event.Gate != gateName {
+				continue
 			}
-			var verdict apiv1.Verdict
-			if err := json.Unmarshal(data, &verdict); err != nil {
-				return "", fmt.Errorf("parse verdict for gate %q: %w", event.Gate, err)
+			if event.Ref != nil {
+				data, err := reader.ArtifactBytes(*event.Ref)
+				if err != nil {
+					return "", fmt.Errorf("read verdict for gate %q: %w", event.Gate, err)
+				}
+				var verdict apiv1.Verdict
+				if err := json.Unmarshal(data, &verdict); err != nil {
+					return "", fmt.Errorf("parse verdict for gate %q: %w", event.Gate, err)
+				}
+				reason := strings.TrimSpace(verdict.Summary)
+				if reason == "" {
+					reason = strings.TrimSpace(verdict.Rationale)
+				}
+				if reason != "" {
+					return reason, nil
+				}
 			}
-			reason := strings.TrimSpace(verdict.Summary)
-			if reason == "" {
-				reason = strings.TrimSpace(verdict.Rationale)
+			if escalated, _ := event.Runner["escalated"].(bool); escalated {
+				if attempt, ok := event.Runner["repassAttempt"].(float64); ok {
+					return fmt.Sprintf("gate %s escalated after outcome %s exhausted the repass budget at attempt %.0f", event.Gate, event.Verdict, attempt), nil
+				}
+				return fmt.Sprintf("gate %s escalated after outcome %s exhausted the repass budget", event.Gate, event.Verdict), nil
 			}
-			if reason != "" {
+			return fmt.Sprintf("gate %s returned terminal outcome %s", event.Gate, event.Verdict), nil
+		case journal.EventStageFinished:
+			if gateName != "" || event.Status != string(apiv1.ResultFailure) || event.Error == nil {
+				continue
+			}
+			if event.AttemptClass == journal.AttemptInfra && event.Error.Code == "interrupted" {
+				continue
+			}
+			if reason := strings.TrimSpace(event.Error.Message); reason != "" {
 				return reason, nil
 			}
-		}
-		if escalated, _ := event.Runner["escalated"].(bool); escalated {
-			if attempt, ok := event.Runner["repassAttempt"].(float64); ok {
-				return fmt.Sprintf("gate %s escalated after outcome %s exhausted the repass budget at attempt %.0f", event.Gate, event.Verdict, attempt), nil
+			if code := strings.TrimSpace(event.Error.Code); code != "" {
+				return code, nil
 			}
-			return fmt.Sprintf("gate %s escalated after outcome %s exhausted the repass budget", event.Gate, event.Verdict), nil
 		}
-		return fmt.Sprintf("gate %s returned terminal outcome %s", event.Gate, event.Verdict), nil
 	}
 	if gateName == "" {
-		return "", fmt.Errorf("no gate verdict found")
+		return "", fmt.Errorf("no terminal gate or failed task reason found")
 	}
 	return "", fmt.Errorf("no verdict found for gate %q", gateName)
 }
@@ -167,7 +183,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	if status == issueCloseOutNeedsHuman {
 		if comment == "" {
 			gateName := providerInput("reasonFromGate", "")
-			reason, err := issueCloseOutGateReason(l.RunsDir(), runID, gateName)
+			reason, err := issueCloseOutReason(l.RunsDir(), runID, gateName)
 			if err != nil {
 				pf(stderr, "error: resolve parking reason: %v\n", err)
 				return 1

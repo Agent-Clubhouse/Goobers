@@ -513,6 +513,34 @@ func fixtureMachine(t *testing.T) *workflow.Machine {
 	return m
 }
 
+func escalationParkingMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "review"},
+			{Name: "park-needs-human", Type: apiv1.TaskDeterministic, Goal: "park the issue", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: workflow.TargetAbort},
+		},
+		Gates: []apiv1.Gate{{
+			Name:      "review",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches: map[string]string{
+				"pass":                  workflow.TerminalComplete,
+				"fail":                  workflow.TargetAbort,
+				workflow.BranchEscalate: "park-needs-human",
+			},
+		}},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "escalation-parking", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile escalation parking machine: %v", err)
+	}
+	return m
+}
+
 func newTestRunner(t *testing.T, byTask map[string]stubTaskResult, automated invoke.Automated) (*Runner, string) {
 	t.Helper()
 	return newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
@@ -4541,6 +4569,60 @@ func TestRunnerEscalatesNonRetryableFailureDisposition(t *testing.T) {
 			t.Fatal("reviewer was not invoked — an unrecognized failure code must still route into the gate, not escalate")
 		}
 	})
+}
+
+func TestRunnerRoutesNonRetryableFailureThroughGateEscalationBranch(t *testing.T) {
+	const runID = "run-park-nonretryable"
+	const summary = "The issue bundles independent changes and needs decomposition."
+	byTask := map[string]stubTaskResult{
+		runID + ":implement": {
+			status:  apiv1.ResultFailure,
+			summary: summary,
+			errorInfo: &apiv1.ErrorInfo{
+				Code: "NEEDS_DECOMPOSITION", Message: "implementation cannot continue", Retryable: false,
+			},
+		},
+		runID + ":park-needs-human": {status: apiv1.ResultSuccess},
+	}
+	r, runsDir := newTestRunner(t, byTask, nil)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: escalationParkingMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseAborted || res.FinalState != "park-needs-human" {
+		t.Fatalf("result = %+v, want aborted after park-needs-human", res)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var finished []string
+	for _, event := range events {
+		if event.Type == journal.EventGateEvaluated {
+			t.Fatalf("non-retryable disposition evaluated review gate: %+v", event)
+		}
+		if event.Type != journal.EventStageFinished {
+			continue
+		}
+		finished = append(finished, event.Stage)
+		if event.Stage == "implement" && (event.Error == nil || event.Error.Message != summary) {
+			t.Fatalf("implement error = %+v, want retained summary %q", event.Error, summary)
+		}
+	}
+	if !reflect.DeepEqual(finished, []string{"implement", "park-needs-human"}) {
+		t.Fatalf("finished stages = %v, want implement then park-needs-human", finished)
+	}
 }
 
 // TestRunnerFastFailsEmptyDiffFromAgenticStage is #415's reviewer sibling,

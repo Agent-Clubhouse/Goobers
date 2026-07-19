@@ -106,15 +106,18 @@ pipeline.
 | Status | Runner action |
 |---|---|
 | `success` | advance the state machine to the next stage/gate |
-| `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION`), route straight to `@escalate` (terminal `escalated`) after this one attempt — bypassing `Next` and any repass loop. Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
+| `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION`), bypass the `Next` gate's evaluator and route through its optional `escalate` control branch; without one, terminate directly at `@escalate`. Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
 | `blocked` | **finish the run `escalated`** (#544/#545) — never a pause. The blocked cause is journaled (`blocked_by_agent`, carrying `error`), the claim is released via the normal terminal path, and the driving issue is notified: if `outputs.blockedBy` names blocking issue numbers, backlog selection records the block and skips the issue until every named blocker closes (self-heals automatically, #552); otherwise the issue is parked `goobers:needs-human` (#539's convention) since there is nothing concrete for selection to key off. |
 
 > **Non-retryable escalate disposition (#415, V0.7 ladder remediation L6 —
 > `docs/design/v07-ladder-remediation.md` §3.4):** a `failure` result carrying
 > `error.retryable == false` **and** a recognized escalate code (`ISSUE_OVER_SCOPE`
-> / `NEEDS_DECOMPOSITION`) routes straight to `@escalate` (terminal `escalated`)
-> after one attempt — bypassing the `Next` gate and the repass loop. It is the
-> signal a human, or a future decomposition workflow, selects on. Without it an
+> / `NEEDS_DECOMPOSITION`) bypasses the `Next` gate evaluator and its repass
+> loop after one attempt. When that gate declares an `escalate` control branch,
+> the runner follows it so the workflow can perform deterministic disposition
+> work before terminating; otherwise it routes straight to `@escalate`
+> (terminal `escalated`). It is the signal a human, or a future decomposition
+> workflow, selects on. Without it an
 > un-scopeable item the stage correctly rejected on attempt 1 re-enters the repass
 > loop until the budget exhausts and terminates `aborted`, not `escalated` — the
 > V0.6 ladder's over-scope-probe finding. This is a business-disposition route,

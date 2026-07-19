@@ -1031,17 +1031,27 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		// #415: a stage that self-identifies a non-retryable business
 		// disposition — status:failure with error.retryable==false and a
 		// recognized escalate code (ISSUE_OVER_SCOPE / NEEDS_DECOMPOSITION) —
-		// routes straight to @escalate after this one attempt, bypassing the
-		// Next gate and its repass loop. Without it, an un-scopeable issue the
-		// implementer correctly rejected on attempt 1 re-enters the
-		// reviewer→implement repass loop and re-derives the identical
-		// conclusion until the repass budget exhausts, terminating `aborted`
-		// instead of the `escalated` a human / a future decomposition workflow
-		// selects on. Placed ahead of the gate-routing branch so the
-		// disposition wins over the ordinary "failure into the gate" path.
-		if isNonRetryableEscalation(result.Error) {
-			res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
-			return "", res, false, err
+		// bypasses the Next gate evaluator and its repass loop after this one
+		// attempt. Its escalation control branch may route disposition work
+		// before termination; without one the run ends at @escalate. Otherwise
+		// an un-scopeable issue the implementer correctly rejected on attempt 1
+		// re-enters the reviewer→implement loop and re-derives the identical
+		// conclusion until the budget exhausts.
+		if result.Status == apiv1.ResultFailure && isNonRetryableEscalation(result.Error) {
+			target := taskEscalationTarget(machine, t)
+			switch target {
+			case workflow.TargetAbort:
+				res, err = r.finish(runID, jr, journal.PhaseAborted, t.Name, steps)
+				return "", res, false, err
+			case workflow.TargetEscalate:
+				res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
+				return "", res, false, err
+			case workflow.TerminalComplete:
+				res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
+				return "", res, false, err
+			default:
+				return target, Result{}, true, nil
+			}
 		}
 		if _, isGate := machine.Gate(t.Next); t.Next != "" && isGate {
 			return t.Next, Result{}, true, nil
@@ -1298,7 +1308,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 
 		if err := jr.Append(journal.Event{
 			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-			Status: string(result.Status), Error: errorDetailFrom(result.Error),
+			Status: string(result.Status), Error: errorDetailFrom(result),
 			Outputs: result.Outputs, Artifacts: refsFrom(result.Artifacts),
 		}); err != nil {
 			err = fmt.Errorf("runner: journal stage.finished for %q: %w", t.Name, err)
@@ -1574,25 +1584,30 @@ func readMutationSidecar(workspace string) []mutationFact {
 	return facts
 }
 
-// errorDetailFrom converts a stage's business-level error (apiv1.ErrorInfo,
-// part of its ResultEnvelope) into the journal's normative ErrorDetail
-// (Code+Message) so a failed/blocked stage's reason is actually visible in
-// the journal, not just its coarse Status string. nil in, nil out.
-func errorDetailFrom(e *apiv1.ErrorInfo) *journal.ErrorDetail {
-	if e == nil {
+// errorDetailFrom converts a stage's business-level error into the journal's
+// normative ErrorDetail. A recognized non-retryable disposition retains the
+// result summary as its human-facing reason so a downstream parking stage can
+// surface the implementer's explanation without re-running a reviewer.
+func errorDetailFrom(result apiv1.ResultEnvelope) *journal.ErrorDetail {
+	if result.Error == nil {
 		return nil
 	}
-	return &journal.ErrorDetail{Code: e.Code, Message: e.Message}
+	message := result.Error.Message
+	if result.Status == apiv1.ResultFailure && isNonRetryableEscalation(result.Error) {
+		if summary := strings.TrimSpace(result.Summary); summary != "" {
+			message = summary
+		}
+	}
+	return &journal.ErrorDetail{Code: result.Error.Code, Message: message}
 }
 
 // escalateErrorCodes are the recognized non-retryable business dispositions an
-// agentic stage can emit to route its run straight to @escalate (#415) rather
-// than into the Next gate's repass loop. Each names a conclusion that
-// re-running the stage can only re-derive — the item needs a human or a future
-// decomposition workflow, not another implement attempt. Kept as a
-// runner-owned policy set (the runner owns status→transition routing), not a
-// schema enum, so recognizing a new code never reopens the closed envelope
-// contract.
+// agentic stage can emit to bypass the Next gate's repass loop (#415). Each
+// names a conclusion that re-running the stage can only re-derive — the item
+// needs a human or a future decomposition workflow, not another implement
+// attempt. Kept as a runner-owned policy set (the runner owns status→transition
+// routing), not a schema enum, so recognizing a new code never reopens the
+// closed envelope contract.
 var escalateErrorCodes = map[string]bool{
 	"ISSUE_OVER_SCOPE":    true,
 	"NEEDS_DECOMPOSITION": true,
@@ -1606,6 +1621,19 @@ var escalateErrorCodes = map[string]bool{
 // PhaseFailed). nil in → false (no error detail, nothing to route on).
 func isNonRetryableEscalation(e *apiv1.ErrorInfo) bool {
 	return e != nil && !e.Retryable && escalateErrorCodes[e.Code]
+}
+
+// taskEscalationTarget lets a workflow intercept a non-retryable task
+// disposition through the escalation control branch on its Next gate. The gate
+// evaluator is deliberately bypassed; absent that control branch, the existing
+// direct @escalate behavior remains unchanged.
+func taskEscalationTarget(machine *workflow.Machine, task apiv1.Task) string {
+	if nextGate, ok := machine.Gate(task.Next); ok {
+		if target, ok := workflow.BranchTarget(nextGate, workflow.BranchEscalate); ok {
+			return target
+		}
+	}
+	return workflow.TargetEscalate
 }
 
 // evaluateGate dispatches one gate attempt through gateEval (internal/gate,

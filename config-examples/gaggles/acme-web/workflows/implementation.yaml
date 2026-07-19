@@ -87,6 +87,8 @@ spec:
       onTimeout: salvage
       expectedOutputs:
         - changed-files
+      # A recognized non-retryable failure bypasses review evaluation but uses
+      # review's escalate control branch below to park the issue first.
       next: review
 
     # `make ci`-equivalent, run in the same worktree the implementer used.

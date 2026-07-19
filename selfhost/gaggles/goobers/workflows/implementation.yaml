@@ -119,6 +119,8 @@ spec:
       # committed diff on the run branch, which the runner captures and digests
       # as the reviewer's evidence. A model cannot correctly self-report digested
       # ArtifactPointers, so the result is status + scalar summary only.
+      # A recognized non-retryable failure bypasses review evaluation but uses
+      # review's escalate control branch below to park the issue first.
       next: review
 
     # `make ci`-equivalent, run in the same worktree the implementer used.

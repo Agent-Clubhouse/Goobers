@@ -324,12 +324,45 @@ func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
 		t.Fatalf("record local gate event: %v", err)
 	}
 
-	reason, err := issueCloseOutGateReason(runsDir, "run-local-ci", "")
+	reason, err := issueCloseOutReason(runsDir, "run-local-ci", "")
 	if err != nil {
-		t.Fatalf("issueCloseOutGateReason: %v", err)
+		t.Fatalf("issueCloseOutReason: %v", err)
 	}
 	if !strings.Contains(reason, "local-gate") || !strings.Contains(reason, "attempt 4") {
 		t.Fatalf("reason = %q, want local-gate and repass attempt", reason)
+	}
+}
+
+func TestIssueCloseOutReasonUsesNonRetryableTaskSummary(t *testing.T) {
+	runsDir := t.TempDir()
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-over-scope", Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	const summary = "The issue combines unrelated changes and must be decomposed."
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultFailure),
+		Error: &journal.ErrorDetail{Code: "NEEDS_DECOMPOSITION", Message: summary},
+	}); err != nil {
+		t.Fatalf("record implement failure: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "park-needs-human", Status: string(apiv1.ResultFailure),
+		AttemptClass: journal.AttemptInfra,
+		Error:        &journal.ErrorDetail{Code: "interrupted", Message: "attempt was interrupted"},
+	}); err != nil {
+		t.Fatalf("record interrupted parking attempt: %v", err)
+	}
+
+	reason, err := issueCloseOutReason(runsDir, "run-over-scope", "")
+	if err != nil {
+		t.Fatalf("issueCloseOutReason: %v", err)
+	}
+	if reason != summary {
+		t.Fatalf("reason = %q, want task summary %q", reason, summary)
 	}
 }
 
