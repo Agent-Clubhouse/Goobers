@@ -318,6 +318,56 @@ func TestEvaluatorEscalatesOnRepassBudgetExhaustion(t *testing.T) {
 	}
 }
 
+func TestEvaluatorRoutesRepassEscalationThroughControlBranch(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "review",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches: map[string]string{
+			OutcomePass:       "",
+			OutcomeFail:       "implement",
+			wf.BranchEscalate: "park-needs-human",
+		},
+	}
+	auto := &fakeAutomated{outcomes: []string{OutcomeFail, OutcomeFail}}
+	run := newTestJournal(t)
+	ev := &Evaluator{Automated: auto, MaxRepasses: 1, Journal: run}
+	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}
+
+	first, err := ev.Evaluate(context.Background(), g, env, "implement", apiv1.ResultEnvelope{}, "", false)
+	if err != nil {
+		t.Fatalf("Evaluate #1: %v", err)
+	}
+	if first.Target != "implement" || first.Escalated {
+		t.Fatalf("Evaluate #1 = %+v, want ordinary repass to implement", first)
+	}
+
+	second, err := ev.Evaluate(context.Background(), g, env, "implement", apiv1.ResultEnvelope{}, "", false)
+	if err != nil {
+		t.Fatalf("Evaluate #2: %v", err)
+	}
+	if second.Target != "park-needs-human" || !second.Escalated {
+		t.Fatalf("Evaluate #2 = %+v, want escalated target park-needs-human", second)
+	}
+
+	events := readGateEvents(t, run)
+	if got := events[len(events)-1].Target; got != "park-needs-human" {
+		t.Fatalf("last journaled target = %q, want park-needs-human", got)
+	}
+
+	recovered, ok, err := (&Evaluator{
+		MaxRepasses: 1,
+		Attempts:    map[string]int{"review": 2},
+		Journal:     newTestJournal(t),
+	}).RecoverInterrupted(g, "")
+	if err != nil {
+		t.Fatalf("RecoverInterrupted: %v", err)
+	}
+	if !ok || recovered.Target != "park-needs-human" || !recovered.Escalated {
+		t.Fatalf("RecoverInterrupted = %+v,%v, want escalated target park-needs-human", recovered, ok)
+	}
+}
+
 // TestEvaluatorEscalatesOnDuplicateDiffWithoutReReview is issue #316's core
 // acceptance: an implementer stuck in a non-convergent repass loop produces a
 // diff byte-identical to its immediately prior attempt. The second such

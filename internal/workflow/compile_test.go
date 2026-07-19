@@ -701,6 +701,16 @@ func TestCompileGateOutcomeCoverage(t *testing.T) {
 		}
 	})
 
+	t.Run("escalation control branch compiles", func(t *testing.T) {
+		spec := agenticGate(map[string]string{
+			"pass": TerminalComplete, "fail": TargetAbort, "needs-changes": "implement",
+			BranchEscalate: TargetAbort,
+		})
+		if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+			t.Fatalf("escalation control branch should compile, got %v", err)
+		}
+	})
+
 	t.Run("automated gate missing fail branch", func(t *testing.T) {
 		spec := apiv1.WorkflowSpec{
 			Gaggle: "web",

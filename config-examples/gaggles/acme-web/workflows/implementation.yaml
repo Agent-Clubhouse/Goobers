@@ -87,6 +87,8 @@ spec:
       onTimeout: salvage
       expectedOutputs:
         - changed-files
+      # A recognized non-retryable failure bypasses review evaluation but uses
+      # review's escalate control branch below to park the issue first.
       next: review
 
     # `make ci`-equivalent, run in the same worktree the implementer used.
@@ -179,6 +181,36 @@ spec:
       # Terminal: no `next`. The core loop's product — issue in, PR out — is
       # complete once the issue carries the closing breadcrumb.
 
+    - name: park-escalated
+      type: deterministic
+      goal: Park an escalated issue with the terminal escalation reason.
+      run:
+        command: ["goobers", "issue-close-out"]
+      inputs:
+        status: "needs-human"
+      capabilities:
+        - github:issues:write
+      # Terminal @escalate, NOT @abort. The issue still has to leave
+      # goobers:ready (that is this PR's whole point), but the run's phase is
+      # what every escalation surface selects on: `goobers run` exit 3, the
+      # read API's escalationCause, and `goobers trace`'s escalation summary
+      # all key on PhaseEscalated. Collapsing this into park-needs-human's
+      # @abort would make a repass-exhausted or non-retryable-disposition run
+      # indistinguishable from an ordinary failure — and would regress #415,
+      # which exists precisely so these terminate escalated.
+      next: "@escalate"
+
+    - name: park-needs-human
+      type: deterministic
+      goal: Park a reviewer-rejected issue with the terminal review reason.
+      run:
+        command: ["goobers", "issue-close-out"]
+      inputs:
+        status: "needs-human"
+      capabilities:
+        - github:issues:write
+      next: "@abort"
+
   gates:
     # Agentic gate: the reviewer invocation IS the evaluator (gate.md's
     # "Agentic" evaluator kind) — there is no separate preceding review task.
@@ -186,12 +218,10 @@ spec:
     # evidence context pointers before invoking the reviewer
     # (internal/gate.ReviewerInvocation, #20). Verdict decisions map directly
     # to branches (GT-002: never a silent pass): "needs-changes" repasses to
-    # implement with the rationale as evidence; "fail" aborts outright
-    # rather than spending repass budget on a fundamentally rejected
-    # approach. Bounded repass + auto-escalation on budget exhaustion is
-    # enforced by the gate evaluator at runtime (internal/gate,
-    # DefaultMaxRepasses=3), not by this definition — past budget the
-    # runtime overrides straight to @escalate regardless of these branches.
+    # implement with the rationale as evidence; "fail" parks the issue before
+    # aborting rather than spending repass budget on a fundamentally rejected
+    # approach. The gate's escalate control branch routes bounded-repass
+    # exhaustion through that same parking stage.
     - name: review
       evaluator: agentic
       agentic:
@@ -199,7 +229,8 @@ spec:
       branches:
         pass: local-ci
         needs-changes: implement
-        fail: "@abort"
+        fail: park-needs-human
+        escalate: park-escalated
 
     # local-ci's ResultEnvelope.Status is flattened into this gate's
     # Inputs[status] by the runner (internal/gate's documented
@@ -212,6 +243,7 @@ spec:
       branches:
         pass: push-branch
         fail: implement
+        escalate: park-escalated
 
     # ci-poll sets Outputs[ciStatus] to the normalized providers.CheckState
     # value ("passing"/"failing"/"pending" — providers/model.go); the
@@ -228,6 +260,7 @@ spec:
         # (checks/failure detail) attached as context by the runner, the
         # same evidence-pointer mechanism the reviewer gate uses.
         fail: implement
+        escalate: park-escalated
         # A poll timeout (#239) is not evidence CI failed — just that it
         # didn't finish in time — so it escalates for a human decision
         # instead of spending an agentic repass re-implementing a change

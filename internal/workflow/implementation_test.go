@@ -45,7 +45,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	}
 
 	// Structural shape: query-backlog -> implement -> review(gate) ->
-	// {local-ci on pass, implement on needs-changes, @abort on fail}.
+	// {local-ci on pass, implement on needs-changes, park on fail/escalate}.
 	if w.Spec.Start != "query-backlog" {
 		t.Errorf("start = %q, want query-backlog", w.Spec.Start)
 	}
@@ -71,7 +71,12 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	if review.Agentic == nil || review.Agentic.Goober != "reviewer" {
 		t.Errorf("review.agentic.goober = %+v, want reviewer", review.Agentic)
 	}
-	wantBranches := map[string]string{"pass": "local-ci", "needs-changes": "implement", "fail": TargetAbort}
+	wantBranches := map[string]string{
+		"pass":          "local-ci",
+		"needs-changes": "implement",
+		"fail":          "park-needs-human",
+		BranchEscalate:  "park-escalated",
+	}
 	for outcome, want := range wantBranches {
 		got, ok := BranchTarget(review, outcome)
 		if !ok || got != want {
@@ -91,6 +96,15 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	if target, ok := BranchTarget(ciGate, "pass"); !ok || target != "close-out" {
 		t.Errorf("ci-gate pass branch = %q,%v; want close-out,true", target, ok)
 	}
+	for _, gateName := range []string{"local-gate", "ci-gate"} {
+		g, ok := m.Gate(gateName)
+		if !ok {
+			t.Fatalf("%s not found", gateName)
+		}
+		if target, ok := BranchTarget(g, BranchEscalate); !ok || target != "park-escalated" {
+			t.Errorf("%s escalation branch = %q,%v; want park-escalated,true", gateName, target, ok)
+		}
+	}
 
 	closeOut, ok := m.Task("close-out")
 	if !ok {
@@ -98,6 +112,16 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	}
 	if closeOut.Next != "" {
 		t.Errorf("close-out.next = %q, want terminal", closeOut.Next)
+	}
+	park, ok := m.Task("park-needs-human")
+	if !ok {
+		t.Fatal("park-needs-human task not found")
+	}
+	if park.Next != TargetAbort {
+		t.Errorf("park-needs-human.next = %q, want %q", park.Next, TargetAbort)
+	}
+	if park.Inputs["status"] != "needs-human" {
+		t.Errorf("park-needs-human inputs = %v, want status=needs-human", park.Inputs)
 	}
 
 	// Capability grants match issue #27's scope, split by least privilege:
@@ -125,7 +149,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// theory that the #845 post-mortem falsified — the real cause was terminal
 	// job control (SIGTTOU), fixed by Setsid (#846/#850). The serialize input
 	// was removed so local-ci runs fully parallel again.
-	const wantDigest = "sha256:f10987187b4d16302017541378b4e5ec31f8fce53b53485ad66ea80597927a30"
+	const wantDigest = "sha256:9d2105113119af5d1826ed72aa50401a8678ab3e0d7565f66aa30f5de3cac2cc"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

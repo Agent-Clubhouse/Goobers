@@ -412,6 +412,9 @@ func gateOutcomeProblems(def Definition, knownChecks map[string]bool) []string {
 		}
 		want := toSet(producible)
 		for _, outcome := range sortedKeys(g.Branches) {
+			if outcome == BranchEscalate {
+				continue
+			}
 			if !want[outcome] {
 				problems = append(problems, fmt.Sprintf("gate %q: branch %q is not a producible outcome for this evaluator (never taken)", g.Name, outcome))
 			}

@@ -2,15 +2,21 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
+
+const issueCloseOutNeedsHuman providers.WorkItemStatus = "needs-human"
 
 // issueCloseOutStatus resolves the "status" Task.Input to the WorkItemStatus
 // this stage sets, defaulting to WorkItemStatusDone for backward
@@ -23,11 +29,72 @@ func issueCloseOutStatus(raw string) (providers.WorkItemStatus, error) {
 	switch providers.WorkItemStatus(raw) {
 	case "":
 		return providers.WorkItemStatusDone, nil
-	case providers.WorkItemStatusDone, providers.WorkItemStatusInReview:
+	case providers.WorkItemStatusDone, providers.WorkItemStatusInReview, issueCloseOutNeedsHuman:
 		return providers.WorkItemStatus(raw), nil
 	default:
-		return "", fmt.Errorf("unsupported status %q (want %q or %q)", raw, providers.WorkItemStatusDone, providers.WorkItemStatusInReview)
+		return "", fmt.Errorf("unsupported status %q (want %q, %q, or %q)", raw, providers.WorkItemStatusDone, providers.WorkItemStatusInReview, issueCloseOutNeedsHuman)
 	}
+}
+
+func issueCloseOutReason(runsDir, runID, gateName string) (string, error) {
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		return "", err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return "", err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		switch event.Type {
+		case journal.EventGateEvaluated:
+			if gateName != "" && event.Gate != gateName {
+				continue
+			}
+			if event.Ref != nil {
+				data, err := reader.ArtifactBytes(*event.Ref)
+				if err != nil {
+					return "", fmt.Errorf("read verdict for gate %q: %w", event.Gate, err)
+				}
+				var verdict apiv1.Verdict
+				if err := json.Unmarshal(data, &verdict); err != nil {
+					return "", fmt.Errorf("parse verdict for gate %q: %w", event.Gate, err)
+				}
+				reason := strings.TrimSpace(verdict.Summary)
+				if reason == "" {
+					reason = strings.TrimSpace(verdict.Rationale)
+				}
+				if reason != "" {
+					return reason, nil
+				}
+			}
+			if escalated, _ := event.Runner["escalated"].(bool); escalated {
+				if attempt, ok := event.Runner["repassAttempt"].(float64); ok {
+					return fmt.Sprintf("gate %s escalated after outcome %s exhausted the repass budget at attempt %.0f", event.Gate, event.Verdict, attempt), nil
+				}
+				return fmt.Sprintf("gate %s escalated after outcome %s exhausted the repass budget", event.Gate, event.Verdict), nil
+			}
+			return fmt.Sprintf("gate %s returned terminal outcome %s", event.Gate, event.Verdict), nil
+		case journal.EventStageFinished:
+			if gateName != "" || event.Status != string(apiv1.ResultFailure) || event.Error == nil {
+				continue
+			}
+			if event.AttemptClass == journal.AttemptInfra && event.Error.Code == "interrupted" {
+				continue
+			}
+			if reason := strings.TrimSpace(event.Error.Message); reason != "" {
+				return reason, nil
+			}
+			if code := strings.TrimSpace(event.Error.Code); code != "" {
+				return code, nil
+			}
+		}
+	}
+	if gateName == "" {
+		return "", fmt.Errorf("no terminal gate or failed task reason found")
+	}
+	return "", fmt.Errorf("no verdict found for gate %q", gateName)
 }
 
 func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
@@ -35,11 +102,11 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers issue-close-out [path]\n\n"+
-			"Comment on the issue this run claimed, linking its PR, mark it done (or,\n"+
-			"with status=in-review, mark it in-review without closing — issue #361:\n"+
-			"the work isn't done until the PR merges), and release the claim ledger's\n"+
-			"lease early (rather than waiting for it to expire). Exit codes: 0 = done,\n"+
-			"1 = business error, 2 = usage/IO error.\n")
+			"Comment on the issue this run claimed, linking its PR, and mark it done;\n"+
+			"status=in-review leaves it open for merge-review, while status=needs-human\n"+
+			"parks it by replacing goobers:ready with goobers:needs-human. Release the\n"+
+			"claim ledger lease early rather than waiting for it to expire. Exit codes:\n"+
+			"0 = done, 1 = business error, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -112,32 +179,53 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	}
 
 	ctx := context.Background()
-	head := providerInput("head", providers.BranchName(workflow, runID))
-	base := providerInput("base", "main")
-	pr, found, err := provider.FindPullRequestByBranch(ctx, repo, head, base)
-	if err != nil {
-		return failProviderStage(stderr, "find pull request", err, "")
-	}
 	comment := providerInput("comment", "")
-	if comment == "" {
-		switch {
-		case !found:
-			comment = "Implementation complete."
-		case status == providers.WorkItemStatusInReview:
-			comment = fmt.Sprintf("Implementation complete: %s is open for merge-review.", pr.URL)
-		default:
-			comment = fmt.Sprintf("Implemented in %s.", pr.URL)
+	if status == issueCloseOutNeedsHuman {
+		if comment == "" {
+			gateName := providerInput("reasonFromGate", "")
+			reason, err := issueCloseOutReason(l.RunsDir(), runID, gateName)
+			if err != nil {
+				pf(stderr, "error: resolve parking reason: %v\n", err)
+				return 1
+			}
+			comment = "Implementation parked for human review: " + reason
 		}
-	}
-
-	if _, err := provider.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
-		Repository: repo,
-		ID:         claim.ItemID,
-		Status:     status,
-		Comment:    comment,
-	}); err != nil {
-		pf(stderr, "error: update work item status: %v\n", err)
-		return 1
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository:   repo,
+			ID:           claim.ItemID,
+			Comment:      comment,
+			AddLabels:    []string{providers.LabelNeedsHuman},
+			RemoveLabels: []string{providers.LabelReady},
+		}); err != nil {
+			pf(stderr, "error: park work item: %v\n", err)
+			return 1
+		}
+	} else {
+		head := providerInput("head", providers.BranchName(workflow, runID))
+		base := providerInput("base", "main")
+		pr, found, err := provider.FindPullRequestByBranch(ctx, repo, head, base)
+		if err != nil {
+			return failProviderStage(stderr, "find pull request", err, "")
+		}
+		if comment == "" {
+			switch {
+			case !found:
+				comment = "Implementation complete."
+			case status == providers.WorkItemStatusInReview:
+				comment = fmt.Sprintf("Implementation complete: %s is open for merge-review.", pr.URL)
+			default:
+				comment = fmt.Sprintf("Implemented in %s.", pr.URL)
+			}
+		}
+		if _, err := provider.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
+			Repository: repo,
+			ID:         claim.ItemID,
+			Status:     status,
+			Comment:    comment,
+		}); err != nil {
+			pf(stderr, "error: update work item status: %v\n", err)
+			return 1
+		}
 	}
 
 	// Release the goobers:claimed label on the same event that releases the
@@ -173,9 +261,12 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "warning: release claim %s: %v\n", claim.ItemID, err)
 	}
 
-	if status == providers.WorkItemStatusInReview {
+	switch status {
+	case issueCloseOutNeedsHuman:
+		pf(stdout, "parked %s needs-human\n", claim.ItemID)
+	case providers.WorkItemStatusInReview:
 		pf(stdout, "marked %s in-review (open PR, awaiting merge-review)\n", claim.ItemID)
-	} else {
+	default:
 		pf(stdout, "closed out %s\n", claim.ItemID)
 	}
 	return 0
