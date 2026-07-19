@@ -166,15 +166,18 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if err != nil {
 		return Outcome{}, err
 	}
-	nativeTranscriptHome := ""
+	nativeTranscriptPath := ""
 	if !copilotCommandSelectsSession(argv) {
-		captureID, err := newCopilotCaptureID()
-		if err != nil {
-			return Outcome{}, fmt.Errorf("harness: copilot-cli: create transcript capture id: %w", err)
+		// Pin the log to this run without replacing COPILOT_HOME, which also
+		// contains the user's Copilot configuration.
+		if home, ok := copilotConfigHome(env); ok {
+			captureID, err := newCopilotCaptureID()
+			if err != nil {
+				return Outcome{}, fmt.Errorf("harness: copilot-cli: create transcript capture id: %w", err)
+			}
+			argv = append(argv, "--session-id", captureID)
+			nativeTranscriptPath = copilotSessionLogPath(home, captureID)
 		}
-		copilotHome := filepath.Join(req.Workspace, ".goobers", "copilot", captureID)
-		env = append(env, "COPILOT_HOME="+copilotHome)
-		nativeTranscriptHome = copilotHome
 	}
 
 	result, err := c.runner().Run(ctx, ProcessRequest{
@@ -189,7 +192,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 	}
-	if native, ok := readCopilotSessionTranscript(nativeTranscriptHome, req.MaxTranscriptBytes); ok {
+	if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
 		out.Transcript = native.data
 		out.TranscriptTruncated = native.truncated
 		out.TranscriptDroppedBytes = native.droppedBytes

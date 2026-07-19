@@ -106,9 +106,8 @@ type transcriptCapture struct {
 	droppedBytes int64
 }
 
-func readCopilotSessionTranscript(home string, limit int64) (transcriptCapture, bool) {
-	path, ok := findCopilotSessionLog(home)
-	if !ok {
+func readCopilotSessionTranscript(path string, limit int64) (transcriptCapture, bool) {
+	if path == "" {
 		return transcriptCapture{}, false
 	}
 	f, err := os.Open(path)
@@ -135,7 +134,7 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 		}
 		var native copilotSessionEvent
 		if err := json.Unmarshal(line, &native); err != nil {
-			break
+			return transcriptCapture{}, false
 		}
 		events := convertCopilotSessionEvent(native)
 		for _, event := range events {
@@ -275,27 +274,26 @@ func copilotSessionLogPath(home, sessionID string) string {
 	return filepath.Join(home, "session-state", sessionID, "events.jsonl")
 }
 
-func findCopilotSessionLog(home string) (string, bool) {
-	entries, err := os.ReadDir(filepath.Join(home, "session-state"))
-	if err != nil {
+func copilotConfigHome(env []string) (string, bool) {
+	var home string
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		switch name {
+		case "COPILOT_HOME":
+			if value != "" {
+				return value, true
+			}
+		case "HOME":
+			home = value
+		}
+	}
+	if home == "" {
 		return "", false
 	}
-	var found string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		path := copilotSessionLogPath(home, entry.Name())
-		info, err := os.Stat(path)
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		if found != "" {
-			return "", false
-		}
-		found = path
-	}
-	return found, found != ""
+	return filepath.Join(home, ".copilot"), true
 }
 
 func copilotCommandSelectsSession(argv []string) bool {

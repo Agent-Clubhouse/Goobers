@@ -30,20 +30,26 @@ func TestConvertCopilotSessionEventsFixture(t *testing.T) {
 	}
 }
 
-func TestConvertCopilotSessionEventsSalvagesPartialTrailingRecord(t *testing.T) {
+func TestConvertCopilotSessionEventsRejectsPartialTrailingRecord(t *testing.T) {
 	native := append(readTestData(t, "copilot-session-events.jsonl"), []byte("{partial")...)
-	want := readTestData(t, "copilot-transcript.jsonl")
 
-	got, ok := convertCopilotSessionEvents(bytes.NewReader(native), 0)
-	if !ok {
-		t.Fatal("convertCopilotSessionEvents discarded valid events before a partial trailing record")
-	}
-	if !bytes.Equal(got.data, want) {
-		t.Fatalf("converted transcript:\n%s\nwant salvaged events:\n%s", got.data, want)
+	if _, ok := convertCopilotSessionEvents(bytes.NewReader(native), 0); ok {
+		t.Fatal("convertCopilotSessionEvents accepted a transcript with a partial trailing record")
 	}
 }
 
 func TestCopilotAdapterPrefersNativeSessionTranscript(t *testing.T) {
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	configHome := filepath.Join(userHome, ".copilot")
+	if err := os.MkdirAll(configHome, 0o755); err != nil {
+		t.Fatalf("mkdir Copilot config home: %v", err)
+	}
+	config := []byte(`{"model":"configured-model"}`)
+	if err := os.WriteFile(filepath.Join(configHome, "config"), config, 0o600); err != nil {
+		t.Fatalf("write Copilot config: %v", err)
+	}
+
 	workspace := t.TempDir()
 	native := readTestData(t, "copilot-session-events.jsonl")
 	want := readTestData(t, "copilot-transcript.jsonl")
@@ -70,16 +76,20 @@ func TestCopilotAdapterPrefersNativeSessionTranscript(t *testing.T) {
 	if !bytes.Equal(out.Transcript, want) {
 		t.Fatalf("Transcript:\n%s\nwant native conversion:\n%s", out.Transcript, want)
 	}
-	home, ok := nativeSessionHome(runner.lastReq)
+	path, ok := nativeSessionLogForRequest(runner.lastReq)
 	if !ok {
 		t.Fatalf("Copilot command/env missing native session location: %+v", runner.lastReq)
 	}
-	if filepath.Dir(filepath.Dir(filepath.Dir(copilotSessionLogPath(home, "test-session")))) != home {
-		t.Fatalf("session log path is not rooted under COPILOT_HOME %q", home)
+	home := filepath.Dir(filepath.Dir(filepath.Dir(path)))
+	if home != configHome {
+		t.Fatalf("native session home = %q, want active config home %q", home, configHome)
 	}
-	rel, err := filepath.Rel(workspace, home)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		t.Fatalf("COPILOT_HOME %q is outside workspace %q", home, workspace)
+	gotConfig, err := os.ReadFile(filepath.Join(home, "config"))
+	if err != nil {
+		t.Fatalf("read active Copilot config: %v", err)
+	}
+	if !bytes.Equal(gotConfig, config) {
+		t.Fatalf("active Copilot config = %q, want %q", gotConfig, config)
 	}
 }
 
@@ -87,6 +97,11 @@ func TestCopilotAdapterFallsBackWhenNativeSessionLogUnavailable(t *testing.T) {
 	oversized := []byte(`{"type":"user.message","data":{"content":"native prefix"}}` + "\n")
 	oversized = append(oversized, bytes.Repeat([]byte("x"), int(maxCopilotSessionEventBytes)+1)...)
 	oversized = append(oversized, '\n')
+	malformedBetweenSupported := []byte(
+		`{"type":"user.message","data":{"content":"native prefix"}}` + "\n" +
+			"{not json}\n" +
+			`{"type":"assistant.message","data":{"messageId":"message-1","content":"native suffix"}}` + "\n",
+	)
 
 	for _, tc := range []struct {
 		name string
@@ -95,6 +110,7 @@ func TestCopilotAdapterFallsBackWhenNativeSessionLogUnavailable(t *testing.T) {
 		{name: "missing"},
 		{name: "unsupported", log: []byte(`{"type":"session.start","data":{}}` + "\n")},
 		{name: "malformed", log: []byte("{not json\n")},
+		{name: "malformed between supported", log: malformedBetweenSupported},
 		{name: "oversized after supported", log: oversized},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,23 +234,28 @@ func readTestData(t *testing.T, name string) []byte {
 }
 
 func writeNativeSessionLog(req ProcessRequest, data []byte) error {
-	home, ok := nativeSessionHome(req)
+	path, ok := nativeSessionLogForRequest(req)
 	if !ok {
 		return os.ErrInvalid
 	}
-	path := copilotSessionLogPath(home, "test-session")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0o600)
 }
 
-func nativeSessionHome(req ProcessRequest) (home string, ok bool) {
-	for _, entry := range req.Env {
-		if strings.HasPrefix(entry, "COPILOT_HOME=") {
-			home = strings.TrimPrefix(entry, "COPILOT_HOME=")
-			break
+func nativeSessionLogForRequest(req ProcessRequest) (string, bool) {
+	home, ok := copilotConfigHome(req.Env)
+	if !ok {
+		return "", false
+	}
+	for i, arg := range req.Command {
+		switch {
+		case arg == "--session-id" && i+1 < len(req.Command):
+			return copilotSessionLogPath(home, req.Command[i+1]), true
+		case strings.HasPrefix(arg, "--session-id="):
+			return copilotSessionLogPath(home, strings.TrimPrefix(arg, "--session-id=")), true
 		}
 	}
-	return home, home != ""
+	return "", false
 }
