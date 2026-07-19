@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"sigs.k8s.io/yaml"
 )
@@ -17,6 +18,14 @@ import (
 // telemetry rollup, and Tutor.
 type Reader struct {
 	dir string
+}
+
+// EventRecord retains both the parsed shared envelope and its original JSON.
+// Future-schema events remain inspectable without requiring this build to
+// interpret fields it does not own.
+type EventRecord struct {
+	Event Event
+	Raw   json.RawMessage
 }
 
 // OpenRead opens an existing run directory for reading.
@@ -82,6 +91,12 @@ func (r *Reader) Events() ([]Event, error) {
 	return events, err
 }
 
+// EventRecords is Events with each complete record's original JSON retained.
+func (r *Reader) EventRecords() ([]EventRecord, error) {
+	records, _, err := readEventRecords(filepath.Join(r.dir, fileEvents))
+	return records, err
+}
+
 // KnownSchema reports whether an event uses the schema version this build owns.
 // Events written by an unknown future schema version still parse into the shared
 // envelope (unknown fields are ignored by encoding/json); readers use this to
@@ -96,7 +111,7 @@ func (e Event) KnownSchema() bool { return e.Schema == EventSchema }
 // — the same containment guard Redact already applies to the identical
 // operation via containedBlobPath.
 func (r *Reader) ArtifactBytes(ref Ref) ([]byte, error) {
-	full, err := containedBlobPath(r.dir, ref.Path)
+	full, err := containedExistingBlobPath(r.dir, ref.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -108,6 +123,39 @@ func (r *Reader) ArtifactBytes(ref Ref) ([]byte, error) {
 		return nil, fmt.Errorf("journal: digest mismatch for %q: have %s want %s", ref.Path, got, ref.Digest)
 	}
 	return b, nil
+}
+
+// ArtifactByDigest reads an artifact from its canonical content-addressed path.
+// Callers cannot steer this read with a journal-provided filesystem path.
+func (r *Reader) ArtifactByDigest(digest string) ([]byte, error) {
+	path, err := artifactPath(digest)
+	if err != nil {
+		return nil, err
+	}
+	return r.ArtifactBytes(Ref{Path: path, Digest: digest})
+}
+
+func containedExistingBlobPath(dir, relPath string) (string, error) {
+	full, err := containedBlobPath(dir, relPath)
+	if err != nil {
+		return "", err
+	}
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("journal: resolve run directory: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return "", fmt.Errorf("journal: resolve blob %q: %w", relPath, err)
+	}
+	relative, err := filepath.Rel(resolvedDir, resolved)
+	if err != nil {
+		return "", fmt.Errorf("journal: resolve blob containment %q: %w", relPath, err)
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("journal: blob path %q resolves outside the run directory", relPath)
+	}
+	return resolved, nil
 }
 
 // SpanBytes reads and verifies a stored span blob against its Ref.Digest —
@@ -281,6 +329,18 @@ func reconstructReason(events []Event) string {
 // newline are an interrupted write and are reported as tornBytes, never returned
 // as an event.
 func readEvents(path string) ([]Event, int, error) {
+	records, tornBytes, err := readEventRecords(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	events := make([]Event, len(records))
+	for i := range records {
+		events[i] = records[i].Event
+	}
+	return events, tornBytes, nil
+}
+
+func readEventRecords(path string) ([]EventRecord, int, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -295,7 +355,7 @@ func readEvents(path string) ([]Event, int, error) {
 		tail = data // no complete record yet
 	}
 
-	var events []Event
+	var records []EventRecord
 	sc := bufio.NewScanner(bytes.NewReader(complete))
 	sc.Buffer(make([]byte, 0, 64*1024), maxEventBytes)
 	for sc.Scan() {
@@ -318,7 +378,10 @@ func readEvents(path string) ([]Event, int, error) {
 			// surface it rather than hide it.
 			return nil, 0, fmt.Errorf("journal: corrupt event at seq boundary: %w", err)
 		}
-		events = append(events, ev)
+		records = append(records, EventRecord{
+			Event: ev,
+			Raw:   append(json.RawMessage(nil), line...),
+		})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, 0, fmt.Errorf("journal: scan events log: %w", err)
@@ -329,7 +392,7 @@ func readEvents(path string) ([]Event, int, error) {
 	// NULs from this length (as earlier code did) leaves zero-fill behind, which
 	// the next append concatenates onto — fabricating a corrupt "complete" line
 	// on the following recovery and bricking the journal (#116).
-	return events, len(tail), nil
+	return records, len(tail), nil
 }
 
 // maxEventBytes bounds a single event line during recovery scanning.

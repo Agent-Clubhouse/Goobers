@@ -21,10 +21,19 @@ type fakeReader struct {
 	health       readservice.Health
 	stats        readservice.TelemetryStatsResult
 	errors       readservice.TelemetryErrorsPage
-	err          error
 	telemetryErr error
 	statsReq     readservice.TelemetryStatsRequest
 	errorsReq    readservice.TelemetryErrorsRequest
+	runs         readservice.RunList
+	run          readservice.RunDetail
+	events       readservice.EventList
+	attempts     readservice.AttemptList
+	artifact     readservice.ArtifactContent
+	options      readservice.RunListOptions
+	runID        string
+	stage        string
+	digest       string
+	err          error
 	called       int
 }
 
@@ -45,6 +54,33 @@ func (f *fakeReader) TelemetryStats(_ context.Context, req readservice.Telemetry
 func (f *fakeReader) TelemetryErrors(_ context.Context, req readservice.TelemetryErrorsRequest) (readservice.TelemetryErrorsPage, error) {
 	f.errorsReq = req
 	return f.errors, f.telemetryErr
+}
+
+func (f *fakeReader) ListRuns(_ context.Context, options readservice.RunListOptions) (readservice.RunList, error) {
+	f.options = options
+	return f.runs, f.err
+}
+
+func (f *fakeReader) GetRun(_ context.Context, runID string) (readservice.RunDetail, error) {
+	f.runID = runID
+	return f.run, f.err
+}
+
+func (f *fakeReader) RunEvents(_ context.Context, runID string) (readservice.EventList, error) {
+	f.runID = runID
+	return f.events, f.err
+}
+
+func (f *fakeReader) StageAttempts(_ context.Context, runID, stage string) (readservice.AttemptList, error) {
+	f.runID = runID
+	f.stage = stage
+	return f.attempts, f.err
+}
+
+func (f *fakeReader) Artifact(_ context.Context, runID, digest string) (readservice.ArtifactContent, error) {
+	f.runID = runID
+	f.digest = digest
+	return f.artifact, f.err
 }
 
 func TestHealthHandlerUsesSharedReadService(t *testing.T) {
@@ -73,6 +109,83 @@ func TestHealthHandlerUsesSharedReadService(t *testing.T) {
 	}
 	if reader.called != 1 || !health.Ready || health.Instance.Name != "example" {
 		t.Fatalf("reader called %d times, health = %+v", reader.called, health)
+	}
+}
+
+func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
+	reader := &fakeReader{
+		runs: readservice.RunList{Runs: []readservice.RunSummary{{ID: "run-1"}}},
+		run: readservice.RunDetail{
+			RunSummary:  readservice.RunSummary{ID: "run-1"},
+			GraphStatus: "pinned",
+		},
+		events: readservice.EventList{RunID: "run-1", Events: []readservice.RunEvent{}},
+		attempts: readservice.AttemptList{
+			RunID:    "run-1",
+			Stage:    "implement",
+			Attempts: []readservice.StageAttempt{},
+		},
+		artifact: readservice.ArtifactContent{
+			Metadata: readservice.ArtifactMetadata{
+				Digest:    "sha256:abc",
+				MediaType: "application/json",
+			},
+			Bytes: []byte(`{"ok":true}`),
+		},
+	}
+	handler, err := NewHandler(reader, AllowAll, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "list", path: RunsPath + "?workflow=implementation&gaggle=goobers&phase=running&trigger=item&limit=10&cursor=next"},
+		{name: "detail", path: RunsPath + "/run-1"},
+		{name: "events", path: RunsPath + "/run-1/events"},
+		{name: "attempts", path: RunsPath + "/run-1/stages/implement/attempts"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+			}
+			if got := response.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type = %q", got)
+			}
+		})
+	}
+	if reader.options.Workflow != "implementation" ||
+		reader.options.Gaggle != "goobers" ||
+		reader.options.Phase != "running" ||
+		reader.options.Trigger != "item" ||
+		reader.options.Limit != 10 ||
+		reader.options.Cursor != "next" {
+		t.Fatalf("list options = %+v", reader.options)
+	}
+	if reader.runID != "run-1" || reader.stage != "implement" {
+		t.Fatalf("path values = run %q, stage %q", reader.runID, reader.stage)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, RunsPath+"/run-1/artifacts/sha256:abc", nil),
+	)
+	if response.Code != http.StatusOK || response.Body.String() != `{"ok":true}` {
+		t.Fatalf("artifact response = %d %q", response.Code, response.Body.String())
+	}
+	if reader.runID != "run-1" || reader.digest != "sha256:abc" {
+		t.Fatalf("artifact path values = run %q, digest %q", reader.runID, reader.digest)
+	}
+	if response.Header().Get("Content-Type") != "application/json" ||
+		response.Header().Get("ETag") != `"sha256:abc"` ||
+		response.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("artifact headers = %+v", response.Header())
 	}
 }
 
@@ -121,6 +234,33 @@ func TestAPIErrorsUseStructuredEnvelope(t *testing.T) {
 			authorizer: AllowAll,
 			wantStatus: http.StatusInternalServerError,
 			wantCode:   "read_error",
+		},
+		{
+			name:       "invalid list argument",
+			reader:     &fakeReader{},
+			method:     http.MethodGet,
+			path:       RunsPath + "?limit=lots",
+			authorizer: AllowAll,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_argument",
+		},
+		{
+			name:       "missing run",
+			reader:     &fakeReader{err: readservice.ErrNotFound},
+			method:     http.MethodGet,
+			path:       RunsPath + "/missing",
+			authorizer: AllowAll,
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "artifact integrity",
+			reader:     &fakeReader{err: readservice.ErrArtifactIntegrity},
+			method:     http.MethodGet,
+			path:       RunsPath + "/run-1/artifacts/sha256:abc",
+			authorizer: AllowAll,
+			wantStatus: http.StatusConflict,
+			wantCode:   "artifact_invalid",
 		},
 	}
 	for _, test := range tests {

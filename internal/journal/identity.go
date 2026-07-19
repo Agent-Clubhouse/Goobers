@@ -2,6 +2,10 @@ package journal
 
 import "time"
 
+// PinnedWorkflowGraphInputName is the immutable input snapshot containing the
+// canonical graph a run started with.
+const PinnedWorkflowGraphInputName = "workflow-graph"
+
 // TriggerKind is how a run was started.
 type TriggerKind string
 

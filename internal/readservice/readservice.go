@@ -29,6 +29,11 @@ const (
 type Reader interface {
 	Health(context.Context) (Health, error)
 	TelemetryReader
+	ListRuns(context.Context, RunListOptions) (RunList, error)
+	GetRun(context.Context, string) (RunDetail, error)
+	RunEvents(context.Context, string) (EventList, error)
+	StageAttempts(context.Context, string, string) (AttemptList, error)
+	Artifact(context.Context, string, string) (ArtifactContent, error)
 }
 
 // Health is the versioned daemon health response.
