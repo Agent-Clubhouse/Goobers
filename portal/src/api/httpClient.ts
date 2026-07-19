@@ -108,7 +108,7 @@ export class HttpDaemonClient implements DaemonClient {
         headers.set("Last-Event-ID", request.cursor);
       }
       const response = await this.fetch(this.url(clientRoutes.events), {
-        method: "GET",
+        method: clientRoutes.events.method,
         headers,
         signal: controller.signal,
       });
