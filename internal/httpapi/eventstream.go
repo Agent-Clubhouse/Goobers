@@ -93,10 +93,6 @@ func withSubscriberBuffer(size int) eventStreamOption {
 	return func(c *eventStreamConfig) { c.subscriberBuffer = size }
 }
 
-func withEventWriteTimeout(timeout time.Duration) eventStreamOption {
-	return func(c *eventStreamConfig) { c.writeTimeout = timeout }
-}
-
 func withEventSession(session string) eventStreamOption {
 	return func(c *eventStreamConfig) { c.session = session }
 }
@@ -351,7 +347,7 @@ func runStateVersion(source journalSource) (fileVersion, error) {
 	return fileVersion{size: info.Size(), modTime: info.ModTime().UnixNano()}, nil
 }
 
-func readRunState(source journalSource, durable bool) (string, fileVersion, error) {
+func readRunState(source journalSource, durable bool) (digest string, version fileVersion, err error) {
 	if source.runID == "" {
 		return "", fileVersion{}, nil
 	}
@@ -363,7 +359,9 @@ func readRunState(source journalSource, durable bool) (string, fileVersion, erro
 	if err != nil {
 		return "", fileVersion{}, err
 	}
-	defer file.Close()
+	defer func() {
+		err = errors.Join(err, file.Close())
+	}()
 	data, err := io.ReadAll(file)
 	if err != nil {
 		return "", fileVersion{}, err
@@ -377,7 +375,7 @@ func readRunState(source journalSource, durable bool) (string, fileVersion, erro
 	if err != nil {
 		return "", fileVersion{}, err
 	}
-	version := fileVersion{size: info.Size(), modTime: info.ModTime().UnixNano()}
+	version = fileVersion{size: info.Size(), modTime: info.ModTime().UnixNano()}
 	return journal.Digest(data), version, nil
 }
 
@@ -409,12 +407,14 @@ func (s *EventStream) journalSources() ([]journalSource, error) {
 	return sources, nil
 }
 
-func lastCompleteRecordOffset(path string) (int64, error) {
+func lastCompleteRecordOffset(path string) (offset int64, err error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return 0, err
 	}
-	defer file.Close()
+	defer func() {
+		err = errors.Join(err, file.Close())
+	}()
 	info, err := file.Stat()
 	if err != nil {
 		return 0, err
@@ -442,7 +442,7 @@ func lastCompleteRecordOffset(path string) (int64, error) {
 	return 0, nil
 }
 
-func readNewJournalEvents(path string, offset int64) ([]journal.Event, int64, error) {
+func readNewJournalEvents(path string, offset int64) (events []journal.Event, nextOffset int64, err error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, offset, fmt.Errorf("http API: stat event journal %q: %w", path, err)
@@ -454,7 +454,9 @@ func readNewJournalEvents(path string, offset int64) ([]journal.Event, int64, er
 	if err != nil {
 		return nil, offset, fmt.Errorf("http API: open event journal %q: %w", path, err)
 	}
-	defer file.Close()
+	defer func() {
+		err = errors.Join(err, file.Close())
+	}()
 	info, err = file.Stat()
 	if err != nil {
 		return nil, offset, fmt.Errorf("http API: stat event journal %q: %w", path, err)
@@ -481,7 +483,7 @@ func readNewJournalEvents(path string, offset int64) ([]journal.Event, int64, er
 	}
 	complete := data[:lastNewline+1]
 	lines := bytes.Split(bytes.TrimSuffix(complete, []byte{'\n'}), []byte{'\n'})
-	events := make([]journal.Event, 0, len(lines))
+	events = make([]journal.Event, 0, len(lines))
 	for _, line := range lines {
 		if len(line) == 0 {
 			continue

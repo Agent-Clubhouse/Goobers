@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -311,7 +312,11 @@ func TestAppendToStreamP95UnderOneSecond(t *testing.T) {
 	server := newEventTestServer(t, stream, &fakeReader{})
 	client := &http.Client{Timeout: 5 * time.Second}
 	response, reader := openEventResponse(t, client, server.URL+EventsPath, "")
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close event response body: %v", err)
+		}
+	}()
 	if snapshot := readSSEMessage(t, reader); snapshot.Event != "snapshot" {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
@@ -496,11 +501,12 @@ func TestConcurrentRunJournalsProduceOrderedDeduplicableEvents(t *testing.T) {
 	}
 	close(runs)
 	for run := range runs {
-		defer func() {
-			if err := run.Close(); err != nil {
+		currentRun := run
+		t.Cleanup(func() {
+			if err := currentRun.Close(); err != nil {
 				t.Errorf("close run: %v", err)
 			}
-		}()
+		})
 	}
 
 	seen := map[string]bool{}
@@ -584,6 +590,6 @@ func TestServerShutdownClosesActiveEventStreams(t *testing.T) {
 }
 
 func errorsIsEOFOrClosed(err error) bool {
-	return err == io.EOF || err == context.Canceled ||
+	return errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) ||
 		(err != nil && strings.Contains(err.Error(), "closed"))
 }
