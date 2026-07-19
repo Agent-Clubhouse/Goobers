@@ -173,18 +173,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if err != nil {
 		return nil, err
 	}
-	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
-		health, err := reader.Health(request.Context())
-		if err != nil {
-			errorLog.Printf("health read failed: %v", err)
-			writeError(w, http.StatusInternalServerError, "read_error", "runtime state could not be read")
-			return
-		}
-		writeJSON(w, http.StatusOK, health)
-	})
-	registerTelemetryRoutes(router, reader, errorLog)
-	registerRunRoutes(router, reader, errorLog)
-	registerInventoryRoutes(router, reader, errorLog)
+	registerV1Routes(router, reader, errorLog)
 	// The event stream is optional wiring, so the events route is only part of
 	// what this handler must serve when a stream is actually configured.
 	expected := apicontract.V1Routes()
@@ -199,6 +188,21 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		return nil, fmt.Errorf("register HTTP API routes: %w", err)
 	}
 	return &apiHandler{Handler: router.Handler(), events: config.events}, nil
+}
+
+func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
+	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
+		health, err := reader.Health(request.Context())
+		if err != nil {
+			errorLog.Printf("health read failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "read_error", "runtime state could not be read")
+			return
+		}
+		writeJSON(w, http.StatusOK, health)
+	})
+	registerTelemetryRoutes(router, reader, errorLog)
+	registerRunRoutes(router, reader, errorLog)
+	registerInventoryRoutes(router, reader, errorLog)
 }
 
 func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {

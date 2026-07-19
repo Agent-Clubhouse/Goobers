@@ -11,8 +11,18 @@ import (
 
 func TestValidateRoutesRejectsContractDrift(t *testing.T) {
 	expected := []Route{
-		{ID: RouteHealth, Method: http.MethodGet, Path: HealthPath},
-		{ID: RouteRuns, Method: http.MethodGet, Path: RunsPath},
+		{
+			ID:          RouteHealth,
+			Method:      http.MethodGet,
+			Path:        HealthPath,
+			ActionClass: ActionReadOnlyNavigation,
+		},
+		{
+			ID:          RouteRuns,
+			Method:      http.MethodGet,
+			Path:        RunsPath,
+			ActionClass: ActionReadOnlyNavigation,
+		},
 	}
 	tests := []struct {
 		name   string
@@ -28,14 +38,24 @@ func TestValidateRoutesRejectsContractDrift(t *testing.T) {
 			name: "unexpected route",
 			actual: append(
 				append([]Route{}, expected...),
-				Route{ID: RouteRunDetail, Method: http.MethodGet, Path: RunDetailPath},
+				Route{
+					ID:          RouteRunDetail,
+					Method:      http.MethodGet,
+					Path:        RunDetailPath,
+					ActionClass: ActionReadOnlyNavigation,
+				},
 			),
 			want: "unexpected",
 		},
 		{
 			name: "method mismatch",
 			actual: []Route{
-				{ID: RouteHealth, Method: http.MethodPost, Path: HealthPath},
+				{
+					ID:          RouteHealth,
+					Method:      http.MethodPost,
+					Path:        HealthPath,
+					ActionClass: ActionReadOnlyNavigation,
+				},
 				expected[1],
 			},
 			want: "method",
@@ -43,10 +63,28 @@ func TestValidateRoutesRejectsContractDrift(t *testing.T) {
 		{
 			name: "path mismatch",
 			actual: []Route{
-				{ID: RouteHealth, Method: http.MethodGet, Path: V1Prefix + "/ready"},
+				{
+					ID:          RouteHealth,
+					Method:      http.MethodGet,
+					Path:        V1Prefix + "/ready",
+					ActionClass: ActionReadOnlyNavigation,
+				},
 				expected[1],
 			},
 			want: "path",
+		},
+		{
+			name: "action mismatch",
+			actual: []Route{
+				{
+					ID:          RouteHealth,
+					Method:      http.MethodGet,
+					Path:        HealthPath,
+					ActionClass: ActionConfigTime,
+				},
+				expected[1],
+			},
+			want: "action class",
 		},
 	}
 	for _, test := range tests {
@@ -62,9 +100,9 @@ func TestValidateRoutesRejectsContractDrift(t *testing.T) {
 func TestValidateRuntimeParityRejectsIncompleteAndDuplicateCapabilities(t *testing.T) {
 	capabilities := []Capability{{ID: "approve", Class: ActionRuntimeMutation}}
 	complete := []SurfaceRegistry{
-		{Surface: SurfaceCLI, Capabilities: []CapabilityID{"approve"}},
-		{Surface: SurfaceAPI, Capabilities: []CapabilityID{"approve"}},
-		{Surface: SurfaceUI, Capabilities: []CapabilityID{"approve"}},
+		{Surface: SurfaceCLI, Actions: []SurfaceAction{runtimeAction("approve", "approve")}},
+		{Surface: SurfaceAPI, Actions: []SurfaceAction{runtimeAction("approve", "approve")}},
+		{Surface: SurfaceUI, Actions: []SurfaceAction{runtimeAction("approve", "approve")}},
 	}
 	if err := ValidateRuntimeParity(capabilities, complete); err != nil {
 		t.Fatalf("complete registry: %v", err)
@@ -119,11 +157,46 @@ func TestValidateRuntimeParityRejectsIncompleteAndDuplicateCapabilities(t *testi
 			name:         "duplicate surface registration",
 			capabilities: capabilities,
 			registries: []SurfaceRegistry{
-				{Surface: SurfaceCLI, Capabilities: []CapabilityID{"approve", "approve"}},
+				{
+					Surface: SurfaceCLI,
+					Actions: []SurfaceAction{
+						runtimeAction("approve", "approve"),
+						runtimeAction("approve-confirmation", "approve"),
+					},
+				},
 				complete[1],
 				complete[2],
 			},
 			want: "duplicate cli registration",
+		},
+		{
+			name:         "duplicate action ID",
+			capabilities: capabilities,
+			registries: []SurfaceRegistry{
+				{
+					Surface: SurfaceCLI,
+					Actions: []SurfaceAction{
+						runtimeAction("approve", "approve"),
+						{ID: "approve", Class: ActionReadOnlyNavigation},
+					},
+				},
+				complete[1],
+				complete[2],
+			},
+			want: "action ID",
+		},
+		{
+			name:         "unknown registered capability",
+			capabilities: capabilities,
+			registries: []SurfaceRegistry{
+				{
+					Surface: SurfaceCLI,
+					Actions: []SurfaceAction{runtimeAction("override", "override")},
+				},
+				complete[1],
+				complete[2],
+			},
+			want: "unknown capability",
 		},
 	}
 	for _, test := range tests {
@@ -141,14 +214,50 @@ func TestRuntimeParityExplicitlyExcludesNonMutationActions(t *testing.T) {
 		ActionReadOnlyNavigation,
 		ActionConfigTime,
 		ActionDaemonLifecycle,
+		ActionWorkflowExecution,
+		ActionMaintenance,
 	} {
 		t.Run(string(class), func(t *testing.T) {
 			if RequiresRuntimeParity(class) {
 				t.Fatalf("RequiresRuntimeParity(%q) = true", class)
 			}
-			capabilities := []Capability{{ID: CapabilityID(class), Class: class}}
-			if err := ValidateRuntimeParity(capabilities, emptySurfaceRegistries()); err != nil {
+			registries := emptySurfaceRegistries()
+			registries[0].Actions = []SurfaceAction{{ID: ActionID(class), Class: class}}
+			if err := ValidateRuntimeParity(nil, registries); err != nil {
 				t.Fatalf("excluded class requires a surface registration: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRuntimeParityRejectsMisclassifiedSurfaceActions(t *testing.T) {
+	tests := []struct {
+		name   string
+		action SurfaceAction
+		want   string
+	}{
+		{
+			name:   "mutation without capability",
+			action: SurfaceAction{ID: "approve", Class: ActionRuntimeMutation},
+			want:   "has no capability",
+		},
+		{
+			name: "excluded action with capability",
+			action: SurfaceAction{
+				ID:         "status",
+				Class:      ActionReadOnlyNavigation,
+				Capability: "approve",
+			},
+			want: "cannot register capability",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			registries := emptySurfaceRegistries()
+			registries[0].Actions = []SurfaceAction{test.action}
+			err := ValidateRuntimeParity(nil, registries)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ValidateRuntimeParity() error = %v, want containing %q", err, test.want)
 			}
 		})
 	}
@@ -169,6 +278,14 @@ func emptySurfaceRegistries() []SurfaceRegistry {
 		{Surface: SurfaceCLI},
 		{Surface: SurfaceAPI},
 		{Surface: SurfaceUI},
+	}
+}
+
+func runtimeAction(id ActionID, capability CapabilityID) SurfaceAction {
+	return SurfaceAction{
+		ID:         id,
+		Class:      ActionRuntimeMutation,
+		Capability: capability,
 	}
 }
 

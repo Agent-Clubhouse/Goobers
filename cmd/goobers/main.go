@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-
-	"github.com/goobers/goobers/internal/version"
 )
 
 // runProcessExits is true only for the real CLI entrypoint. In-process callers
@@ -32,84 +30,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
-	switch args[0] {
-	case "init":
-		return runInit(args[1:], stdout, stderr)
-	case "scaffold":
-		return runScaffold(args[1:], stdout, stderr)
-	case "validate":
-		return runValidate(args[1:], stdout, stderr)
-	case "up":
-		return runUp(args[1:], stdout, stderr)
-	case "run":
-		return runRun(args[1:], stdout, stderr)
-	case detachedRunWorkerCommand:
-		return runDetachedWorker(args[1:], stdout, stderr)
-	case "signal":
-		return runSignal(args[1:], stdout, stderr)
-	case "workflow":
-		return runWorkflow(args[1:], stdout, stderr)
-	case "runs":
-		return runRuns(args[1:], stdout, stderr)
-	case "status":
-		return runStatus(args[1:], stdout, stderr)
-	case "stats":
-		return runStats(args[1:], stdout, stderr)
-	case "trace":
-		return runTrace(args[1:], stdout, stderr)
-	case "completion":
-		return runCompletion(args[1:], stdout, stderr)
-	case "__complete":
-		return runCompletionCandidates(args[1:], stdout)
-	case "telemetry":
-		return runTelemetry(args[1:], stdout, stderr)
-	case "telemetry-query":
-		return runTelemetryQuery(args[1:], stdout, stderr)
-	case "journal":
-		return runJournal(args[1:], stdout, stderr)
-	case "backlog-query":
-		return runBacklogQuery(args[1:], stdout, stderr)
-	case "push-branch":
-		return runPushBranch(args[1:], stdout, stderr)
-	case "open-pr":
-		return runOpenPR(args[1:], stdout, stderr)
-	case "issue-close-out":
-		return runIssueCloseOut(args[1:], stdout, stderr)
-	case "reset-rate-limit":
-		return runResetRateLimit(args[1:], stdout, stderr)
-	case "merge-pr":
-		return runMergePR(args[1:], stdout, stderr)
-	case "merge-queue-poll":
-		return runMergeQueuePoll(args[1:], stdout, stderr)
-	case "pr-select":
-		return runPRSelect(args[1:], stdout, stderr)
-	case "gather-sibling-context":
-		return runGatherSiblingContext(args[1:], stdout, stderr)
-	case "apply-verdict":
-		return runApplyVerdict(args[1:], stdout, stderr)
-	case "elect-lander":
-		return runElectLander(args[1:], stdout, stderr)
-	case "post-merge":
-		return runPostMerge(args[1:], stdout, stderr)
-	case "gather-pr-context":
-		return runGatherPRContext(args[1:], stdout, stderr)
-	case "rebase-pr":
-		return runRebasePR(args[1:], stdout, stderr)
-	case "remediation-checkpoint":
-		return runRemediationCheckpoint(args[1:], stdout, stderr)
-	case "push-remediated":
-		return runPushRemediated(args[1:], stdout, stderr)
-	case "--version", "version":
-		pf(stdout, "goobers %s\n", version.Get())
-		return 0
-	case "-h", "--help", "help":
-		usage(stdout)
-		return 0
-	default:
-		pf(stderr, "goobers: unknown command %q\n\n", args[0])
-		usage(stderr)
-		return 2
+	if command, ok := findCLICommand(args[0]); ok {
+		return command.run(args[1:], stdout, stderr)
 	}
+	pf(stderr, "goobers: unknown command %q\n\n", args[0])
+	usage(stderr)
+	return 2
 }
 
 func usage(w io.Writer) {
