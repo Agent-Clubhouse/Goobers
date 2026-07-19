@@ -7,6 +7,7 @@ import {
   type ConfigurationWarningSource,
   useConfigurationWarnings,
 } from "./configurationWarnings";
+import { LiveDataProvider } from "./liveData";
 import { OverviewPage } from "./pages/OverviewPage";
 import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
@@ -31,6 +32,23 @@ export function App({
     document
       .querySelector('meta[name="goobers-dashboard-mode"]')
       ?.getAttribute("content") === "standalone";
+
+  return (
+    <LiveDataProvider client={client}>
+      <Portal client={client} standalone={standalone} warningClient={warningClient} />
+    </LiveDataProvider>
+  );
+}
+
+function Portal({
+  client,
+  standalone,
+  warningClient,
+}: {
+  client: DaemonClient;
+  standalone: boolean;
+  warningClient: ConfigurationWarningClient;
+}) {
   const [route, setRoute] = useState<Route>(() => parseRoute());
   const initialRoute = useRef(true);
 

@@ -7,7 +7,10 @@ import type {
   ArtifactContent,
   AttemptList,
   DaemonClient,
+  DaemonEventStream,
+  DaemonUpdateEvent,
   EventList,
+  EventStreamRequest,
   GagglePage,
   GooberPage,
   Health,
@@ -45,6 +48,14 @@ export class FixtureDaemonClient implements DaemonClient {
   constructor(private readonly fixtures: DaemonFixtures) {
     assertSupportedContractVersion(fixtures.health);
     assertSupportedContractVersion(fixtures.instance);
+  }
+
+  connectEvents(
+    request?: EventStreamRequest,
+    options?: RequestOptions,
+  ): Promise<DaemonEventStream> {
+    throwIfCancelled(options);
+    return Promise.resolve(fixtureEventStream(request?.cursor, options?.signal));
   }
 
   getHealth(options?: RequestOptions): Promise<Health> {
@@ -159,4 +170,42 @@ function throwIfCancelled(options?: RequestOptions): void {
   if (options?.signal?.aborted) {
     throw new RequestCancelledError();
   }
+}
+
+function fixtureEventStream(
+  cursor: string | undefined,
+  signal: AbortSignal | undefined,
+): DaemonEventStream {
+  let closed = false;
+  let release!: () => void;
+  const stopped = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const close = () => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    signal?.removeEventListener("abort", close);
+    release();
+  };
+  signal?.addEventListener("abort", close, { once: true });
+
+  return {
+    close,
+    async *[Symbol.asyncIterator]() {
+      if (!cursor) {
+        const snapshot: DaemonUpdateEvent = {
+          id: "fixture:0",
+          type: "snapshot",
+          data: {
+            cursor: "fixture:0",
+            models: ["instance", "run", "workflow"],
+          },
+        };
+        yield snapshot;
+      }
+      await stopped;
+    },
+  };
 }

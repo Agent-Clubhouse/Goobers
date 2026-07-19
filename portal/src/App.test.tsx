@@ -37,7 +37,7 @@ describe("portal foundation", () => {
     expect(
       await screen.findByRole("heading", { name: "2 runs need attention." }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Daemon connected")).toBeInTheDocument();
+    expect(screen.getByText("Daemon ready")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
   });
 
@@ -54,7 +54,10 @@ describe("portal foundation", () => {
     expect(screen.getByText("Daemon not running; reading this instance locally")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Instance is ready." })).toBeInTheDocument();
     expect(screen.getByText("Local instance loaded")).toBeInTheDocument();
-    expect(screen.queryByText("Daemon connected")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
+    );
+    expect(screen.queryByText("Daemon ready")).not.toBeInTheDocument();
     expect(screen.queryByText(/The daemon is ready/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Workflows" }));

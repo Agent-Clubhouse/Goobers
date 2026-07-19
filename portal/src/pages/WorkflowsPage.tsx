@@ -25,7 +25,7 @@ export function WorkflowsPage({
   if (query.state.status === "error") {
     return <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />;
   }
-  if (query.state.status !== "ready") {
+  if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
   }
 

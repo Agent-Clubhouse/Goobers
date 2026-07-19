@@ -29,7 +29,7 @@ export function OverviewPage({
   if (query.state.status === "error") {
     return <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />;
   }
-  if (query.state.status !== "ready") {
+  if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
   }
 
@@ -183,8 +183,8 @@ function InstanceStrip({
               ? "Local instance loaded"
               : "Local instance not ready"
             : snapshot.health.ready
-              ? "Daemon connected"
-              : "Daemon not ready"}
+              ? "Daemon ready"
+              : "Daemon starting"}
         </strong>
         <span>
           observed{" "}
