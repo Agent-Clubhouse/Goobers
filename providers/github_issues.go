@@ -187,6 +187,24 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 	return comments, nil
 }
 
+// AuthenticatedLogin returns the GitHub login represented by the provider's
+// credential.
+func (p *GitHubProvider) AuthenticatedLogin(ctx context.Context) (string, error) {
+	endpoint, err := joinURL(p.BaseURL, "user")
+	if err != nil {
+		return "", err
+	}
+	var user githubUser
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &user); err != nil {
+		return "", err
+	}
+	login := strings.TrimSpace(user.Login)
+	if login == "" {
+		return "", fmt.Errorf("authenticated GitHub user has no login")
+	}
+	return login, nil
+}
+
 // UpdateComment edits an existing issue/PR comment's body in place — the
 // sticky-comment pattern (#716) a caller uses so a repeated event (e.g.
 // pr-remediation's per-cycle checkpoint/escalation state) updates the SAME
@@ -204,6 +222,22 @@ func (p *GitHubProvider) UpdateComment(ctx context.Context, repo RepositoryRef, 
 		return err
 	}
 	return p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, nil)
+}
+
+// DeleteComment removes an issue/PR comment. A missing comment is already in
+// the desired state, so deletion is idempotent for concurrent reconcilers.
+func (p *GitHubProvider) DeleteComment(ctx context.Context, repo RepositoryRef, commentID string) error {
+	if err := requireOwnerRepo(repo); err != nil {
+		return err
+	}
+	if commentID == "" {
+		return fmt.Errorf("comment id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
+	if err != nil {
+		return err
+	}
+	return p.doStatus(ctx, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound})
 }
 
 // allIssueComments fetches every comment on an issue, following pagination

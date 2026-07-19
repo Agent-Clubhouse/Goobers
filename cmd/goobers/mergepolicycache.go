@@ -16,7 +16,7 @@ import (
 // merge policy (branch protection/ruleset state) is a live provider call,
 // so `merge-pr` memoizes it — like the sibling-context cache (#523) — under
 // the instance's scheduler dir, guarded by the same cross-process flock
-// pattern (withClaimLock), since concurrent merge-review runs' merge-pr
+// pattern (withFileLock), since concurrent merge-review runs' merge-pr
 // stages each run as their own OS process against the same instance root.
 //
 // Unlike the sibling-context cache, a stale merge policy is a correctness
@@ -144,7 +144,7 @@ func saveMergePolicyCacheEntry(schedulerDir, key string, entry mergePolicyCacheE
 }
 
 // withMergePolicyCacheLock serializes cache reads/writes across concurrent
-// merge-pr processes, reusing withBlockingFileLock's blocking-flock discipline
+// merge-pr processes, reusing withFileLock's blocking-flock discipline
 // (siblingcache.go's withSiblingCacheLock rationale applies identically
 // here: each stage dispatch is its own OS process, so an in-process mutex
 // cannot arbitrate). Creates schedulerDir if a standalone/manual invocation
@@ -153,5 +153,5 @@ func withMergePolicyCacheLock(schedulerDir string, fn func() error) error {
 	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
 		return err
 	}
-	return withBlockingFileLock(filepath.Join(schedulerDir, mergePolicyCacheLockFileName), nil, nil, fn)
+	return withFileLock(filepath.Join(schedulerDir, mergePolicyCacheLockFileName), fn)
 }

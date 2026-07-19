@@ -155,9 +155,10 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				t.Fatal("merge-pr task not found")
 			}
 			wantMergeInputs := map[string]string{
-				"pullNumber": "selectedNumber",
-				"headSha":    "selectedHeadSha",
-				"baseSha":    "selectedBaseSha",
+				"pullNumber":    "selectedNumber",
+				"headSha":       "selectedHeadSha",
+				"baseSha":       "selectedBaseSha",
+				"verdictAuthor": "verdictAuthor",
 			}
 			if !reflect.DeepEqual(mergePR.InputsFrom, wantMergeInputs) {
 				t.Errorf("merge-pr inputsFrom = %v, want %v", mergePR.InputsFrom, wantMergeInputs)

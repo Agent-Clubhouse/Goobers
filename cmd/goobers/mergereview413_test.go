@@ -146,8 +146,8 @@ func TestMergeReviewThreadsSelectedNumberToApplyVerdict(t *testing.T) {
 		Title:         "Eligible PR",
 		HeadSHA:       headSHA,
 		BaseSHA:       baseSHA,
-		CommentsSince: []providers.PullRequestComment{{Body: issue.comments[0]}},
-	})
+		CommentsSince: []providers.PullRequestComment{{Author: server.authenticatedLogin, Body: issue.comments[0]}},
+	}, server.authenticatedLogin)
 	if err != nil {
 		t.Fatalf("structured merge message from posted pass verdict: %v", err)
 	}

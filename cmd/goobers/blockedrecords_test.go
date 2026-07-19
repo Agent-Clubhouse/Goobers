@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -90,10 +95,30 @@ func blockedFilterFixture(t *testing.T) (*fakeGitHubServer, *providers.GitHubPro
 	return server, provider, repo
 }
 
+type stalledIssueClient struct {
+	next    providers.HTTPClient
+	path    string
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *stalledIssueClient) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, c.path) {
+		c.once.Do(func() { close(c.started) })
+		select {
+		case <-c.release:
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		}
+	}
+	return c.next.Do(req)
+}
+
 func TestFilterBlockedEligibilityNoRecordsIsNoop(t *testing.T) {
 	_, provider, repo := blockedFilterFixture(t)
 	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}}
-	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, map[string]blockedRecord{})
+	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, eligible, map[string]blockedRecord{})
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -117,7 +142,7 @@ func TestFilterBlockedEligibilitySkipsWhileBlockerOpen(t *testing.T) {
 	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}}
 	recs := map[string]blockedRecord{"510": {Blockers: []string{"441"}, RunID: "run-1"}}
 
-	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -147,7 +172,7 @@ func TestFilterBlockedEligibilitySelfHealsWhenBlockersClose(t *testing.T) {
 	eligible := []providers.WorkItem{{ID: "510"}}
 	recs := map[string]blockedRecord{"510": {Blockers: []string{"441", "442"}, RunID: "run-1"}}
 
-	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -175,7 +200,7 @@ func TestFilterBlockedEligibilityPrunesRecordForClosedItem(t *testing.T) {
 	// 510 no longer appears in this tick's eligible set (it's closed, so the
 	// provider query wouldn't return it) — filterBlockedEligibility must still
 	// prune its stale record via the direct GetWorkItem check.
-	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, nil, map[string]blockedRecord{
+	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, nil, map[string]blockedRecord{
 		"510": {Blockers: []string{"441"}, RunID: "run-1"},
 	})
 	if len(warnings) != 0 {
@@ -278,7 +303,7 @@ func TestFilterBlockedEligibilityResolvesPRPrefixedKey(t *testing.T) {
 	eligible := []providers.WorkItem{{ID: "955"}, {ID: "511"}}
 	recs := map[string]blockedRecord{"pr/955": {Blockers: []string{"956"}, RunID: "run-1"}}
 
-	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
 	if len(warnings) != 0 {
 		t.Fatalf("pr/-prefixed key produced warnings, want a clean lookup: %v", warnings)
 	}
@@ -302,7 +327,7 @@ func TestFilterBlockedEligibilityPrunesPRPrefixedKeyWhenMerged(t *testing.T) {
 	server.closeIssue(955)
 
 	recs := map[string]blockedRecord{"pr/955": {Blockers: []string{"956"}, RunID: "run-1"}}
-	_, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, nil, recs)
+	_, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, nil, recs)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -325,13 +350,13 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 	server.addIssue(510, "blocked item", "goobers:ready")
 	server.addIssue(511, "unrelated item", "goobers:ready")
 
-	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}}
+	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}, {ID: "not-a-real-key"}}
 	recs := map[string]blockedRecord{
 		"510":            {Blockers: []string{"441"}, RunID: "run-1"},
 		"not-a-real-key": {Blockers: []string{"441"}, RunID: "run-2"},
 	}
 
-	filtered, _, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	filtered, _, warnings, unresolved := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
 	if len(warnings) != 1 {
 		t.Fatalf("warnings = %v, want exactly one for the unresolvable key", warnings)
 	}
@@ -343,7 +368,225 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 	}
 	// The healthy record must still have been applied — one bad key degrades
 	// only itself, which is the entire point of the change.
-	if len(filtered) != 1 || filtered[0].ID != "511" {
-		t.Fatalf("filtered = %v, want only 511 — record 510 must still skip despite the bad sibling key", filtered)
+	if len(filtered) != 2 || filtered[0].ID != "511" || filtered[1].ID != "not-a-real-key" {
+		t.Fatalf("filtered = %v, want 511 and the unresolved item — record 510 must still skip despite the bad sibling key", filtered)
+	}
+
+	path := filepath.Join(t.TempDir(), blockedRecordsFileName)
+	if err := saveBlockedRecords(path, recs); err != nil {
+		t.Fatal(err)
+	}
+	reconciled, err := reconcileBlockedEligibilityLocked(path, append([]providers.WorkItem(nil), filtered...), nil, unresolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reconciled) != 2 || reconciled[1].ID != "not-a-real-key" {
+		t.Fatalf("reconciled = %v, want the unchanged unresolved record to remain eligible", reconciled)
+	}
+
+	replacement := recs["not-a-real-key"]
+	replacement.RunID = "replacement-run"
+	if err := saveBlockedRecords(path, map[string]blockedRecord{"not-a-real-key": replacement}); err != nil {
+		t.Fatal(err)
+	}
+	reconciled, err = reconcileBlockedEligibilityLocked(path, append([]providers.WorkItem(nil), filtered...), nil, unresolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reconciled) != 1 || reconciled[0].ID != "511" {
+		t.Fatalf("reconciled after replacement = %v, want only 511", reconciled)
+	}
+}
+
+func TestBacklogQueryDoesNotClaimConcurrentBlockedRecordReplacement(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(441, "resolved prerequisite", "goobers:approved")
+	server.closeIssue(441)
+	server.addIssue(442, "new prerequisite", "goobers:approved")
+	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
+
+	l := layoutFor(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	observed := blockedRecord{
+		Blockers:   []string{"441"},
+		RunID:      "old-run",
+		RecordedAt: time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC),
+	}
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{"510": observed}); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.Claim("510", "old-run", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed old claim: ok=%v err=%v", ok, err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "query-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	stalled := &stalledIssueClient{
+		path:    "/issues/441",
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	releaseProvider := sync.OnceFunc(func() { close(stalled.release) })
+	defer releaseProvider()
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		provider := baseFactory(token, opts...)
+		stalled.next = provider.Client
+		provider.Client = stalled
+		return provider
+	}
+	t.Cleanup(func() { newGitHubProvider = baseFactory })
+
+	var stdout, stderr bytes.Buffer
+	queryDone := make(chan int, 1)
+	go func() {
+		queryDone <- runBacklogQuery([]string{"--claim", root}, &stdout, &stderr)
+	}()
+	select {
+	case <-stalled.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for old blocker resolution")
+	}
+
+	replacement := blockedRecord{
+		Blockers:   []string{"442"},
+		RunID:      "new-run",
+		RecordedAt: time.Date(2026, 7, 18, 11, 0, 0, 0, time.UTC),
+	}
+	if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
+		recs["510"] = replacement
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := releaseClaimsForRun(l, nil, "old-run"); err != nil {
+		t.Fatal(err)
+	}
+
+	releaseProvider()
+	if code := <-queryDone; code != 0 {
+		t.Fatalf("backlog query code = %d, stderr = %q", code, stderr.String())
+	}
+
+	recs, err := snapshotBlockedRecords(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := recs["510"]; !ok || !sameBlockedRecord(got, replacement) {
+		t.Fatalf("concurrent replacement = (%+v, %v), want preserved %+v", got, ok, replacement)
+	}
+	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := reopened.Lookup("510"); held {
+		t.Fatalf("concurrently re-blocked item was claimed: %+v", entry)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["claimed"] != false {
+		t.Fatalf("claimed = %v, want false for concurrently re-blocked item", result["claimed"])
+	}
+}
+
+func TestStalledBlockedStateProviderCallDoesNotDelayFinalizer(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(441, "prerequisite", "goobers:approved")
+	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
+
+	l := layoutFor(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
+		"510": {Blockers: []string{"441"}, RunID: "prior-run"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.Claim("900", "terminal-run", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed terminal claim: ok=%v err=%v", ok, err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "query-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	t.Chdir(t.TempDir())
+
+	stalled := &stalledIssueClient{
+		path:    "/issues/510",
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	releaseProvider := sync.OnceFunc(func() { close(stalled.release) })
+	defer releaseProvider()
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		provider := baseFactory(token, opts...)
+		stalled.next = provider.Client
+		provider.Client = stalled
+		return provider
+	}
+	t.Cleanup(func() { newGitHubProvider = baseFactory })
+
+	var stdout, stderr bytes.Buffer
+	queryDone := make(chan int, 1)
+	go func() {
+		queryDone <- runBacklogQuery([]string{"--claim", root}, &stdout, &stderr)
+	}()
+
+	select {
+	case <-stalled.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for blocked-state provider call")
+	}
+
+	finalizerDone := make(chan error, 1)
+	go func() {
+		finalizerDone <- releaseClaimsForRun(l, nil, "terminal-run")
+	}()
+	select {
+	case err := <-finalizerDone:
+		if err != nil {
+			t.Fatalf("finalize terminal claim: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		releaseProvider()
+		<-queryDone
+		t.Fatal("terminal finalizer waited for a stalled provider call to release the claims lock")
+	}
+
+	releaseProvider()
+	if code := <-queryDone; code != 0 {
+		t.Fatalf("backlog query code = %d, stderr = %q", code, stderr.String())
+	}
+	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := reopened.Lookup("900"); held {
+		t.Fatalf("terminal claim still held after finalizer: %+v", entry)
 	}
 }

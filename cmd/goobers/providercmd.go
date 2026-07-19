@@ -357,6 +357,13 @@ func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration 
 	return nil
 }
 
+// withFileLock is the un-instrumented blocking flock used by non-claim cache
+// and merge locks. Claim-ledger and blocked-record access must go through
+// withClaimLock instead so its wait/hold contention is measured (#791).
+func withFileLock(lockPath string, fn func() error) error {
+	return withBlockingFileLock(lockPath, nil, nil, fn)
+}
+
 // withBlockingFileLock provides the blocking flock discipline shared by the
 // claims lock and unrelated cache/merge locks. The optional callbacks run
 // immediately after acquisition and release.

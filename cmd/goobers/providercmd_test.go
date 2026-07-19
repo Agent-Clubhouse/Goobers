@@ -18,12 +18,14 @@ import (
 // for the real api.github.com surface backlog-query/open-pr/issue-close-out
 // actually talk to, scoped to exactly the endpoints those subcommands hit.
 type fakeIssue struct {
-	number   int
-	title    string
-	body     string
-	labels   []string
-	state    string
-	comments []string
+	number         int
+	title          string
+	body           string
+	labels         []string
+	state          string
+	comments       []string
+	commentIDs     []int64
+	commentAuthors []string
 }
 
 type fakePR struct {
@@ -81,20 +83,22 @@ type fakeCompare struct {
 // issues/comments/labels/pulls API, shared across #131/#132's CLI-level
 // integration tests.
 type fakeGitHubServer struct {
-	mu       sync.Mutex
-	owner    string
-	repo     string
-	issues   map[int]*fakeIssue
-	prs      map[int]*fakePR
-	compares map[string]fakeCompare
-	nextPR   int
-	server   *httptest.Server
+	mu            sync.Mutex
+	owner         string
+	repo          string
+	issues        map[int]*fakeIssue
+	prs           map[int]*fakePR
+	compares      map[string]fakeCompare
+	nextPR        int
+	nextCommentID int64
+	server        *httptest.Server
 	// filesRequests/checkStateRequests count GET /pulls/{n}/files and
 	// /commits/{sha}/{status,check-runs} hits — the per-sibling API cost
 	// #523's cache exists to eliminate, so its tests can assert "an
 	// unchanged sibling costs zero requests on the next gather".
 	filesRequests      int
 	checkStateRequests int
+	authenticatedLogin string
 }
 
 // resetRequestCounts zeroes the per-endpoint counters between gather runs so
@@ -113,9 +117,13 @@ func (s *fakeGitHubServer) requestCounts() (files, checkState int) {
 
 func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	t.Helper()
-	s := &fakeGitHubServer{owner: owner, repo: repo, issues: map[int]*fakeIssue{}, prs: map[int]*fakePR{}, compares: map[string]fakeCompare{}, nextPR: 1}
+	s := &fakeGitHubServer{
+		owner: owner, repo: repo, issues: map[int]*fakeIssue{}, prs: map[int]*fakePR{},
+		compares: map[string]fakeCompare{}, nextPR: 1, authenticatedLogin: "goobers",
+	}
 	mux := http.NewServeMux()
 	prefix := "/repos/" + owner + "/" + repo
+	mux.HandleFunc("/user", s.handleAuthenticatedUser)
 	mux.HandleFunc(prefix+"/issues", s.handleIssuesCollection)
 	mux.HandleFunc(prefix+"/pulls", s.handlePullsCollection)
 	mux.HandleFunc(prefix+"/issues/", s.handleIssueItem)
@@ -125,6 +133,14 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
 	return s
+}
+
+func (s *fakeGitHubServer) handleAuthenticatedUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		return
+	}
+	writeFakeJSON(w, map[string]string{"login": s.authenticatedLogin})
 }
 
 func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) {
@@ -237,6 +253,10 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/repos/"+s.owner+"/"+s.repo+"/issues/")
 	parts := strings.Split(rest, "/")
+	if len(parts) == 2 && parts[0] == "comments" {
+		s.handleCommentItem(w, r, parts[1])
+		return
+	}
 	num, err := strconv.Atoi(parts[0])
 	if err != nil {
 		http.Error(w, "bad issue number", http.StatusBadRequest)
@@ -270,7 +290,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
 		out := make([]map[string]interface{}, 0, len(issue.comments))
 		for i, body := range issue.comments {
-			out = append(out, map[string]interface{}{"id": i + 1, "body": body, "html_url": "", "user": map[string]string{"login": "goobers"}})
+			out = append(out, map[string]interface{}{"id": issue.commentIDs[i], "body": body, "html_url": "", "user": map[string]string{"login": issue.commentAuthors[i]}})
 		}
 		writeFakeJSON(w, out)
 	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodPost:
@@ -278,8 +298,11 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			Body string `json:"body"`
 		}
 		decodeFakeJSON(r, &body)
+		s.nextCommentID++
 		issue.comments = append(issue.comments, body.Body)
-		writeFakeJSON(w, map[string]interface{}{"id": len(issue.comments), "body": body.Body})
+		issue.commentIDs = append(issue.commentIDs, s.nextCommentID)
+		issue.commentAuthors = append(issue.commentAuthors, s.authenticatedLogin)
+		writeFakeJSON(w, map[string]interface{}{"id": s.nextCommentID, "body": body.Body})
 	case len(parts) == 2 && parts[1] == "labels" && r.Method == http.MethodPost:
 		var body struct {
 			Labels []string `json:"labels"`
@@ -300,6 +323,42 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 	default:
 		http.Error(w, fmt.Sprintf("unhandled %s %s", r.Method, r.URL.Path), http.StatusNotImplemented)
 	}
+}
+
+func (s *fakeGitHubServer) handleCommentItem(w http.ResponseWriter, r *http.Request, idString string) {
+	id, err := strconv.ParseInt(idString, 10, 64)
+	if err != nil {
+		http.Error(w, "bad comment id", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, number := range sortedIntKeys(s.issues) {
+		issue := s.issues[number]
+		for i, commentID := range issue.commentIDs {
+			if commentID != id {
+				continue
+			}
+			switch r.Method {
+			case http.MethodPatch:
+				var body struct {
+					Body string `json:"body"`
+				}
+				decodeFakeJSON(r, &body)
+				issue.comments[i] = body.Body
+				writeFakeJSON(w, map[string]interface{}{"id": id, "body": body.Body})
+			case http.MethodDelete:
+				issue.comments = append(issue.comments[:i], issue.comments[i+1:]...)
+				issue.commentIDs = append(issue.commentIDs[:i], issue.commentIDs[i+1:]...)
+				issue.commentAuthors = append(issue.commentAuthors[:i], issue.commentAuthors[i+1:]...)
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+			}
+			return
+		}
+	}
+	http.Error(w, "comment not found", http.StatusNotFound)
 }
 
 func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.Request) {
@@ -608,9 +667,16 @@ func (s *fakeGitHubServer) setPRClosed(number int) {
 // prior run's posted verdict comment (#523's verdict-cache lookup) before
 // the stage under test ever runs.
 func (s *fakeGitHubServer) addComment(number int, body string) {
+	s.addCommentAs(number, s.authenticatedLogin, body)
+}
+
+func (s *fakeGitHubServer) addCommentAs(number int, author, body string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.nextCommentID++
 	s.issues[number].comments = append(s.issues[number].comments, body)
+	s.issues[number].commentIDs = append(s.issues[number].commentIDs, s.nextCommentID)
+	s.issues[number].commentAuthors = append(s.issues[number].commentAuthors, author)
 }
 
 func hasAllLabels(have, want []string) bool {
