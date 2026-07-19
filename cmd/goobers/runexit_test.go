@@ -143,7 +143,7 @@ func respondToDelegatedRequest(ctx context.Context, schedulerDir, runID string) 
 				if err != nil {
 					return err
 				}
-				return os.WriteFile(filepath.Join(requestDir, requestID+responseSuffix), data, 0o644)
+				return journal.WriteFileAtomic(filepath.Join(requestDir, requestID+responseSuffix), data, 0o644)
 			}
 		} else if !os.IsNotExist(err) {
 			return err
