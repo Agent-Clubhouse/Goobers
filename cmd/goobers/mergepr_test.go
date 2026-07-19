@@ -63,12 +63,17 @@ type mergePRServerState struct {
 	baseBranch      string
 	mergeQueueRules bool
 	rulesCalls      int
-	// queueMergesImmediately, only meaningful when mergeQueueRules is set,
-	// makes the fake merge endpoint report merged=true instead of the
-	// normal enqueue response — the rare edge case where a merge queue's
-	// own merge endpoint completes the merge immediately (e.g. nothing
-	// else ahead of this pull request).
-	queueMergesImmediately bool
+	// enqueueCalls counts GraphQL enqueuePullRequest mutations, and
+	// enqueueVars records the last one's variables. Enqueueing goes through
+	// GraphQL, not the REST merge endpoint (issue #882) — mergeCalls
+	// staying 0 on a merge-queue repo is the regression guard.
+	enqueueCalls int
+	enqueueVars  map[string]interface{}
+	// alreadyMerged, only meaningful when mergeQueueRules is set, makes the
+	// enqueue node lookup report the pull request as already merged — a
+	// retried stage attempt whose pull request the queue landed in the
+	// meantime.
+	alreadyMerged bool
 }
 
 func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) *httptest.Server {
@@ -103,6 +108,41 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 			},
 			"base": map[string]interface{}{"ref": st.baseBranch, "sha": st.baseSHA},
 		})
+	})
+	// GraphQL is the only surface that can enqueue a pull request into a
+	// merge queue (issue #882): the REST merge endpoint rejects the attempt
+	// outright on a queue-required branch. Serving it here lets the
+	// merge-queue tests below assert the enqueue happened AND that the REST
+	// merge endpoint was never touched.
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query     string                 `json:"query"`
+			Variables map[string]interface{} `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode graphql request: %v", err)
+			return
+		}
+		if strings.Contains(body.Query, "enqueuePullRequest(input:") {
+			st.enqueueCalls++
+			st.enqueueVars = body.Variables
+			writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{
+				"enqueuePullRequest": map[string]interface{}{
+					"mergeQueueEntry": map[string]interface{}{"state": "QUEUED", "position": 1},
+				},
+			}})
+			return
+		}
+		pr := map[string]interface{}{
+			"id": "PR_node9", "merged": false, "mergeCommit": nil, "mergeQueueEntry": nil,
+		}
+		if st.alreadyMerged {
+			pr["merged"] = true
+			pr["mergeCommit"] = map[string]interface{}{"oid": "merge-commit-sha"}
+		}
+		writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{
+			"repository": map[string]interface{}{"pullRequest": pr},
+		}})
 	})
 	mux.HandleFunc(prefix+"/rules/branches/"+st.baseBranch, func(w http.ResponseWriter, r *http.Request) {
 		st.rulesCalls++
@@ -197,8 +237,13 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		if err := json.NewDecoder(r.Body).Decode(&st.mergeBody); err != nil {
 			t.Errorf("decode merge request body: %v", err)
 		}
-		if st.mergeQueueRules && !st.queueMergesImmediately {
-			writeFakeJSON(w, map[string]interface{}{"merged": false, "message": "Pull Request is in merge queue"})
+		if st.mergeQueueRules {
+			// What GitHub actually does on a queue-required branch (issue
+			// #882): it rejects the REST merge outright rather than
+			// silently converting it into an enqueue. Reproducing the real
+			// 405 here means any regression back to this endpoint fails
+			// loudly instead of passing against a too-forgiving stub.
+			http.Error(w, `{"message":"Repository rule violations found\n\nChanges must be made through the merge queue\n\n"}`, http.StatusMethodNotAllowed)
 			return
 		}
 		sha := "merge-commit-sha"
@@ -334,9 +379,8 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 // direct-merged — merged stays false (GitHub has not actually merged it
 // yet), a new landOutcome="enqueued" key distinguishes this from the
 // refusal case, no branch cleanup is attempted (nothing to clean up until
-// the queue actually lands it), and the direct /merge endpoint is still the
-// one called (GitHub's own documented enqueue-via-merge-endpoint behavior)
-// but never the branch-delete endpoint.
+// the queue actually lands it), and the enqueue goes through GraphQL rather
+// than the REST merge endpoint (issue #882).
 func TestMergePRMergeQueuePolicyEnqueuesInsteadOfMerging(t *testing.T) {
 	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456", mergeQueueRules: true}
 	server := newMergePRServer(t, "your-org", "your-repo", st)
@@ -351,8 +395,16 @@ func TestMergePRMergeQueuePolicyEnqueuesInsteadOfMerging(t *testing.T) {
 	if st.rulesCalls != 1 {
 		t.Fatalf("rules-for-branch endpoint called %d times, want 1", st.rulesCalls)
 	}
-	if st.mergeCalls != 1 {
-		t.Fatalf("merge/enqueue endpoint called %d times, want 1", st.mergeCalls)
+	if st.enqueueCalls != 1 {
+		t.Fatalf("graphql enqueue mutation called %d times, want 1", st.enqueueCalls)
+	}
+	// #882: the REST merge endpoint does NOT enqueue on a queue-required
+	// branch, it 405s — so a merge-queue landing must never touch it.
+	if st.mergeCalls != 0 {
+		t.Fatalf("REST merge endpoint called %d times, want 0 (a merge-queue landing enqueues via GraphQL)", st.mergeCalls)
+	}
+	if got := st.enqueueVars["expectedHeadOid"]; got != "head123" {
+		t.Fatalf("enqueue expectedHeadOid = %v, want head123 (the SHA pin must survive the move off REST)", got)
 	}
 	if st.deleteCalls != 0 || st.pullListCalls != 0 {
 		t.Fatalf("cleanup calls = list:%d delete:%d, want 0 each (nothing to clean up before the queue actually merges)", st.pullListCalls, st.deleteCalls)
@@ -372,15 +424,19 @@ func TestMergePRMergeQueuePolicyEnqueuesInsteadOfMerging(t *testing.T) {
 	}
 }
 
-// TestMergePRMergeQueuePolicySendsMergeMethod is issue #877's regression,
-// shaped exactly like the live failure: on a repo whose detected policy is
-// merge-queue AND whose ruleset restricts merge methods to squash, the
-// enqueue request must carry merge_method — the enqueue path goes through
-// the same PUT .../merge endpoint, so dropping it made GitHub apply its own
-// default ("merge") and reject every landing with a 405 ("Merge commits are
-// not allowed on this repository"). The direct-merge path never had this
-// bug; only the queue path did, which is every repo gated behind #759.
-func TestMergePRMergeQueuePolicySendsMergeMethod(t *testing.T) {
+// TestMergePRMergeQueuePolicyNeverUsesRESTMergeEndpoint is issue #882's
+// regression at the stage level, shaped exactly like the live failure: on a
+// repo whose branch rules require a merge queue, the landing must not go
+// near PUT .../pulls/{n}/merge. It was previously assumed GitHub silently
+// converts that call into an enqueue; it does not — it rejects it with a
+// 405 ("Repository rule violations found / Changes must be made through the
+// merge queue"), which failed every single daemon landing on this repo.
+//
+// Issue #877's merge_method regression is still covered on the direct-merge
+// path (TestMergePRMergesWhenAllConjunctsHold). It does not apply here: a
+// queue takes its merge method from the ruleset, and GitHub's enqueue
+// mutation accepts no such field.
+func TestMergePRMergeQueuePolicyNeverUsesRESTMergeEndpoint(t *testing.T) {
 	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456", mergeQueueRules: true}
 	server := newMergePRServer(t, "your-org", "your-repo", st)
 	root, _ := mergePREnv(t, server.URL, false, map[string]string{
@@ -391,23 +447,23 @@ func TestMergePRMergeQueuePolicySendsMergeMethod(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
-	// No mergeMethod input above on purpose: squash is mergepr.go's default,
-	// which is exactly the configuration the live 405 fired under.
-	if st.mergeBody["merge_method"] != string(providers.MergeMethodSquash) {
-		t.Fatalf("enqueue request body = %+v, want merge_method=squash (omitting it makes GitHub default to a merge commit, which a squash-only ruleset 405s)", st.mergeBody)
+	if st.mergeCalls != 0 {
+		t.Fatalf("REST merge endpoint called %d times, want 0 — that endpoint 405s on a queue-required branch", st.mergeCalls)
+	}
+	if st.enqueueCalls != 1 {
+		t.Fatalf("graphql enqueue mutation called %d times, want 1", st.enqueueCalls)
 	}
 }
 
-// TestMergePRMergeQueuePolicyReportsMergedWhenQueueLandsImmediately pins the
-// edge case documented on providers.EnqueuePullRequestResult: an enqueue
-// call whose queue happens to be empty can complete the merge immediately
-// — that must still report landOutcome=merged (and run branch cleanup),
-// not "enqueued", so a caller doesn't go on to watch a merge-queue entry
-// that no longer exists.
-func TestMergePRMergeQueuePolicyReportsMergedWhenQueueLandsImmediately(t *testing.T) {
+// TestMergePRMergeQueuePolicyReportsMergedWhenAlreadyMerged pins the retry
+// case documented on providers.EnqueuePullRequestResult: a stage attempt
+// whose pull request the queue landed in the meantime must report
+// landOutcome=merged (and run branch cleanup), not "enqueued", so a caller
+// doesn't go on to watch a merge-queue entry that no longer exists.
+func TestMergePRMergeQueuePolicyReportsMergedWhenAlreadyMerged(t *testing.T) {
 	st := &mergePRServerState{
 		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
-		mergeQueueRules: true, queueMergesImmediately: true,
+		mergeQueueRules: true, alreadyMerged: true,
 	}
 	server := newMergePRServer(t, "your-org", "your-repo", st)
 	root, dir := mergePREnv(t, server.URL, false, map[string]string{
