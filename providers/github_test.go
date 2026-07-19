@@ -781,8 +781,60 @@ func TestGitHubProviderListPullRequestsSkipCheckState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPullRequests: %v", err)
 	}
+
 	if len(out) != 1 || out[0].CheckState != "" {
 		t.Fatalf("out = %+v, want one summary with empty CheckState", out)
+	}
+}
+
+func TestGitHubProviderListRecentlyClosedPullRequests(t *testing.T) {
+	now := time.Now().UTC()
+	old := now.Add(-31 * 24 * time.Hour)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("state"); got != "closed" {
+			t.Fatalf("state query = %q, want closed", got)
+		}
+		if got := r.URL.Query().Get("sort"); got != "updated" {
+			t.Fatalf("sort query = %q, want updated", got)
+		}
+		if got := r.URL.Query().Get("direction"); got != "desc" {
+			t.Fatalf("direction query = %q, want desc", got)
+		}
+		writeJSON(t, w, []map[string]interface{}{
+			{
+				"number": 20, "state": "closed", "merged_at": now.Format(time.RFC3339),
+				"closed_at": now.Format(time.RFC3339), "updated_at": now.Format(time.RFC3339),
+				"html_url": "https://github.com/acme/app/pull/20",
+				"head":     map[string]interface{}{"ref": "goobers/implementation/run-20", "sha": "head20"},
+				"base":     map[string]interface{}{"ref": "main", "sha": "base20"},
+			},
+			{
+				"number": 19, "state": "closed", "closed_at": old.Format(time.RFC3339),
+				"updated_at": old.Format(time.RFC3339),
+				"head":       map[string]interface{}{"ref": "goobers/implementation/run-19", "sha": "head19"},
+				"base":       map[string]interface{}{"ref": "main", "sha": "base19"},
+			},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("recently closed listing must not resolve check state, got %s", r.URL.Path)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	out, err := provider.ListRecentlyClosedPullRequests(context.Background(), ListPullRequestsRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, Base: "main", HeadPrefix: "goobers/",
+	}, now.Add(-30*24*time.Hour))
+	if err != nil {
+		t.Fatalf("ListRecentlyClosedPullRequests: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("out = %+v, want only the recently merged PR", out)
+	}
+	if out[0].Number != 20 || out[0].State != "closed" || !out[0].Merged {
+		t.Fatalf("out[0] = %+v, want PR #20 with merged current state", out[0])
 	}
 }
 

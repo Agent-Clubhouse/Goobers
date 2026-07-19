@@ -10,6 +10,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // TestRenderRemediationStateCommentRoundTrips proves the embedded payload
@@ -55,6 +58,15 @@ type remediationCheckpointServerState struct {
 	headSHA, baseSHA string
 	labels           []string
 	comments         []string
+	siblings         []remediationCheckpointSibling
+}
+
+type remediationCheckpointSibling struct {
+	number    int
+	state     string
+	merged    bool
+	updatedAt time.Time
+	comments  []string
 }
 
 func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remediationCheckpointServerState) *httptest.Server {
@@ -65,15 +77,41 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 	mux.HandleFunc(prefix+"/pulls", func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		defer st.mu.Unlock()
-		writeFakeJSON(w, []map[string]interface{}{
-			{
+		state := r.URL.Query().Get("state")
+		out := make([]map[string]interface{}, 0, 1+len(st.siblings))
+		if state == "" || state == "open" {
+			out = append(out, map[string]interface{}{
 				"number": st.number, "draft": false,
+				"state":    "open",
 				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, st.number),
 				"head":     map[string]interface{}{"ref": "goobers/impl/remediation-364", "sha": st.headSHA},
 				"base":     map[string]interface{}{"ref": "main", "sha": st.baseSHA},
 				"labels":   labelsJSON(st.labels),
-			},
-		})
+			})
+		}
+		for _, sibling := range st.siblings {
+			if state == "open" && sibling.state != "open" {
+				continue
+			}
+			if state == "closed" && sibling.state != "closed" {
+				continue
+			}
+			pr := map[string]interface{}{
+				"number": sibling.number, "draft": false, "state": sibling.state,
+				"updated_at": sibling.updatedAt.Format(time.RFC3339),
+				"html_url":   fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, sibling.number),
+				"head":       map[string]interface{}{"ref": fmt.Sprintf("goobers/impl/sibling-%d", sibling.number), "sha": fmt.Sprintf("head-%d", sibling.number)},
+				"base":       map[string]interface{}{"ref": "main", "sha": st.baseSHA},
+			}
+			if sibling.state == "closed" {
+				pr["closed_at"] = sibling.updatedAt.Format(time.RFC3339)
+			}
+			if sibling.merged {
+				pr["merged_at"] = sibling.updatedAt.Format(time.RFC3339)
+			}
+			out = append(out, pr)
+		}
+		writeFakeJSON(w, out)
 	})
 
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/status", prefix, st.headSHA), func(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +172,19 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		}
 		writeFakeJSON(w, out)
 	})
+	for _, sibling := range st.siblings {
+		sibling := sibling
+		mux.HandleFunc(fmt.Sprintf("%s/issues/%d/comments", prefix, sibling.number), func(w http.ResponseWriter, r *http.Request) {
+			out := make([]map[string]interface{}, len(sibling.comments))
+			for i, comment := range sibling.comments {
+				out[i] = map[string]interface{}{
+					"id": i + 1, "user": map[string]string{"login": "goobers-bot"},
+					"body": comment, "created_at": sibling.updatedAt.Format(time.RFC3339),
+				}
+			}
+			writeFakeJSON(w, out)
+		})
+	}
 
 	// GitHub's comment-edit endpoint is flat (repo-scoped comment IDs, not
 	// nested under an issue number) — matches providers.GitHubProvider.
@@ -349,6 +400,85 @@ func TestRemediationCheckpointEscalatesOnSameDiff(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("labels = %v, want goobers:merge-escalated added on the same-diff repeat", st.labels)
+	}
+}
+
+func TestRemediationCheckpointEscalationIncludesKnownSiblingOverlaps(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	now := time.Now().UTC()
+	mergedFinding := "Sibling PR #77 concurrently changes resume.go and must be reconciled."
+	openFinding := "PR #77 overlaps the same scheduler architecture."
+	legacyFinding := "PR #77 must wait for this branch to land first."
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels: []string{"goobers:needs-remediation"},
+		siblings: []remediationCheckpointSibling{
+			{
+				number: 613, state: "closed", merged: true, updatedAt: now,
+				comments: []string{renderVerdictComment(apiv1.Verdict{
+					Decision: apiv1.VerdictNeedsChanges,
+					Findings: []apiv1.Finding{{
+						Severity: apiv1.SeverityError, Class: apiv1.FindingSubstantive,
+						Message: mergedFinding, Location: "cmd/goobers/resume.go",
+					}},
+				}), renderVerdictComment(apiv1.Verdict{
+					Decision: apiv1.VerdictPass,
+					Summary:  "The sibling was updated and is ready to merge.",
+				})},
+			},
+			{
+				number: 614, state: "open", updatedAt: now,
+				comments: []string{renderVerdictComment(apiv1.Verdict{
+					Decision: apiv1.VerdictNeedsChanges,
+					Findings: []apiv1.Finding{{
+						Severity: apiv1.SeverityWarning, Class: apiv1.FindingConflict,
+						Message: openFinding,
+					}},
+				})},
+			},
+			{
+				number: 615, state: "open", updatedAt: now,
+				comments: []string{renderVerdictComment(apiv1.Verdict{
+					Decision: apiv1.VerdictNeedsChanges,
+					Findings: []apiv1.Finding{{
+						Severity: apiv1.SeverityInfo, Class: apiv1.FindingCrossPRBlocked,
+						Message: legacyFinding,
+					}},
+				})},
+			},
+		},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+
+	if code, _, stderr := runArgs(t, "remediation-checkpoint", instanceRoot); code != 0 {
+		t.Fatalf("first cycle: code = %d, stderr = %q", code, stderr)
+	}
+	if code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot); code != 0 {
+		t.Fatalf("second cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if len(st.comments) != 1 {
+		t.Fatalf("comments = %v, want one sticky escalation comment", st.comments)
+	}
+	comment := st.comments[0]
+	for _, want := range []string{
+		"Sibling PR #613 is **merged**", mergedFinding,
+		"Sibling PR #614 is **open**", openFinding,
+		"Sibling PR #615 is **open**", legacyFinding,
+	} {
+		if !strings.Contains(comment, want) {
+			t.Fatalf("escalation comment = %q, want %q", comment, want)
+		}
+	}
+	state, ok := parseRemediationStateComment(comment)
+	if !ok ||
+		!strings.Contains(state.SiblingOverlapContext, "PR #613") ||
+		!strings.Contains(state.SiblingOverlapContext, "PR #614") ||
+		!strings.Contains(state.SiblingOverlapContext, "PR #615") {
+		t.Fatalf("escalation state = %+v, ok = %v, want all persisted sibling overlaps", state, ok)
 	}
 }
 
