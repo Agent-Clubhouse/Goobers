@@ -13,7 +13,6 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/executor"
 )
 
 // TestRenderRemediationStateCommentRoundTrips proves the embedded payload
@@ -44,28 +43,6 @@ func TestRenderRemediationStateCommentRoundTrips(t *testing.T) {
 func TestParseRemediationStateCommentNoPayloadIsNotFound(t *testing.T) {
 	if _, ok := parseRemediationStateComment("please rebase, thanks!"); ok {
 		t.Fatal("parseRemediationStateComment on a plain comment: ok = true, want false")
-	}
-}
-
-func TestRemediationCheckpointProviderContextUsesStageBudget(t *testing.T) {
-	const stageBudget = 200 * time.Millisecond
-	t.Setenv(executor.InputEnvVar(executor.InputTimeout), stageBudget.String())
-
-	before := time.Now()
-	ctx, cancel := providerCommandContext()
-	defer cancel()
-	after := time.Now()
-
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		t.Fatal("provider command context has no deadline")
-	}
-	want := providerCommandBudget(stageBudget)
-	if deadline.Before(before.Add(want)) || deadline.After(after.Add(want)) {
-		t.Fatalf("provider command deadline = %s, want between %s and %s", deadline, before.Add(want), after.Add(want))
-	}
-	if want >= stageBudget {
-		t.Fatalf("provider command budget = %s, want less than stage budget %s", want, stageBudget)
 	}
 }
 

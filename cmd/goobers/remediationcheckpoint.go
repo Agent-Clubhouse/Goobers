@@ -326,8 +326,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 
 	base := providerInput("base", "main")
 	headPrefix := providerInput("headPrefix", "goobers/")
-	ctx, cancel := providerCommandContext()
-	defer cancel()
+	ctx := context.Background()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
 	})
