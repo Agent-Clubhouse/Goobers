@@ -22,9 +22,26 @@ var backlogClaimPattern = regexp.MustCompile(`(?s)backlog-query.*--claim`)
 func CheckWarnings(def Definition) []string {
 	var warnings []string
 	for _, task := range def.Spec.Tasks {
-		if len(task.ExpectedOutputs) > 0 {
+		// expectedOutputs is inert only when the stage has no channel to
+		// emit through. With a resultFile declared it is a real contract
+		// that CheckStageContracts verifies statically (#900/#902): the
+		// keys are cross-checked against what downstream stages read via
+		// inputsFrom, and a promise the stage cannot keep is an error.
+		//
+		// Warning on the declared-and-verified case is what made this
+		// diagnostic actively harmful: silencing it means deleting the
+		// declaration, which deletes the very signal that catches a stage
+		// silently emitting nothing. That is what stalled the instance for
+		// three days (#900) — the declaration was the only evidence
+		// elect-lander was supposed to produce anything at all.
+		// Scoped to shell stages for the same reason CheckStageContracts is:
+		// an agentic stage, or a deterministic one declaring a built-in
+		// inputs.kind such as ci-poll, produces its outputs through its own
+		// executor and never through a result file, so expectedOutputs
+		// there is neither inert nor missing anything.
+		if len(task.ExpectedOutputs) > 0 && isShellStage(task) && strings.TrimSpace(task.Inputs["resultFile"]) == "" {
 			warnings = append(warnings, fmt.Sprintf(
-				`task %q: expectedOutputs is declared but not enforced at V0`,
+				`task %q: expectedOutputs is declared but the stage has no inputs.resultFile to emit it through, so it is inert`,
 				task.Name,
 			))
 		}

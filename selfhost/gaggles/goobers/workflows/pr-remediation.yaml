@@ -60,6 +60,13 @@ spec:
         - github:pr:write
         - github:issues:write
         - repo:push
+      expectedOutputs:
+        - selectedNumber
+        - head
+        - base
+        - isBehindBase
+        - hasSubstantiveFindings
+        - hasFailingCI
       next: rebase-pr
 
     # Rebase-first, finding-driven routing (issue #363, design doc §5 D3): a
@@ -105,6 +112,10 @@ spec:
       capabilities:
         - repo:push
         - github:issues:write
+      expectedOutputs:
+        - selectedNumber
+        - head
+        - needsAgent
       next: rebase-gate
 
     # D4/D5 loop-control (issue #364, design doc §6): runs only when

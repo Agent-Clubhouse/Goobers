@@ -183,7 +183,7 @@ func TestCheckWarningsAcceptedButInertFields(t *testing.T) {
 	}
 	all := strings.Join(warnings, "\n")
 	for _, want := range []string{
-		"expectedOutputs is declared but not enforced at V0",
+		"expectedOutputs is declared but the stage has no inputs.resultFile to emit it through",
 		"run.image is not honored by the local runner",
 	} {
 		if !strings.Contains(all, want) {

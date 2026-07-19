@@ -69,6 +69,8 @@ spec:
         - telemetry:read
         - journal:read
         - agent:model
+      expectedOutputs:
+        - finding
       next: draft-change
 
     # Agentic authoring: reads the analyst's finding (via ContextPointers,
@@ -93,6 +95,8 @@ spec:
       capabilities:
         - repo:push
         - agent:model
+      expectedOutputs:
+        - changed-files
       next: validate-config
 
     # Validate the drafted selfhost tree, not the running instance's unchanged
@@ -133,6 +137,9 @@ spec:
         configRoot: "selfhost"
       capabilities:
         - github:pr:write
+      expectedOutputs:
+        - pull-request-url
+        - prNumber
       # Terminal: no `next`. Same governance model as every other
       # config-affecting change on this instance — a human reviews and
       # merges behind branch protection / CODEOWNERS; there is no

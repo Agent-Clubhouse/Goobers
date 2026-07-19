@@ -26,6 +26,8 @@ spec:
       retry:
         maxAttempts: 2
         backoffSeconds: 30
+      expectedOutputs:
+        - pull-request
       next: run-tests
     - name: run-tests
       type: deterministic
