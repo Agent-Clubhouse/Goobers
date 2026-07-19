@@ -59,6 +59,22 @@ func newTestDelegateScheduler(t *testing.T, entries []localscheduler.WorkflowEnt
 // sweepPendingTriggers, dispatched through the given Scheduler, and its
 // response is readable via pollTriggerResponse — the same round trip
 // runDelegatedTrigger/runUpContext drive in the real CLI.
+// testResponseWait bounds how long a test waits for a trigger response that
+// a sweep has ALREADY been asked to produce. It is a failsafe against a
+// genuinely stuck writer, never a timing assertion.
+//
+// pollTriggerResponse checks the response file before it ever sleeps and
+// returns the instant it lands, so a generous bound costs nothing on the
+// happy path — while a tight one turns ordinary CI load into a red build.
+// TestSweepFailsFastOnNonTransientRefusal flaked exactly that way: a
+// one-second bound reported "timed out waiting for the live daemon" instead
+// of the run-conditions rejection it was actually asserting.
+//
+// The single test that is genuinely ABOUT the timeout
+// (TestPollTriggerResponseTimesOutWithNoSweeper) keeps its own short,
+// deliberate bound and must not use this.
+const testResponseWait = 30 * time.Second
+
 func TestSweepDispatchesPendingRequest(t *testing.T) {
 	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
 	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
@@ -78,7 +94,7 @@ func TestSweepDispatchesPendingRequest(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	runID, err := pollTriggerResponse(ctx, schedulerDir, requestID, time.Second)
+	runID, err := pollTriggerResponse(ctx, schedulerDir, requestID, testResponseWait)
 	if err != nil {
 		t.Fatalf("pollTriggerResponse: %v", err)
 	}
@@ -164,7 +180,7 @@ func TestSweepRefusesStaleRequestAndJournalsNote(t *testing.T) {
 	if len(requests) != 0 {
 		t.Fatalf("stale request was not consumed: %v", requests)
 	}
-	_, err = pollTriggerResponse(context.Background(), schedulerDir, requestID, time.Second)
+	_, err = pollTriggerResponse(context.Background(), schedulerDir, requestID, testResponseWait)
 	if err == nil || !strings.Contains(err.Error(), "stale trigger request") || !strings.Contains(err.Error(), "refusing to dispatch") {
 		t.Fatalf("pollTriggerResponse error = %v, want a stale-request refusal", err)
 	}
@@ -231,7 +247,7 @@ func TestSweepUnknownWorkflowRespondsWithError(t *testing.T) {
 		t.Fatalf("sweepPendingTriggers: %v", err)
 	}
 
-	_, err = pollTriggerResponse(context.Background(), schedulerDir, requestID, time.Second)
+	_, err = pollTriggerResponse(context.Background(), schedulerDir, requestID, testResponseWait)
 	if err == nil {
 		t.Fatal("expected an unknown-workflow error")
 	}
@@ -314,7 +330,7 @@ func TestRunUpSweepsStaleDelegationAtStartup(t *testing.T) {
 		t.Fatal("timed out waiting for runUpContext to report daemon readiness")
 	}
 
-	_, err := pollTriggerResponse(context.Background(), l.SchedulerDir(), requestID, time.Second)
+	_, err := pollTriggerResponse(context.Background(), l.SchedulerDir(), requestID, testResponseWait)
 	if err == nil || !strings.Contains(err.Error(), "stale trigger request") {
 		t.Fatalf("startup refusal error = %v, want stale trigger request", err)
 	}
@@ -564,7 +580,7 @@ func TestPollTriggerResponseToleratesTornWrite(t *testing.T) {
 	var gotID string
 	var gotErr error
 	go func() {
-		gotID, gotErr = pollTriggerResponse(context.Background(), schedulerDir, requestID, 5*time.Second)
+		gotID, gotErr = pollTriggerResponse(context.Background(), schedulerDir, requestID, testResponseWait)
 		close(done)
 	}()
 
@@ -650,7 +666,7 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
 		t.Fatalf("occupying sweepPendingTriggers: %v", err)
 	}
-	if _, err := pollTriggerResponse(context.Background(), schedulerDir, occupyID, 2*time.Second); err != nil {
+	if _, err := pollTriggerResponse(context.Background(), schedulerDir, occupyID, testResponseWait); err != nil {
 		t.Fatalf("occupying pollTriggerResponse: %v", err)
 	}
 	select {
@@ -692,7 +708,7 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	runID, err := pollTriggerResponse(context.Background(), schedulerDir, contendedID, 2*time.Second)
+	runID, err := pollTriggerResponse(context.Background(), schedulerDir, contendedID, testResponseWait)
 	if err != nil {
 		t.Fatalf("requeued pollTriggerResponse: %v", err)
 	}
@@ -721,7 +737,7 @@ func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
 	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
 		t.Fatalf("first sweepPendingTriggers: %v", err)
 	}
-	if _, err := pollTriggerResponse(context.Background(), schedulerDir, firstID, 2*time.Second); err != nil {
+	if _, err := pollTriggerResponse(context.Background(), schedulerDir, firstID, testResponseWait); err != nil {
 		t.Fatalf("first pollTriggerResponse: %v", err)
 	}
 
@@ -732,7 +748,7 @@ func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
 	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
 		t.Fatalf("second sweepPendingTriggers: %v", err)
 	}
-	_, err = pollTriggerResponse(context.Background(), schedulerDir, secondID, time.Second)
+	_, err = pollTriggerResponse(context.Background(), schedulerDir, secondID, testResponseWait)
 	if err == nil {
 		t.Fatal("expected the budget refusal to be reported, not requeued")
 	}
