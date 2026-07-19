@@ -845,38 +845,177 @@ summary:focus-visible {
   font-size: 9px;
 }
 
-.warning-strip {
-  align-items: center;
-  border-top: 1px solid var(--line);
+.configuration-warning-section-workflow {
+  margin: 0 0 34px;
+}
+
+.configuration-warning-heading {
+  align-items: start;
+}
+
+.configuration-warning-heading > div:first-child {
+  max-width: 680px;
+}
+
+.configuration-warning-heading p:last-child {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 5px 0 0;
+}
+
+.configuration-warning-actions {
+  align-items: end;
   display: grid;
-  gap: 12px;
-  grid-template-columns: auto 1fr auto;
-  margin-top: 44px;
-  padding: 15px 3px;
+  gap: 6px;
+  justify-items: end;
+}
+
+.configuration-warning-groups {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.configuration-warning-group + .configuration-warning-group {
+  border-top: 1px solid var(--line-strong);
+}
+
+.configuration-warning-group > header {
+  align-items: baseline;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 9px;
+  padding: 9px 12px;
+}
+
+.configuration-warning-group > header strong {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.configuration-warning-group > header code {
+  color: var(--muted-strong);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.configuration-warning-list {
+  background: var(--panel);
+}
+
+.configuration-warning {
+  align-items: start;
+  display: grid;
+  gap: 10px 14px;
+  grid-template-columns: 100px minmax(180px, 1fr) minmax(260px, 1.25fr) auto;
+  padding: 13px 12px;
+}
+
+.configuration-warning + .configuration-warning {
+  border-top: 1px solid var(--line);
+}
+
+.configuration-warning p {
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 1px 0 0;
+}
+
+.configuration-warning-identity {
+  align-items: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .warning-code {
   background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 38%, transparent);
   border-radius: 5px;
-  color: var(--warning);
+  color: var(--warning-ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 9px;
   font-weight: 700;
   padding: 4px 6px;
 }
 
-.warning-strip > span:nth-child(2) {
+.warning-severity {
+  color: var(--warning);
+  font-size: 9px;
+  font-weight: 700;
+  padding: 4px 0;
+  text-transform: lowercase;
+}
+
+.configuration-warning-remediation {
+  color: var(--muted);
+}
+
+.configuration-warning-remediation strong {
+  color: var(--muted-strong);
+  display: block;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+}
+
+.configuration-warning-remediation code {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.configuration-warning-dismiss {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 5px 8px;
+}
+
+.configuration-warning-dismiss:hover {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.configuration-warning-empty,
+.configuration-warning-error,
+.configuration-warning-loading {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 15px;
+}
+
+.configuration-warning-empty,
+.configuration-warning-error > span {
   display: grid;
   gap: 3px;
 }
 
-.warning-strip strong {
-  font-size: 11px;
+.configuration-warning-empty strong,
+.configuration-warning-error strong {
+  color: var(--ink);
 }
 
-.warning-strip small {
+.configuration-warning-error {
+  align-items: center;
+  border-color: var(--danger);
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.configuration-warning-error small {
   color: var(--muted);
-  font-size: 10px;
 }
 
 .filter-bar {
@@ -2164,6 +2303,28 @@ summary:focus-visible {
   .detail-meta,
   .run-meta {
     flex-wrap: wrap;
+  }
+
+  .configuration-warning-heading {
+    align-items: start;
+    display: grid;
+    gap: 12px;
+  }
+
+  .configuration-warning-actions {
+    justify-items: start;
+  }
+
+  .configuration-warning {
+    grid-template-columns: 1fr auto;
+  }
+
+  .configuration-warning > p {
+    grid-column: 1 / -1;
+  }
+
+  .configuration-warning-remediation {
+    grid-row: 3;
   }
 
   .data-header {

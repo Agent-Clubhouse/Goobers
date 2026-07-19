@@ -21,6 +21,7 @@
   --active: #256e85;
   --active-soft: #e4f2f5;
   --warning: #9a6700;
+  --warning-ink: #805500;
   --warning-soft: #fff2cd;
   --danger: #b03f43;
   --danger-soft: #fbe9e8;
@@ -48,6 +49,7 @@
   --active: #70bfd1;
   --active-soft: #17343b;
   --warning: #e5b95c;
+  --warning-ink: #f0c76d;
   --warning-soft: #3b3019;
   --danger: #ef8f91;
   --danger-soft: #402426;

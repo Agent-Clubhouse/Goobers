@@ -1,4 +1,6 @@
 import { useState } from "react";
+import type { ConfigurationWarningsProps } from "../components/ConfigurationWarnings";
+import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
 import { runs, type Workflow, type WorkflowStage } from "../prototypeData";
 import type { Navigate } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
@@ -32,9 +34,11 @@ function StageDefinition({ stage }: { stage: WorkflowStage }) {
 }
 
 export function WorkflowPage({
+  configurationWarnings,
   workflow,
   navigate,
 }: {
+  configurationWarnings: Omit<ConfigurationWarningsProps, "context">;
   workflow: Workflow;
   navigate: Navigate;
 }) {
@@ -73,6 +77,8 @@ export function WorkflowPage({
           </div>
         </dl>
       </header>
+
+      <ConfigurationWarnings context="workflow" {...configurationWarnings} />
 
       <section className="graph-layout">
         <GraphFrame action={<span className="graph-legend">Select a stage to inspect it</span>}>

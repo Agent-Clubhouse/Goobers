@@ -1,4 +1,6 @@
 import type { DaemonClient, RunSummary, WorkflowSummary } from "../api/types";
+import type { ConfigurationWarningsProps } from "../components/ConfigurationWarnings";
+import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import {
   groupOperationalRuns,
@@ -10,7 +12,13 @@ import { DataList, DataRow } from "../ui/DataList";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
 
-export function OverviewPage({ client }: { client: DaemonClient }) {
+export function OverviewPage({
+  client,
+  configurationWarnings,
+}: {
+  client: DaemonClient;
+  configurationWarnings: Omit<ConfigurationWarningsProps, "context">;
+}) {
   const query = useOperationalSnapshot(client);
 
   if (query.state.status === "loading") {
@@ -23,10 +31,16 @@ export function OverviewPage({ client }: { client: DaemonClient }) {
     return null;
   }
 
-  return <Overview snapshot={query.state.data} />;
+  return <Overview configurationWarnings={configurationWarnings} snapshot={query.state.data} />;
 }
 
-function Overview({ snapshot }: { snapshot: OperationalSnapshot }) {
+function Overview({
+  configurationWarnings,
+  snapshot,
+}: {
+  configurationWarnings: Omit<ConfigurationWarningsProps, "context">;
+  snapshot: OperationalSnapshot;
+}) {
   const groups = groupOperationalRuns(snapshot.runs);
   const emptyInstance = snapshot.inventories.length === 0;
 
@@ -124,15 +138,7 @@ function Overview({ snapshot }: { snapshot: OperationalSnapshot }) {
         </>
       )}
 
-      {snapshot.instance.warnings.map((warning) => (
-        <section className="warning-strip" key={`${warning.code}-${warning.scope}`}>
-          <span className="warning-code">{warning.code}</span>
-          <span>
-            <strong>{warning.scope}</strong>
-            <small>{warning.explanation}</small>
-          </span>
-        </section>
-      ))}
+      <ConfigurationWarnings context="instance" {...configurationWarnings} />
     </>
   );
 }
