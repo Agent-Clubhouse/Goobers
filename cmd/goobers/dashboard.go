@@ -186,8 +186,15 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 	dashboardURL := "http://127.0.0.1:" + portText + "/"
 	pln(stdout, dashboardURL)
 	if !*noOpen {
-		if err := launchDashboardBrowser(dashboardURL); err != nil {
+		if err := launchDashboardBrowser(ctx, dashboardURL); err != nil {
 			shutdownErr := stopDashboard(server, cancelRequests, api)
+			if ctx.Err() != nil {
+				if shutdownErr != nil {
+					pf(stderr, "error: shut down dashboard: %v\n", shutdownErr)
+					return 1
+				}
+				return 0
+			}
 			pf(stderr, "error: open dashboard in browser: %v\n", errors.Join(err, shutdownErr))
 			return 1
 		}
@@ -475,8 +482,8 @@ func stopDashboard(server *http.Server, cancelRequests context.CancelFunc, api d
 	return errors.Join(server.Shutdown(ctx), apiErr)
 }
 
-func openDashboardBrowser(address string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func openDashboardBrowser(ctx context.Context, address string) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	var command *exec.Cmd
 	switch runtime.GOOS {
@@ -490,8 +497,11 @@ func openDashboardBrowser(address string) error {
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
 	if err := command.Run(); err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
 			return errors.New("browser launcher timed out")
+		case errors.Is(ctx.Err(), context.Canceled):
+			return ctx.Err()
 		}
 		return err
 	}

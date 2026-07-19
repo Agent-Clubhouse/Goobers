@@ -237,6 +237,93 @@ func TestDashboardCancellationWhileAttachingExitsCleanlyBeforeURL(t *testing.T) 
 	}
 }
 
+func TestDashboardCancellationDuringBrowserLaunchLeavesLiveDaemonRunning(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	daemon := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != httpapi.HealthPath {
+			http.NotFound(response, request)
+			return
+		}
+		if err := json.NewEncoder(response).Encode(readservice.Health{
+			APIVersion:    readservice.APIVersion,
+			SchemaVersion: readservice.SchemaVersion,
+			Ready:         true,
+		}); err != nil {
+			t.Errorf("encode health response: %v", err)
+		}
+	}))
+	defer daemon.Close()
+	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
+	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	launcherStarted := make(chan string, 1)
+	originalLauncher := launchDashboardBrowser
+	launchDashboardBrowser = func(ctx context.Context, address string) error {
+		launcherStarted <- address
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	defer func() { launchDashboardBrowser = originalLauncher }()
+
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- runDashboardContext(ctx, []string{"--port=auto", root}, &stdout, &stderr)
+	}()
+
+	var dashboardAddress string
+	select {
+	case dashboardAddress = <-launcherStarted:
+	case code := <-done:
+		t.Fatalf("dashboard exited before browser launch: code = %d, stderr = %q", code, stderr.String())
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for browser launch")
+	}
+	cancel()
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("dashboard exit code = %d, stderr = %q", code, stderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("dashboard did not stop after cancellation")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("dashboard reported cancellation as an error: %q", stderr.String())
+	}
+	if stdout.String() != dashboardAddress+"\n" {
+		t.Fatalf("dashboard output = %q, want %q", stdout.String(), dashboardAddress+"\n")
+	}
+	client := &http.Client{Timeout: time.Second}
+	if response, err := client.Get(dashboardAddress); err == nil {
+		_ = response.Body.Close()
+		t.Fatal("dashboard server remains available after cancellation")
+	}
+	running, _, err := inspectDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !running {
+		t.Fatal("dashboard cancellation disturbed the live daemon lock")
+	}
+	response, err := client.Get(daemon.URL + httpapi.HealthPath)
+	if err != nil {
+		t.Fatalf("live daemon stopped after dashboard cancellation: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("live daemon health status = %d", response.StatusCode)
+	}
+}
+
 func TestDashboardAttachesToLiveDaemonWithEphemeralAPIAddress(t *testing.T) {
 	root := initDeterministicDemo(t)
 	setAPIListenAddress(t, root, "127.0.0.1:0")
@@ -376,7 +463,7 @@ func TestDashboardNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 	done := make(chan int, 1)
 	originalLauncher := launchDashboardBrowser
 	browserCalled := false
-	launchDashboardBrowser = func(string) error {
+	launchDashboardBrowser = func(context.Context, string) error {
 		browserCalled = true
 		return nil
 	}
