@@ -342,15 +342,46 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	// Without this, diffDigest would diff against whatever this fresh
 	// worktree defaulted to (the run's own untouched base checkout), not
 	// the PR's actual just-pushed content.
-	if _, err := checkoutExistingBranch(".", current.Head, pushToken); err != nil {
-		pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selectedNumber, current.Head, err)
-		return 1
-	}
-
-	digest, err := diffDigest(".", current.BaseSHA)
-	if err != nil {
-		pf(stderr, "error: compute diff digest for PR #%d: %v\n", selectedNumber, err)
-		return 1
+	// ...UNLESS this worktree is already on that branch, which since #392 is
+	// the normal case: gather-pr-context rebinds the run's workspace branch to
+	// the PR's head, so the runner provisions this stage on it directly.
+	//
+	// Re-checking-out anyway would be actively destructive rather than merely
+	// redundant. checkoutExistingBranch is `git checkout -B <branch>
+	// FETCH_HEAD` — a hard reset to the REMOTE tip — and on the
+	// substantive-findings path rebase-pr deliberately does NOT push its
+	// rebase (rebasepr.go's `!conflict && !hasSubstantiveFindings` guard), so
+	// that rebase exists only as a local commit on this very branch. Resetting
+	// here would discard it, hand `implement` an un-rebased tree, and leave the
+	// PR still behind its base after a successful remediation — looping every
+	// such PR until the D4 budget escalated it.
+	//
+	// A forced escalation (--escalate) skips all of it: the caller already has
+	// a terminal reason, so no digest is consulted to reach the decision. Doing
+	// the fetch anyway would let a transient git/network failure exit non-zero
+	// BEFORE the labelling below — leaving goobers:merge-escalated unapplied
+	// and goobers:needs-remediation still set, so the PR is re-selected and the
+	// reviewer re-rejects the same approach, which is exactly what §4 D2's
+	// escalate-immediately rule exists to prevent.
+	forced := *escalateReason != ""
+	var digest string
+	if !forced {
+		onBranch, err := currentBranchIs(".", current.Head)
+		if err != nil {
+			pf(stderr, "error: resolve current branch for PR #%d: %v\n", selectedNumber, err)
+			return 1
+		}
+		if !onBranch {
+			if _, err := checkoutExistingBranch(".", current.Head, pushToken); err != nil {
+				pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selectedNumber, current.Head, err)
+				return 1
+			}
+		}
+		digest, err = diffDigest(".", current.BaseSHA)
+		if err != nil {
+			pf(stderr, "error: compute diff digest for PR #%d: %v\n", selectedNumber, err)
+			return 1
+		}
 	}
 
 	rawComments, err := provider.ListComments(ctx, repo, strconv.Itoa(selectedNumber))
@@ -370,7 +401,6 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		*budget = DefaultRemediationBudget
 	}
 	exceeded := cycles > *budget
-	forced := *escalateReason != ""
 
 	var state remediationState
 	if exceeded || stalled || forced {
@@ -466,6 +496,23 @@ func writeCheckpointResult(stderr io.Writer, continueRemediation bool, selectedN
 		return err
 	}
 	return nil
+}
+
+// currentBranchIs reports whether dir's checked-out branch is already branch.
+// A detached HEAD (rev-parse prints "HEAD") is never a match, so the caller
+// falls back to an explicit checkout.
+func currentBranchIs(dir, branch string) (bool, error) {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return false, fmt.Errorf("git rev-parse --abbrev-ref HEAD: %w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+		}
+		return false, fmt.Errorf("git rev-parse --abbrev-ref HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)) == branch, nil
 }
 
 // remediationStalled reports whether this cycle is a genuine no-progress

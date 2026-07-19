@@ -508,36 +508,65 @@ type walkSeed struct {
 // recent binding (lastWorkspaceBranch) into walkSeed rather than silently
 // reverting a resumed run to the default branch mid-chain.
 //
-// A rebound branch must already exist on the remote, and must live in the
-// run-branch namespace the worktree manager protects from its prune-fetch
-// (internal/worktree/manager.go's runBranchNamespace) — otherwise the next
-// stage's WorkingCopy refresh would delete it. Both hold for the goober-
-// authored PR branches pr-remediation selects (providers.BranchName's own
-// "goobers/" prefix). Emitting an empty value is a no-op, not a reset.
+// A rebound branch must already exist (worktree.CreateOptions.RequireExistingBranch
+// below turns a missing one into a loud failure rather than a silent empty branch
+// cut from base), and must live in the run-branch namespace the worktree manager
+// protects from its prune-fetch (internal/worktree/manager.go's
+// runBranchNamespace) — otherwise the next stage's WorkingCopy refresh would
+// delete it. Emitting an empty value is a no-op, not a reset.
+//
+// ONLY A DETERMINISTIC STAGE MAY REBIND. An agentic stage's Outputs are
+// authored by the model itself (internal/harness's result-shape hint invites a
+// free-form `"outputs": {...}` map and internal/harness.Executor passes it
+// through verbatim), so honoring this key from one would let any goober, in any
+// workflow, silently move every subsequent stage — including `push-branch` —
+// onto a branch of its choosing. `implementation` needs no diff at all to be
+// affected by that; it just needs an implementer that decides to report a
+// branch name. Rebinding is a runner control-plane decision, so it is sourced
+// only from stages whose output the runner itself produced.
 const WorkspaceBranchOutput = "workspaceBranch"
 
-// rebindWorkspaceBranch reports the branch a finished stage's result rebinds
-// the run's workspace to, or "" if it rebinds nothing. Only a non-empty string
-// output rebinds — a stage that never emits the key leaves the current binding
-// (default or already-rebound) untouched.
-func rebindWorkspaceBranch(result apiv1.ResultEnvelope) string {
+// runBranchNamespacePrefix is the "goobers/" prefix providers.BranchName
+// produces, derived from it rather than restated so the two cannot drift
+// (internal/localscheduler/openprcount.go derives it the same way).
+var runBranchNamespacePrefix = strings.SplitN(providers.BranchName("x", "x"), "/", 2)[0] + "/"
+
+// rebindWorkspaceBranch reports the branch a finished task's result rebinds the
+// run's workspace to, or "" if it rebinds nothing. Fails closed on every
+// doubtful case: a non-deterministic producer, a non-string value, or a branch
+// outside the run-branch namespace are all ignored rather than honored.
+func rebindWorkspaceBranch(t apiv1.Task, result apiv1.ResultEnvelope) string {
+	if t.Type != apiv1.TaskDeterministic {
+		return ""
+	}
 	return workspaceBranchFrom(result.Outputs)
 }
 
 // workspaceBranchFrom reads WorkspaceBranchOutput out of a stage's scalar
 // Outputs. Shared with resume.go, whose journaled outputs are the same values
 // under map[string]any rather than map[string]interface{} (identical types,
-// different spelling). Non-string scalars stringify like every other
-// output-reading check does (internal/gate's stringField).
+// different spelling).
+//
+// Deliberately does NOT stringify non-strings the way internal/gate's
+// stringField does: a branch name is not a value to coerce, and
+// `"workspaceBranch": false` becoming a branch literally named "false" is a
+// worse outcome than ignoring a malformed emission. Values outside the
+// run-branch namespace are ignored for the same reason — "main" is the
+// dangerous case, and nothing legitimate needs it.
 func workspaceBranchFrom(outputs map[string]interface{}) string {
 	v, ok := outputs[WorkspaceBranchOutput]
-	if !ok || v == nil {
+	if !ok {
 		return ""
 	}
-	if s, ok := v.(string); ok {
-		return strings.TrimSpace(s)
+	s, ok := v.(string)
+	if !ok {
+		return ""
 	}
-	return strings.TrimSpace(fmt.Sprintf("%v", v))
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, runBranchNamespacePrefix) {
+		return ""
+	}
+	return s
 }
 
 // walk advances the machine from startState to a terminal state (or a
@@ -628,7 +657,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			// gets the previous binding (gather-pr-context is provisioned on
 			// the run's own branch and checks the PR's branch out for itself;
 			// every stage after it is provisioned on the PR's branch directly).
-			if b := rebindWorkspaceBranch(result); b != "" {
+			if b := rebindWorkspaceBranch(t, result); b != "" {
 				workspaceBranch = b
 			}
 
@@ -2039,6 +2068,10 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			OwnerRunID: in.RunID,
 			BaseRef:    baseRef,
 			Branch:     branch,
+			// A rebound branch names work that already exists; creating it
+			// from base instead would hand the stage a pristine checkout
+			// wearing the PR's branch name. Fail loudly instead.
+			RequireExistingBranch: workspaceBranch != "",
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create worktree: %w", err)

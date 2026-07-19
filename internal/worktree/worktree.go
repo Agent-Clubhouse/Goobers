@@ -42,6 +42,24 @@ type CreateOptions struct {
 	// isolated in a fresh worktree (#133). If empty, the worktree is a detached
 	// checkout of BaseRef.
 	Branch string
+	// RequireExistingBranch refuses to CREATE Branch, failing instead if it is
+	// not already in the managed working copy (issue #392).
+	//
+	// The create-if-absent default is correct-by-construction for a run's own
+	// branch: the first stage is supposed to cut it from BaseRef. It is
+	// actively dangerous for a branch the caller believes already exists —
+	// a rebound workspace branch naming an existing PR. There, silently
+	// creating an empty branch off BaseRef hands the stage a pristine base
+	// checkout that merely carries the PR's branch NAME, which downstream
+	// looks exactly like "the PR legitimately contains nothing": tests pass on
+	// it, and a force-push then replaces the PR's real content with base.
+	//
+	// The failure is realistic rather than theoretical — WorkingCopy's fetch
+	// deliberately excludes the run-branch namespace from its refspec, so the
+	// only reason a PR's branch is in the mirror at all is that an earlier
+	// stage in this same run fetched it. Anything that clears the mirror
+	// between stages reaches this path.
+	RequireExistingBranch bool
 }
 
 // Worktree is a disposable, isolated working copy for one run, branched off
@@ -144,6 +162,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		// branch in two live worktrees, which holds here because stages run
 		// sequentially and each stage's worktree is removed before the next.
 		args = append(args, path, opts.Branch)
+	case opts.RequireExistingBranch:
+		// Never silently substitute a fresh branch off BaseRef for a branch
+		// the caller asserted already exists — see RequireExistingBranch.
+		return nil, fmt.Errorf("worktree: branch %q does not exist in the working copy for run %s (refusing to create it)", opts.Branch, opts.RunID)
 	default:
 		// First stage of the run: create the run branch off BaseRef.
 		args = append(args, "-b", opts.Branch, path, opts.BaseRef)

@@ -200,11 +200,19 @@ spec:
       retry:
         maxAttempts: 2
         backoffSeconds: 15
-      # Same bounded-think-time + salvage contract as implementation's
-      # implement stage (#724): a session that times out with a viable
-      # committed diff advances to review + local-ci rather than discarding
-      # the run's work.
-      onTimeout: salvage
+      # Deliberately NO onTimeout: salvage, unlike implementation's otherwise
+      # identical implement stage (#724). Salvage decides "was anything
+      # produced?" from `git diff <repoRef.branch>...HEAD` being non-empty,
+      # which holds on a run branch cut fresh from main but NOT here: this
+      # worktree is on the PR's own branch, so that diff is the PR's entire
+      # pre-existing content and is never empty. A session that timed out
+      # having committed nothing would salvage as success, be reviewed against
+      # the PR's original unfixed diff, and pass local-ci unchanged. Timing out
+      # here therefore takes the ordinary retry/fail path; nothing is lost,
+      # because the commits live on the PR's branch and the next cycle
+      # re-selects it. (push-remediated independently refuses to publish a
+      # branch that never moved, so this is defense in depth, not the only
+      # guard.)
       next: review
 
     # `make ci`-equivalent, on the PR's branch carrying the rework.

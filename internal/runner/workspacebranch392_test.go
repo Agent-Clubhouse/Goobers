@@ -390,7 +390,7 @@ func TestLastWorkspaceBranchRecoversTheNewestBinding(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := lastWorkspaceBranch(tt.events); got != tt.want {
+			if got := lastWorkspaceBranch(tt.events, rebindFixtureMachine(t)); got != tt.want {
 				t.Errorf("lastWorkspaceBranch = %q, want %q", got, tt.want)
 			}
 		})
@@ -480,5 +480,128 @@ func TestWorkspaceBranchSurvivesCrashAndResume(t *testing.T) {
 		if !got.hasMarker {
 			t.Errorf("resumed %s could not see %s — the resumed run reverted to a branch off main", stage, rebindMarkerFile)
 		}
+	}
+}
+
+// TestWorkspaceBranchRejectsUntrustedRebindings is the guard on WHO may rebind.
+//
+// An agentic stage's Outputs are authored by the model (internal/harness's
+// result-shape hint invites a free-form "outputs" map and passes it through
+// verbatim), so honoring this key from one would let any goober in ANY
+// workflow — `implementation` above all — move every later stage onto a branch
+// of its choosing. `push-branch` pushes whatever branch its worktree is on, so
+// the blast radius is the run's real work never being published, or with
+// "main", a push straight at the trunk.
+//
+// Each case here would be a silent hijack if the corresponding check were
+// dropped, so each asserts the run still ends on the DEFAULT branch.
+func TestWorkspaceBranchRejectsUntrustedRebindings(t *testing.T) {
+	tests := []struct {
+		name    string
+		agentic bool
+		value   interface{}
+	}{
+		{name: "agentic stage may not rebind", agentic: true, value: rebindBranch},
+		{name: "branch outside the run namespace", value: "main"},
+		{name: "branch outside the run namespace, plausible", value: "refs/heads/main"},
+		{name: "non-string value is not coerced", value: false},
+		{name: "numeric value is not coerced", value: 42},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := apiv1.Task{Name: "select", Type: apiv1.TaskDeterministic}
+			if tt.agentic {
+				task = apiv1.Task{Name: "select", Type: apiv1.TaskAgentic, Goober: "implementer"}
+			}
+			got := rebindWorkspaceBranch(task, apiv1.ResultEnvelope{
+				Outputs: map[string]interface{}{WorkspaceBranchOutput: tt.value},
+			})
+			if got != "" {
+				t.Errorf("rebindWorkspaceBranch = %q, want \"\" — this emission must not be honored", got)
+			}
+		})
+	}
+
+	// The legitimate case still works, so the guards above are not vacuous.
+	got := rebindWorkspaceBranch(
+		apiv1.Task{Name: "gather-pr-context", Type: apiv1.TaskDeterministic},
+		apiv1.ResultEnvelope{Outputs: map[string]interface{}{WorkspaceBranchOutput: rebindBranch}},
+	)
+	if got != rebindBranch {
+		t.Errorf("rebindWorkspaceBranch = %q, want %q for a deterministic stage naming a run-namespace branch", got, rebindBranch)
+	}
+}
+
+// TestWorkspaceBranchRejectsUntrustedRebindingsOnResume closes the same hole on
+// the resume path. A stage.finished event records outputs but NOT the producing
+// task's type, so recovering the binding from the journal has to look the type
+// back up in the machine — otherwise an agentic stage's rebinding would be
+// ignored while running and silently honored after the first crash.
+func TestWorkspaceBranchRejectsUntrustedRebindingsOnResume(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "implementer", Goal: "implement", Next: workflow.TerminalComplete},
+		},
+	}
+	machine, err := workflow.Compile(
+		workflow.Definition{Name: "agentic-only", Version: 1, Spec: spec},
+		workflow.WithGoobers(map[string]apiv1.GooberSpec{
+			"implementer": {Workflows: []string{"agentic-only"}, Capabilities: []string{"repo:push", "agent:model"}},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	events := []journal.Event{{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+		Status:  string(apiv1.ResultSuccess),
+		Outputs: map[string]any{WorkspaceBranchOutput: rebindBranch},
+	}}
+	if got := lastWorkspaceBranch(events, machine); got != "" {
+		t.Errorf("lastWorkspaceBranch = %q, want \"\" — an agentic stage's rebinding must not be honored on resume either", got)
+	}
+
+	// A stage the machine does not know is ignored rather than trusted.
+	stray := []journal.Event{{
+		Type: journal.EventStageFinished, Stage: "does-not-exist",
+		Outputs: map[string]any{WorkspaceBranchOutput: rebindBranch},
+	}}
+	if got := lastWorkspaceBranch(stray, machine); got != "" {
+		t.Errorf("lastWorkspaceBranch = %q, want \"\" for an unknown stage", got)
+	}
+}
+
+// TestRebindingAMissingBranchFailsLoudly covers the silent-substitution hazard.
+// worktree.Create's default is to CREATE a branch it cannot find, which is
+// correct for a run's own branch and catastrophic for a rebound one: the stage
+// would get a pristine checkout off main wearing the PR's branch name, pass CI
+// on it, and a later force-push would replace the PR's real content with base.
+// The mirror only holds the PR's branch because an earlier stage fetched it —
+// WorkingCopy's refspec excludes that namespace — so this is reachable, not
+// theoretical.
+func TestRebindingAMissingBranchFailsLoudly(t *testing.T) {
+	runID := "rebind-missing"
+	r, _, _ := newRebindRunner(t, map[string]stubTaskResult{
+		runID + ":select": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
+			// In the run-branch namespace and well-formed, but no such branch
+			// exists on the remote.
+			WorkspaceBranchOutput: "goobers/implementation/never-existed",
+		}},
+		runID + ":rework": {status: apiv1.ResultSuccess},
+		runID + ":verify": {status: apiv1.ResultSuccess},
+	})
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: rebindFixtureMachine(t), Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil && res.Phase == journal.PhaseCompleted {
+		t.Fatal("run completed on a rebound branch that does not exist — the stage silently got a fresh branch off main")
 	}
 }

@@ -390,26 +390,6 @@ func TestPushRemediatedLosesGracefullyToAConcurrentPush(t *testing.T) {
 	}
 }
 
-// TestPushRemediatedWithoutClaimIsIdempotentNoOp covers resume: this stage
-// runs at the very end of the cycle, so a crash after it completed must not
-// fail the run when the stage re-runs. Same contract issue-close-out's
-// released-claim no-op established (#241).
-func TestPushRemediatedWithoutClaimIsIdempotentNoOp(t *testing.T) {
-	instanceRoot, _, _, _ := pushRemediatedFixture(t, true)
-	// Drop this run's claim, as a completed prior attempt would have.
-	if err := releaseClaimsForRun(layoutFor(instanceRoot), nil, "run-392-push"); err != nil {
-		t.Fatalf("release claim: %v", err)
-	}
-
-	code, stdout, stderr := runArgs(t, "push-remediated", instanceRoot)
-	if code != 0 {
-		t.Fatalf("code = %d, want 0 (idempotent no-op); stdout = %q, stderr = %q", code, stdout, stderr)
-	}
-	if !strings.Contains(stdout, "nothing to do") {
-		t.Errorf("stdout = %q, want an explicit no-op", stdout)
-	}
-}
-
 // TestClaimedPullRequestNumberIgnoresOtherRuns pins the recovery helper's
 // scoping: a stage must never pick up a PR another run holds. Getting this
 // wrong would force-push one run's rework onto a different run's PR.
@@ -435,4 +415,150 @@ func TestClaimedPullRequestNumberIgnoresOtherRuns(t *testing.T) {
 	if number != 77 {
 		t.Errorf("number = %d, want 77", number)
 	}
+}
+
+// TestRemediationCheckpointPreservesAnUnpushedRebase is the regression test for
+// the defect #392's own topology introduced.
+//
+// On the substantive-findings path rebase-pr rebases but deliberately does NOT
+// push (rebasepr.go's `!conflict && !hasSubstantiveFindings` guard), so the
+// rebase exists only as a local commit. remediation-checkpoint then runs
+// between rebase-pr and implement, and its re-checkout is `git checkout -B
+// <branch> FETCH_HEAD` — a hard reset to the REMOTE tip. Left unguarded that
+// silently discarded the rebase, handed implement an un-rebased tree, and left
+// the PR still behind base after a "successful" remediation, looping it until
+// the D4 budget escalated.
+func TestRemediationCheckpointPreservesAnUnpushedRebase(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, remediationPRBranch)
+
+	// Stand in for the worktree rebase-pr left behind: on the PR's branch,
+	// carrying a local commit that is NOT on the remote (as a local rebase is).
+	runGitT(t, ".", "fetch", "origin", "refs/heads/"+remediationPRBranch)
+	runGitT(t, ".", "checkout", "-B", remediationPRBranch, "FETCH_HEAD")
+	runGitT(t, ".", "config", "user.name", "rebase")
+	runGitT(t, ".", "config", "user.email", "rebase@example.com")
+	if err := os.WriteFile("rebased.txt", []byte("carried by the local rebase\n"), 0o644); err != nil {
+		t.Fatalf("write rebase marker: %v", err)
+	}
+	runGitT(t, ".", "add", "-A")
+	runGitT(t, ".", "commit", "-m", "local rebase, not pushed")
+	localTip := strings.TrimSpace(runGitOutputT(t, ".", "rev-parse", "HEAD"))
+	if localTip == headSHA {
+		t.Fatal("fixture did not actually advance the local branch")
+	}
+
+	st := &remediationCheckpointServerState{number: 77, headSHA: headSHA, baseSHA: baseSHA, labels: []string{needsRemediationLabel}}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	after := strings.TrimSpace(runGitOutputT(t, ".", "rev-parse", "HEAD"))
+	if after != localTip {
+		t.Fatalf("HEAD = %q after checkpoint, want the unpushed rebase %q preserved (reset to remote %q loses it)", after, localTip, headSHA)
+	}
+	if _, err := os.Stat("rebased.txt"); err != nil {
+		t.Errorf("the rebase's file is gone after checkpoint: %v", err)
+	}
+}
+
+// TestPushRemediatedRefusesToPublishAnUnchangedBranch covers the case where the
+// agentic chain produced nothing — an implement session that timed out or
+// no-op'd, then a reviewer that passed the PR's PRE-EXISTING diff (on a
+// re-entered branch that diff is never empty, so #415's empty-diff fast-fail
+// cannot fire). Pushing would be harmless, but clearing needs-remediation would
+// hand merge-review a PR it already rejected, unchanged, as if remediated.
+func TestPushRemediatedRefusesToPublishAnUnchangedBranch(t *testing.T) {
+	origin, headSHA, baseSHA := initPRBranchOrigin(t, remediationPRBranch)
+
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "run-392-noop", BaseRef: "main",
+		Branch: "goobers/pr-remediation/run-392-noop",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
+	// On the PR's branch, but with NO new commit — the no-op remediation.
+	if _, err := checkoutExistingBranch(wt.Path, remediationPRBranch, "test-token"); err != nil {
+		t.Fatalf("checkoutExistingBranch: %v", err)
+	}
+
+	comment, err := remediationStateComment(remediationState{
+		Cycles: 1, LastDiffDigest: "sha256:prior", HeadSHA: headSHA, BaseSHA: baseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels: []string{needsRemediationLabel}, comments: []string{comment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+
+	instanceRoot := initDemo(t)
+	prev := newGitHubProvider
+	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+	t.Setenv("GOOBERS_RUN_ID", "run-392-noop")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Chdir(wt.Path)
+	if _, err := claimPullRequest(instanceRoot, []providers.PullRequestSummary{{Number: 77}}, "run-392-noop", "pr-remediation", time.Hour); err != nil {
+		t.Fatalf("seed PR claim: %v", err)
+	}
+
+	code, stdout, stderr := runArgs(t, "push-remediated", instanceRoot)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 for a no-op remediation; stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	found := false
+	for _, l := range st.labels {
+		if l == needsRemediationLabel {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("labels = %v, want %s STILL set — an unremediated PR must not look remediated", st.labels, needsRemediationLabel)
+	}
+}
+
+// TestPushRemediatedFailsWhenItsClaimLeaseExpired pins the honest reporting of
+// the one way this stage can lose its PR. pr-remediation never releases the
+// claim mid-run, so an absent entry means `goobers up`'s RecoverExpired reaped
+// an expired lease — the rework is committed but unpublished. Reporting success
+// there (issue-close-out's no-op contract, which does not apply here) would
+// claim the work shipped when it was silently dropped.
+func TestPushRemediatedFailsWhenItsClaimLeaseExpired(t *testing.T) {
+	instanceRoot, st, _, _ := pushRemediatedFixture(t, true)
+	if err := releaseClaimsForRun(layoutFor(instanceRoot), nil, "run-392-push"); err != nil {
+		t.Fatalf("release claim: %v", err)
+	}
+
+	code, stdout, stderr := runArgs(t, "push-remediated", instanceRoot)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1; stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "lease expired") {
+		t.Errorf("stderr = %q, want it to name the expired lease", stderr)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, l := range st.labels {
+		if l == needsRemediationLabel {
+			return
+		}
+	}
+	t.Errorf("labels = %v, want %s still set so the PR is re-selected", st.labels, needsRemediationLabel)
 }

@@ -156,7 +156,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	seed := walkSeed{pointers: reconstructPointers(events)}
 	lastStage, lastResult, hasLast := lastFinishedSubject(events)
 	seed.lastStage, seed.lastResult = lastStage, lastResult
-	seed.workspaceBranch = lastWorkspaceBranch(events)
+	seed.workspaceBranch = lastWorkspaceBranch(events, in.Machine)
 
 	// state.json's MachineState is a checked hint, not a requirement
 	// (#242): read it when available, but a missing/corrupt checkpoint no
@@ -353,13 +353,26 @@ func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
 // rebase and hand the reviewer somebody else's diff. Returns "" when no stage
 // ever rebound (every workflow but pr-remediation today), which is exactly the
 // zero value a fresh walk starts from.
-func lastWorkspaceBranch(events []journal.Event) string {
+//
+// machine is consulted to apply the SAME deterministic-producer restriction the
+// live path enforces (rebindWorkspaceBranch). A stage.finished event records
+// outputs but not the producing task's type, so without the lookup an agentic
+// stage's model-authored `workspaceBranch` would be ignored while running and
+// then silently honored on resume — the security property would hold only until
+// the first crash. An event naming a stage the machine does not have (a
+// definition edit is refused upstream by the WF-016 digest pin, so this is
+// vestigial) is ignored for the same fail-closed reason.
+func lastWorkspaceBranch(events []journal.Event, machine *workflow.Machine) string {
 	for i := len(events) - 1; i >= 0; i-- {
 		e := events[i]
 		if e.Type != journal.EventStageFinished || isInterruptedAttemptMarker(e) {
 			continue
 		}
-		if b := workspaceBranchFrom(e.Outputs); b != "" {
+		t, ok := machine.Task(e.Stage)
+		if !ok {
+			continue
+		}
+		if b := rebindWorkspaceBranch(t, apiv1.ResultEnvelope{Outputs: e.Outputs}); b != "" {
 			return b
 		}
 	}

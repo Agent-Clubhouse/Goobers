@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os/exec"
 	"strconv"
+	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
@@ -95,12 +98,22 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if !ok {
-		// Same resume-idempotency contract as issue-close-out's released-claim
-		// no-op (#241): no claim means a prior attempt of this stage already
-		// completed and released it. Re-running must not fail the run at its
-		// final stage after all the real work succeeded.
-		pln(stdout, "run holds no PR claim; a prior attempt already published this remediation — nothing to do")
-		return 0
+		// Deliberately NOT issue-close-out's released-claim no-op (#241). That
+		// inference is sound there because close-out releases the claim itself
+		// as its last step, so an absent entry really does mean "already done".
+		// pr-remediation never releases mid-run — the claim is dropped only by
+		// finalizeTerminalRun (which cannot precede this stage in a live run)
+		// or by `goobers up`'s RecoverExpired sweep reaping an expired lease.
+		// So reaching here means the lease expired mid-cycle, and the rework is
+		// sitting committed-but-unpushed with the label still set.
+		//
+		// There is no way to tell which PR to publish to without the claim, so
+		// this fails rather than reporting success: a green run whose message
+		// says the work was published, when it was silently dropped, is the
+		// worse outcome. The next cycle re-selects the PR and redoes the work.
+		pf(stderr, "error: run holds no PR claim — its lease expired mid-cycle, so the remediated branch cannot be published; "+
+			"the PR keeps %s and will be re-selected next cycle\n", needsRemediationLabel)
+		return 1
 	}
 
 	ctx := context.Background()
@@ -140,6 +153,26 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// Nothing to publish is NOT success. If the branch still sits exactly where
+	// it did before this cycle's agentic chain ran, the chain produced no
+	// commit — an `implement` session that timed out or no-op'd, then a
+	// reviewer that passed the PR's pre-existing diff (which, on a re-entered
+	// branch, is never the empty diff #415's fast-fail keys on). Pushing would
+	// be a no-op, but CLEARING the label would hand merge-review a PR it
+	// already rejected, unchanged, as though it had been remediated. Leave the
+	// label on and let the next cycle try again.
+	localHead, err := resolveHead(".")
+	if err != nil {
+		pf(stderr, "error: resolve local head for PR #%d: %v\n", selectedNumber, err)
+		return 1
+	}
+	if localHead == state.HeadSHA {
+		pf(stderr, "error: PR #%d's branch is unchanged from its pre-remediation head %s — "+
+			"the remediation produced no commit, so there is nothing to publish and %s stays set\n",
+			selectedNumber, state.HeadSHA, needsRemediationLabel)
+		return 1
+	}
+
 	if err := forcePushWithLease(".", current.Head, state.HeadSHA, pushToken); err != nil {
 		pf(stderr, "error: force-push remediated PR #%d branch %q: %v\n", selectedNumber, current.Head, err)
 		return 1
@@ -153,4 +186,19 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "PR #%d: pushed remediated branch %s and cleared %s\n", selectedNumber, current.Head, needsRemediationLabel)
 	return 0
+}
+
+// resolveHead returns dir's current HEAD commit SHA.
+func resolveHead(dir string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return "", fmt.Errorf("git rev-parse HEAD: %w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+		}
+		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
