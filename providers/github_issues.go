@@ -206,6 +206,22 @@ func (p *GitHubProvider) UpdateComment(ctx context.Context, repo RepositoryRef, 
 	return p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, nil)
 }
 
+// DeleteComment removes an issue/PR comment. A missing comment is already in
+// the desired state, so deletion is idempotent for concurrent reconcilers.
+func (p *GitHubProvider) DeleteComment(ctx context.Context, repo RepositoryRef, commentID string) error {
+	if err := requireOwnerRepo(repo); err != nil {
+		return err
+	}
+	if commentID == "" {
+		return fmt.Errorf("comment id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
+	if err != nil {
+		return err
+	}
+	return p.doStatus(ctx, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound})
+}
+
 // allIssueComments fetches every comment on an issue, following pagination
 // (#139). Both ListComments and the claim protocol's claimWinner read the full
 // comment set through here: a claim breadcrumb landing on page 2+ used to be

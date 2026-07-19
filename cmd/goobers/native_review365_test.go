@@ -102,7 +102,11 @@ func TestNativeApprovalIsDismissedAndNewHeadIsReviewed(t *testing.T) {
 		reviews[1].commitSHA != "head-two" {
 		t.Fatalf("reviews = %+v, want dismissed head-one approval followed by approved head-two review", reviews)
 	}
-	if len(comments) != 2 {
-		t.Fatalf("verdict comments = %v, want one for each reviewed head", comments)
+	if len(comments) != 1 {
+		t.Fatalf("verdict comments = %v, want one sticky status comment", comments)
+	}
+	posted, ok := parseVerdictComment(comments[0])
+	if !ok || posted.HeadSHA != "head-two" || posted.Summary != "new head ready" {
+		t.Fatalf("sticky verdict = %+v, ok = %v, want updated head-two verdict", posted, ok)
 	}
 }

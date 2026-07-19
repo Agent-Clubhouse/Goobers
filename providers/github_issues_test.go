@@ -136,23 +136,29 @@ func (m *issueMock) handler(t *testing.T) http.Handler {
 		m.labels = next
 		writeJSON(t, w, labelObjects(m.labels))
 	})
-	// PATCH /repos/acme/app/issues/comments/{id} — GitHub's comment-edit
-	// endpoint (#716): comment IDs are repo-scoped, not nested under the
-	// issue number, matching UpdateComment's PATCH target.
+	// PATCH/DELETE /repos/acme/app/issues/comments/{id}: comment IDs are
+	// repo-scoped, not nested under the issue number.
 	mux.HandleFunc("/repos/acme/app/issues/comments/", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		if r.Method != http.MethodPatch {
-			t.Fatalf("unexpected comment-edit method %s", r.Method)
-		}
 		id := strings.TrimPrefix(r.URL.Path, "/repos/acme/app/issues/comments/")
-		var body map[string]string
-		decodeJSON(t, r, &body)
 		for i, c := range m.comments {
-			if fmt.Sprint(c["id"]) == id {
+			if fmt.Sprint(c["id"]) != id {
+				continue
+			}
+			switch r.Method {
+			case http.MethodPatch:
+				var body map[string]string
+				decodeJSON(t, r, &body)
 				m.comments[i]["body"] = body["body"]
 				writeJSON(t, w, m.comments[i])
 				return
+			case http.MethodDelete:
+				m.comments = append(m.comments[:i], m.comments[i+1:]...)
+				w.WriteHeader(http.StatusNoContent)
+				return
+			default:
+				t.Fatalf("unexpected comment mutation method %s", r.Method)
 			}
 		}
 		http.Error(w, "comment not found", http.StatusNotFound)
@@ -319,6 +325,37 @@ func TestGitHubUpdateCommentRequiresID(t *testing.T) {
 	p, repo := newIssueProvider(t, m)
 	if err := p.UpdateComment(context.Background(), repo, "", "body"); err == nil {
 		t.Fatal("UpdateComment with an empty comment id: err = nil, want an error")
+	}
+}
+
+func TestGitHubDeleteCommentIsIdempotent(t *testing.T) {
+	m := newIssueMock()
+	p, repo := newIssueProvider(t, m)
+	if err := p.postComment(context.Background(), repo, "7", "obsolete"); err != nil {
+		t.Fatalf("postComment: %v", err)
+	}
+	m.mu.Lock()
+	commentID := fmt.Sprint(m.comments[0]["id"])
+	m.mu.Unlock()
+
+	if err := p.DeleteComment(context.Background(), repo, commentID); err != nil {
+		t.Fatalf("DeleteComment: %v", err)
+	}
+	if err := p.DeleteComment(context.Background(), repo, commentID); err != nil {
+		t.Fatalf("DeleteComment retry: %v", err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.comments) != 0 {
+		t.Fatalf("comments = %v, want none", m.comments)
+	}
+}
+
+func TestGitHubDeleteCommentRequiresID(t *testing.T) {
+	m := newIssueMock()
+	p, repo := newIssueProvider(t, m)
+	if err := p.DeleteComment(context.Background(), repo, ""); err == nil {
+		t.Fatal("DeleteComment with an empty comment id: err = nil, want an error")
 	}
 }
 
