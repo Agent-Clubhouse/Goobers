@@ -117,36 +117,33 @@ func TestListRunsSkipsNonRunEntry(t *testing.T) {
 }
 
 type stubStatusReadService struct {
-	pages map[string]readservice.RunList
+	runs  []readservice.RunSummary
 	err   error
+	calls int
 }
 
-func (s *stubStatusReadService) ListRuns(_ context.Context, options readservice.RunListOptions) (readservice.RunList, error) {
+func (s *stubStatusReadService) ListStatusRuns(context.Context) ([]readservice.RunSummary, error) {
+	s.calls++
 	if s.err != nil {
-		return readservice.RunList{}, s.err
+		return nil, s.err
 	}
-	return s.pages[options.Cursor], nil
+	return s.runs, nil
 }
 
 func (s *stubStatusReadService) SchedulerStatus(context.Context) (readservice.SchedulerStatus, error) {
 	return readservice.SchedulerStatus{}, nil
 }
 
-func TestListStatusRunsPagesThroughSharedService(t *testing.T) {
+func TestListStatusRunsUsesSingleSharedServiceProjection(t *testing.T) {
 	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
-	reads := &stubStatusReadService{pages: map[string]readservice.RunList{
-		"": {
-			Runs: []readservice.RunSummary{{
-				ID: "newer", Workflow: "implementation", Gaggle: "goobers",
-				Phase: journal.PhaseRunning, StartedAt: startedAt.Add(time.Minute),
-			}},
-			NextCursor: "page-2",
+	reads := &stubStatusReadService{runs: []readservice.RunSummary{
+		{
+			ID: "newer", Workflow: "implementation", Gaggle: "goobers",
+			Phase: journal.PhaseRunning, StartedAt: startedAt.Add(time.Minute),
 		},
-		"page-2": {
-			Runs: []readservice.RunSummary{{
-				ID: "older", Workflow: "implementation", Gaggle: "goobers",
-				Phase: journal.PhaseCompleted, StartedAt: startedAt,
-			}},
+		{
+			ID: "older", Workflow: "implementation", Gaggle: "goobers",
+			Phase: journal.PhaseCompleted, StartedAt: startedAt,
 		},
 	}}
 
@@ -155,7 +152,10 @@ func TestListStatusRunsPagesThroughSharedService(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(runs) != 2 || runs[0].RunID != "newer" || runs[1].RunID != "older" {
-		t.Fatalf("listStatusRuns = %+v, want both shared-service pages", runs)
+		t.Fatalf("listStatusRuns = %+v, want shared-service summaries", runs)
+	}
+	if reads.calls != 1 {
+		t.Fatalf("ListStatusRuns calls = %d, want 1", reads.calls)
 	}
 }
 
@@ -164,6 +164,29 @@ func TestListStatusRunsPropagatesSharedServiceFailure(t *testing.T) {
 	_, err := listStatusRuns(context.Background(), &stubStatusReadService{err: want})
 	if !errors.Is(err, want) {
 		t.Fatalf("listStatusRuns error = %v, want %v", err, want)
+	}
+}
+
+func TestStatusSkipsMalformedHistoricalRun(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
+	writeStatusRun(t, root, "healthy-run", "implementation", "goobers", startedAt)
+	writeStatusRun(t, root, "malformed-run", "implementation", "goobers", startedAt.Add(-time.Minute))
+	if err := os.WriteFile(
+		filepath.Join(layout.RunsDir(), "malformed-run", "run.yaml"),
+		[]byte("not: [valid"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "status", root)
+	if code != 0 {
+		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "healthy-run") || strings.Contains(stdout, "malformed-run") {
+		t.Fatalf("stdout = %q, want only the healthy run", stdout)
 	}
 }
 

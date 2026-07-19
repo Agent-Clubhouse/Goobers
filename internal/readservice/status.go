@@ -11,10 +11,22 @@ import (
 
 const providerQuotaResumePrefix = localscheduler.ReasonProviderQuota + ": resumes at "
 
+// StatusReader is the shared read boundary used by local status adapters.
+type StatusReader interface {
+	ListStatusRuns(context.Context) ([]RunSummary, error)
+	SchedulerStatus(context.Context) (SchedulerStatus, error)
+}
+
 // SchedulerStatus is scheduler state projected from the instance journal for
 // local status adapters.
 type SchedulerStatus struct {
 	ProviderQuotaResumeAt *time.Time
+}
+
+// ListStatusRuns returns every readable run in display order. Individual
+// malformed historical journals are omitted so status remains best-effort.
+func (s *Local) ListStatusRuns(ctx context.Context) ([]RunSummary, error) {
+	return s.runSummaries(ctx, true)
 }
 
 // SchedulerStatus returns the current scheduler status recorded in the

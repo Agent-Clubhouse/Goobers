@@ -70,6 +70,50 @@ func TestSchedulerStatusProjectsLatestProviderQuotaPause(t *testing.T) {
 	}
 }
 
+func TestListStatusRunsSkipsMalformedHistoricalRuns(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	startedAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	healthy, _ := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"healthy-run",
+		"implementation",
+		"goobers",
+		startedAt,
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	if err := healthy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	malformed, _ := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"malformed-run",
+		"implementation",
+		"goobers",
+		startedAt.Add(-time.Minute),
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	if err := malformed.Append(journal.Event{Type: journal.EventRunFinished, Status: "unknown"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := malformed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	runs, err := service.ListStatusRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].ID != "healthy-run" {
+		t.Fatalf("ListStatusRuns = %+v, want only healthy-run", runs)
+	}
+}
+
 func TestSchedulerStatusPropagatesReadAndContextFailures(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {

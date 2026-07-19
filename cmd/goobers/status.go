@@ -72,36 +72,22 @@ type statusOptions struct {
 	limit    int
 }
 
-type statusReadService interface {
-	ListRuns(context.Context, readservice.RunListOptions) (readservice.RunList, error)
-	SchedulerStatus(context.Context) (readservice.SchedulerStatus, error)
-}
-
-func listStatusRuns(ctx context.Context, reads statusReadService) ([]runSummary, error) {
-	var runs []runSummary
-	cursor := ""
-	for {
-		page, err := reads.ListRuns(ctx, readservice.RunListOptions{Cursor: cursor})
-		if err != nil {
-			return nil, err
-		}
-		for _, run := range page.Runs {
-			runs = append(runs, runSummary{
-				RunID:     run.ID,
-				Workflow:  run.Workflow,
-				Gaggle:    run.Gaggle,
-				Phase:     run.Phase,
-				StartedAt: run.StartedAt,
-			})
-		}
-		if page.NextCursor == "" {
-			return runs, nil
-		}
-		if page.NextCursor == cursor {
-			return nil, fmt.Errorf("read service returned a repeated run cursor")
-		}
-		cursor = page.NextCursor
+func listStatusRuns(ctx context.Context, reads readservice.StatusReader) ([]runSummary, error) {
+	summaries, err := reads.ListStatusRuns(ctx)
+	if err != nil {
+		return nil, err
 	}
+	runs := make([]runSummary, len(summaries))
+	for i, run := range summaries {
+		runs[i] = runSummary{
+			RunID:     run.ID,
+			Workflow:  run.Workflow,
+			Gaggle:    run.Gaggle,
+			Phase:     run.Phase,
+			StartedAt: run.StartedAt,
+		}
+	}
+	return runs, nil
 }
 
 func runStatus(args []string, stdout, stderr io.Writer) int {
