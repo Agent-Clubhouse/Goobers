@@ -32,6 +32,12 @@ spec:
       goal: Materialize telemetry stats and recent-error signals as an artifact for the nominator to analyze.
       run:
         command: ["goobers", "telemetry", "stats"]
+      inputs:
+        # Without this the expectedOutputs below emit nothing: a shell stage's
+        # outputs are harvested only from its declared result file, so
+        # nominate would find no telemetry-signals artifact to analyze at all
+        # (#900 — the same defect that stalled merge-review's elect-lander).
+        resultFile: "telemetry-signals.json"
       capabilities:
         - telemetry:read
       next: nominate

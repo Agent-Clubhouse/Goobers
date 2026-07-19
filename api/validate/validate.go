@@ -648,6 +648,22 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 	for _, msg := range wf.CheckAdmission(def, ix.gooberSpecs()) {
 		r.add(Error, "", "Workflow", w.Name, "%s", msg)
 	}
+	// Stage output/input contracts (#900). These catch the class of defect
+	// that is structurally valid, compiles, and then silently loses data at
+	// runtime — a stage promising outputs it has no channel to emit, or
+	// reading an upstream output the stage actually preceding it on some
+	// branch does not produce. Reported as errors: both are unconditionally
+	// broken at runtime, on some path, every time.
+	for _, msg := range wf.CheckStageContracts(def) {
+		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+	}
+	// Only the breaking half is reported here. CheckStageContractWarnings
+	// covers the same omission on outputs nothing reads yet, which #881's
+	// VER003 "expectedOutputs is declared but not enforced" already warns
+	// about for every such stage — emitting both would put two warnings on
+	// one missing line. It stays exported for callers that want the strict
+	// bar (this repo holds its own shipped workflows to it in
+	// internal/workflow's stage-contract test).
 }
 
 // gooberSpecs projects the indexed goobers into the name->spec map the compiler's
