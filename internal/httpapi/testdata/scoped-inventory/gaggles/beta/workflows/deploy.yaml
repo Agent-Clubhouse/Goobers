@@ -1,0 +1,16 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: deploy
+spec:
+  gaggle: beta
+  displayName: Beta deploy
+  triggers:
+    - type: manual
+  start: deploy
+  tasks:
+    - name: deploy
+      type: deterministic
+      goal: Deploy beta.
+      run:
+        command: ["true"]

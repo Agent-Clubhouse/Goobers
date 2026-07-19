@@ -212,7 +212,7 @@ func TestAdmitWithoutBudgetDefaultsToBoundedRate(t *testing.T) {
 	}
 
 	c.mu.Lock()
-	got := len(c.starts["wf"])
+	got := len(c.starts[WorkflowIdentity{Workflow: "wf"}])
 	c.mu.Unlock()
 	if got != 10 {
 		t.Fatalf("starts[wf] = %d entries, want exactly 10 — bounded by the default budget, not unbounded", got)

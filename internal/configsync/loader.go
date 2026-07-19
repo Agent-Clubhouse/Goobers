@@ -291,10 +291,18 @@ func (l *Loader) assemble(docs []rawDoc) (*RenderSet, error) {
 		l.stamp(&goobers[i].TypeMeta, &goobers[i].ObjectMeta, "Goober", instance, goobers[i].Spec.Gaggle)
 		set.Objects = append(set.Objects, &goobers[i])
 	}
+	workflowGaggles := map[string]string{}
 	for i := range flows {
 		if !included[flows[i].Spec.Gaggle] {
 			continue
 		}
+		if gaggle, exists := workflowGaggles[flows[i].Name]; exists && gaggle != flows[i].Spec.Gaggle {
+			return nil, fmt.Errorf(
+				"config sync cannot represent workflows %s/%s and %s/%s: Kubernetes object names collide",
+				gaggle, flows[i].Name, flows[i].Spec.Gaggle, flows[i].Name,
+			)
+		}
+		workflowGaggles[flows[i].Name] = flows[i].Spec.Gaggle
 		l.stamp(&flows[i].TypeMeta, &flows[i].ObjectMeta, "Workflow", instance, flows[i].Spec.Gaggle)
 		set.Objects = append(set.Objects, &flows[i])
 	}

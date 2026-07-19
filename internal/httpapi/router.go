@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path"
 	"strconv"
 
 	"github.com/goobers/goobers/internal/readservice"
@@ -24,6 +25,16 @@ const (
 	TelemetryErrorsPath = Prefix + "/telemetry/errors"
 	// RunsPath is the run history endpoint.
 	RunsPath = Prefix + "/runs"
+	// InstancePath is the instance inventory endpoint.
+	InstancePath = Prefix + "/instance"
+	// GagglesPath is the gaggle inventory endpoint.
+	GagglesPath = Prefix + "/gaggles"
+	// GaggleGoobersPath is the gaggle-scoped goober inventory route.
+	GaggleGoobersPath = Prefix + "/gaggles/{gaggle}/goobers"
+	// GaggleWorkflowsPath is the gaggle-scoped workflow inventory route.
+	GaggleWorkflowsPath = Prefix + "/gaggles/{gaggle}/workflows"
+	// WorkflowDetailPath is the gaggle-scoped workflow detail route.
+	WorkflowDetailPath = Prefix + "/gaggles/{gaggle}/workflows/{workflow}"
 )
 
 // Authorizer preserves the authorization boundary for every API route. Tier 1
@@ -61,7 +72,11 @@ func NewRouter(authorizer Authorizer) (*Router, error) {
 	if authorizer == nil {
 		return nil, errors.New("http API authorizer is required")
 	}
-	return &Router{mux: http.NewServeMux(), authorizer: authorizer}, nil
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusNotFound, "not_found", "route not found")
+	})
+	return &Router{mux: mux, authorizer: authorizer}, nil
 }
 
 // HandleGET registers a read route. Other methods receive the structured error
@@ -88,6 +103,10 @@ func (r *Router) Handler() http.Handler {
 		writeError(w, http.StatusNotFound, "not_found", "route not found")
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != path.Clean(request.URL.Path) {
+			notFound.ServeHTTP(w, request)
+			return
+		}
 		_, pattern := r.mux.Handler(request)
 		if pattern == "" {
 			notFound.ServeHTTP(w, request)
@@ -120,6 +139,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	})
 	registerTelemetryRoutes(router, reader, errorLog)
 	registerRunRoutes(router, reader, errorLog)
+	registerInventoryRoutes(router, reader, errorLog)
 	return router.Handler(), nil
 }
 

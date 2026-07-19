@@ -146,7 +146,7 @@ func (r *configReloader) poll(now time.Time) error {
 		return err
 	}
 	r.openPRs.Replace(definitions.OpenPRRefresher)
-	if err := r.reads.ReloadDefinitions(definitions.Set, now); err != nil {
+	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
 		return fmt.Errorf("reload read service definitions: %w", err)
 	}
 	r.appliedDigest = digest

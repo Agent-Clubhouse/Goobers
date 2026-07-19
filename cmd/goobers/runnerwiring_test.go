@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
@@ -99,6 +101,7 @@ func TestBuildCredentialsDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
+
 	got := resolveGrants(t, resolver, grants)
 	for _, c := range credentialedCapabilities {
 		if got[string(c)] != "tokenA" {
@@ -107,6 +110,52 @@ func TestBuildCredentialsDefault(t *testing.T) {
 	}
 	if _, ok := got["agent:model"]; ok {
 		t.Fatalf("agent:model must not be granted without a credentials: entry, got %+v", got)
+	}
+}
+
+func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
+	workflowDefinition := func(gaggle, command string) apiv1.Workflow {
+		return apiv1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "deploy"},
+			Spec: apiv1.WorkflowSpec{
+				Gaggle:   gaggle,
+				Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+				Start:    "deploy",
+				Tasks: []apiv1.Task{{
+					Name: "deploy",
+					Type: apiv1.TaskDeterministic,
+					Goal: "Deploy.",
+					Run:  &apiv1.DeterministicRun{Command: []string{command}},
+				}},
+			},
+		}
+	}
+	set := &instance.ConfigSet{
+		Gaggles: []apiv1.Gaggle{
+			{ObjectMeta: metav1.ObjectMeta{Name: "alpha"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "alpha"}}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "beta"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "beta"}}},
+		},
+		Workflows: []apiv1.Workflow{
+			workflowDefinition("alpha", "alpha-deploy"),
+			workflowDefinition("beta", "beta-deploy"),
+		},
+	}
+
+	machines, err := compiledMachines(set, map[string]apiv1.GooberSpec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs, err := repoRefsByWorkflow(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := localscheduler.WorkflowIdentity{Gaggle: "alpha", Workflow: "deploy"}
+	beta := localscheduler.WorkflowIdentity{Gaggle: "beta", Workflow: "deploy"}
+	if len(machines) != 2 || machines[alpha] == nil || machines[beta] == nil {
+		t.Fatalf("compiled machines = %+v", machines)
+	}
+	if len(refs) != 2 || refs[alpha].Name != "alpha" || refs[beta].Name != "beta" {
+		t.Fatalf("workflow repo refs = %+v", refs)
 	}
 }
 

@@ -100,6 +100,7 @@ func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
 	if code, _, stderr := runArgs(t, "init", "--demo", root); code != 0 {
 		t.Fatalf("init --demo: code = %d, stderr = %q", code, stderr)
 	}
+	setAPIListenAddress(t, root, freeLoopbackAddress(t))
 
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -135,6 +135,11 @@
       "type": "string",
       "x-conformance": "not applicable (instance journal, not a run's conformance set)"
     },
+    "gaggle": {
+      "description": "Instance-journal only: gaggle that scopes the workflow name.",
+      "type": "string",
+      "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+    },
     "runId": {
       "description": "Instance-journal only: the run a scheduler decision or claim transition pertains to.",
       "type": "string",

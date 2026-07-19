@@ -217,7 +217,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	warnings := report.Warnings()
+	warnings := report.CLIWarnings()
 	if _, err := compiledMachines(set, goobersByName(set)); err != nil {
 		printValidationWarnings(stderr, warnings)
 		pf(stderr, "error: invalid workflow: %v\n", err)

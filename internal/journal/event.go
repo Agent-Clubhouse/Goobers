@@ -157,6 +157,8 @@ type Event struct {
 	// Workflow is the workflow name for a scheduler decision (trigger.fired,
 	// tick.skipped, or an instance-level run.started/run.finished echo).
 	Workflow string `json:"workflow,omitempty"`
+	// Gaggle scopes an instance-journal workflow name.
+	Gaggle string `json:"gaggle,omitempty"`
 	// RunID is the run a scheduler decision or claim transition pertains to.
 	RunID string `json:"runId,omitempty"`
 	// Reason is a short, stable explanation for a tick.skipped decision (e.g.

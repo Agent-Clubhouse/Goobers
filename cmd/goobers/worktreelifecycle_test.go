@@ -46,6 +46,7 @@ spec:
 
 func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 	root := initAcceptanceDemo(t)
+	setAPIListenAddress(t, root, freeLoopbackAddress(t))
 	l := instance.NewLayout(root)
 	writeFixture(t, filepath.Join(root, "config", "gaggles", "example", "workflows", "acceptance.yaml"), abortAgenticWorkflowYAML)
 	baseline := worktreeDirectoryCount(t, l.WorkcopiesDir())
@@ -229,6 +230,7 @@ func TestRunAbortPreservesAndJournalsKeptWorktree(t *testing.T) {
 
 func TestUpReapsTerminalDeregisteredOrphanAndKeepsMarkedWorktree(t *testing.T) {
 	root := initDeterministicDemo(t)
+	setAPIListenAddress(t, root, freeLoopbackAddress(t))
 	l := instance.NewLayout(root)
 	const orphanRunID = "startup-terminal-orphan"
 	const keptRunID = "startup-kept-worktree"

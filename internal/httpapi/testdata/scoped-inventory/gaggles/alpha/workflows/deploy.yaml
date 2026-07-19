@@ -1,0 +1,16 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: deploy
+spec:
+  gaggle: alpha
+  displayName: Alpha deploy
+  triggers:
+    - type: manual
+  start: query-backlog
+  tasks:
+    - name: query-backlog
+      type: deterministic
+      goal: Claim the next deploy item.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/configsync"
@@ -93,6 +94,35 @@ func TestRun_InvalidConfigExitsOne(t *testing.T) {
 	}
 }
 
+func TestRun_WorkflowWarningPreservesCLIOutput(t *testing.T) {
+	const want = `WARNING Workflow/implementation: task "query-backlog" runs backlog-query --claim without inputs.resultFile; empty ticks will report success instead of no-work`
+	for _, tc := range []struct {
+		name        string
+		makeInvalid bool
+		wantCode    int
+	}{
+		{name: "non-fatal warning", wantCode: 0},
+		{name: "invalid config", makeInvalid: true, wantCode: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := warningRepo(t, tc.makeInvalid)
+			stderr := outputFile(t)
+			code := run([]string{"--config", cfg, "--out", t.TempDir()}, devnull(t), stderr)
+			if code != tc.wantCode {
+				t.Fatalf("exit = %d, want %d", code, tc.wantCode)
+			}
+			output := readOutput(t, stderr)
+			if !strings.Contains(output, want) {
+				t.Fatalf("output missing legacy warning:\n%s", output)
+			}
+			if strings.Contains(output, "VER003") || strings.Contains(output, "Gaggle/acme-web") ||
+				strings.Contains(output, "gaggles/acme-web/workflows/implementation.yaml") {
+				t.Fatalf("output exposed API warning provenance:\n%s", output)
+			}
+		})
+	}
+}
+
 func TestRun_BadFlagExitsTwo(t *testing.T) {
 	if code := run([]string{"--nope"}, devnull(t), devnull(t)); code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
@@ -132,3 +162,54 @@ var errBoom = errorString("boom")
 type errorString string
 
 func (e errorString) Error() string { return string(e) }
+
+func warningRepo(t *testing.T, makeInvalid bool) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS("../../config-examples")); err != nil {
+		t.Fatal(err)
+	}
+	workflowPath := filepath.Join(dir, "gaggles", "acme-web", "workflows", "implementation.yaml")
+	replaceFile(t, workflowPath, `        resultFile: "claimed-item.json"`, "")
+	if makeInvalid {
+		replaceFile(t, filepath.Join(dir, "manifest.yaml"), "    environment: dev\n", "")
+	}
+	return dir
+}
+
+func replaceFile(t *testing.T, path, old, replacement string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(string(raw), old, replacement, 1)
+	if updated == string(raw) {
+		t.Fatalf("%s did not contain %q", path, old)
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func outputFile(t *testing.T) *os.File {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	return f
+}
+
+func readOutput(t *testing.T, f *os.File) string {
+	t.Helper()
+	if err := f.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}

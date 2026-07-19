@@ -55,6 +55,7 @@ type Issue struct {
 	File     string      `json:"file,omitempty"`
 	Kind     string      `json:"kind,omitempty"`
 	Name     string      `json:"name,omitempty"`
+	Gaggle   string      `json:"gaggle,omitempty"`
 	Message  string      `json:"message"`
 }
 
@@ -66,6 +67,21 @@ func (i Issue) String() string {
 	return fmt.Sprintf("%-7s%s %s: %s", strings.ToUpper(string(i.Severity)), code, i.Scope(), i.Message)
 }
 
+// CLIString preserves the validator's established text representation while
+// structured consumers use the richer warning provenance.
+func (i Issue) CLIString() string {
+	return i.cliIssue().String()
+}
+
+func (i Issue) cliIssue() Issue {
+	if i.Severity == Warning && i.Code == WarningCompatibility && i.Gaggle != "" && i.Kind == "Workflow" {
+		i.Code = ""
+		i.File = ""
+		i.Gaggle = ""
+	}
+	return i
+}
+
 // Scope returns the issue's stable human and machine-readable location.
 func (i Issue) Scope() string {
 	object := ""
@@ -74,6 +90,9 @@ func (i Issue) Scope() string {
 		if i.Name != "" {
 			object += "/" + i.Name
 		}
+	}
+	if i.Gaggle != "" {
+		object = "Gaggle/" + i.Gaggle + " " + object
 	}
 	switch {
 	case i.File != "" && object != "":
@@ -145,10 +164,50 @@ func (r *Report) Warnings() []CodedWarning {
 	return warnings
 }
 
+// CLIWarnings returns warnings in the representation used before workflow
+// warnings gained API-only code and provenance fields.
+func (r *Report) CLIWarnings() []CodedWarning {
+	if r == nil {
+		return nil
+	}
+	return r.CLIReport().Warnings()
+}
+
+// CLIReport preserves the validator's established JSON representation while
+// structured API consumers use the richer warning provenance.
+func (r *Report) CLIReport() *Report {
+	if r == nil {
+		return nil
+	}
+	report := &Report{
+		Files:   r.Files,
+		Objects: r.Objects,
+	}
+	if r.Issues != nil {
+		report.Issues = make([]Issue, 0, len(r.Issues))
+	}
+	for _, issue := range r.Issues {
+		report.Issues = append(report.Issues, issue.cliIssue())
+	}
+	return report
+}
+
 func (r *Report) add(sev Severity, file, kind, name, format string, args ...interface{}) {
 	r.Issues = append(r.Issues, Issue{
 		Severity: sev,
 		File:     file,
+		Kind:     kind,
+		Name:     name,
+		Message:  fmt.Sprintf(format, args...),
+	})
+}
+
+func (r *Report) addWarning(code WarningCode, file, gaggle, kind, name, format string, args ...interface{}) {
+	r.Issues = append(r.Issues, Issue{
+		Code:     code,
+		Severity: Warning,
+		File:     file,
+		Gaggle:   gaggle,
 		Kind:     kind,
 		Name:     name,
 		Message:  fmt.Sprintf(format, args...),
@@ -255,6 +314,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			return err
 		}
 		rel, _ := filepath.Rel(root, path)
+		rel = filepath.ToSlash(rel)
 		for _, seg := range docSep.Split(string(raw), -1) {
 			if strings.TrimSpace(seg) == "" {
 				continue
@@ -365,12 +425,23 @@ func friendlySchemaMessage(msg string) string {
 	}
 }
 
-// index holds the typed objects keyed by name for cross-reference checks.
+type workflowIdentity struct {
+	gaggle string
+	name   string
+}
+
+type indexedWorkflow struct {
+	definition apiv1.Workflow
+	file       string
+}
+
+// index holds the typed objects keyed by their config identities for
+// cross-reference checks.
 type index struct {
 	manifests []apiv1.Manifest
 	gaggles   map[string]apiv1.Gaggle
 	goobers   map[string]apiv1.Goober
-	workflows map[string]apiv1.Workflow
+	workflows map[workflowIdentity]indexedWorkflow
 	gooberDir map[string]string // goober name -> source dir (for instruction path checks)
 
 	// manifestDocsSeen counts documents with kind=Manifest regardless of whether
@@ -383,7 +454,7 @@ func newIndex() *index {
 	return &index{
 		gaggles:   map[string]apiv1.Gaggle{},
 		goobers:   map[string]apiv1.Goober{},
-		workflows: map[string]apiv1.Workflow{},
+		workflows: map[workflowIdentity]indexedWorkflow{},
 		gooberDir: map[string]string{},
 	}
 }
@@ -420,8 +491,12 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 			r.add(Error, doc.file, doc.kind, doc.name, "decode: %v", err)
 			return
 		}
-		ix.dupCheck(r, doc, "Workflow", w.Name, func() bool { _, ok := ix.workflows[w.Name]; return ok })
-		ix.workflows[w.Name] = w
+		identity := workflowIdentity{gaggle: w.Spec.Gaggle, name: w.Name}
+		ix.dupCheck(r, doc, "Workflow", w.Name, func() bool {
+			_, ok := ix.workflows[identity]
+			return ok
+		})
+		ix.workflows[identity] = indexedWorkflow{definition: w, file: doc.file}
 	}
 }
 
@@ -460,7 +535,8 @@ func (ix *index) crossCheck(r *Report) {
 			r.add(Error, "", "Goober", g.Name, "belongs to gaggle %q which is not defined", g.Spec.Gaggle)
 		}
 		for _, wf := range g.Spec.Workflows {
-			if _, ok := ix.workflows[wf]; !ok {
+			identity := workflowIdentity{gaggle: g.Spec.Gaggle, name: wf}
+			if _, ok := ix.workflows[identity]; !ok {
 				r.add(Error, "", "Goober", g.Name, "associated workflow %q is not defined", wf)
 			}
 		}
@@ -473,12 +549,12 @@ func (ix *index) crossCheck(r *Report) {
 	}
 
 	// Workflow state machine integrity.
-	for _, w := range ix.workflows {
-		ix.checkWorkflow(r, w)
+	for _, indexed := range ix.workflows {
+		ix.checkWorkflow(r, indexed.definition, indexed.file)
 	}
 }
 
-func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow) {
+func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 	if _, ok := ix.gaggles[w.Spec.Gaggle]; !ok {
 		r.add(Error, "", "Workflow", w.Name, "belongs to gaggle %q which is not defined", w.Spec.Gaggle)
 	}
@@ -503,8 +579,14 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow) {
 
 	for _, t := range w.Spec.Tasks {
 		if t.Type == apiv1.TaskAgentic && t.Goober != "" {
-			if _, ok := ix.goobers[t.Goober]; !ok {
+			goober, ok := ix.goobers[t.Goober]
+			switch {
+			case !ok:
 				r.add(Error, "", "Workflow", w.Name, "task %q targets goober %q which is not defined", t.Name, t.Goober)
+			case goober.Spec.Gaggle != w.Spec.Gaggle:
+				r.add(Error, "", "Workflow", w.Name,
+					"task %q targets goober %q in gaggle %q, not workflow gaggle %q",
+					t.Name, t.Goober, goober.Spec.Gaggle, w.Spec.Gaggle)
 			}
 		}
 		if t.Next != "" && !wf.IsReservedTarget(t.Next) && !states[t.Next] {
@@ -515,8 +597,14 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow) {
 	for _, g := range w.Spec.Gates {
 		ix.checkGateEvaluator(r, w, g)
 		if g.Evaluator == apiv1.EvaluatorAgentic && g.Agentic != nil && g.Agentic.Goober != "" {
-			if _, ok := ix.goobers[g.Agentic.Goober]; !ok {
+			goober, ok := ix.goobers[g.Agentic.Goober]
+			switch {
+			case !ok:
 				r.add(Error, "", "Workflow", w.Name, "gate %q reviewer goober %q is not defined", g.Name, g.Agentic.Goober)
+			case goober.Spec.Gaggle != w.Spec.Gaggle:
+				r.add(Error, "", "Workflow", w.Name,
+					"gate %q reviewer goober %q is in gaggle %q, not workflow gaggle %q",
+					g.Name, g.Agentic.Goober, goober.Spec.Gaggle, w.Spec.Gaggle)
 			}
 		}
 		for outcome, next := range g.Branches {
@@ -535,7 +623,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow) {
 	// checks the inline field-by-field pass above deliberately does not duplicate.
 	def := wf.Definition{Name: w.Name, Version: 1, Spec: w.Spec}
 	for _, msg := range wf.CheckWarnings(def) {
-		r.add(Warning, "", "Workflow", w.Name, "%s", msg)
+		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckReachability(def) {
 		r.add(Error, "", "Workflow", w.Name, "%s", msg)

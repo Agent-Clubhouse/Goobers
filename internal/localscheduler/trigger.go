@@ -86,23 +86,56 @@ func Tick(t TriggerState, now time.Time) TickResult {
 // recent fire time for a workflow, or startedAt for a workflow never observed
 // (no epoch backfill — a trigger the daemon has never evaluated starts counting
 // from daemon start, not from year zero).
-func ReconstructLastEval(fired []TriggerFiredRecord, workflows []string, startedAt time.Time) map[string]time.Time {
-	last := make(map[string]time.Time, len(workflows))
-	for _, wf := range workflows {
-		last[wf] = startedAt
+func ReconstructLastEval(fired []TriggerFiredRecord, workflows []WorkflowIdentity, startedAt time.Time) map[WorkflowIdentity]time.Time {
+	last := make(map[WorkflowIdentity]time.Time, len(workflows))
+	seen := make(map[WorkflowIdentity]bool, len(workflows))
+	for _, identity := range workflows {
+		last[identity] = startedAt
 	}
 	for _, f := range fired {
-		if cur, ok := last[f.Workflow]; !ok || f.Time.After(cur) {
-			last[f.Workflow] = f.Time
+		identity, ok := resolveWorkflowIdentity(f.Gaggle, f.Workflow, workflows)
+		if !ok {
+			continue
+		}
+		if !seen[identity] || f.Time.After(last[identity]) {
+			last[identity] = f.Time
+			seen[identity] = true
 		}
 	}
 	return last
+}
+
+func resolveWorkflowIdentity(gaggle, workflow string, workflows []WorkflowIdentity) (WorkflowIdentity, bool) {
+	if gaggle != "" {
+		identity := WorkflowIdentity{Gaggle: gaggle, Workflow: workflow}
+		for _, candidate := range workflows {
+			if candidate == identity {
+				return identity, true
+			}
+		}
+		return WorkflowIdentity{}, false
+	}
+
+	var match WorkflowIdentity
+	found := false
+	for _, candidate := range workflows {
+		if candidate.Workflow != workflow {
+			continue
+		}
+		if found {
+			return WorkflowIdentity{}, false
+		}
+		match = candidate
+		found = true
+	}
+	return match, found
 }
 
 // TriggerFiredRecord is the minimal shape ReconstructLastEval needs from a
 // trigger.fired instance-journal event, kept independent of the journal
 // package's Event type so this file has no import-time coupling to it.
 type TriggerFiredRecord struct {
+	Gaggle   string
 	Workflow string
 	Time     time.Time
 }

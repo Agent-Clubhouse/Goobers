@@ -34,9 +34,9 @@ func printValidationIssues(w io.Writer, report *validate.Report) {
 		if issue.Severity != validate.Error {
 			continue
 		}
-		pln(w, issue.String())
+		pln(w, issue.CLIString())
 	}
-	printValidationWarnings(w, report.Warnings())
+	printValidationWarnings(w, report.CLIWarnings())
 }
 
 func printValidationWarnings(w io.Writer, warnings []validate.CodedWarning) {

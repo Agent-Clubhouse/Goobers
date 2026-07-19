@@ -148,10 +148,10 @@ func TestConfiguredRunnerReleasesClaimsAtTerminal(t *testing.T) {
 
 	res, err := setup.Runner.Start(context.Background(), runner.StartInput{
 		RunID:   runID,
-		Machine: setup.Machines["default-implement"],
+		Machine: setup.Machines[localscheduler.WorkflowIdentity{Gaggle: "example", Workflow: "default-implement"}],
 		Gaggle:  "example",
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
-		RepoRef: setup.RepoRefs["default-implement"],
+		RepoRef: setup.RepoRefs[localscheduler.WorkflowIdentity{Gaggle: "example", Workflow: "default-implement"}],
 		Item:    &apiv1.BacklogItem{ID: "498"},
 	})
 	if err != nil {

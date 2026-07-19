@@ -78,7 +78,7 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	}
 	if report != nil {
 		for _, issue := range report.Issues {
-			pln(stdout, issue.String())
+			pln(stdout, issue.CLIString())
 		}
 	}
 	if errors.Is(err, instance.ErrInvalidConfig) {

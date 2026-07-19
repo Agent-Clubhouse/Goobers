@@ -1,6 +1,7 @@
 package localscheduler
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -161,18 +162,58 @@ func TestReleaseReconciledOnlyReleasesMatchingRun(t *testing.T) {
 	if err := sched.Reconcile(runsDir, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if got := sched.conditions.Active("implement"); got != 1 {
+	identity := WorkflowIdentity{Gaggle: "g", Workflow: "implement"}
+	if got := sched.conditions.ActiveWorkflow(identity); got != 1 {
 		t.Fatalf("active count after reconcile = %d, want 1", got)
 	}
 
 	sched.ReleaseReconciled("terminal", "implement")
-	if got := sched.conditions.Active("implement"); got != 1 {
+	if got := sched.conditions.ActiveWorkflow(identity); got != 1 {
 		t.Fatalf("active count after terminal release = %d, want running run's slot preserved", got)
 	}
 
 	sched.ReleaseReconciled("running", "implement")
-	if got := sched.conditions.Active("implement"); got != 0 {
+	if got := sched.conditions.ActiveWorkflow(identity); got != 0 {
 		t.Fatalf("active count after running release = %d, want 0", got)
+	}
+}
+
+func TestReconcileScopesActiveRunsAcrossGaggles(t *testing.T) {
+	runsDir := t.TempDir()
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "alpha-active", Gaggle: "alpha", Workflow: "deploy", WorkflowVersion: 1,
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(filepath.Join(t.TempDir(), "scheduler"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	alpha := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	beta := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched := New([]WorkflowEntry{
+		{Gaggle: "alpha", Workflow: "deploy", Signals: []string{"release"}, Starter: alpha},
+		{Gaggle: "beta", Workflow: "deploy", Signals: []string{"release"}, Starter: beta},
+	}, log)
+	if err := sched.Reconcile(runsDir, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	runIDs := sched.Signal(context.Background(), "release", time.Now())
+	if len(runIDs) != 1 {
+		t.Fatalf("signal run IDs = %v, want only beta admitted", runIDs)
+	}
+	waitForCount(t, beta.count, 1)
+	sched.Wait()
+	if got := alpha.count(); got != 0 {
+		t.Fatalf("alpha starts = %d, want 0 while its reconciled run holds the slot", got)
 	}
 }
 

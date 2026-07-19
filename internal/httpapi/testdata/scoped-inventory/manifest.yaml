@@ -1,0 +1,41 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: scoped-inventory
+spec:
+  instance:
+    name: scoped-inventory
+    environment: dev
+  gaggles:
+    - alpha
+    - beta
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: alpha
+spec:
+  project:
+    provider: github
+    owner: example
+    name: alpha
+  backlog:
+    provider: github
+    project: example/alpha
+  isolation:
+    namespace: alpha
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: beta
+spec:
+  project:
+    provider: github
+    owner: example
+    name: beta
+  backlog:
+    provider: github
+    project: example/beta
+  isolation:
+    namespace: beta
