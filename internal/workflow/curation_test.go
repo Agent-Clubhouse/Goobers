@@ -91,7 +91,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
-	const wantDigest = "sha256:be68b201091477dc3ee4e2d9da583d4066e680ea0bf3fe8b597aac0d6f95ccc8"
+	const wantDigest = "sha256:3bddb18b564a7a5c59f5d08af8751d1530c39f2301f092ef83fb4a6507fc8613"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

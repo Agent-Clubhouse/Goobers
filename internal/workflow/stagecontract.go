@@ -95,12 +95,7 @@ func consumedOutputKeys(def Definition) map[string]bool {
 func undeclaredResultFileProblems(def Definition, consumed map[string]bool, wantConsumed bool) []string {
 	var problems []string
 	for _, task := range def.Spec.Tasks {
-		if task.Type != apiv1.TaskDeterministic || task.Run == nil {
-			continue
-		}
-		// Empty or "shell" is the shell executor; anything else is a
-		// built-in kind with its own output channel.
-		if kind := strings.TrimSpace(task.Inputs["kind"]); kind != "" && kind != "shell" {
+		if !isShellStage(task) {
 			continue
 		}
 		if len(task.ExpectedOutputs) == 0 {
@@ -243,4 +238,17 @@ func containsString(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// isShellStage reports whether task runs through the shell executor, which
+// is the only executor that harvests Outputs from a declared result file.
+// An agentic stage, or a deterministic one naming a built-in inputs.kind
+// (ci-poll dispatches to CIPollExecutor), produces its outputs by its own
+// mechanism and is exempt from every result-file expectation here.
+func isShellStage(task apiv1.Task) bool {
+	if task.Type != apiv1.TaskDeterministic || task.Run == nil {
+		return false
+	}
+	kind := strings.TrimSpace(task.Inputs["kind"])
+	return kind == "" || kind == "shell"
 }

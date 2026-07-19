@@ -40,6 +40,8 @@ spec:
         resultFile: "telemetry-signals.json"
       capabilities:
         - telemetry:read
+      expectedOutputs:
+        - telemetry-signals
       next: nominate
     # Agentic: reads the telemetry-signals artifact plus a read-only checkout,
     # dedupes against already-open goobers:nominated issues (query first —

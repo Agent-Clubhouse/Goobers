@@ -54,7 +54,7 @@ func loadShippedWorkflow(t *testing.T, file string) Definition {
 var goldenDigests = map[string]string{
 	// #401: await-ci explicitly declares the github:pr:write capability used
 	// to poll the pull request's checks.
-	"implementation.yaml":   "sha256:caf91733d1e9aa26529694ddcbe28c4ed64c99f70c87f3b9e5d863df747722b4",
+	"implementation.yaml":   "sha256:3c0fb6f9133f0df14b208acfdaf6d96173dfd8a24771ce521035862ece080761",
 	"backlog-curation.yaml": "sha256:99bf677d0976f720638d16fe95cf88802da632011bf5e7e1d2ca0c0dabf99bd8",
 	"work-nomination.yaml":  "sha256:0e689d382fa5e62493e7f339a9caefc28e4e2ce3a63054035e7955b84de2c10c",
 }
@@ -107,7 +107,7 @@ func TestExampleConfigWorkflowCompiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	const want = "sha256:b9dbc3c025036d2b8030481339a094fd82108cf3d9835d84d545008c2293ff2c"
+	const want = "sha256:8759aecb312273962580f20e568f64d5a9d309920a452b9d430ccd765c8c16b9"
 	t.Logf("default-implement digest = %s", m.Digest())
 	if m.Digest() != want {
 		t.Errorf("digest drift for default-implement:\n got  %s\n want %s\n(update if intended)", m.Digest(), want)

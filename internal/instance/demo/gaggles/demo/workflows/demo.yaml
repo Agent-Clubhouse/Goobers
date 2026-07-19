@@ -18,6 +18,9 @@ spec:
       inputs:
         fixture: README links are stale after a release
         resultFile: triage.json
+      expectedOutputs:
+        - category
+        - priority
       run:
         network: none
         workspace: scratch
@@ -33,6 +36,9 @@ spec:
         resultFile: build.json
       inputsFrom:
         category: category
+      expectedOutputs:
+        - artifact
+        - verdict
       run:
         network: none
         workspace: scratch

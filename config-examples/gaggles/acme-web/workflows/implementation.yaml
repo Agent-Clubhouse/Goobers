@@ -53,6 +53,8 @@ spec:
         # this reuses github:pr:write the same way #361's post-merge stage
         # does for its own PR reads.
         - github:pr:write
+      expectedOutputs:
+        - claimed-item
       next: implement
 
     # Agentic implementation in a fresh, isolated worktree (§16/#19). Scoped
@@ -83,6 +85,8 @@ spec:
       # If the session still times out with a viable committed diff, salvage it
       # and advance to review + local-ci instead of discarding the run.
       onTimeout: salvage
+      expectedOutputs:
+        - changed-files
       # A recognized non-retryable failure bypasses review evaluation but uses
       # review's escalate control branch below to park the issue first.
       next: review
@@ -128,6 +132,10 @@ spec:
         resultFile: "pr-result.json"
       capabilities:
         - github:pr:write
+      expectedOutputs:
+        - pull-request-url
+        # Well-known handoff key for ci-poll's inputsFrom below.
+        - prNumber
       next: ci-poll
 
     - name: ci-poll
@@ -151,6 +159,8 @@ spec:
         prNumber: prNumber
       capabilities:
         - github:pr:write
+      expectedOutputs:
+        - ciStatus
       next: ci-gate
 
     - name: close-out

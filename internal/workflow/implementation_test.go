@@ -149,7 +149,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// theory that the #845 post-mortem falsified — the real cause was terminal
 	// job control (SIGTTOU), fixed by Setsid (#846/#850). The serialize input
 	// was removed so local-ci runs fully parallel again.
-	const wantDigest = "sha256:3b0c5ece9780f929f0804ff92acf2fa4faa3ad996cdc0a78197e81f2ac9cd608"
+	const wantDigest = "sha256:9d2105113119af5d1826ed72aa50401a8678ab3e0d7565f66aa30f5de3cac2cc"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

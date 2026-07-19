@@ -25,6 +25,8 @@ spec:
         command: ["sh", "-c", "printf '%s\n' '{\"ready\":\"true\"}' > scaffold-result.json"]
       inputs:
         resultFile: scaffold-result.json
+      expectedOutputs:
+        - ready
       next: ready-check
     - name: act
       type: agentic

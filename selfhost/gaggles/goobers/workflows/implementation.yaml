@@ -77,6 +77,8 @@ spec:
         # yet, so this reuses github:pr:write the same way #361's post-merge
         # stage does for its own PR reads.
         - github:pr:write
+      expectedOutputs:
+        - claimed-item
       next: implement
 
     # Agentic implementation in a fresh, isolated worktree (§16/#19). Scoped
@@ -162,6 +164,10 @@ spec:
         resultFile: "pr-result.json"
       capabilities:
         - github:pr:write
+      expectedOutputs:
+        - pull-request-url
+        # Well-known handoff key for ci-poll's inputsFrom below.
+        - prNumber
       next: ci-poll
 
     - name: ci-poll
@@ -185,6 +191,8 @@ spec:
         prNumber: prNumber
       capabilities:
         - github:pr:write
+      expectedOutputs:
+        - ciStatus
       next: ci-gate
 
     - name: close-out
