@@ -16,7 +16,7 @@ import (
 // files request plus two check-state requests — dominated the instance's
 // GitHub API budget as the open-PR set grew, #614's rate-limit exhaustion).
 // Lives under the instance's scheduler dir next to claims.json, guarded by
-// the same cross-process flock pattern (withClaimLock): concurrent
+// the same cross-process flock pattern (withFileLock): concurrent
 // merge-review runs' gather stages each run as their own OS process against
 // the same instance root.
 const (
@@ -111,7 +111,7 @@ func saveSiblingCache(schedulerDir string, entries map[string]siblingCacheEntry)
 }
 
 // withSiblingCacheLock serializes cache reads/writes across concurrent
-// gather processes, reusing withClaimLock's blocking-flock discipline (and
+// gather processes, reusing withFileLock's blocking-flock discipline (and
 // claims.json's rationale: each stage dispatch is its own OS process, so an
 // in-process mutex cannot arbitrate). Creates schedulerDir if a standalone/
 // manual invocation runs against a root that was never scaffolded.
@@ -119,5 +119,5 @@ func withSiblingCacheLock(schedulerDir string, fn func() error) error {
 	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
 		return err
 	}
-	return withClaimLock(filepath.Join(schedulerDir, siblingCacheLockFileName), fn)
+	return withFileLock(filepath.Join(schedulerDir, siblingCacheLockFileName), fn)
 }
