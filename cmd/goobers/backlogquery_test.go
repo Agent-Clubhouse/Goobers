@@ -308,6 +308,35 @@ func TestBacklogQueryExcludesIssueWithOpenPR(t *testing.T) {
 	assertNoWorkResultFile(t, workDir)
 }
 
+// TestBacklogQueryExcludesIssueWithImplementsOnlyPR is #980: the open-PR
+// backstop must exclude an issue whose only open PR references it via the
+// non-closing "Implements #N" convention (a structured body whose "Fixes #N"
+// footer was overridden or absent), not just one carrying a closing keyword.
+// This is the gap that let issue #774 be implemented twice (#966/#969).
+func TestBacklogQueryExcludesIssueWithImplementsOnlyPR(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Convert the logs", "goobers:approved", "goobers:ready")
+	server.addOpenPR(101, "goobers/implementation/prior-run", "main", "sha1", "sha2", false, nil, nil)
+	server.setPRBody(101, "## Summary\n\nImplements #7: **Convert the logs**.")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("stdout = %q, want no-work — issue 7 should be excluded by the widened open-PR backstop", stdout)
+	}
+	assertNoWorkResultFile(t, workDir)
+}
+
 // TestBacklogQueryOpenPRBackstopSkippedWithoutCapability proves the backstop
 // is opt-in, not a hard requirement: a stage that never declared
 // github:pr:write gets exactly the pre-#414 label-only behavior (the item is

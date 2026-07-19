@@ -425,7 +425,12 @@ func openPRIssueNumbers(ctx context.Context, provider *providers.GitHubProvider,
 	}
 	out := make(map[string]bool, len(prs))
 	for _, pr := range prs {
-		for _, id := range closingIssueNumbers(pr.Body) {
+		// referencedIssueNumbers, not closingIssueNumbers (#980): a PR that
+		// only says "Implements #N" — a structured body whose "Fixes #N"
+		// footer was overridden or absent — still speaks for that issue and
+		// must exclude it from re-selection, not just one with a closing
+		// keyword.
+		for _, id := range referencedIssueNumbers(pr.Body) {
 			out[id] = true
 		}
 	}
