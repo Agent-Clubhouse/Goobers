@@ -657,9 +657,13 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 	for _, msg := range wf.CheckStageContracts(def) {
 		r.add(Error, "", "Workflow", w.Name, "%s", msg)
 	}
-	for _, msg := range wf.CheckStageContractWarnings(def) {
-		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
-	}
+	// Only the breaking half is reported here. CheckStageContractWarnings
+	// covers the same omission on outputs nothing reads yet, which #881's
+	// VER003 "expectedOutputs is declared but not enforced" already warns
+	// about for every such stage — emitting both would put two warnings on
+	// one missing line. It stays exported for callers that want the strict
+	// bar (this repo holds its own shipped workflows to it in
+	// internal/workflow's stage-contract test).
 }
 
 // gooberSpecs projects the indexed goobers into the name->spec map the compiler's

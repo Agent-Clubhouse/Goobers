@@ -109,18 +109,12 @@ func TestRunWorkflowWarningPreservesCLIOutput(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("decode report: %v\n%s", err, out)
 	}
-	// Two warnings, both from the same missing resultFile line and both
-	// legitimately distinct: the legacy one is about no-work semantics on an
-	// empty tick, the stage-contract one (#900) is about query-backlog's
-	// declared expectedOutputs silently emitting nothing. Neither may leak
-	// API provenance, which is what this test actually guards.
-	if len(report.Issues) != 2 {
-		t.Fatalf("JSON issues = %+v, want two warnings", report.Issues)
+	if len(report.Issues) != 1 {
+		t.Fatalf("JSON issues = %+v, want one warning", report.Issues)
 	}
-	for _, issue := range report.Issues {
-		if issue.Code != "" || issue.File != "" || issue.Gaggle != "" {
-			t.Fatalf("JSON warning exposed API provenance: %+v", issue)
-		}
+	issue := report.Issues[0]
+	if issue.Code != "" || issue.File != "" || issue.Gaggle != "" {
+		t.Fatalf("JSON warning exposed API provenance: %+v", issue)
 	}
 }
 

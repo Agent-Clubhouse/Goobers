@@ -45,9 +45,16 @@ func CheckStageContracts(def Definition) []string {
 // CheckStageContractWarnings reports the non-breaking half of the same
 // analysis: a stage promising outputs it cannot emit that nothing downstream
 // actually reads. Wrong, and worth fixing before something does start
-// reading it — but not a runtime failure today, so it must not fail a
-// validate that would otherwise pass. The moment any stage's inputsFrom
-// references such a key it becomes an error via CheckStageContracts.
+// reading it — but not a runtime failure today. The moment any stage's
+// inputsFrom references such a key it becomes an error via
+// CheckStageContracts.
+//
+// Deliberately NOT wired into `goobers validate`: #881's VER003
+// ("expectedOutputs is declared but not enforced") already warns on every
+// stage this would flag, and two warnings for one missing line is noise.
+// Exported for callers that want the strict bar anyway — this repo holds
+// its own shipped workflows to it, since "nothing reads it yet" is one
+// inputsFrom away from an outage.
 func CheckStageContractWarnings(def Definition) []string {
 	m := newMachine(def)
 	if len(structuralProblems(m)) > 0 {
