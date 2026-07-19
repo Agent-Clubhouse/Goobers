@@ -8,9 +8,10 @@ interface PortalShellProps {
   activeArea: PrimaryArea;
   children: React.ReactNode;
   navigate: Navigate;
+  standalone: boolean;
 }
 
-export function PortalShell({ activeArea, children, navigate }: PortalShellProps) {
+export function PortalShell({ activeArea, children, navigate, standalone }: PortalShellProps) {
   const { theme, toggleTheme } = useTheme();
   const { freshness } = useLiveData();
   const mainContent = useRef<HTMLElement>(null);
@@ -76,8 +77,12 @@ export function PortalShell({ activeArea, children, navigate }: PortalShellProps
           <div>
             <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
             <span>
-              <strong>Daemon API</strong>
-              <small>{freshnessCopy[freshness]}</small>
+              <strong>{standalone ? "Standalone read-only" : "Daemon API"}</strong>
+              <small>
+                {standalone
+                  ? "Daemon not running; reading this instance locally"
+                  : freshnessCopy[freshness]}
+              </small>
             </span>
           </div>
         </div>
