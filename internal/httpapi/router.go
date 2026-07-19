@@ -9,34 +9,36 @@ import (
 	"log"
 	"net/http"
 	"path"
+	"slices"
 	"strconv"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
 const (
 	// Prefix is the versioned root for all HTTP API routes.
-	Prefix = "/api/v1"
+	Prefix = apicontract.V1Prefix
 	// HealthPath is the daemon health endpoint.
-	HealthPath = Prefix + "/health"
+	HealthPath = apicontract.HealthPath
 	// TelemetryStatsPath exposes workflow and stage telemetry aggregates.
-	TelemetryStatsPath = Prefix + "/telemetry/stats"
+	TelemetryStatsPath = apicontract.TelemetryStatsPath
 	// TelemetryErrorsPath exposes paginated recent telemetry errors.
-	TelemetryErrorsPath = Prefix + "/telemetry/errors"
+	TelemetryErrorsPath = apicontract.TelemetryErrorsPath
 	// RunsPath is the run history endpoint.
-	RunsPath = Prefix + "/runs"
+	RunsPath = apicontract.RunsPath
 	// InstancePath is the instance inventory endpoint.
-	InstancePath = Prefix + "/instance"
+	InstancePath = apicontract.InstancePath
 	// GagglesPath is the gaggle inventory endpoint.
-	GagglesPath = Prefix + "/gaggles"
+	GagglesPath = apicontract.GagglesPath
 	// GaggleGoobersPath is the gaggle-scoped goober inventory route.
-	GaggleGoobersPath = Prefix + "/gaggles/{gaggle}/goobers"
+	GaggleGoobersPath = apicontract.GaggleGoobersPath
 	// GaggleWorkflowsPath is the gaggle-scoped workflow inventory route.
-	GaggleWorkflowsPath = Prefix + "/gaggles/{gaggle}/workflows"
+	GaggleWorkflowsPath = apicontract.GaggleWorkflowsPath
 	// WorkflowDetailPath is the gaggle-scoped workflow detail route.
-	WorkflowDetailPath = Prefix + "/gaggles/{gaggle}/workflows/{workflow}"
+	WorkflowDetailPath = apicontract.WorkflowDetailPath
 	// EventsPath is the resumable SSE read-model invalidation stream.
-	EventsPath = Prefix + "/events"
+	EventsPath = apicontract.EventsPath
 )
 
 // Authorizer preserves the authorization boundary for every API route. Tier 1
@@ -67,6 +69,7 @@ type APIError struct {
 type Router struct {
 	mux        *http.ServeMux
 	authorizer Authorizer
+	routes     []apicontract.Route
 }
 
 type handlerConfig struct {
@@ -110,12 +113,17 @@ func NewRouter(authorizer Authorizer) (*Router, error) {
 	return &Router{mux: mux, authorizer: authorizer}, nil
 }
 
-// HandleGET registers a read route. Other methods receive the structured error
-// envelope rather than net/http's plain-text method error.
-func (r *Router) HandleGET(path string, handler http.HandlerFunc) {
-	r.mux.HandleFunc(path, func(w http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
+// Handle registers a typed contract route. Other methods receive the structured
+// error envelope rather than net/http's plain-text method error.
+func (r *Router) Handle(routeID apicontract.RouteID, handler http.HandlerFunc) {
+	route, ok := apicontract.V1Route(routeID)
+	if !ok {
+		panic(fmt.Sprintf("unknown API route ID %q", routeID))
+	}
+	r.routes = append(r.routes, route)
+	r.mux.HandleFunc(route.Path, func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != route.Method {
+			w.Header().Set("Allow", route.Method)
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
@@ -165,7 +173,25 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if err != nil {
 		return nil, err
 	}
-	router.HandleGET(HealthPath, func(w http.ResponseWriter, request *http.Request) {
+	registerV1Routes(router, reader, errorLog)
+	// The event stream is optional wiring, so the events route is only part of
+	// what this handler must serve when a stream is actually configured.
+	expected := apicontract.V1Routes()
+	if config.events != nil {
+		registerEventRoute(router, config.events)
+	} else {
+		expected = slices.DeleteFunc(expected, func(route apicontract.Route) bool {
+			return route.ID == apicontract.RouteEvents
+		})
+	}
+	if err := apicontract.ValidateRoutes(expected, router.routes); err != nil {
+		return nil, fmt.Errorf("register HTTP API routes: %w", err)
+	}
+	return &apiHandler{Handler: router.Handler(), events: config.events}, nil
+}
+
+func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
+	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
 		health, err := reader.Health(request.Context())
 		if err != nil {
 			errorLog.Printf("health read failed: %v", err)
@@ -177,14 +203,10 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	registerTelemetryRoutes(router, reader, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
-	if config.events != nil {
-		registerEventRoute(router, config.events)
-	}
-	return &apiHandler{Handler: router.Handler(), events: config.events}, nil
 }
 
 func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
-	router.HandleGET(RunsPath, func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteRuns, func(w http.ResponseWriter, request *http.Request) {
 		options, err := runListOptions(request)
 		if err != nil {
 			writeReadError(w, errorLog, "list runs", err)
@@ -197,7 +219,7 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		}
 		writeJSON(w, http.StatusOK, runs)
 	})
-	router.HandleGET(RunsPath+"/{run}", func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteRunDetail, func(w http.ResponseWriter, request *http.Request) {
 		run, err := reader.GetRun(request.Context(), request.PathValue("run"))
 		if err != nil {
 			writeReadError(w, errorLog, "get run", err)
@@ -205,7 +227,7 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		}
 		writeJSON(w, http.StatusOK, run)
 	})
-	router.HandleGET(RunsPath+"/{run}/events", func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteRunEvents, func(w http.ResponseWriter, request *http.Request) {
 		events, err := reader.RunEvents(request.Context(), request.PathValue("run"))
 		if err != nil {
 			writeReadError(w, errorLog, "read run events", err)
@@ -213,7 +235,7 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		}
 		writeJSON(w, http.StatusOK, events)
 	})
-	router.HandleGET(RunsPath+"/{run}/stages/{stage}/attempts", func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteStageAttempts, func(w http.ResponseWriter, request *http.Request) {
 		attempts, err := reader.StageAttempts(
 			request.Context(),
 			request.PathValue("run"),
@@ -225,7 +247,7 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		}
 		writeJSON(w, http.StatusOK, attempts)
 	})
-	router.HandleGET(RunsPath+"/{run}/artifacts/{digest}", func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteRunArtifact, func(w http.ResponseWriter, request *http.Request) {
 		artifact, err := reader.Artifact(
 			request.Context(),
 			request.PathValue("run"),

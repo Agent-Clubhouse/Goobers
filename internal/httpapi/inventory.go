@@ -8,13 +8,14 @@ import (
 	"regexp"
 	"strconv"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
 var identifierPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 func registerInventoryRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
-	router.HandleGET(InstancePath, func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteInstance, func(w http.ResponseWriter, request *http.Request) {
 		value, err := reader.Instance(request.Context())
 		if err != nil {
 			writeInventoryReadError(w, errorLog, "instance", err)
@@ -23,7 +24,7 @@ func registerInventoryRoutes(router *Router, reader readservice.Reader, errorLog
 		writeJSON(w, http.StatusOK, value)
 	})
 
-	router.HandleGET(GagglesPath, func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteGaggles, func(w http.ResponseWriter, request *http.Request) {
 		page, ok := inventoryPageRequest(w, request)
 		if !ok {
 			return
@@ -36,7 +37,7 @@ func registerInventoryRoutes(router *Router, reader readservice.Reader, errorLog
 		writeJSON(w, http.StatusOK, value)
 	})
 
-	router.HandleGET(GaggleGoobersPath, func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteGaggleGoobers, func(w http.ResponseWriter, request *http.Request) {
 		gaggle := request.PathValue("gaggle")
 		if !validIdentifier(gaggle) {
 			writeError(w, http.StatusBadRequest, "invalid_identifier", "gaggle identifier is invalid")
@@ -54,7 +55,7 @@ func registerInventoryRoutes(router *Router, reader readservice.Reader, errorLog
 		writeJSON(w, http.StatusOK, value)
 	})
 
-	router.HandleGET(GaggleWorkflowsPath, func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteGaggleWorkflows, func(w http.ResponseWriter, request *http.Request) {
 		gaggle := request.PathValue("gaggle")
 		if !validIdentifier(gaggle) {
 			writeError(w, http.StatusBadRequest, "invalid_identifier", "gaggle identifier is invalid")
@@ -72,7 +73,7 @@ func registerInventoryRoutes(router *Router, reader readservice.Reader, errorLog
 		writeJSON(w, http.StatusOK, value)
 	})
 
-	router.HandleGET(WorkflowDetailPath, func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteWorkflowDetail, func(w http.ResponseWriter, request *http.Request) {
 		gaggle := request.PathValue("gaggle")
 		name := request.PathValue("workflow")
 		if !validIdentifier(gaggle) {

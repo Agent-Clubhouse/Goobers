@@ -49,14 +49,9 @@ func runScaffold(args []string, stdout, stderr io.Writer) int {
 		scaffoldUsage(stderr)
 		return 2
 	}
-	switch args[0] {
-	case "goober", "workflow":
-		return runScaffoldKind(args[0], args[1:], stdout, stderr)
-	default:
-		pf(stderr, "goobers scaffold: unknown kind %q\n\n", args[0])
-		scaffoldUsage(stderr)
-		return 2
-	}
+	pf(stderr, "goobers scaffold: unknown kind %q\n\n", args[0])
+	scaffoldUsage(stderr)
+	return 2
 }
 
 func scaffoldUsage(w io.Writer) {

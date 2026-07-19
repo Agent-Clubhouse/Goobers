@@ -17,6 +17,7 @@ BIN  := bin
 
 GO            ?= go
 GOLANGCI_LINT ?= golangci-lint
+NPM           ?= npm
 
 # Minimum testable-logic coverage enforced by `make cover-check` (ratchet up over
 # time). Overridable: `make cover-check COVERAGE_THRESHOLD=75`.
@@ -44,10 +45,11 @@ help:
 tidy:
 	$(GO) mod tidy
 
-## generate: Regenerate DeepCopy methods (controller-gen object) for the CRD types.
+## generate: Regenerate CRD DeepCopy methods and the portal API contract.
 .PHONY: generate
 generate:
 	$(CONTROLLER_GEN) object paths=./api/v1alpha1/...
+	$(GO) generate ./internal/apicontract
 
 ## manifests: Regenerate CRD YAML manifests from the CRD types.
 .PHONY: manifests
@@ -127,6 +129,13 @@ JOURNAL_TEST_FSYNC_OFF := GOOBERS_DISABLE_FSYNC=1
 test:
 	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
 
+## portal-ci: Install, type-check, build, and test the portal.
+.PHONY: portal-ci
+portal-ci:
+	$(NPM) --prefix portal ci --no-audit --no-fund
+	$(NPM) --prefix portal run build
+	$(NPM) --prefix portal test
+
 ## cover: Show total test coverage.
 .PHONY: cover
 cover: test
@@ -140,9 +149,9 @@ cover: test
 cover-check: test
 	COVERAGE_PROFILE=coverage.out bash test/coverage_gate.sh $(COVERAGE_THRESHOLD)
 
-## ci: Full gate run locally (matches the pipeline).
+## ci: Full Go and portal gate run locally (matches the pipeline).
 .PHONY: ci
-ci: fmt-check vet build test lint
+ci: fmt-check vet build test lint portal-ci
 
 ## clean: Remove build artifacts.
 .PHONY: clean

@@ -29,10 +29,6 @@ func runRuns(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
-	case "list":
-		return runRunsList(args[1:], stdout, stderr)
-	case "du":
-		return runRunsDU(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0

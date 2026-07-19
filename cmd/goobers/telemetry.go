@@ -24,10 +24,6 @@ func runTelemetry(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
-	case "stats":
-		return runTelemetryStats(args[1:], stdout, stderr)
-	case "errors":
-		return runTelemetryErrors(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0

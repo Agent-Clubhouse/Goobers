@@ -12,24 +12,21 @@ import (
 const recentCompletionRunLimit = 100
 
 func runCompletion(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 1 {
-		switch args[0] {
-		case "bash":
-			pf(stdout, "%s", bashCompletion)
-			return 0
-		case "zsh":
-			pf(stdout, "%s", zshCompletion)
-			return 0
-		case "fish":
-			pf(stdout, "%s", fishCompletion)
-			return 0
-		case "-h", "--help", "help":
-			completionUsage(stdout)
-			return 0
-		}
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
+		completionUsage(stdout)
+		return 0
 	}
 	completionUsage(stderr)
 	return 2
+}
+
+func runCompletionScript(script string, args []string, stdout, stderr io.Writer) int {
+	if len(args) != 0 {
+		completionUsage(stderr)
+		return 2
+	}
+	pf(stdout, "%s", script)
+	return 0
 }
 
 func completionUsage(w io.Writer) {

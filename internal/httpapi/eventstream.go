@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -699,7 +700,7 @@ func (s *EventStream) Wait(ctx context.Context) error {
 }
 
 func registerEventRoute(router *Router, stream *EventStream) {
-	router.HandleGET(EventsPath, func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteEvents, func(w http.ResponseWriter, request *http.Request) {
 		initial, events, cancel, err := stream.Subscribe(request.Header.Get("Last-Event-ID"))
 		if err != nil {
 			switch {

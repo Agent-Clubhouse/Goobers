@@ -38,10 +38,6 @@ func exitForPhase(phase journal.RunPhase) int {
 }
 
 func runRun(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "abort" {
-		return runRunAbort(args[1:], stdout, stderr)
-	}
-
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")

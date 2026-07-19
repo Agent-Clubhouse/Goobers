@@ -9,13 +9,14 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
 const maxTelemetryErrorsPageSize = 200
 
 func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader, errorLog *log.Logger) {
-	router.HandleGET(TelemetryStatsPath, func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteTelemetryStats, func(w http.ResponseWriter, request *http.Request) {
 		query, err := parseTelemetryStatsQuery(request.URL.Query())
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
@@ -29,7 +30,7 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 		writeJSON(w, http.StatusOK, result)
 	})
 
-	router.HandleGET(TelemetryErrorsPath, func(w http.ResponseWriter, request *http.Request) {
+	router.Handle(apicontract.RouteTelemetryErrors, func(w http.ResponseWriter, request *http.Request) {
 		query, err := parseTelemetryErrorsQuery(request.URL.Query())
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_query", err.Error())

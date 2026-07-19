@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { HttpDaemonClient } from "./api/httpClient";
+import { bindUIActions } from "./api/surfaceActions";
 import type { DaemonClient, ValidationWarning } from "./api/types";
 import {
   type ConfigurationWarningClient,
@@ -43,14 +44,16 @@ export function App({
     document.getElementById("main-content")?.focus();
   }, [route]);
 
-  const navigate = (nextRoute: Route) => {
-    const nextHash = routeHash(nextRoute);
-    if (window.location.hash === nextHash) {
-      setRoute(nextRoute);
-    } else {
-      window.location.hash = nextHash;
-    }
-  };
+  const { navigate } = bindUIActions({
+    navigate: (nextRoute: Route) => {
+      const nextHash = routeHash(nextRoute);
+      if (window.location.hash === nextHash) {
+        setRoute(nextRoute);
+      } else {
+        window.location.hash = nextHash;
+      }
+    },
+  });
 
   const run =
     route.page === "run" ? runs.find((candidate) => candidate.id === route.id) : undefined;
