@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/goobers/goobers/internal/executor"
 )
 
 // mergeQueuePollServerState scripts one pull request's live state across
@@ -285,6 +288,94 @@ func TestMergeQueuePollTimesOutWhenStillPending(t *testing.T) {
 	}
 	if st.labelCalls != 0 || st.deleteCalls != 0 {
 		t.Fatalf("label/delete calls = %d/%d, want 0/0 for a timeout (no terminal outcome to act on yet)", st.labelCalls, st.deleteCalls)
+	}
+}
+
+// TestMergeQueuePollBudgetStaysInsideTheStageDeadline is issue #884's unit
+// regression. The default poll timeout (30m) is three times the shell
+// executor's default stage timeout (10m), so an unclamped poll never
+// reaches its own timeout branch — it is SIGKILLed first, never writes
+// queue-result.json, and queue-gate then reads the missing queueOutcome as
+// fail, journaling the whole run as FAILED for a pull request that was in
+// fact successfully enqueued.
+//
+// The budget must therefore be strictly less than the stage deadline, with
+// room for the final round trip and the result-file write.
+func TestMergeQueuePollBudgetStaysInsideTheStageDeadline(t *testing.T) {
+	cases := []struct {
+		name  string
+		stage time.Duration
+	}{
+		{"executor default", executor.DefaultTimeout},
+		{"long declared timeout", 35 * time.Minute},
+		{"short declared timeout", 90 * time.Second},
+		{"degenerate timeout", 30 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			budget := mergeQueuePollBudget(tc.stage)
+			if budget <= 0 {
+				t.Fatalf("budget = %s, want a positive poll budget", budget)
+			}
+			if budget >= tc.stage {
+				t.Fatalf("budget = %s, want strictly less than the %s stage deadline — a poll that outlasts its stage is SIGKILLed before it can write a result", budget, tc.stage)
+			}
+		})
+	}
+	// The specific pairing that caused the live failure.
+	if got := mergeQueuePollBudget(executor.DefaultTimeout); got >= executor.DefaultPollTimeout {
+		t.Fatalf("budget under the default stage timeout = %s, want it to clamp the %s default poll timeout down", got, executor.DefaultPollTimeout)
+	}
+}
+
+// TestMergeQueuePollReadsStageTimeoutFromDeclaredInput proves the clamp
+// tracks whatever timeout the workflow actually declares, rather than
+// assuming the executor default. This is what makes the fix survive the
+// hand-maintained instance config: a stage declaring a longer timeout gets
+// a correspondingly longer poll with no rebuild.
+func TestMergeQueuePollReadsStageTimeoutFromDeclaredInput(t *testing.T) {
+	t.Setenv(executor.InputEnvVar(executor.InputTimeout), "35m")
+	if got, want := stageTimeout(), 35*time.Minute; got != want {
+		t.Fatalf("stageTimeout() = %s, want %s (the declared input)", got, want)
+	}
+	if budget := mergeQueuePollBudget(stageTimeout()); budget <= executor.DefaultTimeout {
+		t.Fatalf("budget = %s, want more than the %s executor default once the stage declares 35m", budget, executor.DefaultTimeout)
+	}
+}
+
+// TestMergeQueuePollClampsPollTimeoutToStageBudget is the end-to-end half:
+// a stage that declares a short timeout and a long poll still exits 0 with
+// a written result, rather than running past its own deadline.
+func TestMergeQueuePollClampsPollTimeoutToStageBudget(t *testing.T) {
+	st := &mergeQueuePollServerState{pendingCalls: 1_000_000, terminalState: "open", terminalMerged: false}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, dir := mergeQueuePollEnv(t, server.URL, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms",
+		// A poll timeout far past the stage timeout — the exact shape of
+		// the live defect, where the 30m default ran inside a 10m stage.
+		"pollTimeoutSeconds": "30m",
+		"timeout":            "80ms",
+	})
+
+	done := make(chan struct{})
+	var code int
+	var stderr string
+	go func() {
+		defer close(done)
+		code, _, stderr = runArgs(t, "merge-queue-poll", root)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("merge-queue-poll did not return — it polled past its own stage deadline instead of clamping to it")
+	}
+
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q, want exit 0 for a clamped timeout (not a stage failure)", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "timeout" {
+		t.Fatalf("result = %+v, want queueOutcome=timeout written before the stage deadline", result)
 	}
 }
 
