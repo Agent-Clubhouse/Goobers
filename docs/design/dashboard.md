@@ -289,18 +289,37 @@ and media-type rules. The API never exposes arbitrary filesystem paths.
 Use Server-Sent Events for local live updates, with polling as a documented
 fallback.
 
-The protocol must define:
+`GET /api/v1/events` returns `text/event-stream`. A new connection first
+receives a `snapshot` event whose `id` and `data.cursor` are the same cursor and
+whose models are `instance`, `run`, and `workflow`. The server registers the
+subscriber atomically with that snapshot, so clients can refetch the ordinary
+read endpoints and then apply every later invalidation without a missed-update
+window.
 
-- Snapshot-plus-cursor startup with no race between them.
-- Stable event IDs/cursors.
-- `Last-Event-ID` reconnect.
-- Heartbeats and explicit connected/reconnecting/stale states.
-- Client deduplication and ordered application.
-- A measurable local update target (p95 under one second from durable append to
-  visible state on the same machine).
+Durable journal records produce ordered `invalidate` events. Each event has a
+session-scoped monotonic `id`, repeats that value in `data.cursor`, names the
+coarse models to refetch, and may narrow the change with `runIds` or workflow
+identities. Durable run checkpoint changes also invalidate their run and
+workflow models, including human-gate transitions that append no event.
+Clients apply events in ID order and ignore an ID they have already applied.
+They reconnect with `Last-Event-ID`; the daemon replays retained events with
+their original IDs before continuing live delivery. Replay history is bounded.
+A malformed cursor returns `400 invalid_cursor`; a cursor from an older daemon
+session or outside the retained window returns `409 stale_cursor`.
 
-The event stream invalidates/refetches versioned read models; it does not create
-a second ad hoc shape for every page.
+The stream sends `heartbeat` events without IDs during idle periods. A client
+is connected after the initial snapshot or replay completes, reconnecting
+after a transport disconnect, and stale after `409 stale_cursor`. Slow clients
+are disconnected rather than back-pressuring journal writers. Daemon shutdown
+closes active streams before waiting for HTTP handlers. The local update target
+is p95 under one second from durable append to visible state on the same
+machine.
+
+Polling is the complete recovery fallback: after an unavailable stream or
+stale cursor, refetch the current `/api/v1/instance`, inventory, run, and
+telemetry endpoints, discard the old cursor, and reconnect without
+`Last-Event-ID`. Those versioned reads are the source of current state; SSE only
+invalidates them and never carries page-specific state.
 
 ## 9. Delivery order
 

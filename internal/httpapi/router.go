@@ -35,6 +35,8 @@ const (
 	GaggleWorkflowsPath = Prefix + "/gaggles/{gaggle}/workflows"
 	// WorkflowDetailPath is the gaggle-scoped workflow detail route.
 	WorkflowDetailPath = Prefix + "/gaggles/{gaggle}/workflows/{workflow}"
+	// EventsPath is the resumable SSE read-model invalidation stream.
+	EventsPath = Prefix + "/events"
 )
 
 // Authorizer preserves the authorization boundary for every API route. Tier 1
@@ -65,6 +67,35 @@ type APIError struct {
 type Router struct {
 	mux        *http.ServeMux
 	authorizer Authorizer
+}
+
+type handlerConfig struct {
+	events *EventStream
+}
+
+// HandlerOption configures optional HTTP transport surfaces.
+type HandlerOption func(*handlerConfig) error
+
+// WithEventStream registers the resumable SSE invalidation endpoint.
+func WithEventStream(stream *EventStream) HandlerOption {
+	return func(config *handlerConfig) error {
+		if stream == nil {
+			return errors.New("http API event stream is required")
+		}
+		config.events = stream
+		return nil
+	}
+}
+
+type apiHandler struct {
+	http.Handler
+	events *EventStream
+}
+
+func (h *apiHandler) shutdown() {
+	if h.events != nil {
+		h.events.Close()
+	}
 }
 
 // NewRouter constructs an empty API router.
@@ -117,12 +148,18 @@ func (r *Router) Handler() http.Handler {
 }
 
 // NewHandler registers the v1 read routes over the shared service.
-func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.Logger) (http.Handler, error) {
+func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.Logger, opts ...HandlerOption) (http.Handler, error) {
 	if reader == nil {
 		return nil, errors.New("http API read service is required")
 	}
 	if errorLog == nil {
 		return nil, errors.New("http API error logger is required")
+	}
+	config := handlerConfig{}
+	for _, opt := range opts {
+		if err := opt(&config); err != nil {
+			return nil, err
+		}
 	}
 	router, err := NewRouter(authorizer)
 	if err != nil {
@@ -140,7 +177,10 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	registerTelemetryRoutes(router, reader, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
-	return router.Handler(), nil
+	if config.events != nil {
+		registerEventRoute(router, config.events)
+	}
+	return &apiHandler{Handler: router.Handler(), events: config.events}, nil
 }
 
 func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
