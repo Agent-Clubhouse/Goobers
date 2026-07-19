@@ -23,8 +23,24 @@ make help     # list all targets
 make ci       # the full local gate: fmt-check · vet · build · test · lint
 ```
 
-`make ci` is the exact gate CI enforces (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
-If it's green locally, it will be green in CI.
+`make ci` is the full gate CI enforces on Ubuntu and macOS (see
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)). If it's green locally,
+it exercises the same checks as those required jobs.
+
+### CI platform matrix
+
+| Runner | Command | PR status | What it gates |
+|---|---|---|---|
+| `ubuntu-latest` | `make ci` | Required via the aggregate CI check | The full Linux build, test, race, format, vet, and lint gate |
+| `macos-latest` | `make ci` | Required via the aggregate CI check | The full macOS build, test, race, format, vet, and lint gate |
+| `windows-latest` | `go vet ./...` and `go build ./...` | Advisory (allowed to fail) | Windows compilation while the platform abstractions and portable toolchain tracked by #620, #623, #625, #627, and #630 land |
+
+All three statuses are reported on every pull request, and one platform failure
+does not cancel the others. The required `make ci (fmt-check · vet · build ·
+test · lint)` status aggregates the matrix and fails when either Ubuntu or macOS
+fails. Go module and build caches are scoped to each runner OS. Once the listed
+Windows prerequisites land and the job is stable, Windows will run `make ci`
+and become a required check.
 
 ## Workflow
 
@@ -35,13 +51,14 @@ If it's green locally, it will be green in CI.
 5. Run `make ci` locally until green.
 6. Open a **pull request against `main`**, filling in the
    [PR template](.github/PULL_REQUEST_TEMPLATE.md).
-7. CI (`make ci`) must pass. Address review feedback; keep the branch up to date with `main`.
+7. The required Ubuntu and macOS CI checks must pass. Address review feedback; keep the
+   branch up to date with `main`.
 
 ## Merge requirements
 
 `main` is protected. A PR merges once:
 
-- **CI is green** — the `make ci` check passes on the latest commit. This is the enforced gate.
+- **CI is green** — the required Ubuntu and macOS `make ci` checks pass on the latest commit.
 - **Review** — approval from a [CODEOWNER](.github/CODEOWNERS) where required.
 
 Prefer small, reviewable PRs. Squash-merge is the default so `main` stays linear.
