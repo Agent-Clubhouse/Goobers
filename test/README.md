@@ -23,7 +23,7 @@ workflow file. Gate logic lives in `Makefile` targets the workflow invokes, so t
 stays thin and the gate is runnable locally (`make ci`).
 
 ### Coverage gate
-`make test`/`make cover` writes `coverage.out`; **`test/coverage_gate.sh [threshold]`**
+`make test`/`make cover` writes `coverage.out`; **`go run ./test/coveragegate [threshold]`**
 (default 70, or `$COVERAGE_THRESHOLD`) fails with exit 1 if coverage is below the
 threshold, printing the excluded file set + per-function coverage + the total.
 
