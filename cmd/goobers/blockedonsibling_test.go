@@ -240,7 +240,7 @@ func TestPRSelectPrefersPRWithMostBlockedDependents(t *testing.T) {
 
 	for _, number := range []int{101, 102, 103} {
 		server.addIssue(number, "eligible pr")
-		server.addOpenPR(number, "goobers/impl/"+strconv.Itoa(number), "main", "head", "base", false, nil, nil)
+		server.addOpenPR(number, "goobers/implementation/"+strconv.Itoa(number), "main", "head", "base", false, nil, nil)
 	}
 	for number, blockers := range map[int][]int{
 		201: {103},
@@ -248,7 +248,7 @@ func TestPRSelectPrefersPRWithMostBlockedDependents(t *testing.T) {
 		203: {102},
 	} {
 		server.addIssue(number, "blocked pr")
-		server.addOpenPR(number, "goobers/impl/"+strconv.Itoa(number), "main", "head", "base", false, []string{blockedOnSiblingLabel}, nil)
+		server.addOpenPR(number, "goobers/implementation/"+strconv.Itoa(number), "main", "head", "base", false, []string{blockedOnSiblingLabel}, nil)
 		server.addComment(number, blockedOnSiblingCommentFor(t, blockers...))
 	}
 
@@ -301,7 +301,7 @@ func TestPRSelectWithoutBlockedDependentsPreservesNumberOrder(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	for _, number := range []int{112, 111} {
 		server.addIssue(number, "eligible pr")
-		server.addOpenPR(number, "goobers/impl/"+strconv.Itoa(number), "main", "head", "base", false, nil, nil)
+		server.addOpenPR(number, "goobers/implementation/"+strconv.Itoa(number), "main", "head", "base", false, nil, nil)
 	}
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-run-no-priority")
