@@ -144,10 +144,10 @@ cover: test
 ## cover-check: Fail if testable-logic coverage is below COVERAGE_THRESHOLD.
 # Standalone gate (intentionally NOT part of `ci`): a coverage dip should surface
 # as its own visible job, not break every `make ci` reproduction mid-development.
-# Excludes generated/cmd-mains/embed from the denominator (see test/coverage_gate.sh).
+# Excludes generated/cmd-mains/embed from the denominator (see test/coveragegate).
 .PHONY: cover-check
 cover-check: test
-	COVERAGE_PROFILE=coverage.out bash test/coverage_gate.sh $(COVERAGE_THRESHOLD)
+	COVERAGE_PROFILE=coverage.out $(GO) run ./test/coveragegate $(COVERAGE_THRESHOLD)
 
 ## ci: Full Go and portal gate run locally (matches the pipeline).
 .PHONY: ci

@@ -30,7 +30,7 @@ What actually couples us to POSIX (breaks **Windows**; fine on Linux):
 | Process groups: `SysProcAttr{Setpgid}` + `syscall.Kill(-pid, SIGKILL)` | `internal/harness/process.go:190,225` | Needs Job Objects |
 | Unix signals (SIGTERM; `Signal(0)` liveness probe) | `internal/signals/signals.go:25`, `internal/worktree/reap.go:274` | `os.Interrupt` only; no kill-0 |
 | Token-file permission check wants 0600 | `internal/credentials/source.go:75` | Unix mode bits are fiction on NTFS; needs ACL check |
-| bash: `SHELL := /usr/bin/env bash` in Makefile; `test/coverage_gate.sh` | Makefile, test/ | No bash on stock Windows |
+| bash: `SHELL := /usr/bin/env bash` and Bash recipes | Makefile | No bash on stock Windows |
 | Agent sandboxing design is Seatbelt (macOS) / bubblewrap (Linux) only | docs/design/v1/35-… | No Windows mechanism named |
 
 Also platform-sensitive though not broken: git worktree behavior on Windows (long paths,
@@ -66,8 +66,9 @@ half-ported platform.
   service stop events (windows); one graceful-shutdown path.
 - **P4. Secret-file protection portability** — 0600 check (unix) / owner-only ACL check
   (windows) in `credentials.TokenRef`; fail-closed on both.
-- **P5. De-bash the toolchain** — `coverage_gate.sh` → Go tool (`go run ./test/covergate`);
-  Makefile audited for bashisms or fronted by a portable task runner; contributor docs.
+- **P5. De-bash the toolchain** — coverage gate replaced by a Go tool
+  (`go run ./test/coveragegate`); remaining Makefile bashisms audited or fronted by a
+  portable task runner; contributor docs.
 - **P6. CI platform matrix** — `make ci` on ubuntu + macos + windows (macOS joins the
   matrix too: today's CI never tests the primary dev platform). Windows job may start
   allow-failure while P1–P5 land, then becomes required. (Wiring detail shared with the
