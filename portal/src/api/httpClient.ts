@@ -8,6 +8,7 @@ import {
   assertSupportedContractVersion,
   isRecord,
 } from "./errors";
+import { apiRoutes, type ApiRoute } from "./contract.generated";
 import type {
   ApiErrorEnvelope,
   ArtifactContent,
@@ -31,10 +32,26 @@ import type {
   WorkflowPage,
 } from "./types";
 
-const API_PREFIX = "/api/v1";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 type QueryValue = string | number | undefined;
+type PathParameters = Readonly<Record<string, string>>;
+
+const clientRoutes = {
+  health: apiRoutes.health,
+  instance: apiRoutes.instance,
+  gaggles: apiRoutes.gaggles,
+  gaggleGoobers: apiRoutes.gaggleGoobers,
+  gaggleWorkflows: apiRoutes.gaggleWorkflows,
+  workflowDetail: apiRoutes.workflowDetail,
+  runs: apiRoutes.runs,
+  runDetail: apiRoutes.runDetail,
+  runEvents: apiRoutes.runEvents,
+  stageAttempts: apiRoutes.stageAttempts,
+  runArtifact: apiRoutes.runArtifact,
+  telemetryStats: apiRoutes.telemetryStats,
+  telemetryErrors: apiRoutes.telemetryErrors,
+} satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {
   baseUrl?: string;
@@ -62,19 +79,19 @@ export class HttpDaemonClient implements DaemonClient {
   }
 
   async getHealth(options?: RequestOptions): Promise<Health> {
-    const health = await this.getJSON<Health>("/health", undefined, options);
+    const health = await this.getJSON<Health>(clientRoutes.health, undefined, options);
     assertSupportedContractVersion(health);
     return health;
   }
 
   async getInstance(options?: RequestOptions): Promise<Instance> {
-    const instance = await this.getJSON<Instance>("/instance", undefined, options);
+    const instance = await this.getJSON<Instance>(clientRoutes.instance, undefined, options);
     assertSupportedContractVersion(instance);
     return instance;
   }
 
   listGaggles(request?: PageRequest, options?: RequestOptions): Promise<GagglePage> {
-    return this.getJSON("/gaggles", pageQuery(request), options);
+    return this.getJSON(clientRoutes.gaggles, pageQuery(request), options);
   }
 
   listGoobers(
@@ -82,7 +99,7 @@ export class HttpDaemonClient implements DaemonClient {
     request?: PageRequest,
     options?: RequestOptions,
   ): Promise<GooberPage> {
-    return this.getJSON(`/gaggles/${segment(gaggle)}/goobers`, pageQuery(request), options);
+    return this.getJSON(clientRoutes.gaggleGoobers, pageQuery(request), options, { gaggle });
   }
 
   listWorkflows(
@@ -90,7 +107,7 @@ export class HttpDaemonClient implements DaemonClient {
     request?: PageRequest,
     options?: RequestOptions,
   ): Promise<WorkflowPage> {
-    return this.getJSON(`/gaggles/${segment(gaggle)}/workflows`, pageQuery(request), options);
+    return this.getJSON(clientRoutes.gaggleWorkflows, pageQuery(request), options, { gaggle });
   }
 
   getWorkflow(
@@ -99,15 +116,16 @@ export class HttpDaemonClient implements DaemonClient {
     options?: RequestOptions,
   ): Promise<WorkflowDetail> {
     return this.getJSON(
-      `/gaggles/${segment(gaggle)}/workflows/${segment(workflow)}`,
+      clientRoutes.workflowDetail,
       undefined,
       options,
+      { gaggle, workflow },
     );
   }
 
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {
     return this.getJSON(
-      "/runs",
+      clientRoutes.runs,
       request && {
         gaggle: request.gaggle,
         workflow: request.workflow,
@@ -121,11 +139,11 @@ export class HttpDaemonClient implements DaemonClient {
   }
 
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail> {
-    return this.getJSON(`/runs/${segment(runId)}`, undefined, options);
+    return this.getJSON(clientRoutes.runDetail, undefined, options, { run: runId });
   }
 
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList> {
-    return this.getJSON(`/runs/${segment(runId)}/events`, undefined, options);
+    return this.getJSON(clientRoutes.runEvents, undefined, options, { run: runId });
   }
 
   listStageAttempts(
@@ -134,9 +152,10 @@ export class HttpDaemonClient implements DaemonClient {
     options?: RequestOptions,
   ): Promise<AttemptList> {
     return this.getJSON(
-      `/runs/${segment(runId)}/stages/${segment(stage)}/attempts`,
+      clientRoutes.stageAttempts,
       undefined,
       options,
+      { run: runId, stage },
     );
   }
 
@@ -146,7 +165,7 @@ export class HttpDaemonClient implements DaemonClient {
     options?: RequestOptions,
   ): Promise<ArtifactContent> {
     return this.withResponse(
-      `/runs/${segment(runId)}/artifacts/${segment(digest)}`,
+      clientRoutes.runArtifact,
       undefined,
       options,
       "*/*",
@@ -176,6 +195,7 @@ export class HttpDaemonClient implements DaemonClient {
           bytes,
         };
       },
+      { run: runId, digest },
     );
   }
 
@@ -184,7 +204,7 @@ export class HttpDaemonClient implements DaemonClient {
     options?: RequestOptions,
   ): Promise<TelemetryStatsResult> {
     return this.getJSON(
-      "/telemetry/stats",
+      clientRoutes.telemetryStats,
       request && {
         workflow: request.workflow,
         gaggle: request.gaggle,
@@ -200,7 +220,7 @@ export class HttpDaemonClient implements DaemonClient {
     options?: RequestOptions,
   ): Promise<TelemetryErrorsPage> {
     return this.getJSON(
-      "/telemetry/errors",
+      clientRoutes.telemetryErrors,
       request && {
         workflow: request.workflow,
         gaggle: request.gaggle,
@@ -215,11 +235,12 @@ export class HttpDaemonClient implements DaemonClient {
   }
 
   private async getJSON<T>(
-    path: string,
+    route: ApiRoute,
     query?: Record<string, QueryValue>,
     options?: RequestOptions,
+    pathParameters?: PathParameters,
   ): Promise<T> {
-    return this.withResponse(path, query, options, "application/json", async (response) => {
+    return this.withResponse(route, query, options, "application/json", async (response) => {
       let value: unknown;
       try {
         value = JSON.parse(await response.text());
@@ -227,15 +248,16 @@ export class HttpDaemonClient implements DaemonClient {
         throw new MalformedResponseError(undefined, { cause: error });
       }
       return value as T;
-    });
+    }, pathParameters);
   }
 
   private async withResponse<T>(
-    path: string,
+    route: ApiRoute,
     query: Record<string, QueryValue> | undefined,
     options: RequestOptions | undefined,
     accept: string,
     read: (response: Response) => Promise<T>,
+    pathParameters?: PathParameters,
   ): Promise<T> {
     if (options?.signal?.aborted) {
       throw new RequestCancelledError();
@@ -254,8 +276,8 @@ export class HttpDaemonClient implements DaemonClient {
     }, this.timeoutMs);
 
     try {
-      const response = await this.fetch(this.url(path, query), {
-        method: "GET",
+      const response = await this.fetch(this.url(route, query, pathParameters), {
+        method: route.method,
         headers: { Accept: accept },
         signal: controller.signal,
       });
@@ -280,7 +302,11 @@ export class HttpDaemonClient implements DaemonClient {
     }
   }
 
-  private url(path: string, query?: Record<string, QueryValue>): string {
+  private url(
+    route: ApiRoute,
+    query?: Record<string, QueryValue>,
+    pathParameters?: PathParameters,
+  ): string {
     const search = new URLSearchParams();
     for (const [name, value] of Object.entries(query ?? {})) {
       if (value !== undefined) {
@@ -288,7 +314,7 @@ export class HttpDaemonClient implements DaemonClient {
       }
     }
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
-    return `${this.baseUrl}${API_PREFIX}${path}${suffix}`;
+    return `${this.baseUrl}${routePath(route.path, pathParameters)}${suffix}`;
   }
 }
 
@@ -325,6 +351,16 @@ function normalizeBaseUrl(value: string): string {
 
 function segment(value: string): string {
   return encodeURIComponent(value);
+}
+
+function routePath(template: string, parameters?: PathParameters): string {
+  return template.replace(/\{([^}]+)\}/g, (_match, name: string) => {
+    const value = parameters?.[name];
+    if (value === undefined) {
+      throw new TypeError(`Missing path parameter: ${name}`);
+    }
+    return segment(value);
+  });
 }
 
 function pageQuery(request?: PageRequest): Record<string, QueryValue> | undefined {

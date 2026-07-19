@@ -1,10 +1,10 @@
 name: CI
 
-# Goobers control-plane CI — the enforced merge gate.
-# Runs `make ci` (fmt-check · vet · build · test · lint) on Ubuntu and macOS,
-# plus an advisory Windows compile smoke, on every PR to main, push to main, and
-# merge-group build. See Makefile `ci` target for the authoritative full-gate
-# step list.
+# Goobers control-plane and portal CI — the enforced merge gate.
+# Runs `make ci` (Go fmt/vet/build/test/lint + portal build/test) on Ubuntu and
+# macOS, plus an advisory Windows compile smoke, on every PR to main, push to
+# main, and merge-group build. See Makefile `ci` target for the authoritative
+# full-gate step list.
 
 on:
   push:
@@ -47,6 +47,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
 
       - name: Download modules
         run: go mod download
