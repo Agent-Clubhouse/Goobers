@@ -148,6 +148,9 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 			converted = true
 		}
 	}
+	if scanner.Err() != nil {
+		return transcriptCapture{}, false
+	}
 	if !converted {
 		return transcriptCapture{}, false
 	}

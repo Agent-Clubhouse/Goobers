@@ -84,6 +84,10 @@ func TestCopilotAdapterPrefersNativeSessionTranscript(t *testing.T) {
 }
 
 func TestCopilotAdapterFallsBackWhenNativeSessionLogUnavailable(t *testing.T) {
+	oversized := []byte(`{"type":"user.message","data":{"content":"native prefix"}}` + "\n")
+	oversized = append(oversized, bytes.Repeat([]byte("x"), int(maxCopilotSessionEventBytes)+1)...)
+	oversized = append(oversized, '\n')
+
 	for _, tc := range []struct {
 		name string
 		log  []byte
@@ -91,6 +95,7 @@ func TestCopilotAdapterFallsBackWhenNativeSessionLogUnavailable(t *testing.T) {
 		{name: "missing"},
 		{name: "unsupported", log: []byte(`{"type":"session.start","data":{}}` + "\n")},
 		{name: "malformed", log: []byte("{not json\n")},
+		{name: "oversized after supported", log: oversized},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			workspace := t.TempDir()
