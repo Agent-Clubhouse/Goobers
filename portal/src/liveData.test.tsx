@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { DaemonApiError, DaemonUnavailableError } from "./api/errors";
@@ -9,6 +9,7 @@ import type {
   EventStreamRequest,
   Instance,
   RequestOptions,
+  ValidationWarning,
 } from "./api/types";
 import {
   LiveDataController,
@@ -279,6 +280,52 @@ describe("LiveDataController", () => {
 });
 
 describe("live page integration", () => {
+  it("refreshes terminal run detail when the run model is invalidated", async () => {
+    vi.useRealTimers();
+    window.location.hash = "#/run/01JZ402DASHBOARD";
+    const client = new MutableFixtureClient();
+    const getRun = vi.spyOn(client, "getRun");
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Run 01JZ402DASHBOARD" }),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"));
+    const initialReads = getRun.mock.calls.length;
+
+    client.stream.push(update("fixture:1", ["run"]));
+
+    await waitFor(() => expect(getRun.mock.calls.length).toBeGreaterThan(initialReads));
+  });
+
+  it("refreshes configuration warnings for their instance and workflow models", async () => {
+    vi.useRealTimers();
+    const client = new MutableFixtureClient();
+    let instanceWarnings: ValidationWarning[] = [];
+    let workflowWarnings: ValidationWarning[] = [];
+    const warningClient = {
+      getInstance: vi.fn(async () => ({ warnings: instanceWarnings })),
+      getWorkflow: vi.fn(async () => ({ warnings: workflowWarnings })),
+    };
+    render(<App client={client} warningClient={warningClient} />);
+
+    expect(await screen.findByText("No active configuration warnings.")).toBeInTheDocument();
+    instanceWarnings = [warning("VER001", "Instance/live")];
+    client.stream.push(update("fixture:1", ["instance"]));
+    expect(await screen.findByText("VER001")).toBeInTheDocument();
+
+    act(() => {
+      window.location.hash = "#/workflow/implementation";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(
+      await screen.findByText("No active configuration warnings for this workflow."),
+    ).toBeInTheDocument();
+    workflowWarnings = [warning("VER002", "Workflow/implementation")];
+    client.stream.push(update("fixture:2", ["workflow"]));
+    expect(await screen.findByText("VER002")).toBeInTheDocument();
+  });
+
   it("meets the local p95 update target and stays stale on disconnect", async () => {
     vi.useRealTimers();
     const client = new MutableFixtureClient();
@@ -403,6 +450,15 @@ function update(id: string, models: ("instance" | "run" | "workflow")[]): Daemon
     id,
     type: "invalidate",
     data: { cursor: id, models },
+  };
+}
+
+function warning(code: ValidationWarning["code"], scope: string): ValidationWarning {
+  return {
+    code,
+    severity: "warning",
+    scope,
+    explanation: `${scope} changed.`,
   };
 }
 
