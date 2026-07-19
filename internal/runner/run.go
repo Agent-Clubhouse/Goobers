@@ -473,10 +473,100 @@ const interruptedAttemptErrorCode = "interrupted"
 // (#108) — both reconstructed from the journal by Resume (see
 // lastFinishedSubject, reconstructPointers in resume.go), since walk's own
 // in-memory accumulation of them is exactly what a crash wipes.
+// workspaceBranch is the same for the run-scoped branch rebinding below
+// (lastWorkspaceBranch in resume.go).
 type walkSeed struct {
-	pointers   []apiv1.ContextPointer
-	lastStage  string
-	lastResult apiv1.ResultEnvelope
+	pointers        []apiv1.ContextPointer
+	lastStage       string
+	lastResult      apiv1.ResultEnvelope
+	workspaceBranch string
+}
+
+// WorkspaceBranchOutput is the well-known stage output that REBINDS the branch
+// every subsequent stage's worktree checks out, for the rest of the run
+// (issue #392).
+//
+// By default a run's stages share one branch — providers.BranchName,
+// "goobers/<workflow>/<run-id>" — created off RepoRef.Branch by the first
+// stage and checked out as-is, carrying prior stages' commits, by every stage
+// after it (internal/worktree.Manager.Create's own doc comment, #133). That
+// shared branch, not a shared directory, is what makes local-ci and the
+// reviewer gate evaluate the run's actual diff.
+//
+// A workflow that re-enters on work that ALREADY has a branch needs that same
+// continuity mechanism pointed somewhere else. pr-remediation is the case this
+// exists for (docs/design/v0/pr-lifecycle-loop.md §5): it rebases and reworks
+// an EXISTING PR, so its implement/review/local-ci stages must operate on the
+// PR's own head branch, not a fresh one cut from main. Its gather-pr-context
+// entrypoint emits the selected PR's head branch under this key, and every
+// stage from there on — including agentic stages and gate evaluators, which
+// have no way to re-checkout anything for themselves — is provisioned against
+// it with no per-stage cooperation at all.
+//
+// The rebinding is sticky for the remainder of the run and survives a crash:
+// stage outputs are journaled on stage.finished, so Resume recovers the most
+// recent binding (lastWorkspaceBranch) into walkSeed rather than silently
+// reverting a resumed run to the default branch mid-chain.
+//
+// A rebound branch must already exist (worktree.CreateOptions.RequireExistingBranch
+// below turns a missing one into a loud failure rather than a silent empty branch
+// cut from base), and must live in the run-branch namespace the worktree manager
+// protects from its prune-fetch (internal/worktree/manager.go's
+// runBranchNamespace) — otherwise the next stage's WorkingCopy refresh would
+// delete it. Emitting an empty value is a no-op, not a reset.
+//
+// ONLY A DETERMINISTIC STAGE MAY REBIND. An agentic stage's Outputs are
+// authored by the model itself (internal/harness's result-shape hint invites a
+// free-form `"outputs": {...}` map and internal/harness.Executor passes it
+// through verbatim), so honoring this key from one would let any goober, in any
+// workflow, silently move every subsequent stage — including `push-branch` —
+// onto a branch of its choosing. `implementation` needs no diff at all to be
+// affected by that; it just needs an implementer that decides to report a
+// branch name. Rebinding is a runner control-plane decision, so it is sourced
+// only from stages whose output the runner itself produced.
+const WorkspaceBranchOutput = "workspaceBranch"
+
+// runBranchNamespacePrefix is the "goobers/" prefix providers.BranchName
+// produces, derived from it rather than restated so the two cannot drift
+// (internal/localscheduler/openprcount.go derives it the same way).
+var runBranchNamespacePrefix = strings.SplitN(providers.BranchName("x", "x"), "/", 2)[0] + "/"
+
+// rebindWorkspaceBranch reports the branch a finished task's result rebinds the
+// run's workspace to, or "" if it rebinds nothing. Fails closed on every
+// doubtful case: a non-deterministic producer, a non-string value, or a branch
+// outside the run-branch namespace are all ignored rather than honored.
+func rebindWorkspaceBranch(t apiv1.Task, result apiv1.ResultEnvelope) string {
+	if t.Type != apiv1.TaskDeterministic {
+		return ""
+	}
+	return workspaceBranchFrom(result.Outputs)
+}
+
+// workspaceBranchFrom reads WorkspaceBranchOutput out of a stage's scalar
+// Outputs. Shared with resume.go, whose journaled outputs are the same values
+// under map[string]any rather than map[string]interface{} (identical types,
+// different spelling).
+//
+// Deliberately does NOT stringify non-strings the way internal/gate's
+// stringField does: a branch name is not a value to coerce, and
+// `"workspaceBranch": false` becoming a branch literally named "false" is a
+// worse outcome than ignoring a malformed emission. Values outside the
+// run-branch namespace are ignored for the same reason — "main" is the
+// dangerous case, and nothing legitimate needs it.
+func workspaceBranchFrom(outputs map[string]interface{}) string {
+	v, ok := outputs[WorkspaceBranchOutput]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, runBranchNamespacePrefix) {
+		return ""
+	}
+	return s
 }
 
 // walk advances the machine from startState to a terminal state (or a
@@ -509,6 +599,10 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	pointers := append([]apiv1.ContextPointer(nil), seed.pointers...)
 	lastStage := seed.lastStage
 	lastResult := seed.lastResult
+	// The branch every stage's worktree is provisioned against, rebindable
+	// mid-run by a stage output (#392, WorkspaceBranchOutput). Empty means
+	// "the run's own branch", resolved per stage in createStageWorkspace.
+	workspaceBranch := seed.workspaceBranch
 	steps := 0
 
 	for {
@@ -551,12 +645,21 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				startAttempt = int32(resume.attempt) + 1
 				resume = nil
 			}
-			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt)
+			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, workspaceBranch)
 			if err != nil {
 				return r.failTerminal(in.RunID, jr, t.Name, steps, err)
 			}
 			pointers = append(pointers, produced...)
 			lastStage, lastResult = t.Name, result
+			// Sticky for the rest of the run, and only ever set by a stage
+			// that actually emitted the key — see WorkspaceBranchOutput. This
+			// runs AFTER the stage that emits it, so that stage itself still
+			// gets the previous binding (gather-pr-context is provisioned on
+			// the run's own branch and checks the PR's branch out for itself;
+			// every stage after it is provisioned on the PR's branch directly).
+			if b := rebindWorkspaceBranch(t, result); b != "" {
+				workspaceBranch = b
+			}
 
 			next, res, advance, oerr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.Item, t, result, steps)
 			if oerr != nil {
@@ -582,7 +685,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: steps}, nil
 			}
 
-			gr, err, removeErr := r.evaluateGate(ctx, gateEval, ex, in, g, lastStage, lastResult, pointers)
+			gr, err, removeErr := r.evaluateGate(ctx, gateEval, ex, in, g, lastStage, lastResult, pointers, workspaceBranch)
 			if removeErr != nil {
 				// Non-fatal (issue #136), same rationale as runTask's own
 				// worktree_remove_failed journaling — the teardown failure
@@ -1178,7 +1281,7 @@ func (r *Runner) FinalizeTerminal(runID string, phase journal.RunPhase) error {
 // zero value for the run's first task) — dispatchTask threads its Outputs
 // into this task's Inputs per t.InputsFrom (#132), the task-to-task analog
 // of evaluateGate's unconditional Outputs flatten.
-func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, workspaceBranch string) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	ctx, span := r.startTaskSpan(ctx, in, t)
 	defer span.End()
 
@@ -1235,7 +1338,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, span)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, span, workspaceBranch)
 		for _, m := range mutations {
 			// Best-effort, like ClaimLedger's own journal() (issue #228): a
 			// provider mutation already happened for real regardless of
@@ -1393,12 +1496,12 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task)
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, attempt int, class journal.AttemptClass, span telemetry.Span) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, attempt int, class journal.AttemptClass, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	workspaceMode := apiv1.WorkspaceRepo
 	if t.Run != nil && t.Run.Workspace != "" {
 		workspaceMode = t.Run.Workspace
 	}
-	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream, workspaceMode)
+	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream, workspaceMode, workspaceBranch)
 	if err != nil {
 		prepErr := fmt.Errorf("prepare stage %q: %w", t.Name, err)
 		// #572: a transient network/remote failure provisioning the stage's
@@ -1663,7 +1766,7 @@ func taskEscalationTarget(machine *workflow.Machine, task apiv1.Task) string {
 // Provisioning one anyway wasted a git clone/checkout on every automated-gate
 // evaluation and turned a worktree-provisioning failure (disk, git) into a
 // failure of a gate that touches no filesystem whatsoever.
-func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer) (result gate.Result, err error, removeErr error) {
+func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string) (result gate.Result, err error, removeErr error) {
 	// Same drain contract as runTask: a gate attempt already underway when
 	// SIGTERM cancels the run-level ctx finishes and journals cleanly.
 	ctx = context.WithoutCancel(ctx)
@@ -1720,7 +1823,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
 		var workspace *stageWorkspace
-		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, upstream, apiv1.WorkspaceRepo)
+		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, upstream, apiv1.WorkspaceRepo, workspaceBranch)
 		if err != nil {
 			err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
 			span.Fail(err)
@@ -1903,8 +2006,8 @@ func (w *stageWorkspace) Remove(ctx context.Context) error {
 
 // buildEnvelope provisions an isolated repository worktree or empty scratch
 // directory and builds one stage attempt's invocation envelope.
-func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, goal string, taskInputs map[string]string, capabilities []string, upstream []apiv1.ContextPointer, workspaceMode apiv1.WorkspaceMode) (apiv1.InvocationEnvelope, *stageWorkspace, error) {
-	workspace, err := r.createStageWorkspace(ctx, in, stageName, workspaceMode)
+func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, goal string, taskInputs map[string]string, capabilities []string, upstream []apiv1.ContextPointer, workspaceMode apiv1.WorkspaceMode, workspaceBranch string) (apiv1.InvocationEnvelope, *stageWorkspace, error) {
+	workspace, err := r.createStageWorkspace(ctx, in, stageName, workspaceMode, workspaceBranch)
 	if err != nil {
 		return apiv1.InvocationEnvelope{}, nil, err
 	}
@@ -1929,7 +2032,10 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 	return env, workspace, nil
 }
 
-func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode) (*stageWorkspace, error) {
+// createStageWorkspace provisions this stage attempt's workspace. workspaceBranch
+// is the run-scoped branch rebinding (WorkspaceBranchOutput, #392): empty — the
+// normal case — means the run's own branch, providers.BranchName.
+func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, workspaceBranch string) (*stageWorkspace, error) {
 	switch mode {
 	case apiv1.WorkspaceScratch:
 		if r.cfg.ScratchDir == "" {
@@ -1952,12 +2058,20 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if baseRef == "" {
 			baseRef = "main"
 		}
+		branch := providers.BranchName(in.Machine.Def.Name, in.RunID)
+		if workspaceBranch != "" {
+			branch = workspaceBranch
+		}
 		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
 			RepoURL:    repoURL,
 			RunID:      in.RunID + "-" + stageName,
 			OwnerRunID: in.RunID,
 			BaseRef:    baseRef,
-			Branch:     providers.BranchName(in.Machine.Def.Name, in.RunID),
+			Branch:     branch,
+			// A rebound branch names work that already exists; creating it
+			// from base instead would hand the stage a pristine checkout
+			// wearing the PR's branch name. Fail loudly instead.
+			RequireExistingBranch: workspaceBranch != "",
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create worktree: %w", err)

@@ -35,6 +35,33 @@ by convention:
 - `outputs` on the result envelope accepts **scalars only**; anything larger is
   an artifact, referenced by pointer. State cannot be smuggled through `outputs`.
 
+## Well-known outputs
+
+Most `outputs` keys mean whatever the consuming gate or downstream stage's
+`inputsFrom` says they mean. One key is interpreted by the **runner itself**:
+
+| Output | Effect |
+|---|---|
+| `workspaceBranch` | Rebinds the branch every LATER stage's worktree is provisioned on, for the rest of the run. Empty/absent is a no-op, not a reset. |
+
+This exists for workflows that re-enter on work which **already has a branch**,
+rather than producing a new one. `pr-remediation` is the case it was added for
+(issue #392, `docs/design/v0/pr-lifecycle-loop.md` §5): it rebases and reworks
+an existing PR, so its `implement`/`review`/`local-ci` stages — reused verbatim
+from `implementation` — must operate on the PR's own head branch. An agentic
+stage and a gate evaluator cannot check anything out for themselves, so the
+rebinding is the only way to reach them.
+
+Constraints:
+
+- The branch must already exist on the remote, and must live in the run-branch
+  namespace (`goobers/`) that the worktree manager excludes from its prune
+  fetch — otherwise the next stage's working-copy refresh deletes it.
+- The rebinding is **sticky and durable**: it applies from the stage *after*
+  the emitting one onward, and is recovered from the journal on resume, so a
+  crash mid-chain does not silently revert the rest of the run to the default
+  branch.
+
 ## How a stage gets its input
 
 The runner hands the stage an `InvocationEnvelope`:
@@ -44,6 +71,17 @@ The runner hands the stage an `InvocationEnvelope`:
   stage runs in. Repo-backed stages receive a git worktree at tiers 1–2; a
   deterministic task with `run.workspace: scratch` receives an empty directory
   and does not resolve a repository.
+
+  A run's stages share one **branch**, not one tree: the first repo-backed
+  stage creates the run branch (`goobers/<workflow>/<run-id>`) off
+  `repoRef.branch`, and every later stage checks that same branch out — now
+  carrying the earlier stages' commits — in its own fresh worktree. That is
+  what makes a `local-ci` stage and a reviewer gate evaluate the run's real
+  diff rather than a pristine base. Only **committed** work crosses a stage
+  boundary; an uncommitted working tree does not.
+
+  A stage may **rebind** that branch for the remainder of the run by emitting
+  the well-known `workspaceBranch` output (see below).
 - `contextPointers[]` — the read-only inputs. Each is exactly one of:
   - an `artifact` (`ArtifactPointer`: journal-relative `path` + `sha256` digest) —
     upstream outputs and input snapshots; or

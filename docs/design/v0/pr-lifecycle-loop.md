@@ -166,6 +166,23 @@ pr-remediation:  select(label = needs-remediation)
 referencing the same `implementer`/`reviewer` **goobers** today, and by literal
 stage-reference once #155 lands (§10).
 
+> **How the shared stages reach the PR's branch (issue #392).** The reused stages
+> need a worktree on the PR's branch, and an agentic stage or a gate evaluator
+> cannot check one out for itself the way `gather-pr-context` and `rebase-pr` do.
+> Rather than add a re-checkout to each, `gather-pr-context` emits the runner's
+> well-known **`workspaceBranch`** output, which rebinds the branch every later
+> stage's worktree is provisioned on for the rest of the run
+> (`docs/stage-contract.md`, "Well-known outputs"). This reuses the existing
+> shared-branch continuity mechanism — a run's stages share one *branch*, each in
+> its own fresh worktree — so the rebase `rebase-pr` performs but deliberately
+> does **not** push on the substantive path survives into `implement`, and the
+> reviewer's runner-computed `git diff base...HEAD` is the PR's real diff.
+> `push-remediated` is the terminal counterpart to `implementation`'s
+> `push-branch`: force-with-lease to the PR's head, then clear the label. Its
+> lease expectation is the head SHA `remediation-checkpoint` recorded on the
+> sticky state comment earlier in the same run — never re-resolved from the
+> remote at push time, which would make the lease tautological.
+
 `force-with-lease` is mandatory: even in a goober-authored repo a human may push to a
 branch; the lease makes Goobers lose gracefully and re-select next tick rather than
 clobber the push.

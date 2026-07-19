@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -28,6 +29,59 @@ func claimEligiblePullRequest(root string, eligible []providers.PullRequestSumma
 		return nil, err
 	}
 	return claimPullRequest(root, eligible, runID, workflow, leaseDuration)
+}
+
+// claimedPullRequestNumber recovers the PR number THIS run claimed, from the
+// durable claim ledger rather than from a threaded stage input (issue #392).
+//
+// Task.InputsFrom only resolves against the immediately preceding TASK's own
+// Outputs, so a stage sitting after pr-remediation's agentic chain cannot
+// receive gather-pr-context's selectedNumber: `implement` (a goober session
+// whose result is status + summary only) and `local-ci` (`make ci`) each
+// become the upstream in turn and neither carries it. issue-close-out already
+// solves the identical problem the identical way (issuecloseout.go's
+// ForRun lookup, #241) — the ledger entry this run took in
+// gather-pr-context is the run-scoped durable state that outlives the
+// InputsFrom chain, and outlives a crash/resume with it.
+//
+// Returns ok=false when this run holds no PR claim at all — for a caller
+// reached only via gather-pr-context having claimed one, that means a prior
+// attempt of a later stage already released it, which callers treat as an
+// idempotent no-op rather than an error (same contract as close-out's).
+func claimedPullRequestNumber(root string) (number int, ok bool, err error) {
+	runID, _, err := providerRunContext()
+	if err != nil {
+		return 0, false, err
+	}
+	l := layoutFor(root)
+	var claimed string
+	lockErr := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
+		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+		if lerr != nil {
+			return fmt.Errorf("open claim ledger: %w", lerr)
+		}
+		for _, entry := range ledger.ForRunAll(runID) {
+			if strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
+				claimed = strings.TrimPrefix(entry.ItemID, pullRequestClaimPrefix)
+				break
+			}
+		}
+		return nil
+	})
+	if lockErr != nil {
+		return 0, false, lockErr
+	}
+	if claimed == "" {
+		return 0, false, nil
+	}
+	// ForRunAll is prefix-filtered above, so this can only fail on a ledger
+	// somebody hand-edited — surfaced rather than silently treated as "no
+	// claim", which would let a caller push to the wrong PR's branch.
+	number, perr := strconv.Atoi(claimed)
+	if perr != nil {
+		return 0, false, fmt.Errorf("claim ledger holds malformed PR claim %q for run %s: %w", claimed, runID, perr)
+	}
+	return number, true, nil
 }
 
 func pullRequestClaimLease() (time.Duration, error) {

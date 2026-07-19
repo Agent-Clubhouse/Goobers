@@ -25,3 +25,4 @@ spec:
   workflows:
     - implementation
     - merge-review
+    - pr-remediation
