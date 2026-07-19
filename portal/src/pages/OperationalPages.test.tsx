@@ -19,7 +19,7 @@ describe("operational overview", () => {
       await screen.findByRole("heading", { name: "Daemon is ready." }),
     ).toBeInTheDocument();
     expect(screen.getByText(/No gaggles are configured/)).toBeInTheDocument();
-    expect(screen.getByText("Daemon connected")).toBeInTheDocument();
+    expect(screen.getByText("Daemon ready")).toBeInTheDocument();
     expect(screen.queryByText("Static fixture data")).not.toBeInTheDocument();
   });
 

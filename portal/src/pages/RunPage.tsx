@@ -26,10 +26,12 @@ export function RunPage({
   client,
   navigate,
   runId,
+  standalone,
 }: {
   client: DaemonClient;
   navigate: Navigate;
   runId: string;
+  standalone: boolean;
 }) {
   const query = useRunDetail(client, runId);
 
@@ -39,7 +41,11 @@ export function RunPage({
         <span aria-hidden="true" className="loading-mark" />
         <div>
           <h1>Loading run</h1>
-          <p>Reading pinned identity, graph, and durable events from the daemon.</p>
+          <p>
+            {standalone
+              ? "Reading pinned identity, graph, and durable events from local instance files."
+              : "Reading pinned identity, graph, and durable events from the daemon."}
+          </p>
         </div>
       </section>
     );

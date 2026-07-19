@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MalformedResponseError } from "./api/errors";
 import type {
   DaemonClient,
@@ -11,6 +11,7 @@ import type {
   WorkflowSummary,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
+import { useLiveData } from "./liveData";
 
 const PAGE_LIMIT = 100;
 const attentionPhases = new Set<RunPhase>(["escalated", "failed"]);
@@ -41,34 +42,62 @@ export interface OperationalSnapshotQuery {
 }
 
 export function useOperationalSnapshot(client: DaemonClient): OperationalSnapshotQuery {
-  const [revision, setRevision] = useState(0);
   const [state, setState] = useState<QueryState<OperationalSnapshot>>({ status: "loading" });
+  const request = useRef<AbortController | undefined>(undefined);
+  const { freshness, isFresh, subscribe } = useLiveData();
 
-  useEffect(() => {
+  const refresh = useCallback(() => {
+    request.current?.abort();
     const controller = new AbortController();
-    setState({ status: "loading" });
+    request.current = controller;
+    setState((current) =>
+      current.status === "ready" || current.status === "stale"
+        ? { status: "stale", data: current.data }
+        : { status: "loading" },
+    );
 
-    loadOperationalSnapshot(client, controller.signal).then(
+    return loadOperationalSnapshot(client, controller.signal).then(
       (data) => {
         if (!controller.signal.aborted) {
-          setState({ status: "ready", data });
+          setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
         }
+        return true;
       },
       (error: unknown) => {
         if (!controller.signal.aborted) {
-          setState({
-            status: "error",
-            error: error instanceof Error ? error : new Error("Unable to read daemon data."),
-          });
+          const queryError =
+            error instanceof Error ? error : new Error("Unable to read daemon data.");
+          setState((current) =>
+            current.status === "ready" || current.status === "stale"
+              ? { status: "stale", data: current.data, error: queryError }
+              : { status: "error", error: queryError },
+          );
         }
+        return false;
       },
     );
+  }, [client, isFresh]);
 
-    return () => controller.abort();
-  }, [client, revision]);
+  useEffect(
+    () => subscribe(["instance", "workflow", "run"], refresh),
+    [refresh, subscribe],
+  );
 
-  const retry = useCallback(() => setRevision((current) => current + 1), []);
-  return { retry, state };
+  useEffect(() => {
+    setState((current) => {
+      if (freshness !== "connected" && current.status === "ready") {
+        return { status: "stale", data: current.data };
+      }
+      if (freshness === "connected" && current.status === "stale" && !current.error) {
+        return { status: "ready", data: current.data };
+      }
+      return current;
+    });
+  }, [freshness]);
+
+  useEffect(() => () => request.current?.abort(), []);
+
+  return { retry: refresh, state };
 }
 
 export async function loadOperationalSnapshot(

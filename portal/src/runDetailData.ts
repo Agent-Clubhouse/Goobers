@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MalformedResponseError } from "./api/errors";
 import type {
   DaemonClient,
@@ -7,8 +7,7 @@ import type {
   WorkflowGraph,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
-
-export const ACTIVE_RUN_REFRESH_INTERVAL_MS = 2_000;
+import { useLiveData } from "./liveData";
 
 export type RunNodeState =
   | "pending"
@@ -30,47 +29,56 @@ export interface RunDetailQuery {
 }
 
 export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuery {
-  const [revision, setRevision] = useState(0);
   const [state, setState] = useState<QueryState<RunDetailSnapshot>>({ status: "loading" });
+  const request = useRef<AbortController | undefined>(undefined);
+  const { subscribe } = useLiveData();
+
+  const refresh = useCallback((): Promise<boolean> => {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+
+    return loadRunDetail(client, runId, controller.signal).then(
+      (data) => {
+        if (controller.signal.aborted) {
+          return true;
+        }
+        if (request.current === controller) {
+          request.current = undefined;
+        }
+        setState({ status: "ready", data });
+        return true;
+      },
+      (error: unknown) => {
+        if (controller.signal.aborted) {
+          return true;
+        }
+        if (request.current === controller) {
+          request.current = undefined;
+        }
+        setState({
+          status: "error",
+          error: error instanceof Error ? error : new Error("Unable to read run detail."),
+        });
+        return false;
+      },
+    );
+  }, [client, runId]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     setState({ status: "loading" });
-
-    const refresh = () => {
-      loadRunDetail(client, runId, controller.signal).then(
-        (data) => {
-          if (controller.signal.aborted) {
-            return;
-          }
-          setState({ status: "ready", data });
-          if (!data.run.terminal) {
-            refreshTimer = setTimeout(refresh, ACTIVE_RUN_REFRESH_INTERVAL_MS);
-          }
-        },
-        (error: unknown) => {
-          if (controller.signal.aborted) {
-            return;
-          }
-          setState({
-            status: "error",
-            error: error instanceof Error ? error : new Error("Unable to read run detail."),
-          });
-        },
-      );
-    };
-    refresh();
-
+    const unsubscribe = subscribe(["run"], refresh);
     return () => {
-      controller.abort();
-      if (refreshTimer !== undefined) {
-        clearTimeout(refreshTimer);
-      }
+      unsubscribe();
+      request.current?.abort();
+      request.current = undefined;
     };
-  }, [client, revision, runId]);
+  }, [refresh, subscribe]);
 
-  const retry = useCallback(() => setRevision((current) => current + 1), []);
+  const retry = useCallback(() => {
+    setState({ status: "loading" });
+    void refresh();
+  }, [refresh]);
   return { retry, state };
 }
 

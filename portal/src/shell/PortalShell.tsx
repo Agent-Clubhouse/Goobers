@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import { useLiveData, type LiveFreshness } from "../liveData";
 import type { Navigate, PrimaryArea } from "../routing";
 import { useTheme } from "../theme";
 import { Icon } from "../ui/Icon";
@@ -7,10 +8,12 @@ interface PortalShellProps {
   activeArea: PrimaryArea;
   children: React.ReactNode;
   navigate: Navigate;
+  standalone: boolean;
 }
 
-export function PortalShell({ activeArea, children, navigate }: PortalShellProps) {
+export function PortalShell({ activeArea, children, navigate, standalone }: PortalShellProps) {
   const { theme, toggleTheme } = useTheme();
+  const { freshness } = useLiveData();
   const mainContent = useRef<HTMLElement>(null);
 
   const skipToMainContent = (event: React.MouseEvent<HTMLAnchorElement>) => {
@@ -72,9 +75,14 @@ export function PortalShell({ activeArea, children, navigate }: PortalShellProps
 
         <div className="sidebar-status">
           <div>
+            <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
             <span>
-              <strong>Daemon API</strong>
-              <small>Connection state appears in each live view</small>
+              <strong>{standalone ? "Standalone read-only" : "Daemon API"}</strong>
+              <small>
+                {standalone
+                  ? "Daemon not running; reading this instance locally"
+                  : freshnessCopy[freshness]}
+              </small>
             </span>
           </div>
         </div>
@@ -90,6 +98,15 @@ export function PortalShell({ activeArea, children, navigate }: PortalShellProps
             </span>
           </div>
           <div className="topbar-actions">
+            <span
+              aria-live="polite"
+              className={`freshness-status freshness-status-${freshness}`}
+              data-state={freshness}
+              role="status"
+            >
+              <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
+              {freshnessLabel[freshness]}
+            </span>
             <button
               aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
               className="theme-button"
@@ -108,3 +125,19 @@ export function PortalShell({ activeArea, children, navigate }: PortalShellProps
     </div>
   );
 }
+
+const freshnessLabel: Record<LiveFreshness, string> = {
+  connected: "Live updates connected",
+  reconnecting: "Reconnecting",
+  stale: "Data stale",
+  offline: "Offline",
+  "polling-fallback": "Polling fallback",
+};
+
+const freshnessCopy: Record<LiveFreshness, string> = {
+  connected: "Live updates connected",
+  reconnecting: "Reconnecting; showing stale data",
+  stale: "Refreshing a full snapshot",
+  offline: "Offline; showing stale data",
+  "polling-fallback": "SSE unavailable; polling",
+};
