@@ -4,8 +4,11 @@ import {
   SCHEMA_VERSION,
   type Gaggle,
   type Goober,
+  type RunDetail,
+  type RunEvent,
   type RunPhase,
   type RunSummary,
+  type WorkflowGraph,
   type WorkflowSummary,
 } from "../api/types";
 
@@ -84,7 +87,9 @@ function run(
   gaggle: string,
   phase: RunPhase,
   startedAt: string,
+  lastSeq: number,
   finishedAt?: string,
+  repassCount = 0,
 ): RunSummary {
   return {
     id,
@@ -99,17 +104,239 @@ function run(
     startedAt,
     finishedAt,
     durationMillis: finishedAt ? Date.parse(finishedAt) - Date.parse(startedAt) : 120_000,
-    lastSeq: 9,
-    repassCount: phase === "escalated" ? 3 : 0,
+    lastSeq,
+    repassCount,
     retryCount: 0,
     policyRetryCount: 0,
     infraRetryCount: 0,
   };
 }
 
+function graph(gaggle: string): WorkflowGraph {
+  return {
+    name: "implementation",
+    version: 7,
+    digest: `sha256:${gaggle}`,
+    start: "query",
+    nodes: [
+      { id: "query", kind: "deterministic" },
+      { id: "implement", kind: "agentic", owner: `${gaggle}/implementer` },
+      { id: "review", kind: "gate", evaluator: "agentic" },
+    ],
+    edges: [
+      { source: "query", target: "implement" },
+      { source: "implement", target: "review" },
+      { source: "review", target: "implement", outcome: "needs-changes" },
+    ],
+  };
+}
+
+function detail(summary: RunSummary): RunDetail {
+  return {
+    ...summary,
+    graph: graph(summary.gaggle),
+    graphStatus: "pinned",
+  };
+}
+
+function journalEvent(
+  summary: RunSummary,
+  seq: number,
+  type: RunEvent["type"],
+  fields: Partial<RunEvent> = {},
+): RunEvent {
+  return {
+    schema: "v1",
+    seq,
+    type,
+    branch: 0,
+    time: new Date(Date.parse(summary.startedAt) + seq * 1_000).toISOString(),
+    knownSchema: true,
+    ...fields,
+  };
+}
+
+function runEvents(summary: RunSummary): RunEvent[] {
+  const events = [
+    journalEvent(summary, 1, "run.started", {
+      runId: summary.id,
+      workflow: summary.workflow,
+    }),
+    journalEvent(summary, 2, "stage.started", {
+      stage: "query",
+      attempt: 1,
+      attemptClass: "initial",
+    }),
+    journalEvent(summary, 3, "stage.finished", {
+      stage: "query",
+      attempt: 1,
+      attemptClass: "initial",
+      status: "success",
+    }),
+    journalEvent(summary, 4, "stage.started", {
+      stage: "implement",
+      attempt: 1,
+      attemptClass: "initial",
+    }),
+  ];
+
+  switch (summary.phase) {
+    case "running":
+      return [
+        ...events,
+        journalEvent(summary, 5, "stage.finished", {
+          stage: "implement",
+          attempt: 1,
+          attemptClass: "initial",
+          status: "success",
+        }),
+        journalEvent(summary, 6, "gate.started", {
+          gate: "review",
+          attempt: 1,
+          attemptClass: "initial",
+        }),
+      ];
+    case "completed":
+      return [
+        ...events,
+        journalEvent(summary, 5, "stage.finished", {
+          stage: "implement",
+          attempt: 1,
+          attemptClass: "initial",
+          status: "success",
+        }),
+        journalEvent(summary, 6, "future.recorded", {
+          schema: "v2-preview",
+          knownSchema: false,
+          raw: { future: "preserved but not rendered" },
+        }),
+        journalEvent(summary, 7, "gate.started", {
+          gate: "review",
+          attempt: 1,
+          attemptClass: "initial",
+        }),
+        journalEvent(summary, 8, "gate.evaluated", {
+          gate: "review",
+          attempt: 1,
+          attemptClass: "initial",
+          verdict: "approve",
+          target: "@complete",
+        }),
+        journalEvent(summary, 9, "run.finished", { status: "completed" }),
+      ];
+    case "failed":
+      return [
+        ...events,
+        journalEvent(summary, 5, "stage.finished", {
+          stage: "implement",
+          attempt: 1,
+          attemptClass: "initial",
+          status: "failure",
+        }),
+        journalEvent(summary, 6, "run.finished", { status: "failed" }),
+      ];
+    case "aborted":
+      return [
+        ...events,
+        journalEvent(summary, 5, "run.finished", {
+          status: "aborted",
+          reason: "Run was aborted by the operator.",
+        }),
+      ];
+    case "escalated":
+      return [
+        ...events,
+        journalEvent(summary, 5, "stage.finished", {
+          stage: "implement",
+          attempt: 1,
+          attemptClass: "initial",
+          status: "success",
+        }),
+        journalEvent(summary, 6, "gate.started", {
+          gate: "review",
+          attempt: 1,
+          attemptClass: "initial",
+        }),
+        journalEvent(summary, 7, "gate.evaluated", {
+          gate: "review",
+          attempt: 1,
+          attemptClass: "initial",
+          verdict: "needs-changes",
+          target: "implement",
+        }),
+        journalEvent(summary, 8, "stage.started", {
+          stage: "implement",
+          attempt: 2,
+          attemptClass: "policy",
+        }),
+        journalEvent(summary, 9, "stage.finished", {
+          stage: "implement",
+          attempt: 2,
+          attemptClass: "policy",
+          status: "success",
+        }),
+        journalEvent(summary, 10, "gate.started", {
+          gate: "review",
+          attempt: 2,
+          attemptClass: "policy",
+        }),
+        journalEvent(summary, 11, "gate.evaluated", {
+          gate: "review",
+          attempt: 2,
+          attemptClass: "policy",
+          verdict: "fail",
+          target: "@escalate",
+        }),
+        journalEvent(summary, 12, "run.finished", { status: "escalated" }),
+      ];
+  }
+}
+
 export function populatedDaemonFixtures(): DaemonFixtures {
   const coreWorkflow = workflow("core");
   const toolsWorkflow = workflow("tools");
+  const runSummaries = [
+    run(
+      "01JZ455ESCALATE",
+      "core",
+      "completed",
+      "2026-07-18T02:00:00Z",
+      9,
+      "2026-07-18T03:00:00Z",
+    ),
+    run(
+      "01JZ402DASHBOARD",
+      "core",
+      "escalated",
+      "2026-07-18T04:30:00Z",
+      12,
+      "2026-07-18T05:00:00Z",
+      1,
+    ),
+    run(
+      "01JZ441DAEMONAPI",
+      "core",
+      "running",
+      "2026-07-18T06:00:00Z",
+      6,
+    ),
+    run(
+      "01JZ400FAILED",
+      "core",
+      "failed",
+      "2026-07-18T03:30:00Z",
+      6,
+      "2026-07-18T04:00:00Z",
+    ),
+    run(
+      "01JZ300ABORTED",
+      "tools",
+      "aborted",
+      "2026-07-18T01:30:00Z",
+      5,
+      "2026-07-18T02:00:00Z",
+    ),
+  ];
   return {
     health: {
       apiVersion: API_VERSION,
@@ -163,44 +390,16 @@ export function populatedDaemonFixtures(): DaemonFixtures {
         stages: [],
       },
     },
-    runs: {
-      runs: [
-        run(
-          "01JZ455ESCALATE",
-          "core",
-          "completed",
-          "2026-07-18T02:00:00Z",
-          "2026-07-18T03:00:00Z",
-        ),
-        run(
-          "01JZ402DASHBOARD",
-          "core",
-          "escalated",
-          "2026-07-18T04:30:00Z",
-          "2026-07-18T05:00:00Z",
-        ),
-        run(
-          "01JZ441DAEMONAPI",
-          "core",
-          "running",
-          "2026-07-18T06:00:00Z",
-        ),
-        run(
-          "01JZ400FAILED",
-          "core",
-          "failed",
-          "2026-07-18T03:30:00Z",
-          "2026-07-18T04:00:00Z",
-        ),
-        run(
-          "01JZ300ABORTED",
-          "tools",
-          "aborted",
-          "2026-07-18T01:30:00Z",
-          "2026-07-18T02:00:00Z",
-        ),
-      ],
-    },
+    runs: { runs: runSummaries },
+    runDetails: Object.fromEntries(
+      runSummaries.map((summary) => [summary.id, detail(summary)]),
+    ),
+    runEvents: Object.fromEntries(
+      runSummaries.map((summary) => [
+        summary.id,
+        { runId: summary.id, events: runEvents(summary) },
+      ]),
+    ),
     telemetryStats: { runs: [], stages: [] },
     telemetryErrors: { items: [] },
   };
@@ -221,5 +420,7 @@ export function emptyDaemonFixtures(): DaemonFixtures {
     workflows: {},
     workflowDetails: {},
     runs: { runs: [] },
+    runDetails: {},
+    runEvents: {},
   };
 }

@@ -12,7 +12,7 @@ import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { WorkflowPage } from "./pages/WorkflowPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
-import { instanceWarnings, runs, workflowWarnings, workflows } from "./prototypeData";
+import { instanceWarnings, workflowWarnings, workflows } from "./prototypeData";
 import { activeArea, parseRoute, routeHash, type Route } from "./routing";
 import { PortalShell } from "./shell/PortalShell";
 
@@ -55,8 +55,6 @@ export function App({
     },
   });
 
-  const run =
-    route.page === "run" ? runs.find((candidate) => candidate.id === route.id) : undefined;
   const workflow =
     route.page === "workflow"
       ? workflows.find((candidate) => candidate.id === route.id)
@@ -94,9 +92,10 @@ export function App({
           workflow={workflow}
         />
       )}
-      {route.page === "run" && run && <RunPage key={run.id} navigate={navigate} run={run} />}
+      {route.page === "run" && (
+        <RunPage client={client} key={route.id} navigate={navigate} runId={route.id} />
+      )}
       {route.page === "workflow" && !workflow && <p role="alert">Workflow not found.</p>}
-      {route.page === "run" && !run && <p role="alert">Run not found.</p>}
     </PortalShell>
   );
 }

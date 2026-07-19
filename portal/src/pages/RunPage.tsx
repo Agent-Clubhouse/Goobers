@@ -1,408 +1,403 @@
-import { useEffect, useMemo, useState } from "react";
-import { AttemptInspector } from "../components/AttemptInspector";
-import { EscalationPanel } from "../components/EscalationPanel";
-import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
-import { workflowForRun, type Run } from "../prototypeData";
+import { useEffect, useRef, useState } from "react";
+import type {
+  DaemonClient,
+  RunDetail,
+  RunEvent,
+  WorkflowGraph,
+  WorkflowGraphNode,
+} from "../api/types";
 import {
-  compressedIdleDelayMs,
-  formatReplayDuration,
-  idleCompressionThresholdMs,
-  orderedReplayEvents,
-  replaySpeeds,
-  replayTransition,
-  type ReplaySpeed,
-} from "../replay";
-import type { Navigate } from "../routing";
-import {
-  causalEventIndex,
   deriveNodeStates,
-  deriveTraversedEdges,
-  traversalEdgeAtEvent,
-} from "../runState";
-import { GraphFrame, TopologyGraph } from "../ui/GraphFrame";
+  eventHeading,
+  eventNodeAtSequence,
+  eventSummary,
+  formatDuration,
+  formatElapsed,
+  formatTimestamp,
+  type RunNodeState,
+  useRunDetail,
+} from "../runDetailData";
+import type { Navigate } from "../routing";
+import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
 
-type ReplayMode = "live-follow" | "replay";
+export function RunPage({
+  client,
+  navigate,
+  runId,
+}: {
+  client: DaemonClient;
+  navigate: Navigate;
+  runId: string;
+}) {
+  const query = useRunDetail(client, runId);
 
-export function RunPage({ run, navigate }: { run: Run; navigate: Navigate }) {
-  const workflow = workflowForRun(run);
-  const events = useMemo(() => orderedReplayEvents(run.events), [run.events]);
-  const lastEventIndex = Math.max(events.length - 1, 0);
-  const escalationEventIndex = causalEventIndex(run, events);
-  const initialReplayIndex =
-    run.status === "escalated" && escalationEventIndex !== undefined
-      ? escalationEventIndex
-      : lastEventIndex;
-  const activeRun = run.status === "running";
-  const [mode, setMode] = useState<ReplayMode>(activeRun ? "live-follow" : "replay");
-  const [replayIndex, setReplayIndex] = useState(initialReplayIndex);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [speed, setSpeed] = useState<ReplaySpeed>(1);
-  const reducedMotion = usePrefersReducedMotion();
-  const currentEvent = events[replayIndex] ?? events[0];
-  const [selectedStageId, setSelectedStageId] = useState(
-    currentEvent?.stageId ?? workflow.stages[0]?.id ?? "",
+  if (query.state.status === "loading") {
+    return (
+      <section aria-live="polite" className="daemon-state" role="status">
+        <span aria-hidden="true" className="loading-mark" />
+        <div>
+          <h1>Loading run</h1>
+          <p>Reading pinned identity, graph, and durable events from the daemon.</p>
+        </div>
+      </section>
+    );
+  }
+  if (query.state.status === "error") {
+    return (
+      <section className="daemon-state daemon-state-error" role="alert">
+        <div>
+          <h1>Run unavailable</h1>
+          <p>{query.state.error.message}</p>
+        </div>
+        <button className="reconnect-button" onClick={query.retry} type="button">
+          Retry
+        </button>
+      </section>
+    );
+  }
+  if (query.state.status !== "ready") {
+    return null;
+  }
+
+  return (
+    <RunDetailWorkspace
+      events={query.state.data.events}
+      key={query.state.data.run.id}
+      navigate={navigate}
+      run={query.state.data.run}
+    />
   );
-  const selectedStage =
-    workflow.stages.find((stage) => stage.id === selectedStageId) ?? workflow.stages[0];
-  const nodeStates = deriveNodeStates(workflow, events, replayIndex);
-  const traversedEdges = deriveTraversedEdges(events, replayIndex);
-  const transition = replayTransition(events, replayIndex, speed);
-  const atEnd = replayIndex >= lastEventIndex;
-  const replayEnded = mode === "replay" && atEnd && !isPlaying;
-  const liveHistoryInspection = mode === "live-follow" && replayIndex < lastEventIndex;
-  const latestSequence = events[events.length - 1]?.seq;
-  const causalEvent =
-    escalationEventIndex === undefined ? undefined : events[escalationEventIndex];
-  const escalationVisible =
-    run.status === "escalated" &&
-    (run.escalation && causalEvent
-      ? (currentEvent?.seq ?? 0) >= causalEvent.seq
-      : replayIndex === lastEventIndex);
+}
+
+function RunDetailWorkspace({
+  events,
+  navigate,
+  run,
+}: {
+  events: RunEvent[];
+  navigate: Navigate;
+  run: RunDetail;
+}) {
+  const latestEvent = events.at(-1);
+  const initialSeq = latestEvent?.seq ?? 0;
+  const [selectedSeq, setSelectedSeq] = useState(initialSeq);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(
+    eventNodeAtSequence(events, initialSeq) ?? run.currentStage,
+  );
+  const [followingLatest, setFollowingLatest] = useState(true);
+  const nodeStates = run.graph
+    ? deriveNodeStates(run.graph, events, selectedSeq)
+    : {};
 
   useEffect(() => {
-    if (!isPlaying) {
+    if (!followingLatest) {
       return;
     }
-    if (atEnd || !transition) {
-      setIsPlaying(false);
-      return;
-    }
-    const timeout = window.setTimeout(() => {
-      setReplayIndex((current) => Math.min(current + 1, lastEventIndex));
-    }, transition.playbackDelayMs);
-    return () => window.clearTimeout(timeout);
-  }, [atEnd, isPlaying, lastEventIndex, replayIndex, transition?.playbackDelayMs]);
+    setSelectedSeq(initialSeq);
+    setSelectedNodeId(eventNodeAtSequence(events, initialSeq) ?? run.currentStage);
+  }, [events, followingLatest, initialSeq, run.currentStage]);
 
-  useEffect(() => {
-    if (activeRun && mode === "live-follow" && latestSequence !== undefined) {
-      setReplayIndex(lastEventIndex);
-    }
-  }, [activeRun, lastEventIndex, latestSequence, mode]);
-
-  useEffect(() => {
-    setSelectedStageId(currentEvent?.stageId ?? workflow.stages[0]?.id ?? "");
-  }, [currentEvent, workflow.stages]);
-
-  const selectReplayIndex = (index: number, enterReplay: boolean) => {
-    setIsPlaying(false);
-    if (enterReplay) {
-      setMode("replay");
-    }
-    setReplayIndex(Math.max(0, Math.min(index, lastEventIndex)));
-  };
-
-  const togglePlayback = () => {
-    if (isPlaying) {
-      setIsPlaying(false);
-      return;
-    }
-    setMode("replay");
-    if (atEnd) {
-      setReplayIndex(0);
-    }
-    setIsPlaying(true);
-  };
-
-  const enterReplay = () => {
-    setIsPlaying(false);
-    setMode("replay");
-    setReplayIndex(0);
-  };
-
-  const returnToLive = () => {
-    setIsPlaying(false);
-    setMode("live-follow");
-    setReplayIndex(lastEventIndex);
-  };
-
-  const onReplayKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (event.currentTarget !== event.target) {
-      return;
-    }
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      selectReplayIndex(replayIndex - 1, true);
-    } else if (event.key === "ArrowRight") {
-      event.preventDefault();
-      selectReplayIndex(replayIndex + 1, true);
-    } else if (event.key === " ") {
-      event.preventDefault();
-      togglePlayback();
-    }
+  const selectEvent = (event: RunEvent) => {
+    setSelectedSeq(event.seq);
+    setSelectedNodeId(eventNodeAtSequence(events, event.seq));
+    setFollowingLatest(event.seq === initialSeq);
   };
 
   return (
     <>
-      <nav className="breadcrumbs" aria-label="Breadcrumb">
+      <nav aria-label="Breadcrumb" className="breadcrumbs">
         <button onClick={() => navigate({ page: "runs" })} type="button">
           Runs
         </button>
         <Icon name="chevron" size={14} />
-        <span>{run.shortId}</span>
+        <span className="mono">{run.id}</span>
       </nav>
+
       <header className="run-heading">
         <div>
           <div className="run-title-line">
-            <StatusBadge status={run.status} />
-            <span className="mono run-id">{run.shortId}</span>
+            <StatusBadge status={run.phase} />
+            <span className="mono run-id">{run.id}</span>
           </div>
-          <h1>{run.title}</h1>
+          <h1>Run {run.id}</h1>
           <p>
-            {run.issue} · {workflow.name} v{workflow.version} · {run.startedAt}
+            {run.gaggle} / {run.workflow} · Workflow version {run.workflowVersion}
           </p>
         </div>
         <dl className="run-meta">
           <div>
-            <dt>Duration</dt>
-            <dd>{run.duration}</dd>
-          </div>
-          <div>
-            <dt>Repasses</dt>
-            <dd>{run.repasses} / 3</dd>
-          </div>
-          <div>
             <dt>Trigger</dt>
-            <dd>{run.trigger}</dd>
+            <dd>
+              {run.trigger.kind}
+              {run.trigger.ref ? ` · ${run.trigger.ref}` : ""}
+            </dd>
+          </div>
+          <div>
+            <dt>Started</dt>
+            <dd>
+              <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>
+            </dd>
+          </div>
+          <div>
+            <dt>Finished</dt>
+            <dd>
+              {run.finishedAt ? (
+                <time dateTime={run.finishedAt}>{formatTimestamp(run.finishedAt)}</time>
+              ) : (
+                "In progress"
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt>Duration</dt>
+            <dd>{formatDuration(run.durationMillis)}</dd>
           </div>
           <div>
             <dt>Workflow pin</dt>
-            <dd className="mono">v{workflow.version} · {workflow.digest.slice(7, 15)}</dd>
+            <dd className="mono run-pin">
+              v{run.graph?.version ?? run.workflowVersion} ·{" "}
+              {run.graph?.digest ?? run.workflowDigest ?? "Unavailable"}
+            </dd>
           </div>
         </dl>
       </header>
 
-      {escalationVisible && (
-        <EscalationPanel
-          causalEvent={causalEvent}
-          evidenceEventSeq={run.escalation ? causalEvent?.seq : currentEvent?.seq}
-          onFocusCausalEvent={
-            escalationEventIndex === undefined
-              ? undefined
-              : () => selectReplayIndex(escalationEventIndex, true)
+      <section
+        className="run-detail-workspace"
+        data-responsive-layout="stack-under-820"
+      >
+        <GraphFrame
+          action={
+            <span aria-live="polite" className="graph-legend">
+              State at sequence {selectedSeq || "—"}
+            </span>
           }
-          onSelectStage={setSelectedStageId}
-          run={run}
-          workflow={workflow}
-        />
-      )}
-
-      <section className="run-workspace" data-replay-motion={reducedMotion ? "reduced" : "animated"}>
-        <div className="run-primary">
-          <GraphFrame
-            action={
-              <button
-                className="workflow-link"
-                onClick={() => navigate({ page: "workflow", id: workflow.id })}
-                type="button"
-              >
-                View definition <Icon name="arrow" size={14} />
-              </button>
-            }
-            className="run-graph-panel"
-          >
-            <TopologyGraph
-              activeEdges={traversedEdges}
-              causalStageId={escalationVisible ? causalEvent?.stageId : undefined}
-              onSelectStage={setSelectedStageId}
-              selectedStageId={selectedStageId}
-              states={nodeStates}
-              traversingEdge={
-                isPlaying && !reducedMotion
-                  ? traversalEdgeAtEvent(events, replayIndex)
-                  : undefined
-              }
-              workflow={workflow}
+          className="run-graph-panel"
+        >
+          {run.graphStatus === "pinned" && run.graph ? (
+            <RunTopologyGraph
+              graph={run.graph}
+              nodeStates={nodeStates}
+              onSelectNode={setSelectedNodeId}
+              selectedNodeId={selectedNodeId}
+              selectedSeq={selectedSeq}
             />
-          </GraphFrame>
+          ) : (
+            <div className="empty-detail" role="status">
+              <strong>Pinned graph unavailable</strong>
+              <span>This historic run predates graph snapshots. Its event ledger remains available.</span>
+            </div>
+          )}
+        </GraphFrame>
 
-          <section
-            aria-label="Replay controls"
-            className="playback-panel"
-            onKeyDown={onReplayKeyDown}
-            tabIndex={0}
-          >
-            <div className="playback-summary">
-              <div className="playback-now">
-                <span
-                  aria-hidden="true"
-                  className={`event-mark event-${currentEvent?.tone ?? "neutral"}`}
-                />
-                <div>
-                  <span>
-                    Event {events.length === 0 ? 0 : replayIndex + 1} of {events.length}
-                    {" · "}Seq {currentEvent?.seq ?? "—"}
-                    {" · "}Real elapsed {currentEvent?.elapsed ?? "—"}
-                  </span>
-                  <strong>{currentEvent?.title ?? "No durable events"}</strong>
-                </div>
-              </div>
-              <div className="replay-mode-control">
-                <span className={`replay-mode replay-mode-${mode}`}>
-                  {mode === "live-follow"
-                    ? liveHistoryInspection
-                      ? "Live follow · inspecting history"
-                      : "Live follow"
-                    : "Replay mode"}
-                </span>
-                {activeRun && mode === "live-follow" && (
-                  <button className="mode-button" onClick={enterReplay} type="button">
-                    Enter replay
-                  </button>
-                )}
-                {activeRun && mode === "replay" && (
-                  <button className="mode-button" onClick={returnToLive} type="button">
-                    Return to live
-                  </button>
-                )}
-              </div>
-            </div>
-            <div className="playback-controls">
-              <button
-                aria-label="Previous event"
-                className="step-button"
-                disabled={replayIndex === 0 || events.length === 0}
-                onClick={() => selectReplayIndex(replayIndex - 1, true)}
-                type="button"
-              >
-                <Icon name="previous" size={16} />
-              </button>
-              <button
-                aria-label={isPlaying ? "Pause replay" : "Play replay"}
-                className="play-button"
-                disabled={events.length === 0}
-                onClick={togglePlayback}
-                type="button"
-              >
-                <Icon name={isPlaying ? "pause" : "play"} size={17} />
-              </button>
-              <button
-                aria-label="Next event"
-                className="step-button"
-                disabled={atEnd || events.length === 0}
-                onClick={() => selectReplayIndex(replayIndex + 1, true)}
-                type="button"
-              >
-                <Icon name="next" size={16} />
-              </button>
-              <input
-                aria-label="Replay position"
-                disabled={events.length <= 1}
-                max={lastEventIndex}
-                min={0}
-                onChange={(event) => {
-                  selectReplayIndex(Number(event.target.value), true);
-                }}
-                type="range"
-                value={replayIndex}
-              />
-              <div className="speed-control" aria-label="Replay speed" role="group">
-                {replaySpeeds.map((value) => (
-                  <button
-                    aria-pressed={speed === value}
-                    className={speed === value ? "speed-button speed-button-active" : "speed-button"}
-                    key={value}
-                    onClick={() => setSpeed(value)}
-                    type="button"
-                  >
-                    {value}x
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="playback-context">
-              <span className="replay-state" aria-live="polite">
-                {mode === "live-follow"
-                  ? liveHistoryInspection
-                    ? `Inspecting event ${replayIndex + 1}; new durable events remain live-followed.`
-                    : `Following the latest durable event, sequence ${currentEvent?.seq ?? "—"}.`
-                  : isPlaying
-                    ? `Playing event ${replayIndex + 1} of ${events.length}.`
-                    : replayEnded
-                      ? `Replay ended at event ${events.length}. Play restarts from event 1.`
-                      : `Replay paused at event ${replayIndex + 1} of ${events.length}.`}
-              </span>
-              <span>
-                Idle compression: waits over {formatReplayDuration(idleCompressionThresholdMs)} play in at most{" "}
-                {formatReplayDuration(compressedIdleDelayMs)} before speed; real elapsed is unchanged.
-              </span>
-              {transition?.idleCompressed && (
-                <strong className="compressed-wait">
-                  Next wait: {formatReplayDuration(transition.realDelayMs)} compressed to{" "}
-                  {formatReplayDuration(transition.playbackDelayMs)} at {speed}x.
-                </strong>
-              )}
-              <span>
-                {reducedMotion
-                  ? "Reduced motion: state changes are instant without graph traversal animation."
-                  : "Graph traversal animates only after the durable event is selected."}
-              </span>
-              <span className="keyboard-hint">Keyboard: Space play/pause · Left/Right previous/next</span>
-            </div>
-          </section>
-
-          <div className="event-ledger">
-            <div className="panel-heading-row">
-              <div>
-                <p className="section-kicker">Journal</p>
-                <h2>Event ledger</h2>
-              </div>
-              <span className="graph-legend">Ordered by durable sequence</span>
-            </div>
-            <ol>
-              {events.map((event, index) => (
-                <li
-                  className={[
-                    "ledger-item",
-                    index === replayIndex ? "ledger-item-active" : "",
-                    escalationVisible && event.seq === run.escalation?.causalEventSeq
-                      ? "ledger-item-causal"
-                      : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                  key={event.id}
-                >
-                  <button
-                    aria-current={index === replayIndex ? "true" : undefined}
-                    aria-label={`Select event ${event.seq}: ${event.title}${
-                      escalationVisible && event.seq === run.escalation?.causalEventSeq
-                        ? " (causal event)"
-                        : ""
-                    }`}
-                    onClick={() => {
-                      selectReplayIndex(index, !activeRun || mode === "replay");
-                    }}
-                    type="button"
-                  >
-                    <span className="ledger-seq mono">{String(event.seq).padStart(2, "0")}</span>
-                    <span aria-hidden="true" className={`event-mark event-${event.tone}`} />
-                    <span className="ledger-copy">
-                      <strong>{event.title}</strong>
-                      <span>{event.detail}</span>
-                      {escalationVisible && event.seq === run.escalation?.causalEventSeq && (
-                        <span className="causal-event-label">Causal event</span>
-                      )}
-                    </span>
-                    <span className="ledger-type mono">{event.type}</span>
-                    <span className="ledger-time mono">{event.elapsed}</span>
-                  </button>
-                </li>
-              ))}
-            </ol>
-          </div>
-        </div>
-
-        {selectedStage && (
-          <AttemptInspector
-            eventAttemptNumber={currentEvent?.stageId === selectedStage.id ? currentEvent.attempt : undefined}
-            eventSeq={currentEvent?.seq ?? 0}
-            run={run}
-            stage={selectedStage}
-          />
-        )}
+        <EventLedger
+          events={events}
+          onSelect={selectEvent}
+          run={run}
+          selectedSeq={selectedSeq}
+        />
       </section>
     </>
   );
+}
+
+function RunTopologyGraph({
+  graph,
+  nodeStates,
+  onSelectNode,
+  selectedNodeId,
+  selectedSeq,
+}: {
+  graph: WorkflowGraph;
+  nodeStates: Record<string, RunNodeState>;
+  onSelectNode: (nodeId: string) => void;
+  selectedNodeId?: string;
+  selectedSeq: number;
+}) {
+  const nodeRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  const moveSelection = (targetIndex: number) => {
+    const node = graph.nodes[targetIndex];
+    if (!node) {
+      return;
+    }
+    onSelectNode(node.id);
+    nodeRefs.current[targetIndex]?.focus();
+  };
+
+  const onNodeKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    node: WorkflowGraphNode,
+    index: number,
+  ) => {
+    let targetIndex: number | undefined;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      targetIndex = (index + 1) % graph.nodes.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      targetIndex = (index - 1 + graph.nodes.length) % graph.nodes.length;
+    } else if (event.key === "Home") {
+      targetIndex = 0;
+    } else if (event.key === "End") {
+      targetIndex = graph.nodes.length - 1;
+    }
+    if (targetIndex !== undefined) {
+      event.preventDefault();
+      moveSelection(targetIndex);
+    } else if (event.key === "Enter" || event.key === " ") {
+      onSelectNode(node.id);
+    }
+  };
+
+  return (
+    <div
+      aria-label={`${graph.name} pinned execution graph`}
+      className="run-topology"
+      data-responsive-layout="compact-under-820"
+      role="group"
+    >
+      <p className="run-graph-pin">
+        Pinned v{graph.version} · <span className="mono">{graph.digest}</span>
+      </p>
+      <ol className="run-topology-list">
+        {graph.nodes.map((node, index) => {
+          const state = nodeStates[node.id] ?? "pending";
+          const outgoing = graph.edges.filter((edge) => edge.source === node.id);
+          return (
+            <li className="run-topology-step" key={node.id}>
+              <button
+                aria-label={`${node.id}, ${node.kind}, ${nodeStateLabel(state)} at sequence ${selectedSeq}`}
+                aria-pressed={selectedNodeId === node.id}
+                className={`run-topology-node run-node-${node.kind} run-node-state-${state}`}
+                onClick={() => onSelectNode(node.id)}
+                onKeyDown={(event) => onNodeKeyDown(event, node, index)}
+                ref={(element) => {
+                  nodeRefs.current[index] = element;
+                }}
+                type="button"
+              >
+                <span className="graph-node-kind">{node.kind}</span>
+                <strong>{node.id}</strong>
+                <span className="run-node-state">{nodeStateLabel(state)}</span>
+                {(node.owner || node.evaluator) && (
+                  <span className="run-node-owner">{node.owner || `${node.evaluator} evaluator`}</span>
+                )}
+              </button>
+              {outgoing.length > 0 && (
+                <ul aria-label={`Outgoing branches from ${node.id}`} className="run-graph-edges">
+                  {outgoing.map((edge, edgeIndex) => (
+                    <li key={`${edge.source}-${edge.target}-${edge.outcome ?? edgeIndex}`}>
+                      <span>{edge.outcome || "next"}</span>
+                      <span aria-hidden="true">→</span>
+                      <strong>{edge.target || edge.terminal}</strong>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+function EventLedger({
+  events,
+  onSelect,
+  run,
+  selectedSeq,
+}: {
+  events: RunEvent[];
+  onSelect: (event: RunEvent) => void;
+  run: RunDetail;
+  selectedSeq: number;
+}) {
+  const eventRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  const moveSelection = (index: number, targetIndex: number) => {
+    const event = events[targetIndex];
+    if (!event) {
+      return;
+    }
+    onSelect(event);
+    eventRefs.current[targetIndex]?.focus();
+  };
+
+  return (
+    <section aria-labelledby="event-ledger-title" className="event-ledger">
+      <div className="panel-heading-row">
+        <div>
+          <p className="section-kicker">Journal</p>
+          <h2 id="event-ledger-title">Event ledger</h2>
+        </div>
+        <span className="graph-legend">Ordered by durable sequence</span>
+      </div>
+      {events.length === 0 ? (
+        <div className="empty-detail" role="status">
+          <strong>No durable events recorded</strong>
+        </div>
+      ) : (
+        <ol>
+          {events.map((event, index) => {
+            const selected = event.seq === selectedSeq;
+            const heading = eventHeading(event);
+            const summary = eventSummary(event);
+            return (
+              <li className={`ledger-item ${selected ? "ledger-item-active" : ""}`} key={`${event.branch}-${event.seq}`}>
+                <button
+                  aria-current={selected ? "true" : undefined}
+                  aria-label={`Select sequence ${event.seq}: ${heading}. ${summary}`}
+                  className="run-ledger-button"
+                  onClick={() => onSelect(event)}
+                  onKeyDown={(keyboardEvent) => {
+                    let targetIndex: number | undefined;
+                    if (keyboardEvent.key === "ArrowDown" || keyboardEvent.key === "ArrowRight") {
+                      targetIndex = Math.min(index + 1, events.length - 1);
+                    } else if (keyboardEvent.key === "ArrowUp" || keyboardEvent.key === "ArrowLeft") {
+                      targetIndex = Math.max(index - 1, 0);
+                    } else if (keyboardEvent.key === "Home") {
+                      targetIndex = 0;
+                    } else if (keyboardEvent.key === "End") {
+                      targetIndex = events.length - 1;
+                    }
+                    if (targetIndex !== undefined) {
+                      keyboardEvent.preventDefault();
+                      moveSelection(index, targetIndex);
+                    }
+                  }}
+                  ref={(element) => {
+                    eventRefs.current[index] = element;
+                  }}
+                  type="button"
+                >
+                  <span className="ledger-seq mono">Seq {event.seq}</span>
+                  <span className="ledger-type mono">Type {event.type}</span>
+                  <span className="ledger-time mono">
+                    Elapsed {formatElapsed(run.startedAt, event.time)}
+                  </span>
+                  <span className="ledger-attempt">
+                    {event.attempt ? `Attempt ${event.attempt}` : "No attempt"}
+                  </span>
+                  <span className="ledger-copy">
+                    <strong>{heading}</strong>
+                    <span>{summary}</span>
+                    {!event.knownSchema && (
+                      <span className="ledger-unknown">Unsupported schema {event.schema}</span>
+                    )}
+                    {selected && <span className="selected-event-label">Selected event</span>}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function nodeStateLabel(state: RunNodeState): string {
+  return state.charAt(0).toUpperCase() + state.slice(1);
 }
