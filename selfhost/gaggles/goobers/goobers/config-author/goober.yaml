@@ -15,10 +15,12 @@ spec:
   # confinement (#104/T4 -> #223: aborts before the PR opens if any changed
   # file escapes the configured root), backed by CODEOWNERS + branch
   # protection governance and this goober's own scope discipline
-  # (instructions.md). The one remaining gap — a credential that structurally
+  # (instructions.md). agent:model sources the Copilot model token separately
+  # from repo:push. The one remaining gap — a credential that structurally
   # cannot push platform changes at all, independent of this check — is #35.
   capabilities:
     - repo:push
+    - agent:model
   skills:
     - config-authoring
   tools:

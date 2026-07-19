@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -76,21 +77,15 @@ func TestSelfhostImplementationCIPollDeclaresRequiredCapability(t *testing.T) {
 	t.Fatal("implementation workflow has no inputs.kind=ci-poll task")
 }
 
-// TestSelfhostAgentModelDeclarations is #289's regression guard: the live-loop
-// agentic TASK stages must declare agent:model (so the Copilot subprocess is
-// sourced the model token, §3.3), the curator additionally keeping
-// github:issues:write; and the Tutor workflow's stages must NOT declare it
-// (AC3 — tutor is out of the #30 live loop and its analyst/config-author
-// goobers were never granted agent:model, so declaring it there would fail
-// admission anyway). The reviewer is an agentic GATE with no stage-level
-// capabilities field; its model auth is handled separately (a runner change),
-// not by a stage declaration, so it's intentionally not asserted here.
+// TestSelfhostAgentModelDeclarations guards model-token admission for every
+// shipped agentic task. The reviewer is an agentic gate with no stage-level
+// capabilities field, so its grant remains sourced from reviewer/goober.yaml.
 func TestSelfhostAgentModelDeclarations(t *testing.T) {
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows")
+	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
 
 	taskCaps := func(t *testing.T, file, task string) []string {
 		t.Helper()
-		raw, err := os.ReadFile(filepath.Join(root, file))
+		raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
@@ -106,6 +101,18 @@ func TestSelfhostAgentModelDeclarations(t *testing.T) {
 		t.Fatalf("%s: task %q not found", file, task)
 		return nil
 	}
+	gooberCaps := func(t *testing.T, name string) []string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(root, "goobers", name, "goober.yaml"))
+		if err != nil {
+			t.Fatalf("read %s goober: %v", name, err)
+		}
+		var g apiv1.Goober
+		if err := yaml.Unmarshal(raw, &g); err != nil {
+			t.Fatalf("unmarshal %s goober: %v", name, err)
+		}
+		return g.Spec.Capabilities
+	}
 	has := func(caps []string, want string) bool {
 		for _, c := range caps {
 			if c == want {
@@ -115,7 +122,7 @@ func TestSelfhostAgentModelDeclarations(t *testing.T) {
 		return false
 	}
 
-	// Each live-loop agentic task declares agent:model, alongside its existing grants.
+	// Each agentic task declares agent:model alongside its existing grants.
 	for _, tc := range []struct {
 		file, task string
 		alsoNeeds  string // a pre-existing capability the addition must not drop
@@ -123,6 +130,8 @@ func TestSelfhostAgentModelDeclarations(t *testing.T) {
 		{"backlog-curation.yaml", "curate", "github:issues:write"},
 		{"implementation.yaml", "implement", "repo:push"},
 		{"work-nomination.yaml", "nominate", "github:issues:write"},
+		{"tutor.yaml", "analyze", "journal:read"},
+		{"tutor.yaml", "draft-change", "repo:push"},
 	} {
 		caps := taskCaps(t, tc.file, tc.task)
 		if !has(caps, "agent:model") {
@@ -133,18 +142,68 @@ func TestSelfhostAgentModelDeclarations(t *testing.T) {
 		}
 	}
 
-	// AC3: no stage of the Tutor workflow declares agent:model.
-	rawTutor, err := os.ReadFile(filepath.Join(root, "tutor.yaml"))
-	if err != nil {
-		t.Fatalf("read tutor.yaml: %v", err)
-	}
-	var tutor apiv1.Workflow
-	if err := yaml.Unmarshal(rawTutor, &tutor); err != nil {
-		t.Fatalf("unmarshal tutor.yaml: %v", err)
-	}
-	for _, ta := range tutor.Spec.Tasks {
-		if has(ta.Capabilities, "agent:model") {
-			t.Errorf("tutor.yaml/%s must not declare agent:model (AC3): %v", ta.Name, ta.Capabilities)
+	for _, tc := range []struct {
+		name, alsoNeeds string
+	}{
+		{"analyst", "journal:read"},
+		{"config-author", "repo:push"},
+	} {
+		caps := gooberCaps(t, tc.name)
+		if !has(caps, "agent:model") {
+			t.Errorf("%s goober: expected agent:model in %v", tc.name, caps)
+		}
+		if !has(caps, tc.alsoNeeds) {
+			t.Errorf("%s goober: agent:model must not drop %q (got %v)", tc.name, tc.alsoNeeds, caps)
 		}
 	}
+}
+
+func TestSelfhostTutorValidatesBeforePush(t *testing.T) {
+	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tutor apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &tutor); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := make(map[string]apiv1.Task, len(tutor.Spec.Tasks))
+	for _, task := range tutor.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	if got := tasks["draft-change"].Next; got != "validate-config" {
+		t.Fatalf("draft-change next = %q, want validate-config", got)
+	}
+	validateTask, ok := tasks["validate-config"]
+	if !ok {
+		t.Fatal("tutor workflow has no validate-config task")
+	}
+	if validateTask.Type != apiv1.TaskDeterministic {
+		t.Fatalf("validate-config type = %q, want deterministic", validateTask.Type)
+	}
+	if validateTask.Run == nil ||
+		len(validateTask.Run.Command) != 3 ||
+		validateTask.Run.Command[0] != "sh" ||
+		!strings.Contains(validateTask.Run.Command[2], "goobers validate") {
+		t.Fatalf("validate-config run = %+v, want a goobers validate shell command", validateTask.Run)
+	}
+	if validateTask.Next != "config-valid" {
+		t.Fatalf("validate-config next = %q, want config-valid", validateTask.Next)
+	}
+
+	for _, gate := range tutor.Spec.Gates {
+		if gate.Name != "config-valid" {
+			continue
+		}
+		if gate.Evaluator != apiv1.EvaluatorAutomated || gate.Automated == nil || gate.Automated.Check != "status-equals" {
+			t.Fatalf("config-valid evaluator = %+v, want automated status-equals", gate)
+		}
+		if gate.Branches["pass"] != "push-branch" || gate.Branches["fail"] != "@abort" {
+			t.Fatalf("config-valid branches = %v, want pass->push-branch and fail->@abort", gate.Branches)
+		}
+		return
+	}
+	t.Fatal("tutor workflow has no config-valid gate")
 }
