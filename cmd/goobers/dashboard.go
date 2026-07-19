@@ -135,6 +135,9 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 	errorLog := log.New(stderr, "dashboard: ", log.LstdFlags)
 	api, err := prepareDashboardAPI(ctx, layout, config, errorLog)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) && errors.Is(err, context.Canceled) {
+			return 0
+		}
 		pf(stderr, "error: initialize dashboard API: %v\n", err)
 		return 1
 	}

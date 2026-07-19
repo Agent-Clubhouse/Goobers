@@ -180,6 +180,62 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	}
 }
 
+func TestDashboardCancellationWhileAttachingExitsCleanlyBeforeURL(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	requestStarted := make(chan struct{})
+	var requestOnce sync.Once
+	daemon := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		requestOnce.Do(func() { close(requestStarted) })
+		<-request.Context().Done()
+	}))
+	defer daemon.Close()
+	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
+	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- runDashboardContext(ctx, []string{"--port=auto", "--no-open", root}, &stdout, &stderr)
+	}()
+
+	select {
+	case <-requestStarted:
+	case code := <-done:
+		t.Fatalf("dashboard exited before cancellation: code = %d, stderr = %q", code, stderr.String())
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for dashboard to attach")
+	}
+	cancel()
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("dashboard exit code = %d, stderr = %q", code, stderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("dashboard did not stop after cancellation")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("dashboard printed URL before startup: %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("dashboard reported cancellation as an error: %q", stderr.String())
+	}
+	running, _, err := inspectDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !running {
+		t.Fatal("dashboard cancellation disturbed the live daemon lock")
+	}
+}
+
 func TestDashboardAttachesToLiveDaemonWithEphemeralAPIAddress(t *testing.T) {
 	root := initDeterministicDemo(t)
 	setAPIListenAddress(t, root, "127.0.0.1:0")
