@@ -10,10 +10,12 @@ spec:
   harness: copilot
   # Diagnosis-only: reads telemetry + cross-run journal evidence, writes a
   # finding artifact. Never touches the repo's working tree or opens
-  # anything — same read-only shape as the `reviewer` goober.
+  # anything. agent:model sources the Copilot model token without granting
+  # any repo or provider write access.
   capabilities:
     - telemetry:read
     - journal:read
+    - agent:model
   skills:
     - tutor-diagnosis
   tools:

@@ -54,7 +54,7 @@ _goobers_completion()
     command="${words[2]}"
     flags=(-h --help)
     case "${command}" in
-        validate) flags+=(--check-harness) ;;
+        validate) flags+=(--check-harness --source-tree) ;;
         up) flags+=(--quiet) ;;
         run) flags+=(--no-wait) ;;
         workflow)
