@@ -29,8 +29,9 @@ var defaultExtraArgs = []string{"--allow-all-tools", "--log-level", "error"}
 // (GBO-040): it renders the invocation envelope + goober instructions into a
 // prompt, runs the CLI non-interactively in the stage workspace with only the
 // granted capabilities' credentials materialized into its environment,
-// enforces the timeout, and reads back the completion file the prompt
-// instructed the CLI to write.
+// captures supported native session events when available, enforces the
+// timeout, and reads back the completion file the prompt instructed the CLI to
+// write.
 //
 // The exact CLI invocation shape is configurable rather than hardcoded
 // (Command/PromptFlag/ExtraArgs) so it can be tuned without touching this
@@ -123,9 +124,10 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 	return ExecProcessRunner{}
 }
 
-// Run renders the prompt, runs the CLI non-interactively in req.Workspace
-// with capability-scoped credentials in its environment, and reads back the
-// completion file at req.CompletionPath.
+// Run renders the prompt, runs the CLI non-interactively in req.Workspace with
+// capability-scoped credentials in its environment, prefers converted native
+// session events over the subprocess transcript when available, and reads back
+// the completion file at req.CompletionPath.
 func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
@@ -164,6 +166,19 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if err != nil {
 		return Outcome{}, err
 	}
+	nativeTranscriptPath := ""
+	if !copilotCommandSelectsSession(argv) {
+		// Pin the log to this run without replacing the home that also holds
+		// the user's Copilot configuration.
+		if copilotHome, ok := copilotConfigHome(env); ok {
+			captureID, err := newCopilotCaptureID()
+			if err != nil {
+				return Outcome{}, fmt.Errorf("harness: copilot-cli: create transcript capture id: %w", err)
+			}
+			argv = append(argv, "--session-id", captureID)
+			nativeTranscriptPath = copilotSessionLogPath(copilotHome, captureID)
+		}
+	}
 
 	result, err := c.runner().Run(ctx, ProcessRequest{
 		Command:            argv,
@@ -176,6 +191,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		Transcript:             result.Transcript,
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
+	}
+	if nativeTranscriptPath != "" {
+		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
+			out.Transcript = native.data
+			out.TranscriptTruncated = native.truncated
+			out.TranscriptDroppedBytes = native.droppedBytes
+		}
 	}
 	if err != nil {
 		return out, err
