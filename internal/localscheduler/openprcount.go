@@ -28,25 +28,18 @@ type OpenPRLister interface {
 	ListOpenPullRequestHeads(ctx context.Context, repo providers.RepositoryRef) ([]string, error)
 }
 
-// OpenPRRefresher polls the provider on its own interval for the count of the
-// loop's un-merged run-branch PRs and caches it, so the scheduler's admit-time
-// MaxOpenPRs cap (#353) reads a cached in-memory count instead of making a
+// OpenPRRefresher polls the provider on its own interval for open PR heads and
+// caches them, so the scheduler's admit-time MaxOpenPRs cap (#353) reads a
+// workflow-specific in-memory count instead of making a
 // network call under the tick loop's lock (which Admit must never do — it holds
 // Conditions.mu and "never fails a tick"). It implements OpenPRCounter.
-//
-// It counts every open PR whose head branch is under the goobers/ run-branch
-// namespace (providers.BranchName). That equals the implementation workflow's
-// own sibling PRs while implementation is the only PR-opening workflow — if
-// another PR-producing workflow is ever added, this should bucket by
-// per-workflow prefix instead.
 type OpenPRRefresher struct {
 	lister   OpenPRLister
 	repo     providers.RepositoryRef
-	prefix   string
 	interval time.Duration
 
 	mu    sync.RWMutex
-	count int
+	heads []string
 	known bool
 }
 
@@ -57,19 +50,26 @@ func NewOpenPRRefresher(lister OpenPRLister, repo providers.RepositoryRef, inter
 	if interval <= 0 {
 		interval = DefaultOpenPRRefreshInterval
 	}
-	// The run-branch namespace prefix, derived from providers.BranchName's own
-	// convention (goobers/<workflow>/<run-id>) so it tracks that seam of truth.
-	prefix := strings.SplitN(providers.BranchName("x", "x"), "/", 2)[0] + "/"
-	return &OpenPRRefresher{lister: lister, repo: repo, prefix: prefix, interval: interval}
+	return &OpenPRRefresher{lister: lister, repo: repo, interval: interval}
 }
 
-// OpenPRCount returns the last polled count of open run-branch PRs and whether
-// that count is known yet. Cheap in-memory read (Admit calls it under its own
-// lock). Implements OpenPRCounter.
-func (r *OpenPRRefresher) OpenPRCount() (int, bool) {
+// OpenPRCount returns the last polled count of open run-branch PRs for workflow
+// and whether that count is known yet. Implements OpenPRCounter.
+func (r *OpenPRRefresher) OpenPRCount(workflow string) (int, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.count, r.known
+	if !r.known {
+		return 0, false
+	}
+
+	prefix := providers.BranchName(workflow, "")
+	count := 0
+	for _, head := range r.heads {
+		if strings.HasPrefix(head, prefix) {
+			count++
+		}
+	}
+	return count, true
 }
 
 // Run polls until ctx is cancelled — an eager first poll, then every interval.
@@ -102,11 +102,6 @@ func (r *OpenPRRefresher) pollOnce(ctx context.Context) {
 		r.known = false
 		return
 	}
-	n := 0
-	for _, h := range heads {
-		if strings.HasPrefix(h, r.prefix) {
-			n++
-		}
-	}
-	r.count, r.known = n, true
+	r.heads = append(r.heads[:0], heads...)
+	r.known = true
 }

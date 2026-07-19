@@ -25,16 +25,16 @@ const (
 	ReasonProviderQuota = "provider-quota"
 )
 
-// OpenPRCounter reports the most recently polled count of the loop's own
-// un-merged PRs (those under the goobers/ run-branch namespace). Admit reads it
-// synchronously (a cheap in-memory read) to enforce ReadinessConditions.
+// OpenPRCounter reports the most recently polled count of a workflow's own
+// un-merged PRs. Admit reads it synchronously (a cheap in-memory read) to enforce
+// ReadinessConditions.
 // MaxOpenPRs (#353) without making a network call under the tick loop's lock —
 // the count is refreshed on a separate background interval (openprcount.go).
 // known is false on cold start (no poll completed yet) or after a poll error;
 // Admit fails OPEN in that case — a transient GitHub hiccup must not stall
 // dispatch, matching every other condition's "never fails a tick" contract.
 type OpenPRCounter interface {
-	OpenPRCount() (n int, known bool)
+	OpenPRCount(workflow string) (n int, known bool)
 }
 
 // budgetWindow is the rolling window MaxRunsPerHour is measured over.
@@ -230,7 +230,7 @@ func (c *Conditions) AdmitWorkflow(identity WorkflowIdentity, r apiv1.ReadinessC
 	// count is unknown (cold start / poll error) so a GitHub hiccup never stalls
 	// a tick. Cross-PR rebase/conflict resolution stays V0.5's (epic #357).
 	if r.MaxOpenPRs > 0 && c.openPRs != nil {
-		if n, known := c.openPRs.OpenPRCount(); known && n >= int(r.MaxOpenPRs) {
+		if n, known := c.openPRs.OpenPRCount(identity.Workflow); known && n >= int(r.MaxOpenPRs) {
 			return false, ReasonOpenPRCap
 		}
 	}
