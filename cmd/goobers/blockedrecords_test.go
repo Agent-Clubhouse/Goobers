@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/providers"
@@ -92,9 +93,9 @@ func blockedFilterFixture(t *testing.T) (*fakeGitHubServer, *providers.GitHubPro
 func TestFilterBlockedEligibilityNoRecordsIsNoop(t *testing.T) {
 	_, provider, repo := blockedFilterFixture(t)
 	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}}
-	filtered, changed, err := filterBlockedEligibility(context.Background(), provider, repo, eligible, map[string]blockedRecord{})
-	if err != nil {
-		t.Fatalf("filterBlockedEligibility: %v", err)
+	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, map[string]blockedRecord{})
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
 	}
 	if changed {
 		t.Fatal("changed = true, want false for an empty records map")
@@ -116,9 +117,9 @@ func TestFilterBlockedEligibilitySkipsWhileBlockerOpen(t *testing.T) {
 	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}}
 	recs := map[string]blockedRecord{"510": {Blockers: []string{"441"}, RunID: "run-1"}}
 
-	filtered, changed, err := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
-	if err != nil {
-		t.Fatalf("filterBlockedEligibility: %v", err)
+	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
 	}
 	if changed {
 		t.Fatal("changed = true, want false — the blocker is still open, nothing to persist")
@@ -146,9 +147,9 @@ func TestFilterBlockedEligibilitySelfHealsWhenBlockersClose(t *testing.T) {
 	eligible := []providers.WorkItem{{ID: "510"}}
 	recs := map[string]blockedRecord{"510": {Blockers: []string{"441", "442"}, RunID: "run-1"}}
 
-	filtered, changed, err := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
-	if err != nil {
-		t.Fatalf("filterBlockedEligibility: %v", err)
+	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
 	}
 	if !changed {
 		t.Fatal("changed = false, want true — the self-healed record must be persisted")
@@ -174,11 +175,11 @@ func TestFilterBlockedEligibilityPrunesRecordForClosedItem(t *testing.T) {
 	// 510 no longer appears in this tick's eligible set (it's closed, so the
 	// provider query wouldn't return it) — filterBlockedEligibility must still
 	// prune its stale record via the direct GetWorkItem check.
-	filtered, changed, err := filterBlockedEligibility(context.Background(), provider, repo, nil, map[string]blockedRecord{
+	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, nil, map[string]blockedRecord{
 		"510": {Blockers: []string{"441"}, RunID: "run-1"},
 	})
-	if err != nil {
-		t.Fatalf("filterBlockedEligibility: %v", err)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
 	}
 	if !changed {
 		t.Fatal("changed = false, want true — the stale record must be persisted as removed")
@@ -258,5 +259,91 @@ func TestBacklogQuerySkipsKnownBlockedThenSelfHeals(t *testing.T) {
 	}
 	if recs, _ := loadBlockedRecords(blockedRecordsPath(l)); len(recs) != 0 {
 		t.Fatalf("blocked.json after self-heal = %+v, want empty", recs)
+	}
+}
+
+// TestFilterBlockedEligibilityResolvesPRPrefixedKey is #971's regression test.
+// pr-remediation records its driving item under the claim ledger's name, so
+// blocked.json grows "pr/955"-shaped keys alongside issue-driven bare numbers.
+// Passed through verbatim, that produced GET .../issues/pr/955 — a 404 that
+// hard-failed every query-backlog tick and took down implementation and
+// backlog-curation together. The key must resolve to the pull request and
+// drive the ordinary skip logic.
+func TestFilterBlockedEligibilityResolvesPRPrefixedKey(t *testing.T) {
+	server, provider, repo := blockedFilterFixture(t)
+	server.addIssue(956, "sibling pr, still open", "goobers:ready") // blocker
+	server.addIssue(955, "the blocked pull request", "goobers:ready")
+	server.addIssue(511, "unrelated item", "goobers:ready")
+
+	eligible := []providers.WorkItem{{ID: "955"}, {ID: "511"}}
+	recs := map[string]blockedRecord{"pr/955": {Blockers: []string{"956"}, RunID: "run-1"}}
+
+	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	if len(warnings) != 0 {
+		t.Fatalf("pr/-prefixed key produced warnings, want a clean lookup: %v", warnings)
+	}
+	if changed {
+		t.Fatal("changed = true, want false — the blocker is still open, nothing to persist")
+	}
+	if _, ok := recs["pr/955"]; !ok {
+		t.Fatal("record for pr/955 was removed, want it to survive (blocker still open)")
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("filtered = %v, want both items — a pr/ key skips by its own key, not the bare number", filtered)
+	}
+}
+
+// TestFilterBlockedEligibilityPrunesPRPrefixedKeyWhenMerged proves the prefix
+// strip also feeds the prune half: a pr/ record whose pull request has closed
+// or merged clears itself, exactly as a bare-numeric issue record does.
+func TestFilterBlockedEligibilityPrunesPRPrefixedKeyWhenMerged(t *testing.T) {
+	server, provider, repo := blockedFilterFixture(t)
+	server.addIssue(955, "the pull request", "goobers:ready")
+	server.closeIssue(955)
+
+	recs := map[string]blockedRecord{"pr/955": {Blockers: []string{"956"}, RunID: "run-1"}}
+	_, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, nil, recs)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if !changed {
+		t.Fatal("changed = false, want true — a closed pull request's record must be pruned")
+	}
+	if _, ok := recs["pr/955"]; ok {
+		t.Fatal("record for pr/955 survived, want it pruned once its pull request closed")
+	}
+}
+
+// TestFilterBlockedEligibilityDegradesOnUnresolvableKey is the other half of
+// #971: whatever malformed key ends up in blocked.json next must not halt
+// backlog selection. An unresolvable record is reported as a warning and left
+// untouched — neither pruned (we cannot prove it closed) nor self-healed —
+// while every other record is still processed normally.
+func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
+	server, provider, repo := blockedFilterFixture(t)
+	server.addIssue(441, "prerequisite", "goobers:ready")
+	server.addIssue(510, "blocked item", "goobers:ready")
+	server.addIssue(511, "unrelated item", "goobers:ready")
+
+	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}}
+	recs := map[string]blockedRecord{
+		"510":            {Blockers: []string{"441"}, RunID: "run-1"},
+		"not-a-real-key": {Blockers: []string{"441"}, RunID: "run-2"},
+	}
+
+	filtered, _, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly one for the unresolvable key", warnings)
+	}
+	if !strings.Contains(warnings[0], "not-a-real-key") {
+		t.Fatalf("warning = %q, want it to name the offending key", warnings[0])
+	}
+	if _, ok := recs["not-a-real-key"]; !ok {
+		t.Fatal("unresolvable record was pruned, want it left untouched for a human to resolve")
+	}
+	// The healthy record must still have been applied — one bad key degrades
+	// only itself, which is the entire point of the change.
+	if len(filtered) != 1 || filtered[0].ID != "511" {
+		t.Fatalf("filtered = %v, want only 511 — record 510 must still skip despite the bad sibling key", filtered)
 	}
 }
