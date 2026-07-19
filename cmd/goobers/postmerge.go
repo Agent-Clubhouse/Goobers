@@ -18,10 +18,40 @@ import (
 // convention `goobers open-pr` writes ("Fixes #<issueID>", openpr.go).
 var closingKeywordPattern = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)`)
 
+// referenceKeywordPattern is the closing grammar widened to also match the
+// non-closing "Implements #N" convention `goobers open-pr` writes in a
+// structured PR body's Summary line (openprbody.go). It is deliberately
+// broader than closingKeywordPattern: the open-PR eligibility backstop
+// (#414/#980) wants to know whether ANY open PR already speaks for an issue,
+// not only one whose body happens to carry a closing keyword. It still
+// requires a directed keyword before the "#N" so a bare cross-reference
+// mention ("see also #700") never over-excludes an unrelated issue.
+var referenceKeywordPattern = regexp.MustCompile(`(?i)\b(?:implement(?:s|ed)?|close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)`)
+
 // closingIssueNumbers extracts every distinct issue number a PR body
-// references via GitHub's closing-keyword grammar, in first-seen order.
+// references via GitHub's closing-keyword grammar, in first-seen order. Used
+// by post-merge close-out (#355), which must only mark done the issues the PR
+// actually closes — never a merely-referenced one — so it stays on the
+// narrow closing grammar.
 func closingIssueNumbers(body string) []string {
-	matches := closingKeywordPattern.FindAllStringSubmatch(body, -1)
+	return distinctIssueRefs(closingKeywordPattern, body)
+}
+
+// referencedIssueNumbers extracts every distinct issue number a PR body
+// references via a directed keyword (implements/closes/fixes/resolves), in
+// first-seen order. Used only by the backlog-query open-PR eligibility
+// backstop (#980): a still-open PR that says "Implements #N" but omits a
+// "Fixes #N" footer — an overridden/tutor body, or a future body format —
+// must still exclude #N from re-selection, closing the gap that let #774 be
+// implemented twice (#966/#969).
+func referencedIssueNumbers(body string) []string {
+	return distinctIssueRefs(referenceKeywordPattern, body)
+}
+
+// distinctIssueRefs returns the first submatch group of every match of
+// pattern against body, de-duplicated in first-seen order.
+func distinctIssueRefs(pattern *regexp.Regexp, body string) []string {
+	matches := pattern.FindAllStringSubmatch(body, -1)
 	seen := map[string]bool{}
 	var out []string
 	for _, m := range matches {

@@ -568,3 +568,35 @@ func TestClosingIssueNumbers(t *testing.T) {
 		})
 	}
 }
+
+// TestReferencedIssueNumbers exercises the widened backstop parser (#980): it
+// covers every closing form closingIssueNumbers does AND the non-closing
+// "Implements #N" convention a structured PR body writes, while still
+// ignoring a bare cross-reference mention that carries no directed keyword.
+func TestReferencedIssueNumbers(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"implements", "## Summary\n\nImplements #774: **Convert logs**.", []string{"774"}},
+		{"implemented-past-tense", "Implemented #12 as specced.", []string{"12"}},
+		{"fixes-footer", "Body.\n\n---\nFixes #42", []string{"42"}},
+		{"implements-plus-fixes-collapses", "Implements #774.\n\n---\nFixes #774", []string{"774"}},
+		{"bare-mention-ignored", "Implements #5 (see also #700).", []string{"5"}},
+		{"no-reference", "Just a manual change, no backlog issue.", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := referencedIssueNumbers(tc.body)
+			if len(got) != len(tc.want) {
+				t.Fatalf("referencedIssueNumbers(%q) = %v, want %v", tc.body, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("referencedIssueNumbers(%q) = %v, want %v", tc.body, got, tc.want)
+				}
+			}
+		})
+	}
+}
