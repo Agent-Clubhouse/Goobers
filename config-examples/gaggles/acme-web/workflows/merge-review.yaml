@@ -130,6 +130,20 @@ spec:
         pullNumber: selectedNumber
       inputs:
         resultFile: "queue-result.json"
+        # A merge queue runs a full combined build against the projected
+        # merge state, which routinely outlasts the executor's 10-minute
+        # default stage timeout. Without an explicit budget here the stage
+        # is killed long before the queue resolves, so the run never
+        # observes the merge and post-merge (branch cleanup, issue
+        # close-out, sibling fan-out) never runs for a PR that did in fact
+        # land (#886).
+        #
+        # The stage timeout must exceed the poll timeout: merge-queue-poll
+        # clamps its own poll to a margin inside whichever stage budget is
+        # in effect (#884), so declaring only one of the two silently caps
+        # the other.
+        pollTimeoutSeconds: "25m"
+        timeout: "30m"
       capabilities:
         - github:pr:merge
         - github:issues:write
