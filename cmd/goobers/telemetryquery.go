@@ -26,7 +26,17 @@ type telemetryQueryResult struct {
 	Workflows       []workflowSignal       `json:"workflows"`
 	Stages          []stageSignal          `json:"stages"`
 	ErrorSignatures []errorSignatureSignal `json:"errorSignatures"`
+	NoWork          bool                   `json:"noWork,omitempty"`
+	Note            string                 `json:"note,omitempty"`
 }
+
+// The two benign-empty causes carry distinct notes: the note is the only
+// signal that survives into the trace, since the executor overwrites Summary
+// with a generic no-work line.
+const (
+	telemetryQueryNoRollupNote    = "no telemetry rollup yet"
+	telemetryQueryEmptyWindowNote = "telemetry rollup has no runs in the requested window"
+)
 
 type workflowSignal struct {
 	Workflow      string  `json:"workflow"`
@@ -70,8 +80,8 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 			"document to a declared resultFile (GOOBERS_INPUT_resultFile) or stdout. This\n"+
 			"is the V0 floor for the work-nomination/tutor gather-signals stage (#232);\n"+
 			"the typed, versioned candidate-findings connector is V1 (#148).\n\n"+
-			"Exit codes: 0 = OK (an empty rollup is still success — zero signals is a\n"+
-			"valid answer), 1 = business error (no telemetry rollup found, query error),\n"+
+			"Exit codes: 0 = OK (a missing or empty rollup is a clean no-work result),\n"+
+			"1 = business error (unreadable/corrupt rollup, query error),\n"+
 			"2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
@@ -92,14 +102,23 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 
 	l := layoutFor(providerStageRoot(pathArg))
 	dbPath := l.TelemetryDB()
-	// A missing rollup file is a business error, not an empty result: it means
-	// telemetry was never enabled or no run has ever been ingested, so the
-	// signals input this stage is supposed to provide simply does not exist —
-	// fail closed with an actionable message rather than emit a hollow success.
 	if _, err := os.Stat(dbPath); err != nil {
-		pf(stderr, "error: no telemetry rollup at %s — enable telemetry (instance.yaml "+
-			"telemetry.enabled) and run at least one workflow under `goobers up` first: %v\n", dbPath, err)
-		return 1
+		if !os.IsNotExist(err) {
+			pf(stderr, "error: inspect telemetry rollup %s: %v\n", dbPath, err)
+			return 1
+		}
+		// A fresh instance legitimately has no rollup, so this is no-work rather
+		// than an error. It is also what a permanently-misconfigured instance
+		// looks like, and those are indistinguishable from the result alone —
+		// keep the actionable guidance on stderr, where it lands in the stage's
+		// stderr artifact without affecting the exit code or the result.
+		pf(stderr, "note: no telemetry rollup at %s — if this persists, enable telemetry "+
+			"(instance.yaml telemetry.enabled) and run at least one workflow under `goobers up`: %v\n", dbPath, err)
+		since := time.Now().Add(-*window)
+		result := telemetryQueryResult{Schema: telemetryQuerySchema, Window: window.String(), Since: since}
+		result.NoWork = true
+		result.Note = telemetryQueryNoRollupNote
+		return writeTelemetryQueryResult(result, stdout, stderr)
 	}
 	db, err := rollup.Open(dbPath)
 	if err != nil {
@@ -140,7 +159,15 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 			Code: sig.Code, ErrorClass: sig.ErrorClass, Count: sig.Count, LastSeen: sig.LastSeen,
 		})
 	}
+	if len(result.Workflows) == 0 && len(result.Stages) == 0 && len(result.ErrorSignatures) == 0 {
+		result.NoWork = true
+		result.Note = telemetryQueryEmptyWindowNote
+	}
 
+	return writeTelemetryQueryResult(result, stdout, stderr)
+}
+
+func writeTelemetryQueryResult(result telemetryQueryResult, stdout, stderr io.Writer) int {
 	out, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		pf(stderr, "error: encode signals: %v\n", err)

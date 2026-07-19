@@ -56,7 +56,7 @@ var goldenDigests = map[string]string{
 	// to poll the pull request's checks.
 	"implementation.yaml":   "sha256:3c0fb6f9133f0df14b208acfdaf6d96173dfd8a24771ce521035862ece080761",
 	"backlog-curation.yaml": "sha256:99bf677d0976f720638d16fe95cf88802da632011bf5e7e1d2ca0c0dabf99bd8",
-	"work-nomination.yaml":  "sha256:013d029452371b4a0ada36d53b94713fb04a31a15b9fa27049ac46acc1f9debc",
+	"work-nomination.yaml":  "sha256:0e689d382fa5e62493e7f339a9caefc28e4e2ce3a63054035e7955b84de2c10c",
 }
 
 // TestShippedWorkflowsCompile proves the three V0 shipped workflows (curation,
