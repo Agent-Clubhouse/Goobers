@@ -22,6 +22,7 @@ spec:
       run:
         command: ["goobers", "pr-select"]
       inputs:
+        headPrefix: "goobers/implementation/"
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write

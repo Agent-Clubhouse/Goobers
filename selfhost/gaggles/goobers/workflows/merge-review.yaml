@@ -44,16 +44,17 @@ spec:
   start: pr-select
   tasks:
     # Selection (design doc §3's declarative-selection model, applied to
-    # PRs): one open, non-draft, green-CI goobers/* PR not already carrying
-    # a merge-review label. The selected PR is leased in the same claim
-    # namespace gather-pr-context uses, excluding concurrent review/remediation
-    # of one PR.
+    # PRs): one open, non-draft, green-CI goobers/implementation/* PR not
+    # already carrying a merge-review label. The selected PR is leased in the
+    # same claim namespace gather-pr-context uses, excluding concurrent
+    # review/remediation of one PR.
     - name: pr-select
       type: deterministic
       goal: Select one eligible open PR for holistic review.
       run:
         command: ["goobers", "pr-select"]
       inputs:
+        headPrefix: "goobers/implementation/"
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write
