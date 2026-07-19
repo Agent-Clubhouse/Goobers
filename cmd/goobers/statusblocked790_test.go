@@ -107,3 +107,37 @@ func TestStatusDropsResolvedRecordOnBacklogEligibilityRefresh(t *testing.T) {
 		t.Fatalf("stdout = %q, want no stale resolved record", stdout)
 	}
 }
+
+func TestStatusPrunesResolvedBlockerOnBacklogEligibilityRefresh(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
+		"510": {Blockers: []string{"441", "442"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	server, provider, repo := blockedFilterFixture(t)
+	server.addIssue(441, "resolved prerequisite")
+	server.addIssue(442, "open prerequisite")
+	server.addIssue(510, "parked item")
+	server.closeIssue(441)
+	if _, err := refreshBlockedEligibility(context.Background(), l, provider, repo, nil); err != nil {
+		t.Fatalf("refreshBlockedEligibility: %v", err)
+	}
+
+	code, stdout, stderr := runArgs(t, "status", root)
+	if code != 0 {
+		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "Issues parked on learned dependencies: 1") ||
+		!strings.Contains(stdout, "#510 blocked by #442") {
+		t.Fatalf("stdout = %q, want parked item with its still-open blocker", stdout)
+	}
+	if strings.Contains(stdout, "#441") {
+		t.Fatalf("stdout = %q, want resolved blocker pruned", stdout)
+	}
+}

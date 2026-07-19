@@ -102,8 +102,9 @@ func saveBlockedRecords(path string, recs map[string]blockedRecord) error {
 // agentic attempt rediscovering the identical block every tick. It also keeps
 // blocked.json from accumulating dead weight (QA-1's gate condition):
 //
-//   - Self-heal: once every one of a record's blockers is closed, the record
-//     is cleared and the item is eligible again — no human involved.
+//   - Self-heal: closed blockers are pruned; once every one of a record's
+//     blockers is closed, the record is cleared and the item is eligible
+//     again — no human involved.
 //   - Prune: a record whose OWN item is no longer open (closed by any path —
 //     manual close, a downstream workflow, curation) is cleared outright,
 //     since there is nothing left to skip or heal.
@@ -166,8 +167,8 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 			continue
 		}
 
-		allClosed := true
 		unresolved := false
+		openBlockers := make([]string, 0, len(rec.Blockers))
 		for _, blockerID := range rec.Blockers {
 			blockerOpen, berr := isOpen(blockerID)
 			if berr != nil {
@@ -180,18 +181,22 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 				break
 			}
 			if blockerOpen {
-				allClosed = false
-				break
+				openBlockers = append(openBlockers, blockerID)
 			}
 		}
 		if unresolved {
 			skip[itemID] = true
 			continue
 		}
-		if allClosed {
+		if len(openBlockers) == 0 {
 			delete(recs, itemID)
 			changed = true
 			continue
+		}
+		if len(openBlockers) != len(rec.Blockers) {
+			rec.Blockers = openBlockers
+			recs[itemID] = rec
+			changed = true
 		}
 		skip[itemID] = true
 	}
