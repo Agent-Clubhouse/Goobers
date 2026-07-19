@@ -2,7 +2,9 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { FixtureDaemonClient } from "./api/fixtureClient";
 import { runs } from "./prototypeData";
+import { populatedDaemonFixtures } from "./test/daemonFixtures";
 
 const storedValues = new Map<string, string>();
 
@@ -29,20 +31,23 @@ describe("portal foundation", () => {
     window.location.hash = "#/overview";
   });
 
-  it("shows the operational overview", () => {
-    render(<App />);
+  it("shows the operational overview", async () => {
+    renderLiveApp();
 
-    expect(screen.getByRole("heading", { name: "3 runs need attention." })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "2 runs need attention." }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Daemon connected")).toBeInTheDocument();
-    expect(screen.getByText("Scope could not converge within the repass budget")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
   });
 
   it("opens a run and supports replay", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderLiveApp();
 
-    await user.click(screen.getByRole("button", { name: /Open run Live visual dashboard/i }));
+    await user.click(
+      await screen.findByRole("link", { name: "Open run 01JZ402DASHBOARD" }),
+    );
     expect(await screen.findByRole("heading", { name: "Live visual dashboard and workflow DAG" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Execution graph" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
@@ -53,9 +58,11 @@ describe("portal foundation", () => {
 
   it("uses the run's pinned workflow and does not reveal future attempt results", async () => {
     const user = userEvent.setup();
-    const { container } = render(<App />);
+    const { container } = renderLiveApp();
 
-    await user.click(screen.getByRole("button", { name: /Open run Live visual dashboard/i }));
+    await user.click(
+      await screen.findByRole("link", { name: "Open run 01JZ402DASHBOARD" }),
+    );
     expect(await screen.findByText(/Implementation v7/)).toBeInTheDocument();
     expect(screen.getByText(/v7 · 589d28aa/)).toBeInTheDocument();
 
@@ -73,14 +80,14 @@ describe("portal foundation", () => {
   });
 
   it.each([
-    { hash: "#/overview", heading: "3 runs need attention." },
+    { hash: "#/overview", heading: "2 runs need attention." },
     { hash: "#/workflows", heading: "Workflows" },
     { hash: "#/runs", heading: "Runs" },
-  ])("renders the $hash shell route from static fixtures", ({ hash, heading }) => {
+  ])("renders the $hash shell route from daemon fixtures", async ({ hash, heading }) => {
     window.location.hash = hash;
-    render(<App />);
+    renderLiveApp();
 
-    expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Skip to main content" })).toHaveAttribute(
       "href",
@@ -91,7 +98,7 @@ describe("portal foundation", () => {
   it("persists independently selected themes", async () => {
     window.localStorage.setItem("goobers-theme", "dark");
     const user = userEvent.setup();
-    render(<App />);
+    renderLiveApp();
 
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     await user.click(screen.getByRole("button", { name: "Use light theme" }));
@@ -102,7 +109,7 @@ describe("portal foundation", () => {
 
   it("operates primary navigation from the keyboard and moves focus to the route content", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderLiveApp();
     const workflowsButton = screen.getByRole("button", { name: "Workflows" });
 
     workflowsButton.focus();
@@ -119,7 +126,7 @@ describe("portal foundation", () => {
   it("skips to main content without changing the active hash route", async () => {
     window.location.hash = "#/workflows";
     const user = userEvent.setup();
-    render(<App />);
+    renderLiveApp();
 
     await user.click(screen.getByRole("link", { name: "Skip to main content" }));
 
@@ -145,21 +152,20 @@ describe("portal foundation", () => {
     );
   });
 
-  it("gives filters and dismiss controls observable behavior", async () => {
+  it("gives run filters observable behavior", async () => {
+    window.location.hash = "#/runs";
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "Dismiss warning preview" }));
-    expect(
-      screen.queryByText("One workflow uses an unversioned preview field"),
-    ).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Runs" }));
     await user.click(screen.getByRole("button", { name: "attention" }));
 
     expect(screen.getByRole("button", { name: /Open run Live visual dashboard/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Open run Daemon read API/i })).not.toBeInTheDocument();
   });
+
+  function renderLiveApp() {
+    return render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+  }
 });
 
 describe("escalation detail", () => {

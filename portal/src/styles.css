@@ -377,6 +377,202 @@ summary:focus-visible {
   margin-top: 44px;
 }
 
+.attention-section {
+  margin-bottom: 32px;
+  margin-top: 0;
+}
+
+.daemon-state,
+.empty-state {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  display: flex;
+  gap: 18px;
+  min-height: 150px;
+  padding: 28px;
+}
+
+.daemon-state h1,
+.empty-state h2 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.daemon-state p,
+.empty-state p,
+.inline-empty {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 7px 0 0;
+}
+
+.daemon-state-error {
+  align-items: end;
+  border-color: color-mix(in srgb, var(--danger) 38%, var(--line));
+  justify-content: space-between;
+}
+
+.empty-state img {
+  height: 64px;
+  object-fit: contain;
+  width: 64px;
+}
+
+.loading-mark {
+  border: 2px solid var(--line);
+  border-radius: 50%;
+  border-top-color: var(--accent);
+  height: 24px;
+  width: 24px;
+}
+
+.reconnect-button {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: white;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 8px 13px;
+}
+
+.inline-empty {
+  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  margin: 0;
+  padding: 18px 13px;
+}
+
+.gaggle-section {
+  border-top: 1px solid var(--line-strong);
+  margin-top: 54px;
+  padding-top: 28px;
+}
+
+.gaggle-heading {
+  align-items: end;
+  display: flex;
+  justify-content: space-between;
+}
+
+.gaggle-heading h2 {
+  font-size: 22px;
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+
+.gaggle-heading > div > p:last-child {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 7px 0 0;
+}
+
+.gaggle-heading dl {
+  display: flex;
+  gap: 24px;
+  margin: 0;
+}
+
+.gaggle-heading dl div {
+  display: grid;
+  gap: 3px;
+}
+
+.gaggle-heading dt {
+  color: var(--muted);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.gaggle-heading dd {
+  font-size: 11px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.gaggle-content {
+  margin-top: 28px;
+}
+
+.gaggle-content .section-heading {
+  align-items: baseline;
+}
+
+.gaggle-content h3 {
+  font-size: 14px;
+  margin: 0;
+}
+
+.goober-roster {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.goober-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 17px;
+}
+
+.goober-card header {
+  align-items: start;
+  display: flex;
+  justify-content: space-between;
+}
+
+.goober-card h4 {
+  font-size: 13px;
+  margin: 0;
+}
+
+.goober-card header p {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 4px 0 0;
+}
+
+.definition-status {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted-strong);
+  font-size: 9px;
+  font-weight: 700;
+  padding: 3px 7px;
+  text-transform: uppercase;
+}
+
+.goober-card dl {
+  display: grid;
+  gap: 11px;
+  margin: 17px 0 0;
+}
+
+.goober-card dl div {
+  display: grid;
+  gap: 3px;
+}
+
+.goober-card dt {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.goober-card dd {
+  font-size: 10px;
+  line-height: 1.55;
+  margin: 0;
+}
+
 .section-heading,
 .panel-heading-row {
   align-items: end;
@@ -438,6 +634,8 @@ summary:focus-visible {
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   padding: 16px;
   text-align: left;
+  text-decoration: none;
+  color: inherit;
   width: 100%;
 }
 
@@ -503,10 +701,12 @@ summary:focus-visible {
   background: transparent;
   border: 0;
   border-top: 1px solid var(--line);
+  color: inherit;
   cursor: pointer;
   min-height: 66px;
   padding: 11px 13px;
   text-align: left;
+  text-decoration: none;
   width: 100%;
 }
 
@@ -1954,7 +2154,8 @@ summary:focus-visible {
 
   .detail-heading,
   .run-heading,
-  .page-heading-row {
+  .page-heading-row,
+  .gaggle-heading {
     align-items: start;
     display: grid;
     gap: 22px;
@@ -2018,6 +2219,22 @@ summary:focus-visible {
     border-top: 1px solid var(--line);
     justify-content: space-between;
     padding-top: 12px;
+  }
+
+  .gaggle-heading dl {
+    border-top: 1px solid var(--line);
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding-top: 14px;
+  }
+
+  .goober-roster {
+    grid-template-columns: 1fr;
+  }
+
+  .daemon-state-error {
+    align-items: start;
+    display: grid;
   }
 
   .graph-canvas,

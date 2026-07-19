@@ -1,182 +1,283 @@
-import { useState } from "react";
+import type { DaemonClient, RunSummary, WorkflowSummary } from "../api/types";
+import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import {
-  instanceWarnings,
-  runs,
-  workflowForRun,
-  workflows,
-} from "../prototypeData";
-import type { Navigate } from "../routing";
+  groupOperationalRuns,
+  type OperationalSnapshot,
+  useOperationalSnapshot,
+} from "../operationalData";
+import { routeHash } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
 
-export function OverviewPage({ navigate }: { navigate: Navigate }) {
-  const [warningVisible, setWarningVisible] = useState(true);
-  const activeRuns = runs.filter((run) => run.status === "running");
-  const recentRuns = runs.filter((run) => run.status !== "running");
-  const attentionRuns = runs.filter((run) => run.status === "escalated");
+export function OverviewPage({ client }: { client: DaemonClient }) {
+  const query = useOperationalSnapshot(client);
+
+  if (query.state.status === "loading") {
+    return <DaemonLoadingState />;
+  }
+  if (query.state.status === "error") {
+    return <DaemonErrorState error={query.state.error} retry={query.retry} />;
+  }
+  if (query.state.status !== "ready") {
+    return null;
+  }
+
+  return <Overview snapshot={query.state.data} />;
+}
+
+function Overview({ snapshot }: { snapshot: OperationalSnapshot }) {
+  const groups = groupOperationalRuns(snapshot.runs);
+  const emptyInstance = snapshot.inventories.length === 0;
 
   return (
     <>
       <header className="page-heading">
-        <p className="page-kicker">Local instance</p>
+        <p className="page-kicker">{snapshot.instance.name}</p>
         <h1>
-          {attentionRuns.length === 1
-            ? "One run needs attention."
-            : `${attentionRuns.length} runs need attention.`}
+          {emptyInstance
+            ? snapshot.health.ready
+              ? "Daemon is ready."
+              : "Daemon is starting."
+            : attentionHeading(groups.attention.length)}
         </h1>
-        <p>Everything else is moving normally across the goobers gaggle.</p>
+        <p>
+          {emptyInstance
+            ? "No gaggles are configured. Add gaggle definitions to begin observing workflows and runs."
+            : "Live operational state from the daemon, ordered by what needs attention now."}
+        </p>
       </header>
 
-      <section aria-label="Instance status" className="instance-strip">
-        <div>
-          <span aria-hidden="true" className="live-mark" />
-          <strong>Daemon connected</strong>
-          <span>updated just now</span>
-        </div>
-        <dl>
-          <div>
-            <dt>Workflows</dt>
-            <dd>{workflows.length}</dd>
-          </div>
-          <div>
-            <dt>Active runs</dt>
-            <dd>{activeRuns.length}</dd>
-          </div>
-          <div>
-            <dt>Gaggles</dt>
-            <dd>1</dd>
-          </div>
-        </dl>
-      </section>
-
-      {attentionRuns.length > 0 && (
-        <section className="content-section">
+      {groups.attention.length > 0 && (
+        <section className="content-section attention-section">
           <div className="section-heading">
             <div>
               <p className="section-kicker section-kicker-danger">Attention</p>
               <h2>Needs attention</h2>
             </div>
             <span className="section-count">
-              {attentionRuns.length} {attentionRuns.length === 1 ? "run" : "runs"}
+              {groups.attention.length} {groups.attention.length === 1 ? "run" : "runs"}
             </span>
           </div>
           <div className="attention-list">
-            {attentionRuns.map((attentionRun) => (
-              <button
+            {groups.attention.map((run) => (
+              <a
+                aria-label={`Open run ${run.id}`}
                 className="attention-row"
-                key={attentionRun.id}
-                onClick={() => navigate({ page: "run", id: attentionRun.id })}
-                type="button"
+                href={routeHash({ page: "run", id: run.id })}
+                key={run.id}
               >
                 <span className="attention-icon">
                   <Icon name="alert" />
                 </span>
                 <span className="attention-copy">
-                  <strong>{attentionRun.title}</strong>
-                  <span>{attentionRun.escalation?.summary ?? "Escalation cause unavailable"}</span>
-                </span>
-                <span className="attention-meta">
-                  <span>{attentionRun.issue}</span>
+                  <strong>{runLabel(run)}</strong>
                   <span>
-                    {attentionRun.escalation
-                      ? `${attentionRun.escalation.budget.consumed} of ${attentionRun.escalation.budget.limit} ${attentionRun.escalation.budget.kind} attempts`
-                      : "Legacy record"}
+                    {run.phase === "escalated"
+                      ? "Run escalated and needs human review."
+                      : "Run failed and needs investigation."}
                   </span>
                 </span>
+                <span className="attention-meta">
+                  <span>{workflowLabel(snapshot, run)}</span>
+                  <time dateTime={run.finishedAt ?? run.startedAt}>
+                    {formatTimestamp(run.finishedAt ?? run.startedAt)}
+                  </time>
+                </span>
                 <Icon name="arrow" />
-              </button>
+              </a>
             ))}
           </div>
         </section>
       )}
 
-      <section className="content-section">
-        <div className="section-heading">
-          <div>
-            <p className="section-kicker">Live</p>
-            <h2>Active runs</h2>
-          </div>
-          <button className="text-button" onClick={() => navigate({ page: "runs" })} type="button">
-            View all runs <Icon name="arrow" size={15} />
-          </button>
-        </div>
-        <DataList
-          ariaLabel="Active runs"
-          columns={["Run", "Workflow", "Current stage", "Elapsed"]}
-          gridClassName="run-grid"
-        >
-          {activeRuns.map((run) => (
-            <DataRow
-              key={run.id}
-              label={`Open run ${run.title}`}
-              onClick={() => navigate({ page: "run", id: run.id })}
-            >
-              <span className="row-primary">
-                <span className="row-title">{run.title}</span>
-                <span className="row-subtitle">
-                  {run.issue} · {run.shortId}
-                </span>
-              </span>
-              <span>{workflowForRun(run).name}</span>
-              <span className="stage-progress">
-                <span aria-hidden="true" className="stage-progress-mark" />
-                {run.currentStage}
-              </span>
-              <span className="mono">{run.duration}</span>
-            </DataRow>
-          ))}
-        </DataList>
-      </section>
+      <InstanceStrip snapshot={snapshot} />
 
-      <section className="content-section">
-        <div className="section-heading">
+      {emptyInstance ? (
+        <section className="empty-state">
+          <img alt="" src="/goober-mascot.png" />
           <div>
-            <p className="section-kicker">History</p>
-            <h2>Recent outcomes</h2>
+            <h2>No gaggles configured</h2>
+            <p>
+              {snapshot.health.ready
+                ? "The daemon is ready and waiting for provisioned gaggle, goober, and workflow definitions."
+                : "The daemon has not reported ready yet, and no gaggle definitions are loaded."}
+            </p>
           </div>
-        </div>
-        <DataList
-          ariaLabel="Recent outcomes"
-          columns={["Run", "Outcome", "Workflow", "Duration"]}
-          gridClassName="outcome-grid"
-        >
-          {recentRuns.map((run) => (
-            <DataRow
-              key={run.id}
-              label={`Open run ${run.title}`}
-              onClick={() => navigate({ page: "run", id: run.id })}
-            >
-              <span className="row-primary">
-                <span className="row-title">{run.title}</span>
-                <span className="row-subtitle">{run.issue}</span>
-              </span>
-              <StatusBadge status={run.status} />
-              <span>{workflowForRun(run).name}</span>
-              <span className="mono">{run.duration}</span>
-            </DataRow>
-          ))}
-        </DataList>
-      </section>
+        </section>
+      ) : (
+        <>
+          <RunSection
+            ariaLabel="Active runs"
+            kicker="Live"
+            runs={groups.active}
+            snapshot={snapshot}
+            title="Active runs"
+          />
+          <RunSection
+            ariaLabel="Recent outcomes"
+            kicker="History"
+            runs={groups.recent}
+            snapshot={snapshot}
+            title="Recent outcomes"
+          />
+        </>
+      )}
 
-      {warningVisible &&
-        instanceWarnings.map((warning) => (
-          <section className="warning-strip" key={warning.code}>
-            <span className="warning-code">{warning.code}</span>
-            <span>
-              <strong>{warning.title}</strong>
-              <small>{warning.detail}</small>
-            </span>
-            <button
-              aria-label="Dismiss warning preview"
-              className="icon-button"
-              onClick={() => setWarningVisible(false)}
-              type="button"
-            >
-              <Icon name="close" size={16} />
-            </button>
-          </section>
-        ))}
+      {snapshot.instance.warnings.map((warning) => (
+        <section className="warning-strip" key={`${warning.code}-${warning.scope}`}>
+          <span className="warning-code">{warning.code}</span>
+          <span>
+            <strong>{warning.scope}</strong>
+            <small>{warning.explanation}</small>
+          </span>
+        </section>
+      ))}
     </>
   );
+}
+
+function InstanceStrip({ snapshot }: { snapshot: OperationalSnapshot }) {
+  return (
+    <section aria-label="Daemon connection and instance counts" className="instance-strip">
+      <div>
+        <span aria-hidden="true" className={snapshot.health.ready ? "live-mark" : "live-mark pending"} />
+        <strong>{snapshot.health.ready ? "Daemon connected" : "Daemon not ready"}</strong>
+        <span>
+          observed{" "}
+          <time dateTime={snapshot.health.freshness.observedAt}>
+            {formatTimestamp(snapshot.health.freshness.observedAt)}
+          </time>
+        </span>
+      </div>
+      <dl>
+        <div>
+          <dt>Workflows</dt>
+          <dd>{snapshot.instance.counts.workflows}</dd>
+        </div>
+        <div>
+          <dt>Active runs</dt>
+          <dd>{snapshot.instance.counts.activeRuns}</dd>
+        </div>
+        <div>
+          <dt>Gaggles</dt>
+          <dd>{snapshot.instance.counts.gaggles}</dd>
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+function RunSection({
+  ariaLabel,
+  kicker,
+  runs,
+  snapshot,
+  title,
+}: {
+  ariaLabel: string;
+  kicker: string;
+  runs: RunSummary[];
+  snapshot: OperationalSnapshot;
+  title: string;
+}) {
+  const active = title === "Active runs";
+  return (
+    <section className="content-section">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">{kicker}</p>
+          <h2>{title}</h2>
+        </div>
+        <span className="section-count">{runs.length}</span>
+      </div>
+      {runs.length === 0 ? (
+        <p className="inline-empty">{active ? "No runs are active." : "No recent outcomes."}</p>
+      ) : (
+        <DataList
+          ariaLabel={ariaLabel}
+          columns={
+            active
+              ? ["Run", "Workflow", "Current stage", "Elapsed"]
+              : ["Run", "Outcome", "Workflow", "Duration"]
+          }
+          gridClassName={active ? "run-grid" : "outcome-grid"}
+        >
+          {runs.map((run) => (
+            <DataRow
+              href={routeHash({ page: "run", id: run.id })}
+              key={run.id}
+              label={`Open run ${run.id}`}
+            >
+              <span className="row-primary">
+                <span className="row-title">{runLabel(run)}</span>
+                <span className="row-subtitle">
+                  {run.trigger.ref ? `Trigger ${run.trigger.ref} · ` : ""}
+                  {run.id}
+                </span>
+              </span>
+              {active ? (
+                <>
+                  <span>{workflowLabel(snapshot, run)}</span>
+                  <span className="stage-progress">
+                    <span aria-hidden="true" className="stage-progress-mark" />
+                    {run.currentStage ?? "Awaiting stage"}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <StatusBadge status={run.phase} />
+                  <span>{workflowLabel(snapshot, run)}</span>
+                </>
+              )}
+              <span className="mono">{formatDuration(run.durationMillis)}</span>
+            </DataRow>
+          ))}
+        </DataList>
+      )}
+    </section>
+  );
+}
+
+function workflowLabel(snapshot: OperationalSnapshot, run: RunSummary): string {
+  let workflow: WorkflowSummary | undefined;
+  for (const inventory of snapshot.inventories) {
+    workflow = inventory.workflows.find(
+      (candidate) =>
+        candidate.identity.gaggle === run.gaggle && candidate.identity.name === run.workflow,
+    );
+    if (workflow) {
+      break;
+    }
+  }
+  return workflow?.displayName ?? `${run.gaggle} / ${run.workflow}`;
+}
+
+function runLabel(run: RunSummary): string {
+  return `${run.workflow} · ${run.id}`;
+}
+
+function attentionHeading(count: number): string {
+  if (count === 0) {
+    return "No runs need attention.";
+  }
+  return count === 1 ? "One run needs attention." : `${count} runs need attention.`;
+}
+
+function formatDuration(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.round(milliseconds / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+function formatTimestamp(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
 }

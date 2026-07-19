@@ -2,16 +2,19 @@ export type Route =
   | { page: "overview" }
   | { page: "workflows" }
   | { page: "runs" }
-  | { page: "workflow"; id: string }
+  | { page: "workflow"; id: string; gaggle?: string }
   | { page: "run"; id: string };
 
 export type PrimaryArea = "overview" | "workflows" | "runs";
 
 export function parseRoute(hash = window.location.hash): Route {
   const path = hash.replace(/^#\/?/, "");
-  const [area, id] = path.split("/");
+  const [area, first, second] = path.split("/");
+  const id = first ? decodeURIComponent(first) : "";
   if (area === "workflow" && id) {
-    return { page: "workflow", id };
+    return second
+      ? { page: "workflow", gaggle: id, id: decodeURIComponent(second) }
+      : { page: "workflow", id };
   }
   if (area === "run" && id) {
     return { page: "run", id };
@@ -26,8 +29,14 @@ export function parseRoute(hash = window.location.hash): Route {
 }
 
 export function routeHash(route: Route): string {
-  if (route.page === "workflow" || route.page === "run") {
-    return `#/${route.page}/${route.id}`;
+  if (route.page === "workflow") {
+    const identity = route.gaggle
+      ? `${encodeURIComponent(route.gaggle)}/${encodeURIComponent(route.id)}`
+      : encodeURIComponent(route.id);
+    return `#/workflow/${identity}`;
+  }
+  if (route.page === "run") {
+    return `#/run/${encodeURIComponent(route.id)}`;
   }
   return `#/${route.page}`;
 }

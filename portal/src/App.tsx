@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { HttpDaemonClient } from "./api/httpClient";
+import type { DaemonClient } from "./api/types";
 import { OverviewPage } from "./pages/OverviewPage";
 import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
@@ -8,7 +10,9 @@ import { runs, workflows } from "./prototypeData";
 import { activeArea, parseRoute, routeHash, type Route } from "./routing";
 import { PortalShell } from "./shell/PortalShell";
 
-export function App() {
+const daemonClient = new HttpDaemonClient();
+
+export function App({ client = daemonClient }: { client?: DaemonClient }) {
   const [route, setRoute] = useState<Route>(() => parseRoute());
   const initialRoute = useRef(true);
 
@@ -44,8 +48,8 @@ export function App() {
 
   return (
     <PortalShell activeArea={activeArea(route)} navigate={navigate}>
-      {route.page === "overview" && <OverviewPage navigate={navigate} />}
-      {route.page === "workflows" && <WorkflowsPage navigate={navigate} />}
+      {route.page === "overview" && <OverviewPage client={client} />}
+      {route.page === "workflows" && <WorkflowsPage client={client} />}
       {route.page === "runs" && <RunsPage navigate={navigate} />}
       {route.page === "workflow" && workflow && (
         <WorkflowPage navigate={navigate} workflow={workflow} />
