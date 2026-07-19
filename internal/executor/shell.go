@@ -198,6 +198,7 @@ func stageInvokesProviderBuiltin(command []string) bool {
 		"gather-sibling-context",
 		"issue-close-out",
 		"merge-pr",
+		"merge-queue-poll",
 		"open-pr",
 		"post-merge",
 		"pr-select",

@@ -98,6 +98,19 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	// Never poll past the deadline the executor will kill this stage at
+	// (issue #884). Without this clamp the default 30m poll runs inside a
+	// stage the shell executor SIGKILLs at 10m: the loop never reaches its
+	// own timeout branch, so it never writes queue-result.json, so
+	// queue-gate reads a missing queueOutcome as fail and the whole
+	// merge-review run is journaled as FAILED — for a pull request that
+	// was in fact successfully enqueued and will very likely merge.
+	// Reporting a working landing as a failure is worse than reporting it
+	// late, so the poll budget yields to the stage budget.
+	if clamped := mergeQueuePollBudget(stageTimeout()); timeout > clamped {
+		pf(stderr, "note: poll timeout %s exceeds this stage's own budget; polling for %s instead\n", timeout, clamped)
+		timeout = clamped
+	}
 
 	ctx := context.Background()
 	deadline := time.Now().Add(timeout)
@@ -230,6 +243,45 @@ func writeQueueResult(path, selectedNumber, queueOutcome, mergeSHA string, clean
 // internal/executor/cipoll.go's durationInput: an unset key applies the
 // caller's default, but a SET, malformed value fails closed with a real
 // error rather than silently defaulting.
+// mergeQueuePollMinMargin is the smallest gap mergeQueuePollBudget leaves
+// between the poll's own deadline and the stage deadline the executor
+// enforces — enough for the final poll's HTTP round trip (with its
+// rate-limit backoff) plus the result-file write.
+const mergeQueuePollMinMargin = time.Minute
+
+// stageTimeout reports the wall-clock budget the shell executor is
+// enforcing on this stage: its declared `timeout` input if it has one,
+// otherwise the executor's own default. Read from the same GOOBERS_INPUT_*
+// env the executor injects every declared input under, so the subprocess
+// bounds itself by the same number that will kill it — and keeps doing so
+// if a workflow later declares a different one, including in a
+// hand-maintained instance config this build never sees.
+func stageTimeout() time.Duration {
+	if s := providerInput(executor.InputTimeout, ""); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			return d
+		}
+	}
+	return executor.DefaultTimeout
+}
+
+// mergeQueuePollBudget returns the longest poll timeout that still leaves
+// the loop time to exit cleanly and write its result file before the
+// executor kills the stage at stageTimeout.
+func mergeQueuePollBudget(stage time.Duration) time.Duration {
+	margin := stage / 10
+	if margin < mergeQueuePollMinMargin {
+		margin = mergeQueuePollMinMargin
+	}
+	if budget := stage - margin; budget > 0 {
+		return budget
+	}
+	// A stage budget at or under the margin leaves no safe room to reserve;
+	// half of it is the best available compromise between polling at all
+	// and still writing a result.
+	return stage / 2
+}
+
 func pollDurationInput(key string, def time.Duration) (time.Duration, error) {
 	v := providerInput(key, "")
 	if v == "" {

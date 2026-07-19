@@ -179,6 +179,12 @@ func TestStageInvokesProviderBuiltin(t *testing.T) {
 		{"backlog query", []string{"goobers", "backlog-query", "--claim"}, true},
 		{"open pr", []string{"goobers", "open-pr"}, true},
 		{"merge pr", []string{"goobers", "merge-pr"}, true},
+		// #884: merge-queue-poll is a provider-chain subcommand like every
+		// other entry here. Omitting it cost it both the transient-stderr
+		// reclassification and the infrastructure-attempt retry budget, so
+		// a single transient blip while watching a merge queue failed the
+		// whole merge-review run.
+		{"merge queue poll", []string{"goobers", "merge-queue-poll"}, true},
 		{"ci poll uses in-process classification", []string{"goobers", "ci-poll"}, false},
 		{"push branch is git-backed", []string{"goobers", "push-branch"}, false},
 		{"telemetry query", []string{"goobers", "telemetry-query"}, false},
