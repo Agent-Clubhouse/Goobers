@@ -113,7 +113,8 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	ctx := context.Background()
+	ctx, cancel := providerCommandContext()
+	defer cancel()
 	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
 	if err != nil {
 		return failProviderStage(stderr, "poll merged pull request", err, "")
