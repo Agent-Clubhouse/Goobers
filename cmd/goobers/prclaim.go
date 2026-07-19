@@ -20,15 +20,31 @@ func pullRequestClaimKey(number int) string {
 }
 
 func claimEligiblePullRequest(root string, eligible []providers.PullRequestSummary) (*providers.PullRequestSummary, error) {
-	runID, workflow, err := providerRunContext()
-	if err != nil {
-		return nil, err
-	}
-	leaseDuration, err := pullRequestClaimLease()
+	runID, workflow, leaseDuration, err := pullRequestClaimParameters()
 	if err != nil {
 		return nil, err
 	}
 	return claimPullRequest(root, eligible, runID, workflow, leaseDuration)
+}
+
+func claimEligiblePullRequestInOrder(root string, eligible []providers.PullRequestSummary) (*providers.PullRequestSummary, error) {
+	runID, workflow, leaseDuration, err := pullRequestClaimParameters()
+	if err != nil {
+		return nil, err
+	}
+	return claimPullRequestInOrder(root, eligible, runID, workflow, leaseDuration)
+}
+
+func pullRequestClaimParameters() (runID, workflow string, leaseDuration time.Duration, err error) {
+	runID, workflow, err = providerRunContext()
+	if err != nil {
+		return "", "", 0, err
+	}
+	leaseDuration, err = pullRequestClaimLease()
+	if err != nil {
+		return "", "", 0, err
+	}
+	return runID, workflow, leaseDuration, nil
 }
 
 // claimedPullRequestNumber recovers the PR number THIS run claimed, from the
@@ -109,7 +125,15 @@ func claimPullRequest(
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].Number < candidates[j].Number
 	})
+	return claimPullRequestInOrder(root, candidates, runID, workflow, leaseDuration)
+}
 
+func claimPullRequestInOrder(
+	root string,
+	candidates []providers.PullRequestSummary,
+	runID, workflow string,
+	leaseDuration time.Duration,
+) (*providers.PullRequestSummary, error) {
 	l := layoutFor(root)
 	var selected *providers.PullRequestSummary
 	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {

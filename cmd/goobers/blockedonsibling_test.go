@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -203,5 +206,73 @@ func TestPRSelectSelectsSelfHealedSibling(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "811") {
 		t.Fatalf("stdout = %q, want PR #811 selected — its blocker resolved, self-healing the block", stdout)
+	}
+}
+
+func TestPRSelectPrefersPRWithMostBlockedDependents(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+
+	for _, number := range []int{101, 102, 103} {
+		server.addIssue(number, "eligible pr")
+		server.addOpenPR(number, "goobers/impl/"+strconv.Itoa(number), "main", "head", "base", false, nil, nil)
+	}
+	for number, blockers := range map[int][]int{
+		201: {103},
+		202: {103},
+		203: {102},
+	} {
+		server.addIssue(number, "blocked pr")
+		server.addOpenPR(number, "goobers/impl/"+strconv.Itoa(number), "main", "head", "base", false, []string{blockedOnSiblingLabel}, nil)
+		server.addComment(number, blockedOnSiblingCommentFor(t, blockers...))
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-run-priority")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile("selected-pr.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["number"] != "103" {
+		t.Fatalf("selected PR = %q, want #103 with two blocked dependents", result["number"])
+	}
+}
+
+func TestPRSelectWithoutBlockedDependentsPreservesNumberOrder(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	for _, number := range []int{112, 111} {
+		server.addIssue(number, "eligible pr")
+		server.addOpenPR(number, "goobers/impl/"+strconv.Itoa(number), "main", "head", "base", false, nil, nil)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-run-no-priority")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile("selected-pr.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["number"] != "111" {
+		t.Fatalf("selected PR = %q, want existing lowest-number ordering (#111)", result["number"])
 	}
 }
