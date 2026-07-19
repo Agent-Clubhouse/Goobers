@@ -134,6 +134,7 @@ spec:
         - selectedHeadSha
         - selectedBaseSha
         - decision
+        - verdictAuthor
       next: published-verdict
 
     - name: elect-lander
@@ -186,6 +187,10 @@ spec:
         pullNumber: selectedNumber
         headSha: selectedHeadSha
         baseSha: selectedBaseSha
+        # apply-verdict resolves this with its github:pr:write credential, the
+        # identity that actually owns the sticky verdict. Keep merge-pr scoped
+        # to github:pr:merge instead of injecting the broader posting token.
+        verdictAuthor: verdictAuthor
       inputs:
         # Only review:pass reaches this stage, so the gate decision is a
         # deterministic input rather than model-echoed data.

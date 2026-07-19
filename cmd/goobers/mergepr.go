@@ -40,7 +40,8 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			"Merge a pull request, but only when every independent conjunct holds:\n"+
 			"verdict=pass, CI green, not a draft, and the SHA-pin still matches the\n"+
 			"PR's live head/base (never a bare self-approval). Declared inputs:\n"+
-			"pullNumber, verdict, headSha, baseSha (all required), advisoryMode\n"+
+			"pullNumber, verdict, headSha, baseSha (all required), verdictAuthor\n"+
+			"(required for the default commit message; supplied by apply-verdict), advisoryMode\n"+
 			"(default false — report only, no merge attempted), mergeMethod\n"+
 			"(merge/squash/rebase; default squash), commitMessage (default: PR\n"+
 			"title + review rationale + referenced issues), resultFile (default\n"+
@@ -94,6 +95,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: verdict input %q is not a known verdict decision\n", verdict)
 		return 1
 	}
+	verdictAuthor := strings.TrimSpace(providerInput("verdictAuthor", ""))
 	expectedHeadSHA := providerInput("headSha", "")
 	if expectedHeadSHA == "" {
 		pf(stderr, "error: headSha input is required (the SHA-pin, D6)\n")
@@ -197,7 +199,11 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		commitTitle := ""
 		mergeCommitMessage := commitMessage
 		if strings.TrimSpace(mergeCommitMessage) == "" {
-			commitTitle, mergeCommitMessage, commitErr = structuredMergeCommitMessage(poll)
+			if verdictAuthor == "" {
+				commitErr = fmt.Errorf("verdictAuthor input is required when commitMessage is empty")
+				return nil
+			}
+			commitTitle, mergeCommitMessage, commitErr = structuredMergeCommitMessage(poll, verdictAuthor)
 			if commitErr != nil {
 				return nil
 			}
@@ -285,29 +291,30 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func structuredMergeCommitMessage(poll providers.PullRequestPollResult) (string, string, error) {
+func structuredMergeCommitMessage(poll providers.PullRequestPollResult, verdictAuthor string) (string, string, error) {
 	title := strings.TrimSpace(poll.Title)
 	if title == "" {
 		return "", "", fmt.Errorf("pull request title is empty")
 	}
 
 	var verdict *apiv1.Verdict
-	for i := len(poll.CommentsSince) - 1; i >= 0; i-- {
-		candidate, ok := parseVerdictComment(poll.CommentsSince[i].Body)
-		if !ok || candidate.Decision != apiv1.VerdictPass {
+	for _, comment := range poll.CommentsSince {
+		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, verdictAuthor) {
 			continue
 		}
-		if candidate.HeadSHA != "" && candidate.HeadSHA != poll.HeadSHA {
-			continue
+		candidate, ok := parseVerdictComment(comment.Body)
+		if !ok {
+			break
 		}
-		if candidate.BaseSHA != "" && candidate.BaseSHA != poll.BaseSHA {
-			continue
+		if candidate.Decision == apiv1.VerdictPass &&
+			candidate.HeadSHA != "" && candidate.HeadSHA == poll.HeadSHA &&
+			candidate.BaseSHA != "" && candidate.BaseSHA == poll.BaseSHA {
+			verdict = &candidate
 		}
-		verdict = &candidate
 		break
 	}
 	if verdict == nil {
-		return "", "", fmt.Errorf("no current pass verdict with a summary or rationale found in pull request comments")
+		return "", "", fmt.Errorf("canonical merge-review status is not a pass verdict pinned to the current head and base")
 	}
 
 	summary := strings.TrimSpace(verdict.Summary)

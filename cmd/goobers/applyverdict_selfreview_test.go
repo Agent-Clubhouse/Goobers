@@ -81,4 +81,7 @@ func TestApplyVerdictDegradesOnSelfReview422(t *testing.T) {
 	if !strings.Contains(string(resData), `"decision":"pass"`) {
 		t.Fatalf("verdict-result.json = %q, want decision pass", resData)
 	}
+	if !strings.Contains(string(resData), `"verdictAuthor":"goobers"`) {
+		t.Fatalf("verdict-result.json = %q, want authenticated PR-write author", resData)
+	}
 }
