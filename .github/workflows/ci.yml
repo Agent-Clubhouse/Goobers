@@ -33,15 +33,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            allow-failure: false
-          - os: macos-latest
-            allow-failure: false
-          - os: windows-latest
-            allow-failure: true
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.allow-failure }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -59,7 +52,6 @@ jobs:
         run: go mod download
 
       - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
-        if: runner.os != 'Windows'
         run: |
           curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/${GOLANGCI_LINT_VERSION}/install.sh" \
             | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
@@ -68,28 +60,47 @@ jobs:
       # Single faithful reproduction of the local gate. This is exactly what QA
       # reruns on PR heads, so the CI check and the local `make ci` never diverge.
       - name: make ci
-        if: runner.os != 'Windows'
         run: make ci
-
-      # Windows remains advisory until the platform abstractions and portable
-      # toolchain tracked by #620, #623, #625, #627, and #630 have landed.
-      - name: Windows vet smoke
-        if: runner.os == 'Windows'
-        run: go vet ./...
-
-      - name: Windows build smoke
-        if: runner.os == 'Windows'
-        run: go build ./...
 
       # Parity with the ADO pipeline's coverage publish (informational; the
       # coverage *gate* is `make cover-check`, intentionally separate from `ci`).
       - name: Upload coverage profile
-        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5
         with:
           name: coverage-${{ runner.os }}
           path: coverage.out
           if-no-files-found: ignore
+
+  # Advisory only. Windows cannot pass `make ci` until the platform
+  # abstractions and portable toolchain tracked by #620, #623, #625, #627, and
+  # #630 have landed; until then this reports a visible status on every PR
+  # without gating merges. It is deliberately NOT a `needs` of required-ci —
+  # needs.<job>.result aggregates a whole matrix, so keeping Windows in the `ci`
+  # matrix would let an expected-red leg fail the required gate. Flip this job
+  # into the `ci` matrix and mark it required once #630 lands (#633).
+  windows-smoke:
+    name: windows compile smoke (advisory)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Build smoke
+        run: go build ./...
+
+      - name: Vet smoke
+        run: go vet ./...
 
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
