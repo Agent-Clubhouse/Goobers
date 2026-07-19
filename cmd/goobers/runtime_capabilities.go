@@ -41,6 +41,7 @@ var cliCommands = []cliCommand{
 	),
 	command("validate", apicontract.ActionConfigTime, runValidate),
 	command("up", apicontract.ActionDaemonLifecycle, runUp),
+	command("dashboard", apicontract.ActionReadOnlyNavigation, runDashboard),
 	commandWithSubcommands(
 		"run",
 		apicontract.ActionWorkflowExecution,
