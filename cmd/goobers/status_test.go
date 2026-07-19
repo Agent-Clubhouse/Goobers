@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 func writeStatusRun(t *testing.T, root, runID, workflow, gaggle string, startedAt time.Time) {
@@ -111,6 +113,76 @@ func TestListRunsSkipsNonRunEntry(t *testing.T) {
 	}
 	if got := runs[0]; got.RunID != "valid-run" || got.Workflow != "default-implement" || got.Gaggle != "example" || got.Phase != "running" {
 		t.Fatalf("listRuns returned %+v, want the valid run summary", got)
+	}
+}
+
+type stubStatusReadService struct {
+	pages map[string]readservice.RunList
+	err   error
+}
+
+func (s *stubStatusReadService) ListRuns(_ context.Context, options readservice.RunListOptions) (readservice.RunList, error) {
+	if s.err != nil {
+		return readservice.RunList{}, s.err
+	}
+	return s.pages[options.Cursor], nil
+}
+
+func (s *stubStatusReadService) SchedulerStatus(context.Context) (readservice.SchedulerStatus, error) {
+	return readservice.SchedulerStatus{}, nil
+}
+
+func TestListStatusRunsPagesThroughSharedService(t *testing.T) {
+	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
+	reads := &stubStatusReadService{pages: map[string]readservice.RunList{
+		"": {
+			Runs: []readservice.RunSummary{{
+				ID: "newer", Workflow: "implementation", Gaggle: "goobers",
+				Phase: journal.PhaseRunning, StartedAt: startedAt.Add(time.Minute),
+			}},
+			NextCursor: "page-2",
+		},
+		"page-2": {
+			Runs: []readservice.RunSummary{{
+				ID: "older", Workflow: "implementation", Gaggle: "goobers",
+				Phase: journal.PhaseCompleted, StartedAt: startedAt,
+			}},
+		},
+	}}
+
+	runs, err := listStatusRuns(context.Background(), reads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 || runs[0].RunID != "newer" || runs[1].RunID != "older" {
+		t.Fatalf("listStatusRuns = %+v, want both shared-service pages", runs)
+	}
+}
+
+func TestListStatusRunsPropagatesSharedServiceFailure(t *testing.T) {
+	want := errors.New("read failure")
+	_, err := listStatusRuns(context.Background(), &stubStatusReadService{err: want})
+	if !errors.Is(err, want) {
+		t.Fatalf("listStatusRuns error = %v, want %v", err, want)
+	}
+}
+
+func TestStatusReadFailurePreservesUsageIOExitCode(t *testing.T) {
+	root := initDemo(t)
+	runsDir := instance.NewLayout(root).RunsDir()
+	if err := os.RemoveAll(runsDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runsDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runArgs(t, "status", root)
+	if code != 2 {
+		t.Fatalf("status: code = %d, want 2; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "read runs directory") {
+		t.Fatalf("stderr = %q, want shared-service read failure", stderr)
 	}
 }
 
