@@ -124,6 +124,63 @@ describe("LiveDataController", () => {
     controller.stop();
   });
 
+  it("retries a failed post-connect snapshot until it succeeds", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn();
+    controller.subscribe(["instance", "run", "workflow"], refresh);
+    refresh.mockReset();
+    refresh.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    controller.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(controller.freshness).toBe("stale");
+
+    await vi.advanceTimersByTimeAsync(189);
+    expect(refresh).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(controller.freshness).toBe("connected");
+
+    controller.stop();
+  });
+
+  it("stays stale until invalidations queued during the snapshot are applied", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, testConfig);
+    const states: LiveFreshness[] = [];
+    const initial = deferred<boolean>();
+    const replay = deferred<boolean>();
+    const refresh = vi.fn();
+    controller.subscribe(["instance", "run", "workflow"], refresh);
+    controller.subscribeState((state) => states.push(state));
+    refresh.mockReset();
+    refresh.mockReturnValueOnce(initial.promise).mockReturnValueOnce(replay.promise);
+
+    controller.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    stream.push(update("session:1", ["run"]));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+
+    initial.resolve(true);
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(states).not.toContain("connected");
+
+    replay.resolve(true);
+    await settle();
+    expect(controller.freshness).toBe("connected");
+
+    controller.stop();
+  });
+
   it("polls the same models while SSE is unavailable", async () => {
     const unavailable = () => Promise.reject(new DaemonUnavailableError());
     const client = new ScriptedClient([unavailable, unavailable, unavailable]);
@@ -144,6 +201,37 @@ describe("LiveDataController", () => {
 
     await vi.advanceTimersByTimeAsync(210);
     expect(refresh.mock.calls.length).toBeGreaterThan(1);
+
+    controller.stop();
+  });
+
+  it("waits for each polling refresh before scheduling the next", async () => {
+    const unavailable = () => Promise.reject(new DaemonUnavailableError());
+    const client = new ScriptedClient([unavailable, unavailable, unavailable]);
+    const controller = new LiveDataController(client, testConfig);
+    const firstPoll = deferred<boolean>();
+    const refresh = vi.fn();
+    controller.subscribe(["instance", "run", "workflow"], refresh);
+    refresh.mockReset();
+    refresh.mockReturnValueOnce(firstPoll.promise).mockResolvedValue(true);
+
+    controller.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(100);
+    await settle();
+    expect(controller.freshness).toBe("polling-fallback");
+    expect(refresh).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(400);
+    expect(refresh).toHaveBeenCalledOnce();
+
+    firstPoll.resolve(true);
+    await settle();
+    await vi.advanceTimersByTimeAsync(199);
+    expect(refresh).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(refresh).toHaveBeenCalledTimes(2);
 
     controller.stop();
   });
@@ -191,7 +279,7 @@ describe("LiveDataController", () => {
 });
 
 describe("live page integration", () => {
-  it("refreshes visible daemon data within the local update target and stays stale on disconnect", async () => {
+  it("meets the local p95 update target and stays stale on disconnect", async () => {
     vi.useRealTimers();
     const client = new MutableFixtureClient();
     render(<App client={client} />);
@@ -201,17 +289,24 @@ describe("live page integration", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Live updates connected");
 
-    client.instanceName = "refreshed-instance";
-    const started = performance.now();
-    client.stream.push(update("fixture:1", ["instance"]));
-    await waitFor(() => expect(screen.getByText("refreshed-instance")).toBeInTheDocument(), {
-      timeout: 900,
-    });
-    expect(performance.now() - started).toBeLessThan(1_000);
+    const latencies: number[] = [];
+    for (let sequence = 1; sequence <= 20; sequence += 1) {
+      client.instanceName = `refreshed-instance-${sequence}`;
+      const started = performance.now();
+      client.stream.push(update(`fixture:${sequence}`, ["instance"]));
+      await waitFor(
+        () => expect(screen.getByText(client.instanceName)).toBeInTheDocument(),
+        { timeout: 900 },
+      );
+      latencies.push(performance.now() - started);
+    }
+    const sortedLatencies = [...latencies].sort((left, right) => left - right);
+    const p95Index = Math.ceil(sortedLatencies.length * 0.95) - 1;
+    expect(sortedLatencies[p95Index]).toBeLessThan(1_000);
 
     client.stream.end();
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Reconnecting"));
-    expect(screen.getByText("refreshed-instance")).toBeInTheDocument();
+    expect(screen.getByText("refreshed-instance-20")).toBeInTheDocument();
     expect(screen.getByRole("status")).not.toHaveTextContent("Live updates connected");
   });
 });
@@ -312,6 +407,18 @@ function update(id: string, models: ("instance" | "run" | "workflow")[]): Daemon
 }
 
 async function settle(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let turn = 0; turn < 5; turn += 1) {
+    await Promise.resolve();
+  }
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
 }
