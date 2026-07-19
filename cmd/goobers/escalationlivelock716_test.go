@@ -131,7 +131,7 @@ func TestPRSelectExcludesUnchangedEscalatedPR(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(prNumber, "stuck pr")
-	server.addOpenPR(prNumber, "goobers/impl/stuck", "main", "headsha-601", "basesha-601", false, []string{remediationEscalatedLabel}, nil)
+	server.addOpenPR(prNumber, "goobers/implementation/stuck", "main", "headsha-601", "basesha-601", false, []string{remediationEscalatedLabel}, nil)
 	comment, err := remediationStateComment(remediationState{
 		Escalated: true, EscalatedHeadSHA: "headsha-601", EscalatedBaseSHA: "basesha-601",
 		EscalatedReason: "this cycle's diff is byte-identical to the immediately prior cycle's",
@@ -163,7 +163,7 @@ func TestPRSelectSelectsSelfHealedEscalatedPR(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(prNumber, "self-healed pr")
-	server.addOpenPR(prNumber, "goobers/impl/healed", "main", "new-head-602", "basesha-602", false, []string{remediationEscalatedLabel}, nil)
+	server.addOpenPR(prNumber, "goobers/implementation/healed", "main", "new-head-602", "basesha-602", false, []string{remediationEscalatedLabel}, nil)
 	comment, err := remediationStateComment(remediationState{
 		Escalated: true, EscalatedHeadSHA: "stale-head-602", EscalatedBaseSHA: "basesha-602",
 	})

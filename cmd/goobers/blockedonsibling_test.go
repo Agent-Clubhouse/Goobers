@@ -192,7 +192,7 @@ func TestPRSelectSkipsBlockedOnSibling(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(prNumber, "blocked pr")
 	server.addIssue(700, "open blocker")
-	server.addOpenPR(prNumber, "goobers/impl/blocked", "main", "h810", "b810", false, []string{blockedOnSiblingLabel}, nil)
+	server.addOpenPR(prNumber, "goobers/implementation/blocked", "main", "h810", "b810", false, []string{blockedOnSiblingLabel}, nil)
 	server.addComment(prNumber, blockedOnSiblingCommentFor(t, 700))
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-run-810")
@@ -218,7 +218,7 @@ func TestPRSelectSelectsSelfHealedSibling(t *testing.T) {
 	server.addIssue(prNumber, "self-healed pr")
 	server.addIssue(700, "blocker that merged")
 	server.closeIssue(700) // the blocker merged since the PR was parked
-	server.addOpenPR(prNumber, "goobers/impl/healed", "main", "h811", "b811", false, []string{blockedOnSiblingLabel}, nil)
+	server.addOpenPR(prNumber, "goobers/implementation/healed", "main", "h811", "b811", false, []string{blockedOnSiblingLabel}, nil)
 	server.addComment(prNumber, blockedOnSiblingCommentFor(t, 700))
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-run-811")
