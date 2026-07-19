@@ -205,7 +205,13 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return 1
 	}
 	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
-	handler, err := httpapi.NewHandler(reads, httpapi.AllowAll, apiLog)
+	eventStream, err := httpapi.NewEventStream(l, apiLog)
+	if err != nil {
+		pf(stderr, "error: initialize HTTP event stream: %v\n", err)
+		return 1
+	}
+	defer eventStream.Close()
+	handler, err := httpapi.NewHandler(reads, httpapi.AllowAll, apiLog, httpapi.WithEventStream(eventStream))
 	if err != nil {
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
@@ -408,6 +414,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			scheduler:      sched,
 			openPRs:        openPRs,
 			reads:          reads,
+			events:         eventStream,
 			wg:             &wg,
 			appliedDigest:  setup.ConfigDigest,
 			observedDigest: setup.ConfigDigest,

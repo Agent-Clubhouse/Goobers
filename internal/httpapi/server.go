@@ -22,6 +22,9 @@ type Server struct {
 	listener net.Listener
 	done     chan struct{}
 	errors   chan error
+
+	handlerShutdown func()
+	shutdownOnce    sync.Once
 }
 
 // NewServer constructs an unstarted server.
@@ -35,7 +38,7 @@ func NewServer(address string, handler http.Handler, errorLog *log.Logger) (*Ser
 	if errorLog == nil {
 		return nil, errors.New("http API error logger is required")
 	}
-	return &Server{
+	server := &Server{
 		address: address,
 		http: &http.Server{
 			Handler:           handler,
@@ -44,7 +47,11 @@ func NewServer(address string, handler http.Handler, errorLog *log.Logger) (*Ser
 		},
 		done:   make(chan struct{}),
 		errors: make(chan error, 1),
-	}, nil
+	}
+	if lifecycle, ok := handler.(interface{ shutdown() }); ok {
+		server.handlerShutdown = lifecycle.shutdown
+	}
+	return server, nil
 }
 
 // Start binds synchronously so listener failures are reported during daemon
@@ -85,6 +92,11 @@ func (s *Server) Errors() <-chan error { return s.errors }
 
 // Shutdown gracefully stops accepting requests and waits for active handlers.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.shutdownOnce.Do(func() {
+		if s.handlerShutdown != nil {
+			s.handlerShutdown()
+		}
+	})
 	s.mu.Lock()
 	started := s.listener != nil
 	s.mu.Unlock()

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -69,6 +70,7 @@ type configReloader struct {
 	scheduler       *localscheduler.Scheduler
 	openPRs         *openPRLoop
 	reads           *readservice.Local
+	events          *httpapi.EventStream
 	wg              *sync.WaitGroup
 	appliedDigest   string
 	observedDigest  string
@@ -148,6 +150,9 @@ func (r *configReloader) poll(now time.Time) error {
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
 		return fmt.Errorf("reload read service definitions: %w", err)
+	}
+	if r.events != nil {
+		r.events.PublishDefinitionsChanged()
 	}
 	r.appliedDigest = digest
 	return nil
