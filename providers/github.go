@@ -862,6 +862,21 @@ func (p *GitHubProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQ
 // the prefix filter is applied here instead. A read, so it does not emit a
 // mutation event.
 func (p *GitHubProvider) ListPullRequests(ctx context.Context, req ListPullRequestsRequest) ([]PullRequestSummary, error) {
+	return p.listPullRequests(ctx, req, "open", time.Time{})
+}
+
+// ListRecentlyClosedPullRequests lists pull requests closed or merged since
+// updatedSince. It is the bounded terminal-PR complement to ListPullRequests
+// used when a workflow needs current state for recently relevant siblings.
+func (p *GitHubProvider) ListRecentlyClosedPullRequests(ctx context.Context, req ListPullRequestsRequest, updatedSince time.Time) ([]PullRequestSummary, error) {
+	if updatedSince.IsZero() {
+		return nil, fmt.Errorf("updatedSince is required")
+	}
+	req.SkipCheckState = true
+	return p.listPullRequests(ctx, req, "closed", updatedSince)
+}
+
+func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullRequestsRequest, state string, updatedSince time.Time) ([]PullRequestSummary, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return nil, err
 	}
@@ -869,9 +884,13 @@ func (p *GitHubProvider) ListPullRequests(ctx context.Context, req ListPullReque
 	if err != nil {
 		return nil, err
 	}
-	values := url.Values{"state": []string{"open"}}
+	values := url.Values{"state": []string{state}}
 	if req.Base != "" {
 		values.Set("base", req.Base)
+	}
+	if !updatedSince.IsZero() {
+		values.Set("sort", "updated")
+		values.Set("direction", "desc")
 	}
 	endpoint, err = addQuery(endpoint, values)
 	if err != nil {
@@ -884,7 +903,19 @@ func (p *GitHubProvider) ListPullRequests(ctx context.Context, req ListPullReque
 		if err := json.Unmarshal(page, &pageOut); err != nil {
 			return fmt.Errorf("decode pulls page: %w", err)
 		}
-		prs = append(prs, pageOut...)
+		for _, pr := range pageOut {
+			if !updatedSince.IsZero() && pr.UpdatedAt.Before(updatedSince) {
+				return errStopPaging
+			}
+			if !updatedSince.IsZero() {
+				closedRecently := pr.ClosedAt != nil && !pr.ClosedAt.Before(updatedSince)
+				mergedRecently := pr.MergedAt != nil && !pr.MergedAt.Before(updatedSince)
+				if !closedRecently && !mergedRecently {
+					continue
+				}
+			}
+			prs = append(prs, pr)
+		}
 		return nil
 	}); err != nil {
 		return nil, err
@@ -910,6 +941,8 @@ func (p *GitHubProvider) ListPullRequests(ctx context.Context, req ListPullReque
 			ID:         strconv.Itoa(pr.Number),
 			Number:     pr.Number,
 			URL:        pr.HTMLURL,
+			State:      pr.State,
+			Merged:     pr.Merged || pr.MergedAt != nil,
 			Head:       pr.Head.Ref,
 			Base:       pr.Base.Ref,
 			HeadSHA:    pr.Head.SHA,
@@ -1862,6 +1895,8 @@ type githubPullRequestDetail struct {
 	Title     string        `json:"title"`
 	State     string        `json:"state"`
 	Merged    bool          `json:"merged"`
+	MergedAt  *time.Time    `json:"merged_at"`
+	ClosedAt  *time.Time    `json:"closed_at"`
 	Mergeable *bool         `json:"mergeable"`
 	Draft     bool          `json:"draft"`
 	Body      string        `json:"body"`

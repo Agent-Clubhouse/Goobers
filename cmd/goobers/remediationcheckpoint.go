@@ -12,9 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
@@ -28,6 +31,15 @@ import (
 const DefaultRemediationBudget = 10
 
 const remediationEscalatedLabel = "goobers:merge-escalated"
+
+const siblingOverlapLookback = 30 * 24 * time.Hour
+
+type siblingOverlapFinding struct {
+	Number   int    `json:"number"`
+	State    string `json:"state"`
+	Message  string `json:"message"`
+	Location string `json:"location,omitempty"`
+}
 
 // remediationState is pr-remediation's OWN durable per-PR loop-control
 // state (D4's cycle counter + D5's last diff digest) — distinct from
@@ -75,8 +87,9 @@ type remediationState struct {
 	EscalatedReason string `json:"escalatedReason,omitempty"`
 	// EscalatedHeadSHA / EscalatedBaseSHA are the PR's head/base SHA at the
 	// moment of escalation — the self-heal comparison snapshot (#716).
-	EscalatedHeadSHA string `json:"escalatedHeadSha,omitempty"`
-	EscalatedBaseSHA string `json:"escalatedBaseSha,omitempty"`
+	EscalatedHeadSHA      string `json:"escalatedHeadSha,omitempty"`
+	EscalatedBaseSHA      string `json:"escalatedBaseSha,omitempty"`
+	SiblingOverlapContext string `json:"siblingOverlapContext,omitempty"`
 }
 
 // remediationStatePattern matches the machine-readable payload
@@ -122,6 +135,9 @@ func renderRemediationComment(state remediationState) string {
 			"**pr-remediation escalated**\n\n%s. Parked until this PR's head or base changes, or a human removes `%s`.",
 			state.EscalatedReason, remediationEscalatedLabel,
 		)
+		if state.SiblingOverlapContext != "" {
+			prose += "\n\n**Known sibling-overlap findings from merge-review:**\n" + state.SiblingOverlapContext
+		}
 	} else {
 		prose = fmt.Sprintf("pr-remediation checkpoint: cycle %d, diff digest `%s`.", state.Cycles, state.LastDiffDigest)
 	}
@@ -312,7 +328,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	headPrefix := providerInput("headPrefix", "goobers/")
 	ctx := context.Background()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix,
+		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "")
@@ -415,11 +431,22 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		if forced {
 			reason = *escalateReason
 		}
+		var overlaps []siblingOverlapFinding
+		if exceeded || stalled {
+			overlaps, err = knownSiblingOverlapFindings(
+				ctx, provider, repo, selectedNumber, base, headPrefix, prs,
+				time.Now().UTC().Add(-siblingOverlapLookback),
+			)
+			if err != nil {
+				return failProviderStage(stderr, fmt.Sprintf("load sibling-overlap findings for PR #%d", selectedNumber), err, "")
+			}
+		}
 		state = remediationState{
 			Cycles: cycles, LastDiffDigest: digest,
 			HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
 			Escalated: true, EscalatedReason: reason,
 			EscalatedHeadSHA: current.HeadSHA, EscalatedBaseSHA: current.BaseSHA,
+			SiblingOverlapContext: renderSiblingOverlapContext(overlaps),
 		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository:   repo,
@@ -452,6 +479,123 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "recorded checkpoint for PR #%d: cycle %d/%d, digest %s\n", selectedNumber, cycles, *budget, digest)
 	return 0
+}
+
+func knownSiblingOverlapFindings(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	selectedNumber int,
+	base, headPrefix string,
+	openPRs []providers.PullRequestSummary,
+	closedSince time.Time,
+) ([]siblingOverlapFinding, error) {
+	closedPRs, err := provider.ListRecentlyClosedPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, HeadPrefix: headPrefix,
+	}, closedSince)
+	if err != nil {
+		return nil, fmt.Errorf("list recently closed pull requests: %w", err)
+	}
+
+	candidates := make(map[int]providers.PullRequestSummary, len(openPRs)+len(closedPRs))
+	for _, candidate := range openPRs {
+		candidates[candidate.Number] = candidate
+	}
+	for _, candidate := range closedPRs {
+		// The terminal query runs second, so it is the current-state winner
+		// when a sibling closes between the two snapshots.
+		candidates[candidate.Number] = candidate
+	}
+	referencePattern := regexp.MustCompile(fmt.Sprintf(
+		`(?i)(?:(?:\bPR\b|\bpull request\b)\s*#?\s*%d\b|#%d\b)`,
+		selectedNumber, selectedNumber,
+	))
+	numbers := make([]int, 0, len(candidates))
+	for number := range candidates {
+		numbers = append(numbers, number)
+	}
+	sort.Ints(numbers)
+	var overlaps []siblingOverlapFinding
+	for _, number := range numbers {
+		candidate := candidates[number]
+		if candidate.Number == selectedNumber {
+			continue
+		}
+		comments, err := provider.ListComments(ctx, repo, strconv.Itoa(candidate.Number))
+		if err != nil {
+			return nil, fmt.Errorf("list comments on sibling PR #%d: %w", candidate.Number, err)
+		}
+		for i := len(comments) - 1; i >= 0; i-- {
+			verdict, ok := parseVerdictComment(comments[i].Body)
+			if !ok {
+				continue
+			}
+			matched := false
+			for _, finding := range verdict.Findings {
+				if !siblingFindingReferencesPR(finding, selectedNumber, referencePattern) {
+					continue
+				}
+				overlaps = append(overlaps, siblingOverlapFinding{
+					Number: candidate.Number, State: pullRequestState(candidate),
+					Message: finding.Message, Location: finding.Location,
+				})
+				matched = true
+			}
+			if matched {
+				break
+			}
+		}
+	}
+	sort.Slice(overlaps, func(i, j int) bool {
+		if overlaps[i].Number != overlaps[j].Number {
+			return overlaps[i].Number < overlaps[j].Number
+		}
+		if overlaps[i].Message != overlaps[j].Message {
+			return overlaps[i].Message < overlaps[j].Message
+		}
+		return overlaps[i].Location < overlaps[j].Location
+	})
+	return overlaps, nil
+}
+
+func siblingFindingReferencesPR(finding apiv1.Finding, selectedNumber int, referencePattern *regexp.Regexp) bool {
+	if finding.Class == apiv1.FindingCrossPRBlocked {
+		for _, blocker := range finding.BlockingPRs {
+			if blocker == selectedNumber {
+				return true
+			}
+		}
+		if len(finding.BlockingPRs) == 0 {
+			return referencePattern.MatchString(finding.Message) || referencePattern.MatchString(finding.Location)
+		}
+		return false
+	}
+	if finding.Class != apiv1.FindingSubstantive && finding.Class != apiv1.FindingConflict {
+		return false
+	}
+	return referencePattern.MatchString(finding.Message) || referencePattern.MatchString(finding.Location)
+}
+
+func pullRequestState(pr providers.PullRequestSummary) string {
+	if pr.Merged {
+		return "merged"
+	}
+	if strings.EqualFold(pr.State, "closed") {
+		return "closed"
+	}
+	return "open"
+}
+
+func renderSiblingOverlapContext(overlaps []siblingOverlapFinding) string {
+	var lines []string
+	for _, overlap := range overlaps {
+		line := fmt.Sprintf("- Sibling PR #%d is **%s**: %s", overlap.Number, overlap.State, overlap.Message)
+		if overlap.Location != "" {
+			line += " (" + overlap.Location + ")"
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // writeCheckpointResult emits this stage's routing output (issue #392).

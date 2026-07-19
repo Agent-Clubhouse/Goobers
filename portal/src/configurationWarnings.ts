@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { QueryState } from "./api/queryState";
 import type {
   Instance,
@@ -6,6 +6,7 @@ import type {
   ValidationWarning,
   WorkflowDetail,
 } from "./api/types";
+import { useLiveData } from "./liveData";
 
 export type ConfigurationWarningSource =
   | { kind: "none" }
@@ -49,7 +50,8 @@ export function useConfigurationWarnings(
   const sourceKey = warningSourceKey(source);
   const sourceGaggle = source.kind === "workflow" ? source.gaggle : "";
   const sourceWorkflow = source.kind === "workflow" ? source.workflow : "";
-  const [revision, setRevision] = useState(0);
+  const request = useRef<AbortController | undefined>(undefined);
+  const { subscribe } = useLiveData();
   const [dismissedWarningKeys, setDismissedWarningKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -61,17 +63,20 @@ export function useConfigurationWarnings(
     state: client ? { status: "loading" } : warningState(fixtureWarnings),
   }));
 
-  useEffect(() => {
+  const refreshWarnings = useCallback(async (): Promise<boolean> => {
+    request.current?.abort();
+    request.current = undefined;
     if (source.kind === "none") {
       setQuery({ sourceKey, state: { status: "empty" } });
-      return;
+      return true;
     }
     if (!client) {
       setQuery({ sourceKey, state: warningState(fixtureWarnings) });
-      return;
+      return true;
     }
 
     const controller = new AbortController();
+    request.current = controller;
     setQuery((current) => ({
       sourceKey,
       state:
@@ -81,37 +86,56 @@ export function useConfigurationWarnings(
           : { status: "loading" },
     }));
 
-    readWarnings(client, source, { signal: controller.signal }).then(
-      (warnings) => {
-        if (!controller.signal.aborted) {
-          setQuery({ sourceKey, state: warningState(warnings) });
-        }
-      },
-      (cause: unknown) => {
-        if (controller.signal.aborted) {
-          return;
-        }
-        const error = cause instanceof Error ? cause : new Error("Unable to read configuration warnings.");
-        setQuery((current) => ({
-          sourceKey,
-          state:
-            current.sourceKey === sourceKey && current.state.status === "stale"
-              ? { status: "stale", data: current.state.data, error }
-              : { status: "error", error },
-        }));
-      },
-    );
-
-    return () => controller.abort();
+    try {
+      const warnings = await readWarnings(client, source, { signal: controller.signal });
+      if (controller.signal.aborted) {
+        return true;
+      }
+      setQuery({ sourceKey, state: warningState(warnings) });
+      return true;
+    } catch (cause: unknown) {
+      if (controller.signal.aborted) {
+        return true;
+      }
+      const error =
+        cause instanceof Error ? cause : new Error("Unable to read configuration warnings.");
+      setQuery((current) => ({
+        sourceKey,
+        state:
+          current.sourceKey === sourceKey && current.state.status === "stale"
+            ? { status: "stale", data: current.state.data, error }
+            : { status: "error", error },
+      }));
+      return false;
+    } finally {
+      if (request.current === controller) {
+        request.current = undefined;
+      }
+    }
   }, [
     client,
     fixtureWarnings,
-    revision,
     sourceGaggle,
     source.kind,
     sourceWorkflow,
     sourceKey,
   ]);
+
+  useEffect(() => {
+    if (source.kind === "none") {
+      void refreshWarnings();
+      return;
+    }
+    const unsubscribe = subscribe(
+      [source.kind === "instance" ? "instance" : "workflow"],
+      refreshWarnings,
+    );
+    return () => {
+      unsubscribe();
+      request.current?.abort();
+      request.current = undefined;
+    };
+  }, [refreshWarnings, source.kind, subscribe]);
 
   const dismiss = useCallback((warning: ValidationWarning) => {
     setDismissedWarningKeys((current) => {
@@ -122,8 +146,8 @@ export function useConfigurationWarnings(
   }, []);
   const refresh = useCallback(() => {
     setDismissedWarningKeys(new Set());
-    setRevision((current) => current + 1);
-  }, []);
+    void refreshWarnings();
+  }, [refreshWarnings]);
 
   return useMemo(
     () => ({

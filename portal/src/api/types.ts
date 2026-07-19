@@ -18,9 +18,41 @@ export type AttemptClass = "initial" | "policy" | "infra";
 export type StageAttemptStatus = "running" | "success" | "failure" | "blocked" | "no-work";
 export type ValidationSeverity = "error" | "warning";
 export type ValidationWarningCode = "VER001" | "VER002" | "VER003" | "MODEL002";
+export type UpdateModel = "instance" | "run" | "workflow";
 
 export interface RequestOptions {
   signal?: AbortSignal;
+}
+
+export interface EventStreamRequest {
+  cursor?: string;
+}
+
+export interface WorkflowUpdateReference {
+  gaggle: string;
+  name: string;
+}
+
+export interface ModelInvalidation {
+  cursor: string;
+  models: UpdateModel[];
+  runIds?: string[];
+  workflows?: WorkflowUpdateReference[];
+}
+
+export type DaemonUpdateEvent =
+  | {
+      id: string;
+      type: "snapshot" | "invalidate";
+      data: ModelInvalidation;
+    }
+  | {
+      type: "heartbeat";
+      data: { cursor: string };
+    };
+
+export interface DaemonEventStream extends AsyncIterable<DaemonUpdateEvent> {
+  close(): void;
 }
 
 export interface PageRequest {
@@ -476,6 +508,10 @@ export interface TelemetryError {
 }
 
 export interface DaemonClient {
+  connectEvents(
+    request?: EventStreamRequest,
+    options?: RequestOptions,
+  ): Promise<DaemonEventStream>;
   getHealth(options?: RequestOptions): Promise<Health>;
   getInstance(options?: RequestOptions): Promise<Instance>;
   listGaggles(request?: PageRequest, options?: RequestOptions): Promise<GagglePage>;

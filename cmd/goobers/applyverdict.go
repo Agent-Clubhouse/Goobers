@@ -24,6 +24,8 @@ import (
 // behind a named sibling (#747) — see verdictLabel's doc comment.
 const blockedOnSiblingLabel = "goobers:blocked-on-sibling"
 
+const mergeReviewStatusMarker = "<!-- goobers:merge-review-status -->"
+
 // verdictLabel maps a #358 Verdict's Decision to the design doc's label
 // contract (§3): pass -> eligible to merge, needs-changes -> selected by
 // pr-remediation, fail -> a human must look (§4 D2: fail is never burned on
@@ -254,7 +256,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 	if current == nil {
 		pln(stdout, "PR is no longer open (merged/closed since selection) — verdict moot, nothing to apply")
-		return writeApplyVerdictResult(resultFile, selectedNumber, "", "", "moot", stderr)
+		return writeApplyVerdictResult(resultFile, selectedNumber, "", "", "moot", "", stderr)
 	}
 
 	// D6: the verdict is void if the PR has moved since it was computed —
@@ -263,11 +265,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// against a diff that no longer exists.
 	if verdict.HeadSHA != "" && verdict.HeadSHA != current.HeadSHA {
 		pf(stdout, "verdict void: PR #%d's head moved (%s -> %s) since review — skipping, will re-review next cycle\n", selectedNumber, verdict.HeadSHA, current.HeadSHA)
-		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", stderr)
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", stderr)
 	}
 	if verdict.BaseSHA != "" && verdict.BaseSHA != current.BaseSHA {
 		pf(stdout, "verdict void: PR #%d's base moved (%s -> %s) since review — skipping, will re-review next cycle\n", selectedNumber, verdict.BaseSHA, current.BaseSHA)
-		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", stderr)
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", stderr)
 	}
 
 	// A `fail` verdict on work that is MOOT gets closed rather than parked for
@@ -345,16 +347,16 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "native review skipped for PR #%d: reviewing identity authored the PR (GitHub refuses self-review) — publishing verdict via comment/label handoff instead\n", selectedNumber)
 	}
 
+	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
+	}
 	if posted.Decision == apiv1.VerdictPass {
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo,
-			ID:         strconv.Itoa(selectedNumber),
-			Comment:    comment,
-		}); err != nil {
+		if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 		}
 		pf(stdout, "approved PR #%d at %s\n", selectedNumber, current.HeadSHA)
-		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), stderr)
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, stderr)
 	}
 
 	// Publish the native review first. If the legacy handoff below fails, the
@@ -364,13 +366,86 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		Repository: repo,
 		ID:         strconv.Itoa(selectedNumber),
 		AddLabels:  []string{label},
-		Comment:    comment,
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
 	}
+	if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
+	}
 
 	pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, verdict.Decision)
-	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), stderr)
+	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, stderr)
+}
+
+// reconcileMergeReviewStatusComment keeps the oldest marked comment authored
+// by the provider's authenticated identity as the canonical status, then
+// removes its marked duplicates. Relisting after every create/update makes
+// concurrent creators observe and collapse each other's comments; duplicate
+// deletion tolerates another reconciler winning the race.
+func reconcileMergeReviewStatusComment(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, body string) error {
+	author, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve merge-review status author: %w", err)
+	}
+	return reconcileMergeReviewStatusCommentAs(ctx, provider, repo, prNumber, author, body)
+}
+
+func reconcileMergeReviewStatusCommentAs(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, author, body string) error {
+	id := strconv.Itoa(prNumber)
+	comments, err := provider.ListComments(ctx, repo, id)
+	if err != nil {
+		return fmt.Errorf("list merge-review status comments: %w", err)
+	}
+	marked := mergeReviewStatusComments(comments, author)
+	if len(marked) == 0 {
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: repo,
+			ID:         id,
+			Comment:    body,
+		}); err != nil {
+			return fmt.Errorf("create merge-review status comment: %w", err)
+		}
+	} else if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
+		return fmt.Errorf("update merge-review status comment: %w", err)
+	}
+
+	comments, err = provider.ListComments(ctx, repo, id)
+	if err != nil {
+		return fmt.Errorf("relist merge-review status comments: %w", err)
+	}
+	marked = mergeReviewStatusComments(comments, author)
+	if len(marked) == 0 {
+		return fmt.Errorf("merge-review status comment disappeared during reconciliation")
+	}
+	if marked[0].Body != body {
+		if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
+			return fmt.Errorf("update canonical merge-review status comment: %w", err)
+		}
+	}
+	for _, duplicate := range marked[1:] {
+		if err := provider.DeleteComment(ctx, repo, duplicate.ID); err != nil {
+			return fmt.Errorf("delete duplicate merge-review status comment %s: %w", duplicate.ID, err)
+		}
+	}
+	return nil
+}
+
+func mergeReviewStatusComments(comments []providers.Comment, author string) []providers.Comment {
+	marked := make([]providers.Comment, 0, len(comments))
+	for _, comment := range comments {
+		if isTrustedMergeReviewAuthor(comment.Author, author) && isMergeReviewStatusComment(comment.Body) {
+			marked = append(marked, comment)
+		}
+	}
+	return marked
+}
+
+func isTrustedMergeReviewAuthor(commentAuthor, authenticatedAuthor string) bool {
+	return authenticatedAuthor != "" && strings.EqualFold(commentAuthor, authenticatedAuthor)
+}
+
+func isMergeReviewStatusComment(body string) bool {
+	return body == mergeReviewStatusMarker || strings.HasPrefix(body, mergeReviewStatusMarker+"\n")
 }
 
 // electedLanderPass resolves an entirely-cross-PR-ordering `needs-changes`
@@ -568,7 +643,7 @@ func closeMootPullRequest(ctx context.Context, provider *providers.GitHubProvide
 		return failProviderStage(stderr, fmt.Sprintf("close moot pull request #%d", selectedNumber), err, resultFile)
 	}
 	pf(stdout, "closed moot PR #%d: %s\n", selectedNumber, reason)
-	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "closed-moot", stderr)
+	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "closed-moot", "", stderr)
 }
 
 func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecision, error) {
@@ -582,12 +657,13 @@ func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecis
 	}
 }
 
-func writeApplyVerdictResult(path string, selectedNumber int, headSHA, baseSHA, decision string, stderr io.Writer) int {
+func writeApplyVerdictResult(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor string, stderr io.Writer) int {
 	data, err := json.Marshal(map[string]string{
 		"selectedNumber":  strconv.Itoa(selectedNumber),
 		"selectedHeadSha": headSHA,
 		"selectedBaseSha": baseSHA,
 		"decision":        decision,
+		"verdictAuthor":   verdictAuthor,
 	})
 	if err != nil {
 		pf(stderr, "error: marshal verdict result: %v\n", err)
@@ -637,15 +713,17 @@ func readLatestGateVerdict(runsDir, runID, gateName string) (*apiv1.Verdict, err
 // renderVerdictComment is the prose PR comment — a human-readable
 // projection of the same Verdict artifact (design doc §4: "one source of
 // truth, so comment and fix cannot drift"), never a separately-authored
-// message. It also embeds the SAME Verdict as a machine-readable payload
-// (verdictJSONComment) in an HTML comment appended to the end — invisible
-// when GitHub renders the comment, but readable by `gather-pr-context`
-// (issue #362), which runs in a different workflow's run and so has no
-// journal/runID relationship to this run's own artifact. This keeps the
-// prose and the machine payload as ONE posted comment (still a single
-// source of truth) rather than growing a second, driftable channel.
+// message. The stable mergeReviewStatusMarker identifies the comment for
+// in-place updates without relying on prose. It also embeds the SAME Verdict
+// as a machine-readable payload (verdictJSONComment) in an HTML comment
+// appended to the end — invisible when GitHub renders the comment, but
+// readable by `gather-pr-context` (issue #362), which runs in a different
+// workflow's run and so has no journal/runID relationship to this run's own
+// artifact. This keeps the prose and the machine payload as ONE posted
+// comment (still a single source of truth) rather than growing a second,
+// driftable channel.
 func renderVerdictComment(v apiv1.Verdict) string {
-	s := fmt.Sprintf("**merge-review verdict: %s**\n\n%s", v.Decision, v.Summary)
+	s := fmt.Sprintf("%s\n**merge-review verdict: %s**\n\n%s", mergeReviewStatusMarker, v.Decision, v.Summary)
 	if v.Rationale != "" {
 		s += "\n\n" + v.Rationale
 	}
@@ -695,4 +773,8 @@ func parseVerdictComment(body string) (v apiv1.Verdict, ok bool) {
 		return apiv1.Verdict{}, false
 	}
 	return v, true
+}
+
+func isTrustedMergeReviewStatusComment(commentAuthor, body, authenticatedAuthor string) bool {
+	return isTrustedMergeReviewAuthor(commentAuthor, authenticatedAuthor) && isMergeReviewStatusComment(body)
 }
