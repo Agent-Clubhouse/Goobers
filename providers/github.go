@@ -754,23 +754,51 @@ func (p *GitHubProvider) recordEnqueue(ctx context.Context, repo RepositoryRef, 
 	})
 }
 
+// pollMergeQueueEntryQuery reads the pull request's own state and its live
+// merge queue entry in one round trip. The entry is the only surface that
+// distinguishes "still queued" from "no longer queued" — REST exposes
+// nothing equivalent.
+const pollMergeQueueEntryQuery = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      state
+      merged
+      mergeCommit{ oid }
+      mergeQueueEntry{ state position }
+    }
+  }
+}`
+
 // PollMergeQueueEntry reports whether the merge queue has since merged or
 // evicted a pull request previously enqueued via EnqueuePullRequest (issue
-// #758), via a plain "get pull request" re-poll: merged=true is an
-// unambiguous merged outcome; state="closed" with merged=false means the
-// queue (or a human) closed it without landing it — evicted, a first-class
-// outcome, never conflated with "still pending"; anything still open is
-// reported pending, for the caller's own bounded poll loop to keep watching
-// until its timeout. A read, so it does not emit a mutation event.
+// #758), by reading the pull request's live merge queue entry over GraphQL.
 //
-// GitHub does not document a REST field that retroactively distinguishes
-// "evicted, left open" from "never queued" once a pull request is no longer
-// enqueued — reads here are deliberately just the pull request's own state,
-// not a speculative merge-queue-specific field, so a caller watching a
-// pull request that is evicted-but-left-open will see Pending until its own
-// poll times out rather than a wrong Evicted/Merged classification. Worth
-// re-validating against real merge-queue payloads once #759 actually
-// enables the queue live (this repo's queue is not yet enabled).
+// This previously re-polled the pull request over REST and classified on
+// pr.State == "closed" alone. That never fires for a real eviction: GitHub
+// leaves an evicted pull request OPEN and simply removes its queue entry,
+// so every eviction reported Pending until the caller's poll timed out, and
+// mergeQueuePollEvicted's goobers:needs-remediation routing — #758's own
+// acceptance criterion — could never run (issue #885). The old doc flagged
+// exactly this as needing re-validation "once #759 actually enables the
+// queue live"; it since has, and REST turned out to be the wrong surface.
+//
+// Classification:
+//
+//   - merged: unambiguous, and the merge commit is reported as such. Never
+//     the head SHA — under the squash method a merge queue requires, the
+//     commit that lands on the base branch is a brand-new SHA that can
+//     never equal the pull request's head.
+//   - closed without merging: evicted-and-closed, still first-class.
+//   - open, unmerged, entry present: pending; the caller's own bounded poll
+//     loop keeps watching.
+//   - open, unmerged, NO entry: absent. For a pull request the caller
+//     enqueued, that is what an eviction looks like — but it is also what
+//     the moments right after a successful enqueue look like, so the
+//     distinction is left to the caller, which is the only party that
+//     knows whether it has already seen an entry. See
+//     MergeQueueEntryAbsent's doc.
+//
+// A read, so it does not emit a mutation event.
 func (p *GitHubProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueueEntryRequest) (PollMergeQueueEntryResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return PollMergeQueueEntryResult{}, err
@@ -778,21 +806,50 @@ func (p *GitHubProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQ
 	if req.PullID == "" {
 		return PollMergeQueueEntryResult{}, fmt.Errorf("pull id is required")
 	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
+	number, err := strconv.Atoi(req.PullID)
 	if err != nil {
+		return PollMergeQueueEntryResult{}, fmt.Errorf("pull id %q must be a pull request number: %w", req.PullID, err)
+	}
+	var out struct {
+		Repository struct {
+			PullRequest *struct {
+				State       string `json:"state"`
+				Merged      bool   `json:"merged"`
+				MergeCommit *struct {
+					OID string `json:"oid"`
+				} `json:"mergeCommit"`
+				MergeQueueEntry *struct {
+					State    string `json:"state"`
+					Position int    `json:"position"`
+				} `json:"mergeQueueEntry"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	if err := p.graphql(ctx, pollMergeQueueEntryQuery, map[string]interface{}{
+		"owner":  req.Repository.Owner,
+		"name":   req.Repository.Name,
+		"number": number,
+	}, &out); err != nil {
 		return PollMergeQueueEntryResult{}, err
 	}
-	var pr githubPullRequestDetail
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
-		return PollMergeQueueEntryResult{}, err
+	pr := out.Repository.PullRequest
+	if pr == nil {
+		return PollMergeQueueEntryResult{}, fmt.Errorf("pull request %s/%s#%d not found", req.Repository.Owner, req.Repository.Name, number)
 	}
 	if pr.Merged {
-		return PollMergeQueueEntryResult{State: MergeQueueEntryMerged, MergeSHA: pr.Head.SHA}, nil
+		mergeSHA := ""
+		if pr.MergeCommit != nil {
+			mergeSHA = pr.MergeCommit.OID
+		}
+		return PollMergeQueueEntryResult{State: MergeQueueEntryMerged, MergeSHA: mergeSHA}, nil
 	}
-	if pr.State == "closed" {
+	if strings.EqualFold(pr.State, "closed") {
 		return PollMergeQueueEntryResult{State: MergeQueueEntryEvicted}, nil
 	}
-	return PollMergeQueueEntryResult{State: MergeQueueEntryPending}, nil
+	if pr.MergeQueueEntry == nil {
+		return PollMergeQueueEntryResult{State: MergeQueueEntryAbsent}, nil
+	}
+	return PollMergeQueueEntryResult{State: MergeQueueEntryPending, QueueState: pr.MergeQueueEntry.State, QueuePosition: pr.MergeQueueEntry.Position}, nil
 }
 
 // ListPullRequests lists open pull requests targeting req.Base, filtered

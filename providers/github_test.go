@@ -1327,32 +1327,50 @@ func TestGitHubProviderEnqueuePullRequestRejectsNonNumericPullID(t *testing.T) {
 	}
 }
 
-// TestGitHubProviderPollMergeQueueEntryStates covers #758's three
-// classifications a poll can report: merged (pr.Merged=true), evicted
-// (closed without merging — a first-class outcome, never conflated with
-// "still pending"), and pending (still open — the caller's own bounded
-// poll loop keeps watching until its timeout).
+// TestGitHubProviderPollMergeQueueEntryStates covers every classification a
+// poll can report. The "absent" case is issue #885's headline: GitHub
+// leaves an evicted pull request OPEN and just removes its queue entry, so
+// the old REST classification (which only looked at pr.State == "closed")
+// reported Pending forever and #758's needs-remediation routing could never
+// fire.
 func TestGitHubProviderPollMergeQueueEntryStates(t *testing.T) {
 	cases := []struct {
-		name   string
-		state  string
-		merged bool
-		want   MergeQueueEntryState
+		name  string
+		pr    map[string]interface{}
+		want  MergeQueueEntryState
+		wantS string
 	}{
-		{name: "merged", state: "closed", merged: true, want: MergeQueueEntryMerged},
-		{name: "evicted (closed without merging)", state: "closed", merged: false, want: MergeQueueEntryEvicted},
-		{name: "still pending (open)", state: "open", merged: false, want: MergeQueueEntryPending},
+		{
+			name: "merged reports the merge commit, not the head SHA",
+			pr: map[string]interface{}{
+				"state": "MERGED", "merged": true,
+				"mergeCommit": map[string]interface{}{"oid": "squashsha"}, "mergeQueueEntry": nil,
+			},
+			want: MergeQueueEntryMerged, wantS: "squashsha",
+		},
+		{
+			name: "closed without merging is evicted",
+			pr:   map[string]interface{}{"state": "CLOSED", "merged": false, "mergeCommit": nil, "mergeQueueEntry": nil},
+			want: MergeQueueEntryEvicted,
+		},
+		{
+			name: "open with a live entry is pending",
+			pr: map[string]interface{}{
+				"state": "OPEN", "merged": false, "mergeCommit": nil,
+				"mergeQueueEntry": map[string]interface{}{"state": "AWAITING_CHECKS", "position": 3},
+			},
+			want: MergeQueueEntryPending,
+		},
+		{
+			name: "open with no entry is absent — what a real eviction looks like",
+			pr:   map[string]interface{}{"state": "OPEN", "merged": false, "mergeCommit": nil, "mergeQueueEntry": nil},
+			want: MergeQueueEntryAbsent,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mux := http.NewServeMux()
-			mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(t, w, map[string]interface{}{
-					"number": 9, "state": tc.state, "merged": tc.merged,
-					"head": map[string]interface{}{"ref": "feature", "sha": "headsha"},
-				})
-			})
-			server := httptest.NewServer(mux)
+			stub := &graphQLStub{t: t, lookup: lookupResponse(tc.pr)}
+			server := stub.server()
 			defer server.Close()
 
 			provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
@@ -1365,7 +1383,33 @@ func TestGitHubProviderPollMergeQueueEntryStates(t *testing.T) {
 			if result.State != tc.want {
 				t.Fatalf("State = %q, want %q", result.State, tc.want)
 			}
+			if result.MergeSHA != tc.wantS {
+				t.Fatalf("MergeSHA = %q, want %q", result.MergeSHA, tc.wantS)
+			}
 		})
+	}
+}
+
+// TestGitHubProviderPollMergeQueueEntrySurfacesQueueProgress proves a
+// pending entry carries the queue's own view of it, so "still pending" is
+// legible in logs (position 3, awaiting checks) rather than opaque.
+func TestGitHubProviderPollMergeQueueEntrySurfacesQueueProgress(t *testing.T) {
+	stub := &graphQLStub{t: t, lookup: lookupResponse(map[string]interface{}{
+		"state": "OPEN", "merged": false, "mergeCommit": nil,
+		"mergeQueueEntry": map[string]interface{}{"state": "AWAITING_CHECKS", "position": 3},
+	})}
+	server := stub.server()
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.PollMergeQueueEntry(context.Background(), PollMergeQueueEntryRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
+	})
+	if err != nil {
+		t.Fatalf("PollMergeQueueEntry returned error: %v", err)
+	}
+	if result.QueueState != "AWAITING_CHECKS" || result.QueuePosition != 3 {
+		t.Fatalf("queue progress = %q/%d, want AWAITING_CHECKS/3", result.QueueState, result.QueuePosition)
 	}
 }
 

@@ -114,6 +114,15 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 
 	ctx := context.Background()
 	deadline := time.Now().Add(timeout)
+	// An absent queue entry is how a real eviction presents — GitHub leaves
+	// the pull request open and just removes it from the queue (#885) — but
+	// it is also how the gap between merge-pr's enqueue and the entry
+	// becoming visible presents. These two track which one this is: once an
+	// entry has been seen, absence can only mean the entry went away.
+	// Before then, absence is tolerated for a short grace window so a
+	// propagation lag is never mistaken for an eviction.
+	entrySeen := false
+	graceUntil := time.Now().Add(mergeQueueEntryGrace)
 	for attempt := 0; ; attempt++ {
 		result, pollErr := provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: repo, PullID: pullNumber})
 		if pollErr != nil && !providers.IsTransientError(pollErr) {
@@ -125,9 +134,16 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 				return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
 			case providers.MergeQueueEntryEvicted:
 				return mergeQueuePollEvicted(ctx, provider, repo, pullNumber, resultFile, stdout, stderr)
+			case providers.MergeQueueEntryPending:
+				entrySeen = true
+			case providers.MergeQueueEntryAbsent:
+				if entrySeen || time.Now().After(graceUntil) {
+					pf(stdout, "pr #%s is open and unmerged with no merge queue entry — evicted\n", pullNumber)
+					return mergeQueuePollEvicted(ctx, provider, repo, pullNumber, resultFile, stdout, stderr)
+				}
+				// Still inside the grace window and no entry has ever been
+				// seen: treat as pending and poll again.
 			}
-			// MergeQueueEntryPending falls through to the backoff/timeout
-			// check below, same as a transient poll error does.
 		}
 		if time.Now().After(deadline) {
 			if err := writeQueueResult(resultFile, pullNumber, "timeout", "", nil, ""); err != nil {
@@ -281,6 +297,15 @@ func mergeQueuePollBudget(stage time.Duration) time.Duration {
 	// and still writing a result.
 	return stage / 2
 }
+
+// mergeQueueEntryGrace bounds how long an absent merge queue entry is
+// tolerated as "not visible yet" before it is read as an eviction (#885).
+// It only applies before any entry has been seen: once one has, absence is
+// immediately conclusive. Long enough to absorb GitHub's propagation lag
+// between a successful enqueue and the entry appearing; short enough that a
+// genuine eviction still routes to remediation well inside the stage's own
+// poll budget.
+const mergeQueueEntryGrace = 90 * time.Second
 
 func pollDurationInput(key string, def time.Duration) (time.Duration, error) {
 	v := providerInput(key, "")

@@ -465,6 +465,17 @@ const (
 	// criterion), never silently conflated with "still pending" or left for
 	// a generic failure path to bury.
 	MergeQueueEntryEvicted MergeQueueEntryState = "evicted"
+	// MergeQueueEntryAbsent: the pull request is open and unmerged, and has
+	// no merge queue entry at all. For a pull request the caller enqueued
+	// itself, this is what a real eviction looks like — GitHub leaves an
+	// evicted pull request OPEN and simply removes its entry, so there is
+	// no closed state to detect (issue #885). It is reported separately
+	// from Evicted rather than folded into it because it is also, briefly,
+	// what the moments between a successful enqueue and the entry becoming
+	// visible look like: only the caller knows whether it has already seen
+	// an entry for this pull request, so only the caller can tell those
+	// two apart.
+	MergeQueueEntryAbsent MergeQueueEntryState = "absent"
 )
 
 // PollMergeQueueEntryRequest polls the live state of a pull request the
@@ -478,8 +489,17 @@ type PollMergeQueueEntryRequest struct {
 // PollMergeQueueEntryResult reports a pull request's current merge-queue
 // entry state.
 type PollMergeQueueEntryResult struct {
-	State    MergeQueueEntryState `json:"state"`
-	MergeSHA string               `json:"mergeSha,omitempty"`
+	State MergeQueueEntryState `json:"state"`
+	// MergeSHA, on a merged outcome, is the commit that actually landed on
+	// the base branch — never the pull request's head SHA, which under the
+	// squash method a merge queue requires is a different commit entirely.
+	MergeSHA string `json:"mergeSha,omitempty"`
+	// QueueState and QueuePosition carry the provider's own view of a
+	// pending entry (for GitHub: QUEUED/AWAITING_CHECKS/MERGEABLE/
+	// UNMERGEABLE/LOCKED, and the entry's place in line) so a poll's
+	// progress is legible in logs rather than an opaque "still pending".
+	QueueState    string `json:"queueState,omitempty"`
+	QueuePosition int    `json:"queuePosition,omitempty"`
 }
 
 // ListPullRequestsRequest filters open pull requests for merge-review's

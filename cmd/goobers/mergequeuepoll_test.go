@@ -29,7 +29,14 @@ type mergeQueuePollServerState struct {
 	headBranch     string
 	headSHA        string
 
+	// pendingEntryAbsent makes the pending-phase polls report NO merge queue
+	// entry rather than a live one — issue #885's eviction shape, since
+	// GitHub leaves an evicted pull request open and simply removes its
+	// entry. Left unset, pending polls report a normal queued entry.
+	pendingEntryAbsent bool
+
 	pollCalls     int
+	graphqlPolls  int
 	pullListCalls int
 	deleteCalls   int
 	labelCalls    int
@@ -66,6 +73,39 @@ func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePol
 				"repo": map[string]interface{}{"name": repo, "html_url": "https://github.com/" + owner + "/" + repo, "owner": map[string]string{"login": owner}}},
 			"base": map[string]interface{}{"ref": "main", "sha": "basesha"},
 		})
+	})
+	// The queue-entry poll itself is GraphQL (issue #885) — the merge queue
+	// entry is the only surface that distinguishes "still queued" from "no
+	// longer queued", and REST exposes nothing equivalent. The REST
+	// .../pulls/9 handler above still serves PollPullRequest, which the
+	// merged path calls separately to resolve branch-cleanup details.
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		st.graphqlPolls++
+		terminal := st.graphqlPolls > st.pendingCalls
+		terminalState, terminalMerged, entryAbsent := st.terminalState, st.terminalMerged, st.pendingEntryAbsent
+		st.mu.Unlock()
+
+		pr := map[string]interface{}{"state": "OPEN", "merged": false, "mergeCommit": nil}
+		switch {
+		case terminal && terminalMerged:
+			pr["state"] = "MERGED"
+			pr["merged"] = true
+			pr["mergeCommit"] = map[string]interface{}{"oid": "queuemergesha"}
+		case terminal && terminalState == "closed":
+			pr["state"] = "CLOSED"
+		}
+		// The entry exists only during the pending phase. Once the scripted
+		// state goes terminal, it is gone — which, for a pull request that
+		// is still OPEN and unmerged, is exactly how GitHub presents an
+		// eviction (#885).
+		pr["mergeQueueEntry"] = nil
+		if !terminal && !entryAbsent {
+			pr["mergeQueueEntry"] = map[string]interface{}{"state": "QUEUED", "position": 1}
+		}
+		writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{
+			"repository": map[string]interface{}{"pullRequest": pr},
+		}})
 	})
 	mux.HandleFunc(prefix+"/pulls", func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
@@ -227,6 +267,75 @@ func TestMergeQueuePollReportsEvictedAndLabelsForRemediation(t *testing.T) {
 	}
 	if _, ok := result["mergeSha"]; ok {
 		t.Fatalf("result = %+v, want no mergeSha for an evicted pull request", result)
+	}
+}
+
+// TestMergeQueuePollDetectsEvictionWhileThePullRequestStaysOpen is issue
+// #885's headline regression, and the shape a REAL merge-queue eviction
+// takes: GitHub does not close an evicted pull request, it leaves it open
+// and removes its queue entry.
+//
+// The old REST classification only checked pr.State == "closed", so this
+// case reported Pending forever — the poll ran to its timeout and
+// goobers:needs-remediation, #758's own acceptance criterion, could never
+// be applied. pr-remediation was therefore unreachable by the one event it
+// exists to handle.
+func TestMergeQueuePollDetectsEvictionWhileThePullRequestStaysOpen(t *testing.T) {
+	st := &mergeQueuePollServerState{
+		// One poll with a live entry, then the entry disappears while the
+		// pull request stays open and unmerged.
+		pendingCalls: 1, terminalState: "open", terminalMerged: false, pendingEntryAbsent: false,
+	}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, dir := mergeQueuePollEnv(t, server.URL, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "evicted" {
+		t.Fatalf("result = %+v, want queueOutcome=evicted for an open pull request dropped from the queue", result)
+	}
+	if st.labelCalls != 1 {
+		t.Fatalf("label calls = %d, want 1 — the eviction must route to remediation, which is the whole point", st.labelCalls)
+	}
+	if st.deleteCalls != 0 {
+		t.Fatalf("branch delete calls = %d, want 0 (an evicted pull request was never merged)", st.deleteCalls)
+	}
+}
+
+// TestMergeQueuePollToleratesAnAbsentEntryBeforeItHasSeenOne guards the
+// other side of #885: an absent entry is ALSO what the gap between
+// merge-pr's enqueue and the entry becoming visible looks like. Reading
+// that as an eviction would label a perfectly healthy just-enqueued pull
+// request needs-remediation. Before any entry has been seen, absence is
+// tolerated for a grace window — so a poll whose budget expires inside that
+// window reports timeout, never eviction.
+func TestMergeQueuePollToleratesAnAbsentEntryBeforeItHasSeenOne(t *testing.T) {
+	st := &mergeQueuePollServerState{
+		// No entry ever appears, and the pull request stays open.
+		pendingCalls: 1_000_000, terminalState: "open", terminalMerged: false, pendingEntryAbsent: true,
+	}
+	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
+	root, dir := mergeQueuePollEnv(t, server.URL, map[string]string{
+		// A poll budget far shorter than the grace window, so the run ends
+		// while absence is still being tolerated.
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "20ms",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "timeout" {
+		t.Fatalf("result = %+v, want queueOutcome=timeout — an entry that is not visible YET is not an eviction", result)
+	}
+	if st.labelCalls != 0 {
+		t.Fatalf("label calls = %d, want 0 — a just-enqueued pull request must never be labeled needs-remediation", st.labelCalls)
 	}
 }
 
