@@ -72,6 +72,7 @@ spec:
         - selectedHeadSha
         - selectedBaseSha
         - decision
+        - verdictAuthor
       next: published-verdict
 
     # #833: deterministic cross-PR winner-election. Crowns one lander of a
@@ -114,6 +115,10 @@ spec:
         pullNumber: selectedNumber
         headSha: selectedHeadSha
         baseSha: selectedBaseSha
+        # apply-verdict resolves this with its github:pr:write credential, the
+        # identity that actually owns the sticky verdict. Keep merge-pr scoped
+        # to github:pr:merge instead of injecting the broader posting token.
+        verdictAuthor: verdictAuthor
       inputs:
         verdict: "pass"
         # Set true to evaluate without attempting a merge. The merge capability

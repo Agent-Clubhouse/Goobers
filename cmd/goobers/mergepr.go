@@ -40,7 +40,8 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			"Merge a pull request, but only when every independent conjunct holds:\n"+
 			"verdict=pass, CI green, not a draft, and the SHA-pin still matches the\n"+
 			"PR's live head/base (never a bare self-approval). Declared inputs:\n"+
-			"pullNumber, verdict, headSha, baseSha (all required), advisoryMode\n"+
+			"pullNumber, verdict, headSha, baseSha (all required), verdictAuthor\n"+
+			"(required for the default commit message; supplied by apply-verdict), advisoryMode\n"+
 			"(default false — report only, no merge attempted), mergeMethod\n"+
 			"(merge/squash/rebase; default squash), commitMessage (default: PR\n"+
 			"title + review rationale + referenced issues), resultFile (default\n"+
@@ -94,6 +95,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: verdict input %q is not a known verdict decision\n", verdict)
 		return 1
 	}
+	verdictAuthor := strings.TrimSpace(providerInput("verdictAuthor", ""))
 	expectedHeadSHA := providerInput("headSha", "")
 	if expectedHeadSHA == "" {
 		pf(stderr, "error: headSha input is required (the SHA-pin, D6)\n")
@@ -197,9 +199,8 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		commitTitle := ""
 		mergeCommitMessage := commitMessage
 		if strings.TrimSpace(mergeCommitMessage) == "" {
-			verdictAuthor, err := provider.AuthenticatedLogin(ctx)
-			if err != nil {
-				commitErr = fmt.Errorf("resolve merge-review verdict author: %w", err)
+			if verdictAuthor == "" {
+				commitErr = fmt.Errorf("verdictAuthor input is required when commitMessage is empty")
 				return nil
 			}
 			commitTitle, mergeCommitMessage, commitErr = structuredMergeCommitMessage(poll, verdictAuthor)

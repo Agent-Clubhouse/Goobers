@@ -256,7 +256,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 	if current == nil {
 		pln(stdout, "PR is no longer open (merged/closed since selection) — verdict moot, nothing to apply")
-		return writeApplyVerdictResult(resultFile, selectedNumber, "", "", "moot", stderr)
+		return writeApplyVerdictResult(resultFile, selectedNumber, "", "", "moot", "", stderr)
 	}
 
 	// D6: the verdict is void if the PR has moved since it was computed —
@@ -265,11 +265,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// against a diff that no longer exists.
 	if verdict.HeadSHA != "" && verdict.HeadSHA != current.HeadSHA {
 		pf(stdout, "verdict void: PR #%d's head moved (%s -> %s) since review — skipping, will re-review next cycle\n", selectedNumber, verdict.HeadSHA, current.HeadSHA)
-		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", stderr)
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", stderr)
 	}
 	if verdict.BaseSHA != "" && verdict.BaseSHA != current.BaseSHA {
 		pf(stdout, "verdict void: PR #%d's base moved (%s -> %s) since review — skipping, will re-review next cycle\n", selectedNumber, verdict.BaseSHA, current.BaseSHA)
-		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", stderr)
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", stderr)
 	}
 
 	// A `fail` verdict on work that is MOOT gets closed rather than parked for
@@ -347,12 +347,16 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "native review skipped for PR #%d: reviewing identity authored the PR (GitHub refuses self-review) — publishing verdict via comment/label handoff instead\n", selectedNumber)
 	}
 
+	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
+	}
 	if posted.Decision == apiv1.VerdictPass {
-		if err := reconcileMergeReviewStatusComment(ctx, provider, repo, selectedNumber, comment); err != nil {
+		if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 		}
 		pf(stdout, "approved PR #%d at %s\n", selectedNumber, current.HeadSHA)
-		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), stderr)
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, stderr)
 	}
 
 	// Publish the native review first. If the legacy handoff below fails, the
@@ -365,12 +369,12 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
 	}
-	if err := reconcileMergeReviewStatusComment(ctx, provider, repo, selectedNumber, comment); err != nil {
+	if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 	}
 
 	pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, verdict.Decision)
-	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), stderr)
+	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, stderr)
 }
 
 // reconcileMergeReviewStatusComment keeps the oldest marked comment authored
@@ -379,11 +383,15 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 // concurrent creators observe and collapse each other's comments; duplicate
 // deletion tolerates another reconciler winning the race.
 func reconcileMergeReviewStatusComment(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, body string) error {
-	id := strconv.Itoa(prNumber)
 	author, err := provider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve merge-review status author: %w", err)
 	}
+	return reconcileMergeReviewStatusCommentAs(ctx, provider, repo, prNumber, author, body)
+}
+
+func reconcileMergeReviewStatusCommentAs(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, author, body string) error {
+	id := strconv.Itoa(prNumber)
 	comments, err := provider.ListComments(ctx, repo, id)
 	if err != nil {
 		return fmt.Errorf("list merge-review status comments: %w", err)
@@ -635,7 +643,7 @@ func closeMootPullRequest(ctx context.Context, provider *providers.GitHubProvide
 		return failProviderStage(stderr, fmt.Sprintf("close moot pull request #%d", selectedNumber), err, resultFile)
 	}
 	pf(stdout, "closed moot PR #%d: %s\n", selectedNumber, reason)
-	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "closed-moot", stderr)
+	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "closed-moot", "", stderr)
 }
 
 func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecision, error) {
@@ -649,12 +657,13 @@ func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecis
 	}
 }
 
-func writeApplyVerdictResult(path string, selectedNumber int, headSHA, baseSHA, decision string, stderr io.Writer) int {
+func writeApplyVerdictResult(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor string, stderr io.Writer) int {
 	data, err := json.Marshal(map[string]string{
 		"selectedNumber":  strconv.Itoa(selectedNumber),
 		"selectedHeadSha": headSHA,
 		"selectedBaseSha": baseSHA,
 		"decision":        decision,
+		"verdictAuthor":   verdictAuthor,
 	})
 	if err != nil {
 		pf(stderr, "error: marshal verdict result: %v\n", err)

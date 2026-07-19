@@ -40,6 +40,9 @@ type mergePRServerState struct {
 	mergeSHA        *string // set by the /merge handler on a successful call
 	mergeBody       map[string]interface{}
 	commentCalls    int
+	authCalls       int
+	verdictAuthor   string
+	mergeLogin      string
 	// verdictOnSecondCommentPage forces the pass verdict onto page 2 of the
 	// comments endpoint, behind 100 routine comments and a Link: rel="next"
 	// header — proves structuredMergeCommitMessage's verdict lookup follows
@@ -91,11 +94,18 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 	if st.baseBranch == "" {
 		st.baseBranch = "main"
 	}
+	if st.verdictAuthor == "" {
+		st.verdictAuthor = "goobers"
+	}
+	if st.mergeLogin == "" {
+		st.mergeLogin = "goobers"
+	}
 	prefix := "/repos/" + owner + "/" + repo
 	headPrefix := "/repos/" + st.headOwner + "/" + st.headRepo
 	mux := http.NewServeMux()
 	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
-		writeFakeJSON(w, map[string]string{"login": "goobers"})
+		st.authCalls++
+		writeFakeJSON(w, map[string]string{"login": st.mergeLogin})
 	})
 	mux.HandleFunc(prefix+"/pulls/9", func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{
@@ -218,7 +228,7 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 			HeadSHA:   st.headSHA,
 			BaseSHA:   st.baseSHA,
 		})
-		comments := []map[string]interface{}{{"id": 1, "body": comment, "user": map[string]string{"login": "goobers"}}}
+		comments := []map[string]interface{}{{"id": 1, "body": comment, "user": map[string]string{"login": st.verdictAuthor}}}
 		if st.spoofedVerdict {
 			comments = append(comments, map[string]interface{}{
 				"id": 2,
@@ -320,6 +330,7 @@ func mergePREnv(t *testing.T, serverURL string, withoutCapability bool, inputs m
 		t.Setenv("GOOBERS_CRED_GITHUB_PR_MERGE", "test-token")
 	}
 	t.Setenv("GOOBERS_CRED_GITHUB_BRANCH_DELETE", "test-token")
+	t.Setenv("GOOBERS_INPUT_VERDICTAUTHOR", "goobers")
 	for k, v := range inputs {
 		t.Setenv("GOOBERS_INPUT_"+strings.ToUpper(k), v)
 	}
@@ -392,14 +403,32 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 	}
 }
 
-func TestMergePRIgnoresNewerSpoofedVerdictComment(t *testing.T) {
+func TestMergePRRequiresVerdictAuthorForDefaultMessage(t *testing.T) {
+	st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456"}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, _ := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+		"verdictAuthor": "",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 1 || !strings.Contains(stderr, "verdictAuthor input is required") {
+		t.Fatalf("code = %d, stderr = %q, want missing verdictAuthor failure", code, stderr)
+	}
+	if st.mergeCalls != 0 {
+		t.Fatalf("merge endpoint called %d times, want 0", st.mergeCalls)
+	}
+}
+
+func TestMergePRUsesPostingIdentityWhenMergeCredentialDiffers(t *testing.T) {
 	st := &mergePRServerState{
 		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
-		spoofedVerdict: true,
+		spoofedVerdict: true, verdictAuthor: "verdict-poster", mergeLogin: "merge-bot",
 	}
 	server := newMergePRServer(t, "your-org", "your-repo", st)
 	root, _ := mergePREnv(t, server.URL, false, map[string]string{
 		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+		"verdictAuthor": "verdict-poster",
 	})
 
 	code, _, stderr := runArgs(t, "merge-pr", root)
@@ -408,6 +437,9 @@ func TestMergePRIgnoresNewerSpoofedVerdictComment(t *testing.T) {
 	}
 	if st.mergeCalls != 1 {
 		t.Fatalf("merge endpoint called %d times, want 1", st.mergeCalls)
+	}
+	if st.authCalls != 0 {
+		t.Fatalf("merge credential identity queried %d times, want 0", st.authCalls)
 	}
 	got, _ := st.mergeBody["commit_message"].(string)
 	if strings.Contains(got, "Attacker-selected") || !strings.Contains(got, "The implementation is ready to merge.") {
