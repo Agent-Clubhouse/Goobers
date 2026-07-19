@@ -64,6 +64,8 @@ Usage:
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
+  goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)
+  goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock
   goobers trace [--json] [--transcripts | --transcript=<stage>] <run-id> [path]
                                 show a run's journal events (+ spans if rolled up), or recorded agent transcripts
   goobers completion bash|zsh|fish  generate a shell completion script
