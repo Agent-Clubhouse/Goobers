@@ -5,14 +5,23 @@ for the Dashboard / Portal milestone (#14, epic #440).
 
 It is a React/Vite application with reusable shell, navigation, dense-list,
 graph, inspector, status, icon, theme, accessibility, query-state, and typed
-daemon-client modules. Overview and Workflows read the live daemon API; detail
-routes remain backed by static fixtures until their vertical slices land.
+daemon-client modules. Overview and Workflows read the live daemon API, as do
+configuration warnings on the overview and workflow routes; the remaining detail
+routes stay backed by static fixtures until their vertical slices land.
 
 ## Run it
 
 ```bash
 npm --prefix portal install
 npm --prefix portal run dev
+```
+
+The Vite development server proxies same-origin `/api` requests to the
+`goobers up` daemon at `http://127.0.0.1:8080` by default. If `api.listen`
+uses another address, set the proxy target when starting the portal:
+
+```bash
+GOOBERS_DAEMON_URL=http://127.0.0.1:9090 npm --prefix portal run dev
 ```
 
 The production build and component tests are:
@@ -54,8 +63,9 @@ The full product and architecture authority is
 ## Current boundaries
 
 - Workflow and run detail pages still use static data intentionally shaped around
-  representative runs. Overview, workflow inventory, and gaggle rosters use the
-  HTTP daemon adapter, with the fixture adapter reserved for tests.
+  representative runs. Overview, workflow inventory, gaggle rosters, and
+  configuration warnings use the HTTP daemon adapter, with the fixture adapter
+  reserved for tests.
 - The graph layout is fixture-specific, not a general layout engine.
 - Artifact rows demonstrate hierarchy but do not open real journal content.
 - The graph layout remains fixture-specific; narrow layouts use an equivalent

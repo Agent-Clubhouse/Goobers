@@ -1,3 +1,5 @@
+import type { ValidationWarning } from "./api/types";
+
 export type StageKind = "deterministic" | "agentic" | "gate";
 export type RunStatus = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type NodeState = "pending" | "active" | "complete" | "failed" | "escalated";
@@ -115,12 +117,6 @@ export interface Run {
   events: RunEvent[];
   attempts: StageAttempt[];
   escalation?: Escalation;
-}
-
-export interface InstanceWarning {
-  code: string;
-  title: string;
-  detail: string;
 }
 
 function fixtureArtifact(artifact: Omit<Artifact, "digestVerified">): Artifact {
@@ -1383,11 +1379,26 @@ export const runs: Run[] = [
   },
 ];
 
-export const instanceWarnings: InstanceWarning[] = [
+export const workflowWarnings: Record<string, readonly ValidationWarning[]> = {
+  implementation: [
+    {
+      code: "VER003",
+      severity: "warning",
+      scope:
+        "gaggles/goobers/workflows/implementation.yaml Gaggle/goobers Workflow/implementation",
+      explanation:
+        "expectedOutputs is declared but the stage has no inputs.resultFile to emit it through",
+    },
+  ],
+};
+
+export const instanceWarnings: readonly ValidationWarning[] = [
+  ...workflowWarnings.implementation,
   {
-    code: "VER001",
-    title: "One workflow uses an unversioned preview field",
-    detail: "backlog-curation uses readiness.maxOpenPRs without an explicit DSL compatibility target.",
+    code: "MODEL002",
+    severity: "warning",
+    scope: "Goober/coder",
+    explanation: "requested model is unavailable; using the harness default",
   },
 ];
 
