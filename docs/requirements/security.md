@@ -166,5 +166,6 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   declaration surface (default-deny beyond declared capabilities). See `SEC-042`.
 - **SEC-Q5:** **Resolved (default, Tier 3, V2):** restricted pod **egress** via network
   policy (allowlist provider/telemetry endpoints).
-- **SEC-Q6:** *(build-time design)* Sandboxing mechanism for local agentic stages at V1
-  (`SEC-044`) — container, OS sandbox, or harness-native — per platform.
+- **SEC-Q6:** **Resolved (V1):** OS-native sandboxing for local agentic stages
+  (`SEC-044`) — Seatbelt on macOS and bubblewrap on Linux; containers are deferred.
+  See [`ADR 0001`](../adr/0001-agentic-sandbox-mechanism.md).

@@ -1,0 +1,87 @@
+# ADR 0001: Use OS-native sandboxes for local agentic stages
+
+- Status: Accepted
+- Date: 2026-07-18
+- Decision owner: SEC-Q6 / issue #163
+
+## Context
+
+V1 requires agentic subprocesses to be sandboxable on developer workstations and
+small-team hosts (SEC-044). The GitHub Copilot CLI must retain access to its local
+authentication and platform runtime while writes outside the stage worktree are
+denied. The mechanism must work on macOS and Linux without changing the harness
+contract.
+
+The spike compared three options:
+
+| Option | Finding |
+|---|---|
+| OS-native | Seatbelt (`sandbox-exec`) on macOS and bubblewrap (`bwrap`) on Linux can make the host filesystem read-only and mount only the worktree writable. The locally installed CLI and its authentication remain available. |
+| Container | Provides a stronger, more uniform boundary, but requires a daemon/image lifecycle and explicit forwarding of the host Copilot authentication and keychain. That is too heavy for the tier-1 single-binary deployment. |
+| Harness-native | Copilot tool permissions govern tool approval, not an independently enforceable filesystem boundary. A compromised or incorrect harness cannot be constrained by its own policy. |
+
+## Decision
+
+Use an OS-native sandbox for V1 local agentic execution:
+
+- macOS wraps the harness with Seatbelt. The prototype starts from normal host
+  access, denies all filesystem writes, then permits writes only in the canonical
+  worktree, terminal/null devices, and explicitly declared runtime-state roots.
+- Linux wraps the harness with bubblewrap. The prototype mounts the host root
+  read-only, unshares the PID namespace before mounting a private `/proc`,
+  provides a private `/dev`, and bind-mounts only the canonical worktree plus
+  explicitly declared runtime-state roots read-write.
+- `internal/sandbox.Sandbox` is the platform-neutral seam. It rewrites an
+  `exec.Cmd` while leaving environment construction, stdio, timeouts, and process
+  groups with the harness runner.
+- Absence of the native mechanism is an explicit error. S3 must fail closed by
+  default and implement any trusted-local opt-out above this seam.
+
+Container isolation is deferred to tier 3, where ephemeral pods are already the
+execution substrate. Harness-native permissions remain defense in depth, not the
+sandbox boundary.
+
+## Evidence
+
+`TestNativeSandboxConfinement` runs a scripted child in a temporary worktree,
+proves an in-worktree write succeeds, and proves a direct out-of-worktree write
+is denied. On Linux, `TestNativeSandboxIsolatesHostProc` also starts a host
+helper and proves the sandbox cannot write through `/proc/<host-pid>/root`. CI
+runs these probes with bubblewrap on Linux and Seatbelt on macOS. Linux
+construction executes a bounded bubblewrap preflight so a present but unusable
+installation is reported as unavailable before stage dispatch.
+
+Copilot CLI 1.0.71 exposes `COPILOT_HOME` to override its configuration and
+state directory and `--log-dir` to redirect logs. The probe assigns both to the
+temporary worktree while retaining the user's `HOME` for credential-store
+authentication. On 2026-07-18, the opt-in live probe
+`GOOBERS_SANDBOX_COPILOT_LIVE=1 go test ./internal/sandbox -run
+TestNativeSandboxCopilotLive -count=1` succeeded on macOS with GitHub Copilot
+CLI 1.0.71: `copilot -p` authenticated through the existing local login,
+executed non-interactively under Seatbelt, created its requested file, and
+persisted session state beneath the in-worktree `COPILOT_HOME`. Seatbelt
+allowed no writable root outside the temporary worktree.
+
+## Consequences and residual risks
+
+- Seatbelt is deprecated and undocumented but remains present and functional on
+  supported macOS releases. Startup preflight must treat its removal as sandbox
+  unavailability, never silently execute bare.
+- Bubblewrap is an external Linux dependency and requires user namespaces or a
+  correctly installed setuid helper. Availability must be checked before stage
+  dispatch.
+- This decision constrains filesystem mutation, not all reads. Runtime binaries,
+  shared libraries, certificates, and local Copilot authentication remain
+  readable. S2 should narrow read access where platform testing proves it does
+  not break authentication.
+- Host IPC endpoints outside private `/dev` and `/proc` may still delegate side
+  effects. S2 must either mask those endpoints or document narrowly reviewed
+  exceptions needed for local authentication; this spike does not claim a
+  production-complete boundary.
+- S3 must provision a fresh in-worktree `COPILOT_HOME` for every sandboxed
+  Copilot run so resumable session metadata is isolated with the disposable
+  worktree.
+- The prototype does not restrict network egress. Copilot requires network
+  access; V1 documents that residual risk, while tier 3 enforces network policy.
+- The wrapper deliberately avoids creating a new session so the harness
+  runner's existing process-group timeout and kill semantics remain intact.
