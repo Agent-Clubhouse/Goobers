@@ -47,6 +47,8 @@ const DefaultClaimLease = 6 * time.Hour
 // ListWorkItems call below.
 const backlogScanCeiling = 250
 
+const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
+
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -221,32 +223,16 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		eligible = backstopped
 	}
 
-	// Dependency-aware skip (#552): an item already reported blocked (#545)
-	// on a still-open prerequisite is never re-claimed to re-derive the
-	// identical conclusion every tick — self-heals the moment every blocker
-	// closes, no human involved. Shares claims.lock with the ledger below
-	// (blocked.json's own convention) since a concurrent tick's claim and a
-	// concurrent tick's blocked-write must not race each other.
-	err = withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
-		recs, lerr := loadBlockedRecords(blockedRecordsPath(l))
-		if lerr != nil {
-			return lerr
-		}
-		filtered, changed, blockedWarnings := filterBlockedEligibility(ctx, provider, repo, eligible, recs)
-		for _, w := range blockedWarnings {
-			// Warn, never fail: blocked.json is a selection optimization, and a
-			// record we cannot resolve must not stall every backlog tick (#971).
-			pf(stderr, "warning: blocked records: %s\n", w)
-		}
-		eligible = filtered
-		if !changed {
-			return nil
-		}
-		return saveBlockedRecords(blockedRecordsPath(l), recs)
-	})
+	// Snapshot blocked.json under its local lock, then resolve provider state
+	// after releasing it. The latest records are reconciled under the same
+	// transaction that filters or claims, closing the learned-block race.
+	observedBlocked, resolvedBlocked, blockedWarnings, err := resolveBlockedEligibility(ctx, l, provider, repo, eligible)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	for _, w := range blockedWarnings {
+		pf(stderr, "warning: blocked records: %s\n", w)
 	}
 
 	// Claim order was an accident of whichever sort order the provider's
@@ -262,7 +248,19 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// unconditional baseline every claim order now starts from.
 	sortEligibleFIFO(eligible)
 
+	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	if !*claim {
+		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
+			var reconcileErr error
+			eligible, _, reconcileErr = reconcileBlockedEligibilityLocked(
+				blockedRecordsPath(l), eligible, observedBlocked, resolvedBlocked,
+			)
+			return reconcileErr
+		})
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
 		if len(eligible) == 0 {
 			pln(stdout, "no eligible items")
 			return 0
@@ -274,6 +272,16 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(eligible) == 0 {
+		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
+			_, _, reconcileErr := reconcileBlockedEligibilityLocked(
+				blockedRecordsPath(l), eligible, observedBlocked, resolvedBlocked,
+			)
+			return reconcileErr
+		})
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
 		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
 	}
 
@@ -312,8 +320,34 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// batch (maxItems 20), implementation a single item (maxItems 1). All claims
 	// share this run's id; each item gets its own ledger entry.
 	var claimed []providers.WorkItem
-	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	err = withClaimLock(lockPath, func() error {
+	err = withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
+		var skipped []blockedEligibilitySkip
+		var lerr error
+		eligible, skipped, lerr = reconcileBlockedEligibilityLocked(
+			blockedRecordsPath(l), eligible, observedBlocked, resolvedBlocked,
+		)
+		if lerr != nil {
+			return lerr
+		}
+		for _, skip := range skipped {
+			if jerr := instanceLog.Append(journal.Event{
+				Type:     journal.EventRunnerAnnotation,
+				Workflow: workflow,
+				RunID:    runID,
+				Reason:   skip.reason(),
+				Runner: map[string]any{
+					"annotation":   blockedEligibilitySkipAnnotation,
+					"itemId":       skip.ItemID,
+					"openBlockers": skip.OpenBlockers,
+				},
+			}); jerr != nil {
+				return fmt.Errorf("journal blocked eligibility skip for %s: %w", skip.ItemID, jerr)
+			}
+		}
+		if len(eligible) == 0 {
+			return nil
+		}
+
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName), localscheduler.WithInstanceLog(instanceLog))
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
@@ -336,6 +370,9 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if len(eligible) == 0 {
+		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
 	}
 	// Every eligible item is already claimed by another run — a routine no-work
 	// tick (#233), not an error: exit 0 with the structured noWork result the
@@ -456,7 +493,7 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 	l := layoutFor(root)
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	var released []string
-	err = withClaimLock(lockPath, func() error {
+	err = withClaimLock(lockPath, claimLockOperationBacklogRelease, func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)

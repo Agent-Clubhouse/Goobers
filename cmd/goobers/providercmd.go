@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"syscall"
@@ -15,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -51,6 +53,20 @@ const (
 	// (the merge decision, not claim-ledger mutation) with a different
 	// hold-time profile (network round-trips, not a fast local read/write).
 	mergeLockFileName = "merge.lock"
+
+	claimLockOperationBacklogFilterBlocked = "backlog-query.filter-blocked"
+	claimLockOperationBacklogClaim         = "backlog-query.claim"
+	claimLockOperationBacklogRelease       = "backlog-query.release"
+	claimLockOperationPRLookup             = "pr-claim.lookup"
+	claimLockOperationPRAcquire            = "pr-claim.acquire"
+	claimLockOperationRunLookup            = "run-claims.lookup"
+	claimLockOperationBlockedUpdate        = "blocked-records.update"
+	claimLockOperationRecovery             = "claim-recovery"
+	claimLockOperationRunRelease           = "run-claims.release"
+	claimLockOperationCloseOutLookup       = "issue-close-out.lookup"
+	claimLockOperationCloseOutRelease      = "issue-close-out.release"
+
+	claimLockSlowThreshold = 5 * time.Second
 )
 
 // layoutFor is instance.NewLayout, named for readability at each provider-
@@ -282,15 +298,85 @@ func failProviderStage(stderr io.Writer, what string, err error, resultFileDefau
 // acceptance criterion). A blocking (not acquireInstanceLock's non-blocking)
 // flock is deliberate: the loser here should wait its turn and get a
 // consistent read, not fail outright the way a second `goobers up` should.
-func withClaimLock(lockPath string, fn func() error) error {
+// Every caller supplies a stable operation label. Wait and hold durations are
+// measured for every acquisition, while only threshold breaches are journaled
+// so normal lock traffic stays low-noise.
+func withClaimLock(lockPath, operation string, fn func() error) error {
+	return withClaimLockThreshold(lockPath, operation, claimLockSlowThreshold, fn)
+}
+
+func withClaimLockThreshold(lockPath, operation string, slowThreshold time.Duration, fn func() error) error {
+	if operation == "" {
+		return errors.New("claim lock operation is required")
+	}
+
+	waitStarted := time.Now()
+	var acquiredAt time.Time
+	var releasedAt time.Time
+	defer func() {
+		if acquiredAt.IsZero() {
+			return
+		}
+		waitDuration := acquiredAt.Sub(waitStarted)
+		holdDuration := releasedAt.Sub(acquiredAt)
+		if waitDuration > slowThreshold || holdDuration > slowThreshold {
+			// The callback may already have durably mutated the ledger. Match
+			// claim-transition journaling's best-effort policy rather than
+			// reporting a failed operation after that mutation succeeded.
+			_ = recordSlowClaimLock(lockPath, operation, waitDuration, holdDuration)
+		}
+	}()
+
+	return withBlockingFileLock(lockPath, func() {
+		acquiredAt = time.Now()
+	}, func() {
+		releasedAt = time.Now()
+	}, fn)
+}
+
+func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration time.Duration) error {
+	log, _, err := journal.OpenInstanceLog(filepath.Dir(lockPath))
+	if err != nil {
+		return fmt.Errorf("open instance log for slow claim lock: %w", err)
+	}
+	if err := log.Append(journal.Event{
+		Type: journal.EventClaimLockSlow,
+		Runner: map[string]any{
+			"operation":    operation,
+			"pid":          os.Getpid(),
+			"waitDuration": waitDuration.String(),
+			"holdDuration": holdDuration.String(),
+		},
+	}); err != nil {
+		_ = log.Close()
+		return fmt.Errorf("append slow claim lock event: %w", err)
+	}
+	if err := log.Close(); err != nil {
+		return fmt.Errorf("close instance log after slow claim lock event: %w", err)
+	}
+	return nil
+}
+
+// withBlockingFileLock provides the blocking flock discipline shared by the
+// claims lock and unrelated cache/merge locks. The optional callbacks run
+// immediately after acquisition and release.
+func withBlockingFileLock(lockPath string, onAcquired, onReleased func(), fn func() error) error {
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		return fmt.Errorf("open claim lock file: %w", err)
+		return fmt.Errorf("open lock file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("acquire claim lock: %w", err)
+		return fmt.Errorf("acquire lock: %w", err)
 	}
-	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	if onAcquired != nil {
+		onAcquired()
+	}
+	defer func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		if onReleased != nil {
+			onReleased()
+		}
+	}()
 	return fn()
 }
