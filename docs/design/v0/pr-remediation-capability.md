@@ -215,3 +215,35 @@ mutually independent and can go in parallel once row 1 lands.
 3. **Should `respond-to-findings` run before or after `push-remediated`?** After is
    more honest (the response describes what actually landed) but leaves a window where
    the branch has moved and the thread has not.
+
+## 7. Decisions taken (2026-07-19)
+
+Recorded here so the open questions in §6 and the choices implied by §3 are not
+re-litigated. Each was settled by the maintainer.
+
+| Question | Decision |
+|---|---|
+| §6 Q1 — CI log volume | **Annotations + check summary, no raw log tails.** Highest signal per token, bounded by construction, no truncation heuristics to maintain. Accepted cost: an unannotated panic or build error gives less. Revisit only if that gap shows up in practice. |
+| Default remediation scope | **Maximally liberal** — conflicts, substantive findings, failing CI, stale base, sibling overlap, all on by default. Safe because the stuck-loop detector still bounds effort per cause. Scope down per-workflow if a category proves noisy. |
+| Sibling overlap behavior | **Wait** — park `blocked-on-sibling` and let the existing self-heal unpark it. Do not rewrite a diff that would have been fine once the sibling landed. |
+| Cycle budget shape | **Per cause, not flat** (issue #953). 2 per cause, ~6 total. A flat counter cannot distinguish three pointless rebases from three distinct problems solved in sequence. DSL-declared, not compiled in. |
+| Election semantics | **Election means "those siblings stop blocking you", not merge authority.** Resolved in PR #949: `apply-verdict` now derives a genuine pass rather than `elect-gate` bypassing verdict publication entirely. |
+| Human-authored PRs | **Out of scope here.** Punted to the mixed-mode epic #804 (with #805 actor classification, #807 trust policy, #369 mixed-company merge-review), where it belongs. Eventually configurable. |
+
+### Consequences discovered while settling these
+
+Verifying the sibling-wait decision surfaced that **cross-PR clusters have no
+guaranteed forward-progress path**, which the design had assumed they did:
+
+- A crowned lander that cannot merge re-wins its own deterministic election
+  forever while its siblings stay parked behind it — no runner-up fallback, no
+  timeout, no attempt counter (#950).
+- Asymmetric reviewer findings can leave a cluster with **no** lander crowned at
+  all, silently. The code acknowledges only the opposite hazard, double-crowning
+  (#951).
+- The crowned lander is on the critical path for its whole cluster and is
+  currently selected with no added priority (#952).
+
+None of these were visible from the workflow YAML; all three came out of
+tracing what actually guarantees a merge. They are prerequisites for "wait" being
+a safe default rather than a stall.
