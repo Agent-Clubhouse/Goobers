@@ -53,6 +53,8 @@ const sweepErrorReportEvery = 12
 
 var httpShutdownGrace = 5 * time.Second
 
+const daemonAPIAddressFileName = "api.address"
+
 // diagnosticsMode is set true by `goobers up --diagnostics`. Read in
 // buildRunnerConfig to arm the executor's per-stage diagnostics watchdog and
 // un-truncate stage output. A package var (like runProcessExits) so it threads
@@ -181,6 +183,11 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return 1
 	}
 	defer release()
+	apiAddressPath := filepath.Join(l.SchedulerDir(), daemonAPIAddressFileName)
+	if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(ctx, l, &wg)
@@ -422,6 +429,19 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		go func() { configDone <- reloader.Run(ctx) }()
 	}
 
+	if err := publishDaemonAPIAddress(apiAddressPath, apiServer.Address()); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	apiAddressPublished := true
+	defer func() {
+		if apiAddressPublished {
+			if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
+				pf(stderr, "error: %v\n", err)
+			}
+		}
+	}()
+
 	ready.Store(true)
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at http://%s%s\n", root, len(setup.Entries), apiServer.Address(), httpapi.Prefix)
 	if diagnosticsMode {
@@ -483,6 +503,12 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		apiFailed = true
 		pf(stderr, "error: %v\n", shutdownErr)
 	}
+	if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
+		apiFailed = true
+		pf(stderr, "error: %v\n", err)
+	} else {
+		apiAddressPublished = false
+	}
 
 	// Wait for both background goroutines to fully stop BEFORE any further
 	// stdout/stderr writes below: each reacts to the same ctx cancellation
@@ -509,6 +535,39 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return 1
 	}
 	return 0
+}
+
+func publishDaemonAPIAddress(path, address string) error {
+	file, err := os.CreateTemp(filepath.Dir(path), "."+daemonAPIAddressFileName+"-*")
+	if err != nil {
+		return fmt.Errorf("create daemon API address file: %w", err)
+	}
+	tempPath := file.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if _, err := io.WriteString(file, address+"\n"); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write daemon API address file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close daemon API address file: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("publish daemon API address: %w", err)
+	}
+	removeTemp = false
+	return nil
+}
+
+func removeDaemonAPIAddress(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove daemon API address: %w", err)
+	}
+	return nil
 }
 
 func worktreeRunTerminal(runsDir string) func(string) (bool, error) {

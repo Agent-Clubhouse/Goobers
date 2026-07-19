@@ -132,7 +132,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="init scaffold validate up run signal workflow runs status stats trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
+        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -142,6 +142,7 @@ _goobers_completion()
     case "${command}" in
         validate) flags+=" --check-harness --source-tree" ;;
         up) flags+=" --quiet" ;;
+        dashboard) flags+=" --port --no-open --dev-assets" ;;
         run) flags+=" --no-wait" ;;
         workflow)
             [[ "${COMP_WORDS[2]:-}" == "show" ]] && flags+=" --dot"
@@ -248,6 +249,7 @@ _goobers_completion()
             'scaffold:scaffold a goober or workflow in a gaggle'
             'validate:validate instance configuration'
             'up:run the scheduler and runner daemon'
+            'dashboard:serve and open the local operations portal'
             'run:trigger or abort a run'
             'signal:fire an external signal'
             'workflow:inspect workflows'
@@ -288,6 +290,7 @@ _goobers_completion()
     case "${command}" in
         validate) flags+=(--check-harness --source-tree) ;;
         up) flags+=(--quiet) ;;
+        dashboard) flags+=(--port --no-open --dev-assets) ;;
         run) flags+=(--no-wait) ;;
         workflow)
             [[ "${words[3]:-}" == "show" ]] && flags+=(--dot)
@@ -407,7 +410,7 @@ function __goobers_completion_runs
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'init scaffold validate up run signal workflow runs status stats trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'init scaffold validate up dashboard run signal workflow runs status stats trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -428,6 +431,9 @@ complete -c goobers -n '__fish_seen_subcommand_from scaffold' -l force -d 'Repla
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-harness -d 'Check agent harnesses'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l source-tree -d 'Validate a checked-in config source tree'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress liveness heartbeats'
+complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l port -r -d 'Dashboard port or auto'
+complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l no-open -d 'Print the URL without opening a browser'
+complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l dev-assets -r -d 'Serve a local portal build'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show' -l dot -d 'Emit Graphviz DOT'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcommand_from list' -l limit -r -d 'Maximum runs'

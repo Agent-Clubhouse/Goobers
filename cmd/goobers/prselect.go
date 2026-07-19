@@ -1,12 +1,12 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -73,12 +73,28 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	headPrefix := providerInput("headPrefix", "goobers/")
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
 
-	ctx := context.Background()
+	ctx, cancel := providerCommandContext()
+	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "selected-pr.json")
+	}
+
+	blockerScanCtx, cancelBlockerScan := blockedOnSiblingScanContext(ctx)
+	defer cancelBlockerScan()
+	siblingBlocked := make(map[int]bool)
+	blockedDependents := make(map[int]int)
+	for _, pr := range prs {
+		blockers, err := liveBlockedOnSiblingBlockers(blockerScanCtx, provider, repo, pr)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
+		}
+		siblingBlocked[pr.Number] = len(blockers) > 0
+		for _, blocker := range blockers {
+			blockedDependents[blocker]++
+		}
 	}
 
 	var eligible []providers.PullRequestSummary
@@ -104,11 +120,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		// reproduce the identical cross-PR verdict. Self-heals (selectable
 		// again) automatically once every blocker merges or closes, with no
 		// human clearing the label.
-		sibBlocked, err := blockedOnSiblingStillBlocks(ctx, provider, repo, pr)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
-		}
-		if sibBlocked {
+		if siblingBlocked[pr.Number] {
 			continue
 		}
 		eligible = append(eligible, pr)
@@ -117,7 +129,14 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "no eligible PR to select this cycle")
 	}
 
-	claimed, err := claimEligiblePullRequest(root, eligible)
+	sort.Slice(eligible, func(i, j int) bool {
+		left, right := blockedDependents[eligible[i].Number], blockedDependents[eligible[j].Number]
+		if left != right {
+			return left > right
+		}
+		return eligible[i].Number < eligible[j].Number
+	})
+	claimed, err := claimEligiblePullRequestInOrder(root, eligible)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
 		return 1

@@ -154,7 +154,8 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	ctx := context.Background()
+	ctx, cancel := providerCommandContext()
+	defer cancel()
 	labels := make([]string, 0, 1+len(requireLabels))
 	if trustLabel != "" {
 		labels = append(labels, trustLabel)

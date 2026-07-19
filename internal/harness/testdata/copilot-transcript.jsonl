@@ -1,0 +1,9 @@
+{"role":"user","content":"Implement the parser."}
+{"role":"assistant","content":"I will inspect the package.","model":"gpt-5.4"}
+{"role":"assistant","model":"gpt-5.4","tool_call":{"id":"call-1","name":"view","arguments":{"path":"main.go"}}}
+{"role":"tool","content":"package main","tool_call":{"id":"call-1","success":true}}
+{"role":"tool","content":"file not found","tool_call":{"id":"call-2","success":false}}
+{"role":"system","model":"gpt-5.5"}
+{"role":"system","content":"retrying request"}
+{"role":"assistant","model":"a-model","usage":{"input_tokens":8,"output_tokens":3,"cache_read_tokens":2,"cache_write_tokens":1,"reasoning_tokens":1,"requests":1,"cost":0.5,"nano_aiu":1000}}
+{"role":"assistant","model":"z-model","usage":{"input_tokens":20,"output_tokens":10,"cache_read_tokens":4,"cache_write_tokens":2,"requests":2,"cost":1.5,"nano_aiu":2000}}

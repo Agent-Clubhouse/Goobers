@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -103,7 +102,8 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	base := providerInput("base", "main")
 	headPrefix := providerInput("headPrefix", "goobers/")
 
-	ctx := context.Background()
+	ctx, cancel := providerCommandContext()
+	defer cancel()
 	// SkipCheckState: the list is the always-fresh probe (one request), but
 	// per-candidate check-state resolution is two more requests per PR —
 	// resolved below only for siblings whose cached state isn't reusable.

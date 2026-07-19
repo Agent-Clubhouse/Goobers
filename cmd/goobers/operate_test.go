@@ -41,6 +41,7 @@ func TestRunCompletesDeterministicWorkflow(t *testing.T) {
 	if !strings.Contains(stdout, "phase=completed") {
 		t.Fatalf("expected the real runner to complete the deterministic task, stdout = %q", stdout)
 	}
+	runID := runIDFromRunStdout(t, stdout)
 
 	// status lists the run, completed.
 	code, stdout, stderr = runArgs(t, "status", root)
@@ -52,7 +53,6 @@ func TestRunCompletesDeterministicWorkflow(t *testing.T) {
 	}
 
 	// trace shows the real stage dispatch sequence.
-	runID := strings.Fields(strings.Split(stdout, "\n")[1])[0]
 	code, stdout, stderr = runArgs(t, "trace", runID, root)
 	if code != 0 {
 		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)

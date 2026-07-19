@@ -10,6 +10,10 @@ interface PortalEnvironment {
 export function createViteConfig(environment: PortalEnvironment = process.env) {
   return {
     plugins: [react()],
+    build: {
+      outDir: "../cmd/goobers/portal-dist",
+      emptyOutDir: true,
+    },
     server: {
       proxy: {
         "/api": {
