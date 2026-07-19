@@ -1,13 +1,13 @@
 # Goobers portal
 
-This directory contains the production UI foundation and static fixture views
-for the Dashboard / Portal milestone (#14, epic #440).
+This directory contains the production UI for the Dashboard / Portal milestone
+(#14, epic #440).
 
 It is a React/Vite application with reusable shell, navigation, dense-list,
 graph, inspector, status, icon, theme, accessibility, query-state, and typed
-daemon-client modules. Overview and Workflows read the live daemon API, as do
-configuration warnings on the overview and workflow routes; the remaining detail
-routes stay backed by static fixtures until their vertical slices land.
+daemon-client modules. Overview, Workflows, and run detail read the live daemon
+API, as do configuration warnings on the overview and workflow routes; the
+remaining prototype routes use static fixtures until their vertical slices land.
 
 ## Run it
 
@@ -38,12 +38,12 @@ npm --prefix portal run build
 - **Workflows**: dense inventory, gaggle/goober context, and workflow detail
   with selectable stages.
 - **Runs**: status filters and run detail.
-- **Run detail**: synchronized execution graph, event ledger, replay, attempts,
-  outputs, artifacts, and escalation cause.
+- **Run detail**: pinned identity, synchronized execution graph, and durable
+  event ledger.
 - **Theme**: independently tuned light and dark palettes.
 
-The `Live visual dashboard and workflow DAG` fixture is the richest review
-path. It contains three repasses and a terminal escalation.
+Daemon fixtures cover live and terminal runs, repasses, and forward-compatible
+unknown journal events.
 
 ## Accepted design decisions
 
@@ -62,14 +62,14 @@ The full product and architecture authority is
 
 ## Current boundaries
 
-- Workflow and run detail pages still use static data intentionally shaped around
-  representative runs. Overview, workflow inventory, gaggle rosters, and
-  configuration warnings use the HTTP daemon adapter, with the fixture adapter
-  reserved for tests.
-- The graph layout is fixture-specific, not a general layout engine.
-- Artifact rows demonstrate hierarchy but do not open real journal content.
-- The graph layout remains fixture-specific; narrow layouts use an equivalent
-  ordered stage presentation instead of clipping the desktop graph.
+- Workflow detail still uses static data intentionally shaped around a
+  representative workflow. Overview, workflow inventory, gaggle rosters, run
+  detail, and configuration warnings use the HTTP daemon adapter, with the
+  fixture adapter reserved for tests.
+- Attempt, artifact, replay, and escalation views remain deferred to their
+  dedicated portal slices.
+- Run detail uses the pinned graph topology and an ordered stage presentation
+  that remains operable at narrow widths.
 - Tier-1 is localhost-only and does not activate the future MSAL/OIDC scaffold.
 
 Production issues must preserve accepted behavior while replacing fixtures with
