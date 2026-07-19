@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -112,7 +111,9 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		provider := newGitHubProvider(issuesToken)
-		if _, err := provider.UpdateWorkItem(context.Background(), providers.UpdateWorkItemRequest{
+		ctx, cancel := providerCommandContext()
+		defer cancel()
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo, ID: selectedNumber, RemoveLabels: []string{needsRemediationLabel},
 		}); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("clear %s from PR #%s", needsRemediationLabel, selectedNumber), err, "rebase-result.json")

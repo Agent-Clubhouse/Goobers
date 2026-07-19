@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -116,7 +115,8 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	ctx := context.Background()
+	ctx, cancel := providerCommandContext()
+	defer cancel()
 	base := providerInput("base", "main")
 	headPrefix := providerInput("headPrefix", "goobers/")
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{

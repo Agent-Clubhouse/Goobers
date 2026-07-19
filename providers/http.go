@@ -20,6 +20,8 @@ import (
 // it to minimize round trips when following pagination (#139).
 const maxPerPage = 100
 
+const defaultProviderHTTPTimeout = 60 * time.Second
+
 // errStopPaging lets a getAllPages callback halt pagination early (e.g. once a
 // bounded list has collected enough items) without surfacing an error.
 var errStopPaging = errors.New("stop paging")
@@ -157,7 +159,11 @@ func httpClientOrDefault(client HTTPClient) HTTPClient {
 	if client != nil {
 		return client
 	}
-	return http.DefaultClient
+	return newProviderHTTPClient(defaultProviderHTTPTimeout)
+}
+
+func newProviderHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout}
 }
 
 func commandRunnerOrDefault(runner CommandRunner) CommandRunner {

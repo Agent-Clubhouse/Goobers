@@ -112,7 +112,8 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 		timeout = clamped
 	}
 
-	ctx := context.Background()
+	ctx, cancel := providerCommandContext()
+	defer cancel()
 	deadline := time.Now().Add(timeout)
 	// An absent queue entry is how a real eviction presents — GitHub leaves
 	// the pull request open and just removes it from the queue (#885) — but
@@ -292,31 +293,11 @@ func writeQueueResult(path, selectedNumber, queueOutcome, mergeSHA string, clean
 // internal/executor/cipoll.go's durationInput: an unset key applies the
 // caller's default, but a SET, malformed value fails closed with a real
 // error rather than silently defaulting.
-// mergeQueuePollMinMargin is the smallest gap mergeQueuePollBudget leaves
-// between the poll's own deadline and the stage deadline the executor
-// enforces — enough for the final poll's HTTP round trip (with its
-// rate-limit backoff) plus the result-file write.
-const mergeQueuePollMinMargin = time.Minute
-
-// stageTimeout reports the wall-clock budget the shell executor is
-// enforcing on this stage: its declared `timeout` input if it has one,
-// otherwise the executor's own default. Read from the same GOOBERS_INPUT_*
-// env the executor injects every declared input under, so the subprocess
-// bounds itself by the same number that will kill it — and keeps doing so
-// if a workflow later declares a different one, including in a
-// hand-maintained instance config this build never sees.
-func stageTimeout() time.Duration {
-	if s := providerInput(executor.InputTimeout, ""); s != "" {
-		if d, err := time.ParseDuration(s); err == nil && d > 0 {
-			return d
-		}
-	}
-	return executor.DefaultTimeout
-}
-
 // mergeQueuePollBudget returns the longest poll timeout that still leaves
 // the loop time to exit cleanly and write its result file before the
 // executor kills the stage at stageTimeout.
+const mergeQueuePollMinMargin = time.Minute
+
 func mergeQueuePollBudget(stage time.Duration) time.Duration {
 	margin := stage / 10
 	if margin < mergeQueuePollMinMargin {
@@ -325,9 +306,6 @@ func mergeQueuePollBudget(stage time.Duration) time.Duration {
 	if budget := stage - margin; budget > 0 {
 		return budget
 	}
-	// A stage budget at or under the margin leaves no safe room to reserve;
-	// half of it is the best available compromise between polling at all
-	// and still writing a result.
 	return stage / 2
 }
 

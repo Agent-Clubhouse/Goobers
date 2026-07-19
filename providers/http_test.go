@@ -2,8 +2,12 @@ package providers
 
 import (
 	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -29,5 +33,51 @@ func TestADOProviderRegistersBasicAuthCredential(t *testing.T) {
 		if bytes.Contains(got, []byte(credential)) || !bytes.Contains(got, []byte(journal.Redacted)) {
 			t.Fatalf("registered credential was not redacted: %q", got)
 		}
+	}
+}
+
+func TestDefaultProviderHTTPClientHasTimeout(t *testing.T) {
+	client, ok := httpClientOrDefault(nil).(*http.Client)
+	if !ok {
+		t.Fatalf("default client type = %T, want *http.Client", httpClientOrDefault(nil))
+	}
+	if client.Timeout != defaultProviderHTTPTimeout {
+		t.Fatalf("default client timeout = %s, want %s", client.Timeout, defaultProviderHTTPTimeout)
+	}
+}
+
+func TestProviderHTTPClientBoundsStalledEndpointRetries(t *testing.T) {
+	requests := make(chan struct{}, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		requests <- struct{}{}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	const (
+		clientTimeout = 20 * time.Millisecond
+		retries       = 2
+	)
+	provider := NewGitHubProvider("token",
+		func(p *GitHubProvider) {
+			p.BaseURL = server.URL
+			p.Client = newProviderHTTPClient(clientTimeout)
+			p.sleep = func(context.Context, time.Duration) error { return nil }
+		},
+		WithMaxRateLimitRetries(retries),
+	)
+
+	start := time.Now()
+	_, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: RepositoryRef{Owner: "owner", Name: "repo"},
+	})
+	if err == nil {
+		t.Fatal("ListWorkItems() error = nil, want timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("stalled request took %s, want retries bounded by the client timeout", elapsed)
+	}
+	if got, want := len(requests), retries+1; got != want {
+		t.Fatalf("request attempts = %d, want %d", got, want)
 	}
 }

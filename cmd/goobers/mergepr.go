@@ -113,7 +113,8 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 	resultFile := providerInput("resultFile", "merge-result.json")
 
-	ctx := context.Background()
+	ctx, cancel := providerCommandContext()
+	defer cancel()
 
 	// #719: with merge-review's readiness allowing several concurrent runs
 	// to review DIFFERENT PRs at once (distinct-PR concurrency is already

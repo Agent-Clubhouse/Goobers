@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"io"
@@ -106,7 +105,9 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		prReq.RunID = runID
 	}
 
-	result, err := provider.OpenPullRequest(context.Background(), prReq)
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	result, err := provider.OpenPullRequest(ctx, prReq)
 	if err != nil {
 		return failProviderStage(stderr, "open pull request", err, "pr-result.json")
 	}

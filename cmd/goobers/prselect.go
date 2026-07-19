@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -73,7 +72,8 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	headPrefix := providerInput("headPrefix", "goobers/")
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
 
-	ctx := context.Background()
+	ctx, cancel := providerCommandContext()
+	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})

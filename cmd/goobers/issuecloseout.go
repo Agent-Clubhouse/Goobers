@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -178,7 +177,8 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	ctx := context.Background()
+	ctx, cancel := providerCommandContext()
+	defer cancel()
 	comment := providerInput("comment", "")
 	if status == issueCloseOutNeedsHuman {
 		if comment == "" {
