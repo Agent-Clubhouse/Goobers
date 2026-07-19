@@ -1108,21 +1108,72 @@ func TestGitHubProviderDetectMergePolicyRequiresBranch(t *testing.T) {
 	}
 }
 
-// TestGitHubProviderEnqueuePullRequestReportsNotYetMerged proves the normal
-// enqueue outcome (#758): the merge endpoint's merged=false response (the
-// documented behavior when the base branch requires a merge queue) is
-// surfaced verbatim, and the mutation is recorded as "enqueue", not "merge"
-// — an operator reading the mutation journal should see this pull request
-// was queued, not that it was actually merged.
-func TestGitHubProviderEnqueuePullRequestReportsNotYetMerged(t *testing.T) {
+// graphQLStub serves the /graphql endpoint the enqueue path uses, routing
+// by whether the request carries the mutation or the lookup query, and
+// recording every request body so a test can assert what went on the wire.
+// It deliberately registers NO REST merge handler: any fall-through to
+// PUT .../pulls/{n}/merge 404s loudly, which is the #882 regression guard.
+type graphQLStub struct {
+	t        *testing.T
+	lookup   map[string]interface{}
+	mutation map[string]interface{}
+	bodies   []map[string]interface{}
+}
+
+func (s *graphQLStub) server() *httptest.Server {
 	mux := http.NewServeMux()
-	var gotBody map[string]interface{}
-	mux.HandleFunc("/repos/acme/app/pulls/9/merge", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodPut)
-		decodeJSON(t, r, &gotBody)
-		writeJSON(t, w, map[string]interface{}{"merged": false, "message": "Pull Request is in merge queue"})
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(s.t, r, http.MethodPost)
+		var body map[string]interface{}
+		decodeJSON(s.t, r, &body)
+		s.bodies = append(s.bodies, body)
+		query, _ := body["query"].(string)
+		if strings.Contains(query, "enqueuePullRequest(input:") {
+			writeJSON(s.t, w, map[string]interface{}{"data": s.mutation})
+			return
+		}
+		writeJSON(s.t, w, map[string]interface{}{"data": s.lookup})
 	})
-	server := httptest.NewServer(mux)
+	return httptest.NewServer(mux)
+}
+
+// variables returns the variables sent with the nth recorded request.
+func (s *graphQLStub) variables(n int) map[string]interface{} {
+	s.t.Helper()
+	if n >= len(s.bodies) {
+		s.t.Fatalf("only %d graphql requests were made, wanted request %d", len(s.bodies), n)
+	}
+	vars, _ := s.bodies[n]["variables"].(map[string]interface{})
+	return vars
+}
+
+// lookupResponse builds the enqueue lookup query's data payload.
+func lookupResponse(pr map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{"repository": map[string]interface{}{"pullRequest": pr}}
+}
+
+// TestGitHubProviderEnqueuePullRequestUsesGraphQLMutation is #882's
+// regression test. The enqueue previously went through the REST merge
+// endpoint on the assumption that GitHub silently converts it into an
+// enqueue for a queue-required branch; live evidence was a flat 405
+// ("Changes must be made through the merge queue"), because no REST
+// endpoint enqueues anything — the GraphQL mutation is the only one.
+//
+// The stub serves ONLY /graphql, so a regression back to the REST path
+// fails this test with a 404 rather than passing quietly.
+func TestGitHubProviderEnqueuePullRequestUsesGraphQLMutation(t *testing.T) {
+	stub := &graphQLStub{
+		t: t,
+		lookup: lookupResponse(map[string]interface{}{
+			"id": "PR_node", "merged": false, "mergeCommit": nil, "mergeQueueEntry": nil,
+		}),
+		mutation: map[string]interface{}{
+			"enqueuePullRequest": map[string]interface{}{
+				"mergeQueueEntry": map[string]interface{}{"state": "QUEUED", "position": 2},
+			},
+		},
+	}
+	server := stub.server()
 	defer server.Close()
 
 	rec := &recordingRecorder{}
@@ -1134,18 +1185,26 @@ func TestGitHubProviderEnqueuePullRequestReportsNotYetMerged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnqueuePullRequest returned error: %v", err)
 	}
+	// Enqueueing never merges inline, so Merged is false by construction —
+	// the queue entry is what the caller polls next.
 	if result.Merged || result.Number != 9 {
 		t.Fatalf("result = %#v, want Merged=false Number=9", result)
 	}
-	if gotBody["sha"] != "deadbeef" {
-		t.Fatalf("request body sha = %v, want deadbeef (the SHA-pin guard, same as MergePullRequest)", gotBody["sha"])
+	if len(stub.bodies) != 2 {
+		t.Fatalf("made %d graphql requests, want 2 (node-id lookup, then mutation)", len(stub.bodies))
 	}
-	// #877: the enqueue endpoint IS the merge endpoint, so merge_method has
-	// to be on the wire here exactly as MergePullRequest sends it —
-	// otherwise GitHub defaults to a merge commit and a squash-only ruleset
-	// 405s the landing.
-	if gotBody["merge_method"] != string(MergeMethodSquash) {
-		t.Fatalf("request body merge_method = %v, want squash", gotBody["merge_method"])
+	if got := stub.variables(0)["number"]; got != float64(9) {
+		t.Fatalf("lookup number = %v, want 9", got)
+	}
+	mutationVars := stub.variables(1)
+	if got := mutationVars["pullRequestId"]; got != "PR_node" {
+		t.Fatalf("mutation pullRequestId = %v, want the node id from the lookup", got)
+	}
+	// The SHA pin survives the move off REST: it is spelled expectedHeadOid
+	// on the mutation, and dropping it would let the queue land a commit the
+	// merge conjuncts were never checked against.
+	if got := mutationVars["expectedHeadOid"]; got != "deadbeef" {
+		t.Fatalf("mutation expectedHeadOid = %v, want deadbeef", got)
 	}
 	ref, ok := rec.last()
 	if !ok {
@@ -1156,17 +1215,52 @@ func TestGitHubProviderEnqueuePullRequestReportsNotYetMerged(t *testing.T) {
 	}
 }
 
-// TestGitHubProviderEnqueuePullRequestReportsMergedWhenQueueLandsImmediately
-// pins the edge case an empty queue can produce: the merge endpoint
-// reporting merged=true for what was still, from the caller's perspective,
-// an enqueue attempt — the mutation records as "merge", matching what
-// actually happened.
-func TestGitHubProviderEnqueuePullRequestReportsMergedWhenQueueLandsImmediately(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/acme/app/pulls/9/merge", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, map[string]interface{}{"sha": "abc123", "merged": true, "message": "merged"})
+// TestGitHubProviderEnqueuePullRequestAlreadyMergedIsNotAnError covers a
+// retried stage attempt whose pull request the queue landed in the
+// meantime: the desired end state already holds, so this reports the real
+// merge commit rather than erroring on a mutation GitHub would reject.
+func TestGitHubProviderEnqueuePullRequestAlreadyMergedIsNotAnError(t *testing.T) {
+	stub := &graphQLStub{
+		t: t,
+		lookup: lookupResponse(map[string]interface{}{
+			"id": "PR_node", "merged": true,
+			"mergeCommit":     map[string]interface{}{"oid": "abc123"},
+			"mergeQueueEntry": nil,
+		}),
+	}
+	server := stub.server()
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.EnqueuePullRequest(context.Background(), EnqueuePullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
 	})
-	server := httptest.NewServer(mux)
+	if err != nil {
+		t.Fatalf("EnqueuePullRequest returned error: %v", err)
+	}
+	// The merge commit, not the head SHA — under the squash method a merge
+	// queue requires, they are never the same commit.
+	if !result.Merged || result.MergeSHA != "abc123" {
+		t.Fatalf("result = %#v, want Merged=true MergeSHA=abc123", result)
+	}
+	if len(stub.bodies) != 1 {
+		t.Fatalf("made %d graphql requests, want 1 (no mutation for an already-merged pull request)", len(stub.bodies))
+	}
+}
+
+// TestGitHubProviderEnqueuePullRequestAlreadyEnqueuedIsIdempotent covers the
+// other retry case: the pull request is already in the queue, so the
+// enqueue is a successful no-op instead of a duplicate-entry error that
+// would fail an otherwise healthy landing.
+func TestGitHubProviderEnqueuePullRequestAlreadyEnqueuedIsIdempotent(t *testing.T) {
+	stub := &graphQLStub{
+		t: t,
+		lookup: lookupResponse(map[string]interface{}{
+			"id": "PR_node", "merged": false, "mergeCommit": nil,
+			"mergeQueueEntry": map[string]interface{}{"state": "AWAITING_CHECKS", "position": 0},
+		}),
+	}
+	server := stub.server()
 	defer server.Close()
 
 	rec := &recordingRecorder{}
@@ -1177,15 +1271,59 @@ func TestGitHubProviderEnqueuePullRequestReportsMergedWhenQueueLandsImmediately(
 	if err != nil {
 		t.Fatalf("EnqueuePullRequest returned error: %v", err)
 	}
-	if !result.Merged || result.MergeSHA != "abc123" {
-		t.Fatalf("result = %#v, want Merged=true MergeSHA=abc123", result)
+	if result.Merged || result.Number != 9 {
+		t.Fatalf("result = %#v, want Merged=false Number=9", result)
+	}
+	if len(stub.bodies) != 1 {
+		t.Fatalf("made %d graphql requests, want 1 (no mutation for an already-enqueued pull request)", len(stub.bodies))
 	}
 	ref, ok := rec.last()
 	if !ok {
-		t.Fatalf("expected a recorded external ref")
+		t.Fatalf("expected a recorded external ref for the already-enqueued pull request")
 	}
-	if ref.Operation != "merge" {
-		t.Fatalf("Operation = %q, want merge (the queue actually landed it)", ref.Operation)
+	if ref.Operation != "enqueue" {
+		t.Fatalf("Operation = %q, want enqueue", ref.Operation)
+	}
+}
+
+// TestGitHubProviderGraphQLSurfacesErrorsArray pins the one way GraphQL
+// differs from every REST call in this provider: a failure arrives as HTTP
+// 200 with a non-empty errors array, which p.do's status check alone would
+// read as success and then silently decode into a zero value.
+func TestGitHubProviderGraphQLSurfacesErrorsArray(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"data": nil,
+			"errors": []map[string]interface{}{
+				{"type": "FORBIDDEN", "message": "Merge queue is not enabled for this branch"},
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	_, err := provider.EnqueuePullRequest(context.Background(), EnqueuePullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9",
+	})
+	if err == nil {
+		t.Fatal("expected an error for a GraphQL errors-array response served as HTTP 200")
+	}
+	if !strings.Contains(err.Error(), "Merge queue is not enabled") {
+		t.Fatalf("error = %v, want it to carry GitHub's own message", err)
+	}
+}
+
+// TestGitHubProviderEnqueuePullRequestRejectsNonNumericPullID proves the
+// pull id is resolved to a node id via its number, so a non-numeric id
+// fails with that reason rather than as an opaque GitHub rejection.
+func TestGitHubProviderEnqueuePullRequestRejectsNonNumericPullID(t *testing.T) {
+	provider := NewGitHubProvider("token")
+	if _, err := provider.EnqueuePullRequest(context.Background(), EnqueuePullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "not-a-number",
+	}); err == nil {
+		t.Fatal("expected an error for a non-numeric pull id")
 	}
 }
 

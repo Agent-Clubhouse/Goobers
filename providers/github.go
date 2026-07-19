@@ -601,16 +601,61 @@ func (p *GitHubProvider) DetectMergePolicy(ctx context.Context, req RepoMergePol
 	return RepoMergePolicyResult{Policy: MergePolicyDirect}, nil
 }
 
+// enqueuePullRequestLookupQuery resolves the GraphQL node ID the enqueue
+// mutation requires from the pull request number the rest of the codebase
+// carries, and in the same round trip reads the two states that make the
+// enqueue a no-op: already merged, and already sitting in the queue.
+const enqueuePullRequestLookupQuery = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      id
+      merged
+      mergeCommit{ oid }
+      mergeQueueEntry{ state position }
+    }
+  }
+}`
+
+// enqueuePullRequestMutation is GitHub's only supported way to add a pull
+// request to a merge queue. expectedHeadOid is the same optimistic-
+// concurrency guard the REST merge endpoint spells "sha".
+const enqueuePullRequestMutation = `mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID){
+  enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid}){
+    mergeQueueEntry{ state position }
+  }
+}`
+
 // EnqueuePullRequest adds a GitHub pull request to its repo's merge queue
-// (issue #758) via the SAME endpoint MergePullRequest uses (PUT
-// .../pulls/{number}/merge) — GitHub's documented behavior for that
-// endpoint is that a base branch requiring a merge queue causes the request
-// to enqueue the pull request instead of merging it directly. The response
-// still reports merged=false in the normal (now-queued) case, and
-// merged=true in the rare edge case where the queue happened to be empty
-// and completed the merge immediately — both are reported back verbatim so
-// internal/mergepolicy's Land can classify the outcome correctly rather
-// than assuming "enqueue attempted" always means "not yet merged".
+// (issue #758) via the GraphQL enqueuePullRequest mutation.
+//
+// It previously used the REST merge endpoint (PUT .../pulls/{number}/merge)
+// on the assumption that GitHub converts that call into an enqueue when the
+// base branch requires a merge queue. That assumption is wrong, and issue
+// #882 is the live evidence: against a queue-required branch, with the
+// ruleset's own required merge method sent correctly, GitHub rejected the
+// call outright — 405 "Repository rule violations found / Changes must be
+// made through the merge queue" — rather than queuing anything. There is no
+// REST endpoint for this operation at all; the GraphQL mutation is the only
+// one, which is why `gh pr merge` reaches for it too.
+//
+// Two states make the mutation unnecessary, and both are checked first so a
+// retried stage attempt is idempotent rather than an error:
+//
+//   - already merged (the queue landed it between attempts) — reported as
+//     Merged=true with the real merge commit, which internal/mergepolicy's
+//     enqueueLander maps to Outcome=merged;
+//   - already enqueued — reported as a successful no-op enqueue, since the
+//     desired end state already holds.
+//
+// Merged=true on the mutation path is impossible by construction: unlike
+// the REST endpoint, enqueueing never merges inline, so a queue with
+// nothing ahead of this pull request still yields an entry to poll rather
+// than an immediate merge.
+//
+// req.MergeMethod is deliberately not sent. The queue's merge method comes
+// from the repository ruleset's merge_queue rule, not from the enqueue
+// call, and the mutation accepts no such field — #877's fix remains correct
+// for the direct-merge path and is simply inapplicable here.
 func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullRequestRequest) (EnqueuePullRequestResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return EnqueuePullRequestResult{}, err
@@ -618,38 +663,95 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 	if req.PullID == "" {
 		return EnqueuePullRequestResult{}, fmt.Errorf("pull id is required")
 	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "merge")
+	number, err := strconv.Atoi(req.PullID)
 	if err != nil {
+		// The GraphQL lookup takes the number as an Int, so a non-numeric
+		// pull id cannot be resolved to a node at all — fail with that
+		// reason rather than sending a request GitHub will reject opaquely.
+		return EnqueuePullRequestResult{}, fmt.Errorf("pull id %q must be a pull request number: %w", req.PullID, err)
+	}
+
+	var lookup struct {
+		Repository struct {
+			PullRequest *struct {
+				ID          string `json:"id"`
+				Merged      bool   `json:"merged"`
+				MergeCommit *struct {
+					OID string `json:"oid"`
+				} `json:"mergeCommit"`
+				MergeQueueEntry *struct {
+					State    string `json:"state"`
+					Position int    `json:"position"`
+				} `json:"mergeQueueEntry"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	if err := p.graphql(ctx, enqueuePullRequestLookupQuery, map[string]interface{}{
+		"owner":  req.Repository.Owner,
+		"name":   req.Repository.Name,
+		"number": number,
+	}, &lookup); err != nil {
 		return EnqueuePullRequestResult{}, err
 	}
-	body := map[string]interface{}{}
+	pr := lookup.Repository.PullRequest
+	if pr == nil || pr.ID == "" {
+		return EnqueuePullRequestResult{}, fmt.Errorf("pull request %s/%s#%d not found", req.Repository.Owner, req.Repository.Name, number)
+	}
+
+	if pr.Merged {
+		mergeSHA := ""
+		if pr.MergeCommit != nil {
+			mergeSHA = pr.MergeCommit.OID
+		}
+		return EnqueuePullRequestResult{
+			Number:   number,
+			Merged:   true,
+			MergeSHA: mergeSHA,
+			Message:  "pull request is already merged",
+		}, nil
+	}
+	if pr.MergeQueueEntry != nil {
+		p.recordEnqueue(ctx, req.Repository, req.PullID)
+		return EnqueuePullRequestResult{
+			Number:  number,
+			Message: fmt.Sprintf("pull request is already enqueued (state %s, position %d)", pr.MergeQueueEntry.State, pr.MergeQueueEntry.Position),
+		}, nil
+	}
+
+	variables := map[string]interface{}{"pullRequestId": pr.ID}
 	if req.ExpectedHeadSHA != "" {
-		body["sha"] = req.ExpectedHeadSHA
+		variables["expectedHeadOid"] = req.ExpectedHeadSHA
 	}
-	if req.MergeMethod != "" {
-		body["merge_method"] = string(req.MergeMethod)
+	var mutation struct {
+		EnqueuePullRequest struct {
+			MergeQueueEntry *struct {
+				State    string `json:"state"`
+				Position int    `json:"position"`
+			} `json:"mergeQueueEntry"`
+		} `json:"enqueuePullRequest"`
 	}
-	var out githubMergeResult
-	if err := p.do(ctx, http.MethodPut, endpoint, body, &out); err != nil {
+	if err := p.graphql(ctx, enqueuePullRequestMutation, variables, &mutation); err != nil {
 		return EnqueuePullRequestResult{}, err
 	}
-	number, convErr := strconv.Atoi(req.PullID)
-	if convErr != nil {
-		number = 0
+
+	p.recordEnqueue(ctx, req.Repository, req.PullID)
+	message := "pull request enqueued"
+	if entry := mutation.EnqueuePullRequest.MergeQueueEntry; entry != nil {
+		message = fmt.Sprintf("pull request enqueued (state %s, position %d)", entry.State, entry.Position)
 	}
-	operation := "enqueue"
-	state := "enqueued"
-	if out.Merged {
-		operation = "merge"
-		state = "merged"
-	}
+	return EnqueuePullRequestResult{Number: number, Message: message}, nil
+}
+
+// recordEnqueue journals the enqueue as a mutation of the pull request's
+// external ref, so a queued-but-not-yet-merged pull request is as visible
+// in the run journal as a merged one.
+func (p *GitHubProvider) recordEnqueue(ctx context.Context, repo RepositoryRef, pullID string) {
 	p.recordExternalRef(ctx, ExternalRef{
 		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, req.PullID),
-		Operation: operation,
-		Fields:    map[string]FieldDigest{"state": {After: digestString(state)}},
+		Ref:       issueRef(repo, pullID),
+		Operation: "enqueue",
+		Fields:    map[string]FieldDigest{"state": {After: digestString("enqueued")}},
 	})
-	return EnqueuePullRequestResult{Number: number, Merged: out.Merged, MergeSHA: out.SHA, Message: out.Message}, nil
 }
 
 // PollMergeQueueEntry reports whether the merge queue has since merged or

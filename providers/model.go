@@ -418,26 +418,30 @@ type EnqueuePullRequestRequest struct {
 	Repository RepositoryRef `json:"repository"`
 	PullID     string        `json:"pullId"`
 	// ExpectedHeadSHA, if set, is the same optimistic-concurrency guard
-	// MergePullRequestRequest passes to GitHub's merge API — enqueueing
-	// uses that same API (see GitHubProvider.EnqueuePullRequest's doc).
+	// MergePullRequestRequest passes to the provider — GitHub's enqueue
+	// mutation spells it expectedHeadOid, and it serves the identical
+	// purpose: refuse to land a head commit the caller's merge conjuncts
+	// were never checked against.
 	ExpectedHeadSHA string `json:"expectedHeadSha,omitempty"`
 	// MergeMethod is the same merge-method selection
-	// MergePullRequestRequest carries, and for the same reason: because
-	// enqueueing goes through GitHub's merge API, omitting it makes GitHub
-	// fall back to its own default ("merge"), which a repo whose ruleset
-	// restricts merge methods (e.g. squash-only) rejects outright with a
-	// 405 (issue #877). Empty means "let the provider decide", matching
-	// MergePullRequestRequest.
+	// MergePullRequestRequest carries. It is provider-neutral and remains
+	// meaningful for a backend whose enqueue operation accepts one, but
+	// GitHub ignores it: a merge queue takes its method from the
+	// repository ruleset's merge_queue rule, not from the enqueue call,
+	// and GitHub's enqueue mutation has no such field (issue #882). It
+	// stays required on the direct-merge path, which is what #877 fixed.
 	MergeMethod MergeMethod `json:"mergeMethod,omitempty"`
 }
 
 // EnqueuePullRequestResult reports the outcome of an enqueue attempt.
-// Merged=true is the rare edge case where GitHub's merge endpoint (the same
-// endpoint enqueue calls) completed the merge immediately instead of
-// actually queuing it (e.g. an empty queue with nothing ahead of this pull
-// request) — still a genuine "merged" outcome, which internal/mergepolicy's
-// enqueueLander maps back to Outcome=merged rather than mis-reporting
-// "enqueued" for a pull request that is, in fact, already landed.
+// Merged=true means the pull request was ALREADY merged when the enqueue
+// was attempted — a retried stage attempt whose pull request the queue
+// landed in the meantime — which internal/mergepolicy's enqueueLander maps
+// back to Outcome=merged rather than mis-reporting "enqueued" for a pull
+// request that is, in fact, already landed. A successful enqueue never
+// reports Merged=true: queuing a pull request never merges it inline, so
+// the caller polls the queue entry (PollMergeQueueEntryRequest) for the
+// terminal outcome.
 type EnqueuePullRequestResult struct {
 	Number   int    `json:"number"`
 	Merged   bool   `json:"merged"`
