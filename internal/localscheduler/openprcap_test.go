@@ -11,11 +11,13 @@ import (
 )
 
 type fakeOpenPRCounter struct {
-	n     int
-	known bool
+	counts map[string]int
+	known  bool
 }
 
-func (f fakeOpenPRCounter) OpenPRCount() (int, bool) { return f.n, f.known }
+func (f fakeOpenPRCounter) OpenPRCount(workflow string) (int, bool) {
+	return f.counts[workflow], f.known
+}
 
 // TestAdmitOpenPRCap is #353: the MaxOpenPRs cap blocks a new run once the
 // counter reports the workflow's open PRs at the cap, admits below it, and
@@ -28,7 +30,7 @@ func TestAdmitOpenPRCap(t *testing.T) {
 
 	t.Run("blocks at cap", func(t *testing.T) {
 		c := NewConditions()
-		c.SetOpenPRCounter(fakeOpenPRCounter{n: 1, known: true})
+		c.SetOpenPRCounter(fakeOpenPRCounter{counts: map[string]int{"implementation": 1}, known: true})
 		ok, reason := c.Admit("implementation", capped, now)
 		if ok || reason != ReasonOpenPRCap {
 			t.Fatalf("ok=%v reason=%q, want blocked with %q", ok, reason, ReasonOpenPRCap)
@@ -36,21 +38,21 @@ func TestAdmitOpenPRCap(t *testing.T) {
 	})
 	t.Run("admits below cap", func(t *testing.T) {
 		c := NewConditions()
-		c.SetOpenPRCounter(fakeOpenPRCounter{n: 0, known: true})
+		c.SetOpenPRCounter(fakeOpenPRCounter{counts: map[string]int{"implementation": 0}, known: true})
 		if ok, _ := c.Admit("implementation", capped, now); !ok {
 			t.Fatal("expected admit below the cap")
 		}
 	})
 	t.Run("fails open when count unknown", func(t *testing.T) {
 		c := NewConditions()
-		c.SetOpenPRCounter(fakeOpenPRCounter{n: 99, known: false})
+		c.SetOpenPRCounter(fakeOpenPRCounter{counts: map[string]int{"implementation": 99}, known: false})
 		if ok, _ := c.Admit("implementation", capped, now); !ok {
 			t.Fatal("expected admit when the count is unknown (fail-open)")
 		}
 	})
 	t.Run("no cap when MaxOpenPRs is unset", func(t *testing.T) {
 		c := NewConditions()
-		c.SetOpenPRCounter(fakeOpenPRCounter{n: 99, known: true})
+		c.SetOpenPRCounter(fakeOpenPRCounter{counts: map[string]int{"implementation": 99}, known: true})
 		if ok, _ := c.Admit("implementation", apiv1.ReadinessConditions{MaxConcurrentRuns: 10}, now); !ok {
 			t.Fatal("expected admit when MaxOpenPRs is unset (opt-in)")
 		}
@@ -59,6 +61,19 @@ func TestAdmitOpenPRCap(t *testing.T) {
 		c := NewConditions()
 		if ok, _ := c.Admit("implementation", capped, now); !ok {
 			t.Fatal("expected admit when no counter is wired (fail-open)")
+		}
+	})
+	t.Run("does not count tutor PRs against implementation", func(t *testing.T) {
+		c := NewConditions()
+		c.SetOpenPRCounter(fakeOpenPRCounter{
+			counts: map[string]int{"implementation": 0, "tutor": 1},
+			known:  true,
+		})
+		if ok, reason := c.Admit("implementation", capped, now); !ok {
+			t.Fatalf("implementation: ok=%v reason=%q, want admitted", ok, reason)
+		}
+		if ok, reason := c.Admit("tutor", capped, now); ok || reason != ReasonOpenPRCap {
+			t.Fatalf("tutor: ok=%v reason=%q, want blocked with %q", ok, reason, ReasonOpenPRCap)
 		}
 	})
 }
@@ -74,30 +89,35 @@ func (f *fakeOpenPRLister) ListOpenPullRequestHeads(_ context.Context, _ provide
 	return f.heads, f.err
 }
 
-// TestOpenPRRefresherCountsRunBranchHeads is #353: the refresher counts only the
-// open PRs under the goobers/ run-branch namespace (providers.BranchName), and
-// reports "unknown" until the first poll completes.
+// TestOpenPRRefresherCountsRunBranchHeads is #353/#891: the refresher counts
+// only each workflow's own run-branch PRs and reports "unknown" until the first
+// poll completes.
 func TestOpenPRRefresherCountsRunBranchHeads(t *testing.T) {
 	lister := &fakeOpenPRLister{heads: []string{
 		"goobers/implementation/run-1",
 		"goobers/implementation/run-2",
-		"goobers/backlog-curation/run-3", // still a run-branch PR (goobers/ prefix)
-		"feature/human-authored",         // not a loop PR — excluded
-		"dependabot/go_modules/x",        // not a loop PR — excluded
+		"goobers/tutor/run-3",
+		"goobers/implementation-helper/run-4",
+		"feature/human-authored",
 	}}
 	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour)
 
-	if _, known := r.OpenPRCount(); known {
+	if _, known := r.OpenPRCount("implementation"); known {
 		t.Fatal("expected unknown before the first poll (Admit fails open until then)")
 	}
 
 	r.pollOnce(context.Background())
-	n, known := r.OpenPRCount()
-	if !known {
-		t.Fatal("expected known after a successful poll")
-	}
-	if n != 3 {
-		t.Fatalf("count = %d, want 3 (only goobers/ run-branch heads)", n)
+	for _, tc := range []struct {
+		workflow string
+		want     int
+	}{
+		{workflow: "implementation", want: 2},
+		{workflow: "tutor", want: 1},
+	} {
+		n, known := r.OpenPRCount(tc.workflow)
+		if !known || n != tc.want {
+			t.Errorf("%s: count=%d known=%v, want %d/true", tc.workflow, n, known, tc.want)
+		}
 	}
 }
 
@@ -108,7 +128,7 @@ func TestOpenPRRefresherFailsOpenOnError(t *testing.T) {
 	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour)
 
 	r.pollOnce(context.Background())
-	if _, known := r.OpenPRCount(); known {
+	if _, known := r.OpenPRCount("implementation"); known {
 		t.Fatal("expected unknown (fail-open) after a poll error")
 	}
 
@@ -116,7 +136,7 @@ func TestOpenPRRefresherFailsOpenOnError(t *testing.T) {
 	lister.err = nil
 	lister.heads = []string{"goobers/implementation/run-9"}
 	r.pollOnce(context.Background())
-	if n, known := r.OpenPRCount(); !known || n != 1 {
+	if n, known := r.OpenPRCount("implementation"); !known || n != 1 {
 		t.Fatalf("after recovery: n=%d known=%v, want 1/true", n, known)
 	}
 }
@@ -134,7 +154,7 @@ func TestOpenPRRefresherRunPollsAndStops(t *testing.T) {
 	// The eager first poll makes the count known without waiting a full interval.
 	deadline := time.After(2 * time.Second)
 	for {
-		if _, known := r.OpenPRCount(); known {
+		if _, known := r.OpenPRCount("implementation"); known {
 			break
 		}
 		select {
