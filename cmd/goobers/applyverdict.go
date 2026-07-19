@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -269,6 +270,16 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", stderr)
 	}
 
+	// A `fail` verdict on work that is MOOT gets closed rather than parked for
+	// a human (#923/#947). Deliberately narrow: mootness is established by a
+	// deterministic, independently verifiable fact about the repository, never
+	// by the reviewer's prose. See mootFailReason.
+	if verdict.Decision == apiv1.VerdictFail {
+		if reason, moot := mootFailReason(ctx, provider, repo, current); moot {
+			return closeMootPullRequest(ctx, provider, repo, selectedNumber, current, *verdict, reason, resultFile, stdout, stderr)
+		}
+	}
+
 	posted := *verdict
 	if posted.Digest == "" {
 		posted.Digest = providerInput("reviewDigest", "")
@@ -353,6 +364,134 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, verdict.Decision)
 	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), stderr)
+}
+
+// resolvedIssuePattern matches every way a goober-authored PR body states the
+// issue it exists to resolve. It is DELIBERATELY broader than
+// closingKeywordPattern (postmerge.go), which matches only GitHub's own
+// closing-keyword grammar.
+//
+// The two must not be merged. closingKeywordPattern drives real mutations —
+// post-merge closes exactly those issues when a PR lands — so broadening it
+// would close issues a PR never claimed to close. This pattern only ever
+// decides "is the work this PR describes already obsolete", and closes nothing.
+//
+// The extra verb is not speculative: `goobers open-pr` writes its body as
+// "Implements #N: **title**." (openprbody.go), which is not a GitHub closing
+// keyword — by design, since post-merge does the closing explicitly rather than
+// letting GitHub do it. So the single most common goober PR body form is
+// invisible to closingKeywordPattern. PR #919 was exactly that shape, and a
+// mootness check reading only closing keywords would have missed the case this
+// whole path exists for.
+var resolvedIssuePattern = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|implement(?:s|ed)?)\s+#(\d+)`)
+
+// resolvedIssueNumbers extracts every distinct issue number a PR body claims to
+// resolve, in first-seen order.
+func resolvedIssueNumbers(body string) []string {
+	matches := resolvedIssuePattern.FindAllStringSubmatch(body, -1)
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range matches {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+// mootFailReason reports whether a `fail`-verdicted pull request is MOOT —
+// work that should never have been done, as opposed to work done wrongly — and
+// the human-readable reason it is.
+//
+// The distinction matters because it decides who has to act. `fail` normally
+// means the reviewer judged the APPROACH wrong, which is a genuine judgment
+// call reserved for a human (design doc §4 D2), and auto-closing those would
+// take a person out of the one loop they were deliberately left in. But a
+// meaningful share of `fail` verdicts are not that at all: the work was already
+// obsolete before the run started, and there is nothing for anyone to decide.
+//
+// PR #919 (weekend_10, 2026-07-19) is the worked example. #827 merged the real
+// torn-read fix at 2026-07-18T10:57Z; issue #684 was closed as superseded at
+// 02:52Z; the implementation run opened #919 for #684 at 03:34Z, 42 minutes
+// AFTER its issue was closed. The reviewer's rationale said outright "close PR
+// #919 rather than merging it" — and had no mechanism to do so, so it sat open
+// until a human closed it by hand. (#947 tracks preventing the wasted run in
+// the first place; this only stops the debris needing a human.)
+//
+// Mootness is established ONLY by a deterministic fact about the repository,
+// never by the reviewer's prose. The verdict being `fail` is what makes the
+// question worth asking; it is not itself evidence of the answer. A model can
+// be wrong about whether something is superseded, and closing a pull request on
+// a wrong belief is not a failure mode worth accepting to save a click — so the
+// model's rationale gates nothing here, it is merely quoted in the comment.
+//
+// Fails closed in every ambiguous case: a provider error, an unresolvable
+// issue, or a pull request that references no issue at all all return false and
+// take the ordinary escalate-to-a-human path.
+func mootFailReason(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) (string, bool) {
+	// Condition 1: the pull request no longer changes anything. Whatever it
+	// proposed is already contained in its base, so there is nothing to merge
+	// and nothing to decide. This is the general "already fixed elsewhere"
+	// shape, independent of any issue bookkeeping.
+	files, err := provider.PullRequestFiles(ctx, repo, strconv.Itoa(pr.Number))
+	if err == nil && len(files) == 0 {
+		return "its diff against the base is now empty — whatever it proposed is already contained in the base branch", true
+	}
+
+	// Condition 2: every issue this pull request exists to resolve is itself
+	// already closed. One unresolvable or still-open issue is enough to make
+	// this NOT moot: the pull request may still be the thing that closes it.
+	issues := resolvedIssueNumbers(pr.Body)
+	if len(issues) == 0 {
+		return "", false
+	}
+	for _, id := range issues {
+		item, err := provider.GetWorkItem(ctx, repo, id)
+		if err != nil {
+			return "", false
+		}
+		if !strings.EqualFold(item.State, "closed") {
+			return "", false
+		}
+	}
+	return fmt.Sprintf("every issue it exists to close (%s) is already closed", strings.Join(prefixedIssueNumbers(issues), ", ")), true
+}
+
+// prefixedIssueNumbers renders issue IDs as #N for a human-facing comment.
+func prefixedIssueNumbers(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, "#"+id)
+	}
+	return out
+}
+
+// closeMootPullRequest closes a moot `fail`-verdicted pull request, stating
+// both the objective reason it is moot and the reviewer's own rationale.
+//
+// Both are included on purpose. The objective reason is what justifies closing
+// automatically and is the part a reader should be able to check; the rationale
+// is the reviewer's reasoning and is the part that explains it. Publishing only
+// the second would make an automated close look like it rests on a model's
+// opinion, which is precisely what it does not rest on.
+//
+// No native review is submitted first: a changes-requested review on a pull
+// request being closed in the same breath is noise, and #870 means it would
+// frequently be refused as a self-review anyway.
+func closeMootPullRequest(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, selectedNumber int, current *providers.PullRequestSummary, verdict apiv1.Verdict, reason, resultFile string, stdout, stderr io.Writer) int {
+	comment := fmt.Sprintf(
+		"Closing this pull request automatically: %s.\n\nThe merge reviewer returned a `fail` verdict, and this pull request is **moot** rather than wrong — the work it proposes is already obsolete, so there is no decision for a human to make. Reopen it if that reading is incorrect.\n\n> %s",
+		reason, strings.ReplaceAll(strings.TrimSpace(verdict.Rationale), "\n", "\n> "))
+	if _, err := provider.ClosePullRequest(ctx, providers.ClosePullRequestRequest{
+		Repository: repo,
+		PullID:     strconv.Itoa(selectedNumber),
+		Comment:    comment,
+	}); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("close moot pull request #%d", selectedNumber), err, resultFile)
+	}
+	pf(stdout, "closed moot PR #%d: %s\n", selectedNumber, reason)
+	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "closed-moot", stderr)
 }
 
 func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecision, error) {
