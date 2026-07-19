@@ -430,7 +430,7 @@ func TestRemediationCheckpointEscalationIncludesKnownSiblingOverlaps(t *testing.
 				comments: []string{renderVerdictComment(apiv1.Verdict{
 					Decision: apiv1.VerdictNeedsChanges,
 					Findings: []apiv1.Finding{{
-						Severity: apiv1.SeverityWarning, Class: apiv1.FindingSubstantive,
+						Severity: apiv1.SeverityWarning, Class: apiv1.FindingConflict,
 						Message: openFinding,
 					}},
 				})},

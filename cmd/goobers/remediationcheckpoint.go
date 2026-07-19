@@ -567,7 +567,7 @@ func siblingFindingReferencesPR(finding apiv1.Finding, selectedNumber int, refer
 		}
 		return false
 	}
-	if finding.Class != apiv1.FindingSubstantive {
+	if finding.Class != apiv1.FindingSubstantive && finding.Class != apiv1.FindingConflict {
 		return false
 	}
 	return referencePattern.MatchString(finding.Message) || referencePattern.MatchString(finding.Location)
