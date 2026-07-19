@@ -594,3 +594,149 @@ func TestPollTriggerResponseToleratesTornWrite(t *testing.T) {
 		t.Errorf("response file not consumed after a successful parse (stat err = %v)", err)
 	}
 }
+
+// blockingDelegateStarter holds its Start call until release is closed, so a
+// test can keep a workflow's max-parallel slot occupied for as long as it
+// needs to.
+type blockingDelegateStarter struct {
+	release chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+func newBlockingDelegateStarter() *blockingDelegateStarter {
+	return &blockingDelegateStarter{release: make(chan struct{}), entered: make(chan struct{}, 1)}
+}
+
+func (b *blockingDelegateStarter) Start(ctx context.Context, _ localscheduler.StartRequest) (localscheduler.StartResult, error) {
+	select {
+	case b.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	return localscheduler.StartResult{Phase: journal.PhaseCompleted}, nil
+}
+
+func (b *blockingDelegateStarter) releaseAll() { b.once.Do(func() { close(b.release) }) }
+
+// TestSweepRequeuesTriggerRefusedForCapacity is the #874 regression guard. A
+// max-parallel refusal is transient by construction: dispatch releases a
+// workflow's slot in a deferred call that runs *after* Starter.Start returns,
+// while `goobers run` decides the run is over by watching the run's own
+// journal — which the runner wrote from inside that call. So the slot is
+// still held for a moment after the command that owned it has exited, and a
+// second `goobers run` in that window used to come back as a hard error
+// ("run conditions rejected the trigger ... conditions: max-parallel").
+//
+// The sweep must instead put the request back and retry on a later pass. This
+// drives that directly: hold the slot, sweep, and require that the request
+// survives with no response written.
+func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
+	blocking := newBlockingDelegateStarter()
+	t.Cleanup(blocking.releaseAll)
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1, MaxRunsPerHour: 10},
+		Starter:   blocking,
+	}})
+
+	occupyID, err := writeTriggerRequest(schedulerDir, "implement")
+	if err != nil {
+		t.Fatalf("writeTriggerRequest: %v", err)
+	}
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("occupying sweepPendingTriggers: %v", err)
+	}
+	if _, err := pollTriggerResponse(context.Background(), schedulerDir, occupyID, 2*time.Second); err != nil {
+		t.Fatalf("occupying pollTriggerResponse: %v", err)
+	}
+	select {
+	case <-blocking.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("occupying run never entered Start; its slot is not held")
+	}
+
+	contendedID, err := writeTriggerRequest(schedulerDir, "implement")
+	if err != nil {
+		t.Fatalf("writeTriggerRequest: %v", err)
+	}
+	reqPath := filepath.Join(schedulerDir, pendingTriggersDir, contendedID+requestSuffix)
+	respPath := filepath.Join(schedulerDir, pendingTriggersDir, contendedID+responseSuffix)
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("contended sweepPendingTriggers: %v", err)
+	}
+	if _, err := os.Stat(respPath); !os.IsNotExist(err) {
+		data, _ := os.ReadFile(respPath)
+		t.Fatalf("capacity refusal answered the client instead of requeueing: response = %q (stat err = %v)", data, err)
+	}
+	if _, err := os.Stat(reqPath); err != nil {
+		t.Fatalf("contended request was consumed rather than requeued: %v", err)
+	}
+
+	// Freeing the slot lets an ordinary later sweep dispatch the very same
+	// request — no client-visible failure anywhere in the sequence.
+	blocking.releaseAll()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+			t.Fatalf("retry sweepPendingTriggers: %v", err)
+		}
+		if _, err := os.Stat(respPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("requeued request was never dispatched after the slot freed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	runID, err := pollTriggerResponse(context.Background(), schedulerDir, contendedID, 2*time.Second)
+	if err != nil {
+		t.Fatalf("requeued pollTriggerResponse: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("expected a non-empty run id for the requeued request")
+	}
+}
+
+// TestSweepFailsFastOnNonTransientRefusal is the other half of the contract:
+// only capacity refusals requeue. A spent budget cannot clear by waiting, so
+// requeueing one would trade a clear error for a silent 30s hang before the
+// staleness check finally answered.
+func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1, MaxRunsPerHour: 1},
+		Starter:   starter,
+	}})
+
+	// Spend the hourly budget.
+	firstID, err := writeTriggerRequest(schedulerDir, "implement")
+	if err != nil {
+		t.Fatalf("writeTriggerRequest: %v", err)
+	}
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("first sweepPendingTriggers: %v", err)
+	}
+	if _, err := pollTriggerResponse(context.Background(), schedulerDir, firstID, 2*time.Second); err != nil {
+		t.Fatalf("first pollTriggerResponse: %v", err)
+	}
+
+	secondID, err := writeTriggerRequest(schedulerDir, "implement")
+	if err != nil {
+		t.Fatalf("writeTriggerRequest: %v", err)
+	}
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("second sweepPendingTriggers: %v", err)
+	}
+	_, err = pollTriggerResponse(context.Background(), schedulerDir, secondID, time.Second)
+	if err == nil {
+		t.Fatal("expected the budget refusal to be reported, not requeued")
+	}
+	if !strings.Contains(err.Error(), "run conditions rejected the trigger") {
+		t.Fatalf("err = %v, want the run-conditions rejection", err)
+	}
+}

@@ -500,9 +500,40 @@ func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time)
 	}
 	runID, admitted, skipReason := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerManual)
 	if !admitted {
-		return "", fmt.Errorf("localscheduler: run conditions rejected the trigger for %q: %s", workflow, skipReason)
+		return "", &TriggerRejectedError{Workflow: workflow, Reason: skipReason}
 	}
 	return runID, nil
+}
+
+// TriggerRejectedError reports a trigger that run conditions refused. It
+// carries the stable Reason string so a caller can tell a refusal that a
+// later attempt could satisfy (a capacity condition — some other run holds
+// the slot right now) from one that a retry can never satisfy (a budget is
+// spent, the open-PR cap is reached). The message is unchanged from the
+// plain fmt.Errorf this replaced.
+type TriggerRejectedError struct {
+	Workflow string
+	Reason   string
+}
+
+func (e *TriggerRejectedError) Error() string {
+	return fmt.Sprintf("localscheduler: run conditions rejected the trigger for %q: %s", e.Workflow, e.Reason)
+}
+
+// Transient reports whether waiting could plausibly clear the refusal.
+//
+// Only the max-parallel conditions qualify: they are held by runs that are
+// already in flight and release as those runs finish. This matters because a
+// slot is released strictly *after* the run it belongs to is observable as
+// terminal — dispatch's `defer ReleaseWorkflow` runs once Starter.Start
+// returns, while a client watching the run's own journal (waitForRunTerminal,
+// what `goobers run` does) sees the terminal event the runner wrote inside
+// that call. So back-to-back `goobers run X` invocations can race the release
+// of the slot the first one just finished with, and the second is refused for
+// capacity that is about to exist. Budget/quota/open-PR-cap refusals are not
+// transient in this sense and must still fail fast.
+func (e *TriggerRejectedError) Transient() bool {
+	return e.Reason == ReasonMaxParallel || e.Reason == ReasonInstanceMaxParallel
 }
 
 // RecordTriggerRefusal journals a trigger rejected by an admission layer
