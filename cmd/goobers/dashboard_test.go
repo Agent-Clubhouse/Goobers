@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -176,6 +177,56 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("standalone health status = %d, body = %q", response.Code, response.Body.String())
 	}
+}
+
+func TestStandaloneDashboardAPILeavesInstanceUnchanged(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotDashboardInstance(t, root)
+
+	api, err := standaloneDashboardAPI(layout, config, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := api.close(); err != nil {
+		t.Fatal(err)
+	}
+
+	after := snapshotDashboardInstance(t, root)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("standalone dashboard changed instance files\nbefore: %#v\nafter:  %#v", before, after)
+	}
+}
+
+func snapshotDashboardInstance(t *testing.T, root string) map[string]string {
+	t.Helper()
+	files := make(map[string]string)
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		files[relative] = string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
 }
 
 func TestDashboardAssetFSRequiresIndex(t *testing.T) {

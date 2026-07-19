@@ -10,30 +10,46 @@ import { routeHash } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
 
-export function WorkflowsPage({ client }: { client: DaemonClient }) {
+export function WorkflowsPage({
+  client,
+  standalone,
+}: {
+  client: DaemonClient;
+  standalone: boolean;
+}) {
   const query = useOperationalSnapshot(client);
 
   if (query.state.status === "loading") {
-    return <DaemonLoadingState />;
+    return <DaemonLoadingState standalone={standalone} />;
   }
   if (query.state.status === "error") {
-    return <DaemonErrorState error={query.state.error} retry={query.retry} />;
+    return <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />;
   }
   if (query.state.status !== "ready") {
     return null;
   }
 
-  return <WorkflowInventory snapshot={query.state.data} />;
+  return <WorkflowInventory snapshot={query.state.data} standalone={standalone} />;
 }
 
-function WorkflowInventory({ snapshot }: { snapshot: OperationalSnapshot }) {
+function WorkflowInventory({
+  snapshot,
+  standalone,
+}: {
+  snapshot: OperationalSnapshot;
+  standalone: boolean;
+}) {
   return (
     <>
       <header className="page-heading page-heading-row">
         <div>
           <p className="page-kicker">Definitions</p>
           <h1>Workflows</h1>
-          <p>Versioned processes and their provisioned workforce, read from the daemon.</p>
+          <p>
+            {standalone
+              ? "Versioned processes and their provisioned workforce, read from this instance."
+              : "Versioned processes and their provisioned workforce, read from the daemon."}
+          </p>
         </div>
         <div className="scope-chip">
           <span className="scope-mark">G</span>
@@ -49,8 +65,12 @@ function WorkflowInventory({ snapshot }: { snapshot: OperationalSnapshot }) {
             <h2>No gaggles configured</h2>
             <p>
               {snapshot.health.ready
-                ? "The daemon is ready. Provision a gaggle to make its workflows and goobers visible here."
-                : "The daemon has not reported ready yet, and no gaggle definitions are loaded."}
+                ? standalone
+                  ? "The instance is ready. Provision a gaggle to make its workflows and goobers visible here."
+                  : "The daemon is ready. Provision a gaggle to make its workflows and goobers visible here."
+                : standalone
+                  ? "The local read service has not reported ready yet, and no gaggle definitions are loaded."
+                  : "The daemon has not reported ready yet, and no gaggle definitions are loaded."}
             </p>
           </div>
         </section>

@@ -27,6 +27,10 @@ export function App({
   client = daemonClient,
   warningClient = client,
 }: { client?: DaemonClient; warningClient?: ConfigurationWarningClient } = {}) {
+  const standalone =
+    document
+      .querySelector('meta[name="goobers-dashboard-mode"]')
+      ?.getAttribute("content") === "standalone";
   const [route, setRoute] = useState<Route>(() => parseRoute());
   const initialRoute = useRef(true);
 
@@ -79,11 +83,15 @@ export function App({
   );
 
   return (
-    <PortalShell activeArea={activeArea(route)} navigate={navigate}>
+    <PortalShell activeArea={activeArea(route)} navigate={navigate} standalone={standalone}>
       {route.page === "overview" && (
-        <OverviewPage client={client} configurationWarnings={configurationWarnings} />
+        <OverviewPage
+          client={client}
+          configurationWarnings={configurationWarnings}
+          standalone={standalone}
+        />
       )}
-      {route.page === "workflows" && <WorkflowsPage client={client} />}
+      {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
       {route.page === "runs" && <RunsPage navigate={navigate} />}
       {route.page === "workflow" && workflow && (
         <WorkflowPage

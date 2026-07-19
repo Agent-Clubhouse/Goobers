@@ -29,7 +29,6 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/signals"
-	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 const (
@@ -315,28 +314,13 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	if err != nil {
 		return dashboardAPI{}, err
 	}
-	var telemetry *rollup.DB
-	if config.TelemetryEnabled() {
-		telemetry, err = rollup.Open(layout.TelemetryDB())
-		if err != nil {
-			return dashboardAPI{}, err
-		}
-	}
-	closeTelemetry := func() error {
-		if telemetry == nil {
-			return nil
-		}
-		return telemetry.Close()
-	}
 	reads, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      layout,
 		Config:      config,
 		Definitions: definitions,
 		Validation:  report,
-		Telemetry:   telemetry,
 	}, func() bool { return true })
 	if err != nil {
-		_ = closeTelemetry()
 		return dashboardAPI{}, err
 	}
 	manifestInstance := definitions.Manifest.Spec.Instance
@@ -350,13 +334,11 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	}
 	events, err := httpapi.NewEventStream(layout, errorLog)
 	if err != nil {
-		_ = closeTelemetry()
 		return dashboardAPI{}, err
 	}
 	handler, err := httpapi.NewHandler(reader, httpapi.AllowAll, errorLog, httpapi.WithEventStream(events))
 	if err != nil {
 		events.Close()
-		_ = closeTelemetry()
 		return dashboardAPI{}, err
 	}
 	return dashboardAPI{
@@ -366,7 +348,7 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 			events.Close()
 			waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			return errors.Join(events.Wait(waitCtx), closeTelemetry())
+			return events.Wait(waitCtx)
 		},
 	}, nil
 }

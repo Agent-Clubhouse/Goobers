@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { App } from "./App";
 import { FixtureDaemonClient } from "./api/fixtureClient";
-import { populatedDaemonFixtures } from "./test/daemonFixtures";
+import { emptyDaemonFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
 
 const storedValues = new Map<string, string>();
 
@@ -47,10 +47,23 @@ describe("portal foundation", () => {
     mode.content = "standalone";
     document.head.append(mode);
 
-    renderLiveApp();
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
     expect(await screen.findByText("Standalone read-only")).toBeInTheDocument();
     expect(screen.getByText("Daemon not running; reading this instance locally")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Instance is ready." })).toBeInTheDocument();
+    expect(screen.getByText("Local instance loaded")).toBeInTheDocument();
+    expect(screen.queryByText("Daemon connected")).not.toBeInTheDocument();
+    expect(screen.queryByText(/The daemon is ready/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Workflows" }));
+    expect(
+      await screen.findByText(
+        "The instance is ready. Provision a gaggle to make its workflows and goobers visible here.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/The daemon is ready/)).not.toBeInTheDocument();
   });
 
   it("opens a run from daemon data without later-slice controls", async () => {

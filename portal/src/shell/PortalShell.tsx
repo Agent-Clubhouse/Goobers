@@ -7,15 +7,12 @@ interface PortalShellProps {
   activeArea: PrimaryArea;
   children: React.ReactNode;
   navigate: Navigate;
+  standalone: boolean;
 }
 
-export function PortalShell({ activeArea, children, navigate }: PortalShellProps) {
+export function PortalShell({ activeArea, children, navigate, standalone }: PortalShellProps) {
   const { theme, toggleTheme } = useTheme();
   const mainContent = useRef<HTMLElement>(null);
-  const standalone =
-    document
-      .querySelector('meta[name="goobers-dashboard-mode"]')
-      ?.getAttribute("content") === "standalone";
 
   const skipToMainContent = (event: React.MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();

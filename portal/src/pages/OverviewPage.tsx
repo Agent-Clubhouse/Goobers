@@ -15,31 +15,41 @@ import { StatusBadge } from "../ui/StatusBadge";
 export function OverviewPage({
   client,
   configurationWarnings,
+  standalone,
 }: {
   client: DaemonClient;
   configurationWarnings: Omit<ConfigurationWarningsProps, "context">;
+  standalone: boolean;
 }) {
   const query = useOperationalSnapshot(client);
 
   if (query.state.status === "loading") {
-    return <DaemonLoadingState />;
+    return <DaemonLoadingState standalone={standalone} />;
   }
   if (query.state.status === "error") {
-    return <DaemonErrorState error={query.state.error} retry={query.retry} />;
+    return <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />;
   }
   if (query.state.status !== "ready") {
     return null;
   }
 
-  return <Overview configurationWarnings={configurationWarnings} snapshot={query.state.data} />;
+  return (
+    <Overview
+      configurationWarnings={configurationWarnings}
+      snapshot={query.state.data}
+      standalone={standalone}
+    />
+  );
 }
 
 function Overview({
   configurationWarnings,
   snapshot,
+  standalone,
 }: {
   configurationWarnings: Omit<ConfigurationWarningsProps, "context">;
   snapshot: OperationalSnapshot;
+  standalone: boolean;
 }) {
   const groups = groupOperationalRuns(snapshot.runs);
   const emptyInstance = snapshot.inventories.length === 0;
@@ -50,15 +60,21 @@ function Overview({
         <p className="page-kicker">{snapshot.instance.name}</p>
         <h1>
           {emptyInstance
-            ? snapshot.health.ready
-              ? "Daemon is ready."
-              : "Daemon is starting."
+            ? standalone
+              ? snapshot.health.ready
+                ? "Instance is ready."
+                : "Instance data is loading."
+              : snapshot.health.ready
+                ? "Daemon is ready."
+                : "Daemon is starting."
             : attentionHeading(groups.attention.length)}
         </h1>
         <p>
           {emptyInstance
             ? "No gaggles are configured. Add gaggle definitions to begin observing workflows and runs."
-            : "Live operational state from the daemon, ordered by what needs attention now."}
+            : standalone
+              ? "Operational state read directly from this instance, ordered by what needs attention now."
+              : "Live operational state from the daemon, ordered by what needs attention now."}
         </p>
       </header>
 
@@ -105,7 +121,7 @@ function Overview({
         </section>
       )}
 
-      <InstanceStrip snapshot={snapshot} />
+      <InstanceStrip snapshot={snapshot} standalone={standalone} />
 
       {emptyInstance ? (
         <section className="empty-state">
@@ -114,8 +130,12 @@ function Overview({
             <h2>No gaggles configured</h2>
             <p>
               {snapshot.health.ready
-                ? "The daemon is ready and waiting for provisioned gaggle, goober, and workflow definitions."
-                : "The daemon has not reported ready yet, and no gaggle definitions are loaded."}
+                ? standalone
+                  ? "The instance is ready for provisioned gaggle, goober, and workflow definitions."
+                  : "The daemon is ready and waiting for provisioned gaggle, goober, and workflow definitions."
+                : standalone
+                  ? "The local read service has not reported ready yet, and no gaggle definitions are loaded."
+                  : "The daemon has not reported ready yet, and no gaggle definitions are loaded."}
             </p>
           </div>
         </section>
@@ -143,12 +163,29 @@ function Overview({
   );
 }
 
-function InstanceStrip({ snapshot }: { snapshot: OperationalSnapshot }) {
+function InstanceStrip({
+  snapshot,
+  standalone,
+}: {
+  snapshot: OperationalSnapshot;
+  standalone: boolean;
+}) {
   return (
-    <section aria-label="Daemon connection and instance counts" className="instance-strip">
+    <section
+      aria-label={standalone ? "Local instance status and counts" : "Daemon connection and instance counts"}
+      className="instance-strip"
+    >
       <div>
         <span aria-hidden="true" className={snapshot.health.ready ? "live-mark" : "live-mark pending"} />
-        <strong>{snapshot.health.ready ? "Daemon connected" : "Daemon not ready"}</strong>
+        <strong>
+          {standalone
+            ? snapshot.health.ready
+              ? "Local instance loaded"
+              : "Local instance not ready"
+            : snapshot.health.ready
+              ? "Daemon connected"
+              : "Daemon not ready"}
+        </strong>
         <span>
           observed{" "}
           <time dateTime={snapshot.health.freshness.observedAt}>
