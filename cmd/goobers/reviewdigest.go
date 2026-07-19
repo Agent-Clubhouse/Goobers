@@ -156,15 +156,12 @@ type authenticatedBacklogProvider interface {
 	AuthenticatedLogin(context.Context) (string, error)
 }
 
-// findCachedVerdict looks up the most recently posted trusted verdict comment on
-// selectedNumber (the same verdictJSONComment payload apply-verdict already
-// posts, parsed by parseVerdictComment — gather-pr-context's exact
-// mechanism for reading a merge-review verdict back from a DIFFERENT run's
-// comments, reused here rather than duplicated) and returns it only when
-// its recorded Digest matches wantDigest. A prior verdict with no Digest
-// (posted before #523, or by a schema version this instance no longer
-// trusts) or a non-matching Digest is not a cache hit — the caller falls
-// through to a real review, exactly as if no comment existed at all.
+// findCachedVerdict reads the canonical trusted merge-review status comment on
+// selectedNumber and returns it only when its recorded Digest matches
+// wantDigest. A prior verdict with no Digest (posted before #523, or by a schema
+// version this instance no longer trusts) or a non-matching Digest is not a
+// cache hit — the caller falls through to a real review, exactly as if no
+// comment existed at all.
 func findCachedVerdict(ctx context.Context, provider authenticatedBacklogProvider, repo providers.RepositoryRef, selectedNumber int, wantDigest string) (*apiv1.Verdict, error) {
 	author, err := provider.AuthenticatedLogin(ctx)
 	if err != nil {
@@ -174,17 +171,17 @@ func findCachedVerdict(ctx context.Context, provider authenticatedBacklogProvide
 	if err != nil {
 		return nil, fmt.Errorf("list comments on PR #%d: %w", selectedNumber, err)
 	}
-	for i := len(comments) - 1; i >= 0; i-- {
-		v, ok := parseTrustedVerdictComment(comments[i].Author, comments[i].Body, author)
-		if !ok {
+	for _, comment := range comments {
+		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, author) {
 			continue
+		}
+		v, ok := parseVerdictComment(comment.Body)
+		if !ok {
+			return nil, nil
 		}
 		if v.Digest != "" && v.Digest == wantDigest {
 			return &v, nil
 		}
-		// The latest verdict comment is the only one that could possibly
-		// still be valid (an older one is superseded regardless of its own
-		// digest) — stop at the first one found, matching or not.
 		return nil, nil
 	}
 	return nil, nil

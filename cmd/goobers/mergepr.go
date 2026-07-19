@@ -298,22 +298,23 @@ func structuredMergeCommitMessage(poll providers.PullRequestPollResult, verdictA
 	}
 
 	var verdict *apiv1.Verdict
-	for i := len(poll.CommentsSince) - 1; i >= 0; i-- {
-		candidate, ok := parseTrustedVerdictComment(poll.CommentsSince[i].Author, poll.CommentsSince[i].Body, verdictAuthor)
-		if !ok || candidate.Decision != apiv1.VerdictPass {
+	for _, comment := range poll.CommentsSince {
+		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, verdictAuthor) {
 			continue
 		}
-		if candidate.HeadSHA != "" && candidate.HeadSHA != poll.HeadSHA {
-			continue
+		candidate, ok := parseVerdictComment(comment.Body)
+		if !ok {
+			break
 		}
-		if candidate.BaseSHA != "" && candidate.BaseSHA != poll.BaseSHA {
-			continue
+		if candidate.Decision == apiv1.VerdictPass &&
+			candidate.HeadSHA != "" && candidate.HeadSHA == poll.HeadSHA &&
+			candidate.BaseSHA != "" && candidate.BaseSHA == poll.BaseSHA {
+			verdict = &candidate
 		}
-		verdict = &candidate
 		break
 	}
 	if verdict == nil {
-		return "", "", fmt.Errorf("no current pass verdict with a summary or rationale found in pull request comments")
+		return "", "", fmt.Errorf("canonical merge-review status is not a pass verdict pinned to the current head and base")
 	}
 
 	summary := strings.TrimSpace(verdict.Summary)

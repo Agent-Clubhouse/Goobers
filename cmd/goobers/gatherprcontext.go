@@ -209,15 +209,17 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, "pr-context.json")
 	}
-	// Latest trusted comment carrying an embedded payload wins (a PR can
-	// accumulate several merge-review cycles; only the most recent verdict
-	// from the authenticated provider identity is actionable).
+	// Reconciliation retains the oldest trusted marked comment as the
+	// canonical status and updates it in place.
 	var verdict *apiv1.Verdict
-	for i := len(rawComments) - 1; i >= 0; i-- {
-		if v, ok := parseTrustedVerdictComment(rawComments[i].Author, rawComments[i].Body, verdictAuthor); ok {
-			verdict = &v
-			break
+	for _, comment := range rawComments {
+		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, verdictAuthor) {
+			continue
 		}
+		if v, ok := parseVerdictComment(comment.Body); ok {
+			verdict = &v
+		}
+		break
 	}
 
 	// Digest short-circuit (#716 design item 2): escalationStillBlocks above

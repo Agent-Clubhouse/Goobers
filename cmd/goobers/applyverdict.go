@@ -775,9 +775,6 @@ func parseVerdictComment(body string) (v apiv1.Verdict, ok bool) {
 	return v, true
 }
 
-func parseTrustedVerdictComment(commentAuthor, body, authenticatedAuthor string) (apiv1.Verdict, bool) {
-	if !isTrustedMergeReviewAuthor(commentAuthor, authenticatedAuthor) {
-		return apiv1.Verdict{}, false
-	}
-	return parseVerdictComment(body)
+func isTrustedMergeReviewStatusComment(commentAuthor, body, authenticatedAuthor string) bool {
+	return isTrustedMergeReviewAuthor(commentAuthor, authenticatedAuthor) && isMergeReviewStatusComment(body)
 }

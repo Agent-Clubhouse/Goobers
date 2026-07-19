@@ -447,6 +447,69 @@ func TestMergePRUsesPostingIdentityWhenMergeCredentialDiffers(t *testing.T) {
 	}
 }
 
+func TestStructuredMergeCommitMessageRejectsHistoricalPassAfterCanonicalNonPass(t *testing.T) {
+	historicalPass, err := verdictJSONComment(apiv1.Verdict{
+		Decision: apiv1.VerdictPass,
+		Summary:  "Historical pass.",
+		HeadSHA:  "head123",
+		BaseSHA:  "base456",
+	})
+	if err != nil {
+		t.Fatalf("render historical verdict: %v", err)
+	}
+	current := renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges,
+		Summary:  "Current review requires changes.",
+		HeadSHA:  "head123",
+		BaseSHA:  "base456",
+	})
+	poll := providers.PullRequestPollResult{
+		Title:   "Do not merge",
+		HeadSHA: "head123",
+		BaseSHA: "base456",
+		CommentsSince: []providers.PullRequestComment{
+			{Author: "goobers", Body: historicalPass},
+			{Author: "goobers", Body: current},
+		},
+	}
+
+	if _, _, err := structuredMergeCommitMessage(poll, "goobers"); err == nil {
+		t.Fatal("structuredMergeCommitMessage accepted a historical pass after the canonical status changed")
+	}
+}
+
+func TestStructuredMergeCommitMessageRequiresCompleteSHAPins(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		headSHA string
+		baseSHA string
+	}{
+		{name: "missing head", baseSHA: "base456"},
+		{name: "missing base", headSHA: "head123"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			poll := providers.PullRequestPollResult{
+				Title:   "Do not merge",
+				HeadSHA: "head123",
+				BaseSHA: "base456",
+				CommentsSince: []providers.PullRequestComment{{
+					Author: "goobers",
+					Body: renderVerdictComment(apiv1.Verdict{
+						Decision: apiv1.VerdictPass,
+						Summary:  "Legacy pass.",
+						HeadSHA:  tc.headSHA,
+						BaseSHA:  tc.baseSHA,
+					}),
+				}},
+			}
+
+			if _, _, err := structuredMergeCommitMessage(poll, "goobers"); err == nil {
+				t.Fatal("structuredMergeCommitMessage accepted an incompletely pinned pass")
+			}
+		})
+	}
+}
+
 // TestMergePRMergeQueuePolicyEnqueuesInsteadOfMerging is issue #758's
 // headline acceptance: a repo whose branch rules require a merge queue gets
 // its ready pull request enqueued via internal/mergepolicy's Land, not
