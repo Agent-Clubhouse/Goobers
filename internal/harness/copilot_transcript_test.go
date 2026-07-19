@@ -3,6 +3,8 @@ package harness
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,11 +47,37 @@ func TestConvertCopilotSessionEventsSalvagesPartialTrailingRecord(t *testing.T) 
 
 func TestCopilotAdapterPrefersNativeSessionTranscript(t *testing.T) {
 	workspace := t.TempDir()
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	copilotHome := filepath.Join(userHome, ".copilot")
+	if err := os.MkdirAll(copilotHome, 0o700); err != nil {
+		t.Fatalf("prepare Copilot home: %v", err)
+	}
+	const config = `{"model":"configured-model"}`
+	if err := os.WriteFile(filepath.Join(copilotHome, "config.json"), []byte(config), 0o600); err != nil {
+		t.Fatalf("write Copilot config: %v", err)
+	}
 	native := readTestData(t, "copilot-session-events.jsonl")
 	want := readTestData(t, "copilot-transcript.jsonl")
 	runner := &fakeProcessRunner{
 		result: ProcessResult{Transcript: []byte("stdout compatibility floor"), ExitCode: 0},
 		act: func(req ProcessRequest) error {
+			for _, entry := range req.Env {
+				if strings.HasPrefix(entry, "COPILOT_HOME=") {
+					return errors.New("COPILOT_HOME unexpectedly replaced active Copilot configuration")
+				}
+			}
+			gotHome, ok := copilotConfigHome(req.Env)
+			if !ok || gotHome != copilotHome {
+				return fmt.Errorf("Copilot home = %q, %v; want %q", gotHome, ok, copilotHome)
+			}
+			gotConfig, err := os.ReadFile(filepath.Join(gotHome, "config.json"))
+			if err != nil {
+				return fmt.Errorf("read active Copilot config: %w", err)
+			}
+			if string(gotConfig) != config {
+				return fmt.Errorf("active Copilot config = %q, want %q", gotConfig, config)
+			}
 			if err := WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}); err != nil {
 				return err
 			}
@@ -70,16 +98,12 @@ func TestCopilotAdapterPrefersNativeSessionTranscript(t *testing.T) {
 	if !bytes.Equal(out.Transcript, want) {
 		t.Fatalf("Transcript:\n%s\nwant native conversion:\n%s", out.Transcript, want)
 	}
-	home, ok := nativeSessionHome(runner.lastReq)
+	path, ok := nativeSessionLogPath(runner.lastReq)
 	if !ok {
 		t.Fatalf("Copilot command/env missing native session location: %+v", runner.lastReq)
 	}
-	if filepath.Dir(filepath.Dir(filepath.Dir(copilotSessionLogPath(home, "test-session")))) != home {
-		t.Fatalf("session log path is not rooted under COPILOT_HOME %q", home)
-	}
-	rel, err := filepath.Rel(workspace, home)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		t.Fatalf("COPILOT_HOME %q is outside workspace %q", home, workspace)
+	if filepath.Dir(filepath.Dir(filepath.Dir(path))) != copilotHome {
+		t.Fatalf("session log path %q is not rooted under active Copilot home %q", path, copilotHome)
 	}
 }
 
@@ -87,6 +111,11 @@ func TestCopilotAdapterFallsBackWhenNativeSessionLogUnavailable(t *testing.T) {
 	oversized := []byte(`{"type":"user.message","data":{"content":"native prefix"}}` + "\n")
 	oversized = append(oversized, bytes.Repeat([]byte("x"), int(maxCopilotSessionEventBytes)+1)...)
 	oversized = append(oversized, '\n')
+	malformedBetweenValid := []byte(
+		`{"type":"user.message","data":{"content":"native prefix"}}` + "\n" +
+			"{not json}\n" +
+			`{"type":"assistant.message","data":{"messageId":"message-1","content":"native suffix"}}`,
+	)
 
 	for _, tc := range []struct {
 		name string
@@ -95,10 +124,12 @@ func TestCopilotAdapterFallsBackWhenNativeSessionLogUnavailable(t *testing.T) {
 		{name: "missing"},
 		{name: "unsupported", log: []byte(`{"type":"session.start","data":{}}` + "\n")},
 		{name: "malformed", log: []byte("{not json\n")},
+		{name: "malformed between supported", log: malformedBetweenValid},
 		{name: "oversized after supported", log: oversized},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			workspace := t.TempDir()
+			t.Setenv("HOME", t.TempDir())
 			floor := []byte("stdout compatibility floor")
 			runner := &fakeProcessRunner{
 				result: ProcessResult{Transcript: floor, ExitCode: 0},
@@ -132,22 +163,16 @@ func TestCopilotAdapterFallsBackWhenNativeSessionLogUnavailable(t *testing.T) {
 
 func TestCopilotAdapterSkipsNativeTranscriptForSelectedSession(t *testing.T) {
 	native := readTestData(t, "copilot-session-events.jsonl")
-	daemonDir := t.TempDir()
-	t.Chdir(daemonDir)
-	path := copilotSessionLogPath("", "unrelated-session")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("prepare unrelated session log: %v", err)
-	}
-	if err := os.WriteFile(path, native, 0o600); err != nil {
-		t.Fatalf("write unrelated session log: %v", err)
-	}
-
 	workspace := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
 	floor := []byte("stdout compatibility floor")
 	runner := &fakeProcessRunner{
 		result: ProcessResult{Transcript: floor, ExitCode: 0},
 		act: func(req ProcessRequest) error {
-			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+			if err := WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}); err != nil {
+				return err
+			}
+			return writeNativeSessionLog(req, native)
 		},
 	}
 	adapter := &CopilotAdapter{
@@ -165,8 +190,8 @@ func TestCopilotAdapterSkipsNativeTranscriptForSelectedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if _, ok := nativeSessionHome(runner.lastReq); ok {
-		t.Fatalf("selected-session command unexpectedly received COPILOT_HOME: %+v", runner.lastReq.Env)
+	if sessionID, ok := nativeSessionID(runner.lastReq); !ok || sessionID != "existing-session" {
+		t.Fatalf("selected-session command changed session ID: %+v", runner.lastReq.Command)
 	}
 	if !bytes.Equal(out.Transcript, floor) {
 		t.Fatalf("Transcript = %q, want floor %q", out.Transcript, floor)
@@ -176,6 +201,7 @@ func TestCopilotAdapterSkipsNativeTranscriptForSelectedSession(t *testing.T) {
 func TestCopilotAdapterBoundsNativeSessionTranscript(t *testing.T) {
 	const limit = int64(80)
 	workspace := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
 	native := readTestData(t, "copilot-session-events.jsonl")
 	runner := &fakeProcessRunner{
 		result: ProcessResult{Transcript: []byte("floor"), ExitCode: 0},
@@ -215,6 +241,7 @@ func TestCopilotNativeTranscriptUsesExecutorRedaction(t *testing.T) {
 	}
 
 	workspace := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
 	runner := &fakeProcessRunner{
 		result: ProcessResult{Transcript: []byte("floor"), ExitCode: 0},
 		act: func(req ProcessRequest) error {
@@ -261,23 +288,36 @@ func readTestData(t *testing.T, name string) []byte {
 }
 
 func writeNativeSessionLog(req ProcessRequest, data []byte) error {
-	home, ok := nativeSessionHome(req)
+	path, ok := nativeSessionLogPath(req)
 	if !ok {
 		return os.ErrInvalid
 	}
-	path := copilotSessionLogPath(home, "test-session")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0o600)
 }
 
-func nativeSessionHome(req ProcessRequest) (home string, ok bool) {
-	for _, entry := range req.Env {
-		if strings.HasPrefix(entry, "COPILOT_HOME=") {
-			home = strings.TrimPrefix(entry, "COPILOT_HOME=")
-			break
+func nativeSessionLogPath(req ProcessRequest) (string, bool) {
+	home, ok := copilotConfigHome(req.Env)
+	if !ok {
+		return "", false
+	}
+	sessionID, ok := nativeSessionID(req)
+	if !ok {
+		return "", false
+	}
+	return copilotSessionLogPath(home, sessionID), true
+}
+
+func nativeSessionID(req ProcessRequest) (string, bool) {
+	for i, arg := range req.Command {
+		switch {
+		case arg == "--session-id" && i+1 < len(req.Command):
+			return req.Command[i+1], true
+		case strings.HasPrefix(arg, "--session-id="):
+			return strings.TrimPrefix(arg, "--session-id="), true
 		}
 	}
-	return home, home != ""
+	return "", false
 }
