@@ -187,6 +187,24 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 	return comments, nil
 }
 
+// AuthenticatedLogin returns the GitHub login represented by the provider's
+// credential.
+func (p *GitHubProvider) AuthenticatedLogin(ctx context.Context) (string, error) {
+	endpoint, err := joinURL(p.BaseURL, "user")
+	if err != nil {
+		return "", err
+	}
+	var user githubUser
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &user); err != nil {
+		return "", err
+	}
+	login := strings.TrimSpace(user.Login)
+	if login == "" {
+		return "", fmt.Errorf("authenticated GitHub user has no login")
+	}
+	return login, nil
+}
+
 // UpdateComment edits an existing issue/PR comment's body in place — the
 // sticky-comment pattern (#716) a caller uses so a repeated event (e.g.
 // pr-remediation's per-cycle checkpoint/escalation state) updates the SAME

@@ -126,6 +126,40 @@ func TestRetriedMergeReviewStatusCommentsConverge(t *testing.T) {
 	assertCanonicalMergeReviewStatus(t, comments, current, humanComment)
 }
 
+func TestMergeReviewStatusCommentIgnoresSpoofedMarker(t *testing.T) {
+	const prNumber = 790
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(prNumber, "spoofed sticky status")
+	spoofed := mergeReviewStatusMarker + "\nThis comment belongs to an unrelated contributor."
+	server.addCommentAs(prNumber, "mallory", spoofed)
+	provider := server.newGitHubProvider("token")
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	first := renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges,
+		Summary:  "trusted status",
+	})
+
+	if err := reconcileMergeReviewStatusComment(context.Background(), provider, repo, prNumber, first); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	comments, ids := fakeIssueComments(t, server, prNumber)
+	assertCanonicalMergeReviewStatus(t, comments, first, spoofed)
+	trustedID := markedCommentIDAfter(t, comments, ids, 1)
+
+	second := renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictPass,
+		Summary:  "updated trusted status",
+	})
+	if err := reconcileMergeReviewStatusComment(context.Background(), provider, repo, prNumber, second); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	comments, ids = fakeIssueComments(t, server, prNumber)
+	assertCanonicalMergeReviewStatus(t, comments, second, spoofed)
+	if got := markedCommentIDAfter(t, comments, ids, 1); got != trustedID {
+		t.Fatalf("trusted status comment id = %d, want original id %d", got, trustedID)
+	}
+}
+
 func fakeIssueComments(t *testing.T, server *fakeGitHubServer, prNumber int) ([]string, []int64) {
 	t.Helper()
 	server.mu.Lock()
@@ -155,9 +189,14 @@ func assertCanonicalMergeReviewStatus(t *testing.T, comments []string, wantStatu
 
 func markedCommentID(t *testing.T, comments []string, ids []int64) int64 {
 	t.Helper()
-	for i, comment := range comments {
+	return markedCommentIDAfter(t, comments, ids, 0)
+}
+
+func markedCommentIDAfter(t *testing.T, comments []string, ids []int64, start int) int64 {
+	t.Helper()
+	for i, comment := range comments[start:] {
 		if isMergeReviewStatusComment(comment) {
-			return ids[i]
+			return ids[start+i]
 		}
 	}
 	t.Fatal("marked merge-review status comment not found")

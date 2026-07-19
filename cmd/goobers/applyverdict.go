@@ -373,17 +373,22 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), stderr)
 }
 
-// reconcileMergeReviewStatusComment keeps the oldest marked comment as the
-// canonical status, then removes marked duplicates. Relisting after every
-// create/update makes concurrent creators observe and collapse each other's
-// comments; duplicate deletion tolerates another reconciler winning the race.
+// reconcileMergeReviewStatusComment keeps the oldest marked comment authored
+// by the provider's authenticated identity as the canonical status, then
+// removes its marked duplicates. Relisting after every create/update makes
+// concurrent creators observe and collapse each other's comments; duplicate
+// deletion tolerates another reconciler winning the race.
 func reconcileMergeReviewStatusComment(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, body string) error {
 	id := strconv.Itoa(prNumber)
+	author, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve merge-review status author: %w", err)
+	}
 	comments, err := provider.ListComments(ctx, repo, id)
 	if err != nil {
 		return fmt.Errorf("list merge-review status comments: %w", err)
 	}
-	marked := mergeReviewStatusComments(comments)
+	marked := mergeReviewStatusComments(comments, author)
 	if len(marked) == 0 {
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo,
@@ -400,7 +405,7 @@ func reconcileMergeReviewStatusComment(ctx context.Context, provider *providers.
 	if err != nil {
 		return fmt.Errorf("relist merge-review status comments: %w", err)
 	}
-	marked = mergeReviewStatusComments(comments)
+	marked = mergeReviewStatusComments(comments, author)
 	if len(marked) == 0 {
 		return fmt.Errorf("merge-review status comment disappeared during reconciliation")
 	}
@@ -417,10 +422,10 @@ func reconcileMergeReviewStatusComment(ctx context.Context, provider *providers.
 	return nil
 }
 
-func mergeReviewStatusComments(comments []providers.Comment) []providers.Comment {
+func mergeReviewStatusComments(comments []providers.Comment, author string) []providers.Comment {
 	marked := make([]providers.Comment, 0, len(comments))
 	for _, comment := range comments {
-		if isMergeReviewStatusComment(comment.Body) {
+		if strings.EqualFold(comment.Author, author) && isMergeReviewStatusComment(comment.Body) {
 			marked = append(marked, comment)
 		}
 	}

@@ -72,16 +72,23 @@ type issueMock struct {
 	comments  []map[string]interface{}
 	nextID    int64
 	authSeen  string
+	userLogin string
 	patchBody map[string]interface{}
 }
 
 func newIssueMock() *issueMock {
-	return &issueMock{title: "Fix API", body: "do it", state: "open", labels: []string{"route/backend"}}
+	return &issueMock{title: "Fix API", body: "do it", state: "open", labels: []string{"route/backend"}, userLogin: "goobers"}
 }
 
 func (m *issueMock) handler(t *testing.T) http.Handler {
 	t.Helper()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected user method %s", r.Method)
+		}
+		writeJSON(t, w, map[string]string{"login": m.userLogin})
+	})
 	mux.HandleFunc("/repos/acme/app/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -226,6 +233,29 @@ func TestGitHubListComments(t *testing.T) {
 	}
 	if comments[0].CreatedAt == nil || !comments[0].CreatedAt.Equal(created) {
 		t.Fatalf("expected created_at preserved, got %#v", comments[0].CreatedAt)
+	}
+}
+
+func TestGitHubAuthenticatedLogin(t *testing.T) {
+	m := newIssueMock()
+	p, _ := newIssueProvider(t, m)
+
+	login, err := p.AuthenticatedLogin(context.Background())
+	if err != nil {
+		t.Fatalf("AuthenticatedLogin: %v", err)
+	}
+	if login != "goobers" {
+		t.Fatalf("login = %q, want %q", login, "goobers")
+	}
+}
+
+func TestGitHubAuthenticatedLoginRequiresLogin(t *testing.T) {
+	m := newIssueMock()
+	m.userLogin = ""
+	p, _ := newIssueProvider(t, m)
+
+	if _, err := p.AuthenticatedLogin(context.Background()); err == nil {
+		t.Fatal("AuthenticatedLogin with an empty login: err = nil, want an error")
 	}
 }
 
