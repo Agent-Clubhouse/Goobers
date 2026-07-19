@@ -22,6 +22,18 @@ var backlogClaimPattern = regexp.MustCompile(`(?s)backlog-query.*--claim`)
 func CheckWarnings(def Definition) []string {
 	var warnings []string
 	for _, task := range def.Spec.Tasks {
+		if len(task.ExpectedOutputs) > 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				`task %q: expectedOutputs is declared but not enforced at V0`,
+				task.Name,
+			))
+		}
+		if task.Run != nil && strings.TrimSpace(task.Run.Image) != "" {
+			warnings = append(warnings, fmt.Sprintf(
+				`task %q: run.image is not honored by the local runner`,
+				task.Name,
+			))
+		}
 		if task.Type != apiv1.TaskDeterministic || task.Run == nil {
 			continue
 		}

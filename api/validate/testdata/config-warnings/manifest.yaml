@@ -1,0 +1,10 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: warning-instance
+spec:
+  instance:
+    name: warning-instance
+    environment: dev
+  gaggles:
+    - web

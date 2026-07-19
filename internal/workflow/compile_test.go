@@ -160,6 +160,38 @@ func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
 	}
 }
 
+func TestCheckWarningsAcceptedButInertFields(t *testing.T) {
+	def := Definition{Name: "inert-fields", Version: 1, Spec: apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name:            "build",
+			Type:            apiv1.TaskDeterministic,
+			Goal:            "build",
+			Run:             &apiv1.DeterministicRun{Command: []string{"true"}, Image: "alpine:3.20"},
+			ExpectedOutputs: []string{"artifact"},
+		}},
+	}}
+
+	if _, err := Compile(def); err != nil {
+		t.Fatalf("warnings must not fail compilation: %v", err)
+	}
+	warnings := CheckWarnings(def)
+	if len(warnings) != 2 {
+		t.Fatalf("warnings = %v, want expectedOutputs and run.image warnings", warnings)
+	}
+	all := strings.Join(warnings, "\n")
+	for _, want := range []string{
+		"expectedOutputs is declared but not enforced at V0",
+		"run.image is not honored by the local runner",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("warnings = %v, want warning containing %q", warnings, want)
+		}
+	}
+}
+
 func TestCompileManualOnlyTrigger(t *testing.T) {
 	spec := linearSpec()
 	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerManual}}

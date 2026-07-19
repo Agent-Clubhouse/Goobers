@@ -193,7 +193,12 @@ func (r *Report) CLIReport() *Report {
 }
 
 func (r *Report) add(sev Severity, file, kind, name, format string, args ...interface{}) {
+	r.addCoded("", sev, file, kind, name, format, args...)
+}
+
+func (r *Report) addCoded(code WarningCode, sev Severity, file, kind, name, format string, args ...interface{}) {
 	r.Issues = append(r.Issues, Issue{
+		Code:     code,
 		Severity: sev,
 		File:     file,
 		Kind:     kind,
