@@ -118,7 +118,7 @@ func (c *stalledIssueClient) Do(req *http.Request) (*http.Response, error) {
 func TestFilterBlockedEligibilityNoRecordsIsNoop(t *testing.T) {
 	_, provider, repo := blockedFilterFixture(t)
 	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}}
-	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, map[string]blockedRecord{})
+	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, eligible, map[string]blockedRecord{})
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -142,7 +142,7 @@ func TestFilterBlockedEligibilitySkipsWhileBlockerOpen(t *testing.T) {
 	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}}
 	recs := map[string]blockedRecord{"510": {Blockers: []string{"441"}, RunID: "run-1"}}
 
-	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -172,7 +172,7 @@ func TestFilterBlockedEligibilitySelfHealsWhenBlockersClose(t *testing.T) {
 	eligible := []providers.WorkItem{{ID: "510"}}
 	recs := map[string]blockedRecord{"510": {Blockers: []string{"441", "442"}, RunID: "run-1"}}
 
-	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -200,7 +200,7 @@ func TestFilterBlockedEligibilityPrunesRecordForClosedItem(t *testing.T) {
 	// 510 no longer appears in this tick's eligible set (it's closed, so the
 	// provider query wouldn't return it) — filterBlockedEligibility must still
 	// prune its stale record via the direct GetWorkItem check.
-	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, nil, map[string]blockedRecord{
+	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, nil, map[string]blockedRecord{
 		"510": {Blockers: []string{"441"}, RunID: "run-1"},
 	})
 	if len(warnings) != 0 {
@@ -303,7 +303,7 @@ func TestFilterBlockedEligibilityResolvesPRPrefixedKey(t *testing.T) {
 	eligible := []providers.WorkItem{{ID: "955"}, {ID: "511"}}
 	recs := map[string]blockedRecord{"pr/955": {Blockers: []string{"956"}, RunID: "run-1"}}
 
-	filtered, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
 	if len(warnings) != 0 {
 		t.Fatalf("pr/-prefixed key produced warnings, want a clean lookup: %v", warnings)
 	}
@@ -327,7 +327,7 @@ func TestFilterBlockedEligibilityPrunesPRPrefixedKeyWhenMerged(t *testing.T) {
 	server.closeIssue(955)
 
 	recs := map[string]blockedRecord{"pr/955": {Blockers: []string{"956"}, RunID: "run-1"}}
-	_, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, nil, recs)
+	_, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, nil, recs)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -350,13 +350,13 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 	server.addIssue(510, "blocked item", "goobers:ready")
 	server.addIssue(511, "unrelated item", "goobers:ready")
 
-	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}}
+	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}, {ID: "not-a-real-key"}}
 	recs := map[string]blockedRecord{
 		"510":            {Blockers: []string{"441"}, RunID: "run-1"},
 		"not-a-real-key": {Blockers: []string{"441"}, RunID: "run-2"},
 	}
 
-	filtered, _, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	filtered, _, warnings, unresolved := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
 	if len(warnings) != 1 {
 		t.Fatalf("warnings = %v, want exactly one for the unresolvable key", warnings)
 	}
@@ -368,8 +368,33 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 	}
 	// The healthy record must still have been applied — one bad key degrades
 	// only itself, which is the entire point of the change.
-	if len(filtered) != 1 || filtered[0].ID != "511" {
-		t.Fatalf("filtered = %v, want only 511 — record 510 must still skip despite the bad sibling key", filtered)
+	if len(filtered) != 2 || filtered[0].ID != "511" || filtered[1].ID != "not-a-real-key" {
+		t.Fatalf("filtered = %v, want 511 and the unresolved item — record 510 must still skip despite the bad sibling key", filtered)
+	}
+
+	path := filepath.Join(t.TempDir(), blockedRecordsFileName)
+	if err := saveBlockedRecords(path, recs); err != nil {
+		t.Fatal(err)
+	}
+	reconciled, err := reconcileBlockedEligibilityLocked(path, append([]providers.WorkItem(nil), filtered...), nil, unresolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reconciled) != 2 || reconciled[1].ID != "not-a-real-key" {
+		t.Fatalf("reconciled = %v, want the unchanged unresolved record to remain eligible", reconciled)
+	}
+
+	replacement := recs["not-a-real-key"]
+	replacement.RunID = "replacement-run"
+	if err := saveBlockedRecords(path, map[string]blockedRecord{"not-a-real-key": replacement}); err != nil {
+		t.Fatal(err)
+	}
+	reconciled, err = reconcileBlockedEligibilityLocked(path, append([]providers.WorkItem(nil), filtered...), nil, unresolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reconciled) != 1 || reconciled[0].ID != "511" {
+		t.Fatalf("reconciled after replacement = %v, want only 511", reconciled)
 	}
 }
 

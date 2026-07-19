@@ -233,7 +233,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	for itemID, record := range observedRecords {
 		remainingRecords[itemID] = record
 	}
-	eligible, changed, blockedWarnings := filterBlockedEligibility(ctx, provider, repo, eligible, remainingRecords)
+	eligible, changed, blockedWarnings, unresolvedRecords := filterBlockedEligibility(ctx, provider, repo, eligible, remainingRecords)
 	for _, warning := range blockedWarnings {
 		// Warn, never fail: blocked.json is a selection optimization, and a
 		// record we cannot resolve must not stall every backlog tick (#971).
@@ -265,7 +265,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	if !*claim {
 		err = withClaimLock(lockPath, func() error {
 			var rerr error
-			eligible, rerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords)
+			eligible, rerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords, unresolvedRecords)
 			return rerr
 		})
 		if err != nil {
@@ -284,7 +284,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 
 	if len(eligible) == 0 {
 		err = withClaimLock(lockPath, func() error {
-			_, rerr := reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords)
+			_, rerr := reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords, unresolvedRecords)
 			return rerr
 		})
 		if err != nil {
@@ -334,7 +334,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
 		}
-		eligible, lerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords)
+		eligible, lerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords, unresolvedRecords)
 		if lerr != nil {
 			return lerr
 		}

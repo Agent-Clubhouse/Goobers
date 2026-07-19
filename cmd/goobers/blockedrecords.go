@@ -103,9 +103,12 @@ func snapshotBlockedRecords(l instance.Layout) (map[string]blockedRecord, error)
 
 // reconcileBlockedEligibilityLocked applies provider-resolved removals to the
 // latest blocked-record state, then excludes every item that is still recorded
-// as blocked. The caller must hold claims.lock through any subsequent claim so
-// a concurrent blocked-record update cannot race the eligibility decision.
-func reconcileBlockedEligibilityLocked(path string, eligible []providers.WorkItem, resolved map[string]blockedRecord) ([]providers.WorkItem, error) {
+// as blocked. An unchanged record whose own provider lookup failed remains
+// eligible, preserving per-record degradation; a concurrent replacement does
+// not inherit that exception. The caller must hold claims.lock through any
+// subsequent claim so a concurrent blocked-record update cannot race the
+// eligibility decision.
+func reconcileBlockedEligibilityLocked(path string, eligible []providers.WorkItem, resolved, unresolved map[string]blockedRecord) ([]providers.WorkItem, error) {
 	current, err := loadBlockedRecords(path)
 	if err != nil {
 		return nil, err
@@ -131,10 +134,14 @@ func reconcileBlockedEligibilityLocked(path string, eligible []providers.WorkIte
 	}
 	filtered := eligible[:0]
 	for _, item := range eligible {
-		if _, blocked := current[item.ID]; blocked {
+		record, blocked := current[item.ID]
+		if !blocked {
+			filtered = append(filtered, item)
 			continue
 		}
-		filtered = append(filtered, item)
+		if observed, ok := unresolved[item.ID]; ok && sameBlockedRecord(record, observed) {
+			filtered = append(filtered, item)
+		}
 	}
 	return filtered, nil
 }
@@ -167,10 +174,12 @@ func sameBlockedRecord(a, b blockedRecord) bool {
 // It returns warnings rather than an error: no per-record lookup failure is
 // fatal here (see the degradation note below), so an error return would only
 // ever be nil. The caller surfaces warnings on stderr so a malformed record
-// stays visible instead of silently degrading selection forever.
-func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, eligible []providers.WorkItem, recs map[string]blockedRecord) (filtered []providers.WorkItem, changed bool, warnings []string) {
+// stays visible instead of silently degrading selection forever. unresolved
+// identifies records whose own item lookup failed so the locked reconciliation
+// can preserve that per-record degradation if the record is still unchanged.
+func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, eligible []providers.WorkItem, recs map[string]blockedRecord) (filtered []providers.WorkItem, changed bool, warnings []string, unresolved map[string]blockedRecord) {
 	if len(recs) == 0 {
-		return eligible, false, nil
+		return eligible, false, nil, nil
 	}
 
 	openCache := map[string]bool{}
@@ -209,6 +218,10 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 		open, oerr := isOpen(itemID)
 		if oerr != nil {
 			lookupErrs = append(lookupErrs, fmt.Sprintf("check blocked item %s: %v", itemID, oerr))
+			if unresolved == nil {
+				unresolved = make(map[string]blockedRecord)
+			}
+			unresolved[itemID] = rec
 			continue
 		}
 		if !open {
@@ -248,7 +261,7 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 	}
 
 	if len(skip) == 0 {
-		return eligible, changed, lookupErrs
+		return eligible, changed, lookupErrs, unresolved
 	}
 	out := eligible[:0]
 	for _, item := range eligible {
@@ -257,7 +270,7 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 		}
 		out = append(out, item)
 	}
-	return out, changed, lookupErrs
+	return out, changed, lookupErrs, unresolved
 }
 
 // updateBlockedRecords applies fn to the records map under the instance's
