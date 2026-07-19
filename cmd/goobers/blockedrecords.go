@@ -209,7 +209,7 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 // result. fn returns false to skip the write (nothing changed).
 func updateBlockedRecords(l instance.Layout, fn func(recs map[string]blockedRecord) bool) error {
 	path := blockedRecordsPath(l)
-	return withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
+	return withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBlockedUpdate, func() error {
 		recs, err := loadBlockedRecords(path)
 		if err != nil {
 			return err

@@ -227,7 +227,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// closes, no human involved. Shares claims.lock with the ledger below
 	// (blocked.json's own convention) since a concurrent tick's claim and a
 	// concurrent tick's blocked-write must not race each other.
-	err = withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
+	err = withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogFilterBlocked, func() error {
 		recs, lerr := loadBlockedRecords(blockedRecordsPath(l))
 		if lerr != nil {
 			return lerr
@@ -313,7 +313,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// share this run's id; each item gets its own ledger entry.
 	var claimed []providers.WorkItem
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	err = withClaimLock(lockPath, func() error {
+	err = withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName), localscheduler.WithInstanceLog(instanceLog))
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
@@ -456,7 +456,7 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 	l := layoutFor(root)
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	var released []string
-	err = withClaimLock(lockPath, func() error {
+	err = withClaimLock(lockPath, claimLockOperationBacklogRelease, func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)

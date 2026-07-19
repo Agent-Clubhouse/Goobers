@@ -19,7 +19,7 @@
       "x-conformance": "normative"
     },
     "type": {
-      "description": "Event kind. trigger.fired, tick.skipped, claim.*, and config.* are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
+      "description": "Event kind. trigger.fired, tick.skipped, claim lifecycle/lock, and config.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
       "type": "string",
       "enum": [
         "run.started",
@@ -39,6 +39,7 @@
         "tick.skipped",
         "claim.acquired",
         "claim.released",
+        "claim_lock_slow",
         "config.reloaded",
         "config.reload.rejected"
       ],
