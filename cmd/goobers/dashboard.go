@@ -243,7 +243,7 @@ func prepareDashboardAPI(ctx context.Context, layout instance.Layout, config *in
 		return dashboardAPI{}, err
 	}
 	if running {
-		target, err := waitForDashboardDaemon(ctx, config.APIListenAddress())
+		target, err := waitForDashboardDaemon(ctx, layout, config.APIListenAddress())
 		if err != nil {
 			return dashboardAPI{}, err
 		}
@@ -258,55 +258,88 @@ func prepareDashboardAPI(ctx context.Context, layout instance.Layout, config *in
 	return standaloneDashboardAPI(layout, config, errorLog)
 }
 
-func waitForDashboardDaemon(ctx context.Context, address string) (*url.URL, error) {
-	target, err := url.Parse("http://" + address)
-	if err != nil {
-		return nil, fmt.Errorf("parse daemon API address %q: %w", address, err)
-	}
+func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, configuredAddress string) (*url.URL, error) {
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	deadline := time.NewTimer(dashboardAttachTimeout)
 	defer deadline.Stop()
-	var lastErr error
+	lastErr := errors.New("daemon API address has not been published")
+	lastLocation := configuredAddress
 	for {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String()+httpapi.HealthPath, nil)
-		if err != nil {
-			return nil, err
-		}
-		response, requestErr := client.Do(request)
-		if requestErr == nil {
-			if response.StatusCode != http.StatusOK {
-				lastErr = fmt.Errorf("health endpoint returned %s", response.Status)
-			} else {
-				var health readservice.Health
-				switch decodeErr := json.NewDecoder(response.Body).Decode(&health); {
-				case decodeErr != nil:
-					lastErr = decodeErr
-				case !health.Ready:
-					lastErr = errors.New("daemon API is not ready")
-				case health.APIVersion != readservice.APIVersion || health.SchemaVersion != readservice.SchemaVersion:
-					lastErr = fmt.Errorf("daemon API contract is %s/%s, want %s/%s",
-						health.APIVersion, health.SchemaVersion, readservice.APIVersion, readservice.SchemaVersion)
-				default:
-					lastErr = nil
-				}
-			}
-			if closeErr := response.Body.Close(); closeErr != nil && lastErr == nil {
-				lastErr = closeErr
-			}
-			if lastErr == nil {
-				return target, nil
-			}
+		address, addressErr := dashboardDaemonAPIAddress(layout, configuredAddress)
+		if addressErr != nil {
+			lastErr = addressErr
 		} else {
-			lastErr = requestErr
+			target, parseErr := url.Parse("http://" + address)
+			if parseErr != nil {
+				return nil, fmt.Errorf("parse daemon API address %q: %w", address, parseErr)
+			}
+			lastLocation = target.String()
+			request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, target.String()+httpapi.HealthPath, nil)
+			if requestErr != nil {
+				return nil, requestErr
+			}
+			response, requestErr := client.Do(request)
+			if requestErr == nil {
+				if response.StatusCode != http.StatusOK {
+					lastErr = fmt.Errorf("health endpoint returned %s", response.Status)
+				} else {
+					var health readservice.Health
+					switch decodeErr := json.NewDecoder(response.Body).Decode(&health); {
+					case decodeErr != nil:
+						lastErr = decodeErr
+					case !health.Ready:
+						lastErr = errors.New("daemon API is not ready")
+					case health.APIVersion != readservice.APIVersion || health.SchemaVersion != readservice.SchemaVersion:
+						lastErr = fmt.Errorf("daemon API contract is %s/%s, want %s/%s",
+							health.APIVersion, health.SchemaVersion, readservice.APIVersion, readservice.SchemaVersion)
+					default:
+						lastErr = nil
+					}
+				}
+				if closeErr := response.Body.Close(); closeErr != nil && lastErr == nil {
+					lastErr = closeErr
+				}
+				if lastErr == nil {
+					return target, nil
+				}
+			} else {
+				lastErr = requestErr
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-deadline.C:
-			return nil, fmt.Errorf("live `goobers up` daemon API at %s is unavailable: %w", target, lastErr)
+			return nil, fmt.Errorf("live `goobers up` daemon API at %s is unavailable: %w", lastLocation, lastErr)
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+func dashboardDaemonAPIAddress(layout instance.Layout, configuredAddress string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(layout.SchedulerDir(), daemonAPIAddressFileName))
+	if err == nil {
+		return usableDaemonAPIAddress(strings.TrimSpace(string(data)))
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("read daemon API address: %w", err)
+	}
+	return usableDaemonAPIAddress(configuredAddress)
+}
+
+func usableDaemonAPIAddress(address string) (string, error) {
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", fmt.Errorf("invalid daemon API address %q: %w", address, err)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil {
+		return "", fmt.Errorf("invalid daemon API address %q: %w", address, err)
+	}
+	if portNumber == 0 {
+		return "", errors.New("daemon API address has not been published")
+	}
+	return address, nil
 }
 
 func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, errorLog *log.Logger) (dashboardAPI, error) {

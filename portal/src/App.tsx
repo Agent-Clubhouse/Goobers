@@ -101,7 +101,13 @@ export function App({
         />
       )}
       {route.page === "run" && (
-        <RunPage client={client} key={route.id} navigate={navigate} runId={route.id} />
+        <RunPage
+          client={client}
+          key={route.id}
+          navigate={navigate}
+          runId={route.id}
+          standalone={standalone}
+        />
       )}
       {route.page === "workflow" && !workflow && <p role="alert">Workflow not found.</p>}
     </PortalShell>

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { FixtureDaemonClient } from "./api/fixtureClient";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
@@ -64,6 +64,26 @@ describe("portal foundation", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/The daemon is ready/)).not.toBeInTheDocument();
+  });
+
+  it("keeps run loading copy local-read aware in standalone mode", async () => {
+    const mode = document.createElement("meta");
+    mode.name = "goobers-dashboard-mode";
+    mode.content = "standalone";
+    document.head.append(mode);
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    vi.spyOn(client, "getRun").mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(client, "listRunEvents").mockImplementation(() => new Promise(() => {}));
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await user.click(await screen.findByRole("link", { name: "Open run 01JZ402DASHBOARD" }));
+
+    expect(await screen.findByRole("heading", { name: "Loading run" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Reading pinned identity, graph, and durable events from local instance files."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/durable events from the daemon/)).not.toBeInTheDocument();
   });
 
   it("opens a run from daemon data without later-slice controls", async () => {

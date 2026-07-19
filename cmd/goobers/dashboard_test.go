@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -176,6 +177,71 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	standalone.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, httpapi.HealthPath, nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("standalone health status = %d, body = %q", response.Code, response.Body.String())
+	}
+}
+
+func TestDashboardAttachesToLiveDaemonWithEphemeralAPIAddress(t *testing.T) {
+	root := initDeterministicDemo(t)
+	setAPIListenAddress(t, root, "127.0.0.1:0")
+	layout := instance.NewLayout(root)
+	ctx, cancel := context.WithCancel(context.Background())
+	started := &daemonStartedWriter{started: make(chan struct{})}
+	var stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- runUpContext(ctx, []string{"--quiet", root}, started, &stderr)
+	}()
+	t.Cleanup(cancel)
+
+	select {
+	case <-started.started:
+	case code := <-done:
+		t.Fatalf("daemon exited before startup: code = %d, stderr = %q", code, stderr.String())
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for daemon startup")
+	}
+
+	published, err := os.ReadFile(filepath.Join(layout.SchedulerDir(), daemonAPIAddressFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := strings.TrimSpace(string(published))
+	_, port, err := net.SplitHostPort(address)
+	if err != nil || port == "0" {
+		t.Fatalf("published daemon API address = %q, parse error = %v", address, err)
+	}
+
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if api.mode != dashboardModeDaemon {
+		t.Fatalf("mode = %q, want daemon", api.mode)
+	}
+	response := httptest.NewRecorder()
+	api.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, httpapi.HealthPath, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("proxied health status = %d, body = %q", response.Code, response.Body.String())
+	}
+	if err := api.close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("daemon exit code = %d, stderr = %q", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for daemon shutdown")
+	}
+	if _, err := os.Stat(filepath.Join(layout.SchedulerDir(), daemonAPIAddressFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("daemon API address file remains after shutdown: %v", err)
 	}
 }
 
