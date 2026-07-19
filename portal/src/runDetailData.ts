@@ -8,6 +8,8 @@ import type {
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
 
+export const ACTIVE_RUN_REFRESH_INTERVAL_MS = 2_000;
+
 export type RunNodeState =
   | "pending"
   | "running"
@@ -33,25 +35,39 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
 
   useEffect(() => {
     const controller = new AbortController();
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     setState({ status: "loading" });
 
-    loadRunDetail(client, runId, controller.signal).then(
-      (data) => {
-        if (!controller.signal.aborted) {
+    const refresh = () => {
+      loadRunDetail(client, runId, controller.signal).then(
+        (data) => {
+          if (controller.signal.aborted) {
+            return;
+          }
           setState({ status: "ready", data });
-        }
-      },
-      (error: unknown) => {
-        if (!controller.signal.aborted) {
+          if (!data.run.terminal) {
+            refreshTimer = setTimeout(refresh, ACTIVE_RUN_REFRESH_INTERVAL_MS);
+          }
+        },
+        (error: unknown) => {
+          if (controller.signal.aborted) {
+            return;
+          }
           setState({
             status: "error",
             error: error instanceof Error ? error : new Error("Unable to read run detail."),
           });
-        }
-      },
-    );
+        },
+      );
+    };
+    refresh();
 
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      if (refreshTimer !== undefined) {
+        clearTimeout(refreshTimer);
+      }
+    };
   }, [client, revision, runId]);
 
   const retry = useCallback(() => setRevision((current) => current + 1), []);
@@ -107,15 +123,23 @@ export function deriveNodeStates(
   const states = Object.fromEntries(
     graph.nodes.map((node) => [node.id, "pending" as RunNodeState]),
   );
+  let activeNodeId: string | undefined;
 
   for (const event of orderRunEvents(events)) {
     if (event.seq > selectedSeq) {
       break;
     }
+    if (event.type === "run.finished") {
+      if (activeNodeId) {
+        states[activeNodeId] = stateFromStatus(event.status);
+      }
+      continue;
+    }
     const nodeId = eventNodeId(event);
     if (!nodeId || !Object.hasOwn(states, nodeId)) {
       continue;
     }
+    activeNodeId = nodeId;
 
     switch (event.type) {
       case "stage.started":
@@ -127,9 +151,6 @@ export function deriveNodeStates(
         break;
       case "gate.evaluated":
         states[nodeId] = stateFromGate(event);
-        break;
-      case "run.finished":
-        states[nodeId] = stateFromStatus(event.status);
         break;
     }
   }

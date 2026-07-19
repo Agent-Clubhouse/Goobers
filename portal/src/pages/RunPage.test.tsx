@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
+import { ACTIVE_RUN_REFRESH_INTERVAL_MS } from "../runDetailData";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
 
 const canonicalRuns = [
@@ -15,6 +16,10 @@ const canonicalRuns = [
 
 beforeEach(() => {
   window.location.hash = "#/overview";
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("run detail", () => {
@@ -47,6 +52,73 @@ describe("run detail", () => {
     expect(
       screen.getByRole("button", { name: "review, gate, Pending at sequence 4" }),
     ).toBeInTheDocument();
+  });
+
+  it("follows appended live events without overwriting a historical selection", async () => {
+    vi.useFakeTimers();
+    const runId = "01JZ441DAEMONAPI";
+    const fixtures = populatedDaemonFixtures();
+    const events = fixtures.runEvents?.[runId];
+    const detail = fixtures.runDetails?.[runId];
+    if (!events || !detail) {
+      throw new Error("Expected active run fixtures.");
+    }
+    renderRun(runId, new FixtureDaemonClient(fixtures));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    events.events.push({
+      schema: "v1",
+      seq: 7,
+      type: "gate.evaluated",
+      branch: 0,
+      time: "2026-07-18T06:00:07Z",
+      knownSchema: true,
+      gate: "review",
+      attempt: 1,
+      attemptClass: "initial",
+      verdict: "needs-changes",
+      target: "implement",
+    });
+    detail.lastSeq = 7;
+    detail.currentStage = "implement";
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ACTIVE_RUN_REFRESH_INTERVAL_MS);
+    });
+
+    expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(
+      screen.getByRole("button", { name: "review, gate, Completed at sequence 7" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
+    events.events.push({
+      schema: "v1",
+      seq: 8,
+      type: "stage.started",
+      branch: 0,
+      time: "2026-07-18T06:00:08Z",
+      knownSchema: true,
+      stage: "implement",
+      attempt: 2,
+      attemptClass: "policy",
+    });
+    detail.lastSeq = 8;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ACTIVE_RUN_REFRESH_INTERVAL_MS);
+    });
+
+    expect(screen.getByRole("button", { name: /^Select sequence 4:/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: /^Select sequence 8:/ })).not.toHaveAttribute(
+      "aria-current",
+    );
   });
 
   it("keeps repasses on one graph node and exposes attempts in sequence", async () => {
@@ -108,12 +180,18 @@ describe("run detail", () => {
       "data-responsive-layout",
       "stack-under-820",
     );
+    expect(
+      screen.getByRole("button", { name: "implement, agentic, Aborted at sequence 5" }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /play|replay/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /attempt|escalation/i })).not.toBeInTheDocument();
   });
 });
 
-function renderRun(runId: string) {
+function renderRun(
+  runId: string,
+  client = new FixtureDaemonClient(populatedDaemonFixtures()),
+) {
   window.location.hash = `#/run/${runId}`;
-  return render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+  return render(<App client={client} />);
 }

@@ -239,7 +239,6 @@ function runEvents(summary: RunSummary): RunEvent[] {
       return [
         ...events,
         journalEvent(summary, 5, "run.finished", {
-          stage: "implement",
           status: "aborted",
           reason: "Run was aborted by the operator.",
         }),

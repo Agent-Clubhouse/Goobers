@@ -86,4 +86,16 @@ describe("run detail projection", () => {
     );
     expect(eventSummary(unsupported)).not.toContain("privateImplementationDetail");
   });
+
+  it("applies an API-shaped terminal event to the previously active node", () => {
+    const events = [
+      event(1, "stage.started", { stage: "implement", attempt: 1 }),
+      event(2, "run.finished", { status: "aborted" }),
+    ];
+
+    expect(deriveNodeStates(graph, events, 2)).toEqual({
+      implement: "aborted",
+      review: "pending",
+    });
+  });
 });

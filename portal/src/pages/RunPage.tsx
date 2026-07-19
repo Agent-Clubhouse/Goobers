@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   DaemonClient,
   RunDetail,
@@ -86,13 +86,23 @@ function RunDetailWorkspace({
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(
     eventNodeAtSequence(events, initialSeq) ?? run.currentStage,
   );
+  const [followingLatest, setFollowingLatest] = useState(true);
   const nodeStates = run.graph
     ? deriveNodeStates(run.graph, events, selectedSeq)
     : {};
 
+  useEffect(() => {
+    if (!followingLatest) {
+      return;
+    }
+    setSelectedSeq(initialSeq);
+    setSelectedNodeId(eventNodeAtSequence(events, initialSeq) ?? run.currentStage);
+  }, [events, followingLatest, initialSeq, run.currentStage]);
+
   const selectEvent = (event: RunEvent) => {
     setSelectedSeq(event.seq);
     setSelectedNodeId(eventNodeAtSequence(events, event.seq));
+    setFollowingLatest(event.seq === initialSeq);
   };
 
   return (
