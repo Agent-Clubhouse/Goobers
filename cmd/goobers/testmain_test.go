@@ -48,6 +48,13 @@ const hermeticEphemeralListen = "127.0.0.1:0"
 //  3. It disables git fsync for every git subprocess these tests spawn (#811).
 //     See disableGitFsyncForTests.
 func TestMain(m *testing.M) {
+	// Deterministic stages substitute os.Executable for a bare "goobers"
+	// command. Let subprocesses launched that way exercise the real CLI
+	// dispatcher instead of handing stage arguments to testing's flag parser.
+	if os.Getenv("GOOBERS_RUN_ID") != "" && len(os.Args) > 1 && os.Args[1] == "validate" {
+		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	}
+
 	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow) error { return nil }
 
 	baseAPIListenAddress := apiListenAddress

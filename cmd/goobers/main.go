@@ -118,7 +118,7 @@ Usage:
   goobers init [--demo] [path]  scaffold an instance root
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
-  goobers validate [path]       validate an instance's instance.yaml + config/
+  goobers validate [flags] [path]  validate an instance or checked-in config source tree
   goobers up [--quiet] [path]   run the daemon (scheduler + runner + loopback HTTP API)
   goobers run <workflow> [--no-wait] [path]
                                 trigger a run manually (still honors run conditions)

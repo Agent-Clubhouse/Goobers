@@ -6,6 +6,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -41,10 +42,13 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	checkHarness := fs.Bool("check-harness", false, "also verify every referenced agent harness is installed and signed in")
+	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers validate [--check-harness] [path]\n\n"+
+		pf(stderr, "Usage: goobers validate [--check-harness] [--source-tree] [path]\n\n"+
 			"Validate an instance's instance.yaml and config/ directory (default\n"+
-			"path \".\"). --check-harness additionally preflights every agent harness\n"+
+			"path \".\"). --source-tree validates a checked-in config source tree\n"+
+			"using instance.yaml.example and the path itself as config/. "+
+			"--check-harness additionally preflights every agent harness\n"+
 			"referenced by a goober (GBO-011) — installed, signed in, actionable\n"+
 			"guidance otherwise. Exit codes: 0 = valid, 1 = validation errors, 2 = usage/IO error.\n")
 	}
@@ -61,17 +65,27 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	if _, err := os.Stat(l.ConfigFile()); err != nil {
-		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
+	configFile := l.ConfigFile()
+	configDir := l.ConfigDir()
+	if *sourceTree {
+		configFile = filepath.Join(root, "instance.yaml.example")
+		configDir = root
+	}
+	if _, err := os.Stat(configFile); err != nil {
+		if *sourceTree {
+			pf(stderr, "error: %s not found (not a config source tree)\n", configFile)
+		} else {
+			pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", configFile)
+		}
 		return 2
 	}
 
-	if _, err := instance.LoadConfig(l.ConfigFile()); err != nil {
+	if _, err := instance.LoadConfig(configFile); err != nil {
 		pf(stdout, "INVALID instance.yaml:\n  %v\n", err)
 		return 1
 	}
 
-	set, report, err := instance.LoadConfigDir(l.ConfigDir())
+	set, report, err := instance.LoadConfigDir(configDir)
 	if err != nil && !errors.Is(err, instance.ErrInvalidConfig) {
 		pf(stderr, "error: %v\n", err)
 		return 2

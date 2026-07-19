@@ -3,7 +3,6 @@ package workflow
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -184,10 +183,12 @@ func TestSelfhostTutorValidatesBeforePush(t *testing.T) {
 		t.Fatalf("validate-config type = %q, want deterministic", validateTask.Type)
 	}
 	if validateTask.Run == nil ||
-		len(validateTask.Run.Command) != 3 ||
-		validateTask.Run.Command[0] != "sh" ||
-		!strings.Contains(validateTask.Run.Command[2], "goobers validate") {
-		t.Fatalf("validate-config run = %+v, want a goobers validate shell command", validateTask.Run)
+		len(validateTask.Run.Command) != 4 ||
+		validateTask.Run.Command[0] != "goobers" ||
+		validateTask.Run.Command[1] != "validate" ||
+		validateTask.Run.Command[2] != "--source-tree" ||
+		validateTask.Run.Command[3] != "selfhost" {
+		t.Fatalf("validate-config run = %+v, want direct selfhost source-tree validation", validateTask.Run)
 	}
 	if validateTask.Next != "config-valid" {
 		t.Fatalf("validate-config next = %q, want config-valid", validateTask.Next)

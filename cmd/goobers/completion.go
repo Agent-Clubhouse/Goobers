@@ -143,7 +143,7 @@ _goobers_completion()
     command="${COMP_WORDS[1]}"
     flags="-h --help"
     case "${command}" in
-        validate) flags+=" --check-harness" ;;
+        validate) flags+=" --check-harness --source-tree" ;;
         up) flags+=" --quiet" ;;
         run) flags+=" --no-wait" ;;
         workflow)
@@ -289,7 +289,7 @@ _goobers_completion()
     command="${words[2]}"
     flags=(-h --help)
     case "${command}" in
-        validate) flags+=(--check-harness) ;;
+        validate) flags+=(--check-harness --source-tree) ;;
         up) flags+=(--quiet) ;;
         run) flags+=(--no-wait) ;;
         workflow)
@@ -429,6 +429,7 @@ complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (co
 
 complete -c goobers -n '__fish_seen_subcommand_from scaffold' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-harness -d 'Check agent harnesses'
+complete -c goobers -n '__fish_seen_subcommand_from validate' -l source-tree -d 'Validate a checked-in config source tree'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress liveness heartbeats'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show' -l dot -d 'Emit Graphviz DOT'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'

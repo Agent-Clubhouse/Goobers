@@ -98,24 +98,13 @@ spec:
       next: validate-config
 
     # Validate the drafted selfhost tree, not the running instance's unchanged
-    # config copy. The temporary layout gives `goobers validate` the
-    # instance.yaml + config/ shape it expects while keeping the check entirely
-    # inside the disposable stage workspace.
+    # config copy. Calling the CLI directly lets the executor substitute the
+    # running daemon's exact binary rather than relying on PATH.
     - name: validate-config
       type: deterministic
       goal: Validate the drafted config before publishing the run branch.
       run:
-        command:
-          - sh
-          - -ec
-          - |-
-            root="$(mktemp -d)"
-            trap 'rm -rf "$root"' EXIT
-            cp selfhost/instance.yaml.example "$root/instance.yaml"
-            mkdir "$root/config"
-            cp selfhost/manifest.yaml "$root/config/manifest.yaml"
-            cp -R selfhost/gaggles "$root/config/gaggles"
-            goobers validate "$root"
+        command: ["goobers", "validate", "--source-tree", "selfhost"]
       next: config-valid
 
     # Deterministic branch push (#237), reached only after config validation.
