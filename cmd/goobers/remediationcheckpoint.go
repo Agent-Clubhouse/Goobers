@@ -34,8 +34,6 @@ const remediationEscalatedLabel = "goobers:merge-escalated"
 
 const siblingOverlapLookback = 30 * 24 * time.Hour
 
-const checkpointProviderMargin = time.Second
-
 type siblingOverlapFinding struct {
 	Number   int    `json:"number"`
 	State    string `json:"state"`
@@ -230,23 +228,6 @@ func latestRemediationState(comments []providers.Comment) (state remediationStat
 	return remediationState{}, "", false
 }
 
-// checkpointProviderBudget leaves time for the command to report its result
-// before the shell executor terminates the stage.
-func checkpointProviderBudget(stage time.Duration) time.Duration {
-	margin := checkpointProviderMargin
-	if margin >= stage {
-		margin = stage / 10
-	}
-	if budget := stage - margin; budget > 0 {
-		return budget
-	}
-	return stage / 2
-}
-
-func checkpointProviderContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), checkpointProviderBudget(stageTimeout()))
-}
-
 // runRemediationCheckpoint implements `goobers remediation-checkpoint`
 // (issue #364): lifts the in-run repass budget (gate.DefaultMaxRepasses,
 // internal/gate/evaluate.go's Evaluator) and same-diff escalation (#316,
@@ -345,8 +326,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 
 	base := providerInput("base", "main")
 	headPrefix := providerInput("headPrefix", "goobers/")
-	ctx, cancel := checkpointProviderContext()
-	defer cancel()
+	ctx := context.Background()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
 	})
