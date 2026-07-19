@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
-import { ACTIVE_RUN_REFRESH_INTERVAL_MS } from "../runDetailData";
+import type { DaemonEventStream, DaemonUpdateEvent } from "../api/types";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
 
 const canonicalRuns = [
@@ -63,7 +63,8 @@ describe("run detail", () => {
     if (!events || !detail) {
       throw new Error("Expected active run fixtures.");
     }
-    renderRun(runId, new FixtureDaemonClient(fixtures));
+    const client = new LiveFixtureClient(fixtures);
+    renderRun(runId, client);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
@@ -83,8 +84,9 @@ describe("run detail", () => {
     });
     detail.lastSeq = 7;
     detail.currentStage = "implement";
+    client.invalidateRun("fixture:1");
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(ACTIVE_RUN_REFRESH_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(50);
     });
 
     expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).toHaveAttribute(
@@ -108,8 +110,9 @@ describe("run detail", () => {
       attemptClass: "policy",
     });
     detail.lastSeq = 8;
+    client.invalidateRun("fixture:2");
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(ACTIVE_RUN_REFRESH_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(50);
     });
 
     expect(screen.getByRole("button", { name: /^Select sequence 4:/ })).toHaveAttribute(
@@ -194,4 +197,60 @@ function renderRun(
 ) {
   window.location.hash = `#/run/${runId}`;
   return render(<App client={client} />);
+}
+
+class LiveFixtureClient extends FixtureDaemonClient {
+  private readonly stream = new PushEventStream();
+
+  override connectEvents(): Promise<DaemonEventStream> {
+    return Promise.resolve(this.stream);
+  }
+
+  invalidateRun(id: string): void {
+    this.stream.push({
+      id,
+      type: "invalidate",
+      data: { cursor: id, models: ["run"] },
+    });
+  }
+}
+
+class PushEventStream implements DaemonEventStream {
+  private closed = false;
+  private readonly queue: DaemonUpdateEvent[] = [];
+  private readonly readers: ((result: IteratorResult<DaemonUpdateEvent>) => void)[] = [];
+
+  push(event: DaemonUpdateEvent): void {
+    const reader = this.readers.shift();
+    if (reader) {
+      reader({ done: false, value: event });
+    } else {
+      this.queue.push(event);
+    }
+  }
+
+  close(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    for (const reader of this.readers.splice(0)) {
+      reader({ done: true, value: undefined });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<DaemonUpdateEvent> {
+    return {
+      next: () => {
+        const event = this.queue.shift();
+        if (event) {
+          return Promise.resolve({ done: false, value: event });
+        }
+        if (this.closed) {
+          return Promise.resolve({ done: true, value: undefined });
+        }
+        return new Promise((resolve) => this.readers.push(resolve));
+      },
+    };
+  }
 }
