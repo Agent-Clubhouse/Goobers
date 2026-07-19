@@ -61,6 +61,13 @@ type syncBuffer struct {
 	dropped int64
 }
 
+func newTranscriptBuffer(limit int64) *syncBuffer {
+	if limit <= 0 {
+		limit = DefaultMaxTranscriptBytes
+	}
+	return &syncBuffer{limit: limit}
+}
+
 func (b *syncBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -199,13 +206,9 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	limit := req.MaxTranscriptBytes
-	if limit <= 0 {
-		limit = DefaultMaxTranscriptBytes
-	}
-	buf := syncBuffer{limit: limit}
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	buf := newTranscriptBuffer(req.MaxTranscriptBytes)
+	cmd.Stdout = buf
+	cmd.Stderr = buf
 
 	if err := cmd.Start(); err != nil {
 		return ProcessResult{ExitCode: -1}, fmt.Errorf("harness: start %v: %w", req.Command, err)
