@@ -8,6 +8,17 @@
 
 # Go build artifacts
 /bin/
+# A bare `go build ./cmd/<name>` (no -o) drops the compiled binary in the CWD,
+# so running one from the repo root leaves a stray multi-MB executable named
+# after the package. /bin/ does not cover that path, and `git add -A` will
+# happily commit it — a 33MB `goobers` binary reached main this way in 6ee0756.
+# One entry per cmd/ package; the canonical build is `make build` -> bin/.
+/config-sync
+/goober-runtime
+/goobers
+/operator
+/scheduler
+/validate
 coverage.out
 coverage.html
 *.test
