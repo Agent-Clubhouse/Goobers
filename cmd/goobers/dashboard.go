@@ -265,7 +265,7 @@ func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, configu
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	deadline := time.NewTimer(dashboardAttachTimeout)
 	defer deadline.Stop()
-	lastErr := errors.New("daemon API address has not been published")
+	var lastErr error
 	lastLocation := configuredAddress
 	for {
 		address, addressErr := dashboardDaemonAPIAddress(layout, configuredAddress)
