@@ -86,6 +86,20 @@ describe("HttpDaemonClient event stream", () => {
     );
   });
 
+  it("cancels successful response bodies that are not event streams", async () => {
+    const cancel = vi.fn();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(new ReadableStream({ cancel }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(
+      new HttpDaemonClient({ fetch: fetcher }).connectEvents(),
+    ).rejects.toBeInstanceOf(MalformedResponseError);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("cancels the response body when the consumer closes the stream", async () => {
     const cancel = vi.fn();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(

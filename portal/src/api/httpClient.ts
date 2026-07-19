@@ -119,6 +119,8 @@ export class HttpDaemonClient implements DaemonClient {
       }
       if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("text/event-stream")) {
         options?.signal?.removeEventListener("abort", cancel);
+        controller.abort();
+        await response.body?.cancel();
         throw new MalformedResponseError("The daemon returned an invalid event stream.");
       }
       if (!response.body) {
