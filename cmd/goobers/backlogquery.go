@@ -232,9 +232,11 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		if lerr != nil {
 			return lerr
 		}
-		filtered, changed, ferr := filterBlockedEligibility(ctx, provider, repo, eligible, recs)
-		if ferr != nil {
-			return ferr
+		filtered, changed, blockedWarnings := filterBlockedEligibility(ctx, provider, repo, eligible, recs)
+		for _, w := range blockedWarnings {
+			// Warn, never fail: blocked.json is a selection optimization, and a
+			// record we cannot resolve must not stall every backlog tick (#971).
+			pf(stderr, "warning: blocked records: %s\n", w)
 		}
 		eligible = filtered
 		if !changed {
