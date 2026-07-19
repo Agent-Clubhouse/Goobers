@@ -139,7 +139,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	var mergeErr error
 	var commitErr error
 	var policyErr error
-	lockErr := withBlockingFileLock(lockPath, nil, nil, func() error {
+	lockErr := withClaimLock(lockPath, func() error {
 		// Independent, live re-check (D6) — never trust a caller-supplied
 		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
 		// actual current state right before deciding, now guaranteed to be

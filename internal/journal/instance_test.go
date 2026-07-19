@@ -241,7 +241,7 @@ func TestInstanceLogRecoversTornTail(t *testing.T) {
 
 // TestInstanceLogEmittedBytesMatchSchema is the InstanceLog counterpart to
 // TestEmittedBytesMatchSchema: it validates the instance journal's actual
-// on-disk event bytes against journal-event.schema.json, so the
+// on-disk event bytes against journal-event.schema.json, so the four
 // instance-only event types (and the workflow/runId/reason fields) can't
 // silently drift from the checked-in contract, matching #8's established
 // drift-guard pattern.
@@ -265,7 +265,6 @@ func TestInstanceLogEmittedBytesMatchSchema(t *testing.T) {
 		{Type: EventRunFinished, Workflow: "nominate", RunID: testIdentity().RunID, Status: string(PhaseCompleted)},
 		{Type: EventClaimAcquired, Name: "issue-8", RunID: testIdentity().RunID, Workflow: "curate"},
 		{Type: EventClaimReleased, Name: "issue-8", RunID: testIdentity().RunID, Workflow: "curate"},
-		{Type: EventClaimLockSlow, Runner: map[string]any{"operation": "backlog-query.claim", "pid": 42, "waitDuration": "6s", "holdDuration": "1ms"}},
 		{Type: EventConfigReloaded, Runner: map[string]any{"oldDigest": Digest([]byte("old")), "newDigest": Digest([]byte("new"))}},
 		{Type: EventConfigReloadRejected, Error: &ErrorDetail{Code: "config_reload_rejected", Message: "invalid workflow"}, Runner: map[string]any{"oldDigest": Digest([]byte("old")), "newDigest": Digest([]byte("invalid"))}},
 	} {

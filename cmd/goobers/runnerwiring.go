@@ -513,7 +513,7 @@ func buildRateLimitedHandler(pq *localscheduler.ProviderQuotaState) runner.RateL
 // runs before FinalizeTerminal, so the claims are still held here.
 func claimedItemIDsForRun(l instance.Layout, runID string) ([]string, error) {
 	var ids []string
-	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationRunLookup, func() error {
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
 		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
 		if err != nil {
 			return fmt.Errorf("open claim ledger: %w", err)

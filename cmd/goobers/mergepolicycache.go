@@ -144,7 +144,7 @@ func saveMergePolicyCacheEntry(schedulerDir, key string, entry mergePolicyCacheE
 }
 
 // withMergePolicyCacheLock serializes cache reads/writes across concurrent
-// merge-pr processes, reusing withBlockingFileLock's blocking-flock discipline
+// merge-pr processes, reusing withClaimLock's blocking-flock discipline
 // (siblingcache.go's withSiblingCacheLock rationale applies identically
 // here: each stage dispatch is its own OS process, so an in-process mutex
 // cannot arbitrate). Creates schedulerDir if a standalone/manual invocation
@@ -153,5 +153,5 @@ func withMergePolicyCacheLock(schedulerDir string, fn func() error) error {
 	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
 		return err
 	}
-	return withBlockingFileLock(filepath.Join(schedulerDir, mergePolicyCacheLockFileName), nil, nil, fn)
+	return withClaimLock(filepath.Join(schedulerDir, mergePolicyCacheLockFileName), fn)
 }

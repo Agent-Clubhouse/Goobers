@@ -55,7 +55,7 @@ func claimedPullRequestNumber(root string) (number int, ok bool, err error) {
 	}
 	l := layoutFor(root)
 	var claimed string
-	lockErr := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRLookup, func() error {
+	lockErr := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
@@ -112,7 +112,7 @@ func claimPullRequest(
 
 	l := layoutFor(root)
 	var selected *providers.PullRequestSummary
-	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRAcquire, func() error {
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), func() error {
 		instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir())
 		if err != nil {
 			return fmt.Errorf("open instance log: %w", err)

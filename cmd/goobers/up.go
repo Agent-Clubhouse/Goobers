@@ -235,7 +235,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	claimLockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
 		var released []localscheduler.ClaimEntry
-		err := withClaimLock(claimLockPath, claimLockOperationRecovery, func() error {
+		err := withClaimLock(claimLockPath, func() error {
 			ledger, err := localscheduler.OpenClaimLedger(claimLedgerPath, localscheduler.WithInstanceLog(setup.InstanceLog))
 			if err != nil {
 				return err

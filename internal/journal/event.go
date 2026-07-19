@@ -46,7 +46,7 @@ const (
 	// claim-ledger transitions recorded to scheduler/events.jsonl, the same
 	// envelope as a run journal's events.jsonl. EventRunStarted/EventRunFinished
 	// above are reused there to announce a run's start/end at the instance
-	// level (with Workflow/RunID set); these are scheduler-only concepts.
+	// level (with Workflow/RunID set); these four are scheduler-only concepts.
 
 	// EventTriggerFired records a cron/manual trigger firing for a workflow.
 	EventTriggerFired EventType = "trigger.fired"
@@ -58,10 +58,6 @@ const (
 	// EventClaimReleased records a lease release (run finished, expired, or
 	// crash-recovered).
 	EventClaimReleased EventType = "claim.released"
-	// EventClaimLockSlow records claims-lock contention above the local runner's
-	// diagnostic threshold. Timing, operation, and process details live under
-	// Runner because they are runner-specific and excluded from conformance.
-	EventClaimLockSlow EventType = "claim_lock_slow"
 	// EventConfigReloaded records an atomically-applied config directory change.
 	EventConfigReloaded EventType = "config.reloaded"
 	// EventConfigReloadRejected records a changed config directory that failed

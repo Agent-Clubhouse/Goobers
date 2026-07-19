@@ -111,7 +111,7 @@ func saveSiblingCache(schedulerDir string, entries map[string]siblingCacheEntry)
 }
 
 // withSiblingCacheLock serializes cache reads/writes across concurrent
-// gather processes, reusing withBlockingFileLock's blocking-flock discipline (and
+// gather processes, reusing withClaimLock's blocking-flock discipline (and
 // claims.json's rationale: each stage dispatch is its own OS process, so an
 // in-process mutex cannot arbitrate). Creates schedulerDir if a standalone/
 // manual invocation runs against a root that was never scaffolded.
@@ -119,5 +119,5 @@ func withSiblingCacheLock(schedulerDir string, fn func() error) error {
 	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
 		return err
 	}
-	return withBlockingFileLock(filepath.Join(schedulerDir, siblingCacheLockFileName), nil, nil, fn)
+	return withClaimLock(filepath.Join(schedulerDir, siblingCacheLockFileName), fn)
 }

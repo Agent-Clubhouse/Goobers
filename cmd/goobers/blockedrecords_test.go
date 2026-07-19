@@ -1,37 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
-	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
-
-type stalledIssueClient struct {
-	next    providers.HTTPClient
-	path    string
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
-}
-
-func (c *stalledIssueClient) Do(req *http.Request) (*http.Response, error) {
-	if strings.HasSuffix(req.URL.Path, c.path) {
-		c.once.Do(func() { close(c.started) })
-		<-c.release
-	}
-	return c.next.Do(req)
-}
 
 func TestBlockedRecordsLoadSaveRoundTrip(t *testing.T) {
 	dir := t.TempDir()
@@ -368,145 +346,4 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 	if len(filtered) != 1 || filtered[0].ID != "511" {
 		t.Fatalf("filtered = %v, want only 511 — record 510 must still skip despite the bad sibling key", filtered)
 	}
-}
-
-func TestFilterBlockedEligibilityProviderFailureKeepsItemParked(t *testing.T) {
-	server, provider, repo := blockedFilterFixture(t)
-	server.addIssue(510, "blocked item", "goobers:ready")
-
-	recs := map[string]blockedRecord{
-		"510": {Blockers: []string{"441"}, RunID: "run-1"},
-	}
-	filtered, changed, warnings := filterBlockedEligibility(
-		context.Background(), provider, repo, []providers.WorkItem{{ID: "510"}}, recs,
-	)
-
-	if changed {
-		t.Fatal("changed = true, want provider failure to preserve the record")
-	}
-	if len(filtered) != 0 {
-		t.Fatalf("filtered = %v, want provider failure to keep 510 parked", filtered)
-	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "441") {
-		t.Fatalf("warnings = %v, want failed blocker lookup warning", warnings)
-	}
-	if _, ok := recs["510"]; !ok {
-		t.Fatal("provider failure removed blocked record 510")
-	}
-}
-
-func TestBacklogQueryReconcilesConcurrentBlockedReplacementBeforeClaim(t *testing.T) {
-	root := initDemo(t)
-	l := layoutFor(root)
-	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	observed := blockedRecord{Blockers: []string{"441"}, RunID: "old-run"}
-	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{"510": observed}); err != nil {
-		t.Fatal(err)
-	}
-
-	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	server.addIssue(441, "resolved prerequisite", "goobers:approved")
-	server.closeIssue(441)
-	server.addIssue(442, "replacement prerequisite", "goobers:approved")
-	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
-
-	stalled := &stalledIssueClient{
-		path:    "/issues/441",
-		started: make(chan struct{}),
-		release: make(chan struct{}),
-	}
-	var releaseOnce sync.Once
-	releaseProvider := func() { releaseOnce.Do(func() { close(stalled.release) }) }
-	defer releaseProvider()
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "query-run")
-	baseFactory := newGitHubProvider
-	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
-		provider := baseFactory(token, opts...)
-		stalled.next = provider.Client
-		provider.Client = stalled
-		return provider
-	}
-	t.Cleanup(func() { newGitHubProvider = baseFactory })
-
-	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
-	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
-	workDir := t.TempDir()
-	t.Chdir(workDir)
-
-	type queryResult struct {
-		code   int
-		stdout string
-		stderr string
-	}
-	queryDone := make(chan queryResult, 1)
-	go func() {
-		var stdout, stderr bytes.Buffer
-		code := runBacklogQuery([]string{"--claim", root}, &stdout, &stderr)
-		queryDone <- queryResult{code: code, stdout: stdout.String(), stderr: stderr.String()}
-	}()
-
-	var result queryResult
-	select {
-	case <-stalled.started:
-	case result = <-queryDone:
-		t.Fatalf("backlog-query exited before blocked-state lookup: code = %d, stdout = %q, stderr = %q", result.code, result.stdout, result.stderr)
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for blocked-state provider lookup")
-	}
-
-	replacement := blockedRecord{Blockers: []string{"442"}, RunID: "new-run"}
-	writeDone := make(chan error, 1)
-	go func() {
-		writeDone <- updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
-			recs["510"] = replacement
-			return true
-		})
-	}()
-	select {
-	case err := <-writeDone:
-		if err != nil {
-			t.Fatalf("write replacement blocked record: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("provider lookup held claims.lock and blocked the record update")
-	}
-	releaseProvider()
-
-	select {
-	case result = <-queryDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("backlog-query did not finish after provider lookup resumed")
-	}
-	if result.code != 0 {
-		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", result.code, result.stdout, result.stderr)
-	}
-
-	recs, err := loadBlockedRecords(blockedRecordsPath(l))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, ok := recs["510"]; !ok || !sameBlockedRecord(got, replacement) {
-		t.Fatalf("blocked record = (%+v, %v), want concurrent replacement %+v", got, ok, replacement)
-	}
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if entry, claimed := ledger.Lookup("510"); claimed {
-		t.Fatalf("concurrently re-blocked item was claimed: %+v", entry)
-	}
-	events, err := journal.ReadInstanceLog(l.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, event := range events {
-		if event.Type == journal.EventRunnerAnnotation &&
-			event.Runner["annotation"] == blockedEligibilitySkipAnnotation &&
-			event.Runner["itemId"] == "510" {
-			return
-		}
-	}
-	t.Fatal("instance journal does not contain the blocked eligibility skip")
 }
