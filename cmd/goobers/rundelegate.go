@@ -210,9 +210,25 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 				sched.RecordTriggerRefusal(req.Workflow, resp.Error)
 			} else {
 				runID, terr := sched.Trigger(ctx, req.Workflow, sweepTime)
-				if terr != nil {
+				var rejected *localscheduler.TriggerRejectedError
+				switch {
+				case terr != nil && errors.As(terr, &rejected) && rejected.Transient():
+					// A capacity refusal is held by a run that is already
+					// finishing, so answering the client with a hard error
+					// turns a moment of contention into a failed command. Put
+					// the request back, untouched, and let the next sweep try
+					// again: CreatedAt is preserved, so the staleness check
+					// above still bounds the wait, and the client's own
+					// pollTriggerResponse deadline bounds it independently.
+					if rerr := os.WriteFile(reqPath, data, 0o644); rerr != nil {
+						sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: requeue trigger request %s: %w", requestID, rerr))
+						resp.Error = terr.Error()
+						break
+					}
+					continue
+				case terr != nil:
 					resp.Error = terr.Error()
-				} else {
+				default:
 					resp.RunID = runID
 				}
 			}
