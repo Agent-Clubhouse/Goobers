@@ -20,6 +20,10 @@ import (
 // CLI-level test.
 func seedGateVerdictJournal(t *testing.T, root, runID string, v apiv1.Verdict) {
 	t.Helper()
+	// Live runs receive these independently from gather-sibling-context. Most
+	// command tests use a matching pin; stale/omitted-echo tests override them.
+	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", v.HeadSHA)
+	t.Setenv("GOOBERS_INPUT_SELECTEDBASESHA", v.BaseSHA)
 	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
 		RunID: runID, Workflow: "merge-review", Gaggle: "goobers",
 	}, nil)

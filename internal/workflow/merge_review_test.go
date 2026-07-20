@@ -143,6 +143,16 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if applyVerdict.Next != "published-verdict" {
 				t.Errorf("apply-verdict.next = %q, want published-verdict", applyVerdict.Next)
 			}
+			wantApplyInputs := map[string]string{
+				"selectedNumber":      "selectedNumber",
+				"selectedHeadSha":     "selectedHeadSha",
+				"selectedBaseSha":     "selectedBaseSha",
+				"reviewDigest":        "reviewDigest",
+				"overlappingSiblings": "overlappingSiblingsCsv",
+			}
+			if !reflect.DeepEqual(applyVerdict.InputsFrom, wantApplyInputs) {
+				t.Errorf("apply-verdict inputsFrom = %v, want %v", applyVerdict.InputsFrom, wantApplyInputs)
+			}
 			publishedVerdict, ok := m.Gate("published-verdict")
 			if !ok {
 				t.Fatal("published-verdict gate not found")
