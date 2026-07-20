@@ -690,6 +690,14 @@ func TestFormatEvent(t *testing.T) {
 			want: "[4] stage.started stage=implement attempt=2 class=infra",
 		},
 		{
+			name: "stage heartbeat",
+			event: journal.Event{
+				Seq: 5, Type: journal.EventStageHeartbeat, Stage: "implement", Attempt: 2,
+				AttemptClass: journal.AttemptPolicy,
+			},
+			want: "[5] stage.heartbeat stage=implement attempt=2 class=policy",
+		},
+		{
 			name: "stage finished",
 			event: journal.Event{
 				Seq: 5, Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
@@ -851,6 +859,9 @@ func TestTraceShowsRepassCount(t *testing.T) {
 			}
 			if !strings.Contains(stdout.String(), "phase:    running (machineState=\"\", lastSeq=") {
 				t.Fatalf("trace stdout missing phase header: %q", stdout.String())
+			}
+			if !strings.Contains(stdout.String(), "\nlast activity: ") {
+				t.Fatalf("trace stdout missing last activity: %q", stdout.String())
 			}
 			if !strings.Contains(stdout.String(), "\n"+tt.want+"\nevents:") {
 				t.Fatalf("trace stdout missing repass header %q after phase: %q", tt.want, stdout.String())

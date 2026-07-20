@@ -174,12 +174,13 @@ func measureRunDiskUsage(runDir, runID string) (runDiskUsage, error) {
 
 // runSummary is the flat, journal-derived row the run-listing commands print.
 type runSummary struct {
-	RunID     string
-	DirName   string
-	Workflow  string
-	Gaggle    string
-	Phase     journal.RunPhase
-	StartedAt time.Time
+	RunID          string
+	DirName        string
+	Workflow       string
+	Gaggle         string
+	Phase          journal.RunPhase
+	StartedAt      time.Time
+	LastActivityAt time.Time
 }
 
 // listRuns scans an instance's runs/ directory for run subdirectories and

@@ -234,6 +234,75 @@ func (b *blockingDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelop
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
+type fakeHeartbeatTicker struct {
+	ticks   chan time.Time
+	stopped chan struct{}
+	once    sync.Once
+}
+
+func (t *fakeHeartbeatTicker) Ticks() <-chan time.Time { return t.ticks }
+func (t *fakeHeartbeatTicker) Stop() {
+	t.once.Do(func() { close(t.stopped) })
+}
+
+type heartbeatRecorder struct {
+	events chan journal.Event
+}
+
+func (r heartbeatRecorder) Append(event journal.Event) error {
+	r.events <- event
+	return nil
+}
+
+func TestStageHeartbeatUsesFixedIntervalAndStopsWithAttempt(t *testing.T) {
+	ticker := &fakeHeartbeatTicker{
+		ticks:   make(chan time.Time, 1),
+		stopped: make(chan struct{}),
+	}
+	var interval time.Duration
+	r := &Runner{
+		heartbeatInterval: StageHeartbeatInterval,
+		newHeartbeatTicker: func(got time.Duration) heartbeatTicker {
+			interval = got
+			return ticker
+		},
+	}
+	recorder := heartbeatRecorder{events: make(chan journal.Event, 1)}
+	heartbeat := r.startStageHeartbeat(recorder, "implement", 2, journal.AttemptPolicy)
+
+	ticker.ticks <- time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	select {
+	case event := <-recorder.events:
+		if event.Type != journal.EventStageHeartbeat ||
+			event.Stage != "implement" ||
+			event.Attempt != 2 ||
+			event.AttemptClass != journal.AttemptPolicy {
+			t.Fatalf("heartbeat event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat was not emitted after fake clock tick")
+	}
+	if interval != time.Minute {
+		t.Fatalf("heartbeat interval = %s, want 1m", interval)
+	}
+
+	if err := heartbeat.Stop(); err != nil {
+		t.Fatalf("stop heartbeat: %v", err)
+	}
+	select {
+	case <-ticker.stopped:
+	default:
+		t.Fatal("heartbeat ticker was not stopped")
+	}
+
+	ticker.ticks <- time.Date(2026, time.July, 20, 9, 1, 0, 0, time.UTC)
+	select {
+	case event := <-recorder.events:
+		t.Fatalf("heartbeat after attempt completion = %+v", event)
+	default:
+	}
+}
+
 // alwaysFailAutomated is an invoke.Automated that always reports "fail",
 // regardless of the subject's actual status — for constructing a gate whose
 // declared "pass" branch is statically reachable (satisfying

@@ -49,9 +49,9 @@ type NormativeEvent struct {
 
 // ConformanceView projects events down to the conformance-normative field set
 // (§3.3): it drops events IsConformanceNormative excludes (infra-retry
-// attempts, gate.started, span.recorded, repaired) and, on the events that
-// remain, the fields event.go's doc comments mark non-normative. It is the single
-// sanctioned comparison surface — the walking-skeleton seed
+// attempts, stage.heartbeat, gate.started, span.recorded, repaired) and, on the
+// events that remain, the fields event.go's doc comments mark non-normative. It
+// is the single sanctioned comparison surface — the walking-skeleton seed
 // (test/e2e/walking_skeleton_test.go) and the eventual V2 conformance harness
 // (#40) both go through this, not a test-local formatter, so a field added to
 // the normative set here is automatically covered everywhere that compares.

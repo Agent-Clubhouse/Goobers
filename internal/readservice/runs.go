@@ -99,6 +99,7 @@ type RunSummary struct {
 	StartedAt        time.Time        `json:"startedAt"`
 	FinishedAt       *time.Time       `json:"finishedAt,omitempty"`
 	DurationMillis   int64            `json:"durationMillis"`
+	LastActivityAt   time.Time        `json:"lastActivityAt"`
 	LastSeq          uint64           `json:"lastSeq"`
 	RepassCount      int              `json:"repassCount"`
 	RetryCount       int              `json:"retryCount"`
@@ -768,6 +769,7 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	phase := journal.PhaseRunning
 	var finishedAt *time.Time
 	var lastSeq uint64
+	var lastActivityAt time.Time
 	currentStage := ""
 	seenInitial := make(map[string]bool)
 	repasses, retries, policyRetries, infraRetries := 0, 0, 0, 0
@@ -776,6 +778,7 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 		event := record.Event
 		if event.Seq > lastSeq {
 			lastSeq = event.Seq
+			lastActivityAt = event.Time
 		}
 		if !event.KnownSchema() {
 			continue
@@ -844,6 +847,7 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 		StartedAt:        run.identity.StartedAt,
 		FinishedAt:       finishedAt,
 		DurationMillis:   duration,
+		LastActivityAt:   lastActivityAt,
 		LastSeq:          lastSeq,
 		RepassCount:      repasses,
 		RetryCount:       retries,

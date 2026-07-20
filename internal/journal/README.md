@@ -64,7 +64,7 @@ for the machine-readable contract; every field there is tagged
 |---|---|
 | `schema` | envelope version (`goobers.dev/journal/event/v1`) |
 | `seq` | monotonic per-run sequence from 1 — the ordering key |
-| `type` | `run.started` · `run.finished` · `stage.started` · `stage.finished` · `gate.evaluated` · `artifact.recorded` · `span.recorded` · `input.snapshot` · `ref.touched` · `error` · `redaction` · `repaired` |
+| `type` | `run.started` · `run.finished` · `stage.started` · `stage.heartbeat` · `stage.finished` · `gate.evaluated` · `artifact.recorded` · `span.recorded` · `input.snapshot` · `ref.touched` · `error` · `redaction` · `repaired` |
 | `branch` | 0 at tiers 1–2; reserved for tier-3 parallel branches |
 | `time` | timestamp — **excluded** from conformance |
 | `stage`/`attempt`/`attemptClass` | stage identity; `attemptClass` is `policy` or `infra` |
@@ -86,9 +86,10 @@ on either runner. "Equivalent" compares only the **normative** fields, in
   external-ref identity `(provider, kind, id)`, artifact **digest**, error
   `code`, redaction digests. Retry attempts count **only when
   `attemptClass != "infra"`**.
-- **Excluded:** `time` and any duration, `spans/` (and its `span.recorded`
-  events — harness/LLM output, structural only), `state.json` (derived), the
-  entire `runner.*` namespace, `ref.path`/`size`, `url`, human `message`.
+- **Excluded:** `time` and any duration, `stage.heartbeat`, `spans/` (and its
+  `span.recorded` events — harness/LLM output, structural only), `state.json`
+  (derived), the entire `runner.*` namespace, `ref.path`/`size`, `url`, human
+  `message`.
 
 `Event.IsConformanceNormative()` and the per-field `x-conformance` markers in the
 schema drive #29's determinism assertion and the V2 conformance harness (#40).

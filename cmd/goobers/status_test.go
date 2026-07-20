@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -88,12 +89,21 @@ func TestStatusJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
 	}
-	want := fmt.Sprintf(
-		`{"warnings":[],"runs":[{"runId":"a-new","workflow":"new-workflow","gaggle":"new-gaggle","phase":"running","startedAt":%q},{"runId":"z-old","workflow":"old-workflow","gaggle":"old-gaggle","phase":"running","startedAt":%q}]}`+"\n",
-		newStartedAt.Format(time.RFC3339), oldStartedAt.Format(time.RFC3339),
-	)
-	if stdout != want {
-		t.Fatalf("stdout = %q, want %q", stdout, want)
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if len(got.Runs) != 2 ||
+		got.Runs[0].RunID != "a-new" ||
+		got.Runs[1].RunID != "z-old" ||
+		!got.Runs[0].StartedAt.Equal(newStartedAt) ||
+		!got.Runs[1].StartedAt.Equal(oldStartedAt) {
+		t.Fatalf("runs = %+v", got.Runs)
+	}
+	for _, run := range got.Runs {
+		if run.LastActivityAt.IsZero() {
+			t.Fatalf("run %q has no last activity timestamp", run.RunID)
+		}
 	}
 }
 
@@ -221,7 +231,7 @@ func TestStatusJSONEmptyInstance(t *testing.T) {
 	}
 }
 
-func TestStatusDefaultTableOutputUnchanged(t *testing.T) {
+func TestStatusDefaultTableIncludesLastActivity(t *testing.T) {
 	root := initScheduledDemo(t)
 	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
 	writeStatusRun(t, root, "fixture-run", "fixture-workflow", "fixture", startedAt)
@@ -230,14 +240,16 @@ func TestStatusDefaultTableOutputUnchanged(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
-	want := fmt.Sprintf(
-		"Issues parked on learned dependencies: 0\n"+
-			"%-34s  %-24s  %-10s  %-10s  %s\n%-34s  %-24s  %-10s  %-10s  %s\n",
-		"RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED",
-		"fixture-run", "fixture-workflow", "fixture", "running", startedAt.Format(time.RFC3339),
-	)
-	if stdout != want {
-		t.Fatalf("stdout = %q, want %q", stdout, want)
+	for _, want := range []string{
+		"LAST ACTIVITY",
+		"fixture-run",
+		"fixture-workflow",
+		startedAt.Format(time.RFC3339),
+		" ago\n",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want it to contain %q", stdout, want)
+		}
 	}
 }
 
@@ -329,13 +341,14 @@ func TestStatusJSONFiltersByMultiplePhases(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status --json --phase: code = %d, stderr = %q", code, stderr)
 	}
-	want := fmt.Sprintf(
-		`{"warnings":[],"runs":[{"runId":"escalated-run","workflow":"implementation","gaggle":"goobers","phase":"escalated","startedAt":%q},{"runId":"failed-run","workflow":"implementation","gaggle":"goobers","phase":"failed","startedAt":%q}]}`+"\n",
-		startedAt.Add(2*time.Minute).Format(time.RFC3339),
-		startedAt.Add(time.Minute).Format(time.RFC3339),
-	)
-	if stdout != want {
-		t.Fatalf("stdout = %q, want %q", stdout, want)
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if len(got.Runs) != 2 ||
+		got.Runs[0].RunID != "escalated-run" ||
+		got.Runs[1].RunID != "failed-run" {
+		t.Fatalf("runs = %+v", got.Runs)
 	}
 }
 
@@ -375,12 +388,14 @@ func TestStatusFiltersCompose(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status with composed filters: code = %d, stderr = %q", code, stderr)
 	}
-	want := fmt.Sprintf(
-		`{"warnings":[],"runs":[{"runId":"merge-new","workflow":"merge-review","gaggle":"goobers","phase":"failed","startedAt":%q}]}`+"\n",
-		startedAt.Add(time.Minute).Format(time.RFC3339),
-	)
-	if stdout != want {
-		t.Fatalf("stdout = %q, want %q", stdout, want)
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if len(got.Runs) != 1 ||
+		got.Runs[0].RunID != "merge-new" ||
+		!got.Runs[0].StartedAt.Equal(startedAt.Add(time.Minute)) {
+		t.Fatalf("runs = %+v", got.Runs)
 	}
 }
 
@@ -510,7 +525,7 @@ func TestWatchStatusRepaintsFiltersAndHighlightsPhaseChangeForOneFrame(t *testin
 		target.Workflow,
 		target.Gaggle,
 		journal.PhaseFailed,
-		target.StartedAt.Format(time.RFC3339),
+		"-",
 	)
 	if got := strings.Count(output, statusHighlight+failedRow+statusReset); got != 1 {
 		t.Fatalf("highlighted failed row count = %d, want 1 (output=%q)", got, output)
@@ -525,6 +540,19 @@ func TestWatchStatusRepaintsFiltersAndHighlightsPhaseChangeForOneFrame(t *testin
 		if len(line) > 80 {
 			t.Fatalf("watch line is %d columns, want at most 80: %q", len(line), line)
 		}
+	}
+}
+
+func TestFormatLastActivity(t *testing.T) {
+	now := time.Date(2026, time.July, 20, 9, 1, 30, 0, time.UTC)
+	if got := formatLastActivity(now, now.Add(-90*time.Second)); got != "1m30s ago" {
+		t.Fatalf("formatLastActivity() = %q, want %q", got, "1m30s ago")
+	}
+	if got := formatLastActivity(now, now.Add(time.Second)); got != "0s ago" {
+		t.Fatalf("future activity = %q, want %q", got, "0s ago")
+	}
+	if got := formatLastActivity(now, time.Time{}); got != "-" {
+		t.Fatalf("missing activity = %q, want %q", got, "-")
 	}
 }
 

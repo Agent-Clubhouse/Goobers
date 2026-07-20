@@ -25,6 +25,7 @@
         "run.started",
         "run.finished",
         "stage.started",
+        "stage.heartbeat",
         "stage.finished",
         "gate.started",
         "gate.evaluated",
@@ -43,7 +44,7 @@
         "config.reloaded",
         "config.reload.rejected"
       ],
-      "x-conformance": "conditional: gate.started is excluded; all other event types are normative unless separately excluded"
+      "x-conformance": "conditional: stage.heartbeat and gate.started are excluded; all other event types are normative unless separately excluded"
     },
     "branch": {
       "description": "Parallel-branch id. 0 at tiers 1-2; reserved for tier-3 parallel branches. Secondary ordering key.",
@@ -60,19 +61,19 @@
     "stage": {
       "description": "Stage name for stage.* events and stage-scoped artifacts.",
       "type": "string",
-      "x-conformance": "normative"
+      "x-conformance": "conditional: excluded for stage.heartbeat; otherwise normative"
     },
     "attempt": {
       "description": "1-based attempt number for stage.* events and stage-scoped artifacts.",
       "type": "integer",
       "minimum": 1,
-      "x-conformance": "normative"
+      "x-conformance": "conditional: excluded for stage.heartbeat; otherwise normative"
     },
     "attemptClass": {
       "description": "Why a retry attempt exists. Only 'policy' attempts are normative; 'infra' attempts are excluded from the conformance set. The initial attempt carries no class and is always included.",
       "type": "string",
       "enum": ["policy", "infra"],
-      "x-conformance": "conditional: excluded when 'infra'"
+      "x-conformance": "conditional: excluded for stage.heartbeat and when 'infra'"
     },
     "gate": {
       "description": "Gate name for gate.* events. gate.started is recovery bookkeeping and excluded from conformance; gate.evaluated is normative.",
