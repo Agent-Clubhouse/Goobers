@@ -160,14 +160,67 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "warning: %v\n", uerr)
 	}
 
+	unescalated, unescalateErrs := unparkSelfHealedEscalations(ctx, provider, repo, poll.Number, poll.BaseBranch, stderr)
+	for _, eerr := range unescalateErrs {
+		pf(stderr, "warning: %v\n", eerr)
+	}
+
 	closed, closeErrs := closeReferencedIssues(ctx, provider, repo, poll.Body, pullNumber)
 	for _, cerr := range closeErrs {
 		pf(stderr, "warning: %v\n", cerr)
 	}
 
-	pf(stdout, "post-merge: labeled %d pr(s) %s (%d clean siblings left untouched), unparked %d blocked-on-sibling pr(s), closed %d issue(s)\n",
-		len(labeled), needsRemediationLabel, len(skipped), len(unparked), len(closed))
+	pf(stdout, "post-merge: labeled %d pr(s) %s (%d clean siblings left untouched), unparked %d blocked-on-sibling pr(s), un-escalated %d self-healed pr(s), closed %d issue(s)\n",
+		len(labeled), needsRemediationLabel, len(skipped), len(unparked), len(unescalated), len(closed))
 	return 0
+}
+
+// unparkSelfHealedEscalations removes goobers:merge-escalated from any open PR
+// that has self-healed since it was parked (#992/#836) — its own head/base SHA
+// has moved past the escalation snapshot, so escalationStillBlocks now returns
+// false. Until this, merge-escalated was never removed by any code path:
+// escalationStillBlocks only made a self-healed PR re-selectable while the
+// stale label physically remained (and, post-#986, kept it needlessly excluded
+// from the open-PR cap). A merge advancing the base is one way a parked PR's
+// recorded state goes stale, so post-merge is a natural sweep point. A genuine
+// dead-end whose SHA has not moved (escalationStillBlocks fail-closed) keeps
+// the label and its human handoff. Mirrors unparkResolvedSiblings' shape and
+// best-effort error posture.
+func unparkSelfHealedEscalations(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, base string, stderr io.Writer) (unparked []int, errs []error) {
+	if base == "" {
+		return nil, nil
+	}
+	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, HeadPrefix: "goobers/", SkipCheckState: true,
+	})
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for merge-escalated unpark: %w", base, err))
+		return nil, errs
+	}
+	for _, pr := range others {
+		if pr.Number == mergedNumber {
+			continue
+		}
+		if !hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) {
+			continue
+		}
+		stillBlocked, berr := escalationStillBlocks(ctx, provider, repo, pr)
+		if berr != nil {
+			errs = append(errs, fmt.Errorf("check merge-escalated state for pr #%d during unpark: %w", pr.Number, berr))
+			continue
+		}
+		if stillBlocked {
+			continue
+		}
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: repo, ID: strconv.Itoa(pr.Number), RemoveLabels: []string{remediationEscalatedLabel},
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("clear %s from pr #%d: %w", remediationEscalatedLabel, pr.Number, err))
+			continue
+		}
+		unparked = append(unparked, pr.Number)
+	}
+	return unparked, errs
 }
 
 // unparkResolvedSiblings clears goobers:blocked-on-sibling from every open
