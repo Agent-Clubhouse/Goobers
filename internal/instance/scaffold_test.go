@@ -62,6 +62,51 @@ func TestInitFresh(t *testing.T) {
 	if len(set.Gaggles) != 1 || len(set.Goobers) != 1 || len(set.Workflows) != 1 {
 		t.Fatalf("unexpected seeded config shape: %+v", set)
 	}
+	assertDefaultImplementationPublishesPR(t, set.Workflows[0])
+}
+
+func assertDefaultImplementationPublishesPR(t *testing.T, workflow apiv1.Workflow) {
+	t.Helper()
+	if workflow.Name != "default-implement" || workflow.Spec.Start != "query-backlog" {
+		t.Fatalf("unexpected default implementation entrypoint: %+v", workflow)
+	}
+	if len(workflow.Spec.Tasks) != 5 {
+		t.Fatalf("default implementation tasks = %d, want 5", len(workflow.Spec.Tasks))
+	}
+	tasks := make(map[string]apiv1.Task, len(workflow.Spec.Tasks))
+	for _, task := range workflow.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	if task := tasks["query-backlog"]; task.Next != "implement" {
+		t.Fatalf("query-backlog next = %q, want implement", task.Next)
+	}
+	if task := tasks["implement"]; task.Type != apiv1.TaskAgentic ||
+		len(task.Capabilities) != 1 || task.Capabilities[0] != "repo:push" ||
+		task.Next != "push-branch" {
+		t.Fatalf("implement task does not hand committed work to push-branch: %+v", task)
+	}
+	if task := tasks["push-branch"]; task.Type != apiv1.TaskDeterministic ||
+		task.Run == nil || len(task.Run.Command) != 2 ||
+		task.Run.Command[0] != "goobers" || task.Run.Command[1] != "push-branch" ||
+		task.Next != "open-pr" {
+		t.Fatalf("push-branch task does not publish before PR creation: %+v", task)
+	}
+	if task := tasks["open-pr"]; task.Type != apiv1.TaskDeterministic ||
+		task.Run == nil || len(task.Run.Command) != 2 ||
+		task.Run.Command[0] != "goobers" || task.Run.Command[1] != "open-pr" ||
+		task.Inputs["resultFile"] != "pr-result.json" ||
+		len(task.ExpectedOutputs) != 2 ||
+		task.ExpectedOutputs[0] != "pull-request-url" ||
+		task.ExpectedOutputs[1] != "prNumber" ||
+		task.Next != "close-out" {
+		t.Fatalf("open-pr task does not verify PR creation before close-out: %+v", task)
+	}
+	if task := tasks["close-out"]; task.Type != apiv1.TaskDeterministic ||
+		task.Run == nil || len(task.Run.Command) != 2 ||
+		task.Run.Command[0] != "goobers" || task.Run.Command[1] != "issue-close-out" ||
+		task.Inputs["status"] != "in-review" {
+		t.Fatalf("close-out task does not keep the issue open for merge: %+v", task)
+	}
 }
 
 func TestInitDemoFresh(t *testing.T) {

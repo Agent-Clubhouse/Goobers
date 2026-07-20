@@ -14,7 +14,6 @@ spec:
   harnessOptions: {}
   capabilities:
     - repo:push
-    - github:pr:write
   skills:
     - implement
     - run-tests

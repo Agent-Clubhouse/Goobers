@@ -107,7 +107,7 @@ func TestExampleConfigWorkflowCompiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	const want = "sha256:51734f07e0eec359252bc86904a1bf34915cbad3abc5224a9466903a37f74a5e"
+	const want = "sha256:41f7ddba694b8bcfa17e99d370aa7b958a93b1010b83acd11c43d38685f9aefe"
 	t.Logf("default-implement digest = %s", m.Digest())
 	if m.Digest() != want {
 		t.Errorf("digest drift for default-implement:\n got  %s\n want %s\n(update if intended)", m.Digest(), want)
