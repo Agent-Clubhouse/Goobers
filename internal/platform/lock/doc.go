@@ -4,7 +4,7 @@
 // ErrHeld when another handle owns the lock. A lock remains held until its
 // Handle is released or the holding process exits.
 //
-// Locks are advisory on Unix but mandatory on Windows. Callers must not rely on
-// another process being able to read or write a locked file, and lock files must
-// reside on a local filesystem.
+// Locks are advisory on Unix. Windows mandatorily locks a reserved byte at a
+// high offset, leaving metadata at the start of the file accessible to other
+// processes. Lock files must reside on a local filesystem.
 package lock
