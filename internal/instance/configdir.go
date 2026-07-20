@@ -57,11 +57,11 @@ func (s *ConfigSet) WorkflowSource(gaggle, name string) (string, bool) {
 // schemas (api/validate) and, if valid, parses its documents into typed
 // structs pruned to the manifest's desired state.
 //
-// Deeper workflow semantics (dangling states, branch targets — the DSL
-// compiler, issue #9) are not wired in yet; only schema-shape validation runs
-// today. Validation fails closed (CFG-023): on an invalid directory this
-// returns ErrInvalidConfig and a nil ConfigSet, so a caller with a
-// last-known-good set (e.g. a watching daemon) can leave it in place.
+// Validation includes schema shape, cross-definition bindings, workflow
+// semantics, capability names, and referenced instruction files. It fails
+// closed (CFG-023): on an invalid directory this returns ErrInvalidConfig and a
+// nil ConfigSet, so a caller with a last-known-good set (e.g. a watching
+// daemon) can leave it in place.
 func LoadConfigDir(dir string) (*ConfigSet, *validate.Report, error) {
 	v, err := validate.New()
 	if err != nil {

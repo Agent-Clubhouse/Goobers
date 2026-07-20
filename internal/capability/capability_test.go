@@ -33,3 +33,18 @@ func TestAllHasNoDuplicates(t *testing.T) {
 		seen[c] = true
 	}
 }
+
+func TestSuggestReturnsLikelyTypo(t *testing.T) {
+	got, ok := Suggest("github:prs:write")
+	if !ok || got != GitHubPRWrite {
+		t.Fatalf("Suggest(github:prs:write) = %q, %t; want %q, true", got, ok, GitHubPRWrite)
+	}
+}
+
+func TestSuggestRejectsDistantAndCanonicalValues(t *testing.T) {
+	for _, value := range []string{"not-a-capability", string(RepoPush)} {
+		if got, ok := Suggest(value); ok {
+			t.Errorf("Suggest(%q) = %q, true; want no suggestion", value, got)
+		}
+	}
+}

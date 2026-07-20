@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -283,6 +284,157 @@ func TestWorkflowOwnerMustBelongToWorkflowGaggle(t *testing.T) {
 	if !strings.Contains(got, `targets goober "reviewer" in gaggle "beta", not workflow gaggle "alpha"`) ||
 		!strings.Contains(got, `reviewer goober "reviewer" is in gaggle "beta", not workflow gaggle "alpha"`) {
 		t.Fatalf("cross-gaggle owner errors missing:\n%s", got)
+	}
+}
+
+func TestForeignLayoutDiagnosticsAreActionable(t *testing.T) {
+	tests := []struct {
+		name              string
+		manifestGaggles   string
+		workflowGaggle    string
+		capability        string
+		writeInstructions bool
+		want              []string
+	}{
+		{
+			name:              "valid",
+			manifestGaggles:   "    - acme",
+			workflowGaggle:    "acme",
+			capability:        "repo:read",
+			writeInstructions: true,
+		},
+		{
+			name:              "unbound workflow",
+			manifestGaggles:   "    - acme",
+			workflowGaggle:    "ghost",
+			capability:        "repo:read",
+			writeInstructions: true,
+			want: []string{
+				`foreign.yaml Workflow/build: spec.gaggle names "ghost", but no Gaggle/ghost definition was found`,
+			},
+		},
+		{
+			name:              "manifest names undefined gaggle",
+			manifestGaggles:   "    - ghost",
+			workflowGaggle:    "acme",
+			capability:        "repo:read",
+			writeInstructions: true,
+			want: []string{
+				`foreign.yaml Manifest/foreign: spec.gaggles references "ghost", but no Gaggle/ghost definition was found`,
+			},
+		},
+		{
+			name:              "capability typo",
+			manifestGaggles:   "    - acme",
+			workflowGaggle:    "acme",
+			capability:        "github:prs:write",
+			writeInstructions: true,
+			want: []string{
+				`foreign.yaml Goober/coder: spec.capabilities contains unknown capability "github:prs:write"; did you mean "github:pr:write"?`,
+			},
+		},
+		{
+			name:            "missing instructions",
+			manifestGaggles: "    - acme",
+			workflowGaggle:  "acme",
+			capability:      "repo:read",
+			want: []string{
+				`foreign.yaml Goober/coder: spec.instructions file "instructions.md" was not found; expected it at "instructions.md"`,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			config := fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: foreign
+spec:
+  instance:
+    name: foreign
+    environment: dev
+  gaggles:
+%s
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: acme
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: app
+  backlog:
+    provider: github
+    project: acme/app
+  isolation:
+    namespace: gaggle-acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: acme
+  role: coder
+  instructions: instructions.md
+  capabilities:
+    - %s
+  workflows:
+    - build
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: build
+spec:
+  gaggle: %s
+  triggers:
+    - type: manual
+  start: build
+  tasks:
+    - name: build
+      type: deterministic
+      goal: Build the project.
+      run:
+        command: ["true"]
+        workspace: scratch
+`, tc.manifestGaggles, tc.capability, tc.workflowGaggle)
+			if err := os.WriteFile(filepath.Join(dir, "foreign.yaml"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tc.writeInstructions {
+				if err := os.WriteFile(filepath.Join(dir, "instructions.md"), []byte("# Coder\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			got := joinIssues(report)
+			if len(tc.want) == 0 {
+				if report.HasErrors() {
+					t.Fatalf("valid foreign layout reported errors:\n%s", got)
+				}
+				return
+			}
+			if !report.HasErrors() {
+				t.Fatalf("malformed foreign layout reported no errors")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("diagnostics missing %q:\n%s", want, got)
+				}
+			}
+			if tc.name == "capability typo" && strings.Count(got, `unknown capability "github:prs:write"`) != 1 {
+				t.Errorf("capability typo should be reported once at its Goober source:\n%s", got)
+			}
+		})
 	}
 }
 

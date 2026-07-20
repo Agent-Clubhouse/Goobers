@@ -21,6 +21,7 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -443,11 +444,13 @@ type indexedWorkflow struct {
 // index holds the typed objects keyed by their config identities for
 // cross-reference checks.
 type index struct {
-	manifests []apiv1.Manifest
-	gaggles   map[string]apiv1.Gaggle
-	goobers   map[string]apiv1.Goober
-	workflows map[workflowIdentity]indexedWorkflow
-	gooberDir map[string]string // goober name -> source dir (for instruction path checks)
+	manifests    []apiv1.Manifest
+	gaggles      map[string]apiv1.Gaggle
+	goobers      map[string]apiv1.Goober
+	workflows    map[workflowIdentity]indexedWorkflow
+	manifestFile map[string]string
+	gooberFile   map[string]string
+	gooberDir    map[string]string // goober name -> source dir (for instruction path checks)
 
 	// manifestDocsSeen counts documents with kind=Manifest regardless of whether
 	// they passed schema validation, so we don't double-report "no Manifest" for
@@ -457,10 +460,12 @@ type index struct {
 
 func newIndex() *index {
 	return &index{
-		gaggles:   map[string]apiv1.Gaggle{},
-		goobers:   map[string]apiv1.Goober{},
-		workflows: map[workflowIdentity]indexedWorkflow{},
-		gooberDir: map[string]string{},
+		gaggles:      map[string]apiv1.Gaggle{},
+		goobers:      map[string]apiv1.Goober{},
+		workflows:    map[workflowIdentity]indexedWorkflow{},
+		manifestFile: map[string]string{},
+		gooberFile:   map[string]string{},
+		gooberDir:    map[string]string{},
 	}
 }
 
@@ -473,6 +478,7 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 			return
 		}
 		ix.manifests = append(ix.manifests, m)
+		ix.manifestFile[m.Name] = doc.file
 	case "Gaggle":
 		var g apiv1.Gaggle
 		if err := yaml.Unmarshal(doc.json, &g); err != nil {
@@ -489,6 +495,7 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 		}
 		ix.dupCheck(r, doc, "Goober", g.Name, func() bool { _, ok := ix.goobers[g.Name]; return ok })
 		ix.goobers[g.Name] = g
+		ix.gooberFile[g.Name] = doc.file
 		ix.gooberDir[g.Name] = doc.dir
 	case "Workflow":
 		var w apiv1.Workflow
@@ -529,26 +536,50 @@ func (ix *index) crossCheck(r *Report) {
 	for _, m := range ix.manifests {
 		for _, gname := range m.Spec.Gaggles {
 			if _, ok := ix.gaggles[gname]; !ok {
-				r.add(Error, "", "Manifest", m.Name, "references gaggle %q which is not defined", gname)
+				r.add(Error, ix.manifestFile[m.Name], "Manifest", m.Name,
+					"spec.gaggles references %q, but no Gaggle/%s definition was found", gname, gname)
 			}
 		}
 	}
-
 	// Goober -> gaggle / workflow references resolve; instruction file exists.
 	for _, g := range ix.goobers {
+		file := ix.gooberFile[g.Name]
 		if _, ok := ix.gaggles[g.Spec.Gaggle]; !ok {
-			r.add(Error, "", "Goober", g.Name, "belongs to gaggle %q which is not defined", g.Spec.Gaggle)
+			r.add(Error, file, "Goober", g.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
+				g.Spec.Gaggle, g.Spec.Gaggle)
 		}
 		for _, wf := range g.Spec.Workflows {
 			identity := workflowIdentity{gaggle: g.Spec.Gaggle, name: wf}
 			if _, ok := ix.workflows[identity]; !ok {
-				r.add(Error, "", "Goober", g.Name, "associated workflow %q is not defined", wf)
+				r.add(Error, file, "Goober", g.Name,
+					"spec.workflows references %q, but no Workflow/%s is defined in gaggle %q",
+					wf, wf, g.Spec.Gaggle)
 			}
+		}
+		for _, value := range g.Spec.Capabilities {
+			if capability.Known(value) {
+				continue
+			}
+			message := fmt.Sprintf("spec.capabilities contains unknown capability %q", value)
+			if suggestion, ok := capability.Suggest(value); ok {
+				message += fmt.Sprintf("; did you mean %q?", suggestion)
+			}
+			r.add(Error, file, "Goober", g.Name, "%s", message)
 		}
 		if g.Spec.Instructions != "" {
 			p := filepath.Join(ix.gooberDir[g.Name], g.Spec.Instructions)
-			if _, err := os.Stat(p); err != nil {
-				r.add(Error, "", "Goober", g.Name, "instructions file %q not found (looked in %s)", g.Spec.Instructions, ix.gooberDir[g.Name])
+			info, err := os.Stat(p)
+			expected := filepath.ToSlash(filepath.Join(filepath.Dir(file), g.Spec.Instructions))
+			switch {
+			case errors.Is(err, fs.ErrNotExist):
+				r.add(Error, file, "Goober", g.Name,
+					"spec.instructions file %q was not found; expected it at %q", g.Spec.Instructions, expected)
+			case err != nil:
+				r.add(Error, file, "Goober", g.Name,
+					"cannot access spec.instructions file %q at %q: %v", g.Spec.Instructions, expected, err)
+			case !info.Mode().IsRegular():
+				r.add(Error, file, "Goober", g.Name,
+					"spec.instructions must name a regular file; %q resolves to %q", g.Spec.Instructions, expected)
 			}
 		}
 	}
@@ -561,25 +592,26 @@ func (ix *index) crossCheck(r *Report) {
 
 func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 	if _, ok := ix.gaggles[w.Spec.Gaggle]; !ok {
-		r.add(Error, "", "Workflow", w.Name, "belongs to gaggle %q which is not defined", w.Spec.Gaggle)
+		r.add(Error, file, "Workflow", w.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
+			w.Spec.Gaggle, w.Spec.Gaggle)
 	}
 
 	states := map[string]bool{}
 	for _, t := range w.Spec.Tasks {
 		if states[t.Name] {
-			r.add(Error, "", "Workflow", w.Name, "duplicate state name %q", t.Name)
+			r.add(Error, file, "Workflow", w.Name, "duplicate state name %q", t.Name)
 		}
 		states[t.Name] = true
 	}
 	for _, g := range w.Spec.Gates {
 		if states[g.Name] {
-			r.add(Error, "", "Workflow", w.Name, "duplicate state name %q", g.Name)
+			r.add(Error, file, "Workflow", w.Name, "duplicate state name %q", g.Name)
 		}
 		states[g.Name] = true
 	}
 
 	if w.Spec.Start != "" && !states[w.Spec.Start] {
-		r.add(Error, "", "Workflow", w.Name, "start state %q is not a defined task or gate", w.Spec.Start)
+		r.add(Error, file, "Workflow", w.Name, "start state %q is not a defined task or gate", w.Spec.Start)
 	}
 
 	for _, t := range w.Spec.Tasks {
@@ -587,27 +619,27 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 			goober, ok := ix.goobers[t.Goober]
 			switch {
 			case !ok:
-				r.add(Error, "", "Workflow", w.Name, "task %q targets goober %q which is not defined", t.Name, t.Goober)
+				r.add(Error, file, "Workflow", w.Name, "task %q targets goober %q which is not defined", t.Name, t.Goober)
 			case goober.Spec.Gaggle != w.Spec.Gaggle:
-				r.add(Error, "", "Workflow", w.Name,
+				r.add(Error, file, "Workflow", w.Name,
 					"task %q targets goober %q in gaggle %q, not workflow gaggle %q",
 					t.Name, t.Goober, goober.Spec.Gaggle, w.Spec.Gaggle)
 			}
 		}
 		if t.Next != "" && !wf.IsReservedTarget(t.Next) && !states[t.Next] {
-			r.add(Error, "", "Workflow", w.Name, "task %q next state %q is not defined", t.Name, t.Next)
+			r.add(Error, file, "Workflow", w.Name, "task %q next state %q is not defined", t.Name, t.Next)
 		}
 	}
 
 	for _, g := range w.Spec.Gates {
-		ix.checkGateEvaluator(r, w, g)
+		ix.checkGateEvaluator(r, w, g, file)
 		if g.Evaluator == apiv1.EvaluatorAgentic && g.Agentic != nil && g.Agentic.Goober != "" {
 			goober, ok := ix.goobers[g.Agentic.Goober]
 			switch {
 			case !ok:
-				r.add(Error, "", "Workflow", w.Name, "gate %q reviewer goober %q is not defined", g.Name, g.Agentic.Goober)
+				r.add(Error, file, "Workflow", w.Name, "gate %q reviewer goober %q is not defined", g.Name, g.Agentic.Goober)
 			case goober.Spec.Gaggle != w.Spec.Gaggle:
-				r.add(Error, "", "Workflow", w.Name,
+				r.add(Error, file, "Workflow", w.Name,
 					"gate %q reviewer goober %q is in gaggle %q, not workflow gaggle %q",
 					g.Name, g.Agentic.Goober, goober.Spec.Gaggle, w.Spec.Gaggle)
 			}
@@ -617,7 +649,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 			// and "@escalate" are reserved terminal targets — neither is a
 			// dangling reference (workflow.IsReservedTarget).
 			if next != "" && !wf.IsReservedTarget(next) && !states[next] {
-				r.add(Error, "", "Workflow", w.Name, "gate %q branch %q -> %q is not a defined state", g.Name, outcome, next)
+				r.add(Error, file, "Workflow", w.Name, "gate %q branch %q -> %q is not a defined state", g.Name, outcome, next)
 			}
 		}
 	}
@@ -631,22 +663,22 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckReachability(def) {
-		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+		r.add(Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckSchedules(def) {
-		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+		r.add(Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckGateOutcomes(def) {
-		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+		r.add(Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckGateParameters(def) {
-		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+		r.add(Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckTriggerFields(def) {
-		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+		r.add(Error, file, "Workflow", w.Name, "%s", msg)
 	}
-	for _, msg := range wf.CheckAdmission(def, ix.gooberSpecs()) {
-		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+	for _, msg := range wf.CheckWorkflowAdmission(def, ix.gooberSpecs()) {
+		r.add(Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	// Stage output/input contracts (#900). These catch the class of defect
 	// that is structurally valid, compiles, and then silently loses data at
@@ -655,7 +687,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 	// branch does not produce. Reported as errors: both are unconditionally
 	// broken at runtime, on some path, every time.
 	for _, msg := range wf.CheckStageContracts(def) {
-		r.add(Error, "", "Workflow", w.Name, "%s", msg)
+		r.add(Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	// Only the breaking half is reported here. CheckStageContractWarnings
 	// covers the same omission on outputs nothing reads yet, which #881's
@@ -678,7 +710,7 @@ func (ix *index) gooberSpecs() map[string]apiv1.GooberSpec {
 
 // checkGateEvaluator enforces GT-016: exactly one evaluator block, matching the
 // declared evaluator kind.
-func (ix *index) checkGateEvaluator(r *Report, w apiv1.Workflow, g apiv1.Gate) {
+func (ix *index) checkGateEvaluator(r *Report, w apiv1.Workflow, g apiv1.Gate, file string) {
 	set := 0
 	if g.Automated != nil {
 		set++
@@ -690,13 +722,13 @@ func (ix *index) checkGateEvaluator(r *Report, w apiv1.Workflow, g apiv1.Gate) {
 		set++
 	}
 	if set != 1 {
-		r.add(Error, "", "Workflow", w.Name, "gate %q must have exactly one evaluator block, found %d", g.Name, set)
+		r.add(Error, file, "Workflow", w.Name, "gate %q must have exactly one evaluator block, found %d", g.Name, set)
 		return
 	}
 	mismatch := (g.Evaluator == apiv1.EvaluatorAutomated && g.Automated == nil) ||
 		(g.Evaluator == apiv1.EvaluatorAgentic && g.Agentic == nil) ||
 		(g.Evaluator == apiv1.EvaluatorHuman && g.Human == nil)
 	if mismatch {
-		r.add(Error, "", "Workflow", w.Name, "gate %q evaluator=%q but the matching evaluator block is not set", g.Name, g.Evaluator)
+		r.add(Error, file, "Workflow", w.Name, "gate %q evaluator=%q but the matching evaluator block is not set", g.Name, g.Evaluator)
 	}
 }
