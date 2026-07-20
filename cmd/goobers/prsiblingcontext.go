@@ -152,11 +152,13 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	next := make(map[string]siblingCacheEntry, len(prs))
 
 	var selectedHeadSHA, selectedBaseSHA string
+	selectedFound := false
 	var selectedFiles []string
 	reused := 0
 	siblings := make([]siblingPR, 0, len(prs))
 	for _, pr := range prs {
 		if pr.Number == selectedNumber {
+			selectedFound = true
 			// Capture the selected PR's OWN current SHAs from this same
 			// fresh query — this is what the review gate's Verdict should
 			// pin against (design doc §6 D6), not whatever pr-select saw
@@ -230,7 +232,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if selectedHeadSHA == "" {
+	if !selectedFound {
 		// The selected PR vanished from the eligible list between pr-select
 		// and here (merged/closed/retargeted mid-cycle) — nothing to review.
 		return writeNoWorkResult(stdout, stderr, "selected PR is no longer open")

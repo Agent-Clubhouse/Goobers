@@ -75,6 +75,43 @@ func TestComputeReviewDigestRejectsIncompleteKey(t *testing.T) {
 	}
 }
 
+func TestGatherSiblingContextMissingSelectedHeadForcesFreshReview(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(10, "Selected PR")
+	server.addOpenPR(10, "goobers/implementation/run-10", "main", "", "shamainbase", false, nil, selectedPRFiles)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-2")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	code, stdout, stderr := runArgs(t, "gather-sibling-context", root)
+	if code != 0 {
+		t.Fatalf("gather-sibling-context: code = %d, stderr = %q", code, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "sibling-context.json"))
+	if err != nil {
+		t.Fatalf("read sibling-context.json: %v", err)
+	}
+	var result struct {
+		SelectedHeadSHA   string `json:"selectedHeadSha"`
+		ReviewDigest      string `json:"reviewDigest"`
+		CachedVerdictJSON string `json:"cachedVerdictJson"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal sibling-context.json: %v", err)
+	}
+	if result.SelectedHeadSHA != "" || result.ReviewDigest != "" || result.CachedVerdictJSON != "" {
+		t.Fatalf("result = %+v, want missing head to disable cache reuse", result)
+	}
+	if strings.Contains(stdout, "no work") {
+		t.Fatalf("stdout = %q, want the present PR to proceed to fresh review", stdout)
+	}
+	if !strings.Contains(stderr, "verdict cache key is incomplete; forcing a fresh review") {
+		t.Fatalf("stderr = %q, want incomplete-key fresh-review warning", stderr)
+	}
+}
+
 // selectedPRFiles is the fixture's selected PR #10's own changed files.
 var selectedPRFiles = []fakePRFile{{path: "cmd/goobers/foo.go", status: "modified", additions: 3, deletions: 1, patch: "@@ -1,3 +1,3 @@\n a\n-b\n+c\n"}}
 
