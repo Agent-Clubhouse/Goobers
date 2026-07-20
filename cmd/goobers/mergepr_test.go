@@ -8,11 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -1042,7 +1042,7 @@ func TestMergePRRefusesWithoutCapability(t *testing.T) {
 // merge-review's readiness now allowing several concurrent runs to review
 // DIFFERENT PRs at once, only one PR may be inside merge-pr's poll->decide->
 // merge window at a time. Simulates a concurrent run already holding that
-// window (an external flock on the exact same instance-scoped lock file,
+// window (an external lock on the exact same instance-scoped lock file,
 // released only after a delay) and asserts this invocation's poll — and
 // therefore its whole decision, including the actual merge call — does not
 // happen until the held lock is released. A merge-pr that raced ahead
@@ -1058,20 +1058,16 @@ func TestMergePRWaitsForHeldMergeLock(t *testing.T) {
 
 	l := layoutFor(root)
 	lockPath := filepath.Join(l.SchedulerDir(), mergeLockFileName)
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	held, err := lock.Acquire(lockPath)
 	if err != nil {
 		t.Fatalf("pre-acquire merge lock: %v", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		t.Fatalf("flock: %v", err)
 	}
 	const holdFor = 150 * time.Millisecond
 	released := make(chan time.Time, 1)
 	go func() {
 		time.Sleep(holdFor)
 		released <- time.Now()
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
+		_ = held.Release()
 	}()
 
 	code, _, stderr := runArgs(t, "merge-pr", root)

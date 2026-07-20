@@ -26,7 +26,7 @@ type Run struct {
 
 	mu           sync.Mutex
 	events       *os.File
-	lock         *os.File
+	lock         *journalLock
 	seq          uint64
 	phase        RunPhase
 	machineState string
@@ -35,9 +35,9 @@ type Run struct {
 	closed       bool
 }
 
-// acquireRunLock takes a blocking exclusive flock on dir's lock file,
+// acquireRunLock takes a blocking exclusive lock on dir's lock file,
 // serializing every writer that opens the same run directory (#243): the
-// only flocks before this were the whole-instance up.lock and the claim
+// only file locks before this were the whole-instance up.lock and the claim
 // ledger's — the run journal itself took none, so `goobers run abort`
 // (which deliberately skips up.lock, see cmd/goobers/run.go) racing a live
 // daemon's own Resume of the same crashed run could open two independent
@@ -51,15 +51,15 @@ type Run struct {
 // It is not reentrant: acquiring the same run lock twice through separate
 // descriptors in one process blocks too. Current flows avoid that deadlock:
 // Create uses a fresh run id, and in-process resume closes its writer first.
-func acquireRunLock(dir string) (*os.File, error) {
+func acquireRunLock(dir string) (*journalLock, error) {
 	return acquireJournalLock(dir, "run")
 }
 
 // releaseRunLock unlocks and closes a lock file acquireRunLock returned. Safe
 // to call with nil (a Run that never acquired one, e.g. a construction path
 // that failed before acquireRunLock ran).
-func releaseRunLock(f *os.File) {
-	releaseJournalLock(f)
+func releaseRunLock(held *journalLock) {
+	releaseJournalLock(held)
 }
 
 // config holds constructor options.
