@@ -408,11 +408,15 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 	if err != nil {
 		return RunDetail{}, err
 	}
+	escalation, err := escalationCause(summary, run.records)
+	if err != nil {
+		return RunDetail{}, err
+	}
 	return RunDetail{
 		RunSummary:  summary,
 		Graph:       graph,
 		GraphStatus: status,
-		Escalation:  escalationCause(summary, run.records),
+		Escalation:  escalation,
 	}, nil
 }
 
@@ -902,35 +906,46 @@ func canonicalTrigger(trigger journal.TriggerKind) bool {
 	}
 }
 
-func escalationCause(summary RunSummary, records []journal.EventRecord) *EscalationCause {
+func escalationCause(summary RunSummary, records []journal.EventRecord) (*EscalationCause, error) {
 	if summary.Phase != journal.PhaseEscalated {
-		return nil
+		return nil, nil
 	}
 	cause := &EscalationCause{
 		RepassCount: summary.RepassCount,
 		RetryCount:  summary.RetryCount,
 	}
+	terminalStage := successfulTerminalStage(records)
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
 		if event.KnownSchema() &&
 			event.Type == journal.EventGateEvaluated &&
-			event.Target == workflow.TargetEscalate {
+			(event.Target == workflow.TargetEscalate ||
+				gateMarkedEscalated(event) ||
+				(terminalStage != "" && event.Target == terminalStage)) {
 			cause.Selector = EscalationSelector{Kind: "gate", Name: event.Gate}
 			cause.SelectedBranch = event.Verdict
 			cause.TerminalReason = gateEscalationReason(event)
 			cause.CausalEventSeq = event.Seq
-			return cause
+			repasses, err := gateRepassCount(records[:i+1], event.Gate)
+			if err != nil {
+				return nil, err
+			}
+			cause.RepassCount = repasses
+			return cause, nil
 		}
 	}
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
-		if !event.KnownSchema() || event.Type != journal.EventStageFinished {
+		if !event.KnownSchema() ||
+			event.Type != journal.EventStageFinished ||
+			(event.Status != string(apiv1.ResultFailure) &&
+				event.Status != string(apiv1.ResultBlocked)) {
 			continue
 		}
 		cause.Selector = EscalationSelector{Kind: "stage", Name: event.Stage}
 		cause.TerminalReason = stageEscalationReason(event, records[i+1:])
 		cause.CausalEventSeq = event.Seq
-		return cause
+		return cause, nil
 	}
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
@@ -946,7 +961,21 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) *Escalat
 		cause.CausalEventSeq = event.Seq
 		break
 	}
-	return cause
+	return cause, nil
+}
+
+func successfulTerminalStage(records []journal.EventRecord) string {
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventStageFinished {
+			continue
+		}
+		if event.Status == string(apiv1.ResultSuccess) {
+			return event.Stage
+		}
+		return ""
+	}
+	return ""
 }
 
 func gateRepassCount(records []journal.EventRecord, gate string) (int, error) {
@@ -1020,8 +1049,7 @@ func lastNeedsChangesReason(reader *journal.Reader, records []journal.EventRecor
 }
 
 func gateEscalationReason(event journal.Event) string {
-	escalated, _ := event.Runner["escalated"].(bool)
-	if escalated {
+	if gateMarkedEscalated(event) {
 		duplicateDiff, _ := event.Runner["duplicateDiff"].(bool)
 		if duplicateDiff {
 			return "repass produced a diff identical to the immediately prior attempt"
@@ -1029,6 +1057,11 @@ func gateEscalationReason(event journal.Event) string {
 		return "repass budget exhausted"
 	}
 	return fmt.Sprintf("gate %s resolved %s -> %s", event.Gate, event.Verdict, event.Target)
+}
+
+func gateMarkedEscalated(event journal.Event) bool {
+	escalated, _ := event.Runner["escalated"].(bool)
+	return escalated
 }
 
 func stageEscalationReason(event journal.Event, subsequent []journal.EventRecord) string {

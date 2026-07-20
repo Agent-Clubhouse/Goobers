@@ -68,6 +68,10 @@ Usage:
   goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock
   goobers trace [--json] [--transcripts | --transcript=<stage>] <run-id> [path]
                                 show a run's journal events (+ spans if rolled up), or recorded agent transcripts
+  goobers escalations [--json] [path]
+                                list escalated runs newest first
+  goobers escalations show [--json] <run-id> [path]
+                                show escalation cause + per-stage artifact timeline
   goobers completion bash|zsh|fish  generate a shell completion script
   goobers telemetry stats|errors [flags] [path]  success rate/duration or recent-error aggregates
   goobers journal redact --run <id> --path <blob> --reason <text> [path]

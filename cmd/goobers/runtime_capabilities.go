@@ -64,6 +64,12 @@ var cliCommands = []cliCommand{
 	command("status", apicontract.ActionReadOnlyNavigation, runStatus),
 	command("stats", apicontract.ActionReadOnlyNavigation, runStats),
 	command("trace", apicontract.ActionReadOnlyNavigation, runTrace),
+	commandWithSubcommands(
+		"escalations",
+		apicontract.ActionReadOnlyNavigation,
+		runEscalations,
+		subcommand("escalations show", "show", apicontract.ActionReadOnlyNavigation, runEscalationShow),
+	),
 	groupCommand(
 		"completion",
 		runCompletion,
