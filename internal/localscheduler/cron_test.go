@@ -37,6 +37,26 @@ func TestParseScheduleRejectsGarbage(t *testing.T) {
 	}
 }
 
+func TestNextScheduledFire(t *testing.T) {
+	hourly, err := ParseSchedule("@hourly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	daily, err := ParseSchedule("@daily")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Date(2026, time.July, 20, 6, 30, 0, 0, time.UTC)
+
+	got, ok := NextScheduledFire([]Schedule{daily, hourly}, after)
+	if !ok || !got.Equal(time.Date(2026, time.July, 20, 7, 0, 0, 0, time.UTC)) {
+		t.Fatalf("NextScheduledFire() = %v, %t", got, ok)
+	}
+	if got, ok := NextScheduledFire(nil, after); ok || !got.IsZero() {
+		t.Fatalf("NextScheduledFire(nil) = %v, %t, want zero, false", got, ok)
+	}
+}
+
 // TestDSTSpringForwardSkipsNonexistentTime verifies the wrapped cron.Schedule
 // skips the day a wall-clock time doesn't exist rather than erroring or
 // producing an invalid instant. US spring-forward 2026 is March 8: 2:00am

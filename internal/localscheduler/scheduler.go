@@ -883,8 +883,8 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 	}
 	for name, entry := range s.workflows {
 		ts := s.triggers[name]
-		for _, sched := range entry.Schedules {
-			consider(sched.Next(ts.LastEval))
+		if next, ok := NextScheduledFire(entry.Schedules, ts.LastEval); ok {
+			consider(next)
 		}
 		if entry.BacklogCounter != nil {
 			// pollBacklog's own due check, mirrored here so the Run loop
