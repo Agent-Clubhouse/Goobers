@@ -243,15 +243,15 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 func legacyClaimNamespace(l instance.Layout, providers map[string]apiv1.Provider, entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
 	runDir, err := l.FindRunDir(entry.RunID)
 	if err != nil {
-		return localscheduler.ClaimNamespace{}, fmt.Errorf("%w: find owning run %q: %v", localscheduler.ErrLegacyClaimOwnershipUnresolved, entry.RunID, err)
+		return localscheduler.ClaimNamespace{}, fmt.Errorf("%w: find owning run %q: %w", localscheduler.ErrLegacyClaimOwnershipUnresolved, entry.RunID, err)
 	}
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
-		return localscheduler.ClaimNamespace{}, fmt.Errorf("%w: open owning run %q: %v", localscheduler.ErrLegacyClaimOwnershipUnresolved, entry.RunID, err)
+		return localscheduler.ClaimNamespace{}, fmt.Errorf("%w: open owning run %q: %w", localscheduler.ErrLegacyClaimOwnershipUnresolved, entry.RunID, err)
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return localscheduler.ClaimNamespace{}, fmt.Errorf("%w: read owning run %q identity: %v", localscheduler.ErrLegacyClaimOwnershipUnresolved, entry.RunID, err)
+		return localscheduler.ClaimNamespace{}, fmt.Errorf("%w: read owning run %q identity: %w", localscheduler.ErrLegacyClaimOwnershipUnresolved, entry.RunID, err)
 	}
 	if identity.RunID != entry.RunID {
 		return localscheduler.ClaimNamespace{}, fmt.Errorf("%w: run journal identity is %q", localscheduler.ErrLegacyClaimOwnershipUnresolved, identity.RunID)
