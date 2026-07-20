@@ -338,16 +338,41 @@ func (l *ClaimLedger) release(storageKey, runID string) error {
 // reserved for operator recovery of stuck claims and journals a distinct event
 // so the override cannot be mistaken for normal run cleanup.
 func (l *ClaimLedger) ForceRelease(itemID string) error {
+	return l.forceRelease(itemID)
+}
+
+// ForceReleaseScoped force-releases a claim identified by its scoped key.
+func (l *ClaimLedger) ForceReleaseScoped(key ClaimKey) error {
+	storageKey, err := key.storageKey()
+	if err != nil {
+		return err
+	}
+	return l.forceRelease(storageKey)
+}
+
+// ForceReleaseEntry force-releases entry without losing its namespace.
+func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry) error {
+	if entry.Gaggle == "" || entry.Provider == "" {
+		return l.ForceRelease(entry.ItemID)
+	}
+	return l.ForceReleaseScoped(ClaimKey{
+		Gaggle:     entry.Gaggle,
+		Provider:   entry.Provider,
+		ExternalID: entry.ExternalID,
+	})
+}
+
+func (l *ClaimLedger) forceRelease(storageKey string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	entry, held := l.entries[itemID]
+	entry, held := l.entries[storageKey]
 	if !held {
 		return nil
 	}
-	delete(l.entries, itemID)
+	delete(l.entries, storageKey)
 	if err := l.persist(); err != nil {
-		l.entries[itemID] = entry
+		l.entries[storageKey] = entry
 		return err
 	}
 	l.journal(journal.EventClaimForceReleased, entry)
@@ -439,7 +464,7 @@ func (l *ClaimLedger) lookup(storageKey string) (ClaimEntry, bool) {
 	return e, ok
 }
 
-// Snapshot returns every ledger entry ordered by item ID.
+// Snapshot returns every ledger entry ordered by item ID and namespace.
 func (l *ClaimLedger) Snapshot() []ClaimEntry {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -449,7 +474,13 @@ func (l *ClaimLedger) Snapshot() []ClaimEntry {
 		entries = append(entries, entry)
 	}
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].ItemID < entries[j].ItemID
+		if entries[i].ItemID != entries[j].ItemID {
+			return entries[i].ItemID < entries[j].ItemID
+		}
+		if entries[i].Gaggle != entries[j].Gaggle {
+			return entries[i].Gaggle < entries[j].Gaggle
+		}
+		return entries[i].Provider < entries[j].Provider
 	})
 	return entries
 }

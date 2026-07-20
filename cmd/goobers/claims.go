@@ -22,6 +22,8 @@ const (
 	claimAdminRequestSuffix    = ".request.json"
 	claimAdminResponseSuffix   = ".response.json"
 	claimAdminCodeNotFound     = "claim_not_found"
+	claimAdminCodeAmbiguous    = "claim_ambiguous"
+	claimAdminCodeInvalidScope = "claim_invalid_scope"
 	claimAdminOperationList    = "list"
 	claimAdminOperationRelease = "release"
 )
@@ -31,6 +33,8 @@ var claimAdminDelegationTimeout = 30 * time.Second
 type claimAdminRequest struct {
 	Operation string    `json:"operation"`
 	ItemID    string    `json:"itemId,omitempty"`
+	Gaggle    string    `json:"gaggle,omitempty"`
+	Provider  string    `json:"provider,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -66,10 +70,12 @@ func runClaimsList(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit claim entries as JSON")
 	staleOnly := fs.Bool("stale", false, "show only claims whose lease has expired")
+	gaggle := fs.String("gaggle", "", "show only claims in this gaggle")
+	provider := fs.String("provider", "", "show only claims from this provider")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers claims list [--json] [--stale] [path]\n\n"+
-			"Print item id, run id, workflow, claimed-at, and expires-at for each\n"+
-			"claim. --stale limits output to expired leases. Default path is \".\".\n")
+		pf(stderr, "Usage: goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]\n\n"+
+			"Print item id, gaggle, provider, run id, workflow, claimed-at, and\n"+
+			"expires-at for each claim. Filters may be combined. Default path is \".\".\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -83,7 +89,11 @@ func runClaimsList(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(0)
 	}
 
-	resp, err := runClaimAdmin(root, claimAdminRequest{Operation: claimAdminOperationList})
+	resp, err := runClaimAdmin(root, claimAdminRequest{
+		Operation: claimAdminOperationList,
+		Gaggle:    *gaggle,
+		Provider:  *provider,
+	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -124,10 +134,12 @@ func runClaimsList(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	pln(stdout, "ITEM ID\tRUN ID\tWORKFLOW\tCLAIMED AT\tEXPIRES AT")
+	pln(stdout, "ITEM ID\tGAGGLE\tPROVIDER\tRUN ID\tWORKFLOW\tCLAIMED AT\tEXPIRES AT")
 	for _, entry := range entries {
-		pf(stdout, "%s\t%s\t%s\t%s\t%s\n",
+		pf(stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			entry.ItemID,
+			claimScopeValue(entry.Gaggle),
+			claimScopeValue(entry.Provider),
 			entry.RunID,
 			entry.Workflow,
 			entry.ClaimedAt.UTC().Format(time.RFC3339),
@@ -140,18 +152,25 @@ func runClaimsList(args []string, stdout, stderr io.Writer) int {
 func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("claims release", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	gaggle := fs.String("gaggle", "", "gaggle owning the claim")
+	provider := fs.String("provider", "", "provider owning the claim")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers claims release <item-id> [path]\n\n"+
+		pf(stderr, "Usage: goobers claims release [--gaggle=name --provider=name] <item-id> [path]\n\n"+
 			"Force-release an item regardless of the run holding it. The override is\n"+
 			"recorded as claim.force_released in the instance journal. Default path\n"+
-			"is \".\". Exit codes: 0 = released, 1 = no such claim, 2 = usage/IO\n"+
-			"error.\n")
+			"is \".\". Scope flags are required when the item id exists in more than\n"+
+			"one namespace. Exit codes: 0 = released, 1 = not found/ambiguous,\n"+
+			"2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() < 1 || fs.NArg() > 2 {
 		fs.Usage()
+		return 2
+	}
+	if (*gaggle == "") != (*provider == "") {
+		pf(stderr, "error: --gaggle and --provider must be supplied together\n")
 		return 2
 	}
 	root := "."
@@ -162,12 +181,14 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	resp, err := runClaimAdmin(root, claimAdminRequest{
 		Operation: claimAdminOperationRelease,
 		ItemID:    fs.Arg(0),
+		Gaggle:    *gaggle,
+		Provider:  *provider,
 	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if resp.Code == claimAdminCodeNotFound {
+	if resp.Code != "" {
 		pf(stderr, "error: %s\n", resp.Error)
 		return 1
 	}
@@ -182,6 +203,13 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	pf(stdout, "released claim %s (was held by run %s, workflow %s)\n",
 		resp.Released.ItemID, resp.Released.RunID, resp.Released.Workflow)
 	return 0
+}
+
+func claimScopeValue(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 func runClaimAdmin(root string, req claimAdminRequest) (claimAdminResponse, error) {
@@ -233,15 +261,15 @@ func executeClaimAdminRequest(schedulerDir string, log *journal.InstanceLog, req
 		}
 		switch req.Operation {
 		case claimAdminOperationList:
-			resp.Entries = ledger.Snapshot()
+			resp.Entries = filterClaimEntries(ledger.Snapshot(), req)
 		case claimAdminOperationRelease:
-			entry, held := ledger.Lookup(req.ItemID)
-			if !held {
-				resp.Code = claimAdminCodeNotFound
-				resp.Error = fmt.Sprintf("no claim for item %q", req.ItemID)
+			entry, code, message := selectClaimForRelease(ledger.Snapshot(), req)
+			if code != "" {
+				resp.Code = code
+				resp.Error = message
 				return nil
 			}
-			if err := ledger.ForceRelease(req.ItemID); err != nil {
+			if err := ledger.ForceReleaseEntry(entry); err != nil {
 				return err
 			}
 			resp.Released = &entry
@@ -251,6 +279,49 @@ func executeClaimAdminRequest(schedulerDir string, log *journal.InstanceLog, req
 		return nil
 	})
 	return resp, err
+}
+
+func filterClaimEntries(entries []localscheduler.ClaimEntry, req claimAdminRequest) []localscheduler.ClaimEntry {
+	filtered := make([]localscheduler.ClaimEntry, 0, len(entries))
+	for _, entry := range entries {
+		if req.Gaggle != "" && entry.Gaggle != req.Gaggle {
+			continue
+		}
+		if req.Provider != "" && entry.Provider != req.Provider {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func selectClaimForRelease(entries []localscheduler.ClaimEntry, req claimAdminRequest) (localscheduler.ClaimEntry, string, string) {
+	if (req.Gaggle == "") != (req.Provider == "") {
+		return localscheduler.ClaimEntry{}, claimAdminCodeInvalidScope, "--gaggle and --provider must be supplied together"
+	}
+	matches := make([]localscheduler.ClaimEntry, 0, 1)
+	for _, entry := range entries {
+		externalID := entry.ExternalID
+		if externalID == "" {
+			externalID = entry.ItemID
+		}
+		if externalID != req.ItemID {
+			continue
+		}
+		if req.Gaggle != "" && (entry.Gaggle != req.Gaggle || entry.Provider != req.Provider) {
+			continue
+		}
+		matches = append(matches, entry)
+	}
+	switch len(matches) {
+	case 0:
+		return localscheduler.ClaimEntry{}, claimAdminCodeNotFound, fmt.Sprintf("no claim for item %q", req.ItemID)
+	case 1:
+		return matches[0], "", ""
+	default:
+		return localscheduler.ClaimEntry{}, claimAdminCodeAmbiguous,
+			fmt.Sprintf("item %q is claimed in multiple namespaces; specify --gaggle and --provider", req.ItemID)
+	}
 }
 
 func writeClaimAdminRequest(schedulerDir string, req claimAdminRequest) (string, error) {
