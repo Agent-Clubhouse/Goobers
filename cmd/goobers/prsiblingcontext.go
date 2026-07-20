@@ -236,47 +236,24 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "selected PR is no longer open")
 	}
 
-	// #523/#718 verdict-level cache: compute this evaluation's digest from
-	// the exact CONTENT the review depends on (not raw SHAs — issue #718:
-	// the selected PR's own patch identity, invariant to a clean rebase,
-	// and only the slice of base's movement that actually intersects this
-	// PR's files), then check the selected PR's own most recent verdict
-	// comment for a match. A match lets the runner skip the reviewer gate's
-	// LLM call entirely (internal/gate.Evaluator.CachedVerdict) — the
-	// expensive part the maintainer ruling targets (90-280s per call),
-	// distinct from --no-cache's fetch-level saving above.
-	var cachedVerdictJSON, reviewDigest string
-	if !*noVerdictCache {
-		patchID, baseIntersectionDigest, perr := computeSelectedPatchContext(ctx, provider, repo, selectedBaseSHA, selectedHeadSHA)
-		if perr != nil {
-			// The digest itself is unobtainable this cycle — same posture
-			// as findCachedVerdict's own error handling just below:
-			// degrade to no cache lookup (a real review still runs, this
-			// gather does not fail) rather than aborting. reviewDigest
-			// stays empty — nothing to look up or emit.
-			pf(stderr, "warning: compute selected PR's patch context for verdict cache: %v\n", perr)
-		} else {
-			reviewDigest = computeReviewDigest(patchID, baseIntersectionDigest, siblings)
-			cached, cerr := findCachedVerdict(ctx, provider, repo, selectedNumber, reviewDigest)
-			if cerr != nil {
-				// A failed lookup is an optimization loss, not a stage
-				// failure — same posture as loadSiblingCache's
-				// degrade-on-error: fall through to a real review rather
-				// than aborting the gather.
-				pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
-			} else if cached != nil {
-				// A digest match proves the prior review still applies to this
-				// evaluation even when an equivalent rebase or disjoint base
-				// advance changed the raw SHAs. Rebind the cached verdict to
-				// this gather's authoritative pin before the runner journals it.
-				cached.HeadSHA = selectedHeadSHA
-				cached.BaseSHA = selectedBaseSHA
-				data, merr := json.Marshal(cached)
-				if merr != nil {
-					pf(stderr, "warning: marshal cached verdict: %v\n", merr)
-				} else {
-					cachedVerdictJSON = string(data)
-				}
+	// Verdict-level cache: hash the complete stable key
+	// (head SHA, base SHA, sorted sibling PR/head set), then check the selected
+	// PR's trusted status comment for a matching usable verdict. Any missing
+	// key component or lookup problem degrades to a fresh review.
+	reviewDigest := computeReviewDigest(selectedHeadSHA, selectedBaseSHA, siblings)
+	var cachedVerdictJSON string
+	if reviewDigest == "" {
+		pf(stderr, "warning: verdict cache key is incomplete; forcing a fresh review\n")
+	} else if !*noVerdictCache {
+		cached, cerr := findCachedVerdict(ctx, provider, repo, selectedNumber, reviewDigest, selectedHeadSHA, selectedBaseSHA)
+		if cerr != nil {
+			pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
+		} else if cached != nil {
+			data, merr := json.Marshal(cached)
+			if merr != nil {
+				pf(stderr, "warning: marshal cached verdict: %v\n", merr)
+			} else {
+				cachedVerdictJSON = string(data)
 			}
 		}
 	}

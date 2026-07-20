@@ -62,18 +62,13 @@ type fakePRFile struct {
 	status    string
 	additions int
 	deletions int
-	// patch is the unified-diff hunk text (issue #718's patch-identity
-	// re-keying reads ChangedFile.Patch) — empty is a valid fixture value
-	// (a binary file, or a status-only assertion that doesn't care about
-	// content identity).
+	// patch is the unified-diff hunk text; empty is valid for binary files
+	// and tests that only care about file metadata.
 	patch string
 }
 
-// fakeCompare is one fixture answer for GET .../compare/{base}...{head}
-// (issue #718: CompareCommits, used both for a PR's own patch identity and
-// for "what has base touched since this PR's merge-base"). Registered
-// explicitly per (base, head) pair via addCompare — the fake has no git
-// history to derive an answer from, unlike the real GitHub API.
+// fakeCompare is one fixture answer for GET .../compare/{base}...{head},
+// registered explicitly per pair because the fake has no git history.
 type fakeCompare struct {
 	mergeBaseSHA string
 	files        []fakePRFile
@@ -176,13 +171,7 @@ func (s *fakeGitHubServer) addOpenPR(number int, head, base, headSHA, baseSHA st
 	}
 }
 
-// addCompare registers the fixture answer for GET .../compare/base...head
-// (issue #718: CompareCommits). A test's own choice of mergeBaseSHA drives
-// computeSelectedPatchContext's short-circuit (equal to base = "base
-// hasn't moved past the PR's merge-base yet", skipping the second compare
-// entirely) or its base-intersection path (different from base = a second
-// addCompare(mergeBaseSHA, base, ...) fixture is also required, for "what
-// has base touched since the PR's merge-base").
+// addCompare registers the fixture answer for GET .../compare/base...head.
 func (s *fakeGitHubServer) addCompare(base, head, mergeBaseSHA string, files []fakePRFile) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -572,11 +561,8 @@ func (s *fakeGitHubServer) handleCommitItem(w http.ResponseWriter, r *http.Reque
 }
 
 // handleCompare serves GET .../compare/{base}...{head} from the fixture
-// registered via addCompare (issue #718) — an unregistered pair is a 404,
-// matching a real "unknown ref" response; computeSelectedPatchContext
-// treats that as a degrade-not-fail cache-optimization loss, so a test
-// that never calls addCompare simply never gets a verdict-cache hit rather
-// than failing outright.
+// registered via addCompare; an unregistered pair is a 404, matching a real
+// "unknown ref" response.
 func (s *fakeGitHubServer) handleCompare(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/repos/"+s.owner+"/"+s.repo+"/compare/")
 	s.mu.Lock()
@@ -677,9 +663,7 @@ func (s *fakeGitHubServer) setPRHead(number int, headSHA string, files []fakePRF
 	}
 }
 
-// setPRBase models base advancing under an unchanged PR (issue #718's
-// delta-aware baseSha conjunct / cache re-keying tests: base moving is the
-// event under test, independent of anything about the PR's own head).
+// setPRBase models base advancing under an unchanged PR.
 func (s *fakeGitHubServer) setPRBase(number int, baseSHA string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

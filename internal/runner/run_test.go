@@ -5411,6 +5411,60 @@ func TestRunnerDeterministicSubjectEmptyDiffStillReviews(t *testing.T) {
 	}
 }
 
+func TestCachedVerdictFromOutputsFailsClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		want   bool
+		mutate func(*apiv1.Verdict, map[string]interface{})
+	}{
+		{name: "complete match", want: true},
+		{name: "missing digest output", mutate: func(_ *apiv1.Verdict, outputs map[string]interface{}) {
+			delete(outputs, "reviewDigest")
+		}},
+		{name: "digest mismatch", mutate: func(_ *apiv1.Verdict, outputs map[string]interface{}) {
+			outputs["reviewDigest"] = "sha256:other"
+		}},
+		{name: "head mismatch", mutate: func(_ *apiv1.Verdict, outputs map[string]interface{}) {
+			outputs["selectedHeadSha"] = "other-head"
+		}},
+		{name: "missing source run", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.SourceRunID = ""
+		}},
+		{name: "invalid decision", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Decision = "approved"
+		}},
+		{name: "invalid finding", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Findings = []apiv1.Finding{{Class: apiv1.FindingCrossPRBlocked}}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verdict := apiv1.Verdict{
+				Decision: apiv1.VerdictPass, Digest: "sha256:key", SourceRunID: "run-original",
+				HeadSHA: "head", BaseSHA: "base",
+			}
+			outputs := map[string]interface{}{
+				"reviewDigest":    verdict.Digest,
+				"selectedHeadSha": verdict.HeadSHA,
+				"selectedBaseSha": verdict.BaseSHA,
+			}
+			if tt.mutate != nil {
+				tt.mutate(&verdict, outputs)
+			}
+			data, err := json.Marshal(verdict)
+			if err != nil {
+				t.Fatalf("marshal verdict: %v", err)
+			}
+			outputs["cachedVerdictJson"] = string(data)
+
+			got := cachedVerdictFromOutputs(outputs)
+			if (got != nil) != tt.want {
+				t.Fatalf("cachedVerdictFromOutputs() = %+v, want cache hit %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestRunnerSkipsReviewerOnCachedVerdictOutput is issue #523's end-to-end
 // wiring proof: when the subject stage feeding an agentic review gate
 // emits a "cachedVerdictJson" output (merge-review's gather-sibling-context,
@@ -5427,6 +5481,7 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 	cached := apiv1.Verdict{
 		Decision: apiv1.VerdictPass, Summary: "reused from a prior run",
 		Digest: "sha256:cache-hit-digest", SourceRunID: "run-original-producer",
+		HeadSHA: "head", BaseSHA: "base",
 	}
 	cachedJSON, err := json.Marshal(cached)
 	if err != nil {
@@ -5435,7 +5490,12 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 	byTask := map[string]stubTaskResult{
 		runID + ":implement": {
 			status: apiv1.ResultSuccess, summary: "gathered sibling context",
-			outputs: map[string]interface{}{"cachedVerdictJson": string(cachedJSON)},
+			outputs: map[string]interface{}{
+				"cachedVerdictJson": string(cachedJSON),
+				"reviewDigest":      cached.Digest,
+				"selectedHeadSha":   cached.HeadSHA,
+				"selectedBaseSha":   cached.BaseSHA,
+			},
 		},
 	}
 	reviewer := &capturingReviewer{}
