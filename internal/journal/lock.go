@@ -3,20 +3,20 @@ package journal
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
-	"syscall"
 	"time"
+
+	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
 // journalLockTimeout bounds how long acquireJournalLock waits for a contended
-// exclusive flock before giving up with ErrLockTimeout, instead of blocking in
-// the flock syscall forever. A bare blocking LOCK_EX meant a second opener of a
+// exclusive lock before giving up with ErrLockTimeout, instead of blocking in
+// the platform lock forever. A bare blocking acquire meant a second opener of a
 // run/instance dir a live daemon already holds — the exact case `goobers run
 // abort` hits, since it deliberately skips up.lock (see cmd/goobers/run.go) and
 // the daemon holds a run's journal lock for that run's whole lifetime (see
 // run.go's acquireRunLock doc) — hung indefinitely (observed: `goobers run
-// abort` wedged in the flock syscall while the daemon held the run dir's
+// abort` wedged in the lock syscall while the daemon held the run dir's
 // .lock).
 //
 // The bound is generous enough that legitimate transient contention always wins
@@ -29,7 +29,7 @@ import (
 // production never mutates it.
 var journalLockTimeout = 30 * time.Second
 
-// journalLockPollInterval is how often a contended, non-blocking flock is
+// journalLockPollInterval is how often a contended, non-blocking lock is
 // retried while waiting its turn — short enough that a waiter proceeds promptly
 // once the holder releases, long enough not to busy-spin.
 var journalLockPollInterval = 50 * time.Millisecond
@@ -41,37 +41,33 @@ var journalLockPollInterval = 50 * time.Millisecond
 // message instead of appearing to hang.
 var ErrLockTimeout = errors.New("journal: lock held by another process (a running daemon?)")
 
-func acquireJournalLock(dir, target string) (*os.File, error) {
-	f, err := os.OpenFile(filepath.Join(dir, fileLock), os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("journal: open %s lock: %w", target, err)
-	}
+type journalLock = platformlock.Handle
+
+func acquireJournalLock(dir, target string) (*journalLock, error) {
+	path := filepath.Join(dir, fileLock)
 	// A non-blocking acquire retried on a short poll up to journalLockTimeout,
-	// rather than a bare blocking LOCK_EX, so a lock a live daemon holds for a
+	// rather than a bare blocking acquire, so a lock a live daemon holds for a
 	// run's lifetime can never wedge a second opener forever. Mirrors the
-	// bounded, retry-based flock cmd/goobers's instance lock already uses.
+	// bounded, retry-based lock cmd/goobers's instance lock already uses.
 	deadline := time.Now().Add(journalLockTimeout)
 	for {
-		lockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		held, lockErr := platformlock.TryAcquire(path)
 		if lockErr == nil {
-			return f, nil
+			return held, nil
 		}
-		if !errors.Is(lockErr, syscall.EWOULDBLOCK) {
-			_ = f.Close()
+		if !errors.Is(lockErr, platformlock.ErrHeld) {
 			return nil, fmt.Errorf("journal: acquire %s lock: %w", target, lockErr)
 		}
 		if time.Now().After(deadline) {
-			_ = f.Close()
 			return nil, fmt.Errorf("journal: acquire %s lock at %s within %s: %w", target, dir, journalLockTimeout, ErrLockTimeout)
 		}
 		time.Sleep(journalLockPollInterval)
 	}
 }
 
-func releaseJournalLock(f *os.File) {
-	if f == nil {
+func releaseJournalLock(held *journalLock) {
+	if held == nil {
 		return
 	}
-	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	_ = f.Close()
+	_ = held.Release()
 }

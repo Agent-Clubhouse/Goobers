@@ -3,11 +3,11 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/lock"
 )
 
 func TestClaimLockUncontendedIsLowNoise(t *testing.T) {
@@ -39,12 +39,8 @@ func TestClaimLockDelayedHolderReportsSlowWaitAndOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	holder, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	holder, err := lock.Acquire(lockPath)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX); err != nil {
-		_ = holder.Close()
 		t.Fatal(err)
 	}
 
@@ -56,8 +52,7 @@ func TestClaimLockDelayedHolderReportsSlowWaitAndOperation(t *testing.T) {
 	released := make(chan struct{})
 	go func() {
 		time.Sleep(holdFor)
-		_ = syscall.Flock(int(holder.Fd()), syscall.LOCK_UN)
-		_ = holder.Close()
+		_ = holder.Release()
 		close(released)
 	}()
 

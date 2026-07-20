@@ -89,6 +89,36 @@ func TestAcquireDaemonLockWritesIdentity(t *testing.T) {
 	}
 }
 
+func TestInspectDaemonLockReadsHeldIdentity(t *testing.T) {
+	root := t.TempDir()
+	lockPath := filepath.Join(root, "scheduler", "up.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	release, err := acquireDaemonLock(lockPath, root)
+	if err != nil {
+		t.Fatalf("acquireDaemonLock: %v", err)
+	}
+	defer release()
+
+	running, identity, err := inspectDaemonLock(lockPath)
+	if err != nil {
+		t.Fatalf("inspectDaemonLock: %v", err)
+	}
+	if !running {
+		t.Fatal("inspectDaemonLock reported held daemon lock as stopped")
+	}
+	if identity == nil {
+		t.Fatal("inspectDaemonLock returned nil identity")
+	}
+	if identity.PID != os.Getpid() {
+		t.Errorf("pid = %d, want %d", identity.PID, os.Getpid())
+	}
+	if identity.InstanceRoot != root {
+		t.Errorf("instanceRoot = %q, want %q", identity.InstanceRoot, root)
+	}
+}
+
 func TestAcquireInstanceLockConflictIncludesHolderPID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "up.lock")
 	identity := daemonIdentity{
