@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -150,6 +151,9 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 	// The selection outcome that routes down the agentic path: a substantive
 	// finding present, so rebase-pr reports needsAgent=true.
 	byTask := map[string]stubTaskResult{
+		runID + ":update-behind-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
+			"selectedNumber": "77", "needsFullRemediation": "true",
+		}},
 		runID + ":gather-pr-context": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			WorkspaceBranchOutput:    rebindBranch,
 			"selectedNumber":         "77",
@@ -181,6 +185,7 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 		Automated:              gate.NewAutomatedEvaluator(),
 		GateGooberCapabilities: map[string][]string{"reviewer": {"agent:model"}},
 		Worktrees:              wtMgr,
+		ScratchDir:             filepath.Join(instanceRoot, "scratch"),
 		RunsDir:                filepath.Join(instanceRoot, "runs"),
 		RepoCloneURL:           func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
 	})
@@ -220,6 +225,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 	want := []string{
+		"update-behind-pr",
 		"gather-pr-context",
 		"rebase-pr",
 		"remediation-checkpoint",
@@ -232,6 +238,79 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	}
 	if goober.reviewed != 1 {
 		t.Errorf("reviewer invoked %d times, want 1 — the agentic review gate must actually run", goober.reviewed)
+	}
+}
+
+func TestShippedPRRemediationAPIUpdateProvisionsNoWorktree(t *testing.T) {
+	const runID = "prr-api-update"
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	var mu sync.Mutex
+	visited := []string{}
+	cloneURLCalls := 0
+	byTask := map[string]stubTaskResult{
+		runID + ":update-behind-pr": {
+			status: apiv1.ResultSuccess,
+			outputs: map[string]interface{}{
+				"selectedNumber": "77", "needsFullRemediation": "false",
+			},
+		},
+	}
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &visitRecordingDeterministic{t: t, rec: rec, byTask: byTask, mu: &mu, visited: &visited}, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return &remediationGoober{t: t}, nil
+		},
+		Automated:  gate.NewAutomatedEvaluator(),
+		Worktrees:  wtMgr,
+		ScratchDir: filepath.Join(instanceRoot, "scratch"),
+		RunsDir:    filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
+			cloneURLCalls++
+			return "", fmt.Errorf("repo workspace must not be requested on API update path")
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: loadShippedPRRemediation(t), Gaggle: "goobers",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if strings.Join(visited, ",") != "update-behind-pr" {
+		t.Fatalf("dispatched stages = %v, want only update-behind-pr", visited)
+	}
+	if cloneURLCalls != 0 {
+		t.Fatalf("RepoCloneURL called %d times, want 0 worktree provisions", cloneURLCalls)
+	}
+	reader, err := journal.OpenRead(filepath.Join(instanceRoot, "runs", runID))
+	if err != nil {
+		t.Fatalf("open run journal: %v", err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatalf("read run journal: %v", err)
+	}
+	var started []string
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted {
+			started = append(started, event.Stage)
+		}
+	}
+	if strings.Join(started, ",") != "update-behind-pr" {
+		t.Fatalf("journaled stages = %v, want no rebase stage", started)
 	}
 }
 

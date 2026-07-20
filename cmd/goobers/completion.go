@@ -145,7 +145,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal claims backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
+        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal claims backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge update-behind-pr gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -305,6 +305,7 @@ _goobers_completion()
             'gather-sibling-context:gather sibling pull request context'
             'apply-verdict:apply a review verdict'
             'post-merge:perform post-merge updates'
+            'update-behind-pr:update a clean behind pull request'
             'gather-pr-context:gather pull request context'
             'rebase-pr:rebase a pull request'
             'remediation-checkpoint:record a remediation checkpoint'
@@ -470,7 +471,7 @@ function __goobers_completion_runs
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal claims backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal claims backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge update-behind-pr gather-pr-context rebase-pr remediation-checkpoint completion version help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 

@@ -72,6 +72,17 @@ func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	_, m := loadPRRemediation(t)
 
+	updateGate, ok := m.Gate("update-behind-gate")
+	if !ok {
+		t.Fatal("update-behind-gate not found")
+	}
+	if got := updateGate.Branches["pass"]; got != "" {
+		t.Errorf("update-behind-gate pass -> %q, want terminal", got)
+	}
+	if got := updateGate.Branches["fail"]; got != "gather-pr-context" {
+		t.Errorf("update-behind-gate fail -> %q, want gather-pr-context", got)
+	}
+
 	// The routing spine: a PR that needs the agent must actually reach it.
 	rebaseGate, ok := m.Gate("rebase-gate")
 	if !ok {

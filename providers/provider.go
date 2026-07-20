@@ -76,6 +76,13 @@ type PullRequestReviewSubmitter interface {
 	SubmitPullRequestReview(context.Context, PullRequestReviewRequest) (PullRequestReviewResult, error)
 }
 
+// PullRequestBranchUpdater incorporates a pull request's base branch through
+// the provider API. It is separate from RepoProvider because Azure DevOps does
+// not yet expose the V0 GitHub update-branch primitive.
+type PullRequestBranchUpdater interface {
+	UpdateBranch(context.Context, UpdateBranchRequest) (UpdateBranchResult, error)
+}
+
 // BranchName returns the run-scoped branch-name convention the repo provider
 // owns (BL-010/#13): the worktree manager pushes to it, the provider never does.
 func BranchName(workflow, runID string) string {

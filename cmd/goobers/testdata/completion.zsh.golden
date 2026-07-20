@@ -40,6 +40,7 @@ _goobers_completion()
             'gather-sibling-context:gather sibling pull request context'
             'apply-verdict:apply a review verdict'
             'post-merge:perform post-merge updates'
+            'update-behind-pr:update a clean behind pull request'
             'gather-pr-context:gather pull request context'
             'rebase-pr:rebase a pull request'
             'remediation-checkpoint:record a remediation checkpoint'
