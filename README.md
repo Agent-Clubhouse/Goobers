@@ -29,6 +29,7 @@ clustered orchestration over a large monorepo.
 | `infra/` | Bicep, ArgoCD, Temporal, ADX | **Quarantined** — tier-3 drop-ins, revived in V2 |
 | `portal/` | TypeScript + React observability portal | Active — retargets to run journals in V1 |
 | `config-examples/` | Reference config layout + starter definitions | Active |
+| `skills/` | Portable agent skills for authoring Goobers config | Active |
 | `test/` | CI + e2e harness | Active |
 
 Quarantined paths stay in-tree, compiling, and status-bannered — they are the
@@ -77,6 +78,15 @@ scheduled workflows until interrupted, draining in-flight runs gracefully on
 SIGINT/SIGTERM. `run` remains the way to trigger one workflow manually
 without a daemon running. Full walkthrough:
 [`docs/guides/quickstart.md`](docs/guides/quickstart.md).
+
+## Authoring workflow DSL with an agent
+
+Use the portable
+[`goobers-dsl-author` skill](skills/goobers-dsl-author/SKILL.md) from your own
+agent harness to find the canonical DSL docs, learn the core terms, and turn a
+plain-English process into schema-valid gaggle, goober, and workflow YAML. It
+does not require a running Goobers daemon. See the
+[installation and usage guide](docs/guides/dsl-authoring-skill.md).
 
 ## Shell completion
 
