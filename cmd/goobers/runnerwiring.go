@@ -86,7 +86,9 @@ func (t teeRegistrar) Register(secret []byte) {
 // tel.Shutdown before this fix existed).
 func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout, runID string, log *journal.InstanceLog) {
 	if tel != nil {
-		_ = tel.Flush(context.Background())
+		if err := tel.Flush(context.Background()); err != nil {
+			logIngestFailure(log, runID, "telemetry_flush_failed", err)
+		}
 	}
 	if db == nil {
 		return
@@ -102,7 +104,23 @@ func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout,
 	if err := db.IngestRun(filepath.Join(l.RunsDir(), runID)); err != nil {
 		logIngestFailure(log, runID, "telemetry_ingest_run_failed", err)
 	}
-	if err := db.IngestSchedulerLog(l.SchedulerDir()); err != nil {
+	ingestSchedulerLog(db, l.SchedulerDir(), log, runID)
+}
+
+func ingestSchedulerTelemetry(ctx context.Context, tel *telemetry.Client, db *rollup.DB, schedulerDir string, log *journal.InstanceLog) {
+	if tel != nil {
+		if err := tel.Flush(ctx); err != nil {
+			logIngestFailure(log, "", "telemetry_flush_failed", err)
+		}
+	}
+	if db == nil {
+		return
+	}
+	ingestSchedulerLog(db, schedulerDir, log, "")
+}
+
+func ingestSchedulerLog(db *rollup.DB, schedulerDir string, log *journal.InstanceLog, runID string) {
+	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
 		logIngestFailure(log, runID, "telemetry_ingest_scheduler_log_failed", err)
 	}
 }
