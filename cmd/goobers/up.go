@@ -39,6 +39,10 @@ var drainGrace = 30 * time.Second
 // tests can shrink it rather than waiting out a real 5 minutes.
 var claimRecoverInterval = 5 * time.Minute
 
+// stalledRunSweepInterval bounds how quickly the daemon notices a run that has
+// crossed its configured journal-silence deadline.
+var stalledRunSweepInterval = time.Minute
+
 // delegationSweepInterval bounds how often runUpContext checks for delegated
 // trigger requests (#343, rundelegate.go) from a `goobers run` invocation
 // that found this daemon already holding up.lock. Deliberately much shorter
@@ -413,6 +417,26 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	stalledRunTimeout, err := setup.RunConditions.StalledRunTimeoutDuration()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	stalledSweepErrors := newSweepErrorReporter(setup.InstanceLog, "stalled_run_sweep_failed")
+	sweepStalled := func(now time.Time) error {
+		return sweepStalledRuns(
+			l,
+			setup.Runners,
+			setup.LegacyRunner,
+			setup.InstanceLog,
+			sched.ReleaseReconciled,
+			now,
+			stalledRunTimeout,
+		)
+	}
+	// Reap stale journals before crash-resume can refresh them with a new
+	// stage heartbeat.
+	stalledSweepErrors.report(sweepStalled(time.Now()))
 
 	if err := apiServer.Start(); err != nil {
 		pf(stderr, "error: start HTTP API: %v\n", err)
@@ -503,6 +527,21 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 						Runner: map[string]any{"releasedClaims": len(released)},
 					})
 				}
+			}
+		}
+	}()
+
+	stalledTicker := time.NewTicker(stalledRunSweepInterval)
+	stalledTickerDone := make(chan struct{})
+	go func() {
+		defer close(stalledTickerDone)
+		defer stalledTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-stalledTicker.C:
+				stalledSweepErrors.report(sweepStalled(now))
 			}
 		}
 	}()
@@ -665,6 +704,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	// sched.Run returns would race the writes below on the shared io.Writer
 	// (stdout/stderr are not safe for concurrent use).
 	<-claimTickerDone
+	<-stalledTickerDone
 	<-delegationTickerDone
 	if heartbeatDone != nil {
 		<-heartbeatDone

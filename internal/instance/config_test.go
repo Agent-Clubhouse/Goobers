@@ -30,6 +30,7 @@ repos:
       env: GITHUB_TOKEN
 runConditions:
   maxParallelRuns: 2
+  stalledRunTimeout: 30m
 notifications: true
 `)
 	cfg, err := LoadConfig(path)
@@ -48,11 +49,28 @@ notifications: true
 	if cfg.RunConditions.MaxParallelRuns != 2 {
 		t.Fatalf("expected maxParallelRuns=2, got %d", cfg.RunConditions.MaxParallelRuns)
 	}
+	if got, err := cfg.RunConditions.StalledRunTimeoutDuration(); err != nil || got != 30*time.Minute {
+		t.Fatalf("StalledRunTimeoutDuration = %s, %v; want 30m", got, err)
+	}
 	if !cfg.Notifications {
 		t.Fatal("expected notifications to be enabled")
 	}
 	if cfg.APIListenAddress() != DefaultAPIListenAddress {
 		t.Fatalf("APIListenAddress = %q, want %q", cfg.APIListenAddress(), DefaultAPIListenAddress)
+	}
+}
+
+func TestStalledRunTimeout(t *testing.T) {
+	if got, err := (RunConditions{}).StalledRunTimeoutDuration(); err != nil || got != DefaultStalledRunTimeout {
+		t.Fatalf("default StalledRunTimeoutDuration = %s, %v; want %s", got, err, DefaultStalledRunTimeout)
+	}
+	for _, value := range []string{"not-a-duration", "0s", "-1m"} {
+		t.Run(value, func(t *testing.T) {
+			cfg := Config{RunConditions: RunConditions{StalledRunTimeout: value}}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "stalledRunTimeout") {
+				t.Fatalf("Validate() error = %v, want stalledRunTimeout error", err)
+			}
+		})
 	}
 }
 
@@ -619,6 +637,7 @@ func TestWriteConfigRoundTrip(t *testing.T) {
 		Repos: []RepoRef{
 			{Provider: "github", Owner: "acme", Name: "web", Token: TokenRef{Env: "GITHUB_TOKEN"}},
 		},
+		RunConditions: RunConditions{StalledRunTimeout: "20m"},
 	}
 	if err := WriteConfig(path, cfg); err != nil {
 		t.Fatalf("WriteConfig: %v", err)
@@ -636,5 +655,8 @@ func TestWriteConfigRoundTrip(t *testing.T) {
 	}
 	if len(got.Repos) != 1 || got.Repos[0].Token.Env != "GITHUB_TOKEN" {
 		t.Fatalf("round-trip mismatch: %+v", got.Repos)
+	}
+	if got.RunConditions.StalledRunTimeout != "20m" {
+		t.Fatalf("stalledRunTimeout = %q, want 20m", got.RunConditions.StalledRunTimeout)
 	}
 }

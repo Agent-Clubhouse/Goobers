@@ -26,6 +26,7 @@ const (
 	DefaultWebhookListenAddress = "127.0.0.1:8081"
 	OTLPEndpointEnv             = "GOOBERS_OTLP_ENDPOINT"
 	OTLPInsecureEnv             = "GOOBERS_OTLP_INSECURE"
+	DefaultStalledRunTimeout    = 45 * time.Minute
 )
 
 // Config is the parsed instance.yaml: target repo(s) + provider, token source
@@ -138,6 +139,24 @@ type RunConditions struct {
 	// WorkflowDailyBudgets overrides a named workflow's runs-per-day budget
 	// (#340), mirroring WorkflowBudgets' per-hour override.
 	WorkflowDailyBudgets map[string]int `json:"workflowDailyBudgets,omitempty" yaml:"workflowDailyBudgets,omitempty"`
+	// StalledRunTimeout is the maximum period a running journal may remain
+	// silent before the daemon escalates it. Empty defaults to 45 minutes.
+	StalledRunTimeout string `json:"stalledRunTimeout,omitempty" yaml:"stalledRunTimeout,omitempty"`
+}
+
+// StalledRunTimeoutDuration resolves the configured stalled-run deadline.
+func (c RunConditions) StalledRunTimeoutDuration() (time.Duration, error) {
+	if c.StalledRunTimeout == "" {
+		return DefaultStalledRunTimeout, nil
+	}
+	timeout, err := time.ParseDuration(c.StalledRunTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("runConditions.stalledRunTimeout %q: %w", c.StalledRunTimeout, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("runConditions.stalledRunTimeout must be positive, got %s", timeout)
+	}
+	return timeout, nil
 }
 
 // TelemetryEnabled reports whether the local rollup store is enabled
@@ -315,6 +334,9 @@ func (c *Config) Validate() error {
 		if c.Telemetry.OTLP.Enabled() && !c.TelemetryEnabled() {
 			return fmt.Errorf("telemetry.otlp.endpoint cannot be set when telemetry.enabled is false")
 		}
+	}
+	if _, err := c.RunConditions.StalledRunTimeoutDuration(); err != nil {
+		return err
 	}
 	for i, r := range c.Repos {
 		if r.Provider != "github" {

@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/desktopnotify"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 type recordingDesktopNotifier struct {
@@ -119,6 +120,17 @@ func TestTerminalNotificationCauseUsesEscalatingGate(t *testing.T) {
 	}}
 	got := terminalNotificationCause(events, journal.PhaseEscalated, "review")
 	if got != "gate review: needs-changes -> @escalate" {
+		t.Fatalf("cause = %q", got)
+	}
+}
+
+func TestTerminalNotificationCauseUsesStalledRunError(t *testing.T) {
+	events := []journal.Event{{
+		Type:  journal.EventError,
+		Error: &journal.ErrorDetail{Code: runner.RunStalledErrorCode, Message: "no journal progress for 45m"},
+	}}
+	got := terminalNotificationCause(events, journal.PhaseEscalated, "implement")
+	if got != "no journal progress for 45m" {
 		t.Fatalf("cause = %q", got)
 	}
 }
