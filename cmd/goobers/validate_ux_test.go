@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -127,6 +130,88 @@ func TestValidateCheckRepos(t *testing.T) {
 	if strings.Contains(stdout, "test-token") {
 		t.Fatalf("repository check output leaked the resolved token: %q", stdout)
 	}
+}
+
+func TestGitRepositoryReachableTimeoutKillsDescendantHoldingOutputPipe(t *testing.T) {
+	pidFile := installHangingGit(t, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := gitRepositoryReachable(ctx, instance.RepoRef{
+		Provider: "github",
+		Owner:    "example",
+		Name:     "repository",
+	}, "test-token")
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("gitRepositoryReachable error = %v, want deadline exceeded", err)
+	}
+	if _, err := os.Stat(pidFile); err != nil {
+		t.Fatalf("git descendant did not start: %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("gitRepositoryReachable took %s; descendant inherited its output pipe after timeout", elapsed)
+	}
+}
+
+func TestGitRepositoryReachableTimeoutBoundedWhenEscapedDescendantHoldsOutputPipe(t *testing.T) {
+	pidFile := installHangingGit(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := gitRepositoryReachable(ctx, instance.RepoRef{
+		Provider: "github",
+		Owner:    "example",
+		Name:     "repository",
+	}, "test-token")
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("gitRepositoryReachable error = %v, want deadline exceeded", err)
+	}
+	if _, err := os.Stat(pidFile); err != nil {
+		t.Fatalf("escaped git descendant did not start: %v", err)
+	}
+	if elapsed > repositoryKillWaitDelay+2*time.Second {
+		t.Fatalf("gitRepositoryReachable took %s; bounded wait did not engage after %s", elapsed, repositoryKillWaitDelay)
+	}
+}
+
+func installHangingGit(t *testing.T, escapeProcessGroup bool) string {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "descendant.pid")
+	script := "#!" + bash + "\n"
+	if escapeProcessGroup {
+		script += "set -m\n"
+	}
+	script += "sleep 10 &\necho $! > \"$GOOBERS_TEST_CHILD_PID_FILE\"\nwait\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOBERS_TEST_CHILD_PID_FILE", pidFile)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() {
+		raw, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil {
+			return
+		}
+		if process, err := os.FindProcess(pid); err == nil {
+			_ = process.Kill()
+		}
+	})
+	return pidFile
 }
 
 func replaceInFile(t *testing.T, path, old, replacement string) {

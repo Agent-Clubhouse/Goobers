@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -134,7 +136,10 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const repositoryPreflightTimeout = 30 * time.Second
+const (
+	repositoryPreflightTimeout = 30 * time.Second
+	repositoryKillWaitDelay    = time.Second
+)
 
 var targetRepositoryReachable = gitRepositoryReachable
 
@@ -177,20 +182,44 @@ func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token st
 		return fmt.Errorf("provider %q does not support repository preflight", repo.Provider)
 	}
 	url := fmt.Sprintf("https://github.com/%s/%s.git", repo.Owner, repo.Name)
-	cmd := exec.CommandContext(ctx, "git",
+	cmd := exec.Command("git",
 		"-c", "credential.helper=",
 		"-c", "credential.interactive=never",
 		"ls-remote", url,
 	)
 	cmd.Env = append(gitAuthEnv(token), "GIT_TERMINAL_PROMPT=0")
-	output, err := cmd.CombinedOutput()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+
+	var err error
+	select {
+	case err = <-waitDone:
+	case <-ctx.Done():
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		select {
+		case <-waitDone:
+		case <-time.After(repositoryKillWaitDelay):
+			// A descendant may have escaped the group while retaining an
+			// output pipe. Do not let cmd.Wait block validation indefinitely.
+		}
+		return ctx.Err()
+	}
 	if err == nil {
 		return nil
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	detail := strings.TrimSpace(string(output))
+	detail := strings.TrimSpace(output.String())
 	if detail == "" {
 		return err
 	}
