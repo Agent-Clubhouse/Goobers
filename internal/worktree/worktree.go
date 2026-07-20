@@ -226,7 +226,7 @@ func (wt *Worktree) ValidateReservedPaths(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("worktree: inspect indexed asset path for run %s: %w", wt.RunID, err)
 	}
-	committed, err := gitOutput(ctx, wt.Path, "log", "--format=%H", wt.startRef+"..HEAD", "--", gooberassets.WorkspaceDir)
+	committed, err := gitOutput(ctx, wt.Path, "log", "--full-history", "--format=%H", wt.startRef+"..HEAD", "--", gooberassets.WorkspaceDir)
 	if err != nil {
 		return fmt.Errorf("worktree: inspect committed asset path for run %s: %w", wt.RunID, err)
 	}

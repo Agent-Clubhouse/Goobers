@@ -160,6 +160,7 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 // <workspace>/.goobers/{prompt.md,result.json,verdict.json,context/}) that must
 // never be committed into a run's PR (#240).
 const scratchExcludePattern = ".goobers/"
+const assetExcludePattern = "/" + gooberassets.WorkspaceDir + "/"
 
 // ensureScratchExcluded makes harness-owned workspace paths invisible to git in
 // every worktree branched from this managed mirror, so the common `git add -A`
@@ -186,11 +187,11 @@ func ensureScratchExcluded(ctx context.Context, dir string) error {
 		switch strings.TrimSpace(line) {
 		case scratchExcludePattern, ".goobers":
 			present[scratchExcludePattern] = true
-		case gooberassets.WorkspaceDir + "/", gooberassets.WorkspaceDir:
-			present[gooberassets.WorkspaceDir+"/"] = true
+		case assetExcludePattern:
+			present[assetExcludePattern] = true
 		}
 	}
-	patterns := []string{scratchExcludePattern, gooberassets.WorkspaceDir + "/"}
+	patterns := []string{scratchExcludePattern, assetExcludePattern}
 	missing := make([]string, 0, len(patterns))
 	for _, pattern := range patterns {
 		if !present[pattern] {

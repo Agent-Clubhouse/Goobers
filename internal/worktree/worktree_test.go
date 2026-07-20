@@ -76,6 +76,31 @@ func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
 	}
 }
 
+func TestManager_Create_AssetExcludeIsRootAnchored(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1", BaseRef: "main", Branch: "goobers/impl/run-1",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "goober reference")
+	nestedAsset := filepath.Join("sub", gooberassets.WorkspaceDir, "fixture.txt")
+	mustWriteFile(t, filepath.Join(wt.Path, nestedAsset), "repository fixture")
+
+	status := runTestGit(t, wt.Path, "status", "--porcelain", "--untracked-files=all")
+	if strings.Contains(status, "?? "+gooberassets.WorkspaceDir+"/") {
+		t.Fatalf("git status exposes root goober assets:\n%s", status)
+	}
+	if !strings.Contains(status, "?? "+filepath.ToSlash(nestedAsset)) {
+		t.Fatalf("git status hides nested repository path:\n%s", status)
+	}
+}
+
 func TestManager_CreateRejectsAssetsCommittedByPriorStage(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
@@ -110,6 +135,43 @@ func TestManager_CreateRejectsAssetsCommittedByPriorStage(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(second.Path, gooberassets.WorkspaceDir)); !os.IsNotExist(err) {
 		t.Fatalf("foreign assets leaked into subsequent stage: %v", err)
+	}
+}
+
+func TestWorktree_ValidateReservedPathsRejectsAssetsInMergeParent(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/run-1"
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	runTestGit(t, wt.Path, "switch", "-c", "asset-side")
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, wt.Path, "commit", "-m", "force-add assets")
+	assetCommit := strings.TrimSpace(runTestGit(t, wt.Path, "rev-parse", "HEAD"))
+
+	runTestGit(t, wt.Path, "switch", branch)
+	runTestGit(t, wt.Path, "branch", "-D", "asset-side")
+	mustWriteFile(t, filepath.Join(wt.Path, "implementation.txt"), "safe change")
+	runTestGit(t, wt.Path, "add", "implementation.txt")
+	runTestGit(t, wt.Path, "commit", "-m", "implement change")
+	runTestGit(t, wt.Path, "merge", "--no-ff", "-s", "ours", assetCommit, "-m", "merge side work")
+
+	if indexed := runTestGit(t, wt.Path, "ls-files", "--cached", "--", gooberassets.WorkspaceDir); indexed != "" {
+		t.Fatalf("merge result unexpectedly tracks assets:\n%s", indexed)
+	}
+	if err := wt.ValidateReservedPaths(ctx); !errors.Is(err, gooberassets.ErrWorkspaceCollision) {
+		t.Fatalf("ValidateReservedPaths error = %v, want ErrWorkspaceCollision", err)
+	}
+	if head := strings.TrimSpace(runTestGit(t, wt.Path, "rev-parse", "HEAD")); head != wt.startRef {
+		t.Fatalf("run branch HEAD = %s, want rollback to %s", head, wt.startRef)
 	}
 }
 
