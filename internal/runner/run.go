@@ -1291,6 +1291,8 @@ func journalToleratedFailure(jr *journal.Run, stage string) error {
 	if err != nil {
 		return err
 	}
+	var attempt int
+	var attemptClass journal.AttemptClass
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
 		if event.Stage != stage {
@@ -1300,12 +1302,16 @@ func journalToleratedFailure(jr *journal.Run, stage string) error {
 			return nil
 		}
 		if event.Type == journal.EventStageFinished {
+			attempt = event.Attempt
+			attemptClass = event.AttemptClass
 			break
 		}
 	}
 	return jr.Append(journal.Event{
-		Type:  journal.EventError,
-		Stage: stage,
+		Type:         journal.EventError,
+		Stage:        stage,
+		Attempt:      attempt,
+		AttemptClass: attemptClass,
 		Error: &journal.ErrorDetail{
 			Code:    toleratedFailureErrorCode,
 			Message: fmt.Sprintf("stage %q failure tolerated by continueOnError", stage),

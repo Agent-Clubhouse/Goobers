@@ -2000,6 +2000,57 @@ func TestJournalToleratedFailureIsIdempotentPerAttempt(t *testing.T) {
 	}
 }
 
+func TestJournalToleratedFailurePreservesInfraAttemptMetadataOnReplay(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-infra-tolerated-note"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+	if err := jr.Append(journal.Event{
+		Type:         journal.EventStageFinished,
+		Stage:        "notify",
+		Attempt:      2,
+		AttemptClass: journal.AttemptInfra,
+		Status:       string(apiv1.ResultFailure),
+	}); err != nil {
+		t.Fatalf("Append stage.finished: %v", err)
+	}
+
+	if err := journalToleratedFailure(jr, "notify"); err != nil {
+		t.Fatalf("journalToleratedFailure first call: %v", err)
+	}
+	if err := journalToleratedFailure(jr, "notify"); err != nil {
+		t.Fatalf("journalToleratedFailure replay: %v", err)
+	}
+
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var notes []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+			notes = append(notes, event)
+		}
+	}
+	if len(notes) != 1 {
+		t.Fatalf("tolerated failure notes = %d, want 1 after replay", len(notes))
+	}
+	if notes[0].Attempt != 2 || notes[0].AttemptClass != journal.AttemptInfra {
+		t.Fatalf("tolerated failure note attempt = %d class = %q, want attempt=2 class=infra", notes[0].Attempt, notes[0].AttemptClass)
+	}
+	for _, event := range journal.ConformanceView(events) {
+		if event.Type == journal.EventError && event.Stage == "notify" && event.ErrorCode == toleratedFailureErrorCode {
+			t.Fatalf("infra tolerated failure note leaked into conformance view: %+v", event)
+		}
+	}
+}
+
 func TestRunnerToleratedFailureDoesNotSatisfyInputsFrom(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "acme-web",
