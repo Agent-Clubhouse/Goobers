@@ -168,7 +168,7 @@ _goobers_completion()
             ;;
         status) flags+=" --daemon --json --phase --workflow --limit --watch --interval" ;;
         stats) flags+=" --since --json" ;;
-        trace) flags+=" --json --transcripts --transcript" ;;
+        trace) flags+=" --json --follow --transcripts --transcript" ;;
         escalations) flags+=" --json" ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
@@ -337,7 +337,7 @@ _goobers_completion()
             ;;
         status) flags+=(--daemon --json --phase --workflow --limit --watch --interval) ;;
         stats) flags+=(--since --json) ;;
-        trace) flags+=(--json --transcripts --transcript) ;;
+        trace) flags+=(--json --follow --transcripts --transcript) ;;
         escalations) flags+=(--json) ;;
         telemetry)
             case "${words[3]:-}" in
@@ -512,6 +512,7 @@ complete -c goobers -n '__fish_seen_subcommand_from stats' -l since -r -d 'Only 
 complete -c goobers -n '__fish_seen_subcommand_from stats' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l no-wait -d 'Return after the run is dispatched'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from trace' -l follow -d 'Stream events until the run reaches a terminal phase'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l transcripts -d 'Show every recorded agent-stage transcript'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l transcript -r -d 'Show recorded transcript data for one stage'
 complete -c goobers -n '__fish_seen_subcommand_from escalations' -l json -d 'Emit JSON'
