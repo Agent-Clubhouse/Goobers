@@ -84,7 +84,11 @@ _goobers_completion()
             [[ "${words[3]:-}" == "redact" ]] && flags+=(--run --path --reason --secret-file)
             ;;
         claims)
-            [[ "${words[3]:-}" == "list" ]] && flags+=(--json --stale)
+            if [[ "${words[3]:-}" == "list" ]]; then
+                flags+=(--json --stale)
+            elif [[ "${words[3]:-}" == "release" ]]; then
+                flags+=(--force)
+            fi
             ;;
         backlog-query) flags+=(--claim --release) ;;
         apply-verdict) flags+=(--gate) ;;

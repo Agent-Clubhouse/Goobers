@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,18 +25,25 @@ const (
 	claimAdminCodeNotFound     = "claim_not_found"
 	claimAdminCodeAmbiguous    = "claim_ambiguous"
 	claimAdminCodeInvalidScope = "claim_invalid_scope"
+	claimAdminCodeLiveHolder   = "claim_live_holder"
+	claimAdminCodeChanged      = "claim_changed"
 	claimAdminOperationList    = "list"
 	claimAdminOperationRelease = "release"
+	claimAdminActorCLI         = "cli"
 )
 
 var claimAdminDelegationTimeout = 30 * time.Second
 
 type claimAdminRequest struct {
-	Operation string    `json:"operation"`
-	ItemID    string    `json:"itemId,omitempty"`
-	Gaggle    string    `json:"gaggle,omitempty"`
-	Provider  string    `json:"provider,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
+	Operation         string    `json:"operation"`
+	ItemID            string    `json:"itemId,omitempty"`
+	Gaggle            string    `json:"gaggle,omitempty"`
+	Provider          string    `json:"provider,omitempty"`
+	ExpectedRunID     string    `json:"expectedRunId,omitempty"`
+	ExpectedClaimedAt time.Time `json:"expectedClaimedAt,omitempty"`
+	Force             bool      `json:"force,omitempty"`
+	Actor             string    `json:"actor,omitempty"`
+	CreatedAt         time.Time `json:"createdAt"`
 }
 
 type claimAdminResponse struct {
@@ -154,13 +162,15 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	gaggle := fs.String("gaggle", "", "gaggle owning the claim")
 	provider := fs.String("provider", "", "provider owning the claim")
+	force := fs.Bool("force", false, "release a claim held by a non-terminal run")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers claims release [--gaggle=name --provider=name] <item-id> [path]\n\n"+
-			"Force-release an item regardless of the run holding it. The override is\n"+
-			"recorded as claim.force_released in the instance journal. Default path\n"+
-			"is \".\". Scope flags are required when the item id exists in more than\n"+
-			"one namespace. Exit codes: 0 = released, 1 = not found/ambiguous,\n"+
-			"2 = usage/IO error.\n")
+		pf(stderr, "Usage: goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]\n\n"+
+			"Print the claim holder, age, and expiry, then force-release the item.\n"+
+			"--force is required while the holding run is non-terminal. The override\n"+
+			"is recorded as claim.force_released in the instance journal. Default\n"+
+			"path is \".\". Scope flags are required when the item id exists in more\n"+
+			"than one namespace. Exit codes: 0 = released, 1 = refused/not found/\n"+
+			"ambiguous, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -178,11 +188,51 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(1)
 	}
 
-	resp, err := runClaimAdmin(root, claimAdminRequest{
-		Operation: claimAdminOperationRelease,
-		ItemID:    fs.Arg(0),
+	previewResp, err := runClaimAdmin(root, claimAdminRequest{
+		Operation: claimAdminOperationList,
 		Gaggle:    *gaggle,
 		Provider:  *provider,
+	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if previewResp.Error != "" {
+		pf(stderr, "error: %s\n", previewResp.Error)
+		return 2
+	}
+	entry, code, message := selectClaimForRelease(previewResp.Entries, claimAdminRequest{
+		ItemID:   fs.Arg(0),
+		Gaggle:   *gaggle,
+		Provider: *provider,
+	})
+	if code != "" {
+		pf(stderr, "error: %s\n", message)
+		return 1
+	}
+	printClaimReleasePreview(stdout, entry, time.Now())
+
+	terminal, err := claimHolderTerminal(root, entry)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if !terminal && !*force {
+		pf(stderr, "error: claim is held by non-terminal run %s; rerun with --force to release it\n", entry.RunID)
+		return 1
+	}
+
+	// Tier 1 local filesystem access is the authorization boundary. Route this
+	// mutation through the tier-2 access-control seam when #172/#469 lands.
+	resp, err := runClaimAdmin(root, claimAdminRequest{
+		Operation:         claimAdminOperationRelease,
+		ItemID:            fs.Arg(0),
+		Gaggle:            *gaggle,
+		Provider:          *provider,
+		ExpectedRunID:     entry.RunID,
+		ExpectedClaimedAt: entry.ClaimedAt,
+		Force:             *force,
+		Actor:             claimAdminActorCLI,
 	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -203,6 +253,41 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	pf(stdout, "released claim %s (was held by run %s, workflow %s)\n",
 		resp.Released.ItemID, resp.Released.RunID, resp.Released.Workflow)
 	return 0
+}
+
+func printClaimReleasePreview(w io.Writer, entry localscheduler.ClaimEntry, now time.Time) {
+	age := now.Sub(entry.ClaimedAt)
+	if age < 0 {
+		age = 0
+	}
+	pf(w, "claim %s (gaggle %s, provider %s): holder run %s, workflow %s, age %s, expires %s\n",
+		entry.ItemID,
+		claimScopeValue(entry.Gaggle),
+		claimScopeValue(entry.Provider),
+		entry.RunID,
+		entry.Workflow,
+		age.Round(time.Second),
+		entry.ExpiresAt.UTC().Format(time.RFC3339),
+	)
+}
+
+func claimHolderTerminal(root string, entry localscheduler.ClaimEntry) (bool, error) {
+	runDir, err := instance.NewLayout(root).FindRunDir(entry.RunID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect holding run %s: %w", entry.RunID, err)
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return false, fmt.Errorf("inspect holding run %s: %w", entry.RunID, err)
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		return false, fmt.Errorf("read holding run %s journal: %w", entry.RunID, err)
+	}
+	return phase != journal.PhaseRunning, nil
 }
 
 func claimScopeValue(value string) string {
@@ -269,7 +354,29 @@ func executeClaimAdminRequest(schedulerDir string, log *journal.InstanceLog, req
 				resp.Error = message
 				return nil
 			}
-			if err := ledger.ForceReleaseEntry(entry); err != nil {
+			if req.ExpectedRunID != "" && entry.RunID != req.ExpectedRunID {
+				resp.Code = claimAdminCodeChanged
+				resp.Error = fmt.Sprintf("claim holder changed from run %s to run %s; inspect and retry", req.ExpectedRunID, entry.RunID)
+				return nil
+			}
+			if !req.ExpectedClaimedAt.IsZero() && !entry.ClaimedAt.Equal(req.ExpectedClaimedAt) {
+				resp.Code = claimAdminCodeChanged
+				resp.Error = "claim lease changed after inspection; inspect and retry"
+				return nil
+			}
+			if req.Actor != claimAdminActorCLI {
+				return fmt.Errorf("claims: release actor must be %q", claimAdminActorCLI)
+			}
+			terminal, err := claimHolderTerminal(filepath.Dir(schedulerDir), entry)
+			if err != nil {
+				return err
+			}
+			if !terminal && !req.Force {
+				resp.Code = claimAdminCodeLiveHolder
+				resp.Error = fmt.Sprintf("claim is held by non-terminal run %s; --force is required", entry.RunID)
+				return nil
+			}
+			if err := ledger.ForceReleaseEntry(entry, req.Actor); err != nil {
 				return err
 			}
 			resp.Released = &entry

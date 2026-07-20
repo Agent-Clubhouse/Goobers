@@ -68,7 +68,7 @@ Usage:
   goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock
   goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]
                                 print current claim leases, optionally only expired leases
-  goobers claims release [--gaggle=name --provider=name] <item-id> [path]
+  goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]
                                 force-release a claim through the live daemon or claims.lock
   goobers trace [--json] [--transcripts | --transcript=<stage>] <run-id> [path]
                                 show a run's journal events (+ spans if rolled up), or recorded agent transcripts
