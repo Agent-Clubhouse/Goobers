@@ -92,6 +92,66 @@ func TestTickBoundsFairDispatchAcrossGaggles(t *testing.T) {
 	}
 }
 
+func TestTickPreservesTriggerEvaluationAndAfterTickAcrossGaggles(t *testing.T) {
+	gate := newReleaseGate(t)
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	now := base.Add(time.Hour)
+	alpha := &fakeStarter{block: gate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	beta := &fakeStarter{block: gate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+
+	var sched *Scheduler
+	var dir string
+	afterTickCalls := 0
+	startedAtAfterTick := 0
+	var afterTickErr error
+	evaluated := make(map[WorkflowIdentity]time.Time)
+	sched, dir = newTestScheduler(t, []WorkflowEntry{
+		{Gaggle: "alpha", Workflow: "deploy", Schedules: []Schedule{fakeSchedule{d: time.Hour}}, Starter: alpha},
+		{Gaggle: "beta", Workflow: "deploy", Schedules: []Schedule{fakeSchedule{d: time.Hour}}, Starter: beta},
+	}, WithClock(func() time.Time { return base }, time.After), WithAfterTick(func(context.Context) {
+		afterTickCalls++
+		events, err := journal.ReadInstanceLog(dir)
+		if err != nil {
+			afterTickErr = err
+			return
+		}
+		for _, event := range events {
+			if event.Type == journal.EventRunStarted {
+				startedAtAfterTick++
+			}
+		}
+		sched.mu.Lock()
+		defer sched.mu.Unlock()
+		for identity, state := range sched.triggers {
+			evaluated[identity] = state.LastEval
+		}
+	}))
+	sched.conditions.SetInstanceLimits(1, nil, nil)
+
+	sched.Tick(context.Background(), now)
+
+	if afterTickCalls != 1 {
+		t.Fatalf("after-tick calls = %d, want 1", afterTickCalls)
+	}
+	if afterTickErr != nil {
+		t.Fatal(afterTickErr)
+	}
+	if startedAtAfterTick != 1 {
+		t.Fatalf("run.started events observed after tick = %d, want 1", startedAtAfterTick)
+	}
+	for _, identity := range []WorkflowIdentity{
+		{Gaggle: "alpha", Workflow: "deploy"},
+		{Gaggle: "beta", Workflow: "deploy"},
+	} {
+		if got := evaluated[identity]; !got.Equal(now) {
+			t.Fatalf("%v LastEval observed after tick = %v, want %v", identity, got, now)
+		}
+	}
+
+	gate.release()
+	sched.Wait()
+}
+
 func TestTickSkipsBlockedWorkflowsWithinGaggleTurn(t *testing.T) {
 	gate := newReleaseGate(t)
 	blockedReadiness := apiv1.ReadinessConditions{MaxConcurrentRuns: 1}
