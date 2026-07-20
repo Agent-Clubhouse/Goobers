@@ -125,25 +125,7 @@ func TestInitThenValidate(t *testing.T) {
 }
 
 func TestValidateScheduledWorkflowHasNoScheduleWarning(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "demo")
-	if code, _, stderr := runArgs(t, "init", root); code != 0 {
-		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
-	}
-
-	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	raw, err := os.ReadFile(workflowPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manual := "    - type: manual"
-	schedule := "    - type: schedule\n      schedule: \"@every 15m\""
-	updated := strings.Replace(string(raw), manual, schedule, 1)
-	if updated == string(raw) {
-		t.Fatalf("starter workflow did not contain expected manual trigger:\n%s", raw)
-	}
-	if err := os.WriteFile(workflowPath, []byte(updated), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	root := initScheduledDemo(t)
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 {

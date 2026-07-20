@@ -85,7 +85,7 @@ func TestUpAndStatusPrintIdenticalOrderedWarnings(t *testing.T) {
 }
 
 func TestStatusJSONIncludesStableWarningShape(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	withValidationIssues(t, validate.Issue{
 		Code:     validate.WarningModelFallback,
 		Severity: validate.Warning,
