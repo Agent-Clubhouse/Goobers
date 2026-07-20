@@ -115,11 +115,14 @@ spec:
         # updates the walk's lastResult/InputsFrom chain (only a task does).
         # Resolves against whichever task precedes it — gather-sibling-context
         # on the review gate's fail branch, elect-lander on elect-gate's
-        # parked branch (#833); both emit selectedNumber+reviewDigest.
+        # parked branch (#833); both emit selectedNumber, the authoritative
+        # selected SHA pin, and reviewDigest.
         # apply-verdict reads the gate's own Verdict back from this run's
         # journal directly (the mechanism #358's schema + internal/gate's
         # existing recordVerdict already provide, not new plumbing).
         selectedNumber: selectedNumber
+        selectedHeadSha: selectedHeadSha
+        selectedBaseSha: selectedBaseSha
         reviewDigest: reviewDigest
         # #990: the same deterministic overlap set the election used —
         # gather-sibling-context emits it on the review-gate branch,

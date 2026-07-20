@@ -228,15 +228,32 @@ func parseBlockedOnSiblingComment(body string) (s blockedOnSiblingState, ok bool
 	return s, true
 }
 
+func verdictPinVoidReason(verdict apiv1.Verdict, selectedHeadSHA, selectedBaseSHA, currentHeadSHA, currentBaseSHA string) string {
+	if verdict.HeadSHA != "" && verdict.HeadSHA != selectedHeadSHA {
+		return fmt.Sprintf("reviewer echoed head SHA %q, but deterministic review pin is %q", verdict.HeadSHA, selectedHeadSHA)
+	}
+	if verdict.BaseSHA != "" && verdict.BaseSHA != selectedBaseSHA {
+		return fmt.Sprintf("reviewer echoed base SHA %q, but deterministic review pin is %q", verdict.BaseSHA, selectedBaseSHA)
+	}
+	if selectedHeadSHA != currentHeadSHA {
+		return fmt.Sprintf("PR head moved from deterministic review pin %q to %q", selectedHeadSHA, currentHeadSHA)
+	}
+	if selectedBaseSHA != currentBaseSHA {
+		return fmt.Sprintf("PR base moved from deterministic review pin %q to %q", selectedBaseSHA, currentBaseSHA)
+	}
+	return ""
+}
+
 // runApplyVerdict implements `goobers apply-verdict` (issue #359): reads the
 // holistic review gate's Verdict back from this run's own journal (the gate
 // already records it as an artifact via internal/gate's recordVerdict — no
-// new plumbing), re-checks its SHA pin against the PR's CURRENT head/base
-// before acting (design doc §6 D6: a verdict computed against a state that
-// no longer exists is void, not actionable), then publishes the verdict as a
-// SHA-pinned native GitHub review. Every verdict also retains the existing
-// prose-comment handoff consumed by merge, cache, and remediation paths;
-// non-pass verdicts additionally retain their decision labels.
+// new plumbing), cross-checks its SHA echo against gather-sibling-context's
+// authoritative pin, and re-checks that pin against the PR's CURRENT head/base
+// before acting (design doc §6 D6: a verdict computed against a state that no
+// longer exists is void, not actionable). It then publishes the verdict as a
+// SHA-pinned native GitHub review. Every verdict also retains the existing prose
+// comment handoff consumed by merge, cache, and remediation paths; non-pass
+// verdicts additionally retain their decision labels.
 //
 // Before posting, a verdict missing Digest/SourceRunID (issue #523: every
 // genuinely fresh, reviewer-produced verdict — a cache-hit verdict already
@@ -253,15 +270,16 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers apply-verdict [--gate name] [path]\n\n"+
 			"Read the holistic review gate's Verdict from this run's own journal,\n"+
-			"re-check its SHA pin against the PR's current head/base, and — if\n"+
+			"cross-check its optional SHA echo against the deterministic review\n"+
+			"pin, re-check that pin against the PR's current head/base, and — if\n"+
 			"still valid — post the verdict as a native GitHub review and retain\n"+
 			"the PR-comment handoff. Non-pass verdicts also apply a remediation\n"+
 			"label. A\n"+
 			"stale SHA pin voids the verdict: no comment, no label, exit 0 (this\n"+
 			"cycle's work is simply moot, not an error — merge-review re-reviews\n"+
-			"next tick). Requires selectedNumber (Task.InputsFrom pr-select's\n"+
-			"number output). Exit codes: 0 = applied (or voided), 1 = business\n"+
-			"error, 2 = usage/IO error.\n")
+			"next tick). Requires selectedNumber, selectedHeadSha, and\n"+
+			"selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or\n"+
+			"voided), 1 = business error, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -285,6 +303,16 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	selectedNumber, err := strconv.Atoi(selectedNumberStr)
 	if err != nil {
 		pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumberStr, err)
+		return 1
+	}
+	selectedHeadSHA := providerInput("selectedHeadSha", "")
+	if selectedHeadSHA == "" {
+		pf(stderr, "error: selectedHeadSha is required (inputsFrom gather-sibling-context's deterministic output)\n")
+		return 1
+	}
+	selectedBaseSHA := providerInput("selectedBaseSha", "")
+	if selectedBaseSHA == "" {
+		pf(stderr, "error: selectedBaseSha is required (inputsFrom gather-sibling-context's deterministic output)\n")
 		return 1
 	}
 
@@ -343,17 +371,12 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return writeApplyVerdictResult(resultFile, selectedNumber, "", "", "moot", "", stderr)
 	}
 
-	// D6: the verdict is void if the PR has moved since it was computed —
-	// either new commits landed (headSha changed) or the base advanced
-	// (baseSha changed). Acting on a stale verdict would label/comment
-	// against a diff that no longer exists.
-	if verdict.HeadSHA != "" && verdict.HeadSHA != current.HeadSHA {
-		pf(stdout, "verdict void: PR #%d's head moved (%s -> %s) since review — skipping, will re-review next cycle\n", selectedNumber, verdict.HeadSHA, current.HeadSHA)
-		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", stderr)
-	}
-	if verdict.BaseSHA != "" && verdict.BaseSHA != current.BaseSHA {
-		pf(stdout, "verdict void: PR #%d's base moved (%s -> %s) since review — skipping, will re-review next cycle\n", selectedNumber, verdict.BaseSHA, current.BaseSHA)
-		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", stderr)
+	// D6: gather-sibling-context's deterministic pin is authoritative. The
+	// reviewer's optional echo can disprove that it reviewed the gathered diff,
+	// but omitting the echo cannot bypass the current-state check.
+	if reason := verdictPinVoidReason(*verdict, selectedHeadSHA, selectedBaseSHA, current.HeadSHA, current.BaseSHA); reason != "" {
+		pf(stdout, "verdict void for PR #%d: %s — skipping, will re-review next cycle\n", selectedNumber, reason)
+		return writeApplyVerdictResultWithReason(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", reason, stderr)
 	}
 
 	// Close a pull request that is NO LONGER NEEDED rather than parking,
@@ -382,6 +405,8 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 
 	posted := *verdict
+	posted.HeadSHA = selectedHeadSHA
+	posted.BaseSHA = selectedBaseSHA
 	if posted.Digest == "" {
 		posted.Digest = providerInput("reviewDigest", "")
 	}
@@ -809,13 +834,21 @@ func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecis
 }
 
 func writeApplyVerdictResult(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor string, stderr io.Writer) int {
-	data, err := json.Marshal(map[string]string{
+	return writeApplyVerdictResultWithReason(path, selectedNumber, headSHA, baseSHA, decision, verdictAuthor, "", stderr)
+}
+
+func writeApplyVerdictResultWithReason(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor, reason string, stderr io.Writer) int {
+	out := map[string]string{
 		"selectedNumber":  strconv.Itoa(selectedNumber),
 		"selectedHeadSha": headSHA,
 		"selectedBaseSha": baseSHA,
 		"decision":        decision,
 		"verdictAuthor":   verdictAuthor,
-	})
+	}
+	if reason != "" {
+		out["reason"] = reason
+	}
+	data, err := json.Marshal(out)
 	if err != nil {
 		pf(stderr, "error: marshal verdict result: %v\n", err)
 		return 1

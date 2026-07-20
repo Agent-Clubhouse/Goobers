@@ -60,6 +60,10 @@ spec:
         command: ["goobers", "apply-verdict"]
       inputsFrom:
         selectedNumber: selectedNumber
+        # The deterministic gather outputs are authoritative; verdict SHAs are
+        # only an optional cross-check against this pin.
+        selectedHeadSha: selectedHeadSha
+        selectedBaseSha: selectedBaseSha
         reviewDigest: reviewDigest
         # #990: same deterministic overlap set the election used.
         overlappingSiblings: overlappingSiblingsCsv
