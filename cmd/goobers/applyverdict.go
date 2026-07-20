@@ -92,6 +92,56 @@ func unionBlockingPRs(findings []apiv1.Finding) []int {
 	return out
 }
 
+// parseOverlappingSiblings parses the comma-separated overlappingSiblings
+// input — the deterministic file-overlap set gather-sibling-context computes
+// (#989/#990) and threads through the workflow — into PR numbers, skipping
+// blank or unparseable tokens.
+func parseOverlappingSiblings(csv string) []int {
+	var out []int
+	for _, tok := range strings.Split(csv, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		if n, err := strconv.Atoi(tok); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// withOverlapBackstop folds the deterministic file-overlap set (#990) into a
+// verdict's findings so sequencing routing uses ground truth, not only the LLM
+// reviewer's classification. Conservative and additive:
+//
+//   - If a real defect is present (any non-cross-pr-blocked finding), the
+//     findings are returned UNCHANGED — a real bug takes priority over
+//     sequencing and must route to remediation, never be merged as a lander.
+//   - Otherwise, if overlappingSiblings is non-empty, a cross-pr-blocked
+//     finding carrying that full set is appended, so allCrossPRBlocked /
+//     unionBlockingPRs / electionDecision treat the PR as sequencing-blocked on
+//     the whole deterministic cluster even if the reviewer under-named the
+//     blocking PRs or filed no structured finding at all.
+//
+// The returned slice never aliases the caller's backing array (full-slice
+// append), so the published verdict's own findings stay the reviewer's.
+func withOverlapBackstop(findings []apiv1.Finding, overlappingSiblings []int) []apiv1.Finding {
+	if len(overlappingSiblings) == 0 {
+		return findings
+	}
+	for _, f := range findings {
+		if f.Class != apiv1.FindingCrossPRBlocked {
+			return findings
+		}
+	}
+	return append(findings[:len(findings):len(findings)], apiv1.Finding{
+		Severity:    apiv1.SeverityWarning,
+		Class:       apiv1.FindingCrossPRBlocked,
+		Message:     fmt.Sprintf("deterministic file overlap with sibling PR(s) %v — sequencing required", overlappingSiblings),
+		BlockingPRs: overlappingSiblings,
+	})
+}
+
 // blockedOnSiblingState is the PR-altitude analog of blockedrecords.go's
 // backlog-altitude blockedRecord (#747) — the structured record apply-verdict
 // posts when a verdict's findings are entirely cross-PR-ordering asks. This
@@ -291,18 +341,28 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		posted.SourceRunID = runID
 	}
 
+	// Fold the deterministic file-overlap set (#990) into the findings used for
+	// sequencing ROUTING only — not into the published verdict, whose findings
+	// stay the reviewer's own (renderVerdictComment below reads posted, not
+	// effective). This lets a green PR whose only issue is a file collision
+	// reach election even if the reviewer under-named (or missed) the blocking
+	// siblings; a verdict with a real defect is returned unchanged.
+	overlappingSiblings := parseOverlappingSiblings(providerInput("overlappingSiblings", ""))
+	effective := posted
+	effective.Findings = withOverlapBackstop(posted.Findings, overlappingSiblings)
+
 	// Election resolves an all-ordering verdict into a real pass (#833/#834,
 	// reframed). See electedLanderPassRationale.
-	if elected, rationale := electedLanderPass(selectedNumber, posted); elected {
+	if elected, rationale := electedLanderPass(selectedNumber, effective); elected {
 		posted.Decision = apiv1.VerdictPass
 		posted.Rationale = rationale
 	}
 
 	comment := renderVerdictComment(posted)
-	label := verdictLabel(posted.Decision, posted.Findings)
+	label := verdictLabel(posted.Decision, effective.Findings)
 	if label == blockedOnSiblingLabel {
 		state := blockedOnSiblingState{
-			Blockers:   unionBlockingPRs(posted.Findings),
+			Blockers:   unionBlockingPRs(effective.Findings),
 			Reason:     posted.Rationale,
 			HeadSHA:    posted.HeadSHA,
 			BaseSHA:    posted.BaseSHA,

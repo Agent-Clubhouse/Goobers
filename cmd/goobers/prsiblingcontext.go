@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
@@ -280,10 +281,12 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	// noticing the collision. overlappingSiblings is the convenience summary
 	// those stages consume.
 	overlappingSiblings := make([]int, 0)
+	overlappingCsv := make([]string, 0)
 	for i := range siblings {
 		siblings[i].Overlap = intersectSorted(selectedFiles, siblings[i].Files)
 		if len(siblings[i].Overlap) > 0 {
 			overlappingSiblings = append(overlappingSiblings, siblings[i].Number)
+			overlappingCsv = append(overlappingCsv, strconv.Itoa(siblings[i].Number))
 		}
 	}
 
@@ -307,6 +310,11 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		// PR's (#989). Empty slice, not omitted, so a consumer can distinguish
 		// "computed, none overlap" from "field absent / older producer".
 		"overlappingSiblings": overlappingSiblings,
+		// overlappingSiblingsCsv: the same set as a comma-separated scalar
+		// string (#990), so the runner's flat-scalar Outputs harvest lifts it
+		// for inputsFrom threading to elect-lander/apply-verdict (a []int array
+		// is not lifted). Empty string when nothing overlaps.
+		"overlappingSiblingsCsv": strings.Join(overlappingCsv, ","),
 	}
 	if cachedVerdictJSON != "" {
 		// A scalar string (not a nested object) so executor.

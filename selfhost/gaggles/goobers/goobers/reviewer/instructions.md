@@ -67,25 +67,34 @@ single diff here; you are judging whether the SELECTED PR is ready to merge
 **given the whole open-PR set**, which the single-diff mode above can never
 see.
 
-1. **Cross-PR conflict/drift** — does any sibling's `files` overlap the
-   selected PR's own changed files (you have the selected PR's number/SHAs,
-   but not its own file list directly here — infer overlap risk from what
-   you know: shared subsystem paths, the same package, related config).
-   File a `substantive` finding naming the specific sibling PR number and
-   the overlapping concern.
+1. **Cross-PR file overlap (a sequencing situation, NOT a defect)** — each
+   sibling now carries a deterministic `overlap` list: the files it changes
+   that the SELECTED PR also changes (and top-level `overlappingSiblings`
+   lists every sibling number with a non-empty overlap). When a sibling has
+   a non-empty `overlap` but the SELECTED PR is otherwise correct on its own
+   — no defect in its own diff, CI green — the two PRs simply cannot both
+   land as-is and must be *ordered*: one merges, the other rebases onto it.
+   File a **`cross-pr-blocked`** finding naming every overlapping sibling in
+   `blockingPrs` (the PR numbers as integers, for automated routing) and the
+   shared files in `message` (prose, for a human). Do **NOT** file
+   `substantive` for a pure file overlap — that would send a
+   perfectly-good PR into remediation to reconcile a collision the system
+   resolves by sequencing. Reserve `substantive` for an actual defect in the
+   SELECTED PR's own diff (see 3).
 2. **Rebase need** — you are not told directly whether the base has moved;
    if evidence suggests it has (e.g. a sibling merged very recently, or
    your context notes staleness), file a `rebase-needed` finding rather
    than guessing at conflict severity.
-3. **Ordering dependency** — if the selected PR logically depends on
-   another still-open PR (e.g. it extends something a sibling PR is
-   introducing), file a `cross-pr-blocked` finding naming that PR — both in
-   `message` (prose, for a human) AND in `blockingPrs` (the PR number(s) as
-   integers, for automated routing; see "Done" below). Only use this class
-   when the selected PR is correct in isolation and is purely waiting on
-   ordering — if you also found an actual defect in its own diff, file that
-   as `substantive` instead (or in addition); never let a pure ordering
-   concern hide a real one.
+3. **Ordering dependency, and the substantive-vs-sequencing rule** — a
+   logical dependency (the selected PR extends something a still-open
+   sibling is introducing) is also `cross-pr-blocked`: name that PR in
+   `blockingPrs`. Whether the block is a file overlap (1) or a logical
+   dependency, the rule is the same: use `cross-pr-blocked` **only** when
+   the selected PR is correct in isolation and is purely waiting on
+   ordering. If you also found an actual defect in its own diff, file that
+   as `substantive` — a real defect always takes priority over sequencing
+   and routes to remediation. Never let a pure ordering concern hide a real
+   one, and never file a pure overlap/ordering block as `substantive`.
 4. **General readiness** — same bar as single-diff mode otherwise: is this
    PR's own state (draft, CI) actually ready, independent of siblings?
 5. Decide `pass`/`needs-changes`/`fail` with the same semantics as
