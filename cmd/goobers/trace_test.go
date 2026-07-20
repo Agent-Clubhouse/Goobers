@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
@@ -528,6 +529,76 @@ func TestTraceFollowTerminalRunUsesOrdinaryTraceOutput(t *testing.T) {
 	if got.Identity.RunID != runID || got.Phase != journal.PhaseCompleted || len(got.Events) != 2 {
 		t.Fatalf("terminal trace --follow = identity %q phase %q events %d", got.Identity.RunID, got.Phase, len(got.Events))
 	}
+}
+
+func TestTraceFollowRefreshesRunThatFinishesBeforeInitialEventRead(t *testing.T) {
+	root := t.TempDir()
+	const runID = "follow-startup-race"
+	run := newTraceTestRun(t, root, runID)
+
+	var raceReader *traceFinishOnEventsReader
+	factory := func(layout instance.Layout) (readservice.OfflineRuns, error) {
+		reads, err := readservice.NewOfflineRuns(layout)
+		if err != nil {
+			return nil, err
+		}
+		raceReader = &traceFinishOnEventsReader{
+			OfflineRuns: reads,
+			run:         run,
+		}
+		return raceReader, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runTraceWithFollowContextAndFactory(
+		context.Background(),
+		[]string{"--json", "--follow", runID, root},
+		&stdout,
+		&stderr,
+		factory,
+	)
+	if code != 0 {
+		t.Fatalf("terminal trace --follow: code = %d, stderr = %q", code, stderr.String())
+	}
+	var got traceJSONResult
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("terminal trace --follow did not use ordinary JSON output: %v: %q", err, stdout.String())
+	}
+	if got.Phase != journal.PhaseCompleted || got.State == nil || got.State.Phase != journal.PhaseCompleted {
+		t.Fatalf("terminal trace --follow phase = %q, state = %#v", got.Phase, got.State)
+	}
+	if raceReader.getRunCalls != 2 {
+		t.Fatalf("GetRun calls = %d, want initial read and terminal refresh", raceReader.getRunCalls)
+	}
+}
+
+type traceFinishOnEventsReader struct {
+	readservice.OfflineRuns
+	run         *journal.Run
+	getRunCalls int
+	finishOnce  sync.Once
+	finishErr   error
+}
+
+func (r *traceFinishOnEventsReader) GetRun(ctx context.Context, runID string) (readservice.RunDetail, error) {
+	r.getRunCalls++
+	return r.OfflineRuns.GetRun(ctx, runID)
+}
+
+func (r *traceFinishOnEventsReader) RunEvents(ctx context.Context, runID string) (readservice.EventList, error) {
+	r.finishOnce.Do(func() {
+		r.finishErr = r.run.Append(journal.Event{
+			Type:   journal.EventRunFinished,
+			Status: string(journal.PhaseCompleted),
+		})
+		if r.finishErr == nil {
+			r.finishErr = r.run.Close()
+		}
+	})
+	if r.finishErr != nil {
+		return readservice.EventList{}, r.finishErr
+	}
+	return r.OfflineRuns.RunEvents(ctx, runID)
 }
 
 func TestTraceFollowCancellationSkipsTornRecordAndExitsInterrupted(t *testing.T) {

@@ -30,6 +30,15 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 }
 
 func runTraceWithFollowContext(followCtx context.Context, args []string, stdout, stderr io.Writer) int {
+	return runTraceWithFollowContextAndFactory(followCtx, args, stdout, stderr, readservice.NewOfflineRuns)
+}
+
+func runTraceWithFollowContextAndFactory(
+	followCtx context.Context,
+	args []string,
+	stdout, stderr io.Writer,
+	newOfflineRuns func(instance.Layout) (readservice.OfflineRuns, error),
+) int {
 	fs := flag.NewFlagSet("trace", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit the run trace as JSON")
@@ -87,7 +96,7 @@ func runTraceWithFollowContext(followCtx context.Context, args []string, stdout,
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	reads, err := readservice.NewOfflineRuns(l)
+	reads, err := newOfflineRuns(l)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -120,20 +129,28 @@ func runTraceWithFollowContext(followCtx context.Context, args []string, stdout,
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if *follow && !detail.Terminal && !traceEventsTerminal(ledger.Events) {
-		if followCtx == nil {
-			var stop func()
-			followCtx, stop = signals.SetupSignalContext()
-			defer stop()
-		}
-		if err := followTrace(followCtx, reads, runID, ledger.Events, *jsonOutput, stdout); err != nil {
-			if errors.Is(err, context.Canceled) {
-				return traceInterruptedExitCode
+	if *follow && !detail.Terminal {
+		if !traceEventsTerminal(ledger.Events) {
+			if followCtx == nil {
+				var stop func()
+				followCtx, stop = signals.SetupSignalContext()
+				defer stop()
 			}
-			pf(stderr, "error: follow trace: %v\n", err)
+			if err := followTrace(followCtx, reads, runID, ledger.Events, *jsonOutput, stdout); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return traceInterruptedExitCode
+				}
+				pf(stderr, "error: follow trace: %v\n", err)
+				return 2
+			}
+			return 0
+		}
+
+		detail, err = reads.GetRun(ctx, runID)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
 			return 2
 		}
-		return 0
 	}
 	identity, state, err := reads.RunMetadata(ctx, runID)
 	if err != nil {
