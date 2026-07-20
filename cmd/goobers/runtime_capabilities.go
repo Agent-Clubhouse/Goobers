@@ -119,6 +119,12 @@ var cliCommands = []cliCommand{
 		subcommand("blocked list", "list", apicontract.ActionReadOnlyNavigation, runBlockedList),
 		subcommand("blocked clear", "clear", apicontract.ActionMaintenance, runBlockedClear),
 	),
+	groupCommand(
+		"claims",
+		runClaims,
+		subcommand("claims list", "list", apicontract.ActionReadOnlyNavigation, runClaimsList),
+		subcommand("claims release", "release", apicontract.ActionMaintenance, runClaimsRelease),
+	),
 	command("backlog-query", apicontract.ActionWorkflowExecution, runBacklogQuery),
 	command("push-branch", apicontract.ActionWorkflowExecution, runPushBranch),
 	command("open-pr", apicontract.ActionWorkflowExecution, runOpenPR),

@@ -265,6 +265,7 @@ func TestInstanceLogEmittedBytesMatchSchema(t *testing.T) {
 		{Type: EventRunFinished, Workflow: "nominate", RunID: testIdentity().RunID, Status: string(PhaseCompleted)},
 		{Type: EventClaimAcquired, Name: "issue-8", RunID: testIdentity().RunID, Workflow: "curate"},
 		{Type: EventClaimReleased, Name: "issue-8", RunID: testIdentity().RunID, Workflow: "curate"},
+		{Type: EventClaimForceReleased, Name: "issue-9", RunID: testIdentity().RunID, Workflow: "implement"},
 		{Type: EventClaimLockSlow, Runner: map[string]any{"operation": "backlog-query.claim", "pid": 42, "waitDuration": "6s", "holdDuration": "1ms"}},
 		{Type: EventConfigReloaded, Runner: map[string]any{"oldDigest": Digest([]byte("old")), "newDigest": Digest([]byte("new"))}},
 		{Type: EventConfigReloadRejected, Error: &ErrorDetail{Code: "config_reload_rejected", Message: "invalid workflow"}, Runner: map[string]any{"oldDigest": Digest([]byte("old")), "newDigest": Digest([]byte("invalid"))}},
