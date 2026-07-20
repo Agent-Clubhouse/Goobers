@@ -437,10 +437,11 @@ func TestReconcileRemoteBranchesDeletesOnlySafeOwnedCandidate(t *testing.T) {
 	var mutation journal.Event
 	for _, event := range events {
 		branch, _ := event.Runner["branch"].(string)
-		if event.Runner["event"] == "decision" {
+		switch event.Runner["event"] {
+		case "decision":
 			reason, _ := event.Runner["reason"].(string)
 			decisions[branch] = reason
-		} else if event.Runner["event"] == "mutation" {
+		case "mutation":
 			mutation = event
 		}
 	}
