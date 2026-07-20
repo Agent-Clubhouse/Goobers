@@ -34,8 +34,9 @@ type GitHubProvider struct {
 	// rate-limit backoff before giving up with a typed RateLimitError (#614).
 	maxRateLimitWait time.Duration
 	// now and sleep are injectable for deterministic rate-limit tests.
-	now   func() time.Time
-	sleep func(context.Context, time.Duration) error
+	now    func() time.Time
+	sleep  func(context.Context, time.Duration) error
+	jitter func(time.Duration) time.Duration
 }
 
 // NewGitHubProvider constructs a GitHub provider with optional overrides.
@@ -47,6 +48,7 @@ func NewGitHubProvider(token string, opts ...func(*GitHubProvider)) *GitHubProvi
 		maxRateLimitWait: defaultRateLimitMaxWait,
 		now:              time.Now,
 		sleep:            contextSleep,
+		jitter:           randomJitter,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -58,6 +60,9 @@ func NewGitHubProvider(token string, opts ...func(*GitHubProvider)) *GitHubProvi
 	}
 	if p.sleep == nil {
 		p.sleep = contextSleep
+	}
+	if p.jitter == nil {
+		p.jitter = randomJitter
 	}
 	return p
 }
@@ -1743,7 +1748,7 @@ func (p *GitHubProvider) send(ctx context.Context, method, endpoint string, body
 		if isRateLimited(resp) {
 			wait, ev := p.rateLimitPlan(resp, endpoint, attempt)
 			_ = resp.Body.Close()
-			if attempt >= p.maxRetries || rateLimitWaited+wait > maxWait {
+			if attempt >= p.maxRetries || wait > maxWait-rateLimitWaited {
 				// Waiting can't help within this request's budget — the
 				// retry allowance is spent, or the reset is further out than
 				// the wait budget allows (#614). Fail FAST with the typed
@@ -1751,12 +1756,17 @@ func (p *GitHubProvider) send(ctx context.Context, method, endpoint string, body
 				// limited, resets at <t>" instead of a generic 403 string,
 				// and no time is burned sleeping toward a wait that cannot
 				// reach the reset anyway.
+				ev.Outcome = RateLimitOutcomeExhausted
+				p.observeRateLimit(ctx, ev)
 				return nil, rateLimitErrorFrom(ev)
 			}
-			p.observeRateLimit(ctx, ev)
 			if err := p.sleep(ctx, wait); err != nil {
+				ev.Outcome = RateLimitOutcomeCanceled
+				p.observeRateLimit(ctx, ev)
 				return nil, err
 			}
+			ev.Outcome = RateLimitOutcomeRetry
+			p.observeRateLimit(ctx, ev)
 			rateLimitWaited += wait
 			continue
 		}

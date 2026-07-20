@@ -30,23 +30,43 @@ type ADOProvider struct {
 	Client       HTTPClient
 	Runner       CommandRunner
 
-	secretRegistrar SecretRegistrar
+	secretRegistrar  SecretRegistrar
+	rateObserver     RateLimitObserver
+	maxRetries       int
+	maxRateLimitWait time.Duration
+	now              func() time.Time
+	sleep            func(context.Context, time.Duration) error
+	jitter           func(time.Duration) time.Duration
 }
 
 // NewADOProvider constructs an Azure DevOps provider with optional overrides.
 func NewADOProvider(organization, project, token string, opts ...func(*ADOProvider)) *ADOProvider {
 	p := &ADOProvider{
-		Organization: organization,
-		Project:      project,
-		BaseURL:      "https://dev.azure.com",
-		Token:        token,
-		Username:     "goobers",
+		Organization:     organization,
+		Project:          project,
+		BaseURL:          "https://dev.azure.com",
+		Token:            token,
+		Username:         "goobers",
+		maxRetries:       defaultRateLimitRetries,
+		maxRateLimitWait: defaultRateLimitMaxWait,
+		now:              time.Now,
+		sleep:            contextSleep,
+		jitter:           randomJitter,
 	}
 	for _, opt := range opts {
 		opt(p)
 	}
 	p.Client = httpClientOrDefault(p.Client)
 	p.Runner = commandRunnerOrDefault(p.Runner)
+	if p.now == nil {
+		p.now = time.Now
+	}
+	if p.sleep == nil {
+		p.sleep = contextSleep
+	}
+	if p.jitter == nil {
+		p.jitter = randomJitter
+	}
 	if p.secretRegistrar != nil && p.Token != "" {
 		p.secretRegistrar.Register([]byte(p.Token))
 		p.secretRegistrar.Register([]byte(strings.TrimPrefix(basicAuth(p.Username, p.Token), "Basic ")))
@@ -63,6 +83,16 @@ type SecretRegistrar interface {
 // with the scrubber used by journals and telemetry.
 func WithADOSecretRegistrar(registrar SecretRegistrar) func(*ADOProvider) {
 	return func(p *ADOProvider) { p.secretRegistrar = registrar }
+}
+
+// WithADORateLimitObserver receives Azure DevOps rate-limit decisions.
+func WithADORateLimitObserver(observer RateLimitObserver) func(*ADOProvider) {
+	return func(p *ADOProvider) { p.rateObserver = observer }
+}
+
+// WithADOMaxRateLimitRetries overrides the retry count for rate-limited requests.
+func WithADOMaxRateLimitRetries(n int) func(*ADOProvider) {
+	return func(p *ADOProvider) { p.maxRetries = n }
 }
 
 // Kind returns the Azure DevOps provider kind.
@@ -657,26 +687,89 @@ func (p *ADOProvider) project(repo RepositoryRef) string {
 }
 
 func (p *ADOProvider) do(ctx context.Context, method, endpoint string, body interface{}, out interface{}) error {
-	req, err := newJSONRequest(ctx, method, endpoint, body)
+	resp, err := p.send(ctx, method, endpoint, body, "")
 	if err != nil {
 		return err
 	}
-	if p.Token != "" {
-		req.Header.Set("Authorization", basicAuth(p.Username, p.Token))
-	}
-	return doJSON(httpClientOrDefault(p.Client), req, out)
+	return readJSONResponse(resp, method, endpoint, out)
 }
 
 func (p *ADOProvider) doPatch(ctx context.Context, method, endpoint string, body interface{}, out interface{}) error {
-	req, err := newJSONRequest(ctx, method, endpoint, body)
+	resp, err := p.send(ctx, method, endpoint, body, "application/json-patch+json")
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json-patch+json")
-	if p.Token != "" {
-		req.Header.Set("Authorization", basicAuth(p.Username, p.Token))
+	return readJSONResponse(resp, method, endpoint, out)
+}
+
+func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body interface{}, contentType string) (*http.Response, error) {
+	maxWait := p.maxRateLimitWait
+	if maxWait <= 0 {
+		maxWait = defaultRateLimitMaxWait
 	}
-	return doJSON(httpClientOrDefault(p.Client), req, out)
+	var waited time.Duration
+	for attempt := 0; ; attempt++ {
+		req, err := newJSONRequest(ctx, method, endpoint, body)
+		if err != nil {
+			return nil, err
+		}
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		if p.Token != "" {
+			req.Header.Set("Authorization", basicAuth(p.Username, p.Token))
+		}
+		resp, err := httpClientOrDefault(p.Client).Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("send request: %w", err)
+		}
+		if resp.StatusCode != http.StatusTooManyRequests {
+			return resp, nil
+		}
+
+		wait, ev := p.rateLimitPlan(resp, endpoint, attempt)
+		if attempt >= p.maxRetries || wait > maxWait-waited {
+			ev.Outcome = RateLimitOutcomeExhausted
+			p.observeRateLimit(ctx, ev)
+			return resp, nil
+		}
+		_ = resp.Body.Close()
+		if err := p.sleep(ctx, wait); err != nil {
+			ev.Outcome = RateLimitOutcomeCanceled
+			p.observeRateLimit(ctx, ev)
+			return nil, err
+		}
+		ev.Outcome = RateLimitOutcomeRetry
+		p.observeRateLimit(ctx, ev)
+		waited += wait
+	}
+}
+
+func (p *ADOProvider) rateLimitPlan(resp *http.Response, endpoint string, attempt int) (time.Duration, RateLimitEvent) {
+	raw := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	serverDelay, directed := retryAfterDelay(raw, p.now())
+	wait := serverDelay
+	if !directed || serverDelay <= 0 {
+		wait = fallbackBackoff(attempt, p.jitter)
+	} else {
+		wait += rateLimitResetSlack
+	}
+	return wait, RateLimitEvent{
+		Provider:      ProviderADO,
+		Scope:         rateLimitScope(endpoint),
+		Delay:         wait,
+		Endpoint:      endpoint,
+		Status:        resp.StatusCode,
+		RetryAfter:    serverDelay,
+		RetryAfterRaw: raw,
+		Attempt:       attempt,
+	}
+}
+
+func (p *ADOProvider) observeRateLimit(ctx context.Context, ev RateLimitEvent) {
+	if p.rateObserver != nil {
+		p.rateObserver.ObserveRateLimit(ctx, ev)
+	}
 }
 
 type adoWIQLResponse struct {

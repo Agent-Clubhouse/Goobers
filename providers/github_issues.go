@@ -1,9 +1,11 @@
 package providers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"sort"
@@ -12,30 +14,9 @@ import (
 	"time"
 )
 
-// Rate-limit retry tuning. GitHub signals primary limits via X-RateLimit-Remaining
-// / X-RateLimit-Reset and secondary (abuse) limits via Retry-After; we honor those
-// and otherwise fall back to capped exponential backoff.
-const (
-	defaultRateLimitRetries = 4
-	rateLimitBackoffBase    = time.Second
-	rateLimitBackoffMax     = 60 * time.Second
-	// rateLimitResetSlack pads a server-directed wait (Retry-After or the
-	// reset clock) so the retry fires just after the window actually rolls
-	// over, not a clock-jitter hair before it — a too-early retry burns an
-	// attempt on a guaranteed second 403.
-	rateLimitResetSlack = 2 * time.Second
-	// defaultRateLimitMaxWait bounds the TOTAL time send() spends sleeping
-	// on rate-limit backoff within one request (#614). Honoring
-	// X-RateLimit-Reset means a single wait can be minutes, not the old
-	// sub-minute exponential — but a shell stage subprocess is killed at
-	// internal/executor's 10-minute DefaultTimeout, and that kill surfaces
-	// as "timeout", masking the rate-limit cause this machinery exists to
-	// make visible. 5 minutes absorbs a near reset boundary transparently
-	// while leaving the stage's own work room under that ceiling; a reset
-	// further out fails fast with a typed RateLimitError instead.
-	// WithRateLimitMaxWait overrides.
-	defaultRateLimitMaxWait = 5 * time.Minute
-)
+// GitHub directs clients to wait at least one minute when a secondary-limit
+// response carries neither Retry-After nor an exhausted primary quota.
+const githubSecondaryFallbackMin = time.Minute
 
 // ErrorCodeRateLimited is the stable error code a GitHub rate-limited failure
 // surfaces under (#614) — carried by RateLimitError and by the stage
@@ -91,9 +72,9 @@ func rateLimitErrorFrom(ev RateLimitEvent) *RateLimitError {
 	}
 }
 
-// isRateLimited reports whether resp is a GitHub rate-limit response we should back
-// off and retry. It inspects headers only, so the body stays available for the
-// non-retry path.
+// isRateLimited reports whether resp is a GitHub rate-limit response we should
+// back off and retry. Secondary-limit responses do not always include guidance
+// headers, so 403 bodies are inspected and restored for the non-retry path.
 func isRateLimited(resp *http.Response) bool {
 	switch resp.StatusCode {
 	case http.StatusTooManyRequests:
@@ -105,6 +86,19 @@ func isRateLimited(resp *http.Response) bool {
 		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
 			return true
 		}
+		if resp.Body == nil {
+			return false
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		if err != nil {
+			return false
+		}
+		message := strings.ToLower(string(body))
+		return strings.Contains(message, "secondary rate limit") ||
+			strings.Contains(message, "abuse detection") ||
+			strings.Contains(message, "abuse rate limit")
 	}
 	return false
 }
@@ -114,6 +108,7 @@ func isRateLimited(resp *http.Response) bool {
 func (p *GitHubProvider) rateLimitPlan(resp *http.Response, endpoint string, attempt int) (time.Duration, RateLimitEvent) {
 	ev := RateLimitEvent{
 		Provider: ProviderGitHub,
+		Scope:    rateLimitScope(endpoint),
 		Endpoint: endpoint,
 		Status:   resp.StatusCode,
 		Attempt:  attempt,
@@ -121,10 +116,10 @@ func (p *GitHubProvider) rateLimitPlan(resp *http.Response, endpoint string, att
 	var wait time.Duration
 	if ra := strings.TrimSpace(resp.Header.Get("Retry-After")); ra != "" {
 		ev.RetryAfterRaw = ra
-		if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
-			wait = time.Duration(secs) * time.Second
+		ev.Secondary = true
+		if delay, ok := retryAfterDelay(ra, p.now()); ok {
+			wait = delay
 			ev.RetryAfter = wait
-			ev.Secondary = true
 		}
 	}
 	if rem := strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")); rem != "" {
@@ -144,9 +139,14 @@ func (p *GitHubProvider) rateLimitPlan(resp *http.Response, endpoint string, att
 			}
 		}
 	}
+	if ev.RemainingRaw != "0" {
+		ev.Secondary = true
+	}
 	if wait <= 0 {
-		// No server-directed wait: capped exponential fallback.
-		wait = backoffDuration(attempt)
+		wait = fallbackBackoff(attempt, p.jitter)
+		if ev.Secondary {
+			wait += githubSecondaryFallbackMin
+		}
 	} else {
 		// A server-directed wait (Retry-After or the reset clock) is honored
 		// as-is plus slack — the old blanket rateLimitBackoffMax cap turned a
@@ -155,17 +155,8 @@ func (p *GitHubProvider) rateLimitPlan(resp *http.Response, endpoint string, att
 		// instead of capping each individual wait here.
 		wait += rateLimitResetSlack
 	}
-	ev.Wait = wait
+	ev.Delay = wait
 	return wait, ev
-}
-
-// backoffDuration returns capped exponential backoff for the given attempt.
-func backoffDuration(attempt int) time.Duration {
-	d := rateLimitBackoffBase << attempt
-	if d <= 0 || d > rateLimitBackoffMax {
-		return rateLimitBackoffMax
-	}
-	return d
 }
 
 // ListComments returns the comments on a GitHub issue, oldest first.

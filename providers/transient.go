@@ -76,6 +76,7 @@ func isTransientStatus(code int, guidedRateLimit bool) bool {
 
 func hasRateLimitRetryGuidance(message string) bool {
 	for _, fragment := range []string{
+		ErrorCodeRateLimited,
 		"retry after ",
 		"retry-after:",
 		"retry-after=",

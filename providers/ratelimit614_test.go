@@ -39,6 +39,7 @@ func TestGitHubRateLimitWaitsUntilReset(t *testing.T) {
 	defer srv.Close()
 
 	var waits []time.Duration
+	observer := &recordingObserver{}
 	p := NewGitHubProvider("token", func(p *GitHubProvider) {
 		p.BaseURL = srv.URL
 		p.now = func() time.Time { return fixed }
@@ -46,7 +47,7 @@ func TestGitHubRateLimitWaitsUntilReset(t *testing.T) {
 			waits = append(waits, d)
 			return nil
 		}
-	})
+	}, WithRateLimitObserver(observer))
 
 	item, err := p.GetWorkItem(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "7")
 	if err != nil {
@@ -60,6 +61,17 @@ func TestGitHubRateLimitWaitsUntilReset(t *testing.T) {
 	}
 	if waits[0] < 90*time.Second {
 		t.Fatalf("wait %v did not reach the 90s-out reset (old 60s cap resurfaced?)", waits[0])
+	}
+	if observer.count() != 1 {
+		t.Fatalf("rate-limit events = %d, want 1", observer.count())
+	}
+	event := observer.events[0]
+	if event.Provider != ProviderGitHub ||
+		event.Secondary ||
+		event.Outcome != RateLimitOutcomeRetry ||
+		event.Delay != waits[0] ||
+		event.Scope == "" {
+		t.Fatalf("primary rate-limit event = %#v", event)
 	}
 }
 

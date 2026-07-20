@@ -37,6 +37,16 @@ type RateLimitObserver interface {
 	ObserveRateLimit(ctx context.Context, ev RateLimitEvent)
 }
 
+// RateLimitOutcome identifies the action taken after a rate-limit response.
+type RateLimitOutcome string
+
+// Rate-limit decision outcomes emitted to observers.
+const (
+	RateLimitOutcomeRetry     RateLimitOutcome = "retry"
+	RateLimitOutcomeExhausted RateLimitOutcome = "exhausted"
+	RateLimitOutcomeCanceled  RateLimitOutcome = "canceled"
+)
+
 // FieldDigest is the before/after content digest of a single mutated field. Empty
 // Before means the field was newly created (e.g. a comment); empty After means it
 // was cleared.
@@ -60,15 +70,17 @@ type ExternalRef struct {
 
 // RateLimitEvent describes a single rate-limit backoff decision.
 type RateLimitEvent struct {
-	Provider   ProviderKind  `json:"provider"`
-	Endpoint   string        `json:"endpoint"`
-	Status     int           `json:"status"`
-	Remaining  int           `json:"remaining"`
-	Reset      time.Time     `json:"reset,omitempty"`
-	RetryAfter time.Duration `json:"retryAfter,omitempty"`
-	Wait       time.Duration `json:"wait"`
-	Attempt    int           `json:"attempt"`
-	Secondary  bool          `json:"secondary"` // GitHub secondary (abuse) rate limit
+	Provider   ProviderKind     `json:"provider"`
+	Scope      string           `json:"scope"`
+	Delay      time.Duration    `json:"delay"`
+	Outcome    RateLimitOutcome `json:"outcome"`
+	Endpoint   string           `json:"-"`
+	Status     int              `json:"status"`
+	Remaining  int              `json:"remaining"`
+	Reset      time.Time        `json:"reset,omitempty"`
+	RetryAfter time.Duration    `json:"retryAfter,omitempty"`
+	Attempt    int              `json:"attempt"`
+	Secondary  bool             `json:"secondary"` // GitHub secondary (abuse) rate limit
 	// RetryAfterRaw/RemainingRaw/ResetRaw are the UNPARSED header string
 	// values (e.g. "1", "0", "1784210000"), preserved alongside the parsed
 	// Duration/int/time.Time fields above so a give-up RateLimitError's
@@ -76,9 +88,9 @@ type RateLimitEvent struct {
 	// format IsTransientError's subprocess-crossed fallback classification
 	// (hasRateLimitRetryGuidance, providers/transient.go) string-matches on,
 	// once the typed error itself no longer survives a process boundary.
-	RetryAfterRaw string `json:"retryAfterRaw,omitempty"`
-	RemainingRaw  string `json:"remainingRaw,omitempty"`
-	ResetRaw      string `json:"resetRaw,omitempty"`
+	RetryAfterRaw string `json:"-"`
+	RemainingRaw  string `json:"-"`
+	ResetRaw      string `json:"-"`
 }
 
 // digestString returns a stable, prefixed content digest of a field value. It is

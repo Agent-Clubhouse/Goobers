@@ -193,17 +193,8 @@ func newJSONRequest(ctx context.Context, method, endpoint string, body interface
 	return req, nil
 }
 
-func doJSON(client HTTPClient, req *http.Request, out interface{}) error {
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("send request: %w", err)
-	}
-	return readJSONResponse(resp, req.Method, req.URL.String(), out)
-}
-
 // readJSONResponse consumes and closes resp: it surfaces a non-2xx status as an
-// error and otherwise decodes the body into out (when non-nil). It is shared by the
-// single-shot doJSON path and the retry-aware provider request loops.
+// error and otherwise decodes the body into out (when non-nil).
 func readJSONResponse(resp *http.Response, method, endpoint string, out interface{}) error {
 	defer func() { _ = resp.Body.Close() }()
 
