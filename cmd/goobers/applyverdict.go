@@ -142,6 +142,34 @@ func withOverlapBackstop(findings []apiv1.Finding, overlappingSiblings []int) []
 	})
 }
 
+// predecessorBlockers narrows a parked PR's recorded blockers to only the
+// cluster members that must land BEFORE it under the election order (#991) —
+// its predecessors — rather than the symmetric union of every overlapping
+// sibling. This is what lets a cluster of 3+ drain instead of deadlocking:
+// with the symmetric set, member B lists C and C lists B, so neither ever
+// unparks (unparkResolvedSiblings needs ALL named blockers closed). With
+// predecessors only, each member waits solely on those ordered ahead of it,
+// so the cluster drains one landing at a time.
+//
+// A blocker b is a predecessor of thisPR iff, in the two-member sub-cluster
+// {thisPR, b}, thisPR is NOT the elected lander — i.e. b lands first. Reusing
+// the election policy this way keeps predecessor-order and election-order
+// identical for every policy (fifo: lower first; newest: higher first)
+// without re-encoding the ordering per policy.
+func predecessorBlockers(thisPR int, blockers []int, policy electionPolicyFunc) []int {
+	var out []int
+	for _, b := range blockers {
+		if b == thisPR {
+			continue
+		}
+		if !policy(thisPR, []int{b}) {
+			out = append(out, b)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
 // blockedOnSiblingState is the PR-altitude analog of blockedrecords.go's
 // backlog-altitude blockedRecord (#747) — the structured record apply-verdict
 // posts when a verdict's findings are entirely cross-PR-ordering asks. This
@@ -361,8 +389,12 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	comment := renderVerdictComment(posted)
 	label := verdictLabel(posted.Decision, effective.Findings)
 	if label == blockedOnSiblingLabel {
+		// Record only the predecessors this parked PR must wait behind, not the
+		// symmetric union of every overlapping sibling (#991) — otherwise a 3+
+		// cluster deadlocks (each member lists the others, none ever unparks).
+		policy, _ := resolveElectionPolicy(providerInput("electionPolicy", defaultElectionPolicy))
 		state := blockedOnSiblingState{
-			Blockers:   unionBlockingPRs(effective.Findings),
+			Blockers:   predecessorBlockers(selectedNumber, unionBlockingPRs(effective.Findings), policy),
 			Reason:     posted.Rationale,
 			HeadSHA:    posted.HeadSHA,
 			BaseSHA:    posted.BaseSHA,
