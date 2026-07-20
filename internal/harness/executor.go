@@ -128,6 +128,12 @@ func WithAssetBundle(bundle *gooberassets.Bundle) Option {
 	return func(e *Executor) { e.assets = bundle }
 }
 
+// HasAssetBundle reports whether each invocation materializes the reserved
+// goober-assets workspace path.
+func (e *Executor) HasAssetBundle() bool {
+	return e.assets != nil
+}
+
 // NewExecutor builds an Executor for one goober: adapter is the harness to
 // drive, injector resolves credentials scoped per invocation's declared
 // capabilities, recorder captures the (scrubbed) transcript as a journal

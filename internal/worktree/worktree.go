@@ -177,10 +177,6 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	if err := runGit(ctx, repoDir, args...); err != nil {
 		return nil, fmt.Errorf("worktree: create for run %s: %w", opts.RunID, err)
 	}
-	if err := gooberassets.EnsureWorkspaceAvailable(path); err != nil {
-		cleanupErr := runGit(ctx, repoDir, "worktree", "remove", "--force", path)
-		return nil, fmt.Errorf("worktree: reserved asset path on branch for run %s: %w", opts.RunID, errors.Join(err, cleanupErr))
-	}
 	startRef, err := gitOutput(ctx, path, "rev-parse", "HEAD")
 	if err != nil {
 		cleanupErr := runGit(ctx, repoDir, "worktree", "remove", "--force", path)

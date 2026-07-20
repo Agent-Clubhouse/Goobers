@@ -206,14 +206,15 @@ func EnsureWorkspaceAvailable(workspace string) error {
 	return nil
 }
 
-// Materialize writes the bundle beneath workspace/WorkspaceDir. Existing
-// content at that path is a collision and is never replaced.
+// Materialize writes the bundle beneath workspace/WorkspaceDir. A nil bundle
+// is the supported no-assets case and leaves the workspace unchanged. Existing
+// content at that path is a collision and is never replaced by a real bundle.
 func (b *Bundle) Materialize(workspace string) (err error) {
-	if err := EnsureWorkspaceAvailable(workspace); err != nil {
-		return err
-	}
 	if b == nil {
 		return nil
+	}
+	if err := EnsureWorkspaceAvailable(workspace); err != nil {
+		return err
 	}
 	target := filepath.Join(workspace, WorkspaceDir)
 	if err := os.Mkdir(target, 0o700); err != nil {

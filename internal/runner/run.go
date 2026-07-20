@@ -1846,11 +1846,14 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		return apiv1.ResultEnvelope{}, nil, prepErr, nil
 	}
 	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
+	var agentInvocation *gooberInvocation
 	defer func() {
 		telemetry.IngestStageEmissions(telemetryDir, &result, span)
 		telemetry.CleanupStageTelemetryDir(telemetryDir)
-		if validationErr := workspace.ValidateReservedPaths(context.WithoutCancel(ctx)); validationErr != nil {
-			err = errors.Join(err, fmt.Errorf("stage %q: %w", t.Name, validationErr))
+		if agentInvocation != nil && agentInvocation.materializedAssets() {
+			if validationErr := workspace.ValidateReservedPaths(context.WithoutCancel(ctx)); validationErr != nil {
+				err = errors.Join(err, fmt.Errorf("stage %q: %w", t.Name, validationErr))
+			}
 		}
 		removeErr = workspace.Remove(ctx)
 	}()
@@ -1885,10 +1888,11 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		if err != nil {
 			return apiv1.ResultEnvelope{}, nil, err, nil
 		}
+		agentInvocation = &gooberInvocation{Goober: ag}
 		if err := recordContextManifest(jr, env, t.Name, attempt, class); err != nil {
 			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err), nil
 		}
-		result, err = ag.Invoke(ctx, env)
+		result, err = agentInvocation.Invoke(ctx, env)
 		// #724: a stage that opts into OnTimeout=salvage completes with its
 		// already-committed diff instead of discarding a timed-out attempt whose
 		// only remaining work was verification. Only a session timeout
@@ -2132,6 +2136,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	var emptyDiff bool
 	var env apiv1.InvocationEnvelope
 	var gateTelemetryDir string
+	var agentInvocation *gooberInvocation
 	if g.Evaluator == apiv1.EvaluatorAutomated {
 		env = apiv1.InvocationEnvelope{
 			TaskID:     in.RunID + ":" + g.Name,
@@ -2166,8 +2171,10 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		}
 		defer func() {
 			telemetry.CleanupStageTelemetryDir(gateTelemetryDir)
-			if validationErr := workspace.ValidateReservedPaths(context.WithoutCancel(ctx)); validationErr != nil {
-				err = errors.Join(err, fmt.Errorf("gate %q: %w", g.Name, validationErr))
+			if agentInvocation != nil && agentInvocation.materializedAssets() {
+				if validationErr := workspace.ValidateReservedPaths(context.WithoutCancel(ctx)); validationErr != nil {
+					err = errors.Join(err, fmt.Errorf("gate %q: %w", g.Name, validationErr))
+				}
 			}
 			removeErr = workspace.Remove(ctx)
 		}()
@@ -2252,7 +2259,8 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 			// different agentic gates in the same run may target different
 			// reviewer goobers. gate.Evaluator reads this field fresh on every
 			// Evaluate call, so mutating it here between calls is safe.
-			gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: ag}
+			agentInvocation = &gooberInvocation{Goober: ag}
+			gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: agentInvocation}
 		}
 	}
 

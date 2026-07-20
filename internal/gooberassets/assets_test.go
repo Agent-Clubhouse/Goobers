@@ -80,8 +80,16 @@ func TestMissingBundleLeavesWorkspaceUnchanged(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(workspace, WorkspaceDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := bundle.Materialize(workspace); !errors.Is(err, ErrWorkspaceCollision) {
-		t.Fatalf("nil bundle accepted reserved workspace path: %v", err)
+	writeAsset(t, filepath.Join(workspace, WorkspaceDir), "repository-owned.txt", "untouched", 0o644)
+	if err := bundle.Materialize(workspace); err != nil {
+		t.Fatalf("nil bundle changed a workspace with a repository-owned asset path: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, WorkspaceDir, "repository-owned.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "untouched" {
+		t.Fatalf("repository-owned content = %q, want untouched", data)
 	}
 }
 

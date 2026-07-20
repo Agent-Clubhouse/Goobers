@@ -15,6 +15,9 @@
 package runner
 
 import (
+	"context"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -61,3 +64,30 @@ type NewDeterministicFunc func(rec ArtifactRecorder, reg SecretRegistrar) (invok
 // invoke.Goober serves both a Task.Goober's Invoke and a paired AgenticGate's
 // Review — one instance, two methods.
 type NewAgenticFunc func(gooberName string, rec ArtifactRecorder, reg SecretRegistrar) (invoke.Goober, error)
+
+type assetBundleGoober interface {
+	HasAssetBundle() bool
+}
+
+// gooberInvocation records whether an executor was actually invoked. The
+// runner uses this with assetBundleGoober to reserve .goober-assets only for a
+// call that materializes a real bundle.
+type gooberInvocation struct {
+	invoke.Goober
+	invoked bool
+}
+
+func (g *gooberInvocation) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.invoked = true
+	return g.Goober.Invoke(ctx, env)
+}
+
+func (g *gooberInvocation) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	g.invoked = true
+	return g.Goober.Review(ctx, env)
+}
+
+func (g *gooberInvocation) materializedAssets() bool {
+	assets, ok := g.Goober.(assetBundleGoober)
+	return g.invoked && ok && assets.HasAssetBundle()
+}
