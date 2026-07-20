@@ -7,10 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"strings"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -59,42 +59,28 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
 	}
-	// Reject traversal-shaped prefixes before asking the shared service to
-	// inspect or list any run.
-	if !apiv1.ValidRunID(runID) {
-		pf(stderr, "error: invalid run id %q\n", runID)
-		return 2
-	}
 
 	l := instance.NewLayout(root)
+	runID, err := resolveRunID(l, runID)
+	if errors.Is(err, iofs.ErrNotExist) {
+		pf(stderr, "error: no run %q found in %s; list runs with 'goobers status'\n", fs.Arg(0), root)
+		return 1
+	}
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	reads, err := readservice.NewOfflineRuns(l)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	ctx := context.Background()
-	detail, matches, err := resolveTraceRun(ctx, reads, runID)
+	detail, err := reads.GetRun(ctx, runID)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	switch len(matches) {
-	case 0:
-		if detail.ID == "" {
-			pf(stderr, "error: no run %q found in %s; list runs with 'goobers status'\n", runID, root)
-			return 1
-		}
-	case 1:
-		detail, err = reads.GetRun(ctx, matches[0])
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
-		}
-	default:
-		pf(stderr, "error: ambiguous prefix %q matches %d runs: %s\n", runID, len(matches), strings.Join(matches, ", "))
-		return 2
-	}
-	runID = detail.ID
 
 	if *showTranscripts || transcriptSelected {
 		transcripts, err := reads.RunTranscripts(ctx, runID, selectedStage)
@@ -394,28 +380,6 @@ func formatEvent(ev journal.Event) string {
 	default:
 		return prefix
 	}
-}
-
-func resolveTraceRun(ctx context.Context, reads readservice.OfflineRuns, runID string) (readservice.RunDetail, []string, error) {
-	detail, err := reads.GetRun(ctx, runID)
-	if err == nil {
-		return detail, nil, nil
-	}
-	if !errors.Is(err, readservice.ErrNotFound) {
-		return readservice.RunDetail{}, nil, err
-	}
-
-	ids, err := reads.RunIDs(ctx)
-	if err != nil {
-		return readservice.RunDetail{}, nil, err
-	}
-	matches := make([]string, 0)
-	for _, id := range ids {
-		if strings.HasPrefix(id, runID) {
-			matches = append(matches, id)
-		}
-	}
-	return readservice.RunDetail{}, matches, nil
 }
 
 func traceJSONEvents(events []readservice.RunEvent) []traceJSONEvent {

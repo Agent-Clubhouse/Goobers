@@ -40,7 +40,8 @@ const (
 )
 
 // CIChecksArtifact is the durable, bounded per-check evidence emitted when CI
-// fails. Checks retain provider order and exclude passing checks.
+// fails. Checks prioritize failures, retain provider order within each
+// priority, and exclude passing checks.
 type CIChecksArtifact struct {
 	Checks   []providers.CheckDetail  `json:"checks"`
 	Metadata CIChecksArtifactMetadata `json:"metadata"`
@@ -390,12 +391,13 @@ func marshalCIChecksArtifact(checks []providers.CheckDetail) ([]byte, error) {
 	}
 	nonPassing := 0
 	for _, check := range checks {
-		if check.State == providers.CheckStatePassing {
-			continue
+		if check.State != providers.CheckStatePassing {
+			nonPassing++
 		}
-		nonPassing++
+	}
+	appendCheck := func(check providers.CheckDetail) {
 		if len(artifact.Checks) == maxCIChecks {
-			continue
+			return
 		}
 		check.Name = strings.ToValidUTF8(check.Name, "\uFFFD")
 		check.URL = strings.ToValidUTF8(check.URL, "\uFFFD")
@@ -405,6 +407,16 @@ func marshalCIChecksArtifact(checks []providers.CheckDetail) ([]byte, error) {
 			artifact.Metadata.SummariesTruncated++
 		}
 		artifact.Checks = append(artifact.Checks, check)
+	}
+	for _, check := range checks {
+		if check.State == providers.CheckStateFailing {
+			appendCheck(check)
+		}
+	}
+	for _, check := range checks {
+		if check.State != providers.CheckStatePassing && check.State != providers.CheckStateFailing {
+			appendCheck(check)
+		}
 	}
 	artifact.Metadata.ChecksDropped = nonPassing - len(artifact.Checks)
 	artifact.Metadata.Truncated = artifact.Metadata.ChecksDropped > 0 || artifact.Metadata.SummariesTruncated > 0
