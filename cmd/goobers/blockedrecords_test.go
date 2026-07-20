@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,68 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestFindBlockedCycle(t *testing.T) {
+	tests := []struct {
+		name string
+		recs map[string]blockedRecord
+		item string
+		want []string
+	}{
+		{
+			name: "acyclic",
+			recs: map[string]blockedRecord{
+				"510": {Blockers: []string{"441"}},
+				"441": {Blockers: []string{"440"}},
+			},
+			item: "510",
+		},
+		{
+			name: "two issue cycle",
+			recs: map[string]blockedRecord{
+				"510": {Blockers: []string{"441"}},
+				"441": {Blockers: []string{"510"}},
+			},
+			item: "510",
+			want: []string{"510", "441", "510"},
+		},
+		{
+			name: "self dependency",
+			recs: map[string]blockedRecord{
+				"510": {Blockers: []string{"510"}},
+			},
+			item: "510",
+			want: []string{"510", "510"},
+		},
+		{
+			name: "longer cycle",
+			recs: map[string]blockedRecord{
+				"510": {Blockers: []string{"441"}},
+				"441": {Blockers: []string{"442"}},
+				"442": {Blockers: []string{"510"}},
+			},
+			item: "510",
+			want: []string{"510", "441", "442", "510"},
+		},
+		{
+			name: "unrelated reachable cycle",
+			recs: map[string]blockedRecord{
+				"510": {Blockers: []string{"441"}},
+				"441": {Blockers: []string{"442"}},
+				"442": {Blockers: []string{"441"}},
+			},
+			item: "510",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := findBlockedCycle(tc.recs, tc.item); !slices.Equal(got, tc.want) {
+				t.Fatalf("findBlockedCycle() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestBlockedRecordsLoadSaveRoundTrip(t *testing.T) {
 	dir := t.TempDir()

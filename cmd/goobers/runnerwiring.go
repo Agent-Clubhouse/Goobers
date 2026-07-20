@@ -436,9 +436,10 @@ func buildEscalationNotifier(cfg *instance.Config, resolver credentials.Resolver
 //
 // When the stage also references blockers through outputs.blockedBy, record
 // them in scheduler/blocked.json so #552's selection guard still protects the
-// issue if a human re-promotes it before every dependency closes. The runner's
-// shared EscalationNotifier owns the explanatory provider comment; this handler
-// owns only parking and dependency-record state.
+// issue if a human re-promotes it before every dependency closes. If a new
+// record closes a cycle, every issue in that cycle is parked and receives a
+// cycle-specific comment for human resolution. The runner's shared
+// EscalationNotifier owns the normal explanatory provider comment.
 //
 // The handler runs before FinalizeTerminal releases the run's claims, so a
 // run with no StartInput.Item (scheduled/fan-out implementation runs claim
@@ -485,6 +486,7 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
 			}
 			if len(o.Blockers) > 0 {
+				var cycle []string
 				if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
 					recs[itemID] = blockedRecord{
 						Blockers:   o.Blockers,
@@ -493,9 +495,29 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 						Reason:     o.Reason,
 						RecordedAt: time.Now().UTC(),
 					}
+					cycle = findBlockedCycle(recs, itemID)
 					return true
 				}); err != nil {
 					errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
+				}
+				if len(cycle) > 0 {
+					comment := fmt.Sprintf(
+						"Goobers detected a circular issue dependency: %s. Every issue in this cycle has been marked `%s` and removed from `%s` for human resolution.",
+						issueCyclePath(cycle), providers.LabelNeedsHuman, providers.LabelReady,
+					)
+					for _, cycleItemID := range cycle[:len(cycle)-1] {
+						cycleReq := providers.UpdateWorkItemRequest{
+							Repository:   repoRef,
+							ID:           cycleItemID,
+							Comment:      comment,
+							AddLabels:    []string{providers.LabelNeedsHuman},
+							RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
+						}
+						if _, err := poster.UpdateWorkItem(ctx, cycleReq); err != nil {
+							errs = append(errs, fmt.Errorf("escalate circular dependency on %s#%s: %w", repoRef.Name, cycleItemID, err))
+						}
+					}
+					continue
 				}
 			}
 			if _, err := poster.UpdateWorkItem(ctx, req); err != nil {
@@ -612,6 +634,31 @@ func claimedItemIDsForRun(l instance.Layout, runID string) ([]string, error) {
 		return nil
 	})
 	return ids, err
+}
+
+// issueRefList renders issue numbers as "#441, #442" for provider comments.
+func issueRefList(numbers []string) string {
+	out := make([]byte, 0, len(numbers)*6)
+	for i, n := range numbers {
+		if i > 0 {
+			out = append(out, ", "...)
+		}
+		out = append(out, '#')
+		out = append(out, n...)
+	}
+	return string(out)
+}
+
+func issueCyclePath(numbers []string) string {
+	out := make([]byte, 0, len(numbers)*9)
+	for i, n := range numbers {
+		if i > 0 {
+			out = append(out, " -> "...)
+		}
+		out = append(out, '#')
+		out = append(out, n...)
+	}
+	return string(out)
 }
 
 // newOpenPRProvider builds the GitHub client the open-PR lister polls; a package

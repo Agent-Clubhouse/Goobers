@@ -955,6 +955,66 @@ func TestBuildBlockedHandlerRecordFailureStillParks(t *testing.T) {
 	}
 }
 
+func TestBuildBlockedHandlerEscalatesCircularDependency(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
+		"441": {Blockers: []string{"442"}, RunID: "prior-1"},
+		"442": {Blockers: []string{"510"}, RunID: "prior-2"},
+	}); err != nil {
+		t.Fatalf("seed blocked records: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID:   "run-cycle",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage:   "implement", ItemID: "510",
+		Reason: "DEPENDENCY_NOT_MET: unmet prerequisite", Blockers: []string{"441"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	wantIDs := []string{"510", "441", "442"}
+	if len(fake.calls) != len(wantIDs) {
+		t.Fatalf("update calls = %d, want %d: %+v", len(fake.calls), len(wantIDs), fake.calls)
+	}
+	for i, got := range fake.calls {
+		if got.ID != wantIDs[i] {
+			t.Errorf("call %d ID = %q, want %q", i, got.ID, wantIDs[i])
+		}
+		if !slices.Equal(got.AddLabels, []string{providers.LabelNeedsHuman}) {
+			t.Errorf("call %d AddLabels = %v, want [%s]", i, got.AddLabels, providers.LabelNeedsHuman)
+		}
+		wantRemoved := []string{providers.LabelReady, providers.LabelClaimed}
+		if !slices.Equal(got.RemoveLabels, wantRemoved) {
+			t.Errorf("call %d RemoveLabels = %v, want %v", i, got.RemoveLabels, wantRemoved)
+		}
+		if !strings.Contains(got.Comment, "#510 -> #441 -> #442 -> #510") {
+			t.Errorf("call %d comment = %q, want full ordered cycle", i, got.Comment)
+		}
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	if got := recs["510"].Blockers; !slices.Equal(got, []string{"441"}) {
+		t.Fatalf("recorded blockers = %v, want [441]", got)
+	}
+}
+
 // TestBuildBlockedHandlerNoBlockersParksNeedsHuman covers the unattributed
 // path: no blocked.json record, but the same #539 parking disposition.
 func TestBuildBlockedHandlerNoBlockersParksNeedsHuman(t *testing.T) {
