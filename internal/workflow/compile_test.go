@@ -160,7 +160,7 @@ func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
 	}
 }
 
-func TestCheckWarningsNoScheduleTrigger(t *testing.T) {
+func TestCheckWarningsNoAutonomousTrigger(t *testing.T) {
 	cases := []struct {
 		name     string
 		triggers []apiv1.Trigger
@@ -169,16 +169,19 @@ func TestCheckWarningsNoScheduleTrigger(t *testing.T) {
 		{
 			name:     "backlog-item-only",
 			triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
-			want:     "workflow \"backlog-item-only\" has no schedule trigger; it will not fire autonomously — run it with `goobers run backlog-item-only`",
 		},
 		{
 			name:     "manual-only",
 			triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
-			want:     "workflow \"manual-only\" has no schedule trigger; it will not fire autonomously — run it with `goobers run manual-only`",
+			want:     "workflow \"manual-only\" has no autonomous trigger; it will not fire autonomously — run it with `goobers run manual-only`",
 		},
 		{
 			name:     "scheduled",
 			triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		},
+		{
+			name:     "signal",
+			triggers: []apiv1.Trigger{{Type: apiv1.TriggerSignal, Signal: "ready"}},
 		},
 	}
 	for _, tc := range cases {

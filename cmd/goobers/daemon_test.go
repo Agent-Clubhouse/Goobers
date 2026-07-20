@@ -134,22 +134,22 @@ func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {
 // `goobers up` starts the scheduler+runner daemon, and a cancelled context
 // (standing in for SIGINT/SIGTERM — runUp itself wires the real signal via
 // internal/signals) drains cleanly and returns 0 rather than hanging. The
-// This test makes the deterministic demo's only workflow schedule-less, so the
+// This test makes the deterministic demo's only workflow manual-only, so the
 // scheduler has nothing to dispatch and simply idles — proving the idle path
 // doesn't busy-loop or block shutdown while startup reports why it is idle.
 func TestUpIdlesThenDrainsOnCancel(t *testing.T) {
 	root := initDeterministicDemo(t)
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	scheduleless := strings.Replace(
+	manualOnly := strings.Replace(
 		deterministicWorkflowYAML,
 		"    - type: schedule\n      schedule: \"@every 24h\"",
-		"    - type: backlog-item",
+		"    - type: manual",
 		1,
 	)
-	if scheduleless == deterministicWorkflowYAML {
+	if manualOnly == deterministicWorkflowYAML {
 		t.Fatal("deterministic workflow fixture did not contain expected schedule trigger")
 	}
-	if err := os.WriteFile(workflowPath, []byte(scheduleless), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(manualOnly), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -175,13 +175,13 @@ func TestUpIdlesThenDrainsOnCancel(t *testing.T) {
 	if !strings.Contains(stdout.String(), "shutdown complete") {
 		t.Fatalf("stdout = %q, want clean-shutdown message", stdout.String())
 	}
-	const warning = "workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`"
+	const warning = "workflow \"default-implement\" has no autonomous trigger; it will not fire autonomously — run it with `goobers run default-implement`"
 	if count := strings.Count(stdout.String(), warning); count != 1 {
 		t.Fatalf("stdout = %q, warning count = %d, want exactly one", stdout.String(), count)
 	}
 }
 
-func TestUpScheduledWorkflowHasNoScheduleWarning(t *testing.T) {
+func TestUpScheduledWorkflowHasNoAutonomousTriggerWarning(t *testing.T) {
 	root := initDeterministicDemo(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -192,8 +192,8 @@ func TestUpScheduledWorkflowHasNoScheduleWarning(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 	}
-	if strings.Contains(stdout.String(), "has no schedule trigger") {
-		t.Fatalf("stdout = %q, want no schedule warning", stdout.String())
+	if strings.Contains(stdout.String(), "has no autonomous trigger") {
+		t.Fatalf("stdout = %q, want no autonomous-trigger warning", stdout.String())
 	}
 }
 

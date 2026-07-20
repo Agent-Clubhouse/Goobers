@@ -215,6 +215,9 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 	matched := []map[string]interface{}{}
 	for _, num := range nums {
 		issue := s.issues[num]
+		if state := q.Get("state"); state != "" && state != "all" && issue.state != state {
+			continue
+		}
 		if !hasAllLabels(issue.labels, wantLabels) {
 			continue
 		}

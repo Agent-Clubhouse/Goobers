@@ -109,8 +109,8 @@ func TestInitThenValidate(t *testing.T) {
 	if !strings.Contains(stdout, "OK:") {
 		t.Fatalf("validate stdout = %q", stdout)
 	}
-	if strings.Contains(stdout, "has no schedule trigger") {
-		t.Fatalf("validate stdout = %q, want no schedule warning for starter workflow", stdout)
+	if strings.Contains(stdout, "has no autonomous trigger") {
+		t.Fatalf("validate stdout = %q, want no autonomous-trigger warning for starter workflow", stdout)
 	}
 
 	// Re-running init is a no-op, not an error.
@@ -123,7 +123,7 @@ func TestInitThenValidate(t *testing.T) {
 	}
 }
 
-func TestValidateWarnsOnceForWorkflowWithoutSchedule(t *testing.T) {
+func TestValidateWarnsOnceForManualOnlyWorkflow(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "demo")
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
@@ -134,11 +134,11 @@ func TestValidateWarnsOnceForWorkflowWithoutSchedule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	schedule := "    - type: schedule\n      schedule: \"@every 15m\""
+	backlog := "    - type: backlog-item\n      selector:\n        goobers: \"true\""
 	manual := "    - type: manual"
-	updated := strings.Replace(string(raw), schedule, manual, 1)
+	updated := strings.Replace(string(raw), backlog, manual, 1)
 	if updated == string(raw) {
-		t.Fatalf("starter workflow did not contain expected schedule trigger:\n%s", raw)
+		t.Fatalf("starter workflow did not contain expected backlog trigger:\n%s", raw)
 	}
 	if err := os.WriteFile(workflowPath, []byte(updated), 0o644); err != nil {
 		t.Fatal(err)
@@ -148,7 +148,7 @@ func TestValidateWarnsOnceForWorkflowWithoutSchedule(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	const warning = "workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`"
+	const warning = "workflow \"default-implement\" has no autonomous trigger; it will not fire autonomously — run it with `goobers run default-implement`"
 	if count := strings.Count(stdout, warning); count != 1 {
 		t.Fatalf("validate stdout = %q, warning count = %d, want exactly one", stdout, count)
 	}

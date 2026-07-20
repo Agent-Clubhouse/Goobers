@@ -201,10 +201,10 @@ routes through the system scheduler**; a goober never calls a workflow itself.
   scale factor) in config. At runtime it materializes as ephemeral run environments —
   worktree processes at tiers 1–2, pods at tier 3. The roster "team member" is the
   definition; the run environment is transient.
-- **The default starter is just a length-1 workflow** — a single-stage, implement-only
-  process. It ships so a gaggle works immediately. It is an ordinary workflow, not a
-  special "implicit" mechanism. Authoring richer workflows is how you add research,
-  tests, reviewers, and gates.
+- **The default starter is a minimal claim → implement → close-out workflow.** It
+  ships so a gaggle works immediately. It is an ordinary workflow, not a special
+  "implicit" mechanism. Authoring richer workflows is how you add research, tests,
+  reviewers, and gates.
 - **Producers are not a separate beast — they are just workflows.** Backlog curator,
   perf hunter, error miner, coverage finder, **Tutor**, researchers, implementers —
   all the *same* taxonomy. They differ only by **trigger** + **stages**. They can
@@ -231,7 +231,7 @@ routes through the system scheduler**; a goober never calls a workflow itself.
 | Goober-run telemetry store | **Journal spans + local rollup (tiers 1–2); ADX drop-in (tier 3)** | Provisioned/owned by the instance; **never** the project's store. OTel instrumentation throughout; only the exporter changes per tier. |
 | Execution model | **System scheduler invokes workflows; workflows invoke goobers** | §7 confirmed. Goobers may *indirectly* trigger workflows via outputs, routed through the scheduler. |
 | Gate model | **One Gate primitive, pluggable evaluator** | Evaluator kind = automated / agentic / human. See `requirements/gate.md`. |
-| Routing | **Labels + selectors (k8s-style)** | Items labeled; workflows declare selectors. See `requirements/scheduler.md`. |
+| Routing | **Labels + selectors** | Items are labeled and workflows declare selectors; the local GitHub scheduler matches selector keys as required labels. See `requirements/scheduler.md`. |
 | Work-claiming | **Lease-based atomic claim, owned by the runner** | Tiers 1–2: claim ledger in instance state + provider-visible marker. Tier 3: Temporal workflow-id identity (one workflow per item id = exactly-once). Backlog item mirrors status for humans — not the claim source of truth. |
 | Portal scope | **Observability-first; minimal runtime ops only** | Config-time = code only; runtime ops (gate approvals, retry/intervene) = minimal portal. Reads run journals. See `requirements/portal.md`. |
 | Tutor change scope | **Goobers + workflows/gates (not platform code)** | Bounded blast radius; approval configurable per instance. See `requirements/tutor.md`. |

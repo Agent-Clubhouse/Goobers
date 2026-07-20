@@ -5,14 +5,14 @@ metadata:
 spec:
   gaggle: example
   displayName: Default (implement-only)
-  # The default starter is a minimal implement-only workflow shipped so a gaggle
-  # works immediately (WF-004). The schedule wakes it every 15 minutes;
-  # query-backlog claims one maintainer-approved item before the coder runs.
+  # The default starter polls for maintainer-approved backlog work, claims one
+  # item before the coder runs, and closes it out after successful implementation.
   # Author richer workflows (research, tests, reviewer gates) by adding tasks
   # and gates.
   triggers:
-    - type: schedule
-      schedule: "@every 15m"
+    - type: backlog-item
+      selector:
+        goobers: "true"
   readiness:
     maxConcurrentRuns: 1
   start: query-backlog
@@ -28,6 +28,7 @@ spec:
         resultFile: "claimed-item.json"
       capabilities:
         - github:issues:write
+        - github:pr:write
       expectedOutputs:
         - claimed-item
       next: implement
@@ -35,6 +36,18 @@ spec:
       type: agentic
       goober: coder
       goal: Implement the backlog item and open a PR.
+      capabilities:
+        - repo:push
+        - github:pr:write
       expectedOutputs:
         - pull-request
-      # No `next` — this is the single, terminal state of the workflow.
+      next: close-out
+    - name: close-out
+      type: deterministic
+      goal: Close the implemented backlog item and release its claim.
+      run:
+        command: ["goobers", "issue-close-out"]
+      inputs:
+        status: "done"
+      capabilities:
+        - github:issues:write

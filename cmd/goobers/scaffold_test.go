@@ -87,7 +87,7 @@ func TestScaffoldGooberAndWorkflowValidate(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	wantWarning := "WARNING Workflow/my-flow: workflow \"my-flow\" has no schedule trigger; it will not fire autonomously — run it with `goobers run my-flow`"
+	wantWarning := "WARNING Workflow/my-flow: workflow \"my-flow\" has no autonomous trigger; it will not fire autonomously — run it with `goobers run my-flow`"
 	if warnings := warningLines(stdout); len(warnings) != 1 || warnings[0] != wantWarning {
 		t.Fatalf("validate warnings = %#v, want %#v", warnings, []string{wantWarning})
 	}
@@ -110,7 +110,7 @@ func TestScaffoldScalarNamesValidate(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	wantWarning := "WARNING Workflow/true: workflow \"true\" has no schedule trigger; it will not fire autonomously — run it with `goobers run true`"
+	wantWarning := "WARNING Workflow/true: workflow \"true\" has no autonomous trigger; it will not fire autonomously — run it with `goobers run true`"
 	if warnings := warningLines(stdout); len(warnings) != 1 || warnings[0] != wantWarning {
 		t.Fatalf("validate warnings = %#v, want %#v", warnings, []string{wantWarning})
 	}

@@ -12,6 +12,9 @@ spec:
   harness: copilot
   model: auto
   harnessOptions: {}
+  capabilities:
+    - repo:push
+    - github:pr:write
   skills:
     - implement
     - run-tests

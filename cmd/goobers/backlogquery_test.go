@@ -78,6 +78,52 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 	}
 }
 
+// The starter runs this lifecycle on each backlog poll: claim, implement, then
+// close out. A later poll must not reclaim the same still-labeled issue after
+// terminal cleanup releases its local ledger claim.
+func TestBacklogCloseOutPreventsClaimOnNextTick(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Fix the bug", "goobers")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("first tick claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("first tick stdout = %q, want item 7 claimed", stdout)
+	}
+	code, stdout, stderr = runArgs(t, "issue-close-out", root)
+	if code != 0 {
+		t.Fatalf("close-out: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "closed out 7") {
+		t.Fatalf("close-out stdout = %q, want item 7 closed", stdout)
+	}
+
+	t.Setenv("GOOBERS_RUN_ID", "run-2")
+	t.Chdir(t.TempDir())
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("second tick claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("second tick stdout = %q, want closed item excluded as no work", stdout)
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if _, ok := ledger.Lookup("7"); ok {
+		t.Fatal("closed item was reclaimed on the second tick")
+	}
+}
+
 func TestBacklogQueryLabelLists(t *testing.T) {
 	tests := []struct {
 		name          string
