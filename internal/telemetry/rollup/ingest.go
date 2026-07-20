@@ -292,9 +292,10 @@ func gateRunnerJSON(ev journalEvent) (sql.NullString, error) {
 }
 
 // IngestSchedulerLog reads the instance journal and its rolling scheduler
-// spans, then (re)populates their rollup rows. Idempotent (delete-then-insert
-// over the instance-level data), so it is safe to call incrementally or as
-// part of Rebuild.
+// spans, including claim transitions and scheduler starvation signals, then
+// (re)populates their rollup rows. Idempotent (delete-then-insert over the
+// instance-level data), so it is safe to call incrementally or as part of
+// Rebuild.
 // Historical duplicate seq values are corruption, but retaining the first
 // occurrence keeps one bad record from permanently preventing all rollup.
 func (db *DB) IngestSchedulerLog(schedulerDir string) error {
@@ -321,7 +322,8 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	}
 	for _, ev := range events {
 		switch ev.Type {
-		case eventTriggerFired, eventTickSkipped, eventClaimAcquired, eventClaimReleased, eventRunStarted, eventRunFinished, eventError:
+		case eventTriggerFired, eventTickSkipped, eventClaimAcquired, eventClaimReleased,
+			eventClaimForceReleased, eventWorkflowStarved, eventRunStarted, eventRunFinished, eventError:
 			if _, err := tx.Exec(`
 				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)

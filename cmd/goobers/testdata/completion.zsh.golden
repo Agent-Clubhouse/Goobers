@@ -57,7 +57,7 @@ _goobers_completion()
     flags=(-h --help)
     case "${command}" in
         validate) flags+=(--check-harness --source-tree) ;;
-        up) flags+=(--quiet) ;;
+        up) flags+=(--quiet --cleanup-spans-only-runs) ;;
         dashboard) flags+=(--port --no-open --dev-assets) ;;
         run) flags+=(--no-wait) ;;
         workflow)

@@ -134,42 +134,50 @@ func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {
 	}
 }
 
-func TestBuildSchedulerSetupCleansSpansOnlyRunDirectories(t *testing.T) {
+func TestSpansOnlyRunCleanupIsDryRunUnlessOptedIn(t *testing.T) {
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
-	spansOnly := filepath.Join(l.RunsDir(), "scheduler-exhaust", "spans")
+	runsDir := l.ForGaggle("example").RunsDir()
+	spansOnlyRun := filepath.Join(runsDir, "scheduler-exhaust")
+	spansOnly := filepath.Join(spansOnlyRun, "spans")
 	if err := os.MkdirAll(spansOnly, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(spansOnly, "spans.jsonl"), []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	realRun := filepath.Join(l.RunsDir(), "real-run")
-	if err := os.MkdirAll(realRun, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(realRun, "events.jsonl"), []byte("{}\n"), 0o644); err != nil {
-		t.Fatal(err)
+	realRun := filepath.Join(runsDir, "real-run")
+	createTerminalRun(t, l.ForGaggle("example"), "real-run")
+
+	runUpOnce := func(args ...string) (string, string) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var stdout, stderr bytes.Buffer
+		if code := runUpContext(ctx, append(args, root), &stdout, &stderr); code != 0 {
+			t.Fatalf("runUpContext(%v) code = %d, stderr = %q", args, code, stderr.String())
+		}
+		return stdout.String(), stderr.String()
 	}
 
-	var wg sync.WaitGroup
-	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
-	if err != nil {
-		t.Fatal(err)
+	output, _ := runUpOnce()
+	if _, err := os.Stat(spansOnlyRun); err != nil {
+		t.Fatalf("dry-run removed candidate: %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	if !strings.Contains(output, "cleanup candidate: "+spansOnlyRun) ||
+		!strings.Contains(output, "--cleanup-spans-only-runs") {
+		t.Fatalf("dry-run output = %q, want candidate and opt-in flag", output)
+	}
 
-	runDirs, err := l.RunDirs()
-	if err != nil {
-		t.Fatal(err)
+	output, _ = runUpOnce("--cleanup-spans-only-runs")
+	if _, err := os.Stat(spansOnlyRun); !os.IsNotExist(err) {
+		t.Fatalf("spans-only run directory survived opt-in cleanup: %v", err)
 	}
-	for _, runsDir := range runDirs {
-		if _, err := os.Stat(filepath.Join(runsDir, "scheduler-exhaust")); !os.IsNotExist(err) {
-			t.Fatalf("spans-only run directory survived startup in %s: %v", runsDir, err)
-		}
-		if _, err := os.Stat(filepath.Join(runsDir, "real-run", "events.jsonl")); err != nil {
-			t.Fatalf("real run was not preserved in %s: %v", runsDir, err)
-		}
+	if _, err := os.Stat(filepath.Join(realRun, "events.jsonl")); err != nil {
+		t.Fatalf("real run was not preserved: %v", err)
+	}
+	if !strings.Contains(output, "removed 1 spans-only run directory") {
+		t.Fatalf("opt-in output = %q, want removal count", output)
 	}
 }
 
