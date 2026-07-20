@@ -42,6 +42,15 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 		writeFakeJSON(w, map[string]string{"login": login})
 	})
 
+	// git/ref/heads/<branch> answers GitHubProvider.BranchTipSHA — the LIVE
+	// base-branch tip escalationStillBlocks compares against (#1052). Defaults
+	// to s.baseSHA so an unchanged fixture (baseSHA == snapshot's
+	// EscalatedBaseSHA) stays blocked, while a fixture whose baseSHA has moved
+	// past the snapshot self-heals — matching the pre-#1052 in-memory semantics.
+	mux.HandleFunc(prefix+"/git/ref/", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"object": map[string]string{"sha": s.baseSHA}})
+	})
+
 	mux.HandleFunc(prefix+"/pulls", func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("base"); got != s.base {
 			t.Fatalf("ListPullRequests base query = %q, want %q", got, s.base)

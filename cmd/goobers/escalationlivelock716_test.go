@@ -66,8 +66,9 @@ func TestEscalationStillBlocks(t *testing.T) {
 			t.Fatalf("remediationStateComment: %v", err)
 		}
 		server.addComment(3, comment)
+		server.setBranchTip("main", "b3") // base branch has not advanced past the snapshot
 		provider := server.newGitHubProvider("token")
-		pr := providers.PullRequestSummary{Number: 3, HeadSHA: "h3", BaseSHA: "b3", Labels: []string{remediationEscalatedLabel}}
+		pr := providers.PullRequestSummary{Number: 3, Base: "main", HeadSHA: "h3", BaseSHA: "b3", Labels: []string{remediationEscalatedLabel}}
 
 		blocked, err := escalationStillBlocks(context.Background(), provider, repo, pr)
 		if err != nil {
@@ -110,8 +111,9 @@ func TestEscalationStillBlocks(t *testing.T) {
 			t.Fatalf("remediationStateComment: %v", err)
 		}
 		server.addComment(5, comment)
+		server.setBranchTip("main", "advanced-base") // a sibling merge advanced the base past the snapshot's stale-base
 		provider := server.newGitHubProvider("token")
-		pr := providers.PullRequestSummary{Number: 5, HeadSHA: "h5", BaseSHA: "advanced-base", Labels: []string{remediationEscalatedLabel}}
+		pr := providers.PullRequestSummary{Number: 5, Base: "main", HeadSHA: "h5", BaseSHA: "advanced-base", Labels: []string{remediationEscalatedLabel}}
 
 		blocked, err := escalationStillBlocks(context.Background(), provider, repo, pr)
 		if err != nil {
@@ -119,6 +121,37 @@ func TestEscalationStillBlocks(t *testing.T) {
 		}
 		if blocked {
 			t.Fatal("blocked = true, want false — a sibling merge advanced the base since escalation (base SHA moved)")
+		}
+	})
+
+	// #1052 regression: the base branch advanced (live tip moved) but GitHub's
+	// pinned pull_request.base.sha did NOT — the exact deadlock where keying
+	// the check off pr.BaseSHA left every escalation permanent-until-human.
+	// The head is unchanged and pr.BaseSHA equals the snapshot, yet the live
+	// base tip has moved, so the self-heal must fire.
+	t.Run("base advanced despite pinned pr.BaseSHA unchanged self-heals (#1052)", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(6, "pr 6")
+		comment, err := remediationStateComment(remediationState{
+			Escalated: true, EscalatedHeadSHA: "h6", EscalatedBaseSHA: "base-tip-at-escalation",
+		})
+		if err != nil {
+			t.Fatalf("remediationStateComment: %v", err)
+		}
+		server.addComment(6, comment)
+		// Live base branch has advanced past the escalation snapshot...
+		server.setBranchTip("main", "base-tip-after-sibling-merge")
+		provider := server.newGitHubProvider("token")
+		// ...even though the PR's pinned base.sha still reads the escalation
+		// snapshot value (GitHub never moves it until the head is synced).
+		pr := providers.PullRequestSummary{Number: 6, Base: "main", HeadSHA: "h6", BaseSHA: "base-tip-at-escalation", Labels: []string{remediationEscalatedLabel}}
+
+		blocked, err := escalationStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("escalationStillBlocks: %v", err)
+		}
+		if blocked {
+			t.Fatal("blocked = true, want false — the live base tip advanced since escalation even though the pinned pr.BaseSHA did not (#1052 deadlock)")
 		}
 	})
 }
@@ -132,6 +165,7 @@ func TestPRSelectExcludesUnchangedEscalatedPR(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(prNumber, "stuck pr")
 	server.addOpenPR(prNumber, "goobers/implementation/stuck", "main", "headsha-601", "basesha-601", false, []string{remediationEscalatedLabel}, nil)
+	server.setBranchTip("main", "basesha-601") // base branch has not advanced past the snapshot
 	comment, err := remediationStateComment(remediationState{
 		Escalated: true, EscalatedHeadSHA: "headsha-601", EscalatedBaseSHA: "basesha-601",
 		EscalatedReason: "this cycle's diff is byte-identical to the immediately prior cycle's",
@@ -248,10 +282,11 @@ func TestGatherPRContextSelfHealsOnBaseAdvance(t *testing.T) {
 	// isBehindBase actually runs `git merge-base --is-ancestor <baseSHA>
 	// HEAD` against the checked-out repo, so the PR's declared baseSHA must
 	// be a REAL SHA in that repo — initPRBranchOrigin's own advanced main
-	// tip. The escalation snapshot's EscalatedBaseSHA is the one compared
-	// purely in-memory (escalationStillBlocks never touches git for it), so
-	// an arbitrary stale placeholder there is what represents "recorded
-	// before the base advanced."
+	// tip. escalationStillBlocks compares the snapshot's EscalatedBaseSHA
+	// against the LIVE base-branch tip (#1052), which this harness serves as
+	// s.baseSHA (the advanced tip); an arbitrary stale placeholder in the
+	// snapshot is what represents "recorded before the base advanced," so the
+	// live tip no longer matches it and the escalation self-heals.
 	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
 
 	stateComment, err := remediationStateComment(remediationState{

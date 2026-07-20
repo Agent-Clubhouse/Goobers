@@ -1686,6 +1686,20 @@ func (p *GitHubProvider) contentSHA(ctx context.Context, endpoint string) (strin
 	return out.SHA, out.SHA != "", nil
 }
 
+// BranchTipSHA resolves the current commit SHA at the tip of branch — the
+// live base-branch head. The merge-escalated self-heal check (#1052) needs
+// this because GitHub's pull_request.base.sha is a PINNED commit: it does not
+// advance when the base branch does (only when the PR head is synchronized),
+// so an escalation snapshot must compare against this live tip — not the PR's
+// own BaseSHA — to detect a sibling merge having advanced the base.
+func (p *GitHubProvider) BranchTipSHA(ctx context.Context, repo RepositoryRef, branch string) (string, error) {
+	ref, err := p.getGitHubRef(ctx, repo, "heads/"+branch)
+	if err != nil {
+		return "", err
+	}
+	return ref.Object.SHA, nil
+}
+
 func (p *GitHubProvider) getGitHubRef(ctx context.Context, repo RepositoryRef, ref string) (githubRef, error) {
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "git", "ref", ref)
 	if err != nil {

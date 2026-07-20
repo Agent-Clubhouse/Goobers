@@ -83,12 +83,16 @@ type fakeCompare struct {
 // issues/comments/labels/pulls API, shared across #131/#132's CLI-level
 // integration tests.
 type fakeGitHubServer struct {
-	mu            sync.Mutex
-	owner         string
-	repo          string
-	issues        map[int]*fakeIssue
-	prs           map[int]*fakePR
-	compares      map[string]fakeCompare
+	mu       sync.Mutex
+	owner    string
+	repo     string
+	issues   map[int]*fakeIssue
+	prs      map[int]*fakePR
+	compares map[string]fakeCompare
+	// branchTips answers GET .../git/ref/heads/<branch> (GitHubProvider.
+	// BranchTipSHA) — the LIVE base-branch tip the merge-escalated self-heal
+	// check (#1052) compares against, distinct from any PR's pinned baseSHA.
+	branchTips    map[string]string
 	nextPR        int
 	nextCommentID int64
 	server        *httptest.Server
@@ -119,7 +123,8 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	t.Helper()
 	s := &fakeGitHubServer{
 		owner: owner, repo: repo, issues: map[int]*fakeIssue{}, prs: map[int]*fakePR{},
-		compares: map[string]fakeCompare{}, nextPR: 1, authenticatedLogin: "goobers",
+		compares: map[string]fakeCompare{}, branchTips: map[string]string{},
+		nextPR: 1, authenticatedLogin: "goobers",
 	}
 	mux := http.NewServeMux()
 	prefix := "/repos/" + owner + "/" + repo
@@ -130,6 +135,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/pulls/", s.handlePullItem)
 	mux.HandleFunc(prefix+"/commits/", s.handleCommitItem)
 	mux.HandleFunc(prefix+"/compare/", s.handleCompare)
+	mux.HandleFunc(prefix+"/git/ref/", s.handleGitRef)
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
 	return s
@@ -181,6 +187,40 @@ func (s *fakeGitHubServer) addCompare(base, head, mergeBaseSHA string, files []f
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.compares[base+"..."+head] = fakeCompare{mergeBaseSHA: mergeBaseSHA, files: files}
+}
+
+// setBranchTip records the live tip SHA a branch's ref resolves to for
+// GitHubProvider.BranchTipSHA (GET .../git/ref/heads/<branch>) — the base-
+// advance signal the merge-escalated self-heal check reads (#1052). Distinct
+// from a PR's pinned baseSHA: that is what GitHub freezes at PR-cut time; this
+// is where the branch actually points now.
+func (s *fakeGitHubServer) setBranchTip(branch, sha string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.branchTips[branch] = sha
+}
+
+func (s *fakeGitHubServer) handleGitRef(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		return
+	}
+	prefix := "/repos/" + s.owner + "/" + s.repo + "/git/ref/"
+	ref := strings.TrimPrefix(r.URL.Path, prefix) // e.g. "heads/main"
+	branch := strings.TrimPrefix(ref, "heads/")
+	s.mu.Lock()
+	sha, ok := s.branchTips[branch]
+	s.mu.Unlock()
+	if !ok {
+		// Unset on purpose: a test that reaches BranchTipSHA without seeding a
+		// tip should fail loudly, not silently resolve to a phantom SHA.
+		http.Error(w, "no branch tip registered for "+branch, http.StatusNotFound)
+		return
+	}
+	writeFakeJSON(w, map[string]any{
+		"ref":    "refs/" + ref,
+		"object": map[string]string{"sha": sha, "type": "commit"},
+	})
 }
 
 func (s *fakeGitHubServer) newGitHubProvider(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {

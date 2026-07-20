@@ -114,6 +114,15 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		writeFakeJSON(w, out)
 	})
 
+	// git/ref/heads/main answers GitHubProvider.BranchTipSHA — the LIVE base
+	// tip runRemediationCheckpoint records as EscalatedBaseSHA at escalation
+	// (#1052), rather than the pinned pull_request.base.sha.
+	mux.HandleFunc(prefix+"/git/ref/", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		writeFakeJSON(w, map[string]interface{}{"object": map[string]string{"sha": st.baseSHA}})
+	})
+
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/status", prefix, st.headSHA), func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []map[string]interface{}{}})
 	})
