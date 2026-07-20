@@ -92,7 +92,14 @@ func readInstanceEvents(schedulerDir string) ([]journalEvent, error) {
 // mid-write leaves the same incomplete-tail signature events.jsonl can, and
 // must be tolerated the same way, not fail the whole ingest).
 func readSpans(runDir string) ([]telemetry.SpanRecord, error) {
-	path := filepath.Join(runDir, dirSpans, fileSpans)
+	return readSpanFile(filepath.Join(runDir, dirSpans, fileSpans))
+}
+
+func readSchedulerSpans(schedulerDir string) ([]telemetry.SpanRecord, error) {
+	return readSpanFile(filepath.Join(schedulerDir, dirSpans, fileSpans))
+}
+
+func readSpanFile(path string) ([]telemetry.SpanRecord, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil

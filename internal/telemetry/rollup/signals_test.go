@@ -1,12 +1,15 @@
 package rollup
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // TestIngestRunCapturesHarnessTranscripts is issue #128's first defect:
@@ -146,6 +149,40 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	}
 }
 
+func TestIngestSchedulerLogCapturesRollingSpans(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEvents(t, schedulerDir, []string{
+		instanceEventLine(1, "tick.skipped", `"workflow":"nominate","reason":"conditions: max-parallel"`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record := telemetry.SpanRecord{
+		Schema: telemetry.SpanSchema, TraceID: fixtureRunID, SpanID: "0123456789abcdef",
+		Name: "scheduler/dispatch", Kind: telemetry.SpanKindScheduler, Status: "ok",
+		StartTime: fixtureStart, EndTime: fixtureStart.Add(time.Millisecond),
+		Attributes: map[string]string{telemetry.AttrOutcome: string(telemetry.OutcomeBlocked)},
+	}
+	if err := writeSchedulerSpan(t, schedulerDir, record); err != nil {
+		t.Fatal(err)
+	}
+
+	db := openTestDB(t, tmp)
+	for i := 0; i < 2; i++ {
+		if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+			t.Fatalf("IngestSchedulerLog pass %d: %v", i+1, err)
+		}
+	}
+	spans, err := db.Spans(fixtureRunID)
+	if err != nil {
+		t.Fatalf("Spans: %v", err)
+	}
+	if len(spans) != 1 || spans[0].Kind != telemetry.SpanKindScheduler ||
+		spans[0].Name != "scheduler/dispatch" || spans[0].BusinessStatus != string(telemetry.OutcomeBlocked) {
+		t.Fatalf("scheduler spans = %#v", spans)
+	}
+}
+
 func TestIngestSchedulerLogToleratesDuplicateSequence(t *testing.T) {
 	tmp := t.TempDir()
 	schedulerDir := filepath.Join(tmp, "scheduler")
@@ -276,4 +313,17 @@ func writeInstanceEvents(t *testing.T, schedulerDir string, lines []string) erro
 	}
 	body := strings.Join(lines, "\n") + "\n"
 	return os.WriteFile(filepath.Join(schedulerDir, fileEvents), []byte(body), 0o644)
+}
+
+func writeSchedulerSpan(t *testing.T, schedulerDir string, record telemetry.SpanRecord) error {
+	t.Helper()
+	dir := filepath.Join(schedulerDir, dirSpans)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	body, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, fileSpans), append(body, '\n'), 0o644)
 }

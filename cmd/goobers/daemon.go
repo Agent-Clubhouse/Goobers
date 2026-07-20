@@ -119,6 +119,13 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	if err := l.MigrateLegacyRuntime(gaggles); err != nil {
 		return nil, err
 	}
+	runDirs, err := l.RunDirs()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := journal.CleanupSpansOnlyRuns(runDirs); err != nil {
+		return nil, err
+	}
 	claimProviders := claimProvidersByGaggle(set)
 
 	// telemetry.enabled defaults to true; instance.yaml can opt out (issue

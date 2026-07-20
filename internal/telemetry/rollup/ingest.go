@@ -291,19 +291,18 @@ func gateRunnerJSON(ev journalEvent) (sql.NullString, error) {
 	return runnerJSON(m)
 }
 
-// IngestSchedulerLog reads the instance journal (scheduler/events.jsonl) —
-// trigger.fired/tick.skipped/claim.acquired/claim.released/
-// claim.force_released, scheduler
-// decisions, claim transitions, the instance-level run.started/run.finished
-// echoes localscheduler's dispatch appends, and instance-level errors — and
-// (re)populates scheduler_events (issue #128: this was never ingested at
-// all). Idempotent (delete-then-insert over the whole table, since the
-// instance log is a single stream, not per-run), so it's safe to call after
-// every dispatch tick (incremental) or as part of Rebuild (full rescan).
+// IngestSchedulerLog reads the instance journal (scheduler/events.jsonl) and
+// its rolling scheduler spans, then (re)populates their rollup rows. Idempotent
+// over the instance-level data, so it is safe to call incrementally or as part
+// of Rebuild.
 // Historical duplicate seq values are corruption, but retaining the first
 // occurrence keeps one bad record from permanently preventing all rollup.
 func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	events, err := readInstanceEvents(schedulerDir)
+	if err != nil {
+		return err
+	}
+	spans, err := readSchedulerSpans(schedulerDir)
 	if err != nil {
 		return err
 	}
@@ -349,6 +348,17 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 			}
 		}
 	}
+	for _, span := range spans {
+		if span.TraceID == "" {
+			return fmt.Errorf("rollup: scheduler span %s has no trace id", span.SpanID)
+		}
+		if err := deleteSpan(tx, span.TraceID, span.SpanID); err != nil {
+			return err
+		}
+		if err := insertSpans(tx, span.TraceID, []telemetry.SpanRecord{span}); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("rollup: commit scheduler ingest tx: %w", err)
 	}
@@ -365,6 +375,18 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	// delay, not a correctness problem, so its failure must never surface
 	// as an ingest failure.
 	checkpointWAL(db.sql)
+	return nil
+}
+
+func deleteSpan(tx *sql.Tx, runID, spanID string) error {
+	for _, table := range []string{"span_events", "span_business_status"} {
+		if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE run_id = ? AND span_id = ?`, table), runID, spanID); err != nil {
+			return fmt.Errorf("rollup: clear %s for span %s: %w", table, spanID, err)
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM spans WHERE run_id = ? AND span_id = ?`, runID, spanID); err != nil {
+		return fmt.Errorf("rollup: clear span %s: %w", spanID, err)
+	}
 	return nil
 }
 

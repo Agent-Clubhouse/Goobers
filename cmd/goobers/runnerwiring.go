@@ -31,11 +31,11 @@ import (
 )
 
 // buildTelemetryClient constructs the OTel client that spans the runner walk
-// (run/task/gate) and scheduler decisions, writing completed spans under
-// RunsDir via JournalSpanExporter (issue #126) — the same run journal
-// layout goobers trace/telemetry read back through the rollup. Shared by
-// up.go/run.go exactly like buildRunnerConfig; each caller owns calling
-// Shutdown on the returned client once it's done driving runs.
+// (run/task/gate) and scheduler decisions. Run spans land under RunsDir;
+// scheduler spans land in the instance scheduler journal. Both are projected
+// into the rollup. Shared by up.go/run.go exactly like buildRunnerConfig; each
+// caller owns calling Shutdown on the returned client once it is done driving
+// runs.
 func buildTelemetryClient(ctx context.Context, l instance.Layout, scrubber journal.Scrubber) (*telemetry.Client, error) {
 	return telemetry.New(ctx, telemetry.Config{
 		ServiceName:    "goobers",
@@ -61,7 +61,7 @@ func (t teeRegistrar) Register(secret []byte) {
 }
 
 // ingestRunTelemetry incrementally ingests one finished run, plus a refresh
-// of the scheduler decision log, into the local telemetry rollup (issues
+// of the scheduler decision log and spans, into the local telemetry rollup (issues
 // #127/#128) — internal/telemetry/rollup/ingest.go's own doc comment already
 // claimed IngestRun is meant to hook a run's completion ("call it once a run
 // finishes"), but nothing in cmd/goobers ever called it; every `goobers

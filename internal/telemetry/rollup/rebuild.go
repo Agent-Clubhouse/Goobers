@@ -9,10 +9,9 @@ import (
 
 // Rebuild derives telemetry.db from scratch by wiping any existing rollup at
 // dbPath and re-ingesting every run directory under runsDir plus the instance
-// journal at schedulerDir (scheduler decisions and claim-ledger transitions,
-// issue #128). The journals are always the source of truth; the rollup is a
-// projection (TEL-032) — this is the primitive behind `goobers telemetry
-// --rebuild`.
+// journal and spans at schedulerDir. The journals are always the source of
+// truth; the rollup is a projection (TEL-032) — this is the primitive behind
+// `goobers telemetry --rebuild`.
 //
 // Run directories are processed in sorted-name order so a rebuild is
 // deterministic run-over-run; each run's own IngestRun is itself idempotent
