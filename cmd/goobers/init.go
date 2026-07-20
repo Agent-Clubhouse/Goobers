@@ -59,33 +59,18 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	for _, s := range res.Skipped {
 		pf(stdout, "  skipped  %s (already exists)\n", s)
 	}
-	instanceConfigCreated := false
-	configSeeded := false
+	demoSeeded := false
 	for _, created := range res.Created {
-		switch created {
-		case instance.ConfigFileName:
-			instanceConfigCreated = true
-		case instance.ConfigDirName:
-			configSeeded = true
+		if created == instance.ConfigDirName {
+			demoSeeded = true
+			break
 		}
 	}
-	if *demo && configSeeded {
+	if *demo && demoSeeded {
 		pf(stdout, demoTourBanner, abs)
-	} else if !*demo && instanceConfigCreated && configSeeded {
-		pf(stdout, starterSetupBanner, abs, abs, abs)
 	}
 	return 0
 }
-
-const starterSetupBanner = `
-Before goobers up can dispatch work:
-  1. Replace your-org/your-repo in:
-       %s/instance.yaml
-       %s/config/gaggles/example/gaggle.yaml
-  2. Export a GitHub token: export GOOBERS_GITHUB_TOKEN=...
-  3. Add the 'goobers' label to an open issue in that repository.
-  4. Start the daemon: goobers up %s
-`
 
 const demoTourBanner = `
 Demo tour (run these from %s):

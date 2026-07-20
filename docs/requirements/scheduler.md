@@ -15,19 +15,18 @@ changes (`ARCHITECTURE.md §7`).
 ## Model
 
 - **Embedded at tiers 1–2:** the scheduler is **embedded in the local runner daemon**
-  (`goobers up`) — no separate scheduler service. It evaluates schedule,
-  backlog-item, and signal triggers and enforces run conditions: max parallel runs
-  per workflow/instance and per-workflow run budgets.
+  (`goobers up`) — no separate scheduler service. It evaluates cron-expression
+  triggers and enforces run conditions: max parallel runs per workflow/instance and
+  per-workflow run budgets.
 - **Tier 3 (V2):** the same declared schedule semantics map onto **Temporal
   Schedules**, and claiming coordinates across distributed workers via workflow-id
   identity — same semantics, different substrate.
 - **Admission loop:** the scheduler continuously evaluates each workflow — has its
   **trigger** fired and are its **readiness conditions** met (`WF-010`/`WF-011`)? If yes
   and matching work exists, it starts a run.
-- **Routing — labels + selectors:** units of work (e.g. backlog items) carry
-  **labels**; workflows declare **selectors** over those labels. The local GitHub
-  scheduler interprets selector keys as required labels; selector values are not
-  matched because GitHub labels are plain strings.
+- **Routing — labels + selectors (k8s-style, V1):** units of work (e.g. backlog
+  items) carry **labels**; workflows declare **selectors** over those labels. The
+  V0 schema reserves these fields but the scheduler does not consume them until V1.
 - **Claiming — lease-based atomic claim, owned by the runner:** before a run, the
   scheduler claims the unit atomically. At tiers 1–2 the claim is recorded in a
   **claim ledger in instance state** plus a **provider-visible marker**
@@ -50,9 +49,9 @@ changes (`ARCHITECTURE.md §7`).
   is saturated (queue/defer rather than fail).
 
 ### Routing
-- **SCH-010 (MUST):** The scheduler MUST route a unit of work to workflow(s) by
-  matching item **labels** against workflow **selectors**. The local GitHub
-  scheduler matches selector keys as required labels.
+- **SCH-010 (MUST, V1):** The scheduler MUST route a unit of work to workflow(s) by
+  matching item **labels** against workflow **selectors**. V0 accepts these fields
+  as reserved schema surface but does not route on them.
 - **SCH-011 (MUST):** When an item matches **multiple** workflows, the scheduler MUST
   resolve to a **single** winner by declared **priority** (deterministic tiebreak) —
   preserving one-item-one-workflow so exactly-once claiming holds on either runner.
@@ -94,11 +93,12 @@ changes (`ARCHITECTURE.md §7`).
   scheduler service. *(Tiers 1–2)*
 - **SCH-041 (MUST):** Cron-expression triggers MUST ship first (V0): the embedded
   scheduler evaluates them and enforces run conditions (max-parallel, run budgets).
-  Backlog-item triggers poll for matching open work and size fan-out; their first
-  stage uses the built-in **`backlog-query --claim`** deterministic command to
-  query + claim an eligible item, honoring the untrusted-input eligibility gate
-  (`SEC-047`). This is the owning statement of the local claim pattern (`WF-055`
-  defers here; `WF-010`). *(All tiers; ships tiers 1–2 first)*
+  At V0 backlog consumption rides cron-triggered workflows whose first stage — the
+  built-in **`backlog-query`** deterministic stage kind — queries + claims eligible
+  items, honoring the untrusted-input eligibility gate (`SEC-047`). This is the
+  owning statement of the V0 cron-claim pattern (`WF-055` defers here; `WF-010`).
+  Direct backlog-item triggers and selectors are reserved for V1. *(All tiers;
+  ships tiers 1–2 first)*
 - **SCH-042 (MUST):** **Tier 3 (V2):** declared schedule triggers MUST map onto
   **Temporal Schedules**, and claiming MUST use workflow-id-based exactly-once
   identity (`SCH-020`) — the cloud drop-in for the scheduling seam

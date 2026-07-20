@@ -84,10 +84,10 @@ same abstraction, whose shape is unchanged.
 ### Triggering
 
 - **BL-020 (SHOULD):** New/changed backlog items SHOULD reach the scheduler promptly
-  (webhook preferred, polling acceptable) to drive trigger evaluation. The local
-  scheduler polls open items matching a backlog-item trigger's selector labels;
-  each admitted run's first stage queries and claims a specific item
-  (`ARCHITECTURE.md §7`).
+  (webhook preferred, polling acceptable) to drive trigger evaluation. At V0, backlog
+  consumption is a cron-triggered workflow whose first stage queries the provider for
+  eligible items and claims them (`ARCHITECTURE.md §7`); direct backlog-item triggers
+  layer onto the same scheduler later.
 
 ## Relationships
 
@@ -109,6 +109,5 @@ same abstraction, whose shape is unchanged.
 - **BL-Q3:** ~~Item model richness~~ **Resolved:** flat for scheduling; hierarchy
   preserved as pass-through; hierarchy-aware behavior deferred (`BL-002`, `BL-012`).
 - **BL-Q4:** ~~Webhook vs. polling~~ **Resolved:** webhook-preferred with poll fallback,
-  per provider (`BL-020`); the local scheduler's backlog-item trigger poll plus the
-  query-and-claim first stage is the polling form. *(Remaining: per-provider auth
-  specifics — build-time design.)*
+  per provider (`BL-020`); at V0 the cron-triggered query-and-claim stage is the polling
+  form. *(Remaining: per-provider auth specifics — build-time design.)*

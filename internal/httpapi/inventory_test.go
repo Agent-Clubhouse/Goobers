@@ -145,7 +145,7 @@ func TestWorkflowEndpointsLoadScopedProductionDefinitionsAndWarnings(t *testing.
 	triggerWarning := alpha.Warnings[1]
 	if triggerWarning.Code != validate.WarningCompatibility || triggerWarning.Severity != validate.Warning ||
 		triggerWarning.Scope != "gaggles/alpha/workflows/deploy.yaml Gaggle/alpha Workflow/deploy" ||
-		!strings.Contains(triggerWarning.Explanation, "has no autonomous trigger") {
+		!strings.Contains(triggerWarning.Explanation, "has no schedule trigger") {
 		t.Fatalf("alpha trigger warning = %+v", triggerWarning)
 	}
 	if len(beta.Warnings) != 1 {
@@ -154,7 +154,7 @@ func TestWorkflowEndpointsLoadScopedProductionDefinitionsAndWarnings(t *testing.
 	betaTriggerWarning := beta.Warnings[0]
 	if betaTriggerWarning.Code != validate.WarningCompatibility || betaTriggerWarning.Severity != validate.Warning ||
 		betaTriggerWarning.Scope != "gaggles/beta/workflows/deploy.yaml Gaggle/beta Workflow/deploy" ||
-		!strings.Contains(betaTriggerWarning.Explanation, "has no autonomous trigger") {
+		!strings.Contains(betaTriggerWarning.Explanation, "has no schedule trigger") {
 		t.Fatalf("beta trigger warning = %+v", betaTriggerWarning)
 	}
 

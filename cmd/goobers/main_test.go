@@ -101,18 +101,6 @@ func TestInitThenValidate(t *testing.T) {
 	if !strings.Contains(stdout, "initialized instance at") {
 		t.Fatalf("init stdout = %q", stdout)
 	}
-	for _, want := range []string{
-		"Before goobers up can dispatch work:",
-		filepath.Join(root, "instance.yaml"),
-		filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml"),
-		"export GOOBERS_GITHUB_TOKEN=...",
-		"Add the 'goobers' label to an open issue",
-		"goobers up " + root,
-	} {
-		if !strings.Contains(stdout, want) {
-			t.Fatalf("init stdout = %q, want setup guidance containing %q", stdout, want)
-		}
-	}
 
 	code, stdout, stderr = runArgs(t, "validate", root)
 	if code != 0 {
@@ -121,8 +109,9 @@ func TestInitThenValidate(t *testing.T) {
 	if !strings.Contains(stdout, "OK:") {
 		t.Fatalf("validate stdout = %q", stdout)
 	}
-	if strings.Contains(stdout, "has no autonomous trigger") {
-		t.Fatalf("validate stdout = %q, want no autonomous-trigger warning for starter workflow", stdout)
+	const warning = "workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`"
+	if count := strings.Count(stdout, warning); count != 1 {
+		t.Fatalf("validate stdout = %q, warning count = %d, want exactly one", stdout, count)
 	}
 
 	// Re-running init is a no-op, not an error.
@@ -135,7 +124,7 @@ func TestInitThenValidate(t *testing.T) {
 	}
 }
 
-func TestValidateWarnsOnceForManualOnlyWorkflow(t *testing.T) {
+func TestValidateScheduledWorkflowHasNoScheduleWarning(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "demo")
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
@@ -146,11 +135,11 @@ func TestValidateWarnsOnceForManualOnlyWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backlog := "    - type: backlog-item\n      selector:\n        goobers: \"true\""
 	manual := "    - type: manual"
-	updated := strings.Replace(string(raw), backlog, manual, 1)
+	schedule := "    - type: schedule\n      schedule: \"@every 15m\""
+	updated := strings.Replace(string(raw), manual, schedule, 1)
 	if updated == string(raw) {
-		t.Fatalf("starter workflow did not contain expected backlog trigger:\n%s", raw)
+		t.Fatalf("starter workflow did not contain expected manual trigger:\n%s", raw)
 	}
 	if err := os.WriteFile(workflowPath, []byte(updated), 0o644); err != nil {
 		t.Fatal(err)
@@ -160,9 +149,8 @@ func TestValidateWarnsOnceForManualOnlyWorkflow(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	const warning = "workflow \"default-implement\" has no autonomous trigger; it will not fire autonomously — run it with `goobers run default-implement`"
-	if count := strings.Count(stdout, warning); count != 1 {
-		t.Fatalf("validate stdout = %q, warning count = %d, want exactly one", stdout, count)
+	if strings.Contains(stdout, "has no schedule trigger") {
+		t.Fatalf("validate stdout = %q, want no schedule warning", stdout)
 	}
 }
 

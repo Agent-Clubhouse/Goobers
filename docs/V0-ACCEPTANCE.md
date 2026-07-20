@@ -287,10 +287,9 @@ decision for a bug:
   sandboxing is V1 (tracked as #35).
 - **No portal.** The journal and telemetry store are inspectable via CLI/files
   only; the portal reading them is V1 (`ARCHITECTURE.md` §12).
-- **cron-only scheduling (historical V0 boundary).** Backlog-item and
-  external-signal triggers were modeled but expressed as cron-triggered
-  `backlog-query` stages for V0. First-class polling and signal delivery have
-  since shipped (`docs/requirements/scheduler.md`).
+- **cron-only scheduling.** Backlog-item and external-signal triggers are
+  modeled but expressed as cron-triggered `backlog-query` stages at V0, not
+  first-class trigger types yet (`docs/requirements/scheduler.md`).
 - **GitHub only.** Azure DevOps parity is V1 (`BL-033`); `providers/ado.go`
   exists but isn't part of the V0 acceptance path.
 - **Structural-only cron/schedule validation.** No range-checking beyond

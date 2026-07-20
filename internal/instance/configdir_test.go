@@ -42,9 +42,6 @@ func TestLoadConfigDirValid(t *testing.T) {
 	gotWorkflows := map[string]bool{}
 	for _, w := range set.Workflows {
 		gotWorkflows[w.Name] = true
-		if w.Name == "default-implement" {
-			assertDefaultImplementationPublishesPR(t, w)
-		}
 	}
 	wantWorkflows := []string{"default-implement", "backlog-curation", "implementation", "work-nomination", "merge-review", "todo-check"}
 	if len(set.Workflows) != len(wantWorkflows) {

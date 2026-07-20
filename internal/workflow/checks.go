@@ -21,19 +21,16 @@ var backlogClaimPattern = regexp.MustCompile(`(?s)backlog-query.*--claim`)
 // CheckWarnings reports non-fatal workflow diagnostics.
 func CheckWarnings(def Definition) []string {
 	var warnings []string
-	hasAutonomousTrigger := false
+	hasSchedule := false
 	for _, trigger := range def.Spec.Triggers {
-		switch trigger.Type {
-		case apiv1.TriggerSchedule, apiv1.TriggerBacklogItem, apiv1.TriggerSignal:
-			hasAutonomousTrigger = true
-		}
-		if hasAutonomousTrigger {
+		if trigger.Type == apiv1.TriggerSchedule {
+			hasSchedule = true
 			break
 		}
 	}
-	if !hasAutonomousTrigger {
+	if !hasSchedule {
 		warnings = append(warnings, fmt.Sprintf(
-			"workflow %q has no autonomous trigger; it will not fire autonomously — run it with `goobers run %s`",
+			"workflow %q has no schedule trigger; it will not fire autonomously — run it with `goobers run %s`",
 			def.Name,
 			def.Name,
 		))
@@ -257,9 +254,15 @@ func CheckGateOutcomes(def Definition) []string {
 // nothing to fire on. type=schedule's own requirement (a non-empty Schedule
 // expression) is already covered by scheduleProblems.
 //
-// A selector-less backlog-item trigger is valid: the local scheduler treats
-// selector keys as required provider labels, so an empty selector deliberately
-// acts as a catch-all for open items.
+// #125 also flagged type=backlog-item with no Selector — deliberately NOT
+// enforced here: Selector (WF-040/SCH-010) has no runtime consumer anywhere
+// in the codebase yet (nothing matches on it), and a huge fraction of
+// existing test fixtures across internal/engine, internal/scheduler (a
+// quarantined tier-3 package), internal/runner, and test/e2e declare a
+// selector-less backlog-item trigger as ordinary scaffolding. Requiring it
+// would mean touching fixtures repo-wide for a field with zero behavioral
+// effect today — a disproportionate cost for a "minor" item; revisit once
+// Selector is actually wired to real routing logic.
 func triggerFieldProblems(def Definition) []string {
 	var problems []string
 	manualIndex := -1

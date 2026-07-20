@@ -27,11 +27,11 @@ everything a goober does happens inside a workflow, at every deployment tier.
 - **Triggers** differentiate workflow archetypes but not the taxonomy: a schedule
   (cron / time-since-last-run) — first to ship (V0); a backlog item becoming
   available; or an external signal. Perf hunter, error miner, Tutor, researchers,
-  implementers are **all just workflows** differing by trigger + stages.
-  Backlog-item triggers poll for matching work and size fan-out; the first stage
-  queries and claims a specific item before any agentic work begins.
-- The **default starter** is a minimal claim → implement → close-out workflow,
-  shipped so a gaggle works immediately.
+  implementers are **all just workflows** differing by trigger + stages. At V0,
+  backlog consumption is expressed as a cron-triggered workflow whose first stage
+  queries the provider for eligible items and claims them.
+- The **default starter** is an ordinary **length-1 (single-stage), implement-only**
+  workflow, shipped so a gaggle works immediately.
 - Every run is a **trace**: journal spans plus the goober-run telemetry store.
 
 ## Requirements
@@ -44,19 +44,18 @@ everything a goober does happens inside a workflow, at every deployment tier.
   and Gates, and MUST compile to a **deterministic step-machine** — no side effects,
   wall-clock reads, or hidden inputs in the machine itself. *(All tiers)*
 - **WF-003 (MUST):** A Workflow MUST belong to exactly one Gaggle.
-- **WF-004 (MUST):** The platform MUST ship a default implementation workflow that
-  autonomously claims eligible backlog work and closes it out after successful
-  implementation, so a newly created gaggle can do work without authoring a
-  workflow first.
+- **WF-004 (MUST):** The platform MUST ship a default single-stage, implement-only
+  workflow so a newly created gaggle can do work without authoring a workflow first.
 - **WF-005 (SHOULD):** Workflows SHOULD support composition/reuse of common stages or
   fragments to avoid duplication.
 
 ### Triggers, readiness & scheduling
 - **WF-010 (MUST):** A Workflow MUST declare its trigger(s): schedule/cron/
   time-since-last-run (**ships first, V0**), backlog-item-available, and/or external
-  signal. Backlog-item triggers poll the provider for open items matching selector
-  label keys and fan out runs up to readiness limits; their first stage queries and
-  claims one eligible item (see `WF-055`, `SCH-041`).
+  signal. Direct backlog-item triggers and their selectors remain in the schema but
+  are **reserved for V1** and have no V0 runtime consumer. At V0 backlog consumption
+  is expressed as a **cron-triggered workflow whose first stage queries and claims
+  eligible items** (see `WF-055`, `SCH-041`).
 - **WF-011 (MUST):** A Workflow MUST declare readiness conditions (e.g. max parallel
   runs, run budgets, worker/resource capacity). A run MUST start only when the
   trigger has fired AND readiness conditions are satisfied. *(All tiers)*
@@ -101,9 +100,10 @@ everything a goober does happens inside a workflow, at every deployment tier.
   so no unit of work is processed more than once. (See Scheduler spec.)
 
 ### Routing
-- **WF-040 (MUST):** The platform MUST map an incoming unit of work (e.g. a backlog
-  item) to the correct workflow. Mechanism owned by the Scheduler spec (labels +
-  selectors); the local GitHub scheduler matches selector keys as required labels.
+- **WF-040 (MUST, V1):** The platform MUST map an incoming unit of work (e.g. a
+  backlog item) to the correct workflow. Mechanism owned by the Scheduler spec
+  (labels + selectors). The V0 schema reserves these fields but does not consume
+  them at runtime.
 
 ### Run journal & runner-seam contract
 - **WF-050 (MUST):** Every run MUST produce an append-only, content-digested **run
@@ -135,12 +135,12 @@ everything a goober does happens inside a workflow, at every deployment tier.
   state checkpoint + event journal on restart and resuming from the last completed
   stage — durability is append + fsync, with no database or service dependency.
   *(Tiers 1–2)*
-- **WF-055 (MUST):** A backlog-consuming workflow's first stage — the built-in
-  **`backlog-query --claim`** command — MUST query the provider for an eligible
-  item and **claim** it so concurrent runs never double-process. The backlog-item
-  trigger's provider poll sizes fan-out but does not replace this per-run claim.
-  Owning requirement: `SCH-041` (claiming semantics `SCH-020`; eligibility gate
-  `SEC-047`); this ID defers to it. *(All tiers; ships tiers 1–2 first.)*
+- **WF-055 (MUST):** V0 MUST support expressing backlog consumption as a
+  cron-triggered workflow whose first stage — the built-in **`backlog-query`** stage
+  kind — queries the provider for eligible items and **claims** them so concurrent
+  runs never double-process. Owning requirement: `SCH-041` (claiming semantics
+  `SCH-020`; eligibility gate `SEC-047`); this ID defers to it. *(All tiers; ships
+  tiers 1–2 first.)*
 
 ## Relationships
 

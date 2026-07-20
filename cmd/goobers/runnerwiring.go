@@ -604,16 +604,15 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 }
 
 // backlogCounter adapts a provider + repo + label selector into a
-// localscheduler.BacklogCounter (#344). It also applies the workflow's
-// backlog-query exclusions so fan-out estimates do not dispatch runs for
-// items the claim stage will reject.
+// localscheduler.BacklogCounter (#344) — resolves its token per call (like
+// escalationCommenter above), honoring credentials.Resolver's re-read-on-
+// resolve rotation contract rather than capturing one at daemon startup.
 type backlogCounter struct {
-	ref           string
-	repo          providers.RepositoryRef
-	labels        []string
-	excludeLabels []string
-	resolver      credentials.Resolver
-	reg           runner.SecretRegistrar
+	ref      string
+	repo     providers.RepositoryRef
+	labels   []string
+	resolver credentials.Resolver
+	reg      runner.SecretRegistrar
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
@@ -628,13 +627,7 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	count := 0
-	for _, item := range items {
-		if !hasAnyLabel(item.Labels, b.excludeLabels) {
-			count++
-		}
-	}
-	return count, nil
+	return len(items), nil
 }
 
 // buildBacklogCounter wires a localscheduler.BacklogCounter for wf's
@@ -647,8 +640,6 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 // unwired) is a flat map; only its KEYS are used as required GitHub labels
 // — values are ignored, since GitHub issue labels are plain strings with no
 // key=value structure to match against, unlike a true k8s label selector.
-// The first goobers backlog-query task's excludeLabels input is applied to
-// the count so trigger fan-out matches the workflow's durable exclusions.
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
@@ -672,22 +663,12 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 	for k := range selector {
 		labels = append(labels, k)
 	}
-	var excludeLabels []string
-	for _, task := range wf.Spec.Tasks {
-		if task.Run == nil || len(task.Run.Command) < 2 ||
-			task.Run.Command[0] != "goobers" || task.Run.Command[1] != "backlog-query" {
-			continue
-		}
-		excludeLabels = splitLabelList(task.Inputs["excludeLabels"])
-		break
-	}
 	return &backlogCounter{
-		ref:           cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
-		repo:          providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
-		labels:        labels,
-		excludeLabels: excludeLabels,
-		resolver:      resolver,
-		reg:           reg,
+		ref:      cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
+		repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		labels:   labels,
+		resolver: resolver,
+		reg:      reg,
 	}
 }
 

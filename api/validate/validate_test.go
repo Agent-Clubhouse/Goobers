@@ -65,7 +65,7 @@ func TestInvalidEnvelopesFail(t *testing.T) {
 }
 
 // TestExampleConfigPasses is the headline acceptance check: the reference config
-// in /config-examples validates clean (exit 0 equivalent).
+// in /config-examples is valid and explains that its starter is manual-only.
 func TestExampleConfigPasses(t *testing.T) {
 	v := newV(t)
 	report, err := v.ValidateDir("../../config-examples")
@@ -75,8 +75,12 @@ func TestExampleConfigPasses(t *testing.T) {
 	if report.HasErrors() {
 		t.Fatalf("expected /config-examples to be valid, got issues:\n%s", joinIssues(report))
 	}
-	if warnings := report.Warnings(); len(warnings) != 0 {
-		t.Fatalf("expected /config-examples to be warning-clean, got %+v", warnings)
+	warnings := report.Warnings()
+	if len(warnings) != 1 ||
+		warnings[0].Code != WarningCompatibility ||
+		warnings[0].Severity != Warning ||
+		!strings.Contains(warnings[0].Explanation, "goobers run default-implement") {
+		t.Fatalf("expected one actionable manual-only warning, got %+v", warnings)
 	}
 	if report.Objects < 4 {
 		t.Errorf("expected at least 4 objects, got %d", report.Objects)
