@@ -107,85 +107,100 @@ func AllFeatures() []Feature {
 }
 
 const (
-	featureWorkflowGaggle                FeatureID = "workflow.spec.gaggle"
-	featureWorkflowDisplayName           FeatureID = "workflow.spec.displayName"
-	featureWorkflowTriggers              FeatureID = "workflow.spec.triggers"
-	featureWorkflowReadiness             FeatureID = "workflow.spec.readiness"
-	featureWorkflowMaxConcurrentRuns     FeatureID = "workflow.spec.readiness.maxConcurrentRuns"
-	featureWorkflowMaxRunsPerHour        FeatureID = "workflow.spec.readiness.maxRunsPerHour"
-	featureWorkflowMaxRunsPerDay         FeatureID = "workflow.spec.readiness.maxRunsPerDay"
-	featureWorkflowMaxChainDepth         FeatureID = "workflow.spec.readiness.maxChainDepth"
-	featureWorkflowMaxOpenPRs            FeatureID = "workflow.spec.readiness.maxOpenPRs"
-	featureWorkflowStart                 FeatureID = "workflow.spec.start"
-	featureWorkflowTasks                 FeatureID = "workflow.spec.tasks"
-	featureWorkflowGates                 FeatureID = "workflow.spec.gates"
-	featureWorkflowTerminalComplete      FeatureID = "workflow.terminal.complete"
-	featureWorkflowTerminalAbort         FeatureID = "workflow.terminal.abort"
-	featureWorkflowTerminalEscalate      FeatureID = "workflow.terminal.escalate"
-	featureGooberGaggle                  FeatureID = "goober.spec.gaggle"
-	featureGooberRole                    FeatureID = "goober.spec.role"
-	featureGooberDisplayName             FeatureID = "goober.spec.displayName"
-	featureGooberInstructions            FeatureID = "goober.spec.instructions"
-	featureGooberHarnessCopilot          FeatureID = "goober.spec.harness.copilot"
-	featureGooberModel                   FeatureID = "goober.spec.model"
-	featureGooberHarnessOptions          FeatureID = "goober.spec.harnessOptions"
-	featureGooberCapabilities            FeatureID = "goober.spec.capabilities"
-	featureGooberSkills                  FeatureID = "goober.spec.skills"
-	featureGooberTools                   FeatureID = "goober.spec.tools"
-	featureGooberScaleFactor             FeatureID = "goober.spec.scaleFactor"
-	featureGooberWorkflows               FeatureID = "goober.spec.workflows"
-	featureTriggerManual                 FeatureID = "trigger.manual"
-	featureTriggerBacklogItem            FeatureID = "trigger.backlog-item"
-	featureTriggerBacklogItemSelector    FeatureID = "trigger.backlog-item.selector"
-	featureTriggerSchedule               FeatureID = "trigger.schedule"
-	featureTriggerSignal                 FeatureID = "trigger.signal"
-	featureTaskName                      FeatureID = "task.name"
-	featureTaskDeterministic             FeatureID = "task.deterministic"
-	featureTaskAgentic                   FeatureID = "task.agentic"
-	featureTaskGoal                      FeatureID = "task.goal"
-	featureTaskGoober                    FeatureID = "task.goober"
-	featureTaskInputs                    FeatureID = "task.inputs"
-	featureTaskInputsFrom                FeatureID = "task.inputsFrom"
-	featureTaskCapabilities              FeatureID = "task.capabilities"
-	featureTaskRetry                     FeatureID = "task.retry"
-	featureTaskRetryMaxAttempts          FeatureID = "task.retry.maxAttempts"
-	featureTaskRetryBackoff              FeatureID = "task.retry.backoff"
-	featureTaskTimeoutFail               FeatureID = "task.onTimeout.fail"
-	featureTaskTimeoutSalvage            FeatureID = "task.onTimeout.salvage"
-	featureTaskExpectedOutputs           FeatureID = "task.expectedOutputs"
-	featureTaskNext                      FeatureID = "task.next"
-	featureStageShell                    FeatureID = "stage.shell"
-	featureStageCIPoll                   FeatureID = "stage.ci-poll"
-	featureStageCommand                  FeatureID = "stage.run.command"
-	featureStageImage                    FeatureID = "stage.run.image"
-	featureStageNetworkNone              FeatureID = "stage.run.network.none"
-	featureStageWorkspaceRepo            FeatureID = "stage.run.workspace.repo"
-	featureStageWorkspaceScratch         FeatureID = "stage.run.workspace.scratch"
-	featureStageResultFile               FeatureID = "stage.resultFile"
-	featureGateName                      FeatureID = "gate.name"
-	featureGateBranches                  FeatureID = "gate.branches"
-	featureGateEscalationBranch          FeatureID = "gate.branch.escalate"
-	featureEvaluatorAutomated            FeatureID = "gate.evaluator.automated"
-	featureEvaluatorAutomatedCheck       FeatureID = "gate.evaluator.automated.check"
-	featureEvaluatorAutomatedParams      FeatureID = "gate.evaluator.automated.params"
-	featureEvaluatorStatusEquals         FeatureID = "gate.evaluator.automated.check.status-equals"
-	featureEvaluatorOutputEquals         FeatureID = "gate.evaluator.automated.check.output-equals"
-	featureEvaluatorOutputNotEquals      FeatureID = "gate.evaluator.automated.check.output-not-equals"
-	featureEvaluatorOutputNumericGTE     FeatureID = "gate.evaluator.automated.check.output-numeric-gte"
-	featureEvaluatorOutputNumericLTE     FeatureID = "gate.evaluator.automated.check.output-numeric-lte"
-	featureEvaluatorOutputNumericLT      FeatureID = "gate.evaluator.automated.check.output-numeric-lt"
-	featureEvaluatorOutputMatches        FeatureID = "gate.evaluator.automated.check.output-matches"
-	featureEvaluatorCIStatus             FeatureID = "gate.evaluator.automated.check.ci-status"
-	featureEvaluatorLandOutcome          FeatureID = "gate.evaluator.automated.check.land-outcome"
-	featureEvaluatorQueueOutcome         FeatureID = "gate.evaluator.automated.check.queue-outcome"
-	featureEvaluatorAgentic              FeatureID = "gate.evaluator.agentic"
-	featureEvaluatorAgenticGoober        FeatureID = "gate.evaluator.agentic.goober"
-	featureEvaluatorHuman                FeatureID = "gate.evaluator.human"
-	featureEvaluatorHumanApprovers       FeatureID = "gate.evaluator.human.approvers"
-	featureEvaluatorHumanTimeout         FeatureID = "gate.evaluator.human.timeout"
-	featureEvaluatorHumanTimeoutRemind   FeatureID = "gate.evaluator.human.onTimeout.remind"
-	featureEvaluatorHumanTimeoutEscalate FeatureID = "gate.evaluator.human.onTimeout.escalate"
-	featureEvaluatorHumanTimeoutReject   FeatureID = "gate.evaluator.human.onTimeout.reject"
+	featureWorkflowGaggle                 FeatureID = "workflow.spec.gaggle"
+	featureWorkflowDisplayName            FeatureID = "workflow.spec.displayName"
+	featureWorkflowTriggers               FeatureID = "workflow.spec.triggers"
+	featureWorkflowReadiness              FeatureID = "workflow.spec.readiness"
+	featureWorkflowMaxConcurrentRuns      FeatureID = "workflow.spec.readiness.maxConcurrentRuns"
+	featureWorkflowMaxRunsPerHour         FeatureID = "workflow.spec.readiness.maxRunsPerHour"
+	featureWorkflowMaxRunsPerDay          FeatureID = "workflow.spec.readiness.maxRunsPerDay"
+	featureWorkflowMaxChainDepth          FeatureID = "workflow.spec.readiness.maxChainDepth"
+	featureWorkflowMaxOpenPRs             FeatureID = "workflow.spec.readiness.maxOpenPRs"
+	featureWorkflowStart                  FeatureID = "workflow.spec.start"
+	featureWorkflowTasks                  FeatureID = "workflow.spec.tasks"
+	featureWorkflowGates                  FeatureID = "workflow.spec.gates"
+	featureWorkflowTerminalComplete       FeatureID = "workflow.terminal.complete"
+	featureWorkflowTerminalAbort          FeatureID = "workflow.terminal.abort"
+	featureWorkflowTerminalEscalate       FeatureID = "workflow.terminal.escalate"
+	featureGooberGaggle                   FeatureID = "goober.spec.gaggle"
+	featureGooberRole                     FeatureID = "goober.spec.role"
+	featureGooberDisplayName              FeatureID = "goober.spec.displayName"
+	featureGooberInstructions             FeatureID = "goober.spec.instructions"
+	featureGooberHarnessCopilot           FeatureID = "goober.spec.harness.copilot"
+	featureGooberModel                    FeatureID = "goober.spec.model"
+	featureGooberHarnessOptions           FeatureID = "goober.spec.harnessOptions"
+	featureGooberCapabilities             FeatureID = "goober.spec.capabilities"
+	featureGooberSkills                   FeatureID = "goober.spec.skills"
+	featureGooberTools                    FeatureID = "goober.spec.tools"
+	featureGooberScaleFactor              FeatureID = "goober.spec.scaleFactor"
+	featureGooberWorkflows                FeatureID = "goober.spec.workflows"
+	featureTriggerManual                  FeatureID = "trigger.manual"
+	featureTriggerBacklogItem             FeatureID = "trigger.backlog-item"
+	featureTriggerBacklogItemSelector     FeatureID = "trigger.backlog-item.selector"
+	featureTriggerSchedule                FeatureID = "trigger.schedule"
+	featureTriggerSignal                  FeatureID = "trigger.signal"
+	featureTaskName                       FeatureID = "task.name"
+	featureTaskDeterministic              FeatureID = "task.deterministic"
+	featureTaskAgentic                    FeatureID = "task.agentic"
+	featureTaskGoal                       FeatureID = "task.goal"
+	featureTaskGoober                     FeatureID = "task.goober"
+	featureTaskInputs                     FeatureID = "task.inputs"
+	featureTaskInputsFrom                 FeatureID = "task.inputsFrom"
+	featureTaskCapabilities               FeatureID = "task.capabilities"
+	featureTaskRetry                      FeatureID = "task.retry"
+	featureTaskRetryMaxAttempts           FeatureID = "task.retry.maxAttempts"
+	featureTaskRetryBackoff               FeatureID = "task.retry.backoff"
+	featureTaskTimeoutSeconds             FeatureID = "task.timeoutSeconds"
+	featureTaskLimits                     FeatureID = "task.limits"
+	featureTaskLimitMaxDurationSeconds    FeatureID = "task.limits.maxDurationSeconds"
+	featureTaskLimitMaxTokens             FeatureID = "task.limits.maxTokens"
+	featureTaskLimitMaxCostUSD            FeatureID = "task.limits.maxCostUSD"
+	featureTaskTimeoutFail                FeatureID = "task.onTimeout.fail"
+	featureTaskTimeoutSalvage             FeatureID = "task.onTimeout.salvage"
+	featureTaskExpectedOutputs            FeatureID = "task.expectedOutputs"
+	featureTaskNext                       FeatureID = "task.next"
+	featureStageShell                     FeatureID = "stage.shell"
+	featureStageCIPoll                    FeatureID = "stage.ci-poll"
+	featureStageCommand                   FeatureID = "stage.run.command"
+	featureStageEnv                       FeatureID = "stage.run.env"
+	featureStageImage                     FeatureID = "stage.run.image"
+	featureStageNetworkNone               FeatureID = "stage.run.network.none"
+	featureStageWorkspaceRepo             FeatureID = "stage.run.workspace.repo"
+	featureStageWorkspaceScratch          FeatureID = "stage.run.workspace.scratch"
+	featureStageResultFile                FeatureID = "stage.resultFile"
+	featureGateName                       FeatureID = "gate.name"
+	featureGateBranches                   FeatureID = "gate.branches"
+	featureGateEscalationBranch           FeatureID = "gate.branch.escalate"
+	featureEvaluatorAutomated             FeatureID = "gate.evaluator.automated"
+	featureEvaluatorAutomatedCheck        FeatureID = "gate.evaluator.automated.check"
+	featureEvaluatorAutomatedParams       FeatureID = "gate.evaluator.automated.params"
+	featureEvaluatorAutomatedTimeout      FeatureID = "gate.evaluator.automated.timeoutSeconds"
+	featureEvaluatorAutomatedRetry        FeatureID = "gate.evaluator.automated.retry"
+	featureEvaluatorAutomatedRetryMax     FeatureID = "gate.evaluator.automated.retry.maxAttempts"
+	featureEvaluatorAutomatedRetryBackoff FeatureID = "gate.evaluator.automated.retry.backoff"
+	featureEvaluatorAutomatedPoll         FeatureID = "gate.evaluator.automated.pollIntervalSeconds"
+	featureEvaluatorStatusEquals          FeatureID = "gate.evaluator.automated.check.status-equals"
+	featureEvaluatorOutputEquals          FeatureID = "gate.evaluator.automated.check.output-equals"
+	featureEvaluatorOutputNotEquals       FeatureID = "gate.evaluator.automated.check.output-not-equals"
+	featureEvaluatorOutputNumericGTE      FeatureID = "gate.evaluator.automated.check.output-numeric-gte"
+	featureEvaluatorOutputNumericLTE      FeatureID = "gate.evaluator.automated.check.output-numeric-lte"
+	featureEvaluatorOutputNumericLT       FeatureID = "gate.evaluator.automated.check.output-numeric-lt"
+	featureEvaluatorOutputMatches         FeatureID = "gate.evaluator.automated.check.output-matches"
+	featureEvaluatorCIStatus              FeatureID = "gate.evaluator.automated.check.ci-status"
+	featureEvaluatorLandOutcome           FeatureID = "gate.evaluator.automated.check.land-outcome"
+	featureEvaluatorQueueOutcome          FeatureID = "gate.evaluator.automated.check.queue-outcome"
+	featureEvaluatorAgentic               FeatureID = "gate.evaluator.agentic"
+	featureEvaluatorAgenticGoober         FeatureID = "gate.evaluator.agentic.goober"
+	featureEvaluatorAgenticTimeout        FeatureID = "gate.evaluator.agentic.timeoutSeconds"
+	featureEvaluatorAgenticRetry          FeatureID = "gate.evaluator.agentic.retry"
+	featureEvaluatorAgenticRetryMax       FeatureID = "gate.evaluator.agentic.retry.maxAttempts"
+	featureEvaluatorAgenticRetryBackoff   FeatureID = "gate.evaluator.agentic.retry.backoff"
+	featureEvaluatorHuman                 FeatureID = "gate.evaluator.human"
+	featureEvaluatorHumanApprovers        FeatureID = "gate.evaluator.human.approvers"
+	featureEvaluatorHumanTimeout          FeatureID = "gate.evaluator.human.timeout"
+	featureEvaluatorHumanTimeoutRemind    FeatureID = "gate.evaluator.human.onTimeout.remind"
+	featureEvaluatorHumanTimeoutEscalate  FeatureID = "gate.evaluator.human.onTimeout.escalate"
+	featureEvaluatorHumanTimeoutReject    FeatureID = "gate.evaluator.human.onTimeout.reject"
 )
 
 // The registry predates the first tagged release. Keep this historical value
@@ -248,6 +263,11 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTaskRetry,
 		featureTaskRetryMaxAttempts,
 		featureTaskRetryBackoff,
+		featureTaskTimeoutSeconds,
+		featureTaskLimits,
+		featureTaskLimitMaxDurationSeconds,
+		featureTaskLimitMaxTokens,
+		featureTaskLimitMaxCostUSD,
 		featureTaskTimeoutFail,
 		featureTaskTimeoutSalvage,
 		featureTaskExpectedOutputs,
@@ -255,6 +275,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureStageShell,
 		featureStageCIPoll,
 		featureStageCommand,
+		featureStageEnv,
 		featureStageImage,
 		featureStageNetworkNone,
 		featureStageWorkspaceRepo,
@@ -266,6 +287,11 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureEvaluatorAutomated,
 		featureEvaluatorAutomatedCheck,
 		featureEvaluatorAutomatedParams,
+		featureEvaluatorAutomatedTimeout,
+		featureEvaluatorAutomatedRetry,
+		featureEvaluatorAutomatedRetryMax,
+		featureEvaluatorAutomatedRetryBackoff,
+		featureEvaluatorAutomatedPoll,
 		featureEvaluatorStatusEquals,
 		featureEvaluatorOutputEquals,
 		featureEvaluatorOutputNotEquals,
@@ -278,6 +304,10 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureEvaluatorQueueOutcome,
 		featureEvaluatorAgentic,
 		featureEvaluatorAgenticGoober,
+		featureEvaluatorAgenticTimeout,
+		featureEvaluatorAgenticRetry,
+		featureEvaluatorAgenticRetryMax,
+		featureEvaluatorAgenticRetryBackoff,
 		featureEvaluatorHuman,
 		featureEvaluatorHumanApprovers,
 		featureEvaluatorHumanTimeout,
@@ -313,6 +343,22 @@ func (s featureSet) ids() []FeatureID {
 		return ids[i] < ids[j]
 	})
 	return ids
+}
+
+type retryFeatureIDs struct {
+	policy      FeatureID
+	maxAttempts FeatureID
+	backoff     FeatureID
+}
+
+func addRetryFeatures(used featureSet, retry *apiv1.RetryPolicy, ids retryFeatureIDs) {
+	if retry == nil {
+		return
+	}
+	used.add(ids.policy, ids.maxAttempts)
+	if retry.BackoffSeconds != 0 {
+		used.add(ids.backoff)
+	}
 }
 
 // FeaturesForWorkflow returns registry metadata for the DSL features used by
@@ -448,10 +494,24 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 	if task.Capabilities != nil {
 		used.add(featureTaskCapabilities)
 	}
-	if task.Retry != nil {
-		used.add(featureTaskRetry, featureTaskRetryMaxAttempts)
-		if task.Retry.BackoffSeconds != 0 {
-			used.add(featureTaskRetryBackoff)
+	addRetryFeatures(used, task.Retry, retryFeatureIDs{
+		policy:      featureTaskRetry,
+		maxAttempts: featureTaskRetryMaxAttempts,
+		backoff:     featureTaskRetryBackoff,
+	})
+	if task.TimeoutSeconds != 0 {
+		used.add(featureTaskTimeoutSeconds)
+	}
+	if task.Limits != nil {
+		used.add(featureTaskLimits)
+		if task.Limits.MaxDurationSeconds != 0 {
+			used.add(featureTaskLimitMaxDurationSeconds)
+		}
+		if task.Limits.MaxTokens != 0 {
+			used.add(featureTaskLimitMaxTokens)
+		}
+		if task.Limits.MaxCostUSD != 0 {
+			used.add(featureTaskLimitMaxCostUSD)
 		}
 	}
 	switch task.OnTimeout {
@@ -477,6 +537,9 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 		return
 	}
 	used.add(featureStageCommand)
+	if task.Run.Env != nil {
+		used.add(featureStageEnv)
+	}
 	switch strings.TrimSpace(task.Inputs["kind"]) {
 	case "", "shell":
 		used.add(featureStageShell)
@@ -528,14 +591,36 @@ func addGateFeatures(used featureSet, gate apiv1.Gate) {
 		if gate.Automated.Params != nil {
 			used.add(featureEvaluatorAutomatedParams)
 		}
+		if gate.Automated.TimeoutSeconds != 0 {
+			used.add(featureEvaluatorAutomatedTimeout)
+		}
+		addRetryFeatures(used, gate.Automated.Retry, retryFeatureIDs{
+			policy:      featureEvaluatorAutomatedRetry,
+			maxAttempts: featureEvaluatorAutomatedRetryMax,
+			backoff:     featureEvaluatorAutomatedRetryBackoff,
+		})
+		if gate.Automated.PollIntervalSeconds != 0 {
+			used.add(featureEvaluatorAutomatedPoll)
+		}
 		if feature, ok := automatedCheckFeatures[gate.Automated.Check]; ok {
 			used.add(feature)
 		}
 	case apiv1.EvaluatorAgentic:
 		used.add(featureEvaluatorAgentic)
-		if gate.Agentic != nil && gate.Agentic.Goober != "" {
+		if gate.Agentic == nil {
+			return
+		}
+		if gate.Agentic.Goober != "" {
 			used.add(featureEvaluatorAgenticGoober)
 		}
+		if gate.Agentic.TimeoutSeconds != 0 {
+			used.add(featureEvaluatorAgenticTimeout)
+		}
+		addRetryFeatures(used, gate.Agentic.Retry, retryFeatureIDs{
+			policy:      featureEvaluatorAgenticRetry,
+			maxAttempts: featureEvaluatorAgenticRetryMax,
+			backoff:     featureEvaluatorAgenticRetryBackoff,
+		})
 	case apiv1.EvaluatorHuman:
 		used.add(featureEvaluatorHuman)
 		if gate.Human == nil {

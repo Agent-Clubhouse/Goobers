@@ -68,6 +68,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 				Name: "agent-fail", Type: apiv1.TaskAgentic, Goal: "agent",
 				Goober: "coder", Inputs: map[string]string{"x": "y"},
 				Capabilities: []string{"repo:push"}, Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
+				TimeoutSeconds: 30, Limits: &apiv1.Limits{MaxDurationSeconds: 30, MaxTokens: 1000, MaxCostUSD: 1},
 				OnTimeout: apiv1.TaskOnTimeoutFail, ExpectedOutputs: []string{"result"}, Next: "agent-salvage",
 			},
 			{
@@ -78,7 +79,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 				Name: "shell-repo", Type: apiv1.TaskDeterministic, Goal: "shell",
 				Run: &apiv1.DeterministicRun{
 					Command: []string{"true"}, Image: "example/image",
-					Network: apiv1.NetworkNone, Workspace: apiv1.WorkspaceRepo,
+					Env: map[string]string{"CI": "true"}, Network: apiv1.NetworkNone, Workspace: apiv1.WorkspaceRepo,
 				},
 				Inputs:     map[string]string{"kind": "shell", "resultFile": "result.json"},
 				InputsFrom: map[string]string{"input": "output"}, Next: "shell-scratch",
@@ -107,7 +108,10 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			automatedFeatureGate("queue-outcome", "agentic"),
 			{
 				Name: "agentic", Evaluator: apiv1.EvaluatorAgentic,
-				Agentic:  &apiv1.AgenticGate{Goober: "reviewer"},
+				Agentic: &apiv1.AgenticGate{
+					Goober: "reviewer", TimeoutSeconds: 30,
+					Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
+				},
 				Branches: map[string]string{"pass": "human-remind", "fail": TargetAbort, "needs-changes": TargetEscalate},
 			},
 			humanFeatureGate("human-remind", "remind", "human-escalate"),
@@ -132,9 +136,13 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		t.Fatalf("FeaturesForGoober: %v", err)
 	}
 	got := featureIDs(append(workflowFeatures, gooberFeatures...))
-	want := featureIDs(AllFeatures())
+	want := expectedCurrentDSLFeatureIDs()
 	if !slices.Equal(got, want) {
-		t.Fatalf("resolved feature surface differs from registry\nmissing: %v\nextra: %v", difference(want, got), difference(got, want))
+		t.Fatalf("resolved feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, got), difference(got, want))
+	}
+	registered := featureIDs(AllFeatures())
+	if !slices.Equal(registered, want) {
+		t.Fatalf("registered feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, registered), difference(registered, want))
 	}
 }
 
@@ -232,8 +240,11 @@ func TestCompileConsumesFeatureRegistry(t *testing.T) {
 func automatedFeatureGate(check, next string) apiv1.Gate {
 	return apiv1.Gate{
 		Name: check, Evaluator: apiv1.EvaluatorAutomated,
-		Automated: &apiv1.AutomatedGate{Check: check, Params: map[string]string{"key": "value"}},
-		Branches:  map[string]string{"pass": next, "fail": TargetAbort, BranchEscalate: TargetEscalate},
+		Automated: &apiv1.AutomatedGate{
+			Check: check, Params: map[string]string{"key": "value"}, TimeoutSeconds: 30,
+			Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3}, PollIntervalSeconds: 5,
+		},
+		Branches: map[string]string{"pass": next, "fail": TargetAbort, BranchEscalate: TargetEscalate},
 	}
 }
 
@@ -243,6 +254,107 @@ func humanFeatureGate(name, onTimeout, next string) apiv1.Gate {
 		Human:    &apiv1.HumanGate{Approvers: []string{"maintainers"}, TimeoutSeconds: 1, OnTimeout: onTimeout},
 		Branches: map[string]string{"pass": next, "fail": TargetAbort},
 	}
+}
+
+func expectedCurrentDSLFeatureIDs() []FeatureID {
+	ids := []FeatureID{
+		"workflow.spec.gaggle",
+		"workflow.spec.displayName",
+		"workflow.spec.triggers",
+		"workflow.spec.readiness",
+		"workflow.spec.readiness.maxConcurrentRuns",
+		"workflow.spec.readiness.maxRunsPerHour",
+		"workflow.spec.readiness.maxRunsPerDay",
+		"workflow.spec.readiness.maxChainDepth",
+		"workflow.spec.readiness.maxOpenPRs",
+		"workflow.spec.start",
+		"workflow.spec.tasks",
+		"workflow.spec.gates",
+		"workflow.terminal.complete",
+		"workflow.terminal.abort",
+		"workflow.terminal.escalate",
+		"goober.spec.gaggle",
+		"goober.spec.role",
+		"goober.spec.displayName",
+		"goober.spec.instructions",
+		"goober.spec.harness.copilot",
+		"goober.spec.model",
+		"goober.spec.harnessOptions",
+		"goober.spec.capabilities",
+		"goober.spec.skills",
+		"goober.spec.tools",
+		"goober.spec.scaleFactor",
+		"goober.spec.workflows",
+		"trigger.manual",
+		"trigger.backlog-item",
+		"trigger.backlog-item.selector",
+		"trigger.schedule",
+		"trigger.signal",
+		"task.name",
+		"task.deterministic",
+		"task.agentic",
+		"task.goal",
+		"task.goober",
+		"task.inputs",
+		"task.inputsFrom",
+		"task.capabilities",
+		"task.retry",
+		"task.retry.maxAttempts",
+		"task.retry.backoff",
+		"task.timeoutSeconds",
+		"task.limits",
+		"task.limits.maxDurationSeconds",
+		"task.limits.maxTokens",
+		"task.limits.maxCostUSD",
+		"task.onTimeout.fail",
+		"task.onTimeout.salvage",
+		"task.expectedOutputs",
+		"task.next",
+		"stage.shell",
+		"stage.ci-poll",
+		"stage.run.command",
+		"stage.run.env",
+		"stage.run.image",
+		"stage.run.network.none",
+		"stage.run.workspace.repo",
+		"stage.run.workspace.scratch",
+		"stage.resultFile",
+		"gate.name",
+		"gate.branches",
+		"gate.branch.escalate",
+		"gate.evaluator.automated",
+		"gate.evaluator.automated.check",
+		"gate.evaluator.automated.params",
+		"gate.evaluator.automated.timeoutSeconds",
+		"gate.evaluator.automated.retry",
+		"gate.evaluator.automated.retry.maxAttempts",
+		"gate.evaluator.automated.retry.backoff",
+		"gate.evaluator.automated.pollIntervalSeconds",
+		"gate.evaluator.automated.check.status-equals",
+		"gate.evaluator.automated.check.output-equals",
+		"gate.evaluator.automated.check.output-not-equals",
+		"gate.evaluator.automated.check.output-numeric-gte",
+		"gate.evaluator.automated.check.output-numeric-lte",
+		"gate.evaluator.automated.check.output-numeric-lt",
+		"gate.evaluator.automated.check.output-matches",
+		"gate.evaluator.automated.check.ci-status",
+		"gate.evaluator.automated.check.land-outcome",
+		"gate.evaluator.automated.check.queue-outcome",
+		"gate.evaluator.agentic",
+		"gate.evaluator.agentic.goober",
+		"gate.evaluator.agentic.timeoutSeconds",
+		"gate.evaluator.agentic.retry",
+		"gate.evaluator.agentic.retry.maxAttempts",
+		"gate.evaluator.agentic.retry.backoff",
+		"gate.evaluator.human",
+		"gate.evaluator.human.approvers",
+		"gate.evaluator.human.timeout",
+		"gate.evaluator.human.onTimeout.remind",
+		"gate.evaluator.human.onTimeout.escalate",
+		"gate.evaluator.human.onTimeout.reject",
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 func featureIDs(features []Feature) []FeatureID {
