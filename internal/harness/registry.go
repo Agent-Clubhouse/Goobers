@@ -3,6 +3,8 @@ package harness
 import (
 	"fmt"
 	"sort"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // Registry maps a harness name (a Goober's `spec.harness`, e.g. "copilot" or
@@ -58,6 +60,19 @@ func (r *Registry) Get(name string) (Adapter, error) {
 		return nil, ErrAdapterNotFound(name)
 	}
 	return a, nil
+}
+
+// ValidateConfig validates harness-scoped configuration through the adapter
+// registered under name.
+func (r *Registry) ValidateConfig(name, model string, options map[string]apiextensionsv1.JSON) error {
+	adapter, err := r.Get(name)
+	if err != nil {
+		return err
+	}
+	if err := ValidateConfig(adapter, model, options); err != nil {
+		return fmt.Errorf("harness: invalid %q configuration: %w", name, err)
+	}
+	return nil
 }
 
 // Names returns the registered adapter names, for diagnostics.

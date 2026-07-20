@@ -14,6 +14,8 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // writeRaw writes raw bytes to workspace/relPath, creating parent dirs —
@@ -144,6 +146,39 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 	}
 	if string(rec.spans[0].data) != "implementing... done" {
 		t.Fatalf("span data = %q", rec.spans[0].data)
+	}
+}
+
+func TestExecutorPassesHarnessConfig(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			if req.Model != "claude-sonnet-4.5" {
+				return fmt.Errorf("model = %q", req.Model)
+			}
+			if got := string(req.HarnessOptions["reasoningEffort"].Raw); got != `"high"` {
+				return fmt.Errorf("harness options = %#v", req.HarnessOptions)
+			}
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+		WithHarnessConfig("claude-sonnet-4.5", map[string]apiextensionsv1.JSON{
+			"reasoningEffort": {Raw: []byte(`"high"`)},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+	if _, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir())); err != nil {
+		t.Fatalf("Invoke: %v", err)
 	}
 }
 

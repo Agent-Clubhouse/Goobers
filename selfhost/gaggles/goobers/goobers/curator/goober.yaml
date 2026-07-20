@@ -8,6 +8,8 @@ spec:
   displayName: Curator
   instructions: instructions.md
   harness: copilot
+  model: auto
+  harnessOptions: {}
   # Issues-only, no repo access (issue #25 scope) — enforced by capability
   # non-injection (SEC-042/SEC-045): credentials for github:pr/repo:* are
   # simply never materialized into this goober's run environment. agent:model

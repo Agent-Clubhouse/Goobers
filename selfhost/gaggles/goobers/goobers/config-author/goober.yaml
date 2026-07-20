@@ -8,6 +8,8 @@ spec:
   displayName: Config author
   instructions: instructions.md
   harness: copilot
+  model: auto
+  harnessOptions: {}
   # Writes config only, and only inside this instance's configured config
   # root (`selfhost/` on this dogfood instance, not the repo root) — never
   # opens the PR itself (open-pr, a separate deterministic stage, does).

@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -15,6 +16,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // fakeProcessRunner is a scripted ProcessRunner double: it lets tests inspect
@@ -25,6 +28,19 @@ type fakeProcessRunner struct {
 	act     func(req ProcessRequest) error
 	result  ProcessResult
 	err     error
+}
+
+func testHarnessOptions(t *testing.T, values map[string]interface{}) map[string]apiextensionsv1.JSON {
+	t.Helper()
+	options := make(map[string]apiextensionsv1.JSON, len(values))
+	for name, value := range values {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("marshal harness option %q: %v", name, err)
+		}
+		options[name] = apiextensionsv1.JSON{Raw: raw}
+	}
+	return options
 }
 
 func (f *fakeProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
@@ -273,6 +289,74 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 	for _, arg := range runner.lastReq.Command {
 		if strings.Contains(arg, "push-token-value") {
 			t.Fatalf("token leaked into argv: %v", runner.lastReq.Command)
+		}
+	}
+}
+
+func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
+	adapter := &CopilotAdapter{}
+	for _, tc := range []struct {
+		name    string
+		model   string
+		options map[string]apiextensionsv1.JSON
+		wantErr string
+	}{
+		{name: "valid", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"})},
+		{name: "default context supported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"context": "default"})},
+		{name: "fable model supported", model: "claude-fable-5"},
+		{name: "fast opus model supported", model: "claude-opus-4.8-fast"},
+		{name: "opus 4.5 model supported", model: "claude-opus-4.5"},
+		{name: "kimi model supported", model: "kimi-k2.7-code"},
+		{name: "mai CLI model supported", model: "mai-code-1-flash"},
+		{name: "non-CLI model alias rejected", model: "mai-code-1-flash-picker", wantErr: "unknown model"},
+		{name: "unknown model", model: "not-a-model", wantErr: "unknown model"},
+		{name: "unknown option", options: testHarnessOptions(t, map[string]interface{}{"temperature": "0.2"}), wantErr: "unknown harness option"},
+		{name: "invalid option type", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": true}), wantErr: "must be a string"},
+		{name: "unknown context value", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": "extended"}), wantErr: "invalid context"},
+		{name: "long context unsupported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context"}), wantErr: "not supported"},
+		{name: "reasoning unsupported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"reasoningEffort": "high"}), wantErr: "not supported"},
+		{name: "reasoning level unsupported", model: "claude-sonnet-4.6", options: testHarnessOptions(t, map[string]interface{}{"reasoningEffort": "xhigh"}), wantErr: "not supported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := adapter.ValidateConfig(tc.model, tc.options)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateConfig: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ValidateConfig error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter = &CopilotAdapter{Command: []string{"copilot"}, ExtraArgs: []string{}, Runner: runner}
+	req := RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Model:          "claude-sonnet-5",
+		HarnessOptions: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"}),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+	}
+	if _, err := adapter.Run(context.Background(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	command := strings.Join(runner.lastReq.Command, " ")
+	for _, want := range []string{
+		"--model claude-sonnet-5",
+		"--context long_context",
+		"--reasoning-effort xhigh",
+	} {
+		if !strings.Contains(command, want) {
+			t.Errorf("command = %q, want %q", command, want)
 		}
 	}
 }

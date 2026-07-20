@@ -83,6 +83,30 @@ func TestExampleConfigPasses(t *testing.T) {
 	}
 }
 
+func TestGooberSchemaPreservesAdapterOwnedHarnessConfig(t *testing.T) {
+	v := newV(t)
+	goober := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Goober",
+		"metadata": {"name": "coder"},
+		"spec": {
+			"gaggle": "example",
+			"role": "coder",
+			"instructions": "instructions.md",
+			"harness": "copilot",
+			"model": "adapter-specific-model",
+			"harnessOptions": {
+				"enabled": true,
+				"budget": 3,
+				"nested": {"strategy": "adaptive"}
+			}
+		}
+	}`
+	if err := v.ValidateJSON("goober.schema.json", []byte(goober)); err != nil {
+		t.Fatalf("adapter-owned harness config failed schema validation: %v", err)
+	}
+}
+
 func TestWorkflowSchemaAcceptsExplicitManualOnlyTrigger(t *testing.T) {
 	v := newV(t)
 	workflow := `{

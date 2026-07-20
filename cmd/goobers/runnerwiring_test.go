@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -86,6 +87,51 @@ func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
 	}
 	if len(copilot.AuthCheckArgs) == 0 {
 		t.Fatal("registered Copilot adapter is missing its authentication preflight")
+	}
+}
+
+func TestCompiledMachinesRejectsInvalidHarnessConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		spec apiv1.GooberSpec
+		want string
+	}{
+		{
+			name: "unknown model",
+			spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot, Model: "unknown-model"},
+			want: `unknown model "unknown-model"`,
+		},
+		{
+			name: "unknown option",
+			spec: apiv1.GooberSpec{
+				Harness: apiv1.HarnessCopilot,
+				HarnessOptions: map[string]apiextensionsv1.JSON{
+					"temperature": {Raw: []byte(`"0.2"`)},
+				},
+			},
+			want: `unknown harness option "temperature"`,
+		},
+		{
+			name: "unsupported model option",
+			spec: apiv1.GooberSpec{
+				Harness: apiv1.HarnessCopilot,
+				Model:   "claude-sonnet-4.5",
+				HarnessOptions: map[string]apiextensionsv1.JSON{
+					"reasoningEffort": {Raw: []byte(`"high"`)},
+				},
+			},
+			want: `reasoningEffort value "high" is not supported by model "claude-sonnet-4.5"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := compiledMachines(
+				&instance.ConfigSet{},
+				map[string]apiv1.GooberSpec{"coder": tc.spec},
+			)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("compiledMachines error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

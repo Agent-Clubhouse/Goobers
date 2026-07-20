@@ -1,6 +1,9 @@
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // Harness identifies the agent harness a goober runs on. v1 supports the GitHub
 // Copilot agent harness only; a pluggable multi-harness abstraction is deferred
@@ -35,6 +38,15 @@ type GooberSpec struct {
 	// +kubebuilder:default=copilot
 	// +optional
 	Harness Harness `json:"harness,omitempty" yaml:"harness,omitempty"`
+	// Model selects the harness model. Values are scoped to Harness and
+	// validated by its adapter before a run starts.
+	// +optional
+	Model string `json:"model,omitempty" yaml:"model,omitempty"`
+	// HarnessOptions are harness-specific settings. The platform preserves the
+	// map as opaque JSON values and the selected harness adapter validates it.
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +optional
+	HarnessOptions map[string]apiextensionsv1.JSON `json:"harnessOptions,omitempty" yaml:"harnessOptions,omitempty"`
 	// Capabilities are the capability grants this goober holds (e.g.
 	// "github:issues:write", "repo:push", "telemetry:read"). A stage invoking
 	// this goober may only use capabilities in this set; undeclared use fails

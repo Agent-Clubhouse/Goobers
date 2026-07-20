@@ -8,6 +8,8 @@ spec:
   displayName: Nominator
   instructions: instructions.md
   harness: copilot
+  model: auto
+  harnessOptions: {}
   # Read-only repo + telemetry, issues-write — never repo:push/github:pr:write
   # (issue #26 scope: "writes issues only — never code"). Enforced by
   # capability non-injection (SEC-042/SEC-045): push/PR credentials are simply

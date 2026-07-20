@@ -20,6 +20,8 @@
         "displayName": { "type": "string" },
         "instructions": { "type": "string", "minLength": 1 },
         "harness": { "type": "string", "enum": ["copilot"] },
+        "model": { "type": "string" },
+        "harnessOptions": { "type": "object", "additionalProperties": true },
         "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "skills": { "type": "array", "items": { "type": "string" } },
         "tools": { "type": "array", "items": { "type": "string" } },

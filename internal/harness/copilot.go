@@ -2,13 +2,17 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/telemetry"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // defaultPromptFlag is the flag CopilotAdapter passes before the rendered
@@ -25,6 +29,47 @@ const defaultPromptFlag = "-p"
 // is the credential-scoping this adapter already does via EnvCapabilities.
 var defaultExtraArgs = []string{"--allow-all-tools", "--log-level", "error"}
 
+type copilotModelCapabilities struct {
+	longContext     bool
+	reasoningEffort map[string]struct{}
+}
+
+func copilotEfforts(values ...string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		out[value] = struct{}{}
+	}
+	return out
+}
+
+var copilotModels = map[string]copilotModelCapabilities{
+	"auto":                 {},
+	"claude-fable-5":       {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"claude-sonnet-5":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"claude-sonnet-4.6":    {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "max")},
+	"claude-sonnet-4.5":    {},
+	"claude-haiku-4.5":     {},
+	"claude-opus-4.8-fast": {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"claude-opus-4.8":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"claude-opus-4.7":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"claude-opus-4.6":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "max")},
+	"claude-opus-4.5":      {},
+	"gpt-5.6-sol":          {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"gpt-5.6-terra":        {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"gpt-5.6-luna":         {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"gpt-5.5":              {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
+	"gpt-5.4":              {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
+	"gpt-5.3-codex":        {reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
+	"gpt-5.4-mini":         {reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
+	"gpt-5-mini":           {reasoningEffort: copilotEfforts("none", "low", "medium", "high")},
+	"gemini-3.1-pro-preview": {longContext: true,
+		reasoningEffort: copilotEfforts("none", "low", "medium", "high")},
+	"gemini-3.5-flash": {longContext: true,
+		reasoningEffort: copilotEfforts("none", "minimal", "low", "medium", "high")},
+	"kimi-k2.7-code":   {},
+	"mai-code-1-flash": {},
+}
+
 // CopilotAdapter is the V0 harness adapter for the GitHub Copilot CLI
 // (GBO-040): it renders the invocation envelope + goober instructions into a
 // prompt, runs the CLI non-interactively in the stage workspace with only the
@@ -36,7 +81,7 @@ var defaultExtraArgs = []string{"--allow-all-tools", "--log-level", "error"}
 // The exact CLI invocation shape is configurable rather than hardcoded
 // (Command/PromptFlag/ExtraArgs) so it can be tuned without touching this
 // adapter's logic, but the defaults here are verified against a real,
-// installed, signed-in Copilot CLI (1.0.70) — not guessed: `copilot -p
+// installed, signed-in Copilot CLI (1.0.71) — not guessed: `copilot -p
 // "<text>" --allow-all-tools --log-level error` performs the task and exits,
 // confirmed by TestCopilotAdapterLiveSmoke.
 type CopilotAdapter struct {
@@ -74,6 +119,62 @@ type CopilotAdapter struct {
 
 // Name returns the adapter's registry name.
 func (c *CopilotAdapter) Name() string { return "copilot-cli" }
+
+// ValidateConfig rejects model and option values the Copilot CLI adapter does
+// not know how to express. This is called during config admission.
+func (c *CopilotAdapter) ValidateConfig(model string, options map[string]apiextensionsv1.JSON) error {
+	_, err := normalizeCopilotConfig(model, options)
+	return err
+}
+
+func normalizeCopilotConfig(model string, options map[string]apiextensionsv1.JSON) (map[string]string, error) {
+	var capabilities copilotModelCapabilities
+	if model != "" {
+		var ok bool
+		capabilities, ok = copilotModels[model]
+		if !ok {
+			return nil, fmt.Errorf("unknown model %q", model)
+		}
+	}
+	names := make([]string, 0, len(options))
+	for name := range options {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	normalized := make(map[string]string, len(options))
+	for _, name := range names {
+		if name != "context" && name != "reasoningEffort" {
+			return nil, fmt.Errorf("unknown harness option %q", name)
+		}
+		var value string
+		if err := json.Unmarshal(options[name].Raw, &value); err != nil {
+			return nil, fmt.Errorf("harness option %q must be a string: %w", name, err)
+		}
+		switch name {
+		case "context":
+			if value != "default" && value != "long_context" {
+				return nil, fmt.Errorf("invalid context value %q", value)
+			}
+			if value == "long_context" {
+				if model == "" {
+					return nil, fmt.Errorf("context value %q requires an explicit model", value)
+				}
+				if !capabilities.longContext {
+					return nil, fmt.Errorf("context value %q is not supported by model %q", value, model)
+				}
+			}
+		case "reasoningEffort":
+			if model == "" {
+				return nil, fmt.Errorf("reasoningEffort requires an explicit model")
+			}
+			if _, ok := capabilities.reasoningEffort[value]; !ok {
+				return nil, fmt.Errorf("reasoningEffort value %q is not supported by model %q", value, model)
+			}
+		}
+		normalized[name] = value
+	}
+	return normalized, nil
+}
 
 // Preflight verifies the Copilot CLI binary is on PATH and responds to a
 // version check, returning an actionable error otherwise (GBO-011; wired into
@@ -138,6 +239,10 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		// fail-closed misconfiguration error an unset workspace should be.
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: RunRequest.Workspace is empty")
 	}
+	harnessOptions, err := normalizeCopilotConfig(req.Model, req.HarnessOptions)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: invalid configuration: %w", err)
+	}
 
 	prompt := renderPrompt(req)
 	// Also write the rendered prompt to the workspace for human debugging —
@@ -160,6 +265,15 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		extra = defaultExtraArgs
 	}
 	argv := append(append([]string{}, c.Command...), flag, prompt)
+	if req.Model != "" {
+		argv = append(argv, "--model", req.Model)
+	}
+	if value, ok := harnessOptions["context"]; ok {
+		argv = append(argv, "--context", value)
+	}
+	if value, ok := harnessOptions["reasoningEffort"]; ok {
+		argv = append(argv, "--reasoning-effort", value)
+	}
 	argv = append(argv, extra...)
 
 	env, err := c.credentialEnv(ctx, req)

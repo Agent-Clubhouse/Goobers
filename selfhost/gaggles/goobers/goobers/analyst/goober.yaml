@@ -8,6 +8,8 @@ spec:
   displayName: Analyst
   instructions: instructions.md
   harness: copilot
+  model: auto
+  harnessOptions: {}
   # Diagnosis-only: reads telemetry + cross-run journal evidence, writes a
   # finding artifact. Never touches the repo's working tree or opens
   # anything. agent:model sources the Copilot model token without granting

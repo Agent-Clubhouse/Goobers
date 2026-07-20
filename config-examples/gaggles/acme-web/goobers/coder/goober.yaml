@@ -10,6 +10,8 @@ spec:
   # relative to this goober definition directory (CFG-003, GBO-002).
   instructions: instructions.md
   harness: copilot
+  model: auto
+  harnessOptions: {}
   skills:
     - implement
     - run-tests

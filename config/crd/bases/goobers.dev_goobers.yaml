@@ -44,6 +44,16 @@ spec:
               everything needed to materialize the goober as ephemeral pods when a workflow
               invokes it (GBO-001, GBO-002).
             properties:
+              capabilities:
+                description: |-
+                  Capabilities are the capability grants this goober holds (e.g.
+                  "github:issues:write", "repo:push", "telemetry:read"). A stage invoking
+                  this goober may only use capabilities in this set; undeclared use fails
+                  closed at compile time, and locally the credentials for an ungranted
+                  capability are simply never materialized (ARCHITECTURE.md §5, SEC-042).
+                items:
+                  type: string
+                type: array
               displayName:
                 description: DisplayName is the human-facing name shown on the portal
                   dashboard.
@@ -58,11 +68,24 @@ spec:
                 enum:
                 - copilot
                 type: string
+              harnessOptions:
+                additionalProperties:
+                  x-kubernetes-preserve-unknown-fields: true
+                description: |-
+                  HarnessOptions are harness-specific settings. The platform preserves the
+                  map as opaque JSON values and the selected harness adapter validates it.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               instructions:
                 description: |-
                   Instructions points at the markdown file defining this goober's
                   behavior/persona/scope, relative to the goober definition directory. The
                   file is markdown with optional YAML frontmatter (see config-as-code docs).
+                type: string
+              model:
+                description: |-
+                  Model selects the harness model. Values are scoped to Harness and
+                  validated by its adapter before a run starts.
                 type: string
               role:
                 description: Role is the goober's role, e.g. "coder", "perf-hunter",

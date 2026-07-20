@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -812,6 +813,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if err != nil {
 				return nil, fmt.Errorf("resolve goober %q harness: %w", gooberName, err)
 			}
+			if err := harness.ValidateConfig(adapter, spec.Model, spec.HarnessOptions); err != nil {
+				return nil, fmt.Errorf("validate goober %q harness config: %w", gooberName, err)
+			}
 			if newAgenticAdapter != nil {
 				adapter = newAgenticAdapter(gooberName, envCaps)
 			}
@@ -837,7 +841,16 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				return nil, fmt.Errorf("runner secret registrar does not implement journal.Scrubber")
 			}
 			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
-			return harness.NewExecutor(adapter, injector, recorder, artifacts, contextResolver, scrubber, instructionsByGoober[gooberName])
+			return harness.NewExecutor(
+				adapter,
+				injector,
+				recorder,
+				artifacts,
+				contextResolver,
+				scrubber,
+				instructionsByGoober[gooberName],
+				harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
+			)
 		},
 		Automated:              gate.NewAutomatedEvaluator(),
 		Worktrees:              wtMgr,
@@ -900,6 +913,21 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 	adapterRegistry, err := buildHarnessRegistry(nil)
 	if err != nil {
 		return nil, err
+	}
+	gooberNames := make([]string, 0, len(goobers))
+	for name := range goobers {
+		gooberNames = append(gooberNames, name)
+	}
+	sort.Strings(gooberNames)
+	for _, name := range gooberNames {
+		spec := goobers[name]
+		harnessName := spec.Harness
+		if harnessName == "" {
+			harnessName = apiv1.HarnessCopilot
+		}
+		if err := adapterRegistry.ValidateConfig(string(harnessName), spec.Model, spec.HarnessOptions); err != nil {
+			return nil, fmt.Errorf("validate goober %q harness config: %w", name, err)
+		}
 	}
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
 	for i := range set.Workflows {
