@@ -487,6 +487,9 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 			r.add(Error, doc.file, doc.kind, doc.name, "decode: %v", err)
 			return
 		}
+		for _, msg := range wf.CheckGooberFeatures(g.Spec) {
+			r.add(Error, doc.file, doc.kind, doc.name, "%s", msg)
+		}
 		ix.dupCheck(r, doc, "Goober", g.Name, func() bool { _, ok := ix.goobers[g.Name]; return ok })
 		ix.goobers[g.Name] = g
 		ix.gooberDir[g.Name] = doc.dir
@@ -562,6 +565,9 @@ func (ix *index) crossCheck(r *Report) {
 func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 	if _, ok := ix.gaggles[w.Spec.Gaggle]; !ok {
 		r.add(Error, "", "Workflow", w.Name, "belongs to gaggle %q which is not defined", w.Spec.Gaggle)
+	}
+	for _, msg := range wf.CheckWorkflowFeatures(wf.Definition{Name: w.Name, Version: 1, Spec: w.Spec}) {
+		r.add(Error, file, "Workflow", w.Name, "%s", msg)
 	}
 
 	states := map[string]bool{}

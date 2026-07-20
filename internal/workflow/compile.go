@@ -75,6 +75,19 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	m := newMachine(def)
 
 	var problems []string
+	problems = append(problems, CheckWorkflowFeatures(def)...)
+	if o.goobers != nil {
+		names := make([]string, 0, len(o.goobers))
+		for name := range o.goobers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			for _, problem := range CheckGooberFeatures(o.goobers[name]) {
+				problems = append(problems, fmt.Sprintf("goober %q: %s", name, problem))
+			}
+		}
+	}
 	problems = append(problems, structuralProblems(m)...)
 	// Reachability and loop analysis only make sense on a well-formed graph;
 	// when the structure is broken those problems are already reported and the
