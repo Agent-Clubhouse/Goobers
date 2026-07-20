@@ -113,28 +113,6 @@ func runRunsDU(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func measureRunsDiskUsage(runsDir string, runs []runSummary) (runsDiskUsage, error) {
-	usage := runsDiskUsage{Runs: make([]runDiskUsage, 0, len(runs))}
-	for _, run := range runs {
-		runUsage, err := measureRunDiskUsage(filepath.Join(runsDir, run.DirName), run.RunID)
-		if err != nil {
-			return runsDiskUsage{}, err
-		}
-
-		usage.Runs = append(usage.Runs, runUsage)
-		usage.JournalStateBytes += runUsage.JournalStateBytes
-		usage.ArtifactBytes += runUsage.ArtifactBytes
-		usage.TotalBytes += runUsage.TotalBytes
-	}
-	sort.Slice(usage.Runs, func(i, j int) bool {
-		if usage.Runs[i].TotalBytes == usage.Runs[j].TotalBytes {
-			return usage.Runs[i].RunID < usage.Runs[j].RunID
-		}
-		return usage.Runs[i].TotalBytes > usage.Runs[j].TotalBytes
-	})
-	return usage, nil
-}
-
 func measureLayoutRunsDiskUsage(layout instance.Layout, runs []runSummary) (runsDiskUsage, error) {
 	usage := runsDiskUsage{Runs: make([]runDiskUsage, 0, len(runs))}
 	for _, run := range runs {
@@ -211,10 +189,6 @@ type runSummary struct {
 // listing — run listings are best-effort over what's actually there.
 func listRuns(runsDir string) ([]runSummary, error) {
 	return listRunsWithPolicy(runsDir, false)
-}
-
-func listRunsStrict(runsDir string) ([]runSummary, error) {
-	return listRunsWithPolicy(runsDir, true)
 }
 
 func listLayoutRuns(layout instance.Layout, strict bool) ([]runSummary, error) {
