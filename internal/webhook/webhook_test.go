@@ -88,7 +88,8 @@ func TestNewHandlerValidatesDependencies(t *testing.T) {
 }
 
 func TestNewDispatchGateRejectsNilContext(t *testing.T) {
-	if _, err := NewDispatchGate(nil); err == nil {
+	var nilParent context.Context
+	if _, err := NewDispatchGate(nilParent); err == nil {
 		t.Fatal("NewDispatchGate unexpectedly succeeded")
 	}
 }
