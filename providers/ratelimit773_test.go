@@ -156,6 +156,64 @@ func TestADORateLimitExhaustionPreservesResponseError(t *testing.T) {
 	}
 }
 
+func TestADOCommitRetriesRateLimitedPathPreflight(t *testing.T) {
+	itemCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/items"):
+			itemCalls++
+			if itemCalls == 1 {
+				w.Header().Set("Retry-After", "2")
+				http.Error(w, "rate limited", http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/pushes"):
+			writeJSON(t, w, map[string]any{
+				"url":     "push-url",
+				"commits": []map[string]string{{"commitId": "commit-sha"}},
+			})
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	observer := &recordingObserver{}
+	provider := NewADOProvider("org", "project", "token",
+		func(p *ADOProvider) { p.BaseURL = server.URL },
+		WithADORateLimitObserver(observer),
+	)
+	var waits []time.Duration
+	provider.sleep = func(_ context.Context, delay time.Duration) error {
+		waits = append(waits, delay)
+		return nil
+	}
+
+	commit, err := provider.Commit(context.Background(), CommitRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Branch:     "work",
+		BaseSHA:    "base-sha",
+		Message:    "update docs",
+		Files:      []CommitFile{{Path: "README.md", Content: "updated"}},
+	})
+	if err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+	if commit.SHA != "commit-sha" {
+		t.Fatalf("Commit() SHA = %q, want commit-sha", commit.SHA)
+	}
+	if itemCalls != 2 {
+		t.Fatalf("path preflight calls = %d, want 2", itemCalls)
+	}
+	if len(waits) != 1 || waits[0] < 2*time.Second {
+		t.Fatalf("path preflight waits = %v, want one wait honoring Retry-After=2", waits)
+	}
+	if observer.count() != 1 || observer.events[0].Outcome != RateLimitOutcomeRetry {
+		t.Fatalf("path preflight rate-limit events = %#v", observer.events)
+	}
+}
+
 func TestGitHubSecondaryRateLimitWithoutHeadersUsesFallback(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

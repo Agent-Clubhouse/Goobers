@@ -23,6 +23,9 @@ import (
 	"github.com/goobers/goobers/internal/gooberruntime"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/version"
+	"github.com/goobers/goobers/providers"
 )
 
 const defaultTaskQueue = "goobers-engine"
@@ -40,6 +43,9 @@ type config struct {
 	taskQueue         string
 	workspaceRoot     string
 	harnessCommand    []string
+	exporter          telemetry.ExporterKind
+	otlpEndpoint      string
+	environment       string
 }
 
 func configFromEnv() config {
@@ -49,6 +55,9 @@ func configFromEnv() config {
 		taskQueue:         envDefault("GOOBERS_TASK_QUEUE", "GOOBERS_TEMPORAL_TASK_QUEUE", "TEMPORAL_TASK_QUEUE", defaultTaskQueue),
 		workspaceRoot:     envDefault("GOOBERS_WORKSPACE_ROOT", "GOOBER_WORKSPACE_ROOT", ""),
 		harnessCommand:    commandFromEnv("GOOBERS_COPILOT_HARNESS_COMMAND", "GOOBER_HARNESS_COMMAND"),
+		exporter:          telemetry.ExporterKind(envDefault("GOOBERS_OTEL_EXPORTER", string(telemetry.ExporterStdout))),
+		otlpEndpoint:      os.Getenv("GOOBERS_OTLP_ENDPOINT"),
+		environment:       os.Getenv("GOOBERS_ENV"),
 	}
 }
 
@@ -70,7 +79,13 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 		return err
 	}
 
-	rw, err := newWorkerRunner(cfg, newRuntime(cfg, secretReg, scrubber))
+	tel, err := telemetry.New(ctx, runtimeTelemetryConfig(cfg, scrubber))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tel.Shutdown(context.Background()) }()
+
+	rw, err := newWorkerRunner(cfg, newRuntime(cfg, secretReg, scrubber, tel))
 	if err != nil {
 		return err
 	}
@@ -84,20 +99,34 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 	return nil
 }
 
-func newRuntime(cfg config, secretReg *journal.RegistryScrubber, scrubber journal.Scrubber) *gooberruntime.Runtime {
+func newRuntime(cfg config, secretReg *journal.RegistryScrubber, scrubber journal.Scrubber, rateObserver providers.RateLimitObserver) *gooberruntime.Runtime {
 	return gooberruntime.New(gooberruntime.Options{
-		Preparer:       gooberRuntimePreparer(cfg, secretReg),
+		Preparer:       gooberRuntimePreparer(cfg, secretReg, rateObserver),
 		Harness:        gooberruntime.NewCopilotHarness(cfg.harnessCommand),
 		OutputScrubber: scrubber,
 	})
 }
 
-func gooberRuntimePreparer(cfg config, secretReg *journal.RegistryScrubber) gooberruntime.InProcessPreparer {
+func gooberRuntimePreparer(cfg config, secretReg *journal.RegistryScrubber, rateObserver providers.RateLimitObserver) gooberruntime.InProcessPreparer {
 	return gooberruntime.InProcessPreparer{
 		WorkspaceRoot: cfg.workspaceRoot,
 		Providers: gooberruntime.EnvProviderResolver{
-			SecretRegistrar: secretReg,
+			SecretRegistrar:   secretReg,
+			RateLimitObserver: rateObserver,
 		},
+	}
+}
+
+func runtimeTelemetryConfig(cfg config, scrubber journal.Scrubber) telemetry.Config {
+	return telemetry.Config{
+		ServiceName:    "goober-runtime",
+		ServiceVersion: version.Get().Version,
+		Environment:    cfg.environment,
+		Exporter:       cfg.exporter,
+		OTLPEndpoint:   cfg.otlpEndpoint,
+		OTLPInsecure:   cfg.otlpEndpoint != "",
+		Batch:          true,
+		Scrubber:       scrubber,
 	}
 }
 

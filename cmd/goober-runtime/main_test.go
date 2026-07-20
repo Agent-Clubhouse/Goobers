@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/gooberruntime"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 func TestConfigFromEnvDefaultsAndAliases(t *testing.T) {
@@ -137,7 +138,8 @@ func TestGooberRuntimePreparerRegistersADOCredential(t *testing.T) {
 	t.Setenv("GOOBERS_ADO_PROJECT", "ado-project")
 
 	registry, scrubber := journal.DefaultScrubber()
-	preparer := gooberRuntimePreparer(config{}, registry)
+	observer := telemetry.NewStageRateLimitObserver("")
+	preparer := gooberRuntimePreparer(config{}, registry, observer)
 	resolver, ok := preparer.Providers.(gooberruntime.EnvProviderResolver)
 	if !ok {
 		t.Fatalf("provider resolver = %T, want EnvProviderResolver", preparer.Providers)
@@ -147,6 +149,9 @@ func TestGooberRuntimePreparerRegistersADOCredential(t *testing.T) {
 	}
 	if resolver.SecretRegistrar != registry {
 		t.Fatal("provider resolver is not wired to the runtime output registry")
+	}
+	if resolver.RateLimitObserver != observer {
+		t.Fatal("provider resolver is not wired to runtime rate-limit telemetry")
 	}
 	encoded := base64.StdEncoding.EncodeToString([]byte("goobers:ado-token"))
 	if got := string(scrubber.Scrub([]byte(encoded))); got != journal.Redacted {

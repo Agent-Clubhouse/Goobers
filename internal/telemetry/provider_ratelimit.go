@@ -8,11 +8,38 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/goobers/goobers/providers"
 )
 
 // ProviderRateLimitEventName is the stable span event name for provider backoff.
 const ProviderRateLimitEventName = "provider.rate_limit"
+
+const providerRateLimitSpanName = "provider/rate_limit"
+
+// ObserveRateLimit implements providers.RateLimitObserver for in-process
+// providers. Decisions join the current span when one exists; background
+// provider polling gets a short standalone span so the event is still exported.
+func (c *Client) ObserveRateLimit(ctx context.Context, ev providers.RateLimitEvent) {
+	if c == nil || c.tracer == nil {
+		return
+	}
+	span := trace.SpanFromContext(ctx)
+	standalone := !span.IsRecording()
+	if standalone {
+		_, span = c.tracer.Start(ctx, providerRateLimitSpanName, trace.WithSpanKind(trace.SpanKindInternal))
+		defer span.End()
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("provider", string(ev.Provider)),
+		attribute.String("scope", ev.Scope),
+		attribute.Int64("delay_ms", ev.Delay.Milliseconds()),
+		attribute.String("outcome", string(ev.Outcome)),
+	}
+	span.AddEvent(ProviderRateLimitEventName, trace.WithAttributes(scrubAttributes(c.scrubber, attrs)...))
+}
 
 // StageRateLimitObserver writes provider rate-limit decisions to the current
 // stage's telemetry sidecar using only credential-safe dimensions.

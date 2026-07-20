@@ -615,16 +615,9 @@ func (p *ADOProvider) pathExists(ctx context.Context, repo RepositoryRef, branch
 	if err != nil {
 		return false, err
 	}
-	req, err := newJSONRequest(ctx, http.MethodGet, endpoint, nil)
+	resp, err := p.send(ctx, http.MethodGet, endpoint, nil, "")
 	if err != nil {
 		return false, err
-	}
-	if p.Token != "" {
-		req.Header.Set("Authorization", basicAuth(p.Username, p.Token))
-	}
-	resp, err := httpClientOrDefault(p.Client).Do(req)
-	if err != nil {
-		return false, fmt.Errorf("send request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {

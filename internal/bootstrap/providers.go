@@ -13,7 +13,7 @@ import (
 // Credentials are passed in (resolved from a Key Vault secret ref by the caller),
 // never read from config. Credentialed ADO providers require registrar so every
 // form used on the wire is scrubbed at output boundaries.
-func BacklogProviderFor(backlog apiv1.BacklogRef, token string, registrar providers.SecretRegistrar) (providers.BacklogProvider, providers.RepositoryRef, error) {
+func BacklogProviderFor(backlog apiv1.BacklogRef, token string, registrar providers.SecretRegistrar, rateObserver providers.RateLimitObserver) (providers.BacklogProvider, providers.RepositoryRef, error) {
 	switch backlog.Provider {
 	case apiv1.ProviderGitHub:
 		owner, name, ok := splitProject(backlog.Project)
@@ -21,7 +21,7 @@ func BacklogProviderFor(backlog apiv1.BacklogRef, token string, registrar provid
 			return nil, providers.RepositoryRef{}, fmt.Errorf("github backlog project %q must be owner/name", backlog.Project)
 		}
 		repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: owner, Name: name}
-		return providers.NewGitHubProvider(token), repo, nil
+		return providers.NewGitHubProvider(token, providers.WithRateLimitObserver(rateObserver)), repo, nil
 	case apiv1.ProviderADO:
 		org, project, ok := splitProject(backlog.Project)
 		if !ok {
@@ -31,7 +31,13 @@ func BacklogProviderFor(backlog apiv1.BacklogRef, token string, registrar provid
 			return nil, providers.RepositoryRef{}, fmt.Errorf("ado backlog provider requires a secret registrar")
 		}
 		repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: project}
-		return providers.NewADOProvider(org, project, token, providers.WithADOSecretRegistrar(registrar)), repo, nil
+		return providers.NewADOProvider(
+			org,
+			project,
+			token,
+			providers.WithADOSecretRegistrar(registrar),
+			providers.WithADORateLimitObserver(rateObserver),
+		), repo, nil
 	default:
 		return nil, providers.RepositoryRef{}, fmt.Errorf("unsupported backlog provider %q", backlog.Provider)
 	}
