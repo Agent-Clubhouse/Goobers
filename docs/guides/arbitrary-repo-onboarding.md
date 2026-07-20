@@ -52,7 +52,8 @@ workflows:
 | Contents | Read and write | Clone, push the run branch |
 | Issues | Read and write | Query, claim, label, and comment |
 | Pull requests | Read and write | Open the implementation PR and poll it |
-| Checks or commit statuses | Read | Observe PR CI |
+| Checks | Read-only | Observe PR CI check runs |
+| Commit statuses | Read-only | Observe PR CI commit statuses |
 
 Agentic stages need a separate personal fine-grained token with **Copilot
 Requests: Read-only**. It needs no repository access. For the full rationale,
@@ -393,9 +394,12 @@ runConditions:
 
 Duplicate the first gaggle directory as `config/gaggles/payments/`, then:
 
-1. Change the copied gaggle's directory, `metadata.name`, every
+1. Change the copied gaggle's directory, `metadata.name`,
+   `spec.isolation.namespace`, `spec.isolation.identityRef`, every
    `spec.gaggle`, project/backlog repository, display names, and instruction
-   text.
+   text. Give the isolation fields values unique to the second gaggle, such as
+   `namespace: gaggle-payments` and `identityRef: payments-identity`; do not
+   retain the first gaggle's values.
 2. Give both gaggles' goobers and workflows globally unique names. For
    example, rename the goober directories and `metadata.name` values to
    `widget-curator` / `payments-curator`, `widget-implementer` /
