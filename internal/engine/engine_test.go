@@ -115,17 +115,24 @@ func TestGatePassContinues(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
 	inv := successInvoker()
-	inv.review = func(_ context.Context, _ apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	var gotLimits apiv1.Limits
+	inv.review = func(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+		gotLimits = env.Limits
 		return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
 	}
 	env.RegisterActivity(&Activities{Goober: inv})
 
-	env.ExecuteWorkflow(Run, runInput("gated", gatedSpec()))
+	spec := gatedSpec()
+	spec.Gates[0].Agentic.TimeoutSeconds = 37
+	env.ExecuteWorkflow(Run, runInput("gated", spec))
 
 	var res RunResult
 	_ = env.GetWorkflowResult(&res)
 	if res.Status != StatusCompleted {
 		t.Errorf("status = %q, want completed", res.Status)
+	}
+	if gotLimits.MaxDurationSeconds != 37 {
+		t.Errorf("review limits = %+v, want 37s duration", gotLimits)
 	}
 }
 
@@ -164,15 +171,24 @@ func TestDeterministicTask(t *testing.T) {
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"}},
 		Start:    "lint",
 		Tasks: []apiv1.Task{
-			{Name: "lint", Type: apiv1.TaskDeterministic, Goal: "run lint", Run: &apiv1.DeterministicRun{Command: []string{"make", "lint"}}},
+			{
+				Name: "lint", Type: apiv1.TaskDeterministic, Goal: "run lint",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "lint"}, Env: map[string]string{"CI": "true"}},
+				TimeoutSeconds: 25,
+				Limits:         &apiv1.Limits{MaxTokens: 1000, MaxCostUSD: 1.25},
+			},
 		},
 	}
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
 	var gotCmd []string
+	var gotEnv map[string]string
+	var gotLimits apiv1.Limits
 	env.RegisterActivity(&Activities{Det: &fakeRunner{
-		run: func(_ context.Context, _ apiv1.InvocationEnvelope, r apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+		run: func(_ context.Context, invocation apiv1.InvocationEnvelope, r apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 			gotCmd = r.Command
+			gotEnv = r.Env
+			gotLimits = invocation.Limits
 			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 		},
 	}})
@@ -186,6 +202,56 @@ func TestDeterministicTask(t *testing.T) {
 	}
 	if len(gotCmd) != 2 || gotCmd[0] != "make" {
 		t.Errorf("runner got command %v, want [make lint]", gotCmd)
+	}
+	if gotEnv["CI"] != "true" {
+		t.Errorf("runner got env %v, want CI=true", gotEnv)
+	}
+	if gotLimits.MaxDurationSeconds != 25 || gotLimits.MaxTokens != 1000 || gotLimits.MaxCostUSD != 1.25 {
+		t.Errorf("runner got limits %+v, want declared task limits", gotLimits)
+	}
+}
+
+func TestCIPollTaskReceivesDownstreamGateCadence(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "ci-poll",
+		Tasks: []apiv1.Task{{
+			Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll CI",
+			Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}},
+			Inputs:       map[string]string{"kind": "ci-poll", "prNumber": "42"},
+			Capabilities: []string{"github:pr:write"},
+			Next:         "ci-gate",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "ci-gate",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "ci-status", PollIntervalSeconds: 9},
+			Branches: map[string]string{
+				"pass":    wf.TerminalComplete,
+				"fail":    wf.TargetAbort,
+				"timeout": wf.TargetEscalate,
+			},
+		}},
+	}
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	var gotInterval interface{}
+	env.RegisterActivity(&Activities{
+		Det: &fakeRunner{run: func(_ context.Context, invocation apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+			gotInterval = invocation.Inputs["pollIntervalSeconds"]
+			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+		}},
+		Auto: &fixtureAuto{ciStatus: "passing"},
+	})
+
+	env.ExecuteWorkflow(Run, runInput("ci-cadence", spec))
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	if gotInterval != "9s" {
+		t.Fatalf("ci-poll cadence input = %v, want 9s from downstream gate", gotInterval)
 	}
 }
 

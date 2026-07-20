@@ -57,6 +57,7 @@ const (
 	DefaultPollInterval    = 15 * time.Second
 	DefaultMaxPollInterval = 2 * time.Minute
 	DefaultPollTimeout     = 30 * time.Minute
+	ciPollResultMargin     = time.Second
 )
 
 // DefaultMaxConsecutivePollErrors bounds how many transient poll errors
@@ -119,7 +120,27 @@ func CIPollConfigFromEnvelope(env apiv1.InvocationEnvelope) (CIPollConfig, error
 	if cfg.Timeout, err = durationInput(env, InputPollTimeoutSec); err != nil {
 		return CIPollConfig{}, err
 	}
+	if env.Limits.MaxDurationSeconds > 0 {
+		stageBudget := time.Duration(env.Limits.MaxDurationSeconds) * time.Second
+		pollBudget := ciPollBudget(stageBudget)
+		if cfg.Timeout <= 0 || cfg.Timeout > pollBudget {
+			cfg.Timeout = pollBudget
+		}
+	}
 	return cfg, nil
+}
+
+// ciPollBudget leaves time for a typed timeout result to cross the stage
+// boundary before the runner's enclosing wall-clock limit expires.
+func ciPollBudget(stage time.Duration) time.Duration {
+	margin := ciPollResultMargin
+	if margin >= stage {
+		margin = stage / 10
+	}
+	if budget := stage - margin; budget > 0 {
+		return budget
+	}
+	return stage / 2
 }
 
 // durationInput parses key's declared value as a time.ParseDuration string
@@ -203,6 +224,10 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 	if timeout <= 0 {
 		timeout = DefaultPollTimeout
 	}
+	parentCtx := ctx
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	maxConsecutiveErrors := e.MaxConsecutivePollErrors
 	if maxConsecutiveErrors <= 0 {
 		maxConsecutiveErrors = DefaultMaxConsecutivePollErrors
@@ -227,6 +252,9 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 	for attempt := 0; ; attempt++ {
 		result, err := e.Poller.PollPullRequest(ctx, req)
 		if err != nil {
+			if ciPollDeadlineExceeded(parentCtx, ctx) {
+				return ciPollTimeoutOutcome(timeout), nil
+			}
 			if !providers.IsTransientError(err) {
 				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", &ciPollProviderError{cause: err})
 			}
@@ -238,6 +266,9 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 				return ciPollTimeoutOutcome(timeout), nil
 			}
 			if serr := sleep(ctx, backoff(interval, maxInterval, attempt)); serr != nil {
+				if ciPollDeadlineExceeded(parentCtx, ctx) {
+					return ciPollTimeoutOutcome(timeout), nil
+				}
 				return apiv1.ResultEnvelope{}, serr
 			}
 			continue
@@ -253,9 +284,16 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 			return ciPollTimeoutOutcome(timeout), nil
 		}
 		if err := sleep(ctx, backoff(interval, maxInterval, attempt)); err != nil {
+			if ciPollDeadlineExceeded(parentCtx, ctx) {
+				return ciPollTimeoutOutcome(timeout), nil
+			}
 			return apiv1.ResultEnvelope{}, err
 		}
 	}
+}
+
+func ciPollDeadlineExceeded(parentCtx, pollCtx context.Context) bool {
+	return errors.Is(pollCtx.Err(), context.DeadlineExceeded) && parentCtx.Err() == nil
 }
 
 // ciPollTimeoutOutcome builds the ResultEnvelope for a poll that exhausted

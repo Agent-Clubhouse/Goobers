@@ -67,6 +67,32 @@ spec:
                           description: Goober names the reviewer goober that returns
                             a Verdict.
                           type: string
+                        retry:
+                          description: |-
+                            Retry declares the evaluator retry bound. Runtime retry semantics are
+                            implemented separately from this declarative contract.
+                          properties:
+                            backoffSeconds:
+                              description: BackoffSeconds is the constant delay between
+                                attempts, in seconds.
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            maxAttempts:
+                              description: |-
+                                MaxAttempts is the total number of attempts including the first (>=1). 1
+                                means no retry.
+                              format: int32
+                              minimum: 1
+                              type: integer
+                          required:
+                          - maxAttempts
+                          type: object
+                        timeoutSeconds:
+                          description: TimeoutSeconds bounds one reviewer attempt.
+                          format: int32
+                          minimum: 1
+                          type: integer
                       required:
                       - goober
                       type: object
@@ -84,6 +110,39 @@ spec:
                           description: 'Params parameterize the check (e.g. {"threshold":
                             "80"}).'
                           type: object
+                        pollIntervalSeconds:
+                          description: |-
+                            PollIntervalSeconds declares remote CI polling cadence for checks that
+                            poll, such as ci-status (GT-020).
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        retry:
+                          description: |-
+                            Retry declares the evaluator retry bound. Runtime retry semantics are
+                            implemented separately from this declarative contract.
+                          properties:
+                            backoffSeconds:
+                              description: BackoffSeconds is the constant delay between
+                                attempts, in seconds.
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            maxAttempts:
+                              description: |-
+                                MaxAttempts is the total number of attempts including the first (>=1). 1
+                                means no retry.
+                              format: int32
+                              minimum: 1
+                              type: integer
+                          required:
+                          - maxAttempts
+                          type: object
+                        timeoutSeconds:
+                          description: TimeoutSeconds bounds one evaluator attempt.
+                          format: int32
+                          minimum: 1
+                          type: integer
                       required:
                       - check
                       type: object
@@ -187,6 +246,28 @@ spec:
                         Inputs are static, task-specific inputs merged into the invocation
                         envelope's inputs blob at runtime.
                       type: object
+                    limits:
+                      description: |-
+                        Limits bound this task's duration and agent usage. TimeoutSeconds, when
+                        set, is the authoritative duration and is copied into the invocation
+                        envelope's Limits.MaxDurationSeconds.
+                      properties:
+                        maxCostUSD:
+                          description: MaxCostUSD caps the run's spend.
+                          minimum: 0
+                          type: number
+                        maxDurationSeconds:
+                          description: MaxDurationSeconds caps wall-clock time for
+                            the stage.
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        maxTokens:
+                          description: MaxTokens caps model tokens the run may consume.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      type: object
                     name:
                       description: Name uniquely identifies this state within the
                         workflow.
@@ -198,10 +279,8 @@ spec:
                     onTimeout:
                       description: |-
                         OnTimeout selects what the runner does when this stage's agentic session
-                        hits its wall-clock timeout (the harness session timeout — currently a
-                        flat 30m, internal/harness.DefaultTimeout; not yet per-stage configurable,
-                        #151). Empty or "fail" (the default) discards the timed-out attempt and
-                        lets Task.Retry run, failing the run once the budget is exhausted —
+                        hits its wall-clock timeout. Empty or "fail" (the default) discards the
+                        timed-out attempt and lets Task.Retry run, failing the run once the budget is exhausted —
                         historically this discarded real, in-progress work whose only remaining
                         step was CI (#724). "salvage" instead checks the run branch for a viable
                         committed diff and, if present, completes the stage with that diff so the
@@ -222,6 +301,13 @@ spec:
                           items:
                             type: string
                           type: array
+                        env:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Env is the explicit environment supplied to the command in addition to
+                            the runner's minimal base environment and capability-scoped credentials.
+                          type: object
                         image:
                           description: Image optionally overrides the container image
                             the command runs in.
@@ -245,6 +331,13 @@ spec:
                       required:
                       - command
                       type: object
+                    timeoutSeconds:
+                      description: |-
+                        TimeoutSeconds bounds one attempt's wall-clock execution. Unset preserves
+                        the executor's default timeout.
+                      format: int32
+                      minimum: 1
+                      type: integer
                     type:
                       description: 'TaskType is the execution kind of a task: code-driven
                         or goober-executed.'

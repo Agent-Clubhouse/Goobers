@@ -1518,7 +1518,8 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 	if t.Run != nil && t.Run.Workspace != "" {
 		workspaceMode = t.Run.Workspace
 	}
-	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, upstream, workspaceMode, workspaceBranch)
+	taskInputs := workflow.TaskInvocationInputs(in.Machine, t)
+	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, taskInputs, t.Capabilities, workflow.TaskLimits(t), upstream, workspaceMode, workspaceBranch)
 	if err != nil {
 		prepErr := fmt.Errorf("prepare stage %q: %w", t.Name, err)
 		// #572: a transient network/remote failure provisioning the stage's
@@ -1828,6 +1829,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 			Goal:       "gate: " + g.Name,
 			RepoRef:    in.RepoRef,
 			Item:       in.Item,
+			Limits:     workflow.GateLimits(g),
 		}
 	} else {
 		var wt *worktree.Worktree
@@ -1841,7 +1843,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
 		var workspace *stageWorkspace
-		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, upstream, apiv1.WorkspaceRepo, workspaceBranch)
+		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, workflow.GateLimits(g), upstream, apiv1.WorkspaceRepo, workspaceBranch)
 		if err != nil {
 			err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
 			span.Fail(err)
@@ -2025,7 +2027,7 @@ func (w *stageWorkspace) Remove(ctx context.Context) error {
 
 // buildEnvelope provisions an isolated repository worktree or empty scratch
 // directory and builds one stage attempt's invocation envelope.
-func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, goal string, taskInputs map[string]string, capabilities []string, upstream []apiv1.ContextPointer, workspaceMode apiv1.WorkspaceMode, workspaceBranch string) (apiv1.InvocationEnvelope, *stageWorkspace, error) {
+func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, goal string, taskInputs map[string]string, capabilities []string, limits apiv1.Limits, upstream []apiv1.ContextPointer, workspaceMode apiv1.WorkspaceMode, workspaceBranch string) (apiv1.InvocationEnvelope, *stageWorkspace, error) {
 	workspace, err := r.createStageWorkspace(ctx, in, stageName, workspaceMode, workspaceBranch)
 	if err != nil {
 		return apiv1.InvocationEnvelope{}, nil, err
@@ -2046,6 +2048,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		Item:            in.Item,
 		ContextPointers: upstream,
 		Capabilities:    capabilities,
+		Limits:          limits,
 		Inputs:          inputs,
 	}
 	return env, workspace, nil

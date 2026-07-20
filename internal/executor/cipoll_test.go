@@ -192,6 +192,25 @@ func TestCIPollExecutor_TimesOutIsAFailure(t *testing.T) {
 	}
 }
 
+func TestCIPollExecutor_ContextDeadlineReturnsTypedTimeout(t *testing.T) {
+	poller := &fakePoller{results: []providers.CheckState{providers.CheckStatePending}}
+	exec, err := NewCIPollExecutor(poller)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := cfgFor("o", "r", "42")
+	cfg.Interval = time.Hour
+	cfg.Timeout = 10 * time.Millisecond
+	result, err := exec.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "poll_timeout" {
+		t.Fatalf("result = %+v, want typed poll_timeout failure", result)
+	}
+}
+
 // TestCIPollExecutor_TransientErrorsThenPass is the regression test for
 // #239 Part 1: a handful of transient provider errors (a 503, a network
 // blip) must not abort the poll — the loop backs off and keeps polling,
@@ -324,6 +343,7 @@ func TestCIPollConfigFromEnvelope_PollIntervalsParseAsDuration(t *testing.T) {
 			InputPollTimeoutSec:     "45m",
 		},
 	}
+
 	cfg, err := CIPollConfigFromEnvelope(env)
 	if err != nil {
 		t.Fatalf("CIPollConfigFromEnvelope: %v", err)
@@ -336,6 +356,42 @@ func TestCIPollConfigFromEnvelope_PollIntervalsParseAsDuration(t *testing.T) {
 	}
 	if cfg.Timeout != 45*time.Minute {
 		t.Fatalf("Timeout = %s, want 45m", cfg.Timeout)
+	}
+}
+
+func TestCIPollConfigFromEnvelope_DeclaredLimitCapsLegacyTimeoutInput(t *testing.T) {
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Limits:  apiv1.Limits{MaxDurationSeconds: 12},
+		Inputs: map[string]interface{}{
+			InputPRNumber:       "7",
+			InputPollTimeoutSec: "45m",
+		},
+	}
+	cfg, err := CIPollConfigFromEnvelope(env)
+	if err != nil {
+		t.Fatalf("CIPollConfigFromEnvelope: %v", err)
+	}
+	if cfg.Timeout != 11*time.Second {
+		t.Fatalf("Timeout = %s, want 11s poll budget within declared 12s stage limit", cfg.Timeout)
+	}
+}
+
+func TestCIPollConfigFromEnvelope_DeclaredLimitDoesNotLengthenLegacyTimeout(t *testing.T) {
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Limits:  apiv1.Limits{MaxDurationSeconds: 60},
+		Inputs: map[string]interface{}{
+			InputPRNumber:       "7",
+			InputPollTimeoutSec: "5s",
+		},
+	}
+	cfg, err := CIPollConfigFromEnvelope(env)
+	if err != nil {
+		t.Fatalf("CIPollConfigFromEnvelope: %v", err)
+	}
+	if cfg.Timeout != 5*time.Second {
+		t.Fatalf("Timeout = %s, want shorter legacy poll timeout 5s", cfg.Timeout)
 	}
 }
 

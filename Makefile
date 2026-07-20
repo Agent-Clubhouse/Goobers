@@ -54,7 +54,7 @@ generate:
 ## manifests: Regenerate CRD YAML manifests from the CRD types.
 .PHONY: manifests
 manifests:
-	$(CONTROLLER_GEN) crd paths=./api/v1alpha1/... output:crd:dir=config/crd/bases
+	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths=./api/v1alpha1/... output:crd:dir=config/crd/bases
 
 ## test-envtest: Run tests with envtest binaries provisioned (operator integration).
 .PHONY: test-envtest

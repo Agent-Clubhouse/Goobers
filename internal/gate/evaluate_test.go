@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -17,6 +18,16 @@ type fakeAutomated struct {
 	i        int
 	err      error
 	onCall   func()
+}
+
+type deadlineCapturingAutomated struct {
+	deadline time.Time
+	ok       bool
+}
+
+func (d *deadlineCapturingAutomated) Evaluate(ctx context.Context, _ apiv1.AutomatedGate, _ apiv1.InvocationEnvelope) (string, error) {
+	d.deadline, d.ok = ctx.Deadline()
+	return OutcomePass, nil
 }
 
 func (f *fakeAutomated) Evaluate(_ context.Context, _ apiv1.AutomatedGate, _ apiv1.InvocationEnvelope) (string, error) {
@@ -103,6 +114,7 @@ func TestEvaluatorJournalsStartBeforeDispatch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("OpenRead during evaluator dispatch: %v", err)
 		}
+
 		events, err := rd.Events()
 		if err != nil {
 			t.Fatalf("Events during evaluator dispatch: %v", err)
@@ -115,6 +127,7 @@ func TestEvaluatorJournalsStartBeforeDispatch(t *testing.T) {
 			t.Fatalf("gate.started repassAttempt = %d, want 1", got)
 		}
 	}
+
 	ev := &Evaluator{Automated: auto, Journal: run}
 	g := apiv1.Gate{
 		Name:      "autogate",
@@ -125,6 +138,28 @@ func TestEvaluatorJournalsStartBeforeDispatch(t *testing.T) {
 
 	if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false); err != nil {
 		t.Fatalf("Evaluate: %v", err)
+	}
+}
+
+func TestEvaluatorAppliesInvocationTimeout(t *testing.T) {
+	auto := &deadlineCapturingAutomated{}
+	ev := &Evaluator{Automated: auto}
+	g := apiv1.Gate{
+		Name:      "autogate",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals", TimeoutSeconds: 2},
+		Branches:  map[string]string{OutcomePass: wf.TerminalComplete, OutcomeFail: wf.TargetAbort},
+	}
+	start := time.Now()
+	env := apiv1.InvocationEnvelope{Limits: apiv1.Limits{MaxDurationSeconds: 2}}
+	if _, err := ev.Evaluate(context.Background(), g, env, "implement", apiv1.ResultEnvelope{}, "", false); err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if !auto.ok {
+		t.Fatal("automated evaluator context has no deadline")
+	}
+	if remaining := auto.deadline.Sub(start); remaining < time.Second || remaining > 3*time.Second {
+		t.Fatalf("evaluator deadline remaining = %s, want approximately 2s", remaining)
 	}
 }
 
