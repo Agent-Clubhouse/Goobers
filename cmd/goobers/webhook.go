@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
@@ -13,7 +14,10 @@ import (
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
-const webhookSecretRefName = "webhook.secret"
+const (
+	webhookSecretRefName = "webhook.secret"
+	webhookReadTimeout   = 10 * time.Second
+)
 
 var webhookListenAddress = func(c *instance.Config) string { return c.WebhookListenAddress() }
 
@@ -39,7 +43,7 @@ func webhookConfigurationWarning(set *instance.ConfigSet, cfg *instance.Config) 
 	return ""
 }
 
-func buildWebhookServer(ctx context.Context, setup *schedulerSetup, sched *localscheduler.Scheduler, errorLog *log.Logger) (*httpapi.Server, error) {
+func buildWebhookServer(ctx context.Context, setup *schedulerSetup, sched *localscheduler.Scheduler, ready func() bool, errorLog *log.Logger) (*httpapi.Server, error) {
 	if !hasWebhookTriggers(setup.Definitions) || !setup.Config.WebhookSecretConfigured() {
 		return nil, nil
 	}
@@ -56,11 +60,11 @@ func buildWebhookServer(ctx context.Context, setup *schedulerSetup, sched *local
 		return nil, fmt.Errorf("resolve webhook secret: %w", err)
 	}
 	setup.SharedRegistry.Register([]byte(secret))
-	handler, err := webhookhttp.NewHandler(ctx, []byte(secret), sched, setup.InstanceLog)
+	handler, err := webhookhttp.NewHandler(ctx, []byte(secret), sched, setup.InstanceLog, ready)
 	if err != nil {
 		return nil, fmt.Errorf("initialize webhook handler: %w", err)
 	}
-	server, err := httpapi.NewServer(webhookListenAddress(setup.Config), handler, errorLog)
+	server, err := httpapi.NewServer(webhookListenAddress(setup.Config), handler, errorLog, httpapi.WithReadTimeout(webhookReadTimeout))
 	if err != nil {
 		return nil, fmt.Errorf("initialize webhook listener: %w", err)
 	}

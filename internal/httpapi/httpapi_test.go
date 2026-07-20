@@ -646,6 +646,20 @@ func TestServerLifecycleAndStartupFailure(t *testing.T) {
 	}
 }
 
+func TestServerReadTimeoutOption(t *testing.T) {
+	const timeout = 3 * time.Second
+	server, err := NewServer("127.0.0.1:0", http.NotFoundHandler(), discardLogger(), WithReadTimeout(timeout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.http.ReadTimeout != timeout {
+		t.Fatalf("ReadTimeout = %s, want %s", server.http.ReadTimeout, timeout)
+	}
+	if _, err := NewServer("127.0.0.1:0", http.NotFoundHandler(), discardLogger(), WithReadTimeout(0)); err == nil {
+		t.Fatal("expected non-positive read timeout error")
+	}
+}
+
 func TestConstructorsRequireDependencies(t *testing.T) {
 	if _, err := NewHandler(nil, AllowAll, discardLogger()); err == nil {
 		t.Fatal("expected missing reader error")
@@ -672,5 +686,8 @@ func TestConstructorsRequireDependencies(t *testing.T) {
 	}
 	if _, err := NewServer("127.0.0.1:0", http.NotFoundHandler(), nil); err == nil {
 		t.Fatal("expected missing error logger error")
+	}
+	if _, err := NewServer("127.0.0.1:0", http.NotFoundHandler(), discardLogger(), nil); err == nil {
+		t.Fatal("expected missing server option error")
 	}
 }

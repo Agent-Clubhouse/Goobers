@@ -332,7 +332,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
-	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookLog)
+	webhookServer, err := buildWebhookServer(ctx, setup, sched, ready.Load, webhookLog)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

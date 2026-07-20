@@ -13,6 +13,20 @@ import (
 
 const readHeaderTimeout = 5 * time.Second
 
+// ServerOption configures optional HTTP server lifecycle bounds.
+type ServerOption func(*http.Server) error
+
+// WithReadTimeout bounds the time spent reading a complete request.
+func WithReadTimeout(timeout time.Duration) ServerOption {
+	return func(server *http.Server) error {
+		if timeout <= 0 {
+			return errors.New("http server read timeout must be positive")
+		}
+		server.ReadTimeout = timeout
+		return nil
+	}
+}
+
 // Server owns the HTTP listener and graceful lifecycle.
 type Server struct {
 	address string
@@ -28,7 +42,7 @@ type Server struct {
 }
 
 // NewServer constructs an unstarted server.
-func NewServer(address string, handler http.Handler, errorLog *log.Logger) (*Server, error) {
+func NewServer(address string, handler http.Handler, errorLog *log.Logger, opts ...ServerOption) (*Server, error) {
 	if address == "" {
 		return nil, errors.New("http API listen address is required")
 	}
@@ -38,15 +52,24 @@ func NewServer(address string, handler http.Handler, errorLog *log.Logger) (*Ser
 	if errorLog == nil {
 		return nil, errors.New("http API error logger is required")
 	}
+	httpServer := &http.Server{
+		Handler:           handler,
+		ErrorLog:          errorLog,
+		ReadHeaderTimeout: readHeaderTimeout,
+	}
+	for _, opt := range opts {
+		if opt == nil {
+			return nil, errors.New("http server option is required")
+		}
+		if err := opt(httpServer); err != nil {
+			return nil, fmt.Errorf("configure HTTP server: %w", err)
+		}
+	}
 	server := &Server{
 		address: address,
-		http: &http.Server{
-			Handler:           handler,
-			ErrorLog:          errorLog,
-			ReadHeaderTimeout: readHeaderTimeout,
-		},
-		done:   make(chan struct{}),
-		errors: make(chan error, 1),
+		http:    httpServer,
+		done:    make(chan struct{}),
+		errors:  make(chan error, 1),
 	}
 	if lifecycle, ok := handler.(interface{ shutdown() }); ok {
 		server.handlerShutdown = lifecycle.shutdown

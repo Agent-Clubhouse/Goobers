@@ -49,12 +49,8 @@ func SignalName(event string) string {
 // ValidSignature reports whether signature authenticates body with secret using
 // GitHub's X-Hub-Signature-256 format.
 func ValidSignature(secret, body []byte, signature string) bool {
-	algorithm, encoded, ok := strings.Cut(signature, "=")
-	if !ok || algorithm != "sha256" {
-		return false
-	}
-	provided, err := hex.DecodeString(encoded)
-	if err != nil || len(provided) != sha256.Size {
+	provided, ok := signatureDigest(signature)
+	if !ok {
 		return false
 	}
 	mac := hmac.New(sha256.New, secret)
@@ -70,6 +66,7 @@ type Handler struct {
 	secret   []byte
 	signaler Signaler
 	journal  InstanceJournal
+	ready    func() bool
 	now      func() time.Time
 
 	mu         sync.Mutex
@@ -78,7 +75,7 @@ type Handler struct {
 }
 
 // NewHandler constructs the authenticated GitHub webhook endpoint.
-func NewHandler(ctx context.Context, secret []byte, signaler Signaler, instanceJournal InstanceJournal) (*Handler, error) {
+func NewHandler(ctx context.Context, secret []byte, signaler Signaler, instanceJournal InstanceJournal, ready func() bool) (*Handler, error) {
 	if ctx == nil {
 		return nil, errors.New("webhook context is required")
 	}
@@ -91,12 +88,16 @@ func NewHandler(ctx context.Context, secret []byte, signaler Signaler, instanceJ
 	if instanceJournal == nil {
 		return nil, errors.New("webhook instance journal is required")
 	}
+	if ready == nil {
+		return nil, errors.New("webhook readiness check is required")
+	}
 	copiedSecret := append([]byte(nil), secret...)
 	return &Handler{
 		ctx:        ctx,
 		secret:     copiedSecret,
 		signaler:   signaler,
 		journal:    instanceJournal,
+		ready:      ready,
 		now:        time.Now,
 		deliveries: make(map[string]struct{}),
 	}, nil
@@ -113,9 +114,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !h.accepting() {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
 
+	if r.ContentLength > maxBodyBytes {
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	provided, ok := signatureDigest(r.Header.Get(signatureHeader))
+	if !ok {
+		h.rejectInvalidSignature(w)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	body, err := io.ReadAll(r.Body)
+	mac := hmac.New(sha256.New, h.secret)
+	_, err := io.Copy(mac, r.Body)
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
@@ -125,15 +140,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if !ValidSignature(h.secret, body, r.Header.Get(signatureHeader)) {
-		if err := h.journal.Append(journal.Event{
-			Type:  journal.EventError,
-			Error: &journal.ErrorDetail{Code: "webhook_signature_invalid", Message: "GitHub webhook signature verification failed"},
-		}); err != nil {
-			http.Error(w, "record webhook rejection", http.StatusInternalServerError)
-			return
-		}
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	if !hmac.Equal(provided, mac.Sum(nil)) {
+		h.rejectInvalidSignature(w)
 		return
 	}
 
@@ -147,6 +155,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("%s must be present and no longer than %d bytes", deliveryHeader, maxHeaderBytes), http.StatusBadRequest)
 		return
 	}
+	if !h.accepting() {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if h.seen(delivery) {
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -154,6 +166,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.signaler.Signal(h.ctx, SignalName(event), h.now())
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h *Handler) accepting() bool {
+	return h.ctx.Err() == nil && h.ready()
+}
+
+func (h *Handler) rejectInvalidSignature(w http.ResponseWriter) {
+	if err := h.journal.Append(journal.Event{
+		Type:  journal.EventError,
+		Error: &journal.ErrorDetail{Code: "webhook_signature_invalid", Message: "GitHub webhook signature verification failed"},
+	}); err != nil {
+		http.Error(w, "record webhook rejection", http.StatusInternalServerError)
+		return
+	}
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 
 func (h *Handler) seen(delivery string) bool {
@@ -169,4 +196,16 @@ func (h *Handler) seen(delivery string) bool {
 		h.order = h.order[1:]
 	}
 	return false
+}
+
+func signatureDigest(signature string) ([]byte, bool) {
+	algorithm, encoded, ok := strings.Cut(signature, "=")
+	if !ok || algorithm != "sha256" {
+		return nil, false
+	}
+	provided, err := hex.DecodeString(encoded)
+	if err != nil || len(provided) != sha256.Size {
+		return nil, false
+	}
+	return provided, true
 }

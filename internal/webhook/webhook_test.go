@@ -7,9 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,6 +41,17 @@ type recordingJournal struct {
 	err    error
 }
 
+type countingReader struct {
+	reads int
+}
+
+func (r *countingReader) Read([]byte) (int, error) {
+	r.reads++
+	return 0, io.EOF
+}
+
+func alwaysReady() bool { return true }
+
 func TestNewHandlerValidatesDependencies(t *testing.T) {
 	signaler := &recordingSignaler{}
 	instanceLog := &recordingJournal{}
@@ -48,15 +61,17 @@ func TestNewHandlerValidatesDependencies(t *testing.T) {
 		secret   []byte
 		signaler Signaler
 		journal  InstanceJournal
+		ready    func() bool
 	}{
-		{name: "context", secret: []byte("secret"), signaler: signaler, journal: instanceLog},
-		{name: "secret", ctx: context.Background(), signaler: signaler, journal: instanceLog},
-		{name: "signaler", ctx: context.Background(), secret: []byte("secret"), journal: instanceLog},
-		{name: "journal", ctx: context.Background(), secret: []byte("secret"), signaler: signaler},
+		{name: "context", secret: []byte("secret"), signaler: signaler, journal: instanceLog, ready: alwaysReady},
+		{name: "secret", ctx: context.Background(), signaler: signaler, journal: instanceLog, ready: alwaysReady},
+		{name: "signaler", ctx: context.Background(), secret: []byte("secret"), journal: instanceLog, ready: alwaysReady},
+		{name: "journal", ctx: context.Background(), secret: []byte("secret"), signaler: signaler, ready: alwaysReady},
+		{name: "readiness", ctx: context.Background(), secret: []byte("secret"), signaler: signaler, journal: instanceLog},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := NewHandler(tc.ctx, tc.secret, tc.signaler, tc.journal); err == nil {
+			if _, err := NewHandler(tc.ctx, tc.secret, tc.signaler, tc.journal, tc.ready); err == nil {
 				t.Fatal("NewHandler unexpectedly succeeded")
 			}
 		})
@@ -91,7 +106,7 @@ func TestValidSignatureGitHubVector(t *testing.T) {
 func TestHandlerRoutesGitHubEventNames(t *testing.T) {
 	const secret = "webhook-test-secret"
 	signaler := &recordingSignaler{}
-	handler, err := NewHandler(context.Background(), []byte(secret), signaler, &recordingJournal{})
+	handler, err := NewHandler(context.Background(), []byte(secret), signaler, &recordingJournal{}, alwaysReady)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +126,7 @@ func TestHandlerRoutesGitHubEventNames(t *testing.T) {
 func TestHandlerRejectsInvalidSignatureAndJournals(t *testing.T) {
 	signaler := &recordingSignaler{}
 	instanceLog := &recordingJournal{}
-	handler, err := NewHandler(context.Background(), []byte("right-secret"), signaler, instanceLog)
+	handler, err := NewHandler(context.Background(), []byte("right-secret"), signaler, instanceLog, alwaysReady)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +149,7 @@ func TestHandlerRejectsInvalidSignatureAndJournals(t *testing.T) {
 func TestHandlerSuppressesReplayedDelivery(t *testing.T) {
 	const secret = "webhook-test-secret"
 	signaler := &recordingSignaler{}
-	handler, err := NewHandler(context.Background(), []byte(secret), signaler, &recordingJournal{})
+	handler, err := NewHandler(context.Background(), []byte(secret), signaler, &recordingJournal{}, alwaysReady)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +167,7 @@ func TestHandlerSuppressesReplayedDelivery(t *testing.T) {
 
 func TestHandlerRejectsUnsupportedRequestShapes(t *testing.T) {
 	const secret = "webhook-test-secret"
-	handler, err := NewHandler(context.Background(), []byte(secret), &recordingSignaler{}, &recordingJournal{})
+	handler, err := NewHandler(context.Background(), []byte(secret), &recordingSignaler{}, &recordingJournal{}, alwaysReady)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,8 +206,60 @@ func TestHandlerRejectsUnsupportedRequestShapes(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsDeliveriesOutsideReadyLifecycle(t *testing.T) {
+	const secret = "webhook-test-secret"
+	var ready atomic.Bool
+	signaler := &recordingSignaler{}
+	ctx, cancel := context.WithCancel(context.Background())
+	handler, err := NewHandler(ctx, []byte(secret), signaler, &recordingJournal{}, ready.Load)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{}`)
+	if response := deliver(t, handler, secret, "issues", "startup", body); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("startup status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	ready.Store(true)
+	if response := deliver(t, handler, secret, "issues", "ready", body); response.Code != http.StatusAccepted {
+		t.Fatalf("ready status = %d, want %d", response.Code, http.StatusAccepted)
+	}
+	ready.Store(false)
+	if response := deliver(t, handler, secret, "issues", "shutdown", body); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("shutdown status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	ready.Store(true)
+	cancel()
+	if response := deliver(t, handler, secret, "issues", "canceled", body); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("canceled-context status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	if got := signaler.names(); len(got) != 1 {
+		t.Fatalf("signals = %v, want one ready-lifecycle delivery", got)
+	}
+}
+
+func TestHandlerRejectsOversizedContentLengthWithoutReading(t *testing.T) {
+	handler, err := NewHandler(context.Background(), []byte("secret"), &recordingSignaler{}, &recordingJournal{}, alwaysReady)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := &countingReader{}
+	request := httptest.NewRequest(http.MethodPost, Path, body)
+	request.ContentLength = maxBodyBytes + 1
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusRequestEntityTooLarge)
+	}
+	if body.reads != 0 {
+		t.Fatalf("oversized body read %d time(s), want 0", body.reads)
+	}
+}
+
 func TestHandlerFailsClosedWhenRejectionCannotBeJournaled(t *testing.T) {
-	handler, err := NewHandler(context.Background(), []byte("right-secret"), &recordingSignaler{}, &recordingJournal{err: errors.New("disk full")})
+	handler, err := NewHandler(context.Background(), []byte("right-secret"), &recordingSignaler{}, &recordingJournal{err: errors.New("disk full")}, alwaysReady)
 	if err != nil {
 		t.Fatal(err)
 	}
