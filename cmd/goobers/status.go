@@ -438,13 +438,18 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	activeRuns, err := localscheduler.ActiveRunCounts(l.RunsDir())
+	runDirs, err := l.RunDirs()
+	if err != nil {
+		pf(stderr, "error: enumerate run journals: %v\n", err)
+		return 2
+	}
+	scopedCounts, err := localscheduler.ActiveRunCountsByWorkflowDirs(runDirs)
 	if err != nil {
 		pf(stderr, "error: count live runs: %v\n", err)
 		return 2
 	}
 	liveRuns := 0
-	for _, count := range activeRuns {
+	for _, count := range scopedCounts {
 		liveRuns += count
 	}
 

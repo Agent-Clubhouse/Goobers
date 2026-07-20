@@ -21,7 +21,7 @@ func releaseClaimsForRun(l instance.Layout, log *journal.InstanceLog, runID stri
 			return fmt.Errorf("open claim ledger: %w", err)
 		}
 		for _, entry := range ledger.ForRunAll(runID) {
-			if err := ledger.Release(entry.ItemID, runID); err != nil {
+			if err := ledger.ReleaseEntry(entry, runID); err != nil {
 				return fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
 			}
 		}

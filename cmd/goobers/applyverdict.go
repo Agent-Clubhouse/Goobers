@@ -294,7 +294,12 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	l := layoutFor(root)
-	verdict, err := readLatestGateVerdict(l.RunsDir(), runID, *gateName)
+	runsDir, err := runsDirForRun(l, runID)
+	if err != nil {
+		pf(stderr, "error: locate run journal: %v\n", err)
+		return 1
+	}
+	verdict, err := readLatestGateVerdict(runsDir, runID, *gateName)
 	if err != nil {
 		pf(stderr, "error: read %s verdict from journal: %v\n", *gateName, err)
 		return 1

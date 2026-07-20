@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/providers"
 )
@@ -193,7 +195,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 					Name: "deploy",
 					Type: apiv1.TaskDeterministic,
 					Goal: "Deploy.",
-					Run:  &apiv1.DeterministicRun{Command: []string{command}},
+					Run:  &apiv1.DeterministicRun{Command: []string{"sh", "-c", "printf " + command}, Workspace: apiv1.WorkspaceScratch},
 				}},
 			},
 		}
@@ -224,6 +226,55 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	}
 	if len(refs) != 2 || refs[alpha].Name != "alpha" || refs[beta].Name != "beta" {
 		t.Fatalf("workflow repo refs = %+v", refs)
+	}
+
+	layout := instance.NewLayout(t.TempDir())
+	for _, gaggle := range []string{"alpha", "beta"} {
+		if err := layout.EnsureGaggleRuntime(gaggle); err != nil {
+			t.Fatal(err)
+		}
+	}
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	var wg sync.WaitGroup
+	definitions, err := buildSchedulerDefinitions(
+		layout,
+		&instance.Config{},
+		set,
+		nil,
+		&wg,
+		nil,
+		nil,
+		log,
+		journal.NewRegistryScrubber(),
+		nil,
+		localscheduler.NewProviderQuotaState(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definitions.WorktreesByGaggle["alpha"].Root == definitions.WorktreesByGaggle["beta"].Root {
+		t.Fatal("gaggles share a workcopy root")
+	}
+	for i, identity := range []localscheduler.WorkflowIdentity{alpha, beta} {
+		runID, err := telemetry.NewRunID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := definitions.Runners[identity.Gaggle].Start(context.Background(), runner.StartInput{
+			RunID:   runID,
+			Machine: definitions.Machines[identity],
+			Gaggle:  identity.Gaggle,
+		})
+		if err != nil || result.Phase != journal.PhaseCompleted {
+			t.Fatalf("start %s run %d: phase=%s err=%v", identity.Gaggle, i, result.Phase, err)
+		}
+		if _, err := os.Stat(filepath.Join(layout.ForGaggle(identity.Gaggle).RunsDir(), runID, "run.yaml")); err != nil {
+			t.Fatalf("%s run journal: %v", identity.Gaggle, err)
+		}
 	}
 }
 

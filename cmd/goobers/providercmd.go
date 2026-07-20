@@ -75,6 +75,7 @@ const (
 	claimLockOperationRunRelease           = "run-claims.release"
 	claimLockOperationCloseOutLookup       = "issue-close-out.lookup"
 	claimLockOperationCloseOutRelease      = "issue-close-out.release"
+	claimLockOperationMigration            = "claim-ledger.migrate"
 
 	claimLockSlowThreshold = 5 * time.Second
 )
@@ -189,6 +190,10 @@ func providerRunContext() (runID, workflow string, err error) {
 		return "", "", fmt.Errorf("GOOBERS_WORKFLOW is not set — this subcommand must run as a workflow stage")
 	}
 	return runID, workflow, nil
+}
+
+func providerGaggle() string {
+	return os.Getenv("GOOBERS_GAGGLE")
 }
 
 // Typed error codes a provider-chain subcommand's declared result file

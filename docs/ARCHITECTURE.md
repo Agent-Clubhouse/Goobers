@@ -108,7 +108,7 @@ enforceable rather than aspirational.
 Every run — local or cloud — produces:
 
 ```
-runs/<run-id>/
+gaggles/<gaggle>/runs/<run-id>/
   run.yaml          # pinned identity: workflow name+version, gaggle, trigger, inputs
   state.json        # current machine state; atomically replaced checkpoint
   events.jsonl      # append-only event journal (stage started/finished, gate verdicts,
@@ -133,7 +133,7 @@ Rules:
 - **Version pinning:** a run records the workflow definition version it started on and
   completes on it; definition changes affect only new runs (`WF-016`).
 - **Redaction at the boundary:** raw secrets MUST NOT land at rest anywhere under
-  `runs/` or `telemetry.db` (`SEC-041`). The journal package scrubs every event,
+  `gaggles/*/runs/` or `telemetry.db` (`SEC-041`). The journal package scrubs every event,
   span, snapshot, **and artifact** before write — registry-based (all
   resolver-issued credentials) plus pattern-based scanning for secret-shaped
   material — and scrubbing happens **before digesting**, so digests commit to the
@@ -199,11 +199,11 @@ Contract rules:
                     # telemetry settings
   config/           # the config repo/directory: gaggles, goobers, workflows, gates,
                     # instruction markdown  (the ONLY thing the Tutor may write to)
-  runs/             # run journals (§4)
+  gaggles/<gaggle>/
+    runs/           # run journals (§4)
+    workcopies/     # managed working copies and per-run worktrees
   scheduler/        # instance journal: scheduler decisions + claim ledger (§4)
   telemetry.db      # local rollup store (§8)
-  workcopies/       # managed working copies of target repos; per-run worktrees
-                    # branch off these
 ```
 
 `goobers init` scaffolds this; `goobers validate` checks it; `goobers up` runs the
@@ -266,7 +266,7 @@ implementation of a seam the local runner also implements. "This is where it goe
 | Seam | Tiers 1–2 (local) | Tier 3 (cloud drop-in) |
 |---|---|---|
 | Runner / durability | Local runner, file journal | **Temporal** (self-hosted, Postgres-backed), history → journal projection |
-| Journal & artifact store | Plain files under `runs/` + `scheduler/` | Cluster volume/blob store, **same on-disk layout** (the projection's write target) |
+| Journal & artifact store | Plain files under `gaggles/<gaggle>/runs/` + `scheduler/` | Cluster volume/blob store, **same on-disk layout** (the projection's write target) |
 | Stage execution | Local process in worktree | **AKS** ephemeral agent pods |
 | Scheduling / triggers | Embedded scheduler (cron eval in `goobers up`) | **Temporal Schedules** |
 | Config delivery | Local `config/` directory watched by daemon | **ArgoCD** sync → CRDs → **Goobers operator** |

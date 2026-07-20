@@ -45,6 +45,68 @@ func TestClaimAndRelease(t *testing.T) {
 	}
 }
 
+func TestClaimsAreIndependentAcrossGaggles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	alpha := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "159"}
+	beta := ClaimKey{Gaggle: "beta", Provider: "github", ExternalID: "159"}
+
+	if ok, _, err := ledger.ClaimScoped(alpha, "run-alpha", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("claim alpha: ok=%v err=%v", ok, err)
+	}
+	if ok, _, err := ledger.ClaimScoped(beta, "run-beta", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("claim beta: ok=%v err=%v", ok, err)
+	}
+	if ok, holder, err := ledger.ClaimScoped(alpha, "run-other", "implementation", time.Hour); err != nil || ok || holder != "run-alpha" {
+		t.Fatalf("duplicate alpha claim: ok=%v holder=%q err=%v", ok, holder, err)
+	}
+
+	reopened, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, ok := reopened.LookupScoped(alpha); !ok || entry.RunID != "run-alpha" {
+		t.Fatalf("alpha lookup = %+v, %v", entry, ok)
+	}
+	if entry, ok := reopened.LookupScoped(beta); !ok || entry.RunID != "run-beta" {
+		t.Fatalf("beta lookup = %+v, %v", entry, ok)
+	}
+	if err := reopened.ReleaseScoped(alpha, "run-alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reopened.LookupScoped(alpha); ok {
+		t.Fatal("alpha claim still held after release")
+	}
+	if entry, ok := reopened.LookupScoped(beta); !ok || entry.RunID != "run-beta" {
+		t.Fatalf("releasing alpha changed beta claim: %+v, %v", entry, ok)
+	}
+}
+
+func TestMigrateLegacyClaimNamespace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.Claim("159", "legacy-run", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("legacy claim: ok=%v err=%v", ok, err)
+	}
+	if err := ledger.MigrateLegacyNamespace("alpha", "github"); err != nil {
+		t.Fatal(err)
+	}
+	key := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "159"}
+	if entry, ok := ledger.LookupScoped(key); !ok || entry.RunID != "legacy-run" {
+		t.Fatalf("migrated claim = %+v, %v", entry, ok)
+	}
+	if _, ok := ledger.Lookup("159"); ok {
+		t.Fatal("legacy item-only key still exists")
+	}
+}
+
 // TestClaimRejectsNonPositiveLeaseDuration is issue #235 edge 1: a
 // non-positive leaseDuration computes ExpiresAt <= ClaimedAt, so the entry
 // is expired() at the moment it's written — the very check the exclusivity

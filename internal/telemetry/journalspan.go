@@ -33,8 +33,9 @@ const (
 // Spans are telemetry, not the conformance-normative journal (§3.3, §4) — this
 // exporter never touches events.jsonl/run.yaml/state.json.
 type JournalSpanExporter struct {
-	runsDir  string
-	scrubber journal.Scrubber
+	runsDir       string
+	perGaggleRoot string
+	scrubber      journal.Scrubber
 }
 
 // NewJournalSpanExporter creates an exporter that writes spans under runsDir
@@ -48,6 +49,14 @@ func NewJournalSpanExporter(runsDir string, scrubber journal.Scrubber) *JournalS
 		scrubber = journal.NewPatternScrubber()
 	}
 	return &JournalSpanExporter{runsDir: runsDir, scrubber: scrubber}
+}
+
+// NewPerGaggleJournalSpanExporter creates an exporter that routes each span to
+// <instance-root>/gaggles/<gaggle>/runs using its goobers.gaggle attribute.
+func NewPerGaggleJournalSpanExporter(instanceRoot string, scrubber journal.Scrubber) *JournalSpanExporter {
+	exporter := NewJournalSpanExporter("", scrubber)
+	exporter.perGaggleRoot = instanceRoot
+	return exporter
 }
 
 // ExportSpans writes each span as one JSON line under its run's spans/
@@ -72,10 +81,19 @@ func (e *JournalSpanExporter) ExportSpans(_ context.Context, spans []sdktrace.Re
 func (e *JournalSpanExporter) Shutdown(context.Context) error { return nil }
 
 func (e *JournalSpanExporter) writeGroup(traceID string, spans []sdktrace.ReadOnlySpan) error {
-	dir := filepath.Join(e.runsDir, traceID, spansDirName)
+	runsDir := e.runsDir
+	if e.perGaggleRoot != "" {
+		gaggle, err := spanGaggle(spans)
+		if err != nil {
+			return fmt.Errorf("telemetry: resolve gaggle for run %s: %w", traceID, err)
+		}
+		runsDir = filepath.Join(e.perGaggleRoot, "gaggles", gaggle, "runs")
+	}
+	dir := filepath.Join(runsDir, traceID, spansDirName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("telemetry: create spans dir for run %s: %w", traceID, err)
 	}
+
 	path := filepath.Join(dir, spanFileName)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -90,6 +108,29 @@ func (e *JournalSpanExporter) writeGroup(traceID string, spans []sdktrace.ReadOn
 		}
 	}
 	return f.Sync()
+}
+
+func spanGaggle(spans []sdktrace.ReadOnlySpan) (string, error) {
+	var gaggle string
+	for _, span := range spans {
+		for _, attr := range span.Attributes() {
+			if string(attr.Key) != AttrGaggle {
+				continue
+			}
+			value := attr.Value.AsString()
+			if value == "" || value == "." || value == ".." || filepath.Base(value) != value {
+				return "", fmt.Errorf("invalid gaggle attribute %q", value)
+			}
+			if gaggle != "" && gaggle != value {
+				return "", fmt.Errorf("trace contains spans from gaggles %q and %q", gaggle, value)
+			}
+			gaggle = value
+		}
+	}
+	if gaggle == "" {
+		return "", fmt.Errorf("missing %s attribute", AttrGaggle)
+	}
+	return gaggle, nil
 }
 
 // SpanRecord is the on-disk shape of one line in spans/spans.jsonl. Field names

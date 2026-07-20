@@ -118,7 +118,10 @@ func (r *configReloader) poll(now time.Time) error {
 			err:    fmt.Errorf("config directory invalid: %w", err),
 		})
 	}
-	definitions, _, err := buildSchedulerDefinitions(
+	if err := r.layout.MigrateLegacyRuntime(configuredGaggleNames(set)); err != nil {
+		return r.reject(digest, err)
+	}
+	definitions, err := buildSchedulerDefinitions(
 		r.layout,
 		r.setup.Config,
 		set,
@@ -128,7 +131,7 @@ func (r *configReloader) poll(now time.Time) error {
 		r.setup.RollupDB,
 		r.setup.InstanceLog,
 		r.setup.SharedRegistry,
-		r.setup.Worktrees,
+		r.setup.WorktreesByGaggle,
 		r.setup.ProviderQuota,
 	)
 	if err != nil {
@@ -147,6 +150,10 @@ func (r *configReloader) poll(now time.Time) error {
 	if err := r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest); err != nil {
 		return err
 	}
+	r.setup.Runner = definitions.Runner
+	r.setup.Runners = definitions.Runners
+	r.setup.Worktrees = definitions.Worktrees
+	r.setup.WorktreesByGaggle = definitions.WorktreesByGaggle
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
 		return fmt.Errorf("reload read service definitions: %w", err)

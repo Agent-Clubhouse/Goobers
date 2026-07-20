@@ -90,7 +90,11 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	runDir := filepath.Join(l.RunsDir(), *runID)
+	runDir, err := runDirFor(l, *runID)
+	if err != nil {
+		pf(stderr, "error: locate run %q: %v\n", *runID, err)
+		return 2
+	}
 
 	// Build the target Ref from the bytes currently at rest: a stored blob commits
 	// to its own digest, so hashing what is on disk yields the digest the journal

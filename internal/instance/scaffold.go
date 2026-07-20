@@ -28,7 +28,7 @@ type InitResult struct {
 }
 
 // Init scaffolds an instance root at root: instance.yaml, config/ (seeded
-// with a starter example), runs/, scheduler/, workcopies/, and a
+// with a starter example), gaggles/, scheduler/, and a
 // telemetry.db placeholder (INST-010, ARCHITECTURE.md §6).
 //
 // Init is idempotent and non-destructive: any piece that already exists is
@@ -74,7 +74,7 @@ func initWithConfig(root, configSource string, cfg *Config) (*InitResult, error)
 		res.Created = append(res.Created, ConfigDirName)
 	}
 
-	for _, name := range []string{RunsDirName, SchedulerDirName, WorkcopiesDirName} {
+	for _, name := range []string{GagglesDirName, SchedulerDirName} {
 		dir := filepath.Join(root, name)
 		if exists(dir) {
 			res.Skipped = append(res.Skipped, name)

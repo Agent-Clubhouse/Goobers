@@ -79,9 +79,8 @@ func TestInitDemoBannerGolden(t *testing.T) {
 	want := fmt.Sprintf(`initialized instance at %s
   created  instance.yaml
   created  config
-  created  runs
+  created  gaggles
   created  scheduler
-  created  workcopies
   created  telemetry.db
 
 Demo tour (run these from %s):

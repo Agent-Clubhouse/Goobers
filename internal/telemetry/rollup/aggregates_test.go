@@ -84,6 +84,7 @@ func TestStatsAggregatesByWorkflowAndStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
+
 	if len(all.Runs) != 2 {
 		t.Fatalf("len(Runs) = %d, want 2 (implement, nominate)", len(all.Runs))
 	}
@@ -133,6 +134,56 @@ func TestStatsAggregatesByWorkflowAndStage(t *testing.T) {
 	}
 	if len(windowed.Runs) != 1 || windowed.Runs[0].TotalRuns != 1 {
 		t.Fatalf("windowed runs = %#v", windowed.Runs)
+	}
+}
+
+func TestRebuildAllAndStatsFilterByGaggle(t *testing.T) {
+	tmp := t.TempDir()
+	alphaRuns := filepath.Join(tmp, "gaggles", "alpha", "runs")
+	betaRuns := filepath.Join(tmp, "gaggles", "beta", "runs")
+	alphaID := "1111111111111111cccccccccccccccc"
+	betaID := "2222222222222222cccccccccccccccc"
+	seedStatsRun(t, alphaRuns, alphaID, "implement", "completed", fixtureStart, false, "")
+	seedStatsRun(t, betaRuns, betaID, "implement", "failed", fixtureStart.Add(time.Hour), true, "harness.crash")
+	for _, fixture := range []struct {
+		runsDir string
+		runID   string
+		gaggle  string
+	}{
+		{alphaRuns, alphaID, "alpha"},
+		{betaRuns, betaID, "beta"},
+	} {
+		path := filepath.Join(fixture.runsDir, fixture.runID, fileRunYAML)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFile(t, path, strings.Replace(string(data), "gaggle: web", "gaggle: "+fixture.gaggle, 1))
+	}
+
+	dbPath := filepath.Join(tmp, "telemetry.db")
+	if err := RebuildAll(dbPath, []string{alphaRuns, betaRuns}, filepath.Join(tmp, "scheduler")); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	alpha, err := db.Stats(StatsRequest{Gaggle: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alpha.Runs) != 1 || alpha.Runs[0].TotalRuns != 1 || alpha.Runs[0].CompletedRuns != 1 {
+		t.Fatalf("alpha stats = %+v", alpha.Runs)
+	}
+	beta, err := db.Stats(StatsRequest{Gaggle: "beta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beta.Runs) != 1 || beta.Runs[0].TotalRuns != 1 || beta.Runs[0].FailedRuns != 1 {
+		t.Fatalf("beta stats = %+v", beta.Runs)
 	}
 }
 

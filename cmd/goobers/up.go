@@ -264,9 +264,11 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// Scratch workspaces have no git metadata to recover. Once this daemon
 	// holds the instance lock, every stage-* entry belongs to the prior process
 	// and can be removed before interrupted runs allocate fresh workspaces.
-	if err := runner.ReapScratchWorkspaces(filepath.Join(l.WorkcopiesDir(), "scratch")); err != nil {
-		pf(stderr, "error: reap scratch workspaces: %v\n", err)
-		return 1
+	for gaggle, manager := range setup.WorktreesByGaggle {
+		if err := runner.ReapScratchWorkspaces(filepath.Join(manager.Root, "scratch")); err != nil {
+			pf(stderr, "error: reap scratch workspaces for gaggle %s: %v\n", gaggle, err)
+			return 1
+		}
 	}
 
 	// Reap crash-orphaned worktrees before anything tries to resume into one
@@ -274,15 +276,17 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// worktree directory that makes worktree.Create refuse forever (fixed
 	// separately by adopt-and-reset, but Reap is still what actually reclaims
 	// the disk space and the git worktree-list registration).
-	if _, warnings, err := setup.Worktrees.Reap(ctx, worktree.ReapOptions{
-		StaleAfter:    reapStaleAfter,
-		IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
-	}); err != nil {
-		pf(stderr, "error: reap worktrees: %v\n", err)
-		return 1
-	} else {
-		for _, w := range warnings {
-			pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
+	for gaggle, manager := range setup.WorktreesByGaggle {
+		if _, warnings, err := manager.Reap(ctx, worktree.ReapOptions{
+			StaleAfter:    reapStaleAfter,
+			IsRunTerminal: worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
+		}); err != nil {
+			pf(stderr, "error: reap worktrees for gaggle %s: %v\n", gaggle, err)
+			return 1
+		} else {
+			for _, w := range warnings {
+				pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
+			}
 		}
 	}
 
@@ -301,7 +305,12 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
-	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
+	runDirs, err := l.RunDirs()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if err := sched.ReconcileAll(runDirs, time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -334,7 +343,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
+	resumed, warned, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, nil, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
