@@ -134,22 +134,26 @@ func TestValidateCheckRepos(t *testing.T) {
 
 func TestGitRepositoryReachableTimeoutKillsDescendantHoldingOutputPipe(t *testing.T) {
 	pidFile := installHangingGit(t, false)
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	result := make(chan error, 1)
+	go func() {
+		result <- gitRepositoryReachable(ctx, instance.RepoRef{
+			Provider: "github",
+			Owner:    "example",
+			Name:     "repository",
+		}, "test-token")
+	}()
+	waitForFile(t, pidFile)
+
 	start := time.Now()
-	err := gitRepositoryReachable(ctx, instance.RepoRef{
-		Provider: "github",
-		Owner:    "example",
-		Name:     "repository",
-	}, "test-token")
+	cancel()
+	err := <-result
 	elapsed := time.Since(start)
 
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("gitRepositoryReachable error = %v, want deadline exceeded", err)
-	}
-	if _, err := os.Stat(pidFile); err != nil {
-		t.Fatalf("git descendant did not start: %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("gitRepositoryReachable error = %v, want canceled", err)
 	}
 	if elapsed > 2*time.Second {
 		t.Fatalf("gitRepositoryReachable took %s; descendant inherited its output pipe after timeout", elapsed)
@@ -158,25 +162,45 @@ func TestGitRepositoryReachableTimeoutKillsDescendantHoldingOutputPipe(t *testin
 
 func TestGitRepositoryReachableTimeoutBoundedWhenEscapedDescendantHoldsOutputPipe(t *testing.T) {
 	pidFile := installHangingGit(t, true)
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	result := make(chan error, 1)
+	go func() {
+		result <- gitRepositoryReachable(ctx, instance.RepoRef{
+			Provider: "github",
+			Owner:    "example",
+			Name:     "repository",
+		}, "test-token")
+	}()
+	waitForFile(t, pidFile)
+
 	start := time.Now()
-	err := gitRepositoryReachable(ctx, instance.RepoRef{
-		Provider: "github",
-		Owner:    "example",
-		Name:     "repository",
-	}, "test-token")
+	cancel()
+	err := <-result
 	elapsed := time.Since(start)
 
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("gitRepositoryReachable error = %v, want deadline exceeded", err)
-	}
-	if _, err := os.Stat(pidFile); err != nil {
-		t.Fatalf("escaped git descendant did not start: %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("gitRepositoryReachable error = %v, want canceled", err)
 	}
 	if elapsed > repositoryKillWaitDelay+2*time.Second {
 		t.Fatalf("gitRepositoryReachable took %s; bounded wait did not engage after %s", elapsed, repositoryKillWaitDelay)
+	}
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("wait for %s: %v", path, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s was not created before timeout", path)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
