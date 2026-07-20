@@ -50,6 +50,11 @@ type blockedCycleNode struct {
 	ItemID     string
 }
 
+type blockedCycleEdge struct {
+	From blockedCycleNode
+	To   blockedCycleNode
+}
+
 type blockedCycleResult struct {
 	Affected  []blockedCycleNode
 	Paths     [][]string
@@ -143,25 +148,61 @@ func findBlockedCycle(recs map[string]blockedRecord, itemKey string) blockedCycl
 	affected = append(affected, others...)
 
 	var paths [][]string
-	morePaths := false
-	for _, blocker := range graph[item] {
-		if !component[blocker] {
-			continue
+	coveredNodes := map[blockedCycleNode]bool{item: true}
+	coveredEdges := make(map[blockedCycleEdge]bool)
+	appendPath := func(nodes []blockedCycleNode) {
+		path := make([]string, len(nodes))
+		for i, node := range nodes {
+			path[i] = node.ItemID
+			coveredNodes[node] = true
+			if i > 0 {
+				coveredEdges[blockedCycleEdge{From: nodes[i-1], To: node}] = true
+			}
 		}
-		if len(paths) == maxBlockedCyclePaths {
+		paths = append(paths, path)
+	}
+
+	if len(component) == 1 {
+		appendPath([]blockedCycleNode{item, item})
+	} else {
+		for _, member := range affected[1:] {
+			if coveredNodes[member] || len(paths) == maxBlockedCyclePaths {
+				continue
+			}
+			outbound, found := shortestBlockedPath(graph, item, member, component)
+			if !found {
+				continue
+			}
+			inbound, found := shortestBlockedPath(graph, member, item, component)
+			if !found {
+				continue
+			}
+			appendPath(append(outbound, inbound[1:]...))
+		}
+	}
+
+	morePaths := false
+	for node := range component {
+		if !coveredNodes[node] {
 			morePaths = true
 			break
 		}
-		returnPath, found := shortestBlockedPath(graph, blocker, item, component)
-		if !found {
-			continue
+	}
+	if !morePaths {
+		for from, edges := range graph {
+			if !component[from] {
+				continue
+			}
+			for _, to := range edges {
+				if component[to] && !coveredEdges[blockedCycleEdge{From: from, To: to}] {
+					morePaths = true
+					break
+				}
+			}
+			if morePaths {
+				break
+			}
 		}
-		path := make([]string, 1, len(returnPath)+1)
-		path[0] = item.ItemID
-		for _, node := range returnPath {
-			path = append(path, node.ItemID)
-		}
-		paths = append(paths, path)
 	}
 	return blockedCycleResult{Affected: affected, Paths: paths, MorePaths: morePaths}
 }
@@ -253,7 +294,10 @@ func sameBlockedRepository(a, b providers.RepositoryRef) bool {
 }
 
 func blockedRecordAppliesToRepository(rec blockedRecord, repo providers.RepositoryRef) bool {
-	return blockedRepositoryEmpty(rec.Repository) || sameBlockedRepository(rec.Repository, repo)
+	// Records written before repository scoping cannot be attributed safely.
+	// Keep them available to blocked list/clear, but quarantine them from
+	// provider-backed eligibility instead of applying them to every repository.
+	return !blockedRepositoryEmpty(rec.Repository) && sameBlockedRepository(rec.Repository, repo)
 }
 
 // blockedLookupID converts a recorded item id into the id a provider lookup
