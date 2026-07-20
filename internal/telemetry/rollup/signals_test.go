@@ -122,7 +122,6 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	if events[6].Type != "error" || events[6].ErrorCode != "claim_recovery_failed" || events[6].ErrorClass != "unknown" {
 		t.Fatalf("error row = %#v", events[6])
 	}
-
 	signatures, err := db.TopErrorSignatures(StatsRequest{}, 10)
 	if err != nil {
 		t.Fatalf("TopErrorSignatures: %v", err)
@@ -171,6 +170,29 @@ func TestIngestSchedulerLogToleratesDuplicateSequence(t *testing.T) {
 	}
 	if events[2].Seq != 3 || events[2].Type != "run.started" {
 		t.Fatalf("event after duplicate = %#v, want seq 3 run.started", events[2])
+	}
+}
+
+func TestIngestSchedulerLogCapturesWorkflowStarved(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEvents(t, schedulerDir, []string{
+		instanceEventLine(1, "workflow.starved", `"workflow":"nominate","reason":"consecutive instance pool skips: 3","skipCount":3`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+		t.Fatalf("IngestSchedulerLog: %v", err)
+	}
+
+	events, err := db.SchedulerEvents("nominate")
+	if err != nil {
+		t.Fatalf("SchedulerEvents: %v", err)
+	}
+	if len(events) != 1 || events[0].Type != "workflow.starved" || events[0].Workflow != "nominate" || events[0].Reason != "consecutive instance pool skips: 3" {
+		t.Fatalf("workflow.starved events = %#v", events)
 	}
 }
 

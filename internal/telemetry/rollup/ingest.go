@@ -338,6 +338,14 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 					return fmt.Errorf("rollup: insert scheduler_error seq %d: %w", ev.Seq, err)
 				}
 			}
+		case eventWorkflowStarved:
+			if _, err := tx.Exec(`
+				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(seq) DO NOTHING`,
+				ev.Seq, ev.Type, nullIfEmpty(ev.Workflow), nullIfEmpty(ev.RunID), nullIfEmpty(ev.Reason), nullIfEmpty(ev.Status), formatTime(ev.Time)); err != nil {
+				return fmt.Errorf("rollup: insert scheduler_event seq %d: %w", ev.Seq, err)
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {

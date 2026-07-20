@@ -73,6 +73,8 @@ const minPoll = time.Second
 // count that often.
 const backlogPollInterval = 30 * time.Second
 
+const starvationSkipThreshold = 3
+
 // newRunID is the run-id generator; swappable in tests for determinism.
 var newRunID = telemetry.NewRunID
 
@@ -94,6 +96,7 @@ type Scheduler struct {
 	now        func() time.Time
 	after      func(d time.Duration) <-chan time.Time
 	telemetry  SpanStarter
+	afterTick  func(context.Context)
 
 	mu         sync.Mutex
 	tickMu     sync.Mutex
@@ -112,6 +115,9 @@ type Scheduler struct {
 	// the worst case is one extra poll right after a restart, not a
 	// correctness bug, so it isn't worth the added Reconcile complexity.
 	backlogLastCheck map[WorkflowIdentity]time.Time
+	// consecutivePoolSkips ages workflows that were due and otherwise ready
+	// but could not enter the shared instance concurrency pool.
+	consecutivePoolSkips map[WorkflowIdentity]int
 }
 
 // Option configures a Scheduler.
@@ -131,6 +137,14 @@ func WithClock(now func() time.Time, after func(time.Duration) <-chan time.Time)
 func WithTelemetry(t SpanStarter) Option {
 	return func(s *Scheduler) {
 		s.telemetry = t
+	}
+}
+
+// WithAfterTick registers work that runs after each trigger evaluation, once
+// all scheduler decision spans opened by that tick have ended.
+func WithAfterTick(afterTick func(context.Context)) Option {
+	return func(s *Scheduler) {
+		s.afterTick = afterTick
 	}
 }
 
@@ -174,15 +188,16 @@ func WithProviderQuota(gate ProviderQuotaGate) Option {
 // a restart; a freshly-created instance can skip it (everything starts empty).
 func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Scheduler {
 	s := &Scheduler{
-		workflows:        make(map[WorkflowIdentity]WorkflowEntry, len(entries)),
-		conditions:       NewConditions(),
-		log:              log,
-		now:              time.Now,
-		after:            time.After,
-		triggers:         make(map[WorkflowIdentity]TriggerState),
-		reconciledRuns:   make(map[string]WorkflowIdentity),
-		backlogLastCheck: make(map[WorkflowIdentity]time.Time),
-		wake:             make(chan struct{}, 1),
+		workflows:            make(map[WorkflowIdentity]WorkflowEntry, len(entries)),
+		conditions:           NewConditions(),
+		log:                  log,
+		now:                  time.Now,
+		after:                time.After,
+		triggers:             make(map[WorkflowIdentity]TriggerState),
+		reconciledRuns:       make(map[string]WorkflowIdentity),
+		backlogLastCheck:     make(map[WorkflowIdentity]time.Time),
+		consecutivePoolSkips: make(map[WorkflowIdentity]int),
+		wake:                 make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -349,10 +364,31 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-// Tick evaluates every workflow's trigger at now and dispatches what's due and
-// admitted. Exported (not just used by Run's loop) so a manual `goobers run
-// <workflow>` trigger and tests can drive a single evaluation deterministically
-// without running the full timer loop.
+type tickCandidate struct {
+	entry              WorkflowEntry
+	schedule           TickResult
+	scheduleDue        bool
+	backlogRemaining   int
+	poolSkips          int
+	dispatchedThisTick bool
+	stopped            bool
+}
+
+func (c *tickCandidate) next() (TickResult, journal.TriggerKind, bool) {
+	if c.scheduleDue {
+		c.scheduleDue = false
+		return c.schedule, journal.TriggerSchedule, true
+	}
+	if c.backlogRemaining > 0 {
+		c.backlogRemaining--
+		return TickResult{Fire: true, LastEval: c.schedule.LastEval}, journal.TriggerItem, true
+	}
+	return TickResult{}, "", false
+}
+
+// Tick evaluates every workflow's trigger at now, orders due workflows by
+// starvation age, and dispatches one item per workflow per pass until demand or
+// capacity is exhausted.
 func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
@@ -364,8 +400,13 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	}
 	s.mu.Unlock()
 
+	candidates := make([]*tickCandidate, 0, len(entries))
 	for _, entry := range entries {
 		identity := entryIdentity(entry)
+		candidate := &tickCandidate{
+			entry:    entry,
+			schedule: TickResult{LastEval: now},
+		}
 		if len(entry.Schedules) > 0 {
 			// Read, evaluate, and write the trigger state under a single lock
 			// acquisition. Tick is exported so a manual trigger and concurrent
@@ -379,13 +420,59 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			s.triggers[identity] = TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: res.LastEval}
 			s.mu.Unlock()
 			if res.Fire {
-				s.dispatch(ctx, entry, now, res, journal.TriggerSchedule)
+				candidate.schedule = res
+				candidate.scheduleDue = true
 			}
 		}
 
 		if entry.BacklogCounter != nil {
-			s.tickBacklog(ctx, entry, now)
+			candidate.backlogRemaining = s.pollBacklog(ctx, entry, now)
 		}
+		if candidate.scheduleDue || candidate.backlogRemaining > 0 {
+			s.mu.Lock()
+			candidate.poolSkips = s.consecutivePoolSkips[identity]
+			s.mu.Unlock()
+			candidates = append(candidates, candidate)
+		}
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].poolSkips != candidates[j].poolSkips {
+			return candidates[i].poolSkips > candidates[j].poolSkips
+		}
+		if candidates[i].entry.Workflow != candidates[j].entry.Workflow {
+			return candidates[i].entry.Workflow < candidates[j].entry.Workflow
+		}
+		return candidates[i].entry.Gaggle < candidates[j].entry.Gaggle
+	})
+
+	for {
+		attempted := false
+		for _, candidate := range candidates {
+			if candidate.stopped {
+				continue
+			}
+			tick, kind, ok := candidate.next()
+			if !ok {
+				continue
+			}
+			attempted = true
+			_, admitted, reason := s.dispatch(ctx, candidate.entry, now, tick, kind)
+			if admitted {
+				candidate.dispatchedThisTick = true
+				continue
+			}
+			candidate.stopped = true
+			if reason == ReasonInstanceMaxParallel && !candidate.dispatchedThisTick {
+				s.recordPoolSkip(candidate.entry)
+			}
+		}
+		if !attempted {
+			break
+		}
+	}
+	if s.afterTick != nil {
+		s.afterTick(ctx)
 	}
 }
 
@@ -398,6 +485,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	workflows := make(map[WorkflowIdentity]WorkflowEntry, len(entries))
 	triggers := make(map[WorkflowIdentity]TriggerState, len(entries))
 	backlogLastCheck := make(map[WorkflowIdentity]time.Time, len(entries))
+	consecutivePoolSkips := make(map[WorkflowIdentity]int, len(entries))
 
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
@@ -417,6 +505,9 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		if checked, ok := s.backlogLastCheck[identity]; ok {
 			backlogLastCheck[identity] = checked
 		}
+		if skips := s.consecutivePoolSkips[identity]; skips > 0 {
+			consecutivePoolSkips[identity] = skips
+		}
 	}
 
 	if err := s.appendJournalEvent(journal.Event{
@@ -433,6 +524,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	s.workflows = workflows
 	s.triggers = triggers
 	s.backlogLastCheck = backlogLastCheck
+	s.consecutivePoolSkips = consecutivePoolSkips
 
 	select {
 	case s.wake <- struct{}{}:
@@ -441,16 +533,9 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	return nil
 }
 
-// tickBacklog polls entry's BacklogCounter at most once per
-// backlogPollInterval and fans out up to that many dispatches (#344) —
-// each still gated by the ordinary run-conditions Admit check inside
-// dispatch, so a workflow near its MaxConcurrentRuns/budget ceiling still
-// only starts as many runs as conditions actually allow, not the raw ready
-// count. dispatch's own Admit refusal is what bounds the fan-out to
-// min(ready, room) — this loop just stops as soon as one dispatch is
-// refused, since every subsequent attempt in the same evaluation would be
-// refused for the identical reason.
-func (s *Scheduler) tickBacklog(ctx context.Context, entry WorkflowEntry, now time.Time) {
+// pollBacklog returns the current demand for a backlog-triggered workflow when
+// its provider polling interval is due.
+func (s *Scheduler) pollBacklog(ctx context.Context, entry WorkflowEntry, now time.Time) int {
 	identity := entryIdentity(entry)
 	s.mu.Lock()
 	last := s.backlogLastCheck[identity]
@@ -460,7 +545,7 @@ func (s *Scheduler) tickBacklog(ctx context.Context, entry WorkflowEntry, now ti
 	}
 	s.mu.Unlock()
 	if !due {
-		return
+		return 0
 	}
 
 	ready, err := entry.BacklogCounter.EligibleCount(ctx)
@@ -471,14 +556,12 @@ func (s *Scheduler) tickBacklog(ctx context.Context, entry WorkflowEntry, now ti
 			Gaggle:   entry.Gaggle,
 			Error:    &journal.ErrorDetail{Code: "backlog_count_failed", Message: err.Error()},
 		})
-		return
+		return 0
 	}
-	for i := 0; i < ready; i++ {
-		_, admitted, _ := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerItem)
-		if !admitted {
-			break
-		}
+	if ready < 0 {
+		return 0
 	}
+	return ready
 }
 
 // Trigger manually fires workflow now, bypassing its cron schedule but still
@@ -659,6 +742,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		span.Complete(telemetry.OutcomeBlocked, false)
 		return "", false, reason
 	}
+	s.resetPoolSkips(identity)
 
 	s.journalEvent(journal.Event{
 		Type:     journal.EventRunStarted,
@@ -712,6 +796,30 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		s.journalEvent(ev)
 	}()
 	return runID, true, ""
+}
+
+func (s *Scheduler) resetPoolSkips(identity WorkflowIdentity) {
+	s.mu.Lock()
+	delete(s.consecutivePoolSkips, identity)
+	s.mu.Unlock()
+}
+
+func (s *Scheduler) recordPoolSkip(entry WorkflowEntry) {
+	identity := entryIdentity(entry)
+	s.mu.Lock()
+	s.consecutivePoolSkips[identity]++
+	skips := s.consecutivePoolSkips[identity]
+	s.mu.Unlock()
+
+	if skips == starvationSkipThreshold {
+		s.journalEvent(journal.Event{
+			Type:      journal.EventWorkflowStarved,
+			Workflow:  entry.Workflow,
+			Gaggle:    entry.Gaggle,
+			Reason:    fmt.Sprintf("consecutive instance pool skips: %d", skips),
+			SkipCount: skips,
+		})
+	}
 }
 
 // startSpan opens a scheduler decision span for entry's dispatch, if
@@ -779,7 +887,7 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 			consider(sched.Next(ts.LastEval))
 		}
 		if entry.BacklogCounter != nil {
-			// tickBacklog's own due check, mirrored here so the Run loop
+			// pollBacklog's own due check, mirrored here so the Run loop
 			// wakes in time to poll it (#344) — otherwise a mixed instance
 			// with both schedule- and backlog-item-triggered workflows
 			// could starve the latter's poll cadence down to whatever the

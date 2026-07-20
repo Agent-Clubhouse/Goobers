@@ -66,6 +66,8 @@ const (
 	eventClaimReleased = "claim.released"
 )
 
+const eventWorkflowStarved = "workflow.starved"
+
 // journalRef mirrors internal/journal.Ref.
 type journalRef struct {
 	Path      string `json:"path"`

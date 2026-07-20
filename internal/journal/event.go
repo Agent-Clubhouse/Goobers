@@ -56,6 +56,9 @@ const (
 	// EventTickSkipped records a tick that did not start a run, with Reason set
 	// (e.g. "conditions: max-parallel", "conditions: budget").
 	EventTickSkipped EventType = "tick.skipped"
+	// EventWorkflowStarved records a workflow crossing the scheduler's
+	// consecutive shared-pool skip threshold.
+	EventWorkflowStarved EventType = "workflow.starved"
 	// EventClaimAcquired records the claim ledger granting a lease.
 	EventClaimAcquired EventType = "claim.acquired"
 	// EventClaimReleased records a lease release (run finished, expired, or
@@ -169,9 +172,12 @@ type Event struct {
 	Gaggle string `json:"gaggle,omitempty"`
 	// RunID is the run a scheduler decision or claim transition pertains to.
 	RunID string `json:"runId,omitempty"`
-	// Reason is a short, stable explanation for a tick.skipped decision (e.g.
-	// "conditions: max-parallel", "conditions: budget").
+	// Reason is a short, stable explanation for a tick.skipped or
+	// workflow.starved decision.
 	Reason string `json:"reason,omitempty"`
+	// SkipCount is the consecutive shared-pool refusal count for a
+	// workflow.starved event.
+	SkipCount int `json:"skipCount,omitempty"`
 }
 
 // ExternalRef identifies an external reference the run touched — an issue or PR

@@ -261,6 +261,7 @@ func TestInstanceLogEmittedBytesMatchSchema(t *testing.T) {
 		{Type: EventTriggerFired, Workflow: "nominate", Reason: "catch-up (missed 3)"},
 		{Type: EventTickSkipped, Workflow: "implement", Reason: "conditions: max-parallel"},
 		{Type: EventTickSkipped, Workflow: "implement", Reason: "conditions: budget"},
+		{Type: EventWorkflowStarved, Workflow: "implement", SkipCount: 3},
 		{Type: EventRunStarted, Workflow: "nominate", RunID: testIdentity().RunID},
 		{Type: EventRunFinished, Workflow: "nominate", RunID: testIdentity().RunID, Status: string(PhaseCompleted)},
 		{Type: EventClaimAcquired, Name: "issue-8", RunID: testIdentity().RunID, Workflow: "curate"},
