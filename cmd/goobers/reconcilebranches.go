@@ -145,7 +145,11 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = log.Close() }()
 
-	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "branch"}))
+	provider := newGitHubProvider(
+		token,
+		providers.WithMutationRecorder(sidecarMutationRecorder{kind: "branch"}),
+		providers.WithMaxRateLimitRetries(0),
+	)
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	report, err := reconcileRemoteBranches(ctx, provider, log, branchReconcileOptions{
@@ -279,16 +283,6 @@ func reconcileRemoteBranches(ctx context.Context, provider providers.BranchRecon
 			continue
 		}
 
-		report.Candidates++
-		if !opts.Delete {
-			report.Preserved++
-			event.Outcome, event.Reason = "candidate", "dry-run"
-			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
-				return report, err
-			}
-			continue
-		}
-
 		if branch.SHA == "" {
 			report.Preserved++
 			report.Failures++
@@ -355,6 +349,16 @@ func reconcileRemoteBranches(ctx context.Context, provider providers.BranchRecon
 		if opts.Now().Sub(*current.LastActivityAt) < opts.MinimumAge {
 			report.Preserved++
 			event.Outcome, event.Reason = "preserved", "branch-activity-recent"
+			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
+				return report, err
+			}
+			continue
+		}
+
+		report.Candidates++
+		if !opts.Delete {
+			report.Preserved++
+			event.Outcome, event.Reason = "candidate", "dry-run"
 			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
 				return report, err
 			}
