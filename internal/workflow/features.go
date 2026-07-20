@@ -455,8 +455,12 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 		}
 	}
 	switch task.OnTimeout {
-	case "", apiv1.TaskOnTimeoutFail:
+	case apiv1.TaskOnTimeoutFail:
 		used.add(featureTaskTimeoutFail)
+	case "":
+		if task.Type == apiv1.TaskAgentic {
+			used.add(featureTaskTimeoutFail)
+		}
 	case apiv1.TaskOnTimeoutSalvage:
 		used.add(featureTaskTimeoutSalvage)
 	}

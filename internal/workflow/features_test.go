@@ -173,6 +173,25 @@ func TestFeaturesForWorkflowResolvesImplicitDefaults(t *testing.T) {
 	}
 }
 
+func TestFeaturesForWorkflowOmitsAgenticTimeoutDefaultForDeterministicTasks(t *testing.T) {
+	def := Definition{Name: "deterministic", Version: 1, Spec: apiv1.WorkflowSpec{
+		Gaggle: "example",
+		Start:  "shell",
+		Tasks: []apiv1.Task{{
+			Name: "shell", Type: apiv1.TaskDeterministic, Goal: "shell",
+			Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+		}},
+	}}
+
+	features, err := FeaturesForWorkflow(def)
+	if err != nil {
+		t.Fatalf("FeaturesForWorkflow: %v", err)
+	}
+	if slices.Contains(featureIDs(features), featureTaskTimeoutFail) {
+		t.Errorf("resolved deterministic-only workflow unexpectedly contains %q", featureTaskTimeoutFail)
+	}
+}
+
 func TestFeaturesForGooberResolvesImplicitDefaults(t *testing.T) {
 	features, err := FeaturesForGoober(apiv1.GooberSpec{
 		Gaggle:       "example",
