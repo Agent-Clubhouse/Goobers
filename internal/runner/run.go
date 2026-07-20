@@ -1518,7 +1518,8 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 	if t.Run != nil && t.Run.Workspace != "" {
 		workspaceMode = t.Run.Workspace
 	}
-	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, t.Inputs, t.Capabilities, workflow.TaskLimits(t), upstream, workspaceMode, workspaceBranch)
+	taskInputs := workflow.TaskInvocationInputs(in.Machine, t)
+	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, taskInputs, t.Capabilities, workflow.TaskLimits(t), upstream, workspaceMode, workspaceBranch)
 	if err != nil {
 		prepErr := fmt.Errorf("prepare stage %q: %w", t.Name, err)
 		// #572: a transient network/remote failure provisioning the stage's

@@ -85,7 +85,7 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		}
 
 		if t, ok := m.Task(state); ok {
-			res, terr := runTask(ctx, in, t)
+			res, terr := runTask(ctx, in, m, t)
 			if terr != nil {
 				return RunResult{}, terr
 			}
@@ -119,8 +119,8 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	}
 }
 
-func runTask(ctx workflow.Context, in RunInput, t apiv1.Task) (apiv1.ResultEnvelope, error) {
-	env := buildInvocation(in, t.Name, t.Goal, t.Inputs, wf.TaskLimits(t))
+func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task) (apiv1.ResultEnvelope, error) {
+	env := buildInvocation(in, t.Name, t.Goal, wf.TaskInvocationInputs(machine, t), wf.TaskLimits(t))
 	ctx = stageActivityContext(ctx, env.Limits)
 	var res apiv1.ResultEnvelope
 	if t.Type == apiv1.TaskAgentic {

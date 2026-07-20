@@ -211,6 +211,50 @@ func TestDeterministicTask(t *testing.T) {
 	}
 }
 
+func TestCIPollTaskReceivesDownstreamGateCadence(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "ci-poll",
+		Tasks: []apiv1.Task{{
+			Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll CI",
+			Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}},
+			Inputs:       map[string]string{"kind": "ci-poll", "prNumber": "42"},
+			Capabilities: []string{"github:pr:write"},
+			Next:         "ci-gate",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "ci-gate",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "ci-status", PollIntervalSeconds: 9},
+			Branches: map[string]string{
+				"pass":    wf.TerminalComplete,
+				"fail":    wf.TargetAbort,
+				"timeout": wf.TargetEscalate,
+			},
+		}},
+	}
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	var gotInterval interface{}
+	env.RegisterActivity(&Activities{
+		Det: &fakeRunner{run: func(_ context.Context, invocation apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+			gotInterval = invocation.Inputs["pollIntervalSeconds"]
+			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+		}},
+		Auto: &fixtureAuto{ciStatus: "passing"},
+	})
+
+	env.ExecuteWorkflow(Run, runInput("ci-cadence", spec))
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	if gotInterval != "9s" {
+		t.Fatalf("ci-poll cadence input = %v, want 9s from downstream gate", gotInterval)
+	}
+}
+
 func TestHumanGateRejectedBeforeSignal(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",

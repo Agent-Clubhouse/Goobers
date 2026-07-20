@@ -825,6 +825,7 @@ func TestRunnerPopulatesDeclaredTaskAndGateLimits(t *testing.T) {
 			Branches:  map[string]string{gate.OutcomePass: workflow.TerminalComplete, gate.OutcomeFail: workflow.TargetAbort},
 		}},
 	}
+
 	machine, err := workflow.Compile(workflow.Definition{Name: "limits-fixture", Version: 1, Spec: spec})
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
@@ -857,6 +858,63 @@ func TestRunnerPopulatesDeclaredTaskAndGateLimits(t *testing.T) {
 	}
 	if auto.env.Limits.MaxDurationSeconds != 12 {
 		t.Fatalf("gate limits = %+v, want 12s duration", auto.env.Limits)
+	}
+}
+
+func TestRunnerThreadsAutomatedGateCadenceToCIPollTask(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "ci-poll",
+		Tasks: []apiv1.Task{{
+			Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll CI",
+			Run:          &apiv1.DeterministicRun{Command: []string{"true"}},
+			Inputs:       map[string]string{"kind": "ci-poll", "prNumber": "42"},
+			Capabilities: []string{"github:pr:write"},
+			Next:         "ci-gate",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "ci-gate",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "ci-status", PollIntervalSeconds: 7},
+			Branches: map[string]string{
+				gate.OutcomePass:    workflow.TerminalComplete,
+				gate.OutcomeFail:    workflow.TargetAbort,
+				gate.OutcomeTimeout: workflow.TargetEscalate,
+			},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "ci-cadence-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-cadence:ci-poll": {
+			status:  apiv1.ResultSuccess,
+			outputs: map[string]interface{}{"ciStatus": "passing"},
+		},
+	}}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-cadence",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	got := det.received["run-cadence:ci-poll"].Inputs["pollIntervalSeconds"]
+	if got != "7s" {
+		t.Fatalf("ci-poll cadence input = %v, want 7s from downstream gate", got)
 	}
 }
 
