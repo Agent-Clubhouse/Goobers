@@ -180,6 +180,10 @@ func TestCheckWarningsNoScheduleTrigger(t *testing.T) {
 			name:     "scheduled",
 			triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
 		},
+		{
+			name:     "webhook",
+			triggers: []apiv1.Trigger{{Type: apiv1.TriggerWebhook, Events: []string{"issues"}}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -413,6 +417,26 @@ func TestCompileRejectsSignalTriggerWithNoName(t *testing.T) {
 	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerSignal, Signal: "upstream-workflow-done"}}
 	if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("a named signal trigger should compile, got %v", err)
+	}
+}
+
+func TestCompileRejectsWebhookTriggerWithoutEvents(t *testing.T) {
+	spec := linearSpec()
+	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerWebhook}}
+	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `trigger[0] type=webhook requires at least one event name`) {
+		t.Fatalf("expected missing-webhook-events error, got %v", err)
+	}
+
+	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerWebhook, Events: []string{"issues", " "}}}
+	_, err = Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `trigger[0] type=webhook event[1] must not be empty`) {
+		t.Fatalf("expected empty-webhook-event error, got %v", err)
+	}
+
+	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerWebhook, Events: []string{"issues", "pull_request"}}}
+	if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("a webhook trigger with events should compile, got %v", err)
 	}
 }
 

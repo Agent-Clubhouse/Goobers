@@ -13,6 +13,7 @@ import (
 func TestFeatureRegistryLookup(t *testing.T) {
 	for _, id := range []FeatureID{
 		"trigger.signal",
+		"trigger.webhook",
 		"gate.evaluator.human",
 		"task.retry.backoff",
 		"goober.spec.model",
@@ -54,6 +55,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"ready": "true"}},
 			{Type: apiv1.TriggerSchedule, Schedule: "@hourly"},
 			{Type: apiv1.TriggerSignal, Signal: "done"},
+			{Type: apiv1.TriggerWebhook, Events: []string{"issues"}},
 		},
 		Readiness: apiv1.ReadinessConditions{
 			MaxConcurrentRuns: 1,
@@ -290,6 +292,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"trigger.backlog-item.selector",
 		"trigger.schedule",
 		"trigger.signal",
+		"trigger.webhook",
 		"task.name",
 		"task.deterministic",
 		"task.agentic",

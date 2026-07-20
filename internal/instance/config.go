@@ -19,9 +19,10 @@ import (
 // apiVersion/kind convention (ARCHITECTURE.md §6) though instance.yaml is a
 // provisioning file, never a CR the operator reconciles.
 const (
-	ConfigAPIVersion        = "goobers.dev/v1alpha1"
-	ConfigKind              = "Instance"
-	DefaultAPIListenAddress = "127.0.0.1:8080"
+	ConfigAPIVersion            = "goobers.dev/v1alpha1"
+	ConfigKind                  = "Instance"
+	DefaultAPIListenAddress     = "127.0.0.1:8080"
+	DefaultWebhookListenAddress = "127.0.0.1:8081"
 )
 
 // Config is the parsed instance.yaml: target repo(s) + provider, token source
@@ -35,6 +36,7 @@ type Config struct {
 	Kind          string          `json:"kind" yaml:"kind"`
 	Repos         []RepoRef       `json:"repos" yaml:"repos"`
 	API           APIConfig       `json:"api,omitempty" yaml:"api,omitempty"`
+	Webhook       WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
 	Telemetry     TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	RunConditions RunConditions   `json:"runConditions,omitempty" yaml:"runConditions,omitempty"`
 	// Credentials sources individual capabilities from their own token refs,
@@ -56,6 +58,16 @@ type Config struct {
 type APIConfig struct {
 	// Listen is a host:port address. Only loopback hosts are accepted.
 	Listen string `json:"listen,omitempty" yaml:"listen,omitempty"`
+}
+
+// WebhookConfig configures the optional GitHub webhook receiver. The daemon
+// starts this listener only when Secret is configured and at least one workflow
+// declares a webhook trigger.
+type WebhookConfig struct {
+	// Listen is a host:port address. Only loopback hosts are accepted.
+	Listen string `json:"listen,omitempty" yaml:"listen,omitempty"`
+	// Secret references the instance-wide GitHub webhook secret.
+	Secret TokenRef `json:"secret,omitempty" yaml:"secret,omitempty"`
 }
 
 // RepoRef is a target repository this instance connects to.
@@ -128,6 +140,21 @@ func (c *Config) APIListenAddress() string {
 	return c.API.Listen
 }
 
+// WebhookListenAddress returns the configured webhook address, defaulting to a
+// separate loopback-only listener.
+func (c *Config) WebhookListenAddress() string {
+	if c.Webhook.Listen == "" {
+		return DefaultWebhookListenAddress
+	}
+	return c.Webhook.Listen
+}
+
+// WebhookSecretConfigured reports whether either supported secret source is
+// present. Validate rejects a ref that sets both.
+func (c *Config) WebhookSecretConfigured() bool {
+	return c.Webhook.Secret.Env != "" || c.Webhook.Secret.File != ""
+}
+
 // Location resolves Timezone to a *time.Location, defaulting to UTC when
 // unset. Validate already rejects an unresolvable Timezone at load time, so
 // this only errors if tzdata disappeared from underneath an already-loaded
@@ -178,6 +205,12 @@ func (c *Config) Validate() error {
 	if err := validateAPIListenAddress(c.APIListenAddress()); err != nil {
 		return fmt.Errorf("api.listen: %w", err)
 	}
+	if err := validateLoopbackListenAddress(c.WebhookListenAddress()); err != nil {
+		return fmt.Errorf("webhook.listen: %w", err)
+	}
+	if c.Webhook.Secret.Env != "" && c.Webhook.Secret.File != "" {
+		return fmt.Errorf("webhook.secret must reference exactly one of env or file — inline secret values are never permitted (CFG-009, SEC-010)")
+	}
 	if c.Timezone != "" {
 		if _, err := time.LoadLocation(c.Timezone); err != nil {
 			return fmt.Errorf("timezone %q: %w", c.Timezone, err)
@@ -221,6 +254,10 @@ func (c *Config) Validate() error {
 }
 
 func validateAPIListenAddress(address string) error {
+	return validateLoopbackListenAddress(address)
+}
+
+func validateLoopbackListenAddress(address string) error {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return fmt.Errorf("must be a host:port address: %w", err)
