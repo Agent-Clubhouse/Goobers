@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,9 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -166,6 +170,81 @@ func TestBuildSchedulerSetupCleansSpansOnlyRunDirectories(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(runsDir, "real-run", "events.jsonl")); err != nil {
 			t.Fatalf("real run was not preserved in %s: %v", runsDir, err)
 		}
+	}
+}
+
+func TestIdleTickIngestsBatchedSchedulerTelemetry(t *testing.T) {
+	ctx := context.Background()
+	l := instance.NewLayout(t.TempDir())
+	runsDir := filepath.Join(l.Root, "gaggles", "example", "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = instanceLog.Close() })
+	tel, err := buildTelemetryClient(ctx, l, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := rollup.Open(l.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tickAt := time.Now().Add(2 * time.Minute)
+	quota := localscheduler.NewProviderQuotaState()
+	quota.RecordExhausted(tickAt.Add(time.Hour))
+	setup := &schedulerSetup{
+		Telemetry:     tel,
+		RollupDB:      db,
+		InstanceLog:   instanceLog,
+		ProviderQuota: quota,
+	}
+	t.Cleanup(func() { setup.Shutdown(ctx) })
+	schedule, err := localscheduler.ParseSchedule("@every 1m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := localscheduler.New([]localscheduler.WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "example",
+		Schedules: []localscheduler.Schedule{schedule},
+	}}, instanceLog, setup.SchedulerOptions()...)
+
+	sched.Tick(ctx, tickAt)
+
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("idle tick created %d run directories", len(entries))
+	}
+	events, err := db.SchedulerEvents("implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[1].Type != string(journal.EventTickSkipped) {
+		t.Fatalf("scheduler events = %#v, want ingested trigger.fired and tick.skipped", events)
+	}
+
+	spanData, err := os.ReadFile(filepath.Join(l.SchedulerDir(), "spans", "spans.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record telemetry.SpanRecord
+	if err := json.Unmarshal(bytes.TrimSpace(spanData), &record); err != nil {
+		t.Fatal(err)
+	}
+	spans, err := db.Spans(record.TraceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spans) != 1 || spans[0].Kind != telemetry.SpanKindScheduler || spans[0].Name != "scheduler/dispatch" {
+		t.Fatalf("scheduler spans = %#v, want incrementally ingested dispatch span", spans)
 	}
 }
 

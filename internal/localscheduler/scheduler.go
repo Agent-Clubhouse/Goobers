@@ -474,6 +474,9 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	if s.afterTick != nil {
 		s.afterTick(ctx)
 	}
+	if s.afterTick != nil {
+		s.afterTick(ctx)
+	}
 }
 
 // Reload atomically replaces the configured workflows between scheduler ticks.
