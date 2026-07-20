@@ -303,6 +303,12 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 	}{
 		{name: "valid", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"})},
 		{name: "default context supported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"context": "default"})},
+		{name: "fable model supported", model: "claude-fable-5"},
+		{name: "fast opus model supported", model: "claude-opus-4.8-fast"},
+		{name: "opus 4.5 model supported", model: "claude-opus-4.5"},
+		{name: "kimi model supported", model: "kimi-k2.7-code"},
+		{name: "mai CLI model supported", model: "mai-code-1-flash"},
+		{name: "non-CLI model alias rejected", model: "mai-code-1-flash-picker", wantErr: "unknown model"},
 		{name: "unknown model", model: "not-a-model", wantErr: "unknown model"},
 		{name: "unknown option", options: testHarnessOptions(t, map[string]interface{}{"temperature": "0.2"}), wantErr: "unknown harness option"},
 		{name: "invalid option type", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": true}), wantErr: "must be a string"},

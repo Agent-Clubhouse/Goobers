@@ -43,25 +43,31 @@ func copilotEfforts(values ...string) map[string]struct{} {
 }
 
 var copilotModels = map[string]copilotModelCapabilities{
-	"auto":                    {},
-	"claude-sonnet-5":         {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-sonnet-4.6":       {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "max")},
-	"claude-sonnet-4.5":       {},
-	"claude-haiku-4.5":        {},
-	"claude-opus-4.8":         {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-opus-4.7":         {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"claude-opus-4.6":         {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "max")},
-	"gpt-5.6-sol":             {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"gpt-5.6-terra":           {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"gpt-5.6-luna":            {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
-	"gpt-5.5":                 {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
-	"gpt-5.4":                 {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
-	"gpt-5.3-codex":           {reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
-	"gpt-5.4-mini":            {reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
-	"gpt-5-mini":              {reasoningEffort: copilotEfforts("none", "low", "medium", "high")},
-	"gemini-3.1-pro-preview":  {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high")},
-	"gemini-3.5-flash":        {longContext: true, reasoningEffort: copilotEfforts("none", "minimal", "low", "medium", "high")},
-	"mai-code-1-flash-picker": {reasoningEffort: copilotEfforts("none", "low", "medium", "high")},
+	"auto":                 {},
+	"claude-fable-5":       {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"claude-sonnet-5":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"claude-sonnet-4.6":    {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "max")},
+	"claude-sonnet-4.5":    {},
+	"claude-haiku-4.5":     {},
+	"claude-opus-4.8-fast": {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"claude-opus-4.8":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"claude-opus-4.7":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"claude-opus-4.6":      {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "max")},
+	"claude-opus-4.5":      {},
+	"gpt-5.6-sol":          {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"gpt-5.6-terra":        {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"gpt-5.6-luna":         {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh", "max")},
+	"gpt-5.5":              {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
+	"gpt-5.4":              {longContext: true, reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
+	"gpt-5.3-codex":        {reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
+	"gpt-5.4-mini":         {reasoningEffort: copilotEfforts("none", "low", "medium", "high", "xhigh")},
+	"gpt-5-mini":           {reasoningEffort: copilotEfforts("none", "low", "medium", "high")},
+	"gemini-3.1-pro-preview": {longContext: true,
+		reasoningEffort: copilotEfforts("none", "low", "medium", "high")},
+	"gemini-3.5-flash": {longContext: true,
+		reasoningEffort: copilotEfforts("none", "minimal", "low", "medium", "high")},
+	"kimi-k2.7-code":   {},
+	"mai-code-1-flash": {},
 }
 
 // CopilotAdapter is the V0 harness adapter for the GitHub Copilot CLI
@@ -75,7 +81,7 @@ var copilotModels = map[string]copilotModelCapabilities{
 // The exact CLI invocation shape is configurable rather than hardcoded
 // (Command/PromptFlag/ExtraArgs) so it can be tuned without touching this
 // adapter's logic, but the defaults here are verified against a real,
-// installed, signed-in Copilot CLI (1.0.70) — not guessed: `copilot -p
+// installed, signed-in Copilot CLI (1.0.71) — not guessed: `copilot -p
 // "<text>" --allow-all-tools --log-level error` performs the task and exits,
 // confirmed by TestCopilotAdapterLiveSmoke.
 type CopilotAdapter struct {
