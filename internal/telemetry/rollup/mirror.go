@@ -50,7 +50,7 @@ type journalEvent struct {
 	Reason       string              `json:"reason,omitempty"`
 }
 
-// Event type values, mirroring internal/journal's EventType constants.
+// Event type values accepted from run and instance journals.
 const (
 	eventStageStarted       = "stage.started"
 	eventStageFinished      = "stage.finished"

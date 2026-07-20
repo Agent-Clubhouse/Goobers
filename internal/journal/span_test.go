@@ -97,12 +97,13 @@ func TestRecordSpanScrubsSecret(t *testing.T) {
 	}
 }
 
-func TestCleanupSpansOnlyRunsPreservesJournals(t *testing.T) {
+func TestSpansOnlyRunCleanupPreservesJournalsAndRevalidatesCandidates(t *testing.T) {
 	runsDir := t.TempDir()
 	spansOnly := filepath.Join(runsDir, "spans-only")
+	becameReal := filepath.Join(runsDir, "became-real")
 	realRun := filepath.Join(runsDir, "real-run")
 	checkpointedRun := filepath.Join(runsDir, "checkpointed-run")
-	for _, dir := range []string{spansOnly, realRun, checkpointedRun} {
+	for _, dir := range []string{spansOnly, becameReal, realRun, checkpointedRun} {
 		if err := os.MkdirAll(filepath.Join(dir, dirSpans), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -117,9 +118,20 @@ func TestCleanupSpansOnlyRunsPreservesJournals(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	removed, err := CleanupSpansOnlyRuns([]string{runsDir})
+	candidates, err := SpansOnlyRunCandidates([]string{runsDir})
 	if err != nil {
-		t.Fatalf("CleanupSpansOnlyRuns: %v", err)
+		t.Fatalf("SpansOnlyRunCandidates: %v", err)
+	}
+	if len(candidates) != 2 || candidates[0] != becameReal || candidates[1] != spansOnly {
+		t.Fatalf("candidates = %#v, want [%s %s]", candidates, becameReal, spansOnly)
+	}
+	if err := os.WriteFile(filepath.Join(becameReal, fileEvents), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := RemoveSpansOnlyRuns(candidates)
+	if err != nil {
+		t.Fatalf("RemoveSpansOnlyRuns: %v", err)
 	}
 	if removed != 1 {
 		t.Fatalf("removed = %d, want 1", removed)
@@ -127,7 +139,7 @@ func TestCleanupSpansOnlyRunsPreservesJournals(t *testing.T) {
 	if _, err := os.Stat(spansOnly); !os.IsNotExist(err) {
 		t.Fatalf("spans-only directory still exists: %v", err)
 	}
-	for _, dir := range []string{realRun, checkpointedRun} {
+	for _, dir := range []string{becameReal, realRun, checkpointedRun} {
 		if _, err := os.Stat(dir); err != nil {
 			t.Fatalf("preserved run %s: %v", dir, err)
 		}

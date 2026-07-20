@@ -291,10 +291,11 @@ func gateRunnerJSON(ev journalEvent) (sql.NullString, error) {
 	return runnerJSON(m)
 }
 
-// IngestSchedulerLog reads the instance journal (scheduler/events.jsonl) and
-// its rolling scheduler spans, then (re)populates their rollup rows. Idempotent
-// over the instance-level data, so it is safe to call incrementally or as part
-// of Rebuild.
+// IngestSchedulerLog reads the instance journal and its rolling scheduler
+// spans, including claim transitions and scheduler starvation signals, then
+// (re)populates their rollup rows. Idempotent (delete-then-insert over the
+// instance-level data), so it is safe to call incrementally or as part of
+// Rebuild.
 // Historical duplicate seq values are corruption, but retaining the first
 // occurrence keeps one bad record from permanently preventing all rollup.
 func (db *DB) IngestSchedulerLog(schedulerDir string) error {
