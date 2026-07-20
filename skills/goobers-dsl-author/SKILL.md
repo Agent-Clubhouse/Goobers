@@ -116,6 +116,10 @@ Apply the complete checklist in `references/dsl-reference.md`. In particular:
   `inputsFrom`.
 - Give each workflow at least one trigger and a readiness limit. A `manual`
   trigger must be the only trigger.
+- For V0 autonomous backlog consumption, use a `schedule` trigger and make the
+  first deterministic task run `["goobers", "backlog-query", "--claim"]`.
+  Direct `backlog-item` triggers and their selectors are reserved for V1 and
+  have no V0 runtime consumer.
 - An agentic task has `goober` and no `run`; a deterministic task has `run`
   and no `goober`.
 - Put only canonical capabilities on tasks. Every capability on an agentic

@@ -129,8 +129,38 @@ Trigger-specific fields:
 |---|---|
 | `manual` | No schedule, signal, or selector; it must be the only trigger. |
 | `schedule` | `schedule`, quoted as a cron expression or supported descriptor. |
-| `backlog-item` | `selector`, with string values. |
+| `backlog-item` | **V1 only.** `selector`, with string values. V0 accepts this shape but never fires it. |
 | `signal` | `signal`, naming the external signal. |
+
+For autonomous V0 backlog consumption, use a schedule and make the first task
+claim one eligible item:
+
+```yaml
+triggers:
+  - type: schedule
+    schedule: "0 * * * *"
+start: query-backlog
+tasks:
+  - name: query-backlog
+    type: deterministic
+    goal: Claim one approved backlog item.
+    run:
+      command: ["goobers", "backlog-query", "--claim"]
+    inputs:
+      trustLabel: "goobers"
+      maxItems: "1"
+      resultFile: "claimed-item.json"
+    capabilities:
+      - github:issues:write
+    expectedOutputs:
+      - claimed-item
+```
+
+When another state processes the claimed item, add `next` naming that reachable
+task or gate. On public repos, `trustLabel` must name a maintainer-applied trust
+label. Do not substitute a `backlog-item` trigger plus `selector`: those fields
+are reserved for V1 and have no V0 runtime consumer, so `goobers up` will not
+start that workflow.
 
 A deterministic task requires `name`, `type: deterministic`, `goal`, and
 `run.command`; it must not set `goober`. An agentic task requires `name`,
@@ -184,6 +214,9 @@ referenced goober's capability list.
 - Every `start`, `next`, and branch target exists or is a reserved terminal.
 - Every task and gate is reachable from `start`.
 - Trigger fields match the trigger type; schedules parse.
+- A V0 autonomous backlog workflow has a schedule trigger and starts with a
+  deterministic `goobers backlog-query --claim` task; it does not use the
+  V1-only `backlog-item` trigger or `selector`.
 - Task type matches `run` versus `goober`.
 - Gate evaluator block and outcome vocabulary match the evaluator.
 - Capabilities are canonical and agentic task grants are a subset of goober

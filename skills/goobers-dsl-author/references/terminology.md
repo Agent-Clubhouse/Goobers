@@ -9,7 +9,7 @@ Use these definitions when explaining a generated config.
 | **Workflow** | A deterministic state machine that belongs to one gaggle. It declares when a run is eligible and connects task and gate states into a process. |
 | **Task** | A state that performs work. A deterministic task runs a command; an agentic task invokes a goober. Architecture documents may call a task a **stage**; the terms are equivalent. |
 | **Gate** | A state that validates a result and branches by outcome. It has exactly one automated, agentic, or human evaluator. A gate decides where the workflow goes; it does not perform the workflow's primary work. |
-| **Trigger** | A declared event that makes a workflow eligible to run, such as manual invocation, a schedule, a backlog item, or a signal. Readiness limits must also allow the run. |
+| **Trigger** | A declared event that makes a workflow eligible to run, such as manual invocation, a schedule, a backlog item, or a signal. V0 backlog consumption uses a schedule plus a first task that claims an item; direct backlog-item triggers are reserved for V1. Readiness limits must also allow the run. |
 | **Capability** | A canonical, scoped grant such as `repo:read` or `github:issues:write`. Capabilities are default-deny: a task receives only what it declares, and an agentic task cannot exceed its goober's grants. |
 
 ## How the terms fit
