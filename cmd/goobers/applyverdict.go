@@ -351,12 +351,27 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", stderr)
 	}
 
-	// A `fail` verdict on work that is MOOT gets closed rather than parked for
-	// a human (#923/#947). Deliberately narrow: mootness is established by a
-	// deterministic, independently verifiable fact about the repository, never
-	// by the reviewer's prose. See mootFailReason.
-	if verdict.Decision == apiv1.VerdictFail {
+	// Close a pull request that is NO LONGER NEEDED rather than parking,
+	// merging, or escalating it (#923/#947/#987). Every trigger is a
+	// deterministic, independently verifiable repository fact, never the
+	// reviewer's prose:
+	//
+	//   - Moot on ANY decision (broadened from the old fail-only path): its
+	//     diff against base is now empty (already landed elsewhere), or every
+	//     issue it exists to close is already closed (a stale issue closed
+	//     mid-flight). See mootFailReason.
+	//   - True duplicate, only for a NON-passing PR: an earlier open goober PR
+	//     already implements the same issue. A passing PR is never closed as a
+	//     duplicate — it merges and wins, and the redundant earlier PR then
+	//     becomes moot (its issue closed by that merge) and closes on its own
+	//     next review. See duplicateOfEarlierPR.
+	// Never intercept a PASS: a passing PR merges and wins. For a non-passing
+	// PR, close it if it is no longer needed.
+	if verdict.Decision != apiv1.VerdictPass {
 		if reason, moot := mootFailReason(ctx, provider, repo, current); moot {
+			return closeMootPullRequest(ctx, provider, repo, selectedNumber, current, *verdict, reason, resultFile, stdout, stderr)
+		}
+		if reason, dup := duplicateOfEarlierPR(ctx, provider, repo, current); dup {
 			return closeMootPullRequest(ctx, provider, repo, selectedNumber, current, *verdict, reason, resultFile, stdout, stderr)
 		}
 	}
@@ -712,8 +727,46 @@ func prefixedIssueNumbers(ids []string) []string {
 	return out
 }
 
-// closeMootPullRequest closes a moot `fail`-verdicted pull request, stating
-// both the objective reason it is moot and the reviewer's own rationale.
+// duplicateOfEarlierPR reports whether pr is a true duplicate that should be
+// closed rather than escalated (#987): another OPEN goober PR with a LOWER
+// number already references one of the same issues. The first PR to claim an
+// issue wins — fifo, consistent with lander election — so this later one is
+// redundant and can never both-land (the #966/#969 deadlock). Best-effort: a
+// listing failure returns not-a-duplicate rather than fabricating a close.
+// The caller must gate this to non-passing PRs, so a passing PR is never
+// closed as a duplicate.
+func duplicateOfEarlierPR(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) (string, bool) {
+	mine := referencedIssueNumbers(pr.Body)
+	if len(mine) == 0 {
+		return "", false
+	}
+	mineSet := make(map[string]bool, len(mine))
+	for _, id := range mine {
+		mineSet[id] = true
+	}
+	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, HeadPrefix: "goobers/", SkipCheckState: true,
+	})
+	if err != nil {
+		return "", false
+	}
+	for _, o := range others {
+		// ListPullRequests returns only open PRs (the same list #414's open-PR
+		// backstop relies on); a lower number is a strictly-earlier claim.
+		if o.Number >= pr.Number {
+			continue
+		}
+		for _, oid := range referencedIssueNumbers(o.Body) {
+			if mineSet[oid] {
+				return fmt.Sprintf("pull request #%d already implements the same issue #%s and was opened first", o.Number, oid), true
+			}
+		}
+	}
+	return "", false
+}
+
+// closeMootPullRequest closes a pull request that is no longer needed, stating
+// both the objective reason and the reviewer's own rationale.
 //
 // Both are included on purpose. The objective reason is what justifies closing
 // automatically and is the part a reader should be able to check; the rationale
@@ -726,7 +779,7 @@ func prefixedIssueNumbers(ids []string) []string {
 // frequently be refused as a self-review anyway.
 func closeMootPullRequest(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, selectedNumber int, current *providers.PullRequestSummary, verdict apiv1.Verdict, reason, resultFile string, stdout, stderr io.Writer) int {
 	comment := fmt.Sprintf(
-		"Closing this pull request automatically: %s.\n\nThe merge reviewer returned a `fail` verdict, and this pull request is **moot** rather than wrong — the work it proposes is already obsolete, so there is no decision for a human to make. Reopen it if that reading is incorrect.\n\n> %s",
+		"Closing this pull request automatically: %s.\n\nThis change is **no longer needed** rather than wrong — there is no decision for a human to make. Reopen it if that reading is incorrect.\n\n> %s",
 		reason, strings.ReplaceAll(strings.TrimSpace(verdict.Rationale), "\n", "\n> "))
 	if _, err := provider.ClosePullRequest(ctx, providers.ClosePullRequestRequest{
 		Repository: repo,
