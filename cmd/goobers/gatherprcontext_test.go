@@ -772,6 +772,113 @@ func TestGatherPRContextDoesNotReselectEscalatedFailingPR(t *testing.T) {
 	}
 }
 
+// TestGatherPRContextSkipsPRHeldByInFlightWorktree is #872/#1007's regression
+// guard: when a PR's head branch is still checked out by another live worktree
+// — its originating implementation run's ci-poll stage, which holds the branch
+// while polling CI on the PR it just opened — gather-pr-context must skip that
+// PR cleanly (exit 0, no-work, no claim, no checkout) instead of claiming it
+// and colliding on the checkout every retry ("fatal: '<branch>' is already
+// used by worktree at ..."). Once that worktree is gone (the owning run
+// finished), the very next tick proceeds and remediates the PR exactly as
+// normal — proving the guard defers rather than permanently drops the PR.
+func TestGatherPRContextSkipsPRHeldByInFlightWorktree(t *testing.T) {
+	const prBranch = "goobers/implementation/owning-run"
+	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
+
+	srv := gatherPRContextServer{
+		owner: "your-org", repo: "your-repo",
+		prNumber: 72, head: prBranch, base: "main",
+		headSHA: headSHA, baseSHA: baseSHA,
+		labels: []string{"goobers:needs-remediation"},
+	}
+	server := srv.start(t)
+
+	prev := newGitHubProvider
+	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	// One manager => one shared managed mirror, exactly like the live daemon:
+	// the pr-remediation stage worktree and the "owning run" worktree below are
+	// two linked worktrees of the same clone, so git's same-branch-in-two-
+	// worktrees prohibition (the collision) is faithfully reproduced.
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	remWT, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "run-rem", BaseRef: "main",
+		Branch: "goobers/pr-remediation/run-rem",
+	})
+	if err != nil {
+		t.Fatalf("Create pr-remediation worktree: %v", err)
+	}
+	t.Cleanup(func() { _ = remWT.Remove(t.Context(), worktree.RemoveOptions{}) })
+
+	// The still-alive originating implementation run: a second worktree holding
+	// the PR's own head branch checked out (its ci-poll stage).
+	owningWT, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "owning-run", BaseRef: "main",
+		Branch: prBranch, RequireExistingBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("Create owning-run worktree: %v", err)
+	}
+
+	instanceRoot := initDemo(t)
+	t.Setenv("GOOBERS_RUN_ID", "run-rem")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Chdir(remWT.Path)
+
+	// Phase 1: the owning run still holds the branch — expect a clean skip.
+	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
+	if code != 0 {
+		t.Fatalf("phase 1 code = %d, stdout = %q, stderr = %q — want a clean no-work skip, not a checkout collision", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("phase 1 stdout = %q, want a no-work skip while the owning run holds the branch", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(remWT.Path, "pr-context.json")); !os.IsNotExist(err) {
+		t.Fatalf("phase 1 wrote pr-context.json (err=%v) — it must not gather/claim a PR whose branch is held by a live worktree", err)
+	}
+	if branch := strings.TrimSpace(runGitOutputT(t, remWT.Path, "symbolic-ref", "--short", "HEAD")); branch != "goobers/pr-remediation/run-rem" {
+		t.Fatalf("phase 1 checked out %q — the guard must skip BEFORE any checkout, leaving the stage worktree on its own branch", branch)
+	}
+
+	// Phase 2: the owning run finishes and releases its worktree — the next
+	// tick must now select and gather the PR exactly as normal.
+	if err := owningWT.Remove(t.Context(), worktree.RemoveOptions{}); err != nil {
+		t.Fatalf("Remove owning-run worktree: %v", err)
+	}
+
+	code, stdout, stderr = runArgs(t, "gather-pr-context", instanceRoot)
+	if code != 0 {
+		t.Fatalf("phase 2 code = %d, stdout = %q, stderr = %q — want normal remediation once the branch is free", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "PR #72") {
+		t.Fatalf("phase 2 stdout = %q, want PR #72 gathered once its branch was released", stdout)
+	}
+	data, err := os.ReadFile(filepath.Join(remWT.Path, "pr-context.json"))
+	if err != nil {
+		t.Fatalf("phase 2 read pr-context.json: %v", err)
+	}
+	var got struct {
+		SelectedNumber string `json:"selectedNumber"`
+		Head           string `json:"head"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("phase 2 unmarshal pr-context.json: %v (data=%s)", err, data)
+	}
+	if got.SelectedNumber != "72" || got.Head != prBranch {
+		t.Fatalf("phase 2 got = %+v, want selectedNumber=\"72\" head=%q", got, prBranch)
+	}
+	if branch := strings.TrimSpace(runGitOutputT(t, remWT.Path, "symbolic-ref", "--short", "HEAD")); branch != prBranch {
+		t.Fatalf("phase 2 checked-out branch = %q, want %q (the PR's own branch)", branch, prBranch)
+	}
+}
+
 // TestGatherPRContextNoEligiblePRIsNoWork proves gather-pr-context succeeds
 // (exit 0, no-work) rather than erroring when no PR is labeled or failing —
 // a normal outcome (mirrors pr-select's own no-work shape), not an error.
