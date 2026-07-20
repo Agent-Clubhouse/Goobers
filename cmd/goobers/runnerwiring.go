@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -486,6 +487,76 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 	}
 }
 
+// buildFailedHandler wires runner.Config.Failed (#1054): the instance-level
+// consequence of a run reaching terminal PhaseFailed. Returns nil when no repo
+// is configured, mirroring buildBlockedHandler. Leaves a human-visible trace on
+// the driving item — a comment recording the terminal failure cause and the run
+// id — so repeated terminal failures on the same item accumulate a countable
+// signal instead of the item silently returning to goobers:ready with no
+// record. The motivating case (#1054) is a recurring copilot-cli harness
+// session timeout in the implement stage: it retries once, times out again, and
+// ends the run `failed` (not `escalated`), so today the driving issue returns to
+// ready indistinguishable from one never attempted and is re-claimed and
+// re-failed forever with nothing accumulating anywhere a human can see.
+//
+// Deliberately does NOT apply goobers:needs-human: that label is reserved for
+// the escalated/park path (buildEscalationNotifier / buildBlockedHandler's
+// no-blockers park), keeping a `failed` terminal distinct from an escalation.
+// Comment-only, via the same escalationCommenter/UpdateWorkItem seam (which
+// normalizes a pr/<n> claim to its bare number).
+//
+// Like buildBlockedHandler, the handler runs before FinalizeTerminal releases
+// the run's claims, so it resolves the driving item(s) from the claim ledger by
+// run id — implementation and pr-remediation runs (the two workflows that hit
+// this) self-select their item mid-run, so they never carry a StartInput.Item
+// snapshot and the ledger is the only source. Best-effort per item: one item's
+// provider failure doesn't skip the rest; the joined error is journaled by the
+// runner (failed_handling_failed), never fatal to the terminal transition.
+func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) runner.FailedHandler {
+	if len(cfg.Repos) == 0 {
+		return nil
+	}
+	poster := &escalationCommenter{
+		resolver: resolver,
+		reg:      reg,
+	}
+
+	return func(ctx context.Context, o runner.FailedOutcome) error {
+		itemIDs, err := claimedItemIDsForRun(l, o.RunID)
+		if err != nil {
+			return err
+		}
+		if len(itemIDs) == 0 {
+			// No driving item anywhere (a producer/schedule run, or a run whose
+			// claim was already released) — nothing to trace; the journaled
+			// run_failed cause and the failed phase are the whole story.
+			return nil
+		}
+		cause := strings.TrimSpace(o.Cause)
+		if cause == "" {
+			cause = "no cause recorded"
+		}
+		repoRef := providers.RepositoryRef{
+			Provider: providers.ProviderKind(o.RepoRef.Provider),
+			Owner:    o.RepoRef.Owner,
+			Name:     o.RepoRef.Name,
+		}
+		var errs []error
+		for _, itemID := range itemIDs {
+			comment := fmt.Sprintf(
+				"Goobers run %s terminated `failed`: %s. The run released its claim and this issue returned to the backlog; this comment records the terminal failure so repeated failures on this item are visible instead of silently recurring. No `%s` applied — a `failed` terminal is distinct from an escalation.",
+				o.RunID, cause, providers.LabelNeedsHuman,
+			)
+			if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+				Repository: repoRef, ID: itemID, Comment: comment,
+			}); err != nil {
+				errs = append(errs, fmt.Errorf("notify failed on %s#%s: %w", repoRef.Name, itemID, err))
+			}
+		}
+		return errors.Join(errs...)
+	}
+}
+
 // buildRateLimitedHandler wires runner.Config.RateLimited (#712): records the
 // exhausted provider quota into the shared ProviderQuotaState the same
 // composition root also hands to the scheduler (via
@@ -853,6 +924,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// Wire the blocked handler (#544/#552): record/park the driving issue
 		// when a stage reports blocked; nil for a repo-less instance.
 		Blocked: buildBlockedHandler(l, cfg, resolver, sharedReg),
+		// Wire the failed handler (#1054): leave a human-visible trace on the
+		// driving item when a run ends terminal `failed`, so a recurring infra
+		// fault (e.g. a copilot-cli session timeout) stops silently returning the
+		// item to ready with no record; nil for a repo-less instance.
+		Failed: buildFailedHandler(l, cfg, resolver, sharedReg),
 	}
 	if tel != nil {
 		rc.Telemetry = tel

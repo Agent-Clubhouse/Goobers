@@ -1109,3 +1109,152 @@ func TestBuildBlockedHandlerNoClaimIsANoop(t *testing.T) {
 		t.Fatalf("calls = %+v, want none (no driving item anywhere)", fake.calls)
 	}
 }
+
+// TestBuildFailedHandlerNilForRepoLessInstance mirrors buildBlockedHandler's
+// repo-less case: no repo configured, no driving item to trace on (#1054).
+func TestBuildFailedHandlerNilForRepoLessInstance(t *testing.T) {
+	if h := buildFailedHandler(instance.NewLayout(t.TempDir()), &instance.Config{}, nil, nil); h != nil {
+		t.Fatalf("expected a nil handler for no repos, got %+v", h)
+	}
+}
+
+// TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman is #1054's core: a
+// run that ends terminal `failed` while claiming an item leaves a human-visible
+// trace — exactly one comment on the driving item carrying the terminal cause
+// and the run id — and, crucially, applies NO labels (goobers:needs-human stays
+// reserved for the escalated/park path). The item is resolved from the claim
+// ledger by run id, the same fallback buildBlockedHandler uses, since the
+// implementation/pr-remediation runs that hit this claim their item mid-run.
+func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("463", "run-timeout", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if h == nil {
+		t.Fatal("expected a non-nil handler for a repo-backed instance")
+	}
+
+	err = h(context.Background(), runner.FailedOutcome{
+		RunID:   "run-timeout",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Stage:   "implement",
+		Cause:   "runner: execute stage \"implement\": harness: copilot-cli: session timed out after 30m0s (attempt 2/2)",
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("comment calls = %d, want 1", len(fake.calls))
+	}
+	got := fake.calls[0]
+	if got.ID != "463" {
+		t.Fatalf("request ID = %q, want 463 (resolved via the claim ledger)", got.ID)
+	}
+	wantRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	if got.Repository != wantRepo {
+		t.Fatalf("request repository = %+v, want %+v", got.Repository, wantRepo)
+	}
+	if len(got.AddLabels) != 0 || len(got.RemoveLabels) != 0 {
+		t.Fatalf("labels = add %v / remove %v, want NONE — a `failed` terminal must not touch labels (needs-human stays reserved for escalation)", got.AddLabels, got.RemoveLabels)
+	}
+	if !strings.Contains(got.Comment, "run-timeout") {
+		t.Fatalf("comment = %q, want it to carry the run id", got.Comment)
+	}
+	if !strings.Contains(got.Comment, "session timed out after 30m0s") {
+		t.Fatalf("comment = %q, want it to carry the terminal failure cause", got.Comment)
+	}
+	if strings.Contains(got.Comment, providers.LabelNeedsHuman) && (len(got.AddLabels) > 0) {
+		t.Fatalf("comment = %q, must not apply needs-human", got.Comment)
+	}
+}
+
+// TestBuildFailedHandlerNormalizesPRClaimID proves the pr/<n> claim key (used by
+// pr-remediation, one of the two workflows that hit the #1054 timeout) is
+// normalized to its bare provider number when the trace comment is posted —
+// mirroring the blocked flow, via escalationCommenter.UpdateWorkItem.
+func TestBuildFailedHandlerNormalizesPRClaimID(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("pr/955", "run-remediate-fail", "pr-remediation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed PR claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err = h(context.Background(), runner.FailedOutcome{
+		RunID:   "run-remediate-fail",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage:   "implement",
+		Cause:   "session timed out after 30m0s",
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(fake.calls) != 1 || fake.calls[0].ID != "955" {
+		t.Fatalf("calls = %+v, want exactly one comment on bare PR number 955", fake.calls)
+	}
+}
+
+// TestBuildFailedHandlerNoClaimIsANoop proves a producer/schedule-triggered run
+// (no claim to resolve) is a clean no-op — the journaled run_failed cause and
+// the failed phase are the whole story; nothing to trace (#1054).
+func TestBuildFailedHandlerNoClaimIsANoop(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.FailedOutcome{
+		RunID:   "run-producer",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage:   "query-backlog",
+		Cause:   "some walk-level failure",
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("calls = %+v, want none (no driving item anywhere)", fake.calls)
+	}
+}
