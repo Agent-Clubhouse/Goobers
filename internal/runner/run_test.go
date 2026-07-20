@@ -254,6 +254,21 @@ func (r heartbeatRecorder) Append(event journal.Event) error {
 	return nil
 }
 
+type failingHeartbeatRecorder struct {
+	err    error
+	failed chan struct{}
+	events []journal.Event
+}
+
+func (r *failingHeartbeatRecorder) Append(event journal.Event) error {
+	if event.Type == journal.EventStageHeartbeat {
+		close(r.failed)
+		return r.err
+	}
+	r.events = append(r.events, event)
+	return nil
+}
+
 func TestStageHeartbeatUsesFixedIntervalAndStopsWithAttempt(t *testing.T) {
 	ticker := &fakeHeartbeatTicker{
 		ticks:   make(chan time.Time, 1),
@@ -300,6 +315,61 @@ func TestStageHeartbeatUsesFixedIntervalAndStopsWithAttempt(t *testing.T) {
 	case event := <-recorder.events:
 		t.Fatalf("heartbeat after attempt completion = %+v", event)
 	default:
+	}
+}
+
+func TestFinishTaskDispatchRecordsSideEffectsBeforeHeartbeatError(t *testing.T) {
+	ticker := &fakeHeartbeatTicker{
+		ticks:   make(chan time.Time, 1),
+		stopped: make(chan struct{}),
+	}
+	r := &Runner{
+		heartbeatInterval: StageHeartbeatInterval,
+		newHeartbeatTicker: func(time.Duration) heartbeatTicker {
+			return ticker
+		},
+	}
+	appendErr := errors.New("heartbeat append failed")
+	recorder := &failingHeartbeatRecorder{
+		err:    appendErr,
+		failed: make(chan struct{}),
+	}
+	heartbeat := r.startStageHeartbeat(recorder, "implement", 2, journal.AttemptPolicy)
+	ticker.ticks <- time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	select {
+	case <-recorder.failed:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat append was not attempted")
+	}
+
+	err := finishTaskDispatch(recorder, heartbeat, "implement", 2, journal.AttemptPolicy, []mutationFact{{
+		Provider:  "github",
+		Kind:      "pr",
+		ID:        "1041",
+		URL:       "https://github.com/acme/web/pull/1041",
+		Operation: "open",
+	}}, errors.New("remove worktree"))
+	if !errors.Is(err, appendErr) {
+		t.Fatalf("finishTaskDispatch error = %v, want heartbeat append error", err)
+	}
+	if len(recorder.events) != 2 {
+		t.Fatalf("side-effect events = %+v, want ref.touched and worktree removal error", recorder.events)
+	}
+	refEvent := recorder.events[0]
+	if refEvent.Type != journal.EventRefTouched ||
+		refEvent.Stage != "implement" ||
+		refEvent.Attempt != 2 ||
+		refEvent.AttemptClass != journal.AttemptPolicy ||
+		refEvent.ExternalRef == nil ||
+		refEvent.ExternalRef.ID != "1041" ||
+		refEvent.Runner["operation"] != "open" {
+		t.Fatalf("ref.touched event = %+v", refEvent)
+	}
+	removeEvent := recorder.events[1]
+	if removeEvent.Type != journal.EventError ||
+		removeEvent.Error == nil ||
+		removeEvent.Error.Code != "worktree_remove_failed" {
+		t.Fatalf("worktree removal event = %+v", removeEvent)
 	}
 }
 

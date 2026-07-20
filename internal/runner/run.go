@@ -1369,6 +1369,38 @@ func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt i
 	return stageHeartbeat{stop: stop, done: done}
 }
 
+func finishTaskDispatch(jr journalAppender, heartbeat stageHeartbeat, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact, removeErr error) error {
+	heartbeatErr := heartbeat.Stop()
+	for _, m := range mutations {
+		// Best-effort, like ClaimLedger's own journal() (issue #228): a
+		// provider mutation already happened for real regardless of
+		// whether this projection succeeds, so a failed Append here must
+		// not fail the stage or mask the mutation's own outcome.
+		_ = jr.Append(journal.Event{
+			Type: journal.EventRefTouched, Stage: stage, Attempt: attempt, AttemptClass: class,
+			ExternalRef: &journal.ExternalRef{Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL},
+			Runner:      map[string]any{"operation": m.Operation},
+		})
+	}
+	if removeErr != nil {
+		// Non-fatal (issue #136): a failed worktree teardown doesn't
+		// change this attempt's own outcome, and worktree.Create's own
+		// adopt-and-reset means it no longer blocks the next attempt
+		// either — but the append recording it must not itself be
+		// silently discarded (#243): a journal that cannot be written
+		// is fatal (§2.6), consistent with the executor_error and
+		// stage.finished appends just below treating their own write
+		// failures the same way.
+		if err := jr.Append(journal.Event{
+			Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
+			Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
+		}); err != nil {
+			return fmt.Errorf("runner: journal worktree removal error for %q: %w", stage, err)
+		}
+	}
+	return heartbeatErr
+}
+
 func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, workspaceBranch string) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
@@ -1423,38 +1455,9 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 
 		heartbeat := r.startStageHeartbeat(jr, t.Name, int(attempt), class)
 		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, span, workspaceBranch)
-		if err := heartbeat.Stop(); err != nil {
+		if err := finishTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, removeErr); err != nil {
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
-		}
-		for _, m := range mutations {
-			// Best-effort, like ClaimLedger's own journal() (issue #228): a
-			// provider mutation already happened for real regardless of
-			// whether this projection succeeds, so a failed Append here must
-			// not fail the stage or mask the mutation's own outcome.
-			_ = jr.Append(journal.Event{
-				Type: journal.EventRefTouched, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-				ExternalRef: &journal.ExternalRef{Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL},
-				Runner:      map[string]any{"operation": m.Operation},
-			})
-		}
-		if removeErr != nil {
-			// Non-fatal (issue #136): a failed worktree teardown doesn't
-			// change this attempt's own outcome, and worktree.Create's own
-			// adopt-and-reset means it no longer blocks the next attempt
-			// either — but the append recording it must not itself be
-			// silently discarded (#243): a journal that cannot be written
-			// is fatal (§2.6), consistent with the executor_error and
-			// stage.finished appends just below treating their own write
-			// failures the same way.
-			if aerr := jr.Append(journal.Event{
-				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-				Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
-			}); aerr != nil {
-				err := fmt.Errorf("runner: journal worktree removal error for %q: %w", t.Name, aerr)
-				span.Fail(err)
-				return apiv1.ResultEnvelope{}, nil, err
-			}
 		}
 		if dispatchErr != nil {
 			lastErr = dispatchErr
