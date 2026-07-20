@@ -467,7 +467,7 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 		}
 	}
 	switch task.OnTimeout {
-	case apiv1.TaskOnTimeoutFail:
+	case "", apiv1.TaskOnTimeoutFail:
 		used.add(featureTaskTimeoutFail)
 	case apiv1.TaskOnTimeoutSalvage:
 		used.add(featureTaskTimeoutSalvage)
@@ -498,7 +498,7 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 		used.add(featureStageNetworkNone)
 	}
 	switch task.Run.Workspace {
-	case apiv1.WorkspaceRepo:
+	case "", apiv1.WorkspaceRepo:
 		used.add(featureStageWorkspaceRepo)
 	case apiv1.WorkspaceScratch:
 		used.add(featureStageWorkspaceScratch)

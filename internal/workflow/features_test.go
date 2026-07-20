@@ -138,6 +138,35 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 	}
 }
 
+func TestFeaturesForWorkflowResolvesImplicitDefaults(t *testing.T) {
+	def := Definition{Name: "defaults", Version: 1, Spec: apiv1.WorkflowSpec{
+		Gaggle: "example",
+		Start:  "agent",
+		Tasks: []apiv1.Task{
+			{Name: "agent", Type: apiv1.TaskAgentic, Goal: "agent", Goober: "coder", Next: "shell"},
+			{Name: "shell", Type: apiv1.TaskDeterministic, Goal: "shell", Run: &apiv1.DeterministicRun{
+				Command: []string{"true"},
+			}},
+		},
+	}}
+
+	features, err := FeaturesForWorkflow(def)
+	if err != nil {
+		t.Fatalf("FeaturesForWorkflow: %v", err)
+	}
+	got := featureIDs(features)
+	for _, want := range []FeatureID{featureTaskTimeoutFail, featureStageWorkspaceRepo} {
+		if !slices.Contains(got, want) {
+			t.Errorf("resolved features do not contain implicit default %q", want)
+		}
+	}
+	for _, unwanted := range []FeatureID{featureTaskTimeoutSalvage, featureStageWorkspaceScratch} {
+		if slices.Contains(got, unwanted) {
+			t.Errorf("resolved features unexpectedly contain %q", unwanted)
+		}
+	}
+}
+
 func TestCompileConsumesFeatureRegistry(t *testing.T) {
 	all := AllFeatures()
 	filtered := make([]Feature, 0, len(all)-1)
