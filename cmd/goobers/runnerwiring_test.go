@@ -511,8 +511,12 @@ func TestBuildOpenPRRefresher(t *testing.T) {
 
 type fakeHeadLister struct{ heads []string }
 
-func (f *fakeHeadLister) ListOpenPullRequestHeads(context.Context, providers.RepositoryRef) ([]string, error) {
-	return f.heads, nil
+func (f *fakeHeadLister) ListOpenPullRequests(context.Context, providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
+	prs := make([]providers.OpenPRSummary, 0, len(f.heads))
+	for _, h := range f.heads {
+		prs = append(prs, providers.OpenPRSummary{Head: h})
+	}
+	return prs, nil
 }
 
 // TestResolvingOpenPRListerResolvesTokenPerCall is #353's rotation-safety +
@@ -534,15 +538,15 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 	t.Cleanup(func() { newOpenPRProvider = prev })
 
 	l := &resolvingOpenPRLister{ref: "acme/web", resolver: resolver, reg: reg}
-	heads, err := l.ListOpenPullRequestHeads(context.Background(), providers.RepositoryRef{Owner: "acme", Name: "web"})
+	prs, err := l.ListOpenPullRequests(context.Background(), providers.RepositoryRef{Owner: "acme", Name: "web"})
 	if err != nil {
-		t.Fatalf("ListOpenPullRequestHeads: %v", err)
+		t.Fatalf("ListOpenPullRequests: %v", err)
 	}
 	if gotToken != "list-token-value" {
 		t.Fatalf("provider built with token %q, want the resolved token", gotToken)
 	}
-	if len(heads) != 1 || heads[0] != "goobers/implementation/run-1" {
-		t.Fatalf("heads = %v", heads)
+	if len(prs) != 1 || prs[0].Head != "goobers/implementation/run-1" {
+		t.Fatalf("prs = %v", prs)
 	}
 	var registered bool
 	for _, s := range reg.registered {

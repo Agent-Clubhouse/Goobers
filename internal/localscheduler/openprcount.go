@@ -21,11 +21,11 @@ const DefaultOpenPRRefreshInterval = 45 * time.Second
 const openPRPollTimeout = 20 * time.Second
 
 // OpenPRLister is the narrow provider seam the refresher polls — satisfied by
-// providers.GitHubProvider.ListOpenPullRequestHeads. Kept minimal so the
-// refresher (and Conditions, via OpenPRCounter) stay unit-testable with a fake,
-// never a live GitHub client.
+// providers.GitHubProvider.ListOpenPullRequests. Kept minimal so the refresher
+// (and Conditions, via OpenPRCounter) stay unit-testable with a fake, never a
+// live GitHub client.
 type OpenPRLister interface {
-	ListOpenPullRequestHeads(ctx context.Context, repo providers.RepositoryRef) ([]string, error)
+	ListOpenPullRequests(ctx context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error)
 }
 
 // OpenPRRefresher polls the provider on its own interval for open PR heads and
@@ -34,27 +34,38 @@ type OpenPRLister interface {
 // network call under the tick loop's lock (which Admit must never do — it holds
 // Conditions.mu and "never fails a tick"). It implements OpenPRCounter.
 type OpenPRRefresher struct {
-	lister   OpenPRLister
-	repo     providers.RepositoryRef
-	interval time.Duration
+	lister        OpenPRLister
+	repo          providers.RepositoryRef
+	interval      time.Duration
+	excludeLabels map[string]bool
 
 	mu    sync.RWMutex
-	heads []string
+	prs   []providers.OpenPRSummary
 	known bool
 }
 
 // NewOpenPRRefresher builds a refresher over lister for repo. interval <= 0 uses
-// DefaultOpenPRRefreshInterval. The count starts "unknown" until the first poll
-// completes (Admit fails open until then).
-func NewOpenPRRefresher(lister OpenPRLister, repo providers.RepositoryRef, interval time.Duration) *OpenPRRefresher {
+// DefaultOpenPRRefreshInterval. excludeLabels are PR labels whose bearers are
+// dropped from the count (#986): a PR parked pending a human — goobers:merge-
+// escalated — cannot be drained by the daemon, so counting it against the cap
+// only starves new work. needs-remediation and plain-open PRs are deliberately
+// NOT excluded (the daemon is draining them; the cap must still apply
+// backpressure). The count starts "unknown" until the first poll completes
+// (Admit fails open until then).
+func NewOpenPRRefresher(lister OpenPRLister, repo providers.RepositoryRef, interval time.Duration, excludeLabels []string) *OpenPRRefresher {
 	if interval <= 0 {
 		interval = DefaultOpenPRRefreshInterval
 	}
-	return &OpenPRRefresher{lister: lister, repo: repo, interval: interval}
+	excluded := make(map[string]bool, len(excludeLabels))
+	for _, l := range excludeLabels {
+		excluded[l] = true
+	}
+	return &OpenPRRefresher{lister: lister, repo: repo, interval: interval, excludeLabels: excluded}
 }
 
 // OpenPRCount returns the last polled count of open run-branch PRs for workflow
-// and whether that count is known yet. Implements OpenPRCounter.
+// — excluding any carrying an excluded (human-parked) label — and whether that
+// count is known yet. Implements OpenPRCounter.
 func (r *OpenPRRefresher) OpenPRCount(workflow string) (int, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -64,12 +75,27 @@ func (r *OpenPRRefresher) OpenPRCount(workflow string) (int, bool) {
 
 	prefix := providers.BranchName(workflow, "")
 	count := 0
-	for _, head := range r.heads {
-		if strings.HasPrefix(head, prefix) {
-			count++
+	for _, pr := range r.prs {
+		if !strings.HasPrefix(pr.Head, prefix) {
+			continue
 		}
+		if r.hasExcludedLabel(pr) {
+			continue
+		}
+		count++
 	}
 	return count, true
+}
+
+// hasExcludedLabel reports whether pr carries any label the refresher was told
+// to drop from the count (caller holds r.mu).
+func (r *OpenPRRefresher) hasExcludedLabel(pr providers.OpenPRSummary) bool {
+	for _, l := range pr.Labels {
+		if r.excludeLabels[l] {
+			return true
+		}
+	}
+	return false
 }
 
 // Run polls until ctx is cancelled — an eager first poll, then every interval.
@@ -92,7 +118,7 @@ func (r *OpenPRRefresher) Run(ctx context.Context) {
 func (r *OpenPRRefresher) pollOnce(ctx context.Context) {
 	pollCtx, cancel := context.WithTimeout(ctx, openPRPollTimeout)
 	defer cancel()
-	heads, err := r.lister.ListOpenPullRequestHeads(pollCtx, r.repo)
+	prs, err := r.lister.ListOpenPullRequests(pollCtx, r.repo)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -102,6 +128,6 @@ func (r *OpenPRRefresher) pollOnce(ctx context.Context) {
 		r.known = false
 		return
 	}
-	r.heads = append(r.heads[:0], heads...)
+	r.prs = append(r.prs[:0], prs...)
 	r.known = true
 }

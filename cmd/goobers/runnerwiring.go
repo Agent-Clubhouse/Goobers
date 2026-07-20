@@ -556,13 +556,13 @@ type resolvingOpenPRLister struct {
 	reg      runner.SecretRegistrar
 }
 
-func (l *resolvingOpenPRLister) ListOpenPullRequestHeads(ctx context.Context, repo providers.RepositoryRef) ([]string, error) {
+func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
 	token, err := l.resolver.Resolve(ctx, l.ref)
 	if err != nil {
 		return nil, fmt.Errorf("resolve open-pr-list token for %s: %w", l.ref, err)
 	}
 	l.reg.Register([]byte(token))
-	return newOpenPRProvider(token).ListOpenPullRequestHeads(ctx, repo)
+	return newOpenPRProvider(token).ListOpenPullRequests(ctx, repo)
 }
 
 // buildOpenPRRefresher constructs the #353 open-PR-count refresher only when the
@@ -593,7 +593,13 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 	repo := cfg.Repos[0]
 	lister := &resolvingOpenPRLister{ref: repo.Owner + "/" + repo.Name, resolver: resolver, reg: reg}
 	repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
-	return localscheduler.NewOpenPRRefresher(lister, repoRef, localscheduler.DefaultOpenPRRefreshInterval), nil
+	// Exclude human-parked PRs from the cap (#986): goobers:merge-escalated is
+	// the daemon's "parked pending a human" signal on a PR — it cannot be
+	// drained autonomously, so counting it against MaxOpenPRs only starves new
+	// implementation work. needs-remediation / blocked-on-sibling are
+	// deliberately NOT excluded: the daemon can still drain those (remediation,
+	// sibling sequencing), and the cap must keep applying backpressure to them.
+	return localscheduler.NewOpenPRRefresher(lister, repoRef, localscheduler.DefaultOpenPRRefreshInterval, []string{remediationEscalatedLabel}), nil
 }
 
 // backlogCounter adapts a provider + repo + label selector into a
