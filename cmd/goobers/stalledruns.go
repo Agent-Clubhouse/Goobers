@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -47,9 +46,7 @@ func sweepStalledRuns(
 			runDir := filepath.Join(runsDir, entry.Name())
 			reader, err := journal.OpenRead(runDir)
 			if err != nil {
-				if !errors.Is(err, fs.ErrNotExist) {
-					sweepErr = errors.Join(sweepErr, fmt.Errorf("inspect run directory %q: %w", entry.Name(), err))
-				}
+				sweepErr = errors.Join(sweepErr, fmt.Errorf("inspect run directory %q: %w", entry.Name(), err))
 				continue
 			}
 			identity, err := reader.Identity()

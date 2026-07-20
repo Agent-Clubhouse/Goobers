@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -31,9 +32,17 @@ const DefaultMaxSteps = 10000
 // independently of a task's policy retry allowance.
 const DefaultMaxInfrastructureAttempts int32 = 2
 
-// StageHeartbeatInterval bounds active-attempt journal growth to one compact
-// liveness event per minute.
+// StageHeartbeatInterval coalesces observable executor progress into at most
+// one compact liveness event per minute.
 const StageHeartbeatInterval = time.Minute
+
+// StalledCancellationGrace bounds how long the watchdog waits for a live owner
+// to honor cancellation before taking over terminalization.
+const StalledCancellationGrace = 5 * time.Second
+
+// StalledTerminalizationGrace bounds how long a sweep waits after another
+// goroutine has already begun terminal cleanup.
+const StalledTerminalizationGrace = 30 * time.Second
 
 type heartbeatTicker interface {
 	Ticks() <-chan time.Time
@@ -290,11 +299,13 @@ type Config struct {
 // through the pre-existing internal/invoke seam. It is the substrate-neutral
 // local runner core (ARCHITECTURE.md §3.1).
 type Runner struct {
-	cfg                Config
-	maxSteps           int
-	heartbeatInterval  time.Duration
-	newHeartbeatTicker func(time.Duration) heartbeatTicker
-	active             activeRunSet
+	cfg                  Config
+	maxSteps             int
+	heartbeatInterval    time.Duration
+	newHeartbeatTicker   func(time.Duration) heartbeatTicker
+	stalledCancelGrace   time.Duration
+	stalledTerminalGrace time.Duration
+	active               activeRunSet
 }
 
 // New validates cfg and returns a ready Runner.
@@ -319,6 +330,8 @@ func New(cfg Config) (*Runner, error) {
 		newHeartbeatTicker: func(interval time.Duration) heartbeatTicker {
 			return wallHeartbeatTicker{ticker: time.NewTicker(interval)}
 		},
+		stalledCancelGrace:   StalledCancellationGrace,
+		stalledTerminalGrace: StalledTerminalizationGrace,
 	}, nil
 }
 
@@ -731,8 +744,8 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 		}
 		jr.SetMachineState(state)
 
-		if request, ok := stalledRequestFromContext(ctx); ok {
-			return r.finishStalled(in.RunID, jr, state, steps, request)
+		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, state, steps); stalled {
+			return stalledResult, stalledErr
 		}
 
 		// Drain, don't abort, on cancellation (SIGTERM: internal/signals
@@ -769,8 +782,8 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				resume = nil
 			}
 			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, workspaceBranch)
-			if request, ok := stalledRequestFromContext(ctx); ok {
-				return r.finishStalled(in.RunID, jr, t.Name, steps, request)
+			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, t.Name, steps); stalled {
+				return stalledResult, stalledErr
 			}
 			if err != nil {
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, t.Name, steps, err)
@@ -820,8 +833,8 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}
 
 			gr, err, removeErr := r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, lastResult, pointers, workspaceBranch)
-			if request, ok := stalledRequestFromContext(ctx); ok {
-				return r.finishStalled(in.RunID, jr, g.Name, steps, request)
+			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, g.Name, steps); stalled {
+				return stalledResult, stalledErr
 			}
 			if removeErr != nil {
 				// Non-fatal (issue #136), same rationale as runTask's own
@@ -1588,7 +1601,7 @@ func (r *Runner) FinalizeTerminal(runID string, phase journal.RunPhase) error {
 // zero value for the run's first task) — dispatchTask threads its Outputs
 // into this task's Inputs per t.InputsFrom (#132), the task-to-task analog
 // of evaluateGate's unconditional Outputs flatten.
-func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt int, class journal.AttemptClass) stageHeartbeat {
+func (r *Runner) startStageHeartbeat(ctx context.Context, jr journalAppender, stage string, attempt int, class journal.AttemptClass) (context.Context, stageHeartbeat) {
 	interval := r.heartbeatInterval
 	if interval <= 0 {
 		interval = StageHeartbeatInterval
@@ -1602,6 +1615,10 @@ func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt i
 	ticker := newTicker(interval)
 	stop := make(chan struct{})
 	done := make(chan error, 1)
+	var progressed atomic.Bool
+	ctx = invoke.WithProgressReporter(ctx, func() {
+		progressed.Store(true)
+	})
 	go func() {
 		var heartbeatErr error
 		defer func() {
@@ -1612,7 +1629,12 @@ func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt i
 			select {
 			case <-stop:
 				return
+			case <-ctx.Done():
+				return
 			case <-ticker.Ticks():
+				if !progressed.Swap(false) {
+					continue
+				}
 				if err := jr.Append(journal.Event{
 					Type:         journal.EventStageHeartbeat,
 					Stage:        stage,
@@ -1625,7 +1647,7 @@ func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt i
 			}
 		}
 	}()
-	return stageHeartbeat{stop: stop, done: done}
+	return ctx, stageHeartbeat{stop: stop, done: done}
 }
 
 type gateHeartbeatGoober struct {
@@ -1646,7 +1668,7 @@ func (g gateHeartbeatGoober) Invoke(ctx context.Context, env apiv1.InvocationEnv
 }
 
 func (g gateHeartbeatGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	heartbeat := g.runner.startStageHeartbeat(g.journal, g.stage, g.attempt, journal.AttemptPolicy)
+	ctx, heartbeat := g.runner.startStageHeartbeat(ctx, g.journal, g.stage, g.attempt, journal.AttemptPolicy)
 	verdict, reviewErr := g.goober.Review(ctx, env)
 	heartbeatErr := heartbeat.Stop()
 	if heartbeatErr != nil {
@@ -1749,7 +1771,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
-		heartbeat := r.startStageHeartbeat(jr, t.Name, int(attempt), class)
+		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)
 		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, span, workspaceBranch)
 		if err := finishTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, removeErr); err != nil {
 			span.Fail(err)

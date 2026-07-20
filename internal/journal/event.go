@@ -15,8 +15,9 @@ const (
 	EventRunFinished EventType = "run.finished"
 	// EventStageStarted marks a stage attempt beginning.
 	EventStageStarted EventType = "stage.started"
-	// EventStageHeartbeat records that a stage attempt remains active. It is
-	// lightweight operational telemetry and excluded from conformance.
+	// EventStageHeartbeat records observable progress from an active stage
+	// attempt. It is lightweight operational telemetry and excluded from
+	// conformance.
 	EventStageHeartbeat EventType = "stage.heartbeat"
 	// EventStageFinished marks a stage attempt ending with a result.
 	EventStageFinished EventType = "stage.finished"

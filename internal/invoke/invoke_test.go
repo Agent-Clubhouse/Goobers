@@ -1,10 +1,21 @@
 package invoke
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
 )
+
+func TestProgressReporter(t *testing.T) {
+	var reports int
+	ctx := WithProgressReporter(context.Background(), func() { reports++ })
+	ReportProgress(ctx)
+	ReportProgress(context.Background())
+	if reports != 1 {
+		t.Fatalf("progress reports = %d, want 1", reports)
+	}
+}
 
 func TestInfrastructureFailure(t *testing.T) {
 	cause := errors.New("provider unavailable")

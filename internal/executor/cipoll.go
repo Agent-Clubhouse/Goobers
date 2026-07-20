@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -288,6 +289,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 	consecutiveErrors := 0
 	for attempt := 0; ; attempt++ {
 		result, err := e.Poller.PollPullRequest(ctx, req)
+		invoke.ReportProgress(ctx)
 		if err != nil {
 			if ciPollDeadlineExceeded(parentCtx, ctx) {
 				return ciPollTimeoutOutcome(timeout), nil

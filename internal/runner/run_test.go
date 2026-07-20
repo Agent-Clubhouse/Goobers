@@ -255,8 +255,9 @@ type blockingDeterministic struct {
 	result   apiv1.ResultEnvelope
 }
 
-func (b *blockingDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+func (b *blockingDeterministic) Run(ctx context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	close(b.started)
+	invoke.ReportProgress(ctx)
 	<-b.release
 	close(b.finished)
 	if b.result.Status == "" {
@@ -299,9 +300,17 @@ func TestStageHeartbeatUsesFixedIntervalAndStopsWithAttempt(t *testing.T) {
 		},
 	}
 	recorder := heartbeatRecorder{events: make(chan journal.Event, 1)}
-	heartbeat := r.startStageHeartbeat(recorder, "implement", 2, journal.AttemptPolicy)
+	ctx, heartbeat := r.startStageHeartbeat(context.Background(), recorder, "implement", 2, journal.AttemptPolicy)
 
 	ticker.ticks <- time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	select {
+	case event := <-recorder.events:
+		t.Fatalf("heartbeat without executor progress = %+v", event)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	invoke.ReportProgress(ctx)
+	ticker.ticks <- time.Date(2026, time.July, 20, 9, 1, 0, 0, time.UTC)
 	select {
 	case event := <-recorder.events:
 		if event.Type != journal.EventStageHeartbeat ||
@@ -326,7 +335,7 @@ func TestStageHeartbeatUsesFixedIntervalAndStopsWithAttempt(t *testing.T) {
 		t.Fatal("heartbeat ticker was not stopped")
 	}
 
-	ticker.ticks <- time.Date(2026, time.July, 20, 9, 1, 0, 0, time.UTC)
+	ticker.ticks <- time.Date(2026, time.July, 20, 9, 2, 0, 0, time.UTC)
 	select {
 	case event := <-recorder.events:
 		t.Fatalf("heartbeat after attempt completion = %+v", event)

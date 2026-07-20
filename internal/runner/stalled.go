@@ -28,16 +28,32 @@ type activeRunResult struct {
 	err    error
 }
 
-type activeRun struct {
-	attemptCtx context.Context
-	cancel     context.CancelCauseFunc
-	done       chan struct{}
-	journal    *journal.Run
+type takeoverClaim int
 
-	mu        sync.Mutex
-	request   *stalledRequest
-	completed bool
-	outcome   activeRunResult
+const (
+	takeoverClaimed takeoverClaim = iota
+	takeoverReady
+	takeoverOwnerTerminalizing
+	takeoverAlreadyClaimed
+)
+
+type activeRun struct {
+	attemptCtx   context.Context
+	cancel       context.CancelCauseFunc
+	done         chan struct{}
+	ownerDone    chan struct{}
+	takeoverDone chan struct{}
+	journal      *journal.Run
+
+	mu                 sync.Mutex
+	request            *stalledRequest
+	ownerFinished      bool
+	ownerOutcome       activeRunResult
+	ownerTerminalizing bool
+	takenOver          bool
+	takeoverOutcome    activeRunResult
+	completed          bool
+	outcome            activeRunResult
 }
 
 type activeRunSet struct {
@@ -49,7 +65,14 @@ type activeRunContextKey struct{}
 
 func (r *Runner) withActiveRun(ctx context.Context, runID string, jr *journal.Run, run func(context.Context) (Result, error)) (Result, error) {
 	attemptCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
-	active := &activeRun{attemptCtx: attemptCtx, cancel: cancel, done: make(chan struct{}), journal: jr}
+	active := &activeRun{
+		attemptCtx:   attemptCtx,
+		cancel:       cancel,
+		done:         make(chan struct{}),
+		ownerDone:    make(chan struct{}),
+		takeoverDone: make(chan struct{}),
+		journal:      jr,
+	}
 
 	r.active.mu.Lock()
 	if r.active.runs == nil {
@@ -63,19 +86,48 @@ func (r *Runner) withActiveRun(ctx context.Context, runID string, jr *journal.Ru
 	r.active.runs[runID] = active
 	r.active.mu.Unlock()
 
-	result, err := run(context.WithValue(ctx, activeRunContextKey{}, active))
+	// Keep the public Start/Resume owner outside the workflow goroutine so a
+	// watchdog takeover can return even if an invocation ignores cancellation.
+	ownedCtx := context.WithValue(ctx, activeRunContextKey{}, active)
+	go func() {
+		result, err := run(ownedCtx)
+		active.mu.Lock()
+		active.ownerFinished = true
+		active.ownerOutcome = activeRunResult{result: result, err: err}
+		close(active.ownerDone)
+		active.mu.Unlock()
+	}()
+
+	var outcome activeRunResult
+	select {
+	case <-active.ownerDone:
+		active.mu.Lock()
+		takenOver := active.takenOver
+		outcome = active.ownerOutcome
+		active.mu.Unlock()
+		if takenOver {
+			<-active.takeoverDone
+			active.mu.Lock()
+			outcome = active.takeoverOutcome
+			active.mu.Unlock()
+		}
+	case <-active.takeoverDone:
+		active.mu.Lock()
+		outcome = active.takeoverOutcome
+		active.mu.Unlock()
+	}
 
 	r.active.mu.Lock()
 	delete(r.active.runs, runID)
 	active.mu.Lock()
 	active.completed = true
-	active.outcome = activeRunResult{result: result, err: err}
+	active.outcome = outcome
 	cancel = active.cancel
 	close(active.done)
 	active.mu.Unlock()
 	r.active.mu.Unlock()
 	cancel(nil)
-	return result, err
+	return outcome.result, outcome.err
 }
 
 func (r *Runner) activeRun(runID string) *activeRun {
@@ -103,11 +155,47 @@ func (r *activeRun) requestEscalation(now time.Time, timeout time.Duration) (req
 	return requested, false
 }
 
-func (r *activeRun) wait() activeRunResult {
-	<-r.done
+func (r *activeRun) waitFor(timeout time.Duration) (activeRunResult, bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-r.done:
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.outcome, true
+	case <-timer.C:
+		return activeRunResult{}, false
+	}
+}
+
+func (r *activeRun) claimTakeover() (activeRunResult, takeoverClaim) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.outcome
+	switch {
+	case r.completed:
+		return r.outcome, takeoverReady
+	case r.ownerFinished:
+		return r.ownerOutcome, takeoverReady
+	case r.ownerTerminalizing:
+		return activeRunResult{}, takeoverOwnerTerminalizing
+	case r.takenOver:
+		select {
+		case <-r.takeoverDone:
+			return r.takeoverOutcome, takeoverReady
+		default:
+			return activeRunResult{}, takeoverAlreadyClaimed
+		}
+	default:
+		r.takenOver = true
+		return activeRunResult{}, takeoverClaimed
+	}
+}
+
+func (r *activeRun) completeTakeover(outcome activeRunResult) {
+	r.mu.Lock()
+	r.takeoverOutcome = outcome
+	close(r.takeoverDone)
+	r.mu.Unlock()
 }
 
 func stalledRequestFromContext(ctx context.Context) (stalledRequest, bool) {
@@ -213,8 +301,34 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 			return Result{Phase: journal.PhaseRunning}, false, nil
 		}
 		if requested {
-			outcome := active.wait()
-			return outcome.result, outcome.result.Phase == journal.PhaseEscalated, outcome.err
+			grace := r.stalledCancelGrace
+			if grace <= 0 {
+				grace = StalledCancellationGrace
+			}
+			if outcome, ok := active.waitFor(grace); ok {
+				return outcome.result, outcome.result.Phase == journal.PhaseEscalated, outcome.err
+			}
+			outcome, claim := active.claimTakeover()
+			switch claim {
+			case takeoverReady:
+				return outcome.result, outcome.result.Phase == journal.PhaseEscalated, outcome.err
+			case takeoverOwnerTerminalizing, takeoverAlreadyClaimed:
+				terminalGrace := r.stalledTerminalGrace
+				if terminalGrace <= 0 {
+					terminalGrace = StalledTerminalizationGrace
+				}
+				if outcome, ok := active.waitFor(terminalGrace); ok {
+					return outcome.result, outcome.result.Phase == journal.PhaseEscalated, outcome.err
+				}
+				return Result{}, false, fmt.Errorf("runner: stalled run %q did not finish terminalization within %s", runID, grace+terminalGrace)
+			}
+			result, finishErr := r.finishStalled(runID, active.journal, candidate.finalState, 0, stalledRequest{
+				now:          now,
+				timeout:      timeout,
+				lastActivity: candidate.lastActivity,
+			})
+			active.completeTakeover(activeRunResult{result: result, err: finishErr})
+			return result, result.Phase == journal.PhaseEscalated, finishErr
 		}
 	}
 
@@ -265,6 +379,23 @@ func (r *Runner) finishStalledRequest(ctx context.Context, runID string, jr *jou
 	request, ok := stalledRequestFromContext(ctx)
 	if !ok {
 		return Result{}, false, nil
+	}
+	active, activeOK := ctx.Value(activeRunContextKey{}).(*activeRun)
+	if activeOK {
+		active.mu.Lock()
+		takenOver := active.takenOver
+		takeoverDone := active.takeoverDone
+		if !takenOver {
+			active.ownerTerminalizing = true
+		}
+		active.mu.Unlock()
+		if takenOver {
+			<-takeoverDone
+			active.mu.Lock()
+			outcome := active.takeoverOutcome
+			active.mu.Unlock()
+			return outcome.result, true, outcome.err
+		}
 	}
 	result, err := r.finishStalled(runID, jr, finalState, steps, request)
 	return result, true, err

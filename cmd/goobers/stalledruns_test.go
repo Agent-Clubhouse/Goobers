@@ -321,6 +321,34 @@ func TestStalledRunSweepErrorsReachInstanceJournal(t *testing.T) {
 	t.Fatalf("instance journal has no stalled_run_sweep_failed event: %+v", events)
 }
 
+func TestStalledRunSweepReportsMissingRunIdentity(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	if err := os.MkdirAll(filepath.Join(layout.RunsDir(), "missing-identity"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reporter := newSweepErrorReporter(log, "stalled_run_sweep_failed")
+	reporter.report(sweepStalledRuns(layout, nil, nil, log, nil, nil, nil, time.Now(), 45*time.Minute))
+
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Error != nil &&
+			event.Error.Code == "stalled_run_sweep_failed" &&
+			strings.Contains(event.Error.Message, "missing-identity") {
+			return
+		}
+	}
+	t.Fatalf("instance journal has no missing run.yaml sweep failure: %+v", events)
+}
+
 func TestSweepStalledRunsReportsRunOpenFailure(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	runDir := filepath.Join(layout.RunsDir(), "unreadable-run")

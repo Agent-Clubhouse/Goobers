@@ -13,6 +13,15 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
+type wedgedDeterministic struct {
+	started chan struct{}
+}
+
+func (d *wedgedDeterministic) Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	close(d.started)
+	select {}
+}
+
 func TestEscalateStalledUsesTerminalPath(t *testing.T) {
 	now := time.Date(2026, 7, 20, 20, 0, 0, 0, time.UTC)
 	eventTime := now.Add(-2 * time.Hour)
@@ -204,12 +213,21 @@ func TestEscalateStalledInterruptsPostStageHandler(t *testing.T) {
 	r, _ := newTestRunner(t, map[string]stubTaskResult{
 		runID + ":implement": {status: apiv1.ResultBlocked, summary: "waiting on dependency"},
 	}, gate.NewAutomatedEvaluator())
+	r.stalledCancelGrace = 20 * time.Millisecond
+	r.stalledTerminalGrace = time.Second
 	handlerStarted := make(chan struct{})
 	r.cfg.Blocked = func(ctx context.Context, _ BlockedOutcome) error {
 		close(handlerStarted)
 		<-ctx.Done()
 		return ctx.Err()
 	}
+	var prepareCalls int
+	r.cfg.PrepareTerminal = func(string, journal.RunPhase, *journal.Run) error {
+		prepareCalls++
+		time.Sleep(100 * time.Millisecond)
+		return nil
+	}
+
 	machine := fixtureMachine(t)
 
 	type startOutcome struct {
@@ -249,5 +267,87 @@ func TestEscalateStalledInterruptsPostStageHandler(t *testing.T) {
 	outcome := <-done
 	if outcome.err != nil || outcome.result.Phase != journal.PhaseEscalated {
 		t.Fatalf("Start() = %+v, %v", outcome.result, outcome.err)
+	}
+	if prepareCalls != 1 {
+		t.Fatalf("terminal preparation calls = %d, want 1", prepareCalls)
+	}
+}
+
+func TestEscalateStalledTakesOverWedgedOwnerAfterIdleHeartbeatTicks(t *testing.T) {
+	wedged := &wedgedDeterministic{started: make(chan struct{})}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return wedged, nil
+	}, gate.NewAutomatedEvaluator())
+	r.stalledCancelGrace = 20 * time.Millisecond
+	ticker := &fakeHeartbeatTicker{
+		ticks:   make(chan time.Time),
+		stopped: make(chan struct{}),
+	}
+	r.newHeartbeatTicker = func(time.Duration) heartbeatTicker { return ticker }
+
+	machine := fixtureMachine(t)
+	type startOutcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan startOutcome, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID:   "wedged-owner",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{
+				Provider: apiv1.ProviderGitHub,
+				Owner:    "acme",
+				Name:     "web",
+				Branch:   "main",
+			},
+		})
+		done <- startOutcome{result: result, err: err}
+	}()
+
+	select {
+	case <-wedged.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("wedged executor did not start")
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case ticker.ticks <- time.Now():
+		case <-time.After(time.Second):
+			t.Fatal("heartbeat goroutine did not receive idle tick")
+		}
+	}
+
+	runDir := filepath.Join(runsDir, "wedged-owner")
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventStageHeartbeat {
+			t.Fatalf("idle ticker masked wedged executor with heartbeat: %+v", event)
+		}
+	}
+
+	result, escalated, err := r.EscalateStalled("wedged-owner", time.Now().Add(2*time.Hour), 45*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !escalated || result.Phase != journal.PhaseEscalated {
+		t.Fatalf("escalated=%v result=%+v", escalated, result)
+	}
+	select {
+	case outcome := <-done:
+		if outcome.err != nil || outcome.result.Phase != journal.PhaseEscalated {
+			t.Fatalf("Start() = %+v, %v", outcome.result, outcome.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not return after watchdog takeover")
 	}
 }

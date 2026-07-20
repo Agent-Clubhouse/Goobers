@@ -9,6 +9,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/goobers/goobers/internal/invoke"
 )
 
 // DefaultTimeout bounds an agentic harness session when the Executor has no
@@ -55,10 +57,11 @@ const DefaultMaxTranscriptBytes int64 = 4 << 20 // 4 MiB
 // chatty or looping agentic session can never balloon daemon memory or write
 // an unbounded blob into the journal (#245).
 type syncBuffer struct {
-	mu      sync.Mutex
-	buf     bytes.Buffer
-	limit   int64
-	dropped int64
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	limit    int64
+	dropped  int64
+	progress func()
 }
 
 func newTranscriptBuffer(limit int64) *syncBuffer {
@@ -69,6 +72,9 @@ func newTranscriptBuffer(limit int64) *syncBuffer {
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {
+	if len(p) > 0 && b.progress != nil {
+		b.progress()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	n := len(p)
@@ -213,6 +219,7 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	buf := newTranscriptBuffer(req.MaxTranscriptBytes)
+	buf.progress = func() { invoke.ReportProgress(runCtx) }
 	cmd.Stdout = buf
 	cmd.Stderr = buf
 
