@@ -10,11 +10,13 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/providers"
 )
 
 func TestTraceJSONIncludesFailedRunErrorAndSpans(t *testing.T) {
@@ -139,6 +141,65 @@ func TestTraceJSONPreservesAttemptClassCompatibility(t *testing.T) {
 	}
 	if strings.Join(classes, ",") != ",policy" {
 		t.Fatalf("attempt classes = %v, want empty initial class then policy", classes)
+	}
+}
+
+func TestTraceRendersPersistedCIFailureEvidence(t *testing.T) {
+	root := t.TempDir()
+	const runID = "ci-failure-evidence"
+	run := newTraceTestRun(t, root, runID)
+	if _, err := run.RecordArtifact("unrelated/"+executor.CIChecksArtifactName, []byte("not CI evidence")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageStarted, Stage: "ci-poll", Attempt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	artifactData, err := json.Marshal(executor.CIChecksArtifact{
+		Checks: []providers.CheckDetail{
+			{Name: "unit-tests", State: providers.CheckStateFailing, URL: "https://ci.example/unit", Summary: "panic in TestWidget\nfull stack"},
+			{Name: "integration", State: providers.CheckStatePending, URL: "https://ci.example/integration", Summary: "still running"},
+			{Name: "lint\ninjected", State: providers.CheckStateFailing, URL: "https://ci.example/lint\nignored", Summary: "format mismatch\r\nsecond line"},
+		},
+		Metadata: executor.CIChecksArtifactMetadata{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := run.RecordArtifact(executor.CIChecksArtifactName, artifactData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "ci-poll", Attempt: 1,
+		Status:    string(apiv1.ResultSuccess),
+		Outputs:   map[string]any{executor.OutputCIStatus: string(providers.CheckStateFailing)},
+		Artifacts: []journal.Ref{ref},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", runID, root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{
+		"CI failed checks:\n",
+		`check="unit-tests" summary="panic in TestWidget" url="https://ci.example/unit"`,
+		`check="lint\ninjected" summary="format mismatch" url="https://ci.example/lint\nignored"`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("trace output missing %q:\n%s", want, stdout)
+		}
+	}
+	for _, unwanted := range []string{"full stack", "second line", `check="integration"`} {
+		if strings.Contains(stdout, unwanted) {
+			t.Fatalf("trace output contains %q:\n%s", unwanted, stdout)
+		}
 	}
 }
 

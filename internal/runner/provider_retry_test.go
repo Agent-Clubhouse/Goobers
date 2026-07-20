@@ -31,8 +31,8 @@ func TestRunnerDoesNotPolicyRetryTerminalCIPollProviderFailure(t *testing.T) {
 	machine := ciPollRetryFixtureMachine(t, 3)
 	cause := errors.New("GET /pulls/9 failed: status 401: bad credentials")
 	poller := &terminalCIPoller{err: cause}
-	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
-		ciPoll, err := executor.NewCIPollExecutor(poller)
+	r, runsDir := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		ciPoll, err := executor.NewCIPollExecutor(poller, rec)
 		if err != nil {
 			return nil, err
 		}

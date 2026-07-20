@@ -2,11 +2,15 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -22,7 +26,34 @@ import (
 // ResultEnvelope.Status reflects whether it *successfully determined* an
 // outcome, not the outcome itself: a failing CI check is still a successful
 // poll.
-const OutputCIStatus = "ciStatus"
+const (
+	OutputCIStatus       = "ciStatus"
+	OutputCIFailedChecks = "ciFailedChecks"
+	CIChecksArtifactName = "ci-checks.json"
+)
+
+const (
+	maxCIFailedChecksOutputRunes = 256
+	maxCICheckSummaryBytes       = 1 << 10
+	maxCIChecksArtifactBytes     = 64 << 10
+	maxCIChecks                  = 20
+)
+
+// CIChecksArtifact is the durable, bounded per-check evidence emitted when CI
+// fails. Checks retain provider order and exclude passing checks.
+type CIChecksArtifact struct {
+	Checks   []providers.CheckDetail  `json:"checks"`
+	Metadata CIChecksArtifactMetadata `json:"metadata"`
+}
+
+// CIChecksArtifactMetadata records every lossy bound applied while curating a
+// ci-checks.json artifact.
+type CIChecksArtifactMetadata struct {
+	Truncated          bool `json:"truncated"`
+	SummariesTruncated int  `json:"summariesTruncated,omitempty"`
+	SummariesDropped   int  `json:"summariesDropped,omitempty"`
+	ChecksDropped      int  `json:"checksDropped,omitempty"`
+}
 
 // CIStatusTimeout is the OutputCIStatus value CIPollExecutor sets when it
 // gives up waiting for a terminal check state before the overall Timeout
@@ -168,6 +199,8 @@ func durationInput(env apiv1.InvocationEnvelope, key string) (time.Duration, err
 // downstream automated gate to branch on.
 type CIPollExecutor struct {
 	Poller PRPoller
+	// Journal records bounded per-check failure evidence. Required.
+	Journal ArtifactRecorder
 	// Interval/MaxInterval/Timeout are this executor's defaults; a positive
 	// value on CIPollConfig overrides them per call.
 	Interval    time.Duration
@@ -184,11 +217,14 @@ type CIPollExecutor struct {
 }
 
 // NewCIPollExecutor builds a CIPollExecutor with real-clock defaults.
-func NewCIPollExecutor(poller PRPoller) (*CIPollExecutor, error) {
+func NewCIPollExecutor(poller PRPoller, recorder ArtifactRecorder) (*CIPollExecutor, error) {
 	if poller == nil {
 		return nil, errors.New("executor: poller must not be nil")
 	}
-	return &CIPollExecutor{Poller: poller}, nil
+	if recorder == nil {
+		return nil, errors.New("executor: journal must not be nil")
+	}
+	return &CIPollExecutor{Poller: poller, Journal: recorder}, nil
 }
 
 // Run polls to a terminal check state or until cfg's timeout expires.
@@ -278,7 +314,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		case providers.CheckStatePassing:
 			return ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing"), nil
 		case providers.CheckStateFailing:
-			return ciPollOutcome(providers.CheckStateFailing, "ci-poll: checks failing"), nil
+			return e.ciPollFailureOutcome(result)
 		}
 		if now().After(deadline) {
 			return ciPollTimeoutOutcome(timeout), nil
@@ -289,6 +325,138 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 			}
 			return apiv1.ResultEnvelope{}, err
 		}
+	}
+}
+
+func (e *CIPollExecutor) ciPollFailureOutcome(result providers.PullRequestPollResult) (apiv1.ResultEnvelope, error) {
+	outcome := ciPollOutcome(providers.CheckStateFailing, "ci-poll: checks failing")
+	names := failingCheckNames(result.Checks)
+	if len(names) == 0 {
+		return outcome, nil
+	}
+
+	data, err := marshalCIChecksArtifact(result.Checks)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: encode %s: %w", CIChecksArtifactName, err)
+	}
+	ref, err := e.Journal.RecordArtifact(CIChecksArtifactName, data)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record %s: %w", CIChecksArtifactName, err)
+	}
+	outcome.Outputs[OutputCIFailedChecks] = boundFailedCheckNames(names)
+	outcome.Artifacts = []apiv1.ArtifactPointer{artifactPointer(ref, "application/json")}
+	return outcome, nil
+}
+
+func failingCheckNames(checks []providers.CheckDetail) []string {
+	names := make([]string, 0, len(checks))
+	for _, check := range checks {
+		if check.State == providers.CheckStateFailing {
+			names = append(names, strings.ToValidUTF8(check.Name, "\uFFFD"))
+		}
+	}
+	return names
+}
+
+func boundFailedCheckNames(names []string) string {
+	joined := strings.Join(names, ",")
+	if utf8.RuneCountInString(joined) <= maxCIFailedChecksOutputRunes {
+		return joined
+	}
+
+	for retained := len(names) - 1; retained > 0; retained-- {
+		marker := fmt.Sprintf("…(+%d more)", len(names)-retained)
+		candidate := strings.Join(names[:retained], ",") + "," + marker
+		if utf8.RuneCountInString(candidate) <= maxCIFailedChecksOutputRunes {
+			return candidate
+		}
+	}
+
+	marker := fmt.Sprintf("…(+%d more)", len(names))
+	budget := maxCIFailedChecksOutputRunes - utf8.RuneCountInString(marker)
+	if budget <= 0 {
+		return marker
+	}
+	first := []rune(names[0])
+	if len(first) > budget {
+		first = first[:budget]
+	}
+	return string(first) + marker
+}
+
+func marshalCIChecksArtifact(checks []providers.CheckDetail) ([]byte, error) {
+	artifact := CIChecksArtifact{
+		Checks: make([]providers.CheckDetail, 0, min(len(checks), maxCIChecks)),
+	}
+	nonPassing := 0
+	for _, check := range checks {
+		if check.State == providers.CheckStatePassing {
+			continue
+		}
+		nonPassing++
+		if len(artifact.Checks) == maxCIChecks {
+			continue
+		}
+		check.Name = strings.ToValidUTF8(check.Name, "\uFFFD")
+		check.URL = strings.ToValidUTF8(check.URL, "\uFFFD")
+		check.Summary = strings.ToValidUTF8(check.Summary, "\uFFFD")
+		if bounded, truncated := truncateUTF8Bytes(check.Summary, maxCICheckSummaryBytes); truncated {
+			check.Summary = bounded
+			artifact.Metadata.SummariesTruncated++
+		}
+		artifact.Checks = append(artifact.Checks, check)
+	}
+	artifact.Metadata.ChecksDropped = nonPassing - len(artifact.Checks)
+	artifact.Metadata.Truncated = artifact.Metadata.ChecksDropped > 0 || artifact.Metadata.SummariesTruncated > 0
+
+	data, err := json.Marshal(artifact)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) <= maxCIChecksArtifactBytes {
+		return data, nil
+	}
+
+	artifact.Metadata.Truncated = true
+	for i := len(artifact.Checks) - 1; i >= 0 && len(data) > maxCIChecksArtifactBytes; i-- {
+		if artifact.Checks[i].Summary == "" {
+			continue
+		}
+		artifact.Checks[i].Summary = ""
+		artifact.Metadata.SummariesDropped++
+		data, err = json.Marshal(artifact)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for len(data) > maxCIChecksArtifactBytes && len(artifact.Checks) > 0 {
+		artifact.Checks = artifact.Checks[:len(artifact.Checks)-1]
+		artifact.Metadata.ChecksDropped++
+		data, err = json.Marshal(artifact)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(data) > maxCIChecksArtifactBytes {
+		return nil, fmt.Errorf("metadata exceeds %d-byte artifact limit", maxCIChecksArtifactBytes)
+	}
+	return data, nil
+}
+
+func truncateUTF8Bytes(value string, limit int) (string, bool) {
+	if len(value) <= limit {
+		return value, false
+	}
+	end := limit
+	for end > 0 && !utf8.ValidString(value[:end]) {
+		end--
+	}
+	return value[:end], true
+}
+
+func artifactPointer(ref journal.Ref, mediaType string) apiv1.ArtifactPointer {
+	return apiv1.ArtifactPointer{
+		Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: mediaType,
 	}
 }
 

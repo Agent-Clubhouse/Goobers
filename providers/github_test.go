@@ -565,7 +565,7 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 		writeJSON(t, w, map[string]interface{}{
 			"check_runs": []map[string]interface{}{
 				{"name": "unit-tests", "status": "completed", "conclusion": "success", "html_url": "https://ci/unit"},
-				{"name": "e2e", "status": "in_progress", "html_url": "https://ci/e2e"},
+				{"name": "e2e", "status": "in_progress", "html_url": "https://ci/e2e", "output": map[string]interface{}{"summary": "waiting for a runner"}},
 			},
 		})
 	})
@@ -599,6 +599,16 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 	}
 	if len(result.Checks) != 3 {
 		t.Fatalf("len(Checks) = %d, want 3 (1 status + 2 check-runs)", len(result.Checks))
+	}
+	wantChecks := []CheckDetail{
+		{Name: "legacy-ci", State: CheckStateFailing, URL: "https://ci/legacy", Summary: "boom"},
+		{Name: "unit-tests", State: CheckStatePassing, URL: "https://ci/unit"},
+		{Name: "e2e", State: CheckStatePending, URL: "https://ci/e2e", Summary: "waiting for a runner"},
+	}
+	for i := range wantChecks {
+		if result.Checks[i] != wantChecks[i] {
+			t.Fatalf("Checks[%d] = %+v, want %+v", i, result.Checks[i], wantChecks[i])
+		}
 	}
 	if result.Mergeable == nil || !*result.Mergeable {
 		t.Fatalf("Mergeable = %v, want true", result.Mergeable)
