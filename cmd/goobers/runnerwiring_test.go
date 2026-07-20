@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,27 @@ func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
 	}
 	if len(copilot.AuthCheckArgs) == 0 {
 		t.Fatal("registered Copilot adapter is missing its authentication preflight")
+	}
+}
+
+// runValidate and daemon startup both call compiledMachines, so this golden
+// list is the automated-check contract for every surviving config admission
+// path. A registry change must update this list rather than silently drifting.
+func TestValidationAutomatedChecksGolden(t *testing.T) {
+	want := []string{
+		"ci-status",
+		"land-outcome",
+		"output-equals",
+		"output-matches",
+		"output-not-equals",
+		"output-numeric-gte",
+		"output-numeric-lt",
+		"output-numeric-lte",
+		"queue-outcome",
+		"status-equals",
+	}
+	if got := knownAutomatedCheckNames(); !slices.Equal(got, want) {
+		t.Fatalf("validation automated checks = %v, want %v", got, want)
 	}
 }
 
