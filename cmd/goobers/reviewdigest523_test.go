@@ -15,7 +15,8 @@ import (
 // #523's CLI-level tests for the verdict-level digest cache (the maintainer
 // ruling's core deliverable): gather-sibling-context computes reviewDigest
 // and checks the selected PR's own most recent verdict comment for a
-// digest match, emitting cachedVerdictJson only on a genuine match — the
+// digest match, rebinding a genuine match to the current deterministic pin,
+// and emitting it as cachedVerdictJson — the
 // signal internal/runner's evaluateGate uses to skip the reviewer's LLM
 // call entirely (proven at the gate.Evaluator layer by
 // TestEvaluatorReusesCachedVerdictWithoutReviewerCall in internal/gate).
@@ -130,7 +131,8 @@ func toChangedFiles(files []fakePRFile) []providers.ChangedFile {
 // TestGatherSiblingContextFindsMatchingCachedVerdict is #523's headline
 // verdict-cache acceptance: a prior run's posted verdict comment whose
 // Digest matches this gather's freshly computed reviewDigest is surfaced as
-// cachedVerdictJson, reused verbatim.
+// cachedVerdictJson with its provenance preserved and its SHA pin rebound to
+// this gather.
 func TestGatherSiblingContextFindsMatchingCachedVerdict(t *testing.T) {
 	root, server, wantDigest := seedVerdictCacheFixture(t)
 	prior := apiv1.Verdict{
@@ -173,7 +175,10 @@ func TestGatherSiblingContextFindsMatchingCachedVerdict(t *testing.T) {
 		t.Fatalf("unmarshal cachedVerdictJson: %v", err)
 	}
 	if got.Decision != prior.Decision || got.Digest != prior.Digest || got.SourceRunID != prior.SourceRunID {
-		t.Fatalf("cached verdict = %+v, want %+v reused verbatim", got, prior)
+		t.Fatalf("cached verdict = %+v, want decision and provenance from %+v", got, prior)
+	}
+	if got.HeadSHA != "sha10head" || got.BaseSHA != "shamainbase" {
+		t.Fatalf("cached verdict pin = (%q, %q), want current gather pin (sha10head, shamainbase)", got.HeadSHA, got.BaseSHA)
 	}
 	if !strings.Contains(stdout, "verdict cache HIT") {
 		t.Fatalf("stdout = %q, want it to report a verdict cache hit", stdout)
@@ -237,11 +242,18 @@ func TestGatherSiblingContextCleanRebaseHitsCache(t *testing.T) {
 		t.Fatalf("unmarshal cachedVerdictJson: %v", err)
 	}
 	if got.Digest != preRebaseDigest {
-		t.Fatalf("cached verdict digest = %q, want the pre-rebase verdict's own digest %q reused verbatim", got.Digest, preRebaseDigest)
+		t.Fatalf("cached verdict digest = %q, want the pre-rebase verdict's own digest %q preserved", got.Digest, preRebaseDigest)
+	}
+	if got.SourceRunID != prior.SourceRunID {
+		t.Fatalf("cached verdict source run = %q, want original producer %q preserved", got.SourceRunID, prior.SourceRunID)
+	}
+	if got.HeadSHA != "sha30-after-rebase" || got.BaseSHA != "shamainbase" {
+		t.Fatalf("cached verdict pin = (%q, %q), want current gather pin (sha30-after-rebase, shamainbase)", got.HeadSHA, got.BaseSHA)
 	}
 	if !strings.Contains(stdout, "verdict cache HIT") {
 		t.Fatalf("stdout = %q, want it to report a verdict cache hit", stdout)
 	}
+	assertCachedVerdictApplies(t, root, server, 30, got)
 }
 
 // TestGatherSiblingContextBaseMovementDisjointFromPRStillHitsCache is issue
@@ -281,6 +293,17 @@ func TestGatherSiblingContextBaseMovementDisjointFromPRStillHitsCache(t *testing
 	if result.CachedVerdictJSON == "" {
 		t.Fatalf("cachedVerdictJson is empty — base moved disjointly from this PR's own files and must not have invalidated the cache")
 	}
+	var cached apiv1.Verdict
+	if err := json.Unmarshal([]byte(result.CachedVerdictJSON), &cached); err != nil {
+		t.Fatalf("unmarshal cachedVerdictJson: %v", err)
+	}
+	if cached.Digest != prior.Digest || cached.SourceRunID != prior.SourceRunID {
+		t.Fatalf("cached verdict provenance = (%q, %q), want (%q, %q)", cached.Digest, cached.SourceRunID, prior.Digest, prior.SourceRunID)
+	}
+	if cached.HeadSHA != "sha40head" || cached.BaseSHA != "shamainbase-v2" {
+		t.Fatalf("cached verdict pin = (%q, %q), want current gather pin (sha40head, shamainbase-v2)", cached.HeadSHA, cached.BaseSHA)
+	}
+	assertCachedVerdictApplies(t, root, server, 40, cached)
 }
 
 // TestGatherSiblingContextBaseMovementIntersectingPRMissesCache is the
@@ -382,6 +405,38 @@ func TestGatherSiblingContextNoVerdictCacheFlagSkipsLookup(t *testing.T) {
 type siblingContextResult struct {
 	ReviewDigest      string `json:"reviewDigest"`
 	CachedVerdictJSON string `json:"cachedVerdictJson"`
+}
+
+func assertCachedVerdictApplies(t *testing.T, root string, server *fakeGitHubServer, selectedNumber int, cached apiv1.Verdict) {
+	t.Helper()
+	const runID = "run-review"
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
+	seedGateVerdictJournal(t, root, runID, cached)
+
+	applyDir := t.TempDir()
+	t.Chdir(applyDir)
+	code, stdout, stderr := runArgs(t, "apply-verdict", root)
+	if code != 0 {
+		t.Fatalf("apply cached verdict: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(applyDir, "verdict-result.json"))
+	if err != nil {
+		t.Fatalf("read verdict-result.json: %v", err)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal verdict-result.json: %v", err)
+	}
+	if result["decision"] != "pass" || result["reason"] != "" {
+		t.Fatalf("cached verdict result = %v, want applied pass without a void reason", result)
+	}
+
+	server.mu.Lock()
+	reviews := append([]fakeReview(nil), server.prs[selectedNumber].reviews...)
+	server.mu.Unlock()
+	if len(reviews) != 1 || reviews[0].commitSHA != cached.HeadSHA {
+		t.Fatalf("native reviews = %+v, want one review pinned to rebound head %q", reviews, cached.HeadSHA)
+	}
 }
 
 func readSiblingContextResult(t *testing.T, root string) siblingContextResult {

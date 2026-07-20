@@ -265,6 +265,12 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 				// than aborting the gather.
 				pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
 			} else if cached != nil {
+				// A digest match proves the prior review still applies to this
+				// evaluation even when an equivalent rebase or disjoint base
+				// advance changed the raw SHAs. Rebind the cached verdict to
+				// this gather's authoritative pin before the runner journals it.
+				cached.HeadSHA = selectedHeadSHA
+				cached.BaseSHA = selectedBaseSHA
 				data, merr := json.Marshal(cached)
 				if merr != nil {
 					pf(stderr, "warning: marshal cached verdict: %v\n", merr)
