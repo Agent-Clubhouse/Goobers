@@ -95,36 +95,39 @@ func TestBaseEnvStillBlocksSecretShapedVars(t *testing.T) {
 }
 
 // TestBuildStageEnv_InjectsRunContextOnlyWhenRequested is #322's core: the
-// run's operational identity (GOOBERS_RUN_ID/GOOBERS_WORKFLOW/
-// GOOBERS_INSTANCE_ROOT) is injected only when injectRunContext is set — i.e.
-// only for a stage whose command is the goobers CLI. A stage that runs the
-// project's own build/test suite gets a clean env, closing the leak at the
-// source. Declared inputs (GOOBERS_INPUT_*) are the stage's own config and
-// flow to every stage kind regardless. injector is nil (no declared caps), so
-// buildStageEnv returns before the credential/registrar path.
+// run's operational identity (GOOBERS_RUN_ID/GOOBERS_GAGGLE/
+// GOOBERS_WORKFLOW/GOOBERS_INSTANCE_ROOT) is injected only when
+// injectRunContext is set — i.e. only for a stage whose command is the goobers
+// CLI. A stage that runs the project's own build/test suite gets a clean env,
+// closing the leak at the source. Declared inputs (GOOBERS_INPUT_*) are the
+// stage's own config and flow to every stage kind regardless. injector is nil
+// (no declared caps), so buildStageEnv returns before the credential/registrar
+// path.
 func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 	inputs := map[string]interface{}{"trustLabel": "goobers:approved"}
 
-	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "/instances/demo", true, inputs, nil)
+	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "/instances/demo", true, inputs, map[string]string{"FEATURE_FLAG": "enabled"})
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=true): %v", err)
 	}
 	for _, want := range []string{
 		"GOOBERS_RUN_ID=run-123",
+		"GOOBERS_GAGGLE=alpha",
 		"GOOBERS_WORKFLOW=implementation",
 		"GOOBERS_INSTANCE_ROOT=/instances/demo",
 		"GOOBERS_INPUT_TRUSTLABEL=goobers:approved",
+		"FEATURE_FLAG=enabled",
 	} {
 		if !hasEnv(withCtx, want) {
 			t.Errorf("injectRunContext=true: missing %q in %v", want, withCtx)
 		}
 	}
 
-	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "/instances/demo", false, inputs, nil)
+	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "/instances/demo", false, inputs, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=false): %v", err)
 	}
-	for _, prefix := range []string{"GOOBERS_RUN_ID", "GOOBERS_WORKFLOW", "GOOBERS_INSTANCE_ROOT"} {
+	for _, prefix := range []string{"GOOBERS_RUN_ID", "GOOBERS_GAGGLE", "GOOBERS_WORKFLOW", "GOOBERS_INSTANCE_ROOT"} {
 		if hasEnvPrefix(noCtx, prefix) {
 			t.Errorf("injectRunContext=false: %s leaked into %v", prefix, noCtx)
 		}
@@ -136,7 +139,7 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 
 	// Even when requested, GOOBERS_INSTANCE_ROOT is omitted if unset (empty
 	// instanceRoot — see ShellExecutor.InstanceRoot), preserving prior behavior.
-	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "", true, nil, nil)
+	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "", true, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(empty instanceRoot): %v", err)
 	}
@@ -152,6 +155,7 @@ func TestBuildStageEnvIncludesDeclaredEnvironment(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		"",
 		"",
 		"",
 		"",
