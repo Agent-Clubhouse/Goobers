@@ -6,6 +6,7 @@ import (
 	"io"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/desktopnotify"
 	"github.com/goobers/goobers/internal/instance"
@@ -89,6 +90,8 @@ func withDesktopNotifications(override notifyFlag, warnings io.Writer) scheduler
 
 var newNativeNotifier = desktopnotify.NewNative
 
+const desktopNotificationTimeout = 5 * time.Second
+
 func buildTerminalNotifier(
 	l instance.Layout,
 	cfg *instance.Config,
@@ -117,7 +120,9 @@ func buildTerminalNotifier(
 		if err != nil {
 			return err
 		}
-		return native.Notify(context.Background(), message)
+		ctx, cancel := context.WithTimeout(context.Background(), desktopNotificationTimeout)
+		defer cancel()
+		return native.Notify(ctx, message)
 	}
 }
 

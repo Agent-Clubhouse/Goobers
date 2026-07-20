@@ -217,9 +217,10 @@ type Config struct {
 	// FinalizeTerminal performs instance-level cleanup for every terminal run,
 	// after run.finished is durable. Optional; errors are surfaced to the caller.
 	FinalizeTerminal TerminalFinalizer
-	// NotifyTerminal reports a newly-terminal live run after run.finished is
-	// durable and before instance-level cleanup. Optional and best-effort:
-	// errors never affect the run and startup recovery does not invoke it.
+	// NotifyTerminal reports a run newly made terminal by this Runner after
+	// run.finished is durable and before instance-level cleanup. Optional and
+	// best-effort: errors never affect the run. Recovery of a run that was
+	// already terminal does not invoke it.
 	NotifyTerminal TerminalNotifier
 	// MaxSteps overrides DefaultMaxSteps when > 0.
 	MaxSteps int
@@ -1285,13 +1286,17 @@ func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, f
 		return Result{}, fmt.Errorf("runner: journal run.finished: %w", err)
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
-	if r.cfg.NotifyTerminal != nil {
-		_ = r.cfg.NotifyTerminal(runID, phase, finalState)
-	}
+	r.notifyTerminal(runID, phase, finalState)
 	if err := r.FinalizeTerminal(runID, phase); err != nil {
 		return res, err
 	}
 	return res, nil
+}
+
+func (r *Runner) notifyTerminal(runID string, phase journal.RunPhase, finalState string) {
+	if r.cfg.NotifyTerminal != nil {
+		_ = r.cfg.NotifyTerminal(runID, phase, finalState)
+	}
 }
 
 func (r *Runner) prepareTerminal(runID string, phase journal.RunPhase, jr *journal.Run) error {

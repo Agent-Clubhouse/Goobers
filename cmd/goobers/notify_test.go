@@ -6,6 +6,7 @@ import (
 	"flag"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/desktopnotify"
 	"github.com/goobers/goobers/internal/instance"
@@ -13,12 +14,15 @@ import (
 )
 
 type recordingDesktopNotifier struct {
-	messages []desktopnotify.Message
-	err      error
+	messages    []desktopnotify.Message
+	deadline    time.Time
+	hasDeadline bool
+	err         error
 }
 
-func (n *recordingDesktopNotifier) Notify(_ context.Context, message desktopnotify.Message) error {
+func (n *recordingDesktopNotifier) Notify(ctx context.Context, message desktopnotify.Message) error {
 	n.messages = append(n.messages, message)
+	n.deadline, n.hasDeadline = ctx.Deadline()
 	return n.err
 }
 
@@ -205,5 +209,8 @@ func TestTerminalNotifierFiltersCompletedAndSendsEscalated(t *testing.T) {
 	}
 	if len(native.messages) != 1 {
 		t.Fatalf("notification count = %d, want 1", len(native.messages))
+	}
+	if !native.hasDeadline || native.deadline.After(time.Now().Add(desktopNotificationTimeout)) {
+		t.Fatalf("native notification deadline = %v, want a deadline within %s", native.deadline, desktopNotificationTimeout)
 	}
 }
