@@ -272,6 +272,12 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			return 1
 		}
 	}
+	if setup.LegacyWorktrees != nil {
+		if err := runner.ReapScratchWorkspaces(filepath.Join(setup.LegacyWorktrees.Root, "scratch")); err != nil {
+			pf(stderr, "error: reap legacy scratch workspaces: %v\n", err)
+			return 1
+		}
+	}
 
 	// Reap crash-orphaned worktrees before anything tries to resume into one
 	// of their keys (issue #136): a mid-stage crash otherwise leaves a
@@ -284,6 +290,19 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			IsRunTerminal: worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
 		}); err != nil {
 			pf(stderr, "error: reap worktrees for gaggle %s: %v\n", gaggle, err)
+			return 1
+		} else {
+			for _, w := range warnings {
+				pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
+			}
+		}
+	}
+	if setup.LegacyWorktrees != nil {
+		if _, warnings, err := setup.LegacyWorktrees.Reap(ctx, worktree.ReapOptions{
+			StaleAfter:    reapStaleAfter,
+			IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
+		}); err != nil {
+			pf(stderr, "error: reap legacy worktrees: %v\n", err)
 			return 1
 		} else {
 			for _, w := range warnings {
@@ -345,7 +364,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, nil, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
+	resumed, warned, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, setup.LegacyRunner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

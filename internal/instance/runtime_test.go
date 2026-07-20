@@ -129,6 +129,58 @@ func TestMigrateLegacyRuntimePreservesPopulatedRootForMultipleGaggles(t *testing
 	}
 }
 
+func TestMigrateLegacyRuntimePreservesAmbiguousRootAfterReducingToOneGaggle(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	legacyRun := filepath.Join(layout.RunsDir(), "legacy-run", "run.yaml")
+	legacyWorkcopy := filepath.Join(layout.WorkcopiesDir(), "legacy-repo", "repo.git", "HEAD")
+	for path, content := range map[string]string{
+		legacyRun:      "gaggle: alpha\n",
+		legacyWorkcopy: "ref: refs/heads/main\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := layout.MigrateLegacyRuntime([]string{"alpha", "beta"}); err != nil {
+		t.Fatalf("multi-gaggle migration: %v", err)
+	}
+	scopedRun := filepath.Join(layout.ForGaggle("beta").RunsDir(), "new-run", "run.yaml")
+	if err := os.MkdirAll(filepath.Dir(scopedRun), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scopedRun, []byte("gaggle: beta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := layout.MigrateLegacyRuntime([]string{"beta"}); err != nil {
+		t.Fatalf("transition to populated sole gaggle: %v", err)
+	}
+	for _, path := range []string{legacyRun, legacyWorkcopy, scopedRun} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("retained runtime path %s: %v", path, err)
+		}
+	}
+	if err := layout.MigrateLegacyRuntime([]string{"gamma"}); err != nil {
+		t.Fatalf("transition to new sole gaggle: %v", err)
+	}
+	for _, legacy := range []string{layout.RunsDir(), layout.WorkcopiesDir()} {
+		info, err := os.Lstat(legacy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("ambiguous legacy runtime %s became a single-gaggle alias", legacy)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(layout.ForGaggle("gamma").RunsDir(), "legacy-run")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("legacy run was assigned to gamma: %v", err)
+	}
+}
+
 func TestMigrateLegacyRuntimeRetainsGeneratedAliases(t *testing.T) {
 	layout := NewLayout(t.TempDir())
 	legacyRepo := filepath.Join(layout.WorkcopiesDir(), "repo", "repo.git", "HEAD")

@@ -34,9 +34,13 @@ pieces are left untouched.
 
 **Upgrading a flat V0 instance:** on first startup, an instance with one active
 gaggle automatically moves populated top-level `runs/` and `workcopies/` into
-`gaggles/<gaggle>/`. If several gaggles are active, assign those legacy
-directories to the intended gaggle manually before startup; Goobers refuses the
-ambiguous migration rather than mixing runtime state.
+`gaggles/<gaggle>/` when no scoped runtime state exists yet. If several gaggles
+are active, Goobers preserves the populated flat directories as a compatibility
+root: retained journals remain readable and resumable while new runs use scoped
+directories. Goobers also keeps that root separate if the configuration later
+returns to one gaggle, because mixed historical state cannot be assigned safely.
+Operators may relocate retained journals by their recorded gaggle during a
+maintenance window; retained Git workcopies should stay at their legacy paths.
 
 ## 3. Configure
 

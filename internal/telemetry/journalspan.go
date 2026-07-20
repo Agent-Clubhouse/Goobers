@@ -52,7 +52,8 @@ func NewJournalSpanExporter(runsDir string, scrubber journal.Scrubber) *JournalS
 }
 
 // NewPerGaggleJournalSpanExporter creates an exporter that routes each span to
-// <instance-root>/gaggles/<gaggle>/runs using its goobers.gaggle attribute.
+// <instance-root>/gaggles/<gaggle>/runs using its goobers.gaggle attribute,
+// except when the run already has a retained flat journal under runs/.
 func NewPerGaggleJournalSpanExporter(instanceRoot string, scrubber journal.Scrubber) *JournalSpanExporter {
 	exporter := NewJournalSpanExporter("", scrubber)
 	exporter.perGaggleRoot = instanceRoot
@@ -88,6 +89,12 @@ func (e *JournalSpanExporter) writeGroup(traceID string, spans []sdktrace.ReadOn
 			return fmt.Errorf("telemetry: resolve gaggle for run %s: %w", traceID, err)
 		}
 		runsDir = filepath.Join(e.perGaggleRoot, "gaggles", gaggle, "runs")
+		legacyRunsDir := filepath.Join(e.perGaggleRoot, "runs")
+		if info, err := os.Stat(filepath.Join(legacyRunsDir, traceID, "run.yaml")); err == nil && info.Mode().IsRegular() {
+			runsDir = legacyRunsDir
+		} else if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("telemetry: inspect retained journal for run %s: %w", traceID, err)
+		}
 	}
 	dir := filepath.Join(runsDir, traceID, spansDirName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

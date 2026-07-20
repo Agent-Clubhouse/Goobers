@@ -2,6 +2,7 @@ package localscheduler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -24,6 +25,10 @@ type ClaimNamespace struct {
 	Gaggle   string
 	Provider string
 }
+
+// ErrLegacyClaimOwnershipUnresolved tells migration to retain a legacy claim
+// unchanged until a later startup can resolve it or its lease expires.
+var ErrLegacyClaimOwnershipUnresolved = errors.New("legacy claim ownership unresolved")
 
 func (k ClaimKey) storageKey() (string, error) {
 	if k.Gaggle == "" || k.Provider == "" || k.ExternalID == "" {
@@ -157,6 +162,9 @@ func (l *ClaimLedger) MigrateLegacyClaims(resolve func(ClaimEntry) (ClaimNamespa
 	for storageKey, entry := range legacy {
 		namespace, err := resolve(entry)
 		if err != nil {
+			if errors.Is(err, ErrLegacyClaimOwnershipUnresolved) {
+				continue
+			}
 			return fmt.Errorf("localscheduler: resolve legacy claim %q ownership: %w", entry.ItemID, err)
 		}
 		key := ClaimKey{Gaggle: namespace.Gaggle, Provider: namespace.Provider, ExternalID: entry.ItemID}
@@ -175,6 +183,9 @@ func (l *ClaimLedger) MigrateLegacyClaims(resolve func(ClaimEntry) (ClaimNamespa
 		entry.Provider = namespace.Provider
 		entry.ExternalID = entry.ItemID
 		migrations = append(migrations, migration{legacyKey: storageKey, scopedKey: scopedKey, entry: entry})
+	}
+	if len(migrations) == 0 {
+		return nil
 	}
 
 	previous := make(map[string]ClaimEntry, len(l.entries))

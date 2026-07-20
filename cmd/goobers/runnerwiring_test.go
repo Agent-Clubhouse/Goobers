@@ -280,9 +280,9 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 
 func TestLegacyClaimNamespaceUsesOwningRunIdentity(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
-	repoRefs := map[localscheduler.WorkflowIdentity]apiv1.RepoRef{
-		{Gaggle: "alpha", Workflow: "deploy"}: {Provider: apiv1.ProviderGitHub},
-		{Gaggle: "beta", Workflow: "deploy"}:  {Provider: apiv1.ProviderADO},
+	providers := map[string]apiv1.Provider{
+		"alpha": apiv1.ProviderGitHub,
+		"beta":  apiv1.ProviderADO,
 	}
 	for _, test := range []struct {
 		runID    string
@@ -305,13 +305,58 @@ func TestLegacyClaimNamespaceUsesOwningRunIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		namespace, err := legacyClaimNamespace(layout, repoRefs, localscheduler.ClaimEntry{RunID: test.runID})
+		namespace, err := legacyClaimNamespace(layout, providers, localscheduler.ClaimEntry{RunID: test.runID})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if namespace.Gaggle != test.gaggle || namespace.Provider != test.provider {
 			t.Fatalf("namespace for %s = %+v, want gaggle %q provider %q", test.runID, namespace, test.gaggle, test.provider)
 		}
+	}
+}
+
+func TestBuildSchedulerSetupMigratesLiveLegacyClaimForRemovedWorkflow(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	const runID = "removed-workflow-run"
+
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "removed-workflow", WorkflowVersion: 1, Gaggle: "example",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ledgerPath := filepath.Join(layout.SchedulerDir(), claimLedgerFileName)
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.Claim("159", runID, "removed-workflow", time.Hour); err != nil || !ok {
+		t.Fatalf("seed legacy claim: ok=%v err=%v", ok, err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), layout, &wg)
+	if err != nil {
+		t.Fatalf("buildSchedulerSetup: %v", err)
+	}
+	defer setup.Shutdown(context.Background())
+
+	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: "159"}
+	entry, ok := reopened.LookupScoped(key)
+	if !ok || entry.RunID != runID {
+		t.Fatalf("migrated claim = %+v, %v; want claim scoped from the run's gaggle", entry, ok)
+	}
+	if _, ok := reopened.Lookup("159"); ok {
+		t.Fatal("item-only legacy claim remained after ownership was resolved without the removed workflow")
 	}
 }
 

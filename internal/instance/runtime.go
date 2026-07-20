@@ -122,7 +122,12 @@ func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
 		}
 		legacyHasData = legacyHasData || hasFiles
 	}
-	if len(names) == 1 {
+	scopedRuntimeExists, err := l.scopedRuntimeExists()
+	if err != nil {
+		return err
+	}
+	preserveLegacy := legacyHasData && scopedRuntimeExists
+	if len(names) == 1 && !preserveLegacy {
 		scoped := l.ForGaggle(names[0])
 		for _, pair := range [][2]string{
 			{l.RunsDir(), scoped.RunsDir()},
@@ -155,7 +160,7 @@ func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
 			return err
 		}
 	}
-	if len(names) == 1 {
+	if len(names) == 1 && !preserveLegacy {
 		scoped := l.ForGaggle(names[0])
 		for _, pair := range [][2]string{
 			{l.RunsDir(), scoped.RunsDir()},
@@ -167,6 +172,30 @@ func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
 		}
 	}
 	return nil
+}
+
+func (l Layout) scopedRuntimeExists() (bool, error) {
+	gaggles, err := os.ReadDir(l.GagglesDir())
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read gaggle runtime directory: %w", err)
+	}
+	for _, gaggle := range gaggles {
+		if !gaggle.IsDir() {
+			continue
+		}
+		scoped := l.ForGaggle(gaggle.Name())
+		for _, dir := range []string{scoped.RunsDir(), scoped.WorkcopiesDir()} {
+			if _, err := os.Lstat(dir); err == nil {
+				return true, nil
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return false, fmt.Errorf("inspect scoped runtime directory %s: %w", dir, err)
+			}
+		}
+	}
+	return false, nil
 }
 
 func migrateLegacyDir(legacy, scoped string) error {
