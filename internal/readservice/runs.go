@@ -918,7 +918,7 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		event := records[i].Event
 		if event.KnownSchema() &&
 			event.Type == journal.EventGateEvaluated &&
-			event.Target == workflow.TargetEscalate {
+			(event.Target == workflow.TargetEscalate || gateMarkedEscalated(event)) {
 			cause.Selector = EscalationSelector{Kind: "gate", Name: event.Gate}
 			cause.SelectedBranch = event.Verdict
 			cause.TerminalReason = gateEscalationReason(event)
@@ -1029,8 +1029,7 @@ func lastNeedsChangesReason(reader *journal.Reader, records []journal.EventRecor
 }
 
 func gateEscalationReason(event journal.Event) string {
-	escalated, _ := event.Runner["escalated"].(bool)
-	if escalated {
+	if gateMarkedEscalated(event) {
 		duplicateDiff, _ := event.Runner["duplicateDiff"].(bool)
 		if duplicateDiff {
 			return "repass produced a diff identical to the immediately prior attempt"
@@ -1038,6 +1037,11 @@ func gateEscalationReason(event journal.Event) string {
 		return "repass budget exhausted"
 	}
 	return fmt.Sprintf("gate %s resolved %s -> %s", event.Gate, event.Verdict, event.Target)
+}
+
+func gateMarkedEscalated(event journal.Event) bool {
+	escalated, _ := event.Runner["escalated"].(bool)
+	return escalated
 }
 
 func stageEscalationReason(event journal.Event, subsequent []journal.EventRecord) string {
