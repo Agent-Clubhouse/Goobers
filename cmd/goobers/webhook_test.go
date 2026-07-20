@@ -305,6 +305,9 @@ func postWebhook(t *testing.T, address, secret, event, delivery string, body []b
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
-	return response.StatusCode
+	status := response.StatusCode
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return status
 }
