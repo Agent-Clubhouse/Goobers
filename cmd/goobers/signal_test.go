@@ -30,6 +30,15 @@ spec:
       goal: run a no-op local command
       run:
         command: ["true"]
+      next: ready
+  gates:
+    - name: ready
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: ""
+        fail: "@abort"
 `
 
 func initSignalDemo(t *testing.T) string {
@@ -67,6 +76,15 @@ func TestSignalDispatchesSubscribedWorkflow(t *testing.T) {
 	if !strings.Contains(stdout, "created run") {
 		t.Fatalf("stdout = %q, want a mention of the created run", stdout)
 	}
+	if !strings.Contains(stderr, "stage local-ci started") || !strings.Contains(stderr, "stage local-ci finished") {
+		t.Fatalf("signal stderr missing stage transitions: %q", stderr)
+	}
+	if !strings.Contains(stderr, "paused at gate ready") {
+		t.Fatalf("signal stderr missing gate pause: %q", stderr)
+	}
+	if strings.Contains(stdout, "stage local-ci") {
+		t.Fatalf("stage progress leaked to stdout: %q", stdout)
+	}
 
 	events, err := journal.ReadInstanceLog(l.SchedulerDir())
 	if err != nil {
@@ -89,6 +107,64 @@ func TestSignalDispatchesSubscribedWorkflow(t *testing.T) {
 	}
 	if !sawRunStarted {
 		t.Fatalf("expected a run.started event in the instance journal: %+v", events)
+	}
+}
+
+func TestSignalMonitorsAllRunsConcurrently(t *testing.T) {
+	root := initSignalDemo(t)
+	configPath := filepath.Join(root, "instance.yaml")
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config = []byte(strings.Replace(string(config), "maxParallelRuns: 1", "maxParallelRuns: 2", 1))
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workflowsDir := filepath.Join(root, "config", "gaggles", "example", "workflows")
+	slow := strings.ReplaceAll(signalTriggeredWorkflowYAML,
+		"name: default-implement", "name: a-slow")
+	slow = strings.ReplaceAll(slow,
+		"local-ci", "slow")
+	slow = strings.ReplaceAll(slow,
+		`command: ["true"]`, `command: ["sh", "-c", "sleep 1"]`)
+	fast := strings.ReplaceAll(signalTriggeredWorkflowYAML,
+		"name: default-implement", "name: z-fast")
+	fast = strings.ReplaceAll(fast,
+		"local-ci", "fast")
+	if err := os.WriteFile(filepath.Join(workflowsDir, "a-slow.yaml"), []byte(slow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowsDir, "z-fast.yaml"), []byte(fast), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(workflowsDir, "default-implement.yaml")); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "signal", "deploy", root)
+	if code != 0 {
+		t.Fatalf("signal: code = %d, stderr = %q", code, stderr)
+	}
+	fastStarted := strings.Index(stderr, "stage fast started")
+	slowFinished := strings.Index(stderr, "stage slow finished")
+	if fastStarted < 0 || slowFinished < 0 || fastStarted > slowFinished {
+		t.Fatalf("later run was not monitored while the first run was active: %q", stderr)
+	}
+
+	var created, finished []string
+	for _, line := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[0] == "created" && fields[1] == "run" {
+			created = append(created, fields[2])
+		}
+		if len(fields) >= 2 && fields[0] == "finished:" {
+			finished = append(finished, strings.TrimPrefix(fields[1], "run="))
+		}
+	}
+	if len(created) != 2 || len(finished) != 2 ||
+		created[0] != finished[0] || created[1] != finished[1] {
+		t.Fatalf("stdout run order changed: created=%v finished=%v, stdout=%q", created, finished, stdout)
 	}
 }
 

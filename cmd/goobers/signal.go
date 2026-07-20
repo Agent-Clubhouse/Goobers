@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/signals"
 )
@@ -117,17 +118,56 @@ func runSignal(args []string, stdout, stderr io.Writer) int {
 	// even started) — the same Add-before-Wait requirement sync.WaitGroup
 	// always has. waitForRunTerminal's polling loop naturally closes that
 	// race by blocking until each run's own journal shows it under way.
+	type waitResult struct {
+		index int
+		runID string
+		phase journal.RunPhase
+		err   error
+	}
+	waitCtx, cancelWait := context.WithCancel(ctx)
+	defer cancelWait()
+	results := make(chan waitResult, len(runIDs))
+	progress := &synchronizedWriter{out: stderr}
+	for index, runID := range runIDs {
+		index := index
+		runID := runID
+		go func() {
+			phase, err := waitForRunTerminalInLayoutWithProgress(waitCtx, l, runID, progress)
+			results <- waitResult{index: index, runID: runID, phase: phase, err: err}
+		}()
+	}
+
 	exitCode := 0
-	for _, runID := range runIDs {
-		phase, err := waitForRunTerminalInLayout(ctx, l, runID)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
+	var waitErr error
+	completed := make([]waitResult, len(runIDs))
+	ready := make([]bool, len(runIDs))
+	next := 0
+	for range runIDs {
+		result := <-results
+		if result.err != nil {
+			if waitErr == nil {
+				waitErr = result.err
+				cancelWait()
+			}
+			continue
 		}
-		pf(stdout, "finished: run=%s phase=%s\n", runID, phase)
-		if phaseExit := exitForPhase(phase); phaseExit > exitCode {
-			exitCode = phaseExit
+		if waitErr != nil {
+			continue
 		}
+		completed[result.index] = result
+		ready[result.index] = true
+		for next < len(runIDs) && ready[next] {
+			result = completed[next]
+			pf(stdout, "finished: run=%s phase=%s\n", result.runID, result.phase)
+			if phaseExit := exitForPhase(result.phase); phaseExit > exitCode {
+				exitCode = phaseExit
+			}
+			next++
+		}
+	}
+	if waitErr != nil {
+		pf(stderr, "error: %v\n", waitErr)
+		return 2
 	}
 	wg.Wait()
 	pf(stdout, "inspect with: goobers trace <run-id> %s\n", root)

@@ -1219,6 +1219,7 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 		journal.EventArtifactRecorded, // runner-assembled context manifest
 		journal.EventArtifactRecorded,
 		journal.EventStageFinished,
+		journal.EventGatePaused,
 		journal.EventGateStarted, // recovery marker, excluded from conformance
 		journal.EventGateEvaluated,
 		journal.EventRunFinished,

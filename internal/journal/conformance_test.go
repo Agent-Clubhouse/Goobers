@@ -161,8 +161,8 @@ func TestConformanceViewExcludesContextManifestDigest(t *testing.T) {
 
 // TestConformanceViewSkipsExcludedEvents confirms ConformanceView filters
 // through IsConformanceNormative — infra-tagged attempts, stage.heartbeat,
-// gate.started, span.recorded, repaired, and runner.annotation events never
-// appear in the projection.
+// gate.started, gate.paused, span.recorded, repaired, and runner.annotation
+// events never appear in the projection.
 func TestConformanceViewSkipsExcludedEvents(t *testing.T) {
 	events := []Event{
 		{Type: EventStageStarted, Stage: "implement", Attempt: 1},
@@ -171,19 +171,20 @@ func TestConformanceViewSkipsExcludedEvents(t *testing.T) {
 		{Type: EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: AttemptPolicy},
 		{Type: EventStageFinished, Stage: "implement", Attempt: 2, AttemptClass: AttemptPolicy, Status: "success"},
 		{Type: EventGateStarted, Gate: "review", Runner: map[string]any{"repassAttempt": 1}},
+		{Type: EventGatePaused, Gate: "approval"},
 		{Type: EventSpanRecorded, Ref: &Ref{Digest: "sha256:span"}},
 		{Type: EventRepaired},
 		{Type: EventRunnerAnnotation, Runner: map[string]any{"worktreeStatus": "kept"}},
 	}
 	view := ConformanceView(events)
 	if len(view) != 3 {
-		t.Fatalf("ConformanceView returned %d events, want 3 (heartbeat, infra attempt, gate start, span, repaired, runner annotation excluded): %+v", len(view), view)
+		t.Fatalf("ConformanceView returned %d events, want 3 (heartbeat, infra attempt, gate markers, span, repaired, runner annotation excluded): %+v", len(view), view)
 	}
 	for _, ne := range view {
 		if ne.AttemptClass == AttemptInfra {
 			t.Errorf("infra-tagged event leaked through: %+v", ne)
 		}
-		if ne.Type == EventStageHeartbeat || ne.Type == EventGateStarted || ne.Type == EventSpanRecorded || ne.Type == EventRepaired || ne.Type == EventRunnerAnnotation {
+		if ne.Type == EventStageHeartbeat || ne.Type == EventGateStarted || ne.Type == EventGatePaused || ne.Type == EventSpanRecorded || ne.Type == EventRepaired || ne.Type == EventRunnerAnnotation {
 			t.Errorf("excluded event type leaked through: %+v", ne)
 		}
 	}

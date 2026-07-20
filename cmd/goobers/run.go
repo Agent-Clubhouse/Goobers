@@ -181,7 +181,7 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 		return 0
 	}
 
-	phase, err := waitForRunTerminal(ctx, l.ForGaggle(gaggle).RunsDir(), runID)
+	phase, err := waitForRunTerminalWithProgress(ctx, l.ForGaggle(gaggle).RunsDir(), runID, stderr)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -228,7 +228,7 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root stri
 		return 0
 	}
 
-	phase, err := waitForRunTerminalInLayout(ctx, l, runID)
+	phase, err := waitForRunTerminalInLayoutWithProgress(ctx, l, runID, stderr)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -388,6 +388,14 @@ func isTerminalPhase(p journal.RunPhase) bool {
 }
 
 func waitForRunTerminal(ctx context.Context, runsDir, runID string) (journal.RunPhase, error) {
+	return waitForRunTerminalWithProgress(ctx, runsDir, runID, io.Discard)
+}
+
+func waitForRunTerminalWithProgress(ctx context.Context, runsDir, runID string, progress io.Writer) (journal.RunPhase, error) {
+	return waitForRunTerminalWithReporter(ctx, runsDir, runID, newRunWaitReporter(runID, progress))
+}
+
+func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, progress *runWaitReporter) (journal.RunPhase, error) {
 	if runTerminalWaitTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, runTerminalWaitTimeout)
@@ -397,9 +405,16 @@ func waitForRunTerminal(ctx context.Context, runsDir, runID string) (journal.Run
 	dir := filepath.Join(runsDir, runID)
 	for {
 		if reader, err := journal.OpenRead(dir); err == nil {
+			events, eventsErr := reader.Events()
+			if eventsErr != nil {
+				return journal.PhaseRunning, fmt.Errorf("read progress for run %s: %w", runID, eventsErr)
+			}
+			progress.observe(events, time.Now())
 			if phase := runPhase(reader); isTerminalPhase(phase) {
 				return phase, nil
 			}
+		} else {
+			progress.heartbeat(time.Now())
 		}
 
 		select {
@@ -424,15 +439,17 @@ func waitForRunTerminal(ctx context.Context, runsDir, runID string) (journal.Run
 	}
 }
 
-func waitForRunTerminalInLayout(ctx context.Context, layout instance.Layout, runID string) (journal.RunPhase, error) {
+func waitForRunTerminalInLayoutWithProgress(ctx context.Context, layout instance.Layout, runID string, progress io.Writer) (journal.RunPhase, error) {
+	reporter := newRunWaitReporter(runID, progress)
 	for {
 		dir, err := layout.FindRunDir(runID)
 		if err == nil {
-			return waitForRunTerminal(ctx, filepath.Dir(dir), runID)
+			return waitForRunTerminalWithReporter(ctx, filepath.Dir(dir), runID, reporter)
 		}
 		if !errors.Is(err, fs.ErrNotExist) {
 			return journal.PhaseRunning, err
 		}
+		reporter.heartbeat(time.Now())
 		select {
 		case <-ctx.Done():
 			return journal.PhaseRunning, ctx.Err()

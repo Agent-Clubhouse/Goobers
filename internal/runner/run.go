@@ -746,15 +746,13 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 		}
 
 		if g, ok := in.Machine.Gate(state); ok {
+			// The machine remains at this gate until its evaluator records a
+			// verdict. Persist that wait before dispatch so observers can
+			// distinguish it from an active stage.
+			if err := jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
+				return Result{}, fmt.Errorf("runner: journal pause at gate %q: %w", g.Name, err)
+			}
 			if g.Evaluator == apiv1.EvaluatorHuman {
-				// A human gate executes nothing (§5): pause here. No stage
-				// attempt runs and no event is appended, so checkpoint
-				// explicitly — Append's implicit checkpoint never fires on
-				// this path, and state.json must still point resume at this
-				// gate (resume on the operator's decision).
-				if err := jr.Checkpoint(); err != nil {
-					return Result{}, fmt.Errorf("runner: checkpoint pause at gate %q: %w", g.Name, err)
-				}
 				return Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: steps}, nil
 			}
 
