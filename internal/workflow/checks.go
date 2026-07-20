@@ -109,7 +109,15 @@ func CheckTriggerFields(def Definition) []string {
 // goober definitions. The config validator enforces its schema's harness enum;
 // Compile additionally checks the production registry via WithKnownHarnesses.
 func CheckAdmission(def Definition, goobers map[string]apiv1.GooberSpec) []string {
-	return admissionProblems(def, goobers, nil)
+	return admissionProblems(def, goobers, nil, true)
+}
+
+// CheckWorkflowAdmission reports workflow-local capability and harness
+// violations. Definition-level goober capability names are omitted so a config
+// validator can report each one once at its Goober source instead of repeating
+// it for every workflow.
+func CheckWorkflowAdmission(def Definition, goobers map[string]apiv1.GooberSpec) []string {
+	return admissionProblems(def, goobers, nil, false)
 }
 
 // CheckGateVocabulary reports an automated gate whose declared

@@ -97,3 +97,47 @@ func Known(s string) bool {
 	}
 	return false
 }
+
+// Suggest returns the closest canonical capability for a likely typo.
+func Suggest(s string) (Capability, bool) {
+	if Known(s) {
+		return "", false
+	}
+	bestDistance := -1
+	var best Capability
+	for _, candidate := range All() {
+		distance := editDistance(s, string(candidate))
+		if bestDistance == -1 || distance < bestDistance {
+			bestDistance = distance
+			best = candidate
+		}
+	}
+	if bestDistance > 2 {
+		return "", false
+	}
+	return best, true
+}
+
+func editDistance(a, b string) int {
+	previous := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		current := make([]int, len(b)+1)
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 0
+			if a[i-1] != b[j-1] {
+				cost = 1
+			}
+			current[j] = min(
+				current[j-1]+1,
+				previous[j]+1,
+				previous[j-1]+cost,
+			)
+		}
+		previous = current
+	}
+	return previous[len(b)]
+}
