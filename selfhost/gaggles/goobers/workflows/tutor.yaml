@@ -33,13 +33,8 @@ spec:
     # Built-in provider-chain style stage: queries the telemetry rollup for
     # cross-run aggregates (T2, #102) and emits the versioned
     # candidate-findings artifact (#148's schema) for the analyst to
-    # diagnose. NOTE: the `telemetry-query` connector subcommand itself is
-    # not wired into the live runner path yet (#132 minimal subcommand ->
-    # #148 typed stage) — this stage is defined to the same shape
-    # work-nomination.yaml's gather-signals stage already ships in this same
-    # config with (also currently blocked on #132/#148), so `tutor` and
-    # `work-nomination` unblock together rather than needing two separate
-    # fixes.
+    # diagnose. The same typed connector and schema are shared with
+    # work-nomination's gather-signals stage.
     - name: gather-signals
       type: deterministic
       goal: Query cross-run telemetry for recurring failure/noise/coverage problems.

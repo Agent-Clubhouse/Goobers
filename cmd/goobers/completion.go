@@ -167,7 +167,7 @@ _goobers_completion()
             ;;
         backlog-query) flags+=" --claim --release" ;;
         apply-verdict) flags+=" --gate" ;;
-        telemetry-query) flags+=" --window" ;;
+        telemetry-query) flags+=" --window --aggregate --threshold --format" ;;
         remediation-checkpoint) flags+=" --budget" ;;
         scaffold)
             [[ "${COMP_WORDS[2]:-}" == "goober" || "${COMP_WORDS[2]:-}" == "workflow" ]] && flags+=" --force"
@@ -258,7 +258,7 @@ _goobers_completion()
             'stats:show the instance lifetime summary'
             'trace:show a run journal'
             'telemetry:query telemetry'
-            'telemetry-query:emit telemetry signals'
+            'telemetry-query:emit candidate findings'
             'journal:manage run journals'
             'backlog-query:query or claim backlog work'
             'push-branch:push the current run branch'
@@ -315,7 +315,7 @@ _goobers_completion()
             ;;
         backlog-query) flags+=(--claim --release) ;;
         apply-verdict) flags+=(--gate) ;;
-        telemetry-query) flags+=(--window) ;;
+        telemetry-query) flags+=(--window --aggregate --threshold --format) ;;
         remediation-checkpoint) flags+=(--budget) ;;
         scaffold)
             [[ "${words[3]:-}" == "goober" || "${words[3]:-}" == "workflow" ]] && flags+=(--force)
@@ -464,5 +464,8 @@ complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l claim -d '
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l release -d 'Release a claim'
 complete -c goobers -n '__fish_seen_subcommand_from apply-verdict' -l gate -r -d 'Gate name'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l window -r -d 'Lookback window'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l aggregate -r -a 'all stage-failure-rate error-signature gate-noise' -d 'Detection aggregate'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l threshold -r -d 'Threshold override k=v'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l format -r -a 'candidate-findings' -d 'Artifact format'
 complete -c goobers -n '__fish_seen_subcommand_from remediation-checkpoint' -l budget -r -d 'Repass budget'
 `

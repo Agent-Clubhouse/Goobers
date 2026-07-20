@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/candidate-findings-v1.schema.json",
+  "title": "CandidateFindingsV1",
+  "description": "Version 1 of the deterministic telemetry-query connector artifact (TEL-045).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "window", "since", "findings"],
+  "properties": {
+    "schema": {
+      "const": "goobers.dev/candidate-findings/v1"
+    },
+    "window": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The requested lookback duration."
+    },
+    "since": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The inclusive lower bound used for the query."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "noWork": {
+      "type": "boolean"
+    },
+    "note": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "subject", "metrics", "threshold", "flagged_runs"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "stage-failure-rate",
+            "error-signature",
+            "gate-never-fails",
+            "gate-repass-churn",
+            "workflow-untriggered",
+            "stage-unreached"
+          ]
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "threshold": {
+          "type": "number"
+        },
+        "flagged_runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/journalPointer"
+          }
+        }
+      }
+    },
+    "journalPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId"],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The run whose journal contains evidence for this finding."
+        }
+      }
+    }
+  }
+}

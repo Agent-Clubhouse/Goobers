@@ -5,11 +5,9 @@
 // harness standing in for the Copilot CLI on both agentic stages. Provider
 // stages use `true` sentinels here; their own behavior is covered separately.
 // Validation runs the real CLI against a drafted selfhost tree.
-// gather-signals here uses `true` in place of the real `goobers
-// telemetry-query` command, which — like work-nomination.yaml's own
-// gather-signals stage — isn't wired into the live runner path yet (#132/
-// #148); this is the same accepted gap the shipped work-nomination.yaml
-// already carries, not something T1 introduces.
+// gather-signals here uses `true` to keep this workflow-plumbing fixture
+// independent of telemetry-query's rollup fixture; telemetryquery_test.go
+// covers the real connector command.
 package main
 
 import (

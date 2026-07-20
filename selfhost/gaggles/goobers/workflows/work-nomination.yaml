@@ -23,18 +23,20 @@ spec:
   tasks:
     - name: gather-signals
       type: deterministic
-      goal: Collect telemetry and repo signals worth acting on.
+      goal: Materialize threshold-crossing telemetry findings with journal evidence.
       run:
-        command: ["goobers", "telemetry-query", "--window", "24h"]
+        command: ["goobers", "telemetry-query", "--window", "24h", "--aggregate", "stage-failure-rate", "--aggregate", "error-signature", "--aggregate", "gate-noise", "--format", "candidate-findings"]
       inputs:
-        resultFile: "telemetry-signals.json"
+        resultFile: "candidate-findings.json"
       capabilities:
         - telemetry:read
+      expectedOutputs:
+        - candidate-findings
       next: nominate
     - name: nominate
       type: agentic
       goober: nominator
-      goal: Propose backlog items from the gathered signals and file them.
+      goal: Propose backlog items from the candidate findings and file them.
       capabilities:
         - telemetry:read
         - github:issues:write

@@ -48,7 +48,7 @@ identity separation, Entra ID auth. Where `tutor.md` says "ADX at tier 3," read 
 | Need | V0 primitive | Status |
 |------|--------------|--------|
 | Workflow model, schedule trigger | Workflow DSL + `internal/localscheduler` (`type: schedule`, 5-field cron / `@every`) | reuse unchanged |
-| Producer-workflow shape (deterministic gather → agentic act) | `work-nomination.yaml` | template — **currently broken**: it invokes a `goobers telemetry-query` subcommand that does not exist (#132; formalized as the connector stage by #148) |
+| Producer-workflow shape (deterministic gather → agentic act) | `work-nomination.yaml` | reuse — `goobers telemetry-query` emits the versioned candidate-findings connector artifact (#148) |
 | Telemetry read | `internal/telemetry/rollup` (`runs`, `stage_attempts`, `gate_verdicts`, `provider_mutations`, `run_errors`, `spans`, `span_events`) | extend (see T2) — after #127/#128; span tables are empty in production until #126 |
 | Capability-scoped injection, fail-closed | `internal/capability` (#74), envelope capability grants (SEC-042) | extend (new caps) |
 | Agentic file-artifact output | harness declared-output-file seam (#73) | reuse — with the #120 containment fix |

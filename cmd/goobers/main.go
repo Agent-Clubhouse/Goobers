@@ -79,7 +79,8 @@ Usage:
   goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
   goobers merge-queue-poll               watch an enqueued pull request until the merge queue merges or evicts it, labeling an eviction for remediation (a workflow stage)
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
-  goobers telemetry-query [--window <d>] emit telemetry signals JSON over a window (a workflow stage)
+  goobers telemetry-query [--window <d>] [--aggregate <name>] [--threshold <k=v>] [--format candidate-findings]
+                                emit versioned candidate findings (a connector stage)
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
   goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)
@@ -93,11 +94,11 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
+backlog-query/telemetry-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/apply-verdict/post-merge/gather-pr-context/
 rebase-pr/remediation-checkpoint/push-remediated are the built-in provider-chain
-stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#237/#359/#360/#361/#362/
-#363/#364/#392): invoked by the runner as a deterministic
+and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
+#359/#360/#361/#362/#363/#364/#392): invoked by the runner as a deterministic
 stage's shell command, not
 typically run by hand. They read their run context (instance root, run id,
 workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*

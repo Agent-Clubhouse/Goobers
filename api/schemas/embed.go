@@ -13,6 +13,9 @@ var FS embed.FS
 // BaseURI is the $id base every schema uses; relative $refs resolve against it.
 const BaseURI = "https://goobers.dev/schemas/"
 
+// CandidateFindings is the versioned telemetry connector artifact schema.
+const CandidateFindings = "candidate-findings-v1.schema.json"
+
 // Kind maps a config object kind to its schema file name.
 var Kind = map[string]string{
 	"Manifest": "manifest.schema.json",
@@ -50,6 +53,7 @@ func Files() []string {
 		"result.schema.json",
 		"verdict.schema.json",
 		"artifact-pointer.schema.json",
+		CandidateFindings,
 		"journal-event.schema.json",
 		"journal-run.schema.json",
 	}
