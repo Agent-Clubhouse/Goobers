@@ -6,11 +6,34 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
+
+// intersectSorted returns the sorted, de-duplicated set of strings present in
+// both a and b — the file-overlap primitive for sibling sequencing (#989).
+func intersectSorted(a, b []string) []string {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	inA := make(map[string]bool, len(a))
+	for _, s := range a {
+		inA[s] = true
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, s := range b {
+		if inA[s] && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 // siblingPR is one OTHER open PR's evidence for the holistic review — what
 // it touches and its own state, so the reviewer can spot cross-PR
@@ -25,6 +48,12 @@ type siblingPR struct {
 	Labels     []string `json:"labels,omitempty"`
 	CheckState string   `json:"checkState"`
 	Files      []string `json:"files"`
+	// Overlap is the deterministic set of files this sibling changes that the
+	// selected PR also changes (#989): the ground-truth file collision, computed
+	// here rather than left for the LLM reviewer to notice. Empty when the two
+	// PRs touch disjoint files. Feeds the sequencing classification/backstop
+	// (#990/#991) and is surfaced to the reviewer as evidence.
+	Overlap []string `json:"overlap,omitempty"`
 }
 
 // runGatherSiblingContext implements `goobers gather-sibling-context`
@@ -122,6 +151,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	next := make(map[string]siblingCacheEntry, len(prs))
 
 	var selectedHeadSHA, selectedBaseSHA string
+	var selectedFiles []string
 	reused := 0
 	siblings := make([]siblingPR, 0, len(prs))
 	for _, pr := range prs {
@@ -131,12 +161,33 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			// pin against (design doc §6 D6), not whatever pr-select saw
 			// several stages ago.
 			selectedHeadSHA, selectedBaseSHA = pr.HeadSHA, pr.BaseSHA
+			// Capture its own changed files too (#989), so overlap against
+			// each sibling can be computed deterministically below. Reuse the
+			// memo on a SHA match, same as siblings, else fetch once.
+			key := strconv.Itoa(pr.Number)
+			prior, hit := cached[key]
+			hit = hit && prior.HeadSHA == pr.HeadSHA
+			if hit {
+				selectedFiles = prior.Files
+			} else {
+				files, ferr := provider.PullRequestFiles(ctx, repo, key)
+				if ferr != nil {
+					return failProviderStage(stderr, fmt.Sprintf("list files for selected PR #%d", pr.Number), ferr, "sibling-context.json")
+				}
+				selectedFiles = make([]string, 0, len(files))
+				for _, f := range files {
+					selectedFiles = append(selectedFiles, f.Path)
+				}
+			}
 			// Keep its still-valid memo through the save's prune-to-open-set:
 			// this PR is a *sibling* from every other run's perspective, and
 			// merge-review cycles through selections — evicting here would
-			// force the very next run to re-fetch it.
-			if prior, ok := cached[strconv.Itoa(pr.Number)]; ok && prior.HeadSHA == pr.HeadSHA {
-				next[strconv.Itoa(pr.Number)] = prior
+			// force the very next run to re-fetch it. Preserve/refresh its
+			// files+check-state memo so the capture above isn't wasted.
+			if hit {
+				next[key] = prior
+			} else {
+				next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: prior.CheckState, Files: selectedFiles}
 			}
 			continue
 		}
@@ -223,6 +274,19 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Deterministic file-overlap (#989): the ground-truth set of files each
+	// sibling shares with the selected PR, computed here so the sequencing
+	// classification/backstop (#990/#991) never depends on the LLM reviewer
+	// noticing the collision. overlappingSiblings is the convenience summary
+	// those stages consume.
+	overlappingSiblings := make([]int, 0)
+	for i := range siblings {
+		siblings[i].Overlap = intersectSorted(selectedFiles, siblings[i].Files)
+		if len(siblings[i].Overlap) > 0 {
+			overlappingSiblings = append(overlappingSiblings, siblings[i].Number)
+		}
+	}
+
 	resultFile := providerInput("resultFile", "sibling-context.json")
 	out := map[string]interface{}{
 		// selectedNumber is emitted as a STRING (selectedNumberStr, not the
@@ -239,6 +303,10 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		"selectedBaseSha": selectedBaseSHA,
 		"reviewDigest":    reviewDigest,
 		"siblings":        siblings,
+		// overlappingSiblings: PR numbers whose files intersect the selected
+		// PR's (#989). Empty slice, not omitted, so a consumer can distinguish
+		// "computed, none overlap" from "field absent / older producer".
+		"overlappingSiblings": overlappingSiblings,
 	}
 	if cachedVerdictJSON != "" {
 		// A scalar string (not a nested object) so executor.
