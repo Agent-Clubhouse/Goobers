@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -509,6 +510,57 @@ func TestExecutorInvokeSurfacesTranscriptTruncation(t *testing.T) {
 	events := decodeTranscriptEvents(t, rec.spans[0].data)
 	if len(events) != 2 || !events[1].Truncated {
 		t.Fatalf("truncated transcript events = %#v", events)
+	}
+}
+
+func TestExecutorBoundsComposedCanonicalTranscript(t *testing.T) {
+	const limit = int64(1024)
+	adapter := &FakeAdapter{
+		Transcript:             bytes.Repeat([]byte("x"), int(limit)),
+		TranscriptTruncated:    true,
+		TranscriptDroppedBytes: 77,
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	injector := testInjector(t, "REPO_TOKEN_ENV", "unused", noopRegistrar{})
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(
+		adapter,
+		injector,
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+		WithTranscriptLimit(limit),
+	)
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir(), "repo:read"))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if truncated, _ := result.Outputs["transcriptTruncated"].(bool); !truncated {
+		t.Fatalf("Outputs[transcriptTruncated] = %v, want true", result.Outputs["transcriptTruncated"])
+	}
+	dropped, _ := result.Outputs["transcriptDroppedBytes"].(float64)
+	if dropped <= float64(adapter.TranscriptDroppedBytes) {
+		t.Fatalf("Outputs[transcriptDroppedBytes] = %v, want > %d", result.Outputs["transcriptDroppedBytes"], adapter.TranscriptDroppedBytes)
+	}
+	events := decodeTranscriptEvents(t, rec.spans[0].data)
+	marker := events[len(events)-1]
+	if marker.Role != "system" || !marker.Truncated || !strings.Contains(marker.Content, fmt.Sprintf("%.0f bytes dropped", dropped)) {
+		t.Fatalf("truncation marker = %#v", marker)
+	}
+	encodedMarker, err := marshalTranscriptEvents(marker)
+	if err != nil {
+		t.Fatalf("marshal truncation marker: %v", err)
+	}
+	if retained := len(rec.spans[0].data) - len(encodedMarker); retained > int(limit) {
+		t.Fatalf("retained transcript bytes = %d, want at most %d", retained, limit)
 	}
 }
 

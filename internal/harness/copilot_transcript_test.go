@@ -423,8 +423,17 @@ func TestCopilotAdapterBoundsNativeSessionTranscript(t *testing.T) {
 	if !out.TranscriptTruncated || out.TranscriptDroppedBytes <= 0 {
 		t.Fatalf("native truncation = %v, dropped = %d; want a positive truncation", out.TranscriptTruncated, out.TranscriptDroppedBytes)
 	}
-	if !strings.Contains(string(out.Transcript), "[transcript truncated:") {
-		t.Fatalf("Transcript missing truncation marker: %q", out.Transcript)
+	events := decodeTranscriptEvents(t, out.Transcript)
+	marker := events[len(events)-1]
+	if marker.Role != "system" || !marker.Truncated || !strings.Contains(marker.Content, "[transcript truncated:") {
+		t.Fatalf("truncation marker = %#v", marker)
+	}
+	encodedMarker, err := marshalTranscriptEvents(marker)
+	if err != nil {
+		t.Fatalf("marshal truncation marker: %v", err)
+	}
+	if retained := len(out.Transcript) - len(encodedMarker); retained > int(limit) {
+		t.Fatalf("retained transcript bytes = %d, want at most %d", retained, limit)
 	}
 }
 

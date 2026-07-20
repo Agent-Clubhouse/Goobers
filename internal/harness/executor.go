@@ -327,6 +327,15 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: encode transcript floor: %w", err)
 		}
+		var dropped int64
+		out.Transcript, dropped, err = boundCanonicalTranscript(out.Transcript, req.MaxTranscriptBytes, out.TranscriptDroppedBytes)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: bound transcript floor: %w", err)
+		}
+		if dropped > out.TranscriptDroppedBytes {
+			out.TranscriptTruncated = true
+		}
+		out.TranscriptDroppedBytes = dropped
 		out.TranscriptSchema = telemetry.GenAIEventSchema
 	}
 	if len(out.Transcript) > 0 {

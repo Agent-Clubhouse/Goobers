@@ -175,11 +175,15 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 	if !converted {
 		return transcriptCapture{}, false
 	}
+	data, dropped, err := finalizeCanonicalTranscript(buf, 0)
+	if err != nil {
+		return transcriptCapture{}, false
+	}
 	return transcriptCapture{
-		data:         buf.Bytes(),
+		data:         data,
 		metrics:      metrics,
-		truncated:    buf.Truncated(),
-		droppedBytes: buf.Dropped(),
+		truncated:    dropped > 0,
+		droppedBytes: dropped,
 	}, true
 }
 
