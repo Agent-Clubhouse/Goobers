@@ -292,13 +292,14 @@ func gateRunnerJSON(ev journalEvent) (sql.NullString, error) {
 }
 
 // IngestSchedulerLog reads the instance journal (scheduler/events.jsonl) —
-// trigger.fired/tick.skipped/workflow.starved/claim.acquired/claim.released, scheduler
-// decisions, claim transitions, the instance-level run.started/run.finished
-// echoes localscheduler's dispatch appends, and instance-level errors — and
-// (re)populates scheduler_events (issue #128: this was never ingested at
-// all). Idempotent (delete-then-insert over the whole table, since the
-// instance log is a single stream, not per-run), so it's safe to call after
-// every dispatch tick (incremental) or as part of Rebuild (full rescan).
+// trigger.fired/tick.skipped/workflow.starved/claim.acquired/claim.released/
+// claim.force_released, scheduler decisions, claim transitions, the
+// instance-level run.started/run.finished echoes localscheduler's dispatch
+// appends, and instance-level errors — and (re)populates scheduler_events
+// (issue #128: this was never ingested at all). Idempotent
+// (delete-then-insert over the whole table, since the instance log is a single
+// stream, not per-run), so it's safe to call after every dispatch tick
+// (incremental) or as part of Rebuild (full rescan).
 // Historical duplicate seq values are corruption, but retaining the first
 // occurrence keeps one bad record from permanently preventing all rollup.
 func (db *DB) IngestSchedulerLog(schedulerDir string) error {
@@ -321,7 +322,7 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	}
 	for _, ev := range events {
 		switch ev.Type {
-		case eventTriggerFired, eventTickSkipped, eventWorkflowStarved, eventClaimAcquired, eventClaimReleased, eventRunStarted, eventRunFinished, eventError:
+		case eventTriggerFired, eventTickSkipped, eventWorkflowStarved, eventClaimAcquired, eventClaimReleased, eventClaimForceReleased, eventRunStarted, eventRunFinished, eventError:
 			if _, err := tx.Exec(`
 				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)
