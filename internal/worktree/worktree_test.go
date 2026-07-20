@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/gooberassets"
 )
 
 // newSourceRepo creates a throwaway git repo with one commit on "main" and
@@ -70,6 +73,43 @@ func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
 	}
 	if !strings.Contains(committed, "src.txt") {
 		t.Fatalf("committed tree should contain the real change:\n%s", committed)
+	}
+}
+
+func TestManager_CreateRejectsAssetsCommittedByPriorStage(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/run-1"
+
+	first, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1-first", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(first.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, first.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, first.Path, "commit", "-m", "force-add assets")
+	if err := first.ValidateReservedPaths(ctx); !errors.Is(err, gooberassets.ErrWorkspaceCollision) {
+		t.Fatalf("ValidateReservedPaths error = %v, want ErrWorkspaceCollision", err)
+	}
+	if err := first.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("remove first worktree: %v", err)
+	}
+
+	second, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1-no-assets", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("subsequent no-assets stage Create: %v", err)
+	}
+	var noAssets *gooberassets.Bundle
+	if err := noAssets.Materialize(second.Path); err != nil {
+		t.Fatalf("subsequent no-assets invocation: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(second.Path, gooberassets.WorkspaceDir)); !os.IsNotExist(err) {
+		t.Fatalf("foreign assets leaked into subsequent stage: %v", err)
 	}
 }
 

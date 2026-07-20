@@ -231,31 +231,37 @@ func configDirectoryDigest(root string) (string, error) {
 			return walkErr
 		}
 		name := entry.Name()
-		inAssets := gooberassets.IsWithinSourceDir(path)
-		if entry.IsDir() {
-			// Skip dotfile directories (notably .git when the config dir is a
-			// tracked repo, per the Workflow-CD epic #453) and all their churn.
-			if path != root && !inAssets && strings.HasPrefix(name, ".") {
-				return filepath.SkipDir
+		if gooberassets.IsSourceDir(path) {
+			bundle, err := gooberassets.Load(path)
+			if err != nil {
+				return err
 			}
-			if inAssets {
-				info, err := entry.Info()
-				if err != nil {
-					return err
-				}
-				return writeEntry(path, info.Mode(), nil)
+			if bundle == nil {
+				return nil
+			}
+			if err := writeEntry(path, 0, []byte(bundle.Fingerprint())); err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !inAssets {
-			// Outside asset bundles, only YAML definitions contribute.
-			if strings.HasPrefix(name, ".") {
-				return nil
+		if entry.IsDir() {
+			// Skip dotfile directories (notably .git when the config dir is a
+			// tracked repo, per the Workflow-CD epic #453) and all their churn.
+			if path != root && strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
 			}
-			ext := strings.ToLower(filepath.Ext(path))
-			if ext != ".yaml" && ext != ".yml" {
-				return nil
-			}
+			return nil
+		}
+		// Outside asset bundles, only YAML definitions contribute.
+		if strings.HasPrefix(name, ".") {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext != ".yaml" && ext != ".yml" {
+			return nil
 		}
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -268,15 +274,7 @@ func configDirectoryDigest(root string) (string, error) {
 			}
 			return err
 		}
-		var mode fs.FileMode
-		if inAssets {
-			info, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			mode = info.Mode()
-		}
-		return writeEntry(path, mode, content)
+		return writeEntry(path, 0, content)
 	})
 	if err != nil {
 		return "", fmt.Errorf("digest config directory: %w", err)

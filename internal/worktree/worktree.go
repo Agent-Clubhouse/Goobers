@@ -2,11 +2,14 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/goobers/goobers/internal/gooberassets"
 )
 
 // botGitUserName/botGitUserEmail are the commit identity Create sets local
@@ -73,8 +76,9 @@ type Worktree struct {
 	// Branch is the branch checked out in the worktree, or empty if detached.
 	Branch string
 
-	manager *Manager
-	key     string
+	manager  *Manager
+	key      string
+	startRef string
 }
 
 // validRunID reports whether id is safe to join onto a directory as a
@@ -173,6 +177,15 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	if err := runGit(ctx, repoDir, args...); err != nil {
 		return nil, fmt.Errorf("worktree: create for run %s: %w", opts.RunID, err)
 	}
+	if err := gooberassets.EnsureWorkspaceAvailable(path); err != nil {
+		cleanupErr := runGit(ctx, repoDir, "worktree", "remove", "--force", path)
+		return nil, fmt.Errorf("worktree: reserved asset path on branch for run %s: %w", opts.RunID, errors.Join(err, cleanupErr))
+	}
+	startRef, err := gitOutput(ctx, path, "rev-parse", "HEAD")
+	if err != nil {
+		cleanupErr := runGit(ctx, repoDir, "worktree", "remove", "--force", path)
+		return nil, fmt.Errorf("worktree: resolve starting ref for run %s: %w", opts.RunID, errors.Join(err, cleanupErr))
+	}
 
 	// A bot identity local to THIS worktree's own .git/config (`git config`
 	// with no --global, so it never touches the managed working copy or the
@@ -199,7 +212,42 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		return nil, fmt.Errorf("worktree: register run %s: %w", opts.RunID, err)
 	}
 
-	return &Worktree{RunID: opts.RunID, Path: path, Branch: opts.Branch, manager: m, key: key}, nil
+	return &Worktree{
+		RunID: opts.RunID, Path: path, Branch: opts.Branch,
+		manager: m, key: key, startRef: startRef,
+	}, nil
+}
+
+// ValidateReservedPaths rejects a stage that forced the materialized asset
+// directory into the index or any commit it added, rewinding those commits so
+// the reserved content cannot cross the shared run-branch boundary.
+func (wt *Worktree) ValidateReservedPaths(ctx context.Context) error {
+	indexed, err := gitOutput(ctx, wt.Path, "ls-files", "--cached", "--", gooberassets.WorkspaceDir)
+	if err != nil {
+		return fmt.Errorf("worktree: inspect indexed asset path for run %s: %w", wt.RunID, err)
+	}
+	committed, err := gitOutput(ctx, wt.Path, "log", "--format=%H", wt.startRef+"..HEAD", "--", gooberassets.WorkspaceDir)
+	if err != nil {
+		return fmt.Errorf("worktree: inspect committed asset path for run %s: %w", wt.RunID, err)
+	}
+	if indexed == "" && committed == "" {
+		return nil
+	}
+
+	var rollbackErr error
+	if wt.Branch != "" {
+		currentRef, err := gitOutput(ctx, wt.Path, "rev-parse", "HEAD")
+		if err != nil {
+			rollbackErr = err
+		} else if currentRef != wt.startRef {
+			rollbackErr = runGit(ctx, wt.Path, "update-ref", "refs/heads/"+wt.Branch, wt.startRef, currentRef)
+		}
+	}
+	collision := fmt.Errorf("%w: %s must not be tracked on the run branch", gooberassets.ErrWorkspaceCollision, gooberassets.WorkspaceDir)
+	if rollbackErr != nil {
+		return fmt.Errorf("worktree: remove reserved asset path from run %s: %w", wt.RunID, errors.Join(collision, rollbackErr))
+	}
+	return collision
 }
 
 // Diff returns the unified diff of this worktree's branch against baseRef

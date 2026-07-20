@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func newV(t *testing.T) *Validator {
@@ -106,6 +108,50 @@ func TestGooberAssetsAreOpaqueToConfigValidation(t *testing.T) {
 	}
 	if report.HasErrors() {
 		t.Fatalf("asset fixture was parsed as config:\n%s", joinIssues(report))
+	}
+}
+
+func TestGooberAssetStructureIsValidated(t *testing.T) {
+	tests := map[string]func(*testing.T, string){
+		"symlink root": func(t *testing.T, assets string) {
+			if err := os.Symlink(t.TempDir(), assets); err != nil {
+				t.Skipf("symlinks unsupported: %v", err)
+			}
+		},
+		"symlink entry": func(t *testing.T, assets string) {
+			if err := os.Mkdir(assets, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(t.TempDir(), "outside"), filepath.Join(assets, "reference")); err != nil {
+				t.Skipf("symlinks unsupported: %v", err)
+			}
+		},
+		"special file": func(t *testing.T, assets string) {
+			if err := os.Mkdir(assets, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := unix.Mkfifo(filepath.Join(assets, "stream"), 0o600); err != nil {
+				t.Skipf("FIFO unsupported: %v", err)
+			}
+		},
+	}
+	for name, setup := range tests {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {
+				t.Fatal(err)
+			}
+			assets := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "assets")
+			setup(t, assets)
+
+			report, err := newV(t).ValidateDir(root)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			if !report.HasErrors() || !strings.Contains(joinIssues(report), "invalid goober assets") {
+				t.Fatalf("unsafe assets were accepted:\n%s", joinIssues(report))
+			}
+		})
 	}
 }
 

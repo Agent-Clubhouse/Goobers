@@ -1849,6 +1849,9 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 	defer func() {
 		telemetry.IngestStageEmissions(telemetryDir, &result, span)
 		telemetry.CleanupStageTelemetryDir(telemetryDir)
+		if validationErr := workspace.ValidateReservedPaths(context.WithoutCancel(ctx)); validationErr != nil {
+			err = errors.Join(err, fmt.Errorf("stage %q: %w", t.Name, validationErr))
+		}
 		removeErr = workspace.Remove(ctx)
 	}()
 
@@ -2163,6 +2166,9 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		}
 		defer func() {
 			telemetry.CleanupStageTelemetryDir(gateTelemetryDir)
+			if validationErr := workspace.ValidateReservedPaths(context.WithoutCancel(ctx)); validationErr != nil {
+				err = errors.Join(err, fmt.Errorf("gate %q: %w", g.Name, validationErr))
+			}
 			removeErr = workspace.Remove(ctx)
 		}()
 		wt = workspace.worktree
@@ -2325,6 +2331,13 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 type stageWorkspace struct {
 	path     string
 	worktree *worktree.Worktree
+}
+
+func (w *stageWorkspace) ValidateReservedPaths(ctx context.Context) error {
+	if w.worktree == nil {
+		return nil
+	}
+	return w.worktree.ValidateReservedPaths(ctx)
 }
 
 func (w *stageWorkspace) Remove(ctx context.Context) error {

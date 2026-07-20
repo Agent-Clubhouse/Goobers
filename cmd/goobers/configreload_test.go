@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -271,6 +273,43 @@ func TestConfigDirectoryDigestOnlyTracksLoadedConfigAndAssets(t *testing.T) {
 		t.Fatal(err)
 	} else if got == withAsset {
 		t.Fatalf("config edit did not change digest: %s", got)
+	}
+}
+
+func TestConfigDirectoryDigestRejectsUnsafeAssets(t *testing.T) {
+	tests := map[string]func(*testing.T, string){
+		"symlink": func(t *testing.T, assets string) {
+			if err := os.Mkdir(assets, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(t.TempDir(), "outside"), filepath.Join(assets, "reference")); err != nil {
+				t.Skipf("symlinks unsupported: %v", err)
+			}
+		},
+		"special file": func(t *testing.T, assets string) {
+			if err := os.Mkdir(assets, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := unix.Mkfifo(filepath.Join(assets, "stream"), 0o600); err != nil {
+				t.Skipf("FIFO unsupported: %v", err)
+			}
+		},
+	}
+	for name, setup := range tests {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "manifest.yaml"), []byte("kind: A\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			assets := filepath.Join(root, "gaggles", "example", "goobers", "coder", "assets")
+			if err := os.MkdirAll(filepath.Dir(assets), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			setup(t, assets)
+			if _, err := configDirectoryDigest(root); err == nil {
+				t.Fatal("configDirectoryDigest accepted unsafe assets")
+			}
+		})
 	}
 }
 

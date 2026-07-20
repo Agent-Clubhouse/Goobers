@@ -74,7 +74,7 @@ cloud cluster without change.
   each invocation MUST receive an isolated snapshot of that directory at the
   fixed workspace-relative path `.goober-assets/`. Goobers without `assets/`
   MUST be unaffected, and assets MUST NOT be shared across Goobers or stages.
-  *(All tiers)*
+  The reserved workspace path MUST NOT be tracked on a run branch. *(All tiers)*
 
 ### Runtime & invocation
 - **GBO-010 (MUST):** A Goober MUST only execute work when invoked by a workflow task;

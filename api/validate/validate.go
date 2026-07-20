@@ -308,10 +308,17 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
-			if gooberassets.IsSourceDir(path) {
+		if gooberassets.IsSourceDir(path) {
+			if assetErr := gooberassets.Validate(path); assetErr != nil {
+				rel, _ := filepath.Rel(root, path)
+				r.add(Error, filepath.ToSlash(rel), "", "", "invalid goober assets: %v", assetErr)
+			}
+			if d.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if d.IsDir() {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))

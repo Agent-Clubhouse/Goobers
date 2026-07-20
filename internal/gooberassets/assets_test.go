@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func writeAsset(t *testing.T, root, name, content string, mode os.FileMode) {
@@ -74,6 +76,13 @@ func TestMissingBundleLeavesWorkspaceUnchanged(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workspace, WorkspaceDir)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("workspace asset path exists without a bundle: %v", err)
 	}
+
+	if err := os.Mkdir(filepath.Join(workspace, WorkspaceDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := bundle.Materialize(workspace); !errors.Is(err, ErrWorkspaceCollision) {
+		t.Fatalf("nil bundle accepted reserved workspace path: %v", err)
+	}
 }
 
 func TestBundleRefusesWorkspaceCollision(t *testing.T) {
@@ -101,6 +110,29 @@ func TestLoadRejectsSymlink(t *testing.T) {
 	}
 	if _, err := Load(source); err == nil {
 		t.Fatal("Load accepted a symlink asset")
+	}
+}
+
+func TestLoadRejectsSymlinkRoot(t *testing.T) {
+	source := filepath.Join(t.TempDir(), SourceDir)
+	if err := os.Symlink(t.TempDir(), source); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	if _, err := Load(source); err == nil {
+		t.Fatal("Load accepted a symlink asset root")
+	}
+}
+
+func TestLoadAndValidateRejectSpecialFile(t *testing.T) {
+	source := t.TempDir()
+	if err := unix.Mkfifo(filepath.Join(source, "stream"), 0o600); err != nil {
+		t.Skipf("FIFO unsupported: %v", err)
+	}
+	if _, err := Load(source); err == nil {
+		t.Fatal("Load accepted a FIFO asset")
+	}
+	if err := Validate(source); err == nil {
+		t.Fatal("Validate accepted a FIFO asset")
 	}
 }
 
