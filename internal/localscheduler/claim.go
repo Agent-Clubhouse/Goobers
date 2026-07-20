@@ -19,6 +19,12 @@ type ClaimKey struct {
 	ExternalID string
 }
 
+// ClaimNamespace identifies the gaggle and provider that own a legacy claim.
+type ClaimNamespace struct {
+	Gaggle   string
+	Provider string
+}
+
 func (k ClaimKey) storageKey() (string, error) {
 	if k.Gaggle == "" || k.Provider == "" || k.ExternalID == "" {
 		return "", fmt.Errorf("localscheduler: claim key requires gaggle, provider, and external ID")
@@ -114,6 +120,17 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 // active gaggle/provider namespace. Empty namespace values are accepted only
 // when there is nothing to migrate.
 func (l *ClaimLedger) MigrateLegacyNamespace(gaggle, provider string) error {
+	return l.MigrateLegacyClaims(func(ClaimEntry) (ClaimNamespace, error) {
+		if gaggle == "" || provider == "" {
+			return ClaimNamespace{}, fmt.Errorf("legacy claim requires a gaggle and provider")
+		}
+		return ClaimNamespace{Gaggle: gaggle, Provider: provider}, nil
+	})
+}
+
+// MigrateLegacyClaims upgrades pre-GAG-011 item-only keys using authoritative
+// ownership resolved independently for each live claim.
+func (l *ClaimLedger) MigrateLegacyClaims(resolve func(ClaimEntry) (ClaimNamespace, error)) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -126,8 +143,8 @@ func (l *ClaimLedger) MigrateLegacyNamespace(gaggle, provider string) error {
 	if len(legacy) == 0 {
 		return nil
 	}
-	if gaggle == "" || provider == "" {
-		return fmt.Errorf("localscheduler: legacy claim ledger contains %d item-only claim(s); assign them to a gaggle and provider before starting a multi-gaggle instance", len(legacy))
+	if resolve == nil {
+		return fmt.Errorf("localscheduler: legacy claim migration requires an ownership resolver")
 	}
 
 	type migration struct {
@@ -138,7 +155,11 @@ func (l *ClaimLedger) MigrateLegacyNamespace(gaggle, provider string) error {
 	migrations := make([]migration, 0, len(legacy))
 	planned := make(map[string]struct{}, len(legacy))
 	for storageKey, entry := range legacy {
-		key := ClaimKey{Gaggle: gaggle, Provider: provider, ExternalID: entry.ItemID}
+		namespace, err := resolve(entry)
+		if err != nil {
+			return fmt.Errorf("localscheduler: resolve legacy claim %q ownership: %w", entry.ItemID, err)
+		}
+		key := ClaimKey{Gaggle: namespace.Gaggle, Provider: namespace.Provider, ExternalID: entry.ItemID}
 		scopedKey, err := key.storageKey()
 		if err != nil {
 			return err
@@ -150,8 +171,8 @@ func (l *ClaimLedger) MigrateLegacyNamespace(gaggle, provider string) error {
 			return fmt.Errorf("localscheduler: cannot migrate duplicate legacy claim %q", entry.ItemID)
 		}
 		planned[scopedKey] = struct{}{}
-		entry.Gaggle = gaggle
-		entry.Provider = provider
+		entry.Gaggle = namespace.Gaggle
+		entry.Provider = namespace.Provider
 		entry.ExternalID = entry.ItemID
 		migrations = append(migrations, migration{legacyKey: storageKey, scopedKey: scopedKey, entry: entry})
 	}

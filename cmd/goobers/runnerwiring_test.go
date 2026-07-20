@@ -278,6 +278,43 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	}
 }
 
+func TestLegacyClaimNamespaceUsesOwningRunIdentity(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	repoRefs := map[localscheduler.WorkflowIdentity]apiv1.RepoRef{
+		{Gaggle: "alpha", Workflow: "deploy"}: {Provider: apiv1.ProviderGitHub},
+		{Gaggle: "beta", Workflow: "deploy"}:  {Provider: apiv1.ProviderADO},
+	}
+	for _, test := range []struct {
+		runID    string
+		gaggle   string
+		provider string
+	}{
+		{runID: "run-alpha", gaggle: "alpha", provider: "github"},
+		{runID: "run-beta", gaggle: "beta", provider: "ado"},
+	} {
+		run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+			RunID:     test.runID,
+			Workflow:  "deploy",
+			Gaggle:    test.gaggle,
+			StartedAt: time.Now(),
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		namespace, err := legacyClaimNamespace(layout, repoRefs, localscheduler.ClaimEntry{RunID: test.runID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if namespace.Gaggle != test.gaggle || namespace.Provider != test.provider {
+			t.Fatalf("namespace for %s = %+v, want gaggle %q provider %q", test.runID, namespace, test.gaggle, test.provider)
+		}
+	}
+}
+
 // TestBuildCredentialsAgentModel: a credentials: entry for agent:model adds a
 // grant sourced from its own token, leaving the repo-backed capabilities intact
 // — the two-tokens-one-subprocess case (#287).

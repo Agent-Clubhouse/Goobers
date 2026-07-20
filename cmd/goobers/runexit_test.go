@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -126,6 +127,56 @@ func TestRunDelegatedExitCodesForTerminalPhases(t *testing.T) {
 				t.Fatalf("stdout = %q, want phase %s", stdout.String(), tt.phase)
 			}
 		})
+	}
+}
+
+func TestRunDelegatedWaitsForJournalCreation(t *testing.T) {
+	oldDelegationInterval := delegationPollInterval
+	oldRunInterval := runPollInterval
+	delegationPollInterval = time.Millisecond
+	runPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		delegationPollInterval = oldDelegationInterval
+		runPollInterval = oldRunInterval
+	})
+
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	const runID = "delegated-delayed-journal"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	responseDone := make(chan error, 1)
+	go func() {
+		if err := respondToDelegatedRequest(ctx, l.SchedulerDir(), runID); err != nil {
+			responseDone <- err
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+		run, err := journal.Create(l.ForGaggle("example").RunsDir(), journal.RunIdentity{
+			RunID:     runID,
+			Workflow:  "default-implement",
+			Gaggle:    "example",
+			StartedAt: time.Now(),
+		}, nil)
+		if err == nil {
+			err = run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)})
+		}
+		if run != nil {
+			err = errors.Join(err, run.Close())
+		}
+		responseDone <- err
+	}()
+
+	var stdout, stderr bytes.Buffer
+	code := runDelegatedTrigger(ctx, l, "default-implement", root, false, &stdout, &stderr)
+	if err := <-responseDone; err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "phase=completed") {
+		t.Fatalf("stdout = %q, want completed phase", stdout.String())
 	}
 }
 

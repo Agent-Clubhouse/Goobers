@@ -94,16 +94,77 @@ func TestMigrateLegacyRuntimeToSingleGaggle(t *testing.T) {
 	}
 }
 
-func TestMigrateLegacyRuntimeRejectsAmbiguousPopulatedRoot(t *testing.T) {
+func TestMigrateLegacyRuntimePreservesPopulatedRootForMultipleGaggles(t *testing.T) {
 	layout := NewLayout(t.TempDir())
-	if err := os.MkdirAll(filepath.Join(layout.RunsDir(), "run-1"), 0o755); err != nil {
+	legacyPaths := []string{
+		filepath.Join(layout.RunsDir(), "run-1", "run.yaml"),
+		filepath.Join(layout.WorkcopiesDir(), "repo", "repo.git", "HEAD"),
+	}
+	for _, path := range legacyPaths {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("legacy\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := layout.MigrateLegacyRuntime([]string{"alpha", "beta"}); err != nil {
+		t.Fatalf("MigrateLegacyRuntime: %v", err)
+	}
+	for _, path := range legacyPaths {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("legacy path %s was not preserved: %v", path, err)
+		}
+	}
+	for _, gaggle := range []string{"alpha", "beta"} {
+		for _, dir := range []string{
+			layout.ForGaggle(gaggle).RunsDir(),
+			layout.ForGaggle(gaggle).WorkcopiesDir(),
+		} {
+			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+				t.Fatalf("scoped runtime directory %s was not created: %v", dir, err)
+			}
+		}
+	}
+}
+
+func TestMigrateLegacyRuntimeRetainsGeneratedAliases(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	legacyRepo := filepath.Join(layout.WorkcopiesDir(), "repo", "repo.git", "HEAD")
+	if err := os.MkdirAll(filepath.Dir(legacyRepo), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	err := layout.MigrateLegacyRuntime([]string{"alpha", "beta"})
-	if err == nil {
-		t.Fatal("expected populated legacy root with multiple gaggles to fail")
+	if err := os.WriteFile(legacyRepo, []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if _, statErr := os.Stat(filepath.Join(layout.RunsDir(), "run-1")); statErr != nil {
-		t.Fatalf("failed migration changed legacy data: %v", statErr)
+	if err := layout.MigrateLegacyRuntime([]string{"alpha"}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, gaggles := range [][]string{{"beta"}, {"alpha", "beta"}} {
+		if err := layout.MigrateLegacyRuntime(gaggles); err != nil {
+			t.Fatalf("MigrateLegacyRuntime(%v): %v", gaggles, err)
+		}
+		for _, alias := range []string{layout.RunsDir(), layout.WorkcopiesDir()} {
+			info, err := os.Lstat(alias)
+			if err != nil || info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("legacy alias %s was not retained: %v", alias, err)
+			}
+		}
+		if _, err := os.Stat(legacyRepo); err != nil {
+			t.Fatalf("retained workcopies alias is unusable: %v", err)
+		}
+		target, err := filepath.EvalSymlinks(layout.WorkcopiesDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := filepath.EvalSymlinks(layout.ForGaggle("alpha").WorkcopiesDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if target != want {
+			t.Fatalf("workcopies alias target = %q, want retained owner %q", target, want)
+		}
 	}
 }

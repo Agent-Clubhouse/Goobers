@@ -252,11 +252,13 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		})
 		return released, err
 	}
-	startupReleased, err := recoverExpiredClaims(time.Now())
+	startupReleased := append([]localscheduler.ClaimEntry(nil), setup.RecoveredClaims...)
+	newlyReleased, err := recoverExpiredClaims(time.Now())
 	if err != nil {
 		pf(stderr, "error: recover expired claims: %v\n", err)
 		return 1
 	}
+	startupReleased = append(startupReleased, newlyReleased...)
 	for _, entry := range startupReleased {
 		pf(stdout, "recovered expired claim %s (was held by run %s)\n", entry.ItemID, entry.RunID)
 	}

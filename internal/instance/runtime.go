@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // EnsureGaggleRuntime creates the runs and workcopies directories for gaggle.
@@ -102,8 +103,8 @@ func (l Layout) FindRunDir(runID string) (string, error) {
 }
 
 // MigrateLegacyRuntime moves a flat runs/workcopies layout into the sole active
-// gaggle. A populated flat runtime is ambiguous when several gaggles are active,
-// so startup fails with an actionable error instead of assigning data silently.
+// gaggle. Multi-gaggle instances retain populated flat roots so their legacy
+// journals and Git worktree metadata remain readable.
 func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
 	names, err := normalizedGaggles(gaggles)
 	if err != nil {
@@ -121,10 +122,6 @@ func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
 		}
 		legacyHasData = legacyHasData || hasFiles
 	}
-	if legacyHasData && len(names) != 1 {
-		return fmt.Errorf("legacy flat runs/workcopies contain data but %d gaggles are active; move each legacy directory under gaggles/<gaggle>/ before starting", len(names))
-	}
-
 	if len(names) == 1 {
 		scoped := l.ForGaggle(names[0])
 		for _, pair := range [][2]string{
@@ -137,6 +134,16 @@ func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
 		}
 	} else if !legacyHasData {
 		for _, legacy := range []string{l.RunsDir(), l.WorkcopiesDir()} {
+			info, err := os.Lstat(legacy)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, err)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				continue
+			}
 			if err := os.Remove(legacy); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return fmt.Errorf("remove empty legacy runtime directory %s: %w", legacy, err)
 			}
@@ -167,6 +174,9 @@ func migrateLegacyDir(legacy, scoped string) error {
 		target, err := filepath.EvalSymlinks(legacy)
 		if err != nil {
 			return fmt.Errorf("resolve legacy runtime alias %s: %w", legacy, err)
+		}
+		if isGeneratedRuntimeAlias(legacy, target) {
+			return nil
 		}
 		scopedAbs, err := filepath.EvalSymlinks(scoped)
 		if err != nil {
@@ -205,6 +215,26 @@ func migrateLegacyDir(legacy, scoped string) error {
 		return fmt.Errorf("migrate legacy runtime %s to %s: %w", legacy, scoped, err)
 	}
 	return nil
+}
+
+func isGeneratedRuntimeAlias(legacy, target string) bool {
+	root, err := filepath.EvalSymlinks(filepath.Dir(legacy))
+	if err != nil {
+		return false
+	}
+	target, err = filepath.EvalSymlinks(target)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(filepath.Clean(rel), string(filepath.Separator))
+	return len(parts) == 3 &&
+		parts[0] == GagglesDirName &&
+		validateGagglePathName(parts[1]) == nil &&
+		parts[2] == filepath.Base(legacy)
 }
 
 func ensureLegacyRuntimeAlias(legacy, scoped string) error {

@@ -107,6 +107,51 @@ func TestMigrateLegacyClaimNamespace(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyClaimsUsesPerRunOwnership(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, claim := range []struct {
+		itemID string
+		runID  string
+	}{
+		{itemID: "159", runID: "run-alpha"},
+		{itemID: "27", runID: "run-beta"},
+	} {
+		if ok, _, err := ledger.Claim(claim.itemID, claim.runID, "implementation", time.Hour); err != nil || !ok {
+			t.Fatalf("legacy claim %s: ok=%v err=%v", claim.itemID, ok, err)
+		}
+	}
+
+	namespaces := map[string]ClaimNamespace{
+		"run-alpha": {Gaggle: "alpha", Provider: "github"},
+		"run-beta":  {Gaggle: "beta", Provider: "ado"},
+	}
+	if err := ledger.MigrateLegacyClaims(func(entry ClaimEntry) (ClaimNamespace, error) {
+		namespace, ok := namespaces[entry.RunID]
+		if !ok {
+			return ClaimNamespace{}, fmt.Errorf("unknown run %s", entry.RunID)
+		}
+		return namespace, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, key := range []ClaimKey{
+		{Gaggle: "alpha", Provider: "github", ExternalID: "159"},
+		{Gaggle: "beta", Provider: "ado", ExternalID: "27"},
+	} {
+		if entry, ok := ledger.LookupScoped(key); !ok || entry.Gaggle != key.Gaggle || entry.Provider != key.Provider {
+			t.Fatalf("migrated claim %v = %+v, %v", key, entry, ok)
+		}
+		if _, ok := ledger.Lookup(key.ExternalID); ok {
+			t.Fatalf("legacy item-only key %q still exists", key.ExternalID)
+		}
+	}
+}
+
 // TestClaimRejectsNonPositiveLeaseDuration is issue #235 edge 1: a
 // non-positive leaseDuration computes ExpiresAt <= ClaimedAt, so the entry
 // is expired() at the moment it's written — the very check the exclusivity

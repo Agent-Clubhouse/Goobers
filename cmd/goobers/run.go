@@ -228,12 +228,7 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root stri
 		return 0
 	}
 
-	runDir, err := l.FindRunDir(runID)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	phase, err := waitForRunTerminal(ctx, filepath.Dir(runDir), runID)
+	phase, err := waitForRunTerminalInLayout(ctx, l, runID)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2

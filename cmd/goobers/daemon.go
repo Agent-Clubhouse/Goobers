@@ -50,6 +50,7 @@ type schedulerSetup struct {
 	RunConditions     instance.RunConditions
 	Validation        *validate.Report
 	ConfigDigest      string
+	RecoveredClaims   []localscheduler.ClaimEntry
 	// OpenPRRefresher backs the #353 MaxOpenPRs cap; nil when no workflow opts
 	// in (or no repo is configured). Only the `up` daemon starts its Run loop
 	// and wires it as a scheduler option — see up.go.
@@ -109,6 +110,10 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	if err := l.MigrateLegacyRuntime(gaggles); err != nil {
 		return nil, err
 	}
+	claimRepoRefs, err := repoRefsByWorkflow(set)
+	if err != nil {
+		return nil, err
+	}
 
 	// telemetry.enabled defaults to true; instance.yaml can opt out (issue
 	// #129). tel/rollupDB stay nil in that case — every downstream use
@@ -146,20 +151,22 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	if err != nil {
 		return nil, fmt.Errorf("open instance log: %w", err)
 	}
-	claimGaggle := ""
-	if len(gaggles) == 1 {
-		claimGaggle = gaggles[0]
-	}
-	claimProvider := ""
-	if len(cfg.Repos) > 0 {
-		claimProvider = cfg.Repos[0].Provider
-	}
+	var recoveredClaims []localscheduler.ClaimEntry
 	if err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationMigration, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+		ledger, err := localscheduler.OpenClaimLedger(
+			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+			localscheduler.WithInstanceLog(instanceLog),
+		)
 		if err != nil {
 			return err
 		}
-		return ledger.MigrateLegacyNamespace(claimGaggle, claimProvider)
+		recoveredClaims, err = ledger.RecoverExpired(time.Now())
+		if err != nil {
+			return err
+		}
+		return ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
+			return legacyClaimNamespace(l, claimRepoRefs, entry)
+		})
 	}); err != nil {
 		if tel != nil {
 			_ = tel.Shutdown(context.Background())
@@ -210,9 +217,36 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		RunConditions:     cfg.RunConditions,
 		Validation:        definitions.Validation,
 		ConfigDigest:      configDigest,
+		RecoveredClaims:   recoveredClaims,
 		OpenPRRefresher:   definitions.OpenPRRefresher,
 		ProviderQuota:     providerQuota,
 		SharedRegistry:    sharedReg,
+	}, nil
+}
+
+func legacyClaimNamespace(l instance.Layout, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
+	runDir, err := l.FindRunDir(entry.RunID)
+	if err != nil {
+		return localscheduler.ClaimNamespace{}, fmt.Errorf("find owning run %q: %w", entry.RunID, err)
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return localscheduler.ClaimNamespace{}, err
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		return localscheduler.ClaimNamespace{}, err
+	}
+	if identity.RunID != entry.RunID {
+		return localscheduler.ClaimNamespace{}, fmt.Errorf("run journal identity is %q", identity.RunID)
+	}
+	ref, ok := repoRefs[localscheduler.WorkflowIdentity{Gaggle: identity.Gaggle, Workflow: identity.Workflow}]
+	if !ok {
+		return localscheduler.ClaimNamespace{}, fmt.Errorf("owning workflow %q in gaggle %q is not configured", identity.Workflow, identity.Gaggle)
+	}
+	return localscheduler.ClaimNamespace{
+		Gaggle:   identity.Gaggle,
+		Provider: string(ref.Provider),
 	}, nil
 }
 
