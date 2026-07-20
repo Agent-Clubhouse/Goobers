@@ -33,7 +33,7 @@ func TestTaskExecutor_DefaultsToShell(t *testing.T) {
 func TestTaskExecutor_RoutesToCIPoll(t *testing.T) {
 	shell, _ := newTestExecutor(t, nil)
 	poller := &fakePoller{results: []providers.CheckState{providers.CheckStatePassing}}
-	ciPoll, err := NewCIPollExecutor(poller)
+	ciPoll, err := NewCIPollExecutor(poller, newFakeRecorder())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestTaskExecutor_RoutesToCIPoll(t *testing.T) {
 func TestTaskExecutor_CIPollHonorsDeclaredDurationLimit(t *testing.T) {
 	shell, _ := newTestExecutor(t, nil)
 	poller := &fakePoller{results: []providers.CheckState{providers.CheckStatePending}}
-	ciPoll, err := NewCIPollExecutor(poller)
+	ciPoll, err := NewCIPollExecutor(poller, newFakeRecorder())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestTaskExecutor_CIPollHonorsDeclaredPollInterval(t *testing.T) {
 		providers.CheckStatePending,
 		providers.CheckStatePassing,
 	}}
-	ciPoll, err := NewCIPollExecutor(poller)
+	ciPoll, err := NewCIPollExecutor(poller, newFakeRecorder())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func (p *dispatchCountingPoller) PollPullRequest(context.Context, providers.Pull
 func TestTaskExecutor_CIPollWithoutCapabilityFailsBeforePolling(t *testing.T) {
 	shell, _ := newTestExecutor(t, nil)
 	poller := &dispatchCountingPoller{}
-	ciPoll, err := NewCIPollExecutor(poller)
+	ciPoll, err := NewCIPollExecutor(poller, newFakeRecorder())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestTaskExecutor_ClassifiesCIPollProviderFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			shell, _ := newTestExecutor(t, nil)
 			poller := &sequencedPoller{steps: []pollStep{{err: tc.err}}}
-			ciPoll, err := NewCIPollExecutor(poller)
+			ciPoll, err := NewCIPollExecutor(poller, newFakeRecorder())
 			if err != nil {
 				t.Fatal(err)
 			}

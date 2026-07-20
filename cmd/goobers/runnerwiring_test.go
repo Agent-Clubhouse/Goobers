@@ -502,6 +502,12 @@ func (r *escTestRegistrar) Register(secret []byte) {
 	r.registered = append(r.registered, append([]byte(nil), secret...))
 }
 
+type ciPollTestRecorder struct{}
+
+func (ciPollTestRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
+	return journal.Ref{Path: name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
+}
+
 type ciPollTestFallback struct{}
 
 func (ciPollTestFallback) Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -528,7 +534,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestFallback{})
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestFallback{}, ciPollTestRecorder{})
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}

@@ -301,6 +301,7 @@ func credentialRefName(cap string) string { return "credential:" + cap }
 type ciPollTaskExecutor struct {
 	fallback invoke.Deterministic
 	injector *credentials.Injector
+	recorder executor.ArtifactRecorder
 }
 
 func (e *ciPollTaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -323,7 +324,7 @@ func (e *ciPollTaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 	} else {
 		poller = providers.NewGitHubProvider(token)
 	}
-	ciPoll, err := executor.NewCIPollExecutor(poller)
+	ciPoll, err := executor.NewCIPollExecutor(poller, e.recorder)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
@@ -337,7 +338,7 @@ func (e *ciPollTaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 // buildCIPollExecutor wraps the deterministic dispatcher for a repo-backed
 // instance. Credential resolution stays lazy so a non-ci-poll stage never
 // requires the PR capability or token.
-func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, fallback invoke.Deterministic) (invoke.Deterministic, error) {
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, fallback invoke.Deterministic, recorder executor.ArtifactRecorder) (invoke.Deterministic, error) {
 	if len(cfg.Repos) == 0 {
 		return fallback, nil
 	}
@@ -347,7 +348,10 @@ func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, f
 	if fallback == nil {
 		return nil, fmt.Errorf("build ci-poll executor: fallback executor is nil")
 	}
-	return &ciPollTaskExecutor{fallback: fallback, injector: injector}, nil
+	if recorder == nil {
+		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
+	}
+	return &ciPollTaskExecutor{fallback: fallback, injector: injector, recorder: recorder}, nil
 }
 
 // newEscalationPoster constructs the provider the escalation notifier posts
@@ -789,7 +793,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if err != nil {
 				return nil, err
 			}
-			return buildCIPollExecutor(cfg, injector, fallback)
+			return buildCIPollExecutor(cfg, injector, fallback, rec)
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			spec, ok := goobers[gooberName]

@@ -11,10 +11,12 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/providers"
 )
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
@@ -153,6 +155,11 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+	ciFailures, err := traceCIFailures(ctx, reads, runID, ledger.Events)
+	if err != nil {
+		pf(stderr, "error: CI failure evidence: %v\n", err)
+		return 2
+	}
 
 	if escalation != nil {
 		printEscalationSummary(stdout, *escalation)
@@ -175,6 +182,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		pln(stdout, "  "+formatEvent(traceJournalEvent(event)))
 	}
 
+	printCIFailures(stdout, ciFailures)
 	printSpans(stdout, spans)
 	return 0
 }
@@ -276,6 +284,58 @@ func printEscalationSummary(stdout io.Writer, summary escalationSummary) {
 	pf(stdout, "  gate: %s\n", summary.Gate)
 	pf(stdout, "  repass count: %d\n", summary.RepassCount)
 	pf(stdout, "  last needs-changes reason: %s\n\n", reason)
+}
+
+func traceCIFailures(
+	ctx context.Context,
+	reads readservice.OfflineRuns,
+	runID string,
+	events []readservice.RunEvent,
+) ([]providers.CheckDetail, error) {
+	var failures []providers.CheckDetail
+	for _, event := range events {
+		if !event.KnownSchema ||
+			event.Type != journal.EventStageFinished ||
+			event.Outputs[executor.OutputCIStatus] != string(providers.CheckStateFailing) {
+			continue
+		}
+		for _, metadata := range event.Artifacts {
+			if metadata.Name != executor.CIChecksArtifactName {
+				continue
+			}
+			content, err := reads.Artifact(ctx, runID, metadata.Digest)
+			if err != nil {
+				return nil, err
+			}
+			var artifact executor.CIChecksArtifact
+			if err := json.Unmarshal(content.Bytes, &artifact); err != nil {
+				return nil, fmt.Errorf("decode %s: %w", executor.CIChecksArtifactName, err)
+			}
+			for _, check := range artifact.Checks {
+				if check.State == providers.CheckStateFailing {
+					failures = append(failures, check)
+				}
+			}
+		}
+	}
+	return failures, nil
+}
+
+func printCIFailures(stdout io.Writer, checks []providers.CheckDetail) {
+	if len(checks) == 0 {
+		return
+	}
+	pln(stdout, "\nCI failed checks:")
+	for _, check := range checks {
+		pf(stdout, "  check=%q summary=%q url=%q\n",
+			check.Name, firstLine(check.Summary), check.URL)
+	}
+}
+
+func firstLine(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	line, _, _ := strings.Cut(value, "\n")
+	return strings.TrimSuffix(line, "\r")
 }
 
 // formatEvent renders one journal event as a single debug line, matching the

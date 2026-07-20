@@ -246,8 +246,8 @@ const (
 type CheckDetail struct {
 	Name    string     `json:"name"`
 	State   CheckState `json:"state"`
-	URL     string     `json:"url,omitempty"`
-	Summary string     `json:"summary,omitempty"`
+	URL     string     `json:"url"`
+	Summary string     `json:"summary"`
 }
 
 // PullRequestComment is a normalized issue-thread comment on a pull request.
