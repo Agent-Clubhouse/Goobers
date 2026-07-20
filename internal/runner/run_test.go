@@ -2113,6 +2113,8 @@ func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 
 	var order []string
 	var got BlockedOutcome
+	commenter := &recordingCommenter{}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 	r.cfg.Blocked = func(_ context.Context, o BlockedOutcome) error {
 		order = append(order, "blocked")
 		got = o
@@ -2122,6 +2124,9 @@ func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 		order = append(order, "finalize")
 		if runID != "run-blocked" || phase != journal.PhaseEscalated {
 			t.Errorf("FinalizeTerminal got (%q, %q), want (run-blocked, escalated)", runID, phase)
+		}
+		if len(commenter.requests) != 1 {
+			t.Errorf("escalation notification calls = %d at finalization, want 1", len(commenter.requests))
 		}
 		return nil
 	}
@@ -2149,16 +2154,27 @@ func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 	}
 	want := BlockedOutcome{
 		RunID:    "run-blocked",
+		RepoRef:  apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Stage:    "implement",
 		ItemID:   "510",
 		Reason:   "DEPENDENCY_NOT_MET: issues #441 and #442 must merge first",
 		Blockers: []string{"441", "442"},
 	}
-	if got.RunID != want.RunID || got.Stage != want.Stage || got.ItemID != want.ItemID || got.Reason != want.Reason {
+	if got.RunID != want.RunID || got.RepoRef != want.RepoRef || got.Stage != want.Stage || got.ItemID != want.ItemID || got.Reason != want.Reason {
 		t.Fatalf("BlockedOutcome = %+v, want %+v", got, want)
 	}
 	if len(got.Blockers) != 2 || got.Blockers[0] != "441" || got.Blockers[1] != "442" {
 		t.Fatalf("Blockers = %v, want [441 442] (parsed, deduped, in order)", got.Blockers)
+	}
+	if len(commenter.requests) != 1 {
+		t.Fatalf("escalation notification calls = %d, want 1", len(commenter.requests))
+	}
+	notification := commenter.requests[0]
+	if notification.Repository != providerRepositoryRef(want.RepoRef) ||
+		notification.ID != "510" ||
+		!strings.Contains(notification.Comment, "implement") ||
+		!strings.Contains(notification.Comment, want.Reason) {
+		t.Fatalf("escalation notification = %+v, want item 510 with stage and blocked reason", notification)
 	}
 
 	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-blocked"))
@@ -4045,10 +4061,7 @@ func TestRunnerNotifiesExplicitGateEscalationOnce(t *testing.T) {
 	r, _ := newTestRunner(t, map[string]stubTaskResult{
 		"run-ci-timeout:ci-poll": {status: apiv1.ResultSuccess},
 	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-ci-timeout",
@@ -4080,10 +4093,7 @@ func TestRunnerTerminalGateNotificationFailureIsBestEffort(t *testing.T) {
 	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
 		"run-notify-error:ci-poll": {status: apiv1.ResultSuccess},
 	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-notify-error",
@@ -4153,10 +4163,7 @@ func TestRunnerNotifiesTerminalGateEscalationViaClaimLedgerFallback(t *testing.T
 	r, _ := newTestRunner(t, map[string]stubTaskResult{
 		"run-scheduled-claimed:ci-poll": {status: apiv1.ResultSuccess},
 	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 	var resolvedRunID string
 	r.cfg.ClaimedItems = func(runID string) ([]string, error) {
 		resolvedRunID = runID
@@ -4196,10 +4203,7 @@ func TestRunnerTerminalGateEscalationFanOutsToEveryClaimedItem(t *testing.T) {
 	r, _ := newTestRunner(t, map[string]stubTaskResult{
 		"run-multi-claimed:ci-poll": {status: apiv1.ResultSuccess},
 	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 	r.cfg.ClaimedItems = func(string) ([]string, error) { return []string{"57", "58"}, nil }
 
 	res, err := r.Start(context.Background(), StartInput{
@@ -4233,10 +4237,7 @@ func TestRunnerTerminalGateItemResolutionFailureIsBestEffort(t *testing.T) {
 	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
 		"run-resolve-error:ci-poll": {status: apiv1.ResultSuccess},
 	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 	r.cfg.ClaimedItems = func(string) ([]string, error) { return nil, fmt.Errorf("claim ledger unreadable") }
 
 	res, err := r.Start(context.Background(), StartInput{
@@ -4284,10 +4285,7 @@ func TestRunnerNotifiesGateAbortWithReviewerRationale(t *testing.T) {
 	r.cfg.NewAgentic = func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
 		return reviewer, nil
 	}
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-review-abort",
@@ -4365,7 +4363,7 @@ func TestRunnerNotifyEscalatedSurvivesCancellation(t *testing.T) {
 		},
 		Automated:    gate.NewAutomatedEvaluator(),
 		MaxRepasses:  0, // escalate on the very first non-pass evaluation
-		Escalation:   &gate.EscalationNotifier{Poster: commenter, Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}},
+		Escalation:   &gate.EscalationNotifier{Poster: commenter},
 		Worktrees:    wtMgr,
 		RunsDir:      runsDir,
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
@@ -4431,10 +4429,7 @@ func TestRunnerAutomaticEscalationDoesNotDoubleNotify(t *testing.T) {
 		"run-auto-escalate:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "x", Message: "always fails"}},
 	}, gate.NewAutomatedEvaluator())
 	r.cfg.MaxRepasses = 1
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-auto-escalate",

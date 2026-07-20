@@ -365,17 +365,20 @@ var newEscalationPoster = func(token string) gate.Commenter { return providers.N
 // contract rather than capturing a token once at daemon startup — registers it
 // for scrubbing, then posts through a freshly-authenticated provider.
 type escalationCommenter struct {
-	ref      string
 	resolver credentials.Resolver
 	reg      runner.SecretRegistrar
 }
 
 func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
-	token, err := c.resolver.Resolve(ctx, c.ref)
+	ref := req.Repository.Owner + "/" + req.Repository.Name
+	token, err := c.resolver.Resolve(ctx, ref)
 	if err != nil {
-		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", c.ref, err)
+		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
 	}
 	c.reg.Register([]byte(token))
+	// PR remediation uses pr/<number> as its internal claim key; provider work
+	// item endpoints use the shared bare issue/PR number.
+	req.ID = blockedLookupID(req.ID)
 	return newEscalationPoster(token).UpdateWorkItem(ctx, req)
 }
 
@@ -384,8 +387,8 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 // constructed, so runner.Config.Escalation stayed nil and a repass-budget
 // escalation posted nothing to the driving issue (#312, the same "real seam,
 // zero production callers" shape as epic #130). Returns nil when no repo is
-// configured — a schedule-only producer instance has no driving issue to
-// comment on, and NotifyEscalated only fires when in.Item is non-nil anyway.
+// configured. The run supplies its repository to each notification so a
+// multi-repo instance resolves and posts through the matching connection.
 // Comment-only by deliberate design: the Commenter/UpdateWorkItem seam was
 // chosen specifically so escalation never touches the item's status label
 // (#63); #20's escalation surfacing is a provider comment on the driving issue,
@@ -395,32 +398,27 @@ func buildEscalationNotifier(cfg *instance.Config, resolver credentials.Resolver
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
-	repo := cfg.Repos[0]
 	return &gate.EscalationNotifier{
 		Poster: &escalationCommenter{
-			ref:      repo.Owner + "/" + repo.Name,
 			resolver: resolver,
 			reg:      reg,
 		},
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name},
 	}
 }
 
 // buildBlockedHandler wires runner.Config.Blocked (#544/#545/#552): the
 // instance-level consequences of a stage reporting status "blocked". Returns
-// nil when no repo is configured, mirroring buildEscalationNotifier. Two
-// dispositions, keyed on whether the stage referenced its blockers in
-// machine-readable form (the documented outputs.blockedBy convention):
+// nil when no repo is configured, mirroring buildEscalationNotifier.
+// Every blocked driving issue is parked goobers:needs-human (swap off
+// goobers:ready and the provider-visible claim marker) per the #544 ruling /
+// #539 convention. This prevents the released claim from making the same item
+// immediately eligible again.
 //
-//   - Known blockers: record the learned block in scheduler/blocked.json so
-//     backlog-query skips the item until every blocker closes (#552's
-//     self-healing skip — a dependency block needs time, not a human), and
-//     comment the same on the driving issue.
-//   - No parseable blockers: park the issue goobers:needs-human (swap off
-//     goobers:ready) per the #544 ruling / #539 convention — an agent saying
-//     "I can't proceed" with nothing selection can key off IS a
-//     human-attention signal, and without the label swap the freed claim
-//     would be re-claimed and re-blocked on the very next tick.
+// When the stage also references blockers through outputs.blockedBy, record
+// them in scheduler/blocked.json so #552's selection guard still protects the
+// issue if a human re-promotes it before every dependency closes. The runner's
+// shared EscalationNotifier owns the explanatory provider comment; this handler
+// owns only parking and dependency-record state.
 //
 // The handler runs before FinalizeTerminal releases the run's claims, so a
 // run with no StartInput.Item (scheduled/fan-out implementation runs claim
@@ -432,13 +430,10 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
-	repo := cfg.Repos[0]
 	poster := &escalationCommenter{
-		ref:      repo.Owner + "/" + repo.Name,
 		resolver: resolver,
 		reg:      reg,
 	}
-	repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
 
 	return func(ctx context.Context, o runner.BlockedOutcome) error {
 		itemIDs := []string{o.ItemID}
@@ -457,8 +452,18 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 		}
 
 		var errs []error
+		repoRef := providers.RepositoryRef{
+			Provider: providers.ProviderKind(o.RepoRef.Provider),
+			Owner:    o.RepoRef.Owner,
+			Name:     o.RepoRef.Name,
+		}
 		for _, itemID := range itemIDs {
-			req := providers.UpdateWorkItemRequest{Repository: repoRef, ID: itemID}
+			req := providers.UpdateWorkItemRequest{
+				Repository:   repoRef,
+				ID:           itemID,
+				AddLabels:    []string{providers.LabelNeedsHuman},
+				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
+			}
 			if len(o.Blockers) > 0 {
 				if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
 					recs[itemID] = blockedRecord{
@@ -471,22 +476,10 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 					return true
 				}); err != nil {
 					errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
-					continue
 				}
-				req.Comment = fmt.Sprintf(
-					"Goobers run %s: stage %q reported this issue blocked on %s — %s. The run finished escalated and released its claim. Backlog selection skips this issue until every blocking issue is closed, then it becomes eligible again automatically.",
-					o.RunID, o.Stage, issueRefList(o.Blockers), o.Reason,
-				)
-			} else {
-				req.Comment = fmt.Sprintf(
-					"Goobers run %s: stage %q reported this issue blocked without machine-readable blocking issues (`outputs.blockedBy`) — %s. The run finished escalated and released its claim; parking `%s` for a human decision.",
-					o.RunID, o.Stage, o.Reason, providers.LabelNeedsHuman,
-				)
-				req.AddLabels = []string{providers.LabelNeedsHuman}
-				req.RemoveLabels = []string{providers.LabelReady}
 			}
 			if _, err := poster.UpdateWorkItem(ctx, req); err != nil {
-				errs = append(errs, fmt.Errorf("notify blocked on %s#%s: %w", repoRef.Name, itemID, err))
+				errs = append(errs, fmt.Errorf("park blocked item %s#%s: %w", repoRef.Name, itemID, err))
 			}
 		}
 		return errors.Join(errs...)
@@ -529,19 +522,6 @@ func claimedItemIDsForRun(l instance.Layout, runID string) ([]string, error) {
 		return nil
 	})
 	return ids, err
-}
-
-// issueRefList renders issue numbers as "#441, #442" for provider comments.
-func issueRefList(numbers []string) string {
-	out := make([]byte, 0, len(numbers)*6)
-	for i, n := range numbers {
-		if i > 0 {
-			out = append(out, ", "...)
-		}
-		out = append(out, '#')
-		out = append(out, n...)
-	}
-	return string(out)
 }
 
 // newOpenPRProvider builds the GitHub client the open-PR lister polls; a package

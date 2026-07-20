@@ -201,7 +201,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 			// flight. Re-dispatching it now would silently re-run its side
 			// effects (#107); instead apply the exact transition a live
 			// walk would have taken right after runTask returned.
-			next, res, advance, terr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, item, t, lastResult, 0)
+			next, res, advance, terr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.RepoRef, item, t, lastResult, 0)
 			if terr != nil {
 				return res, terr
 			}

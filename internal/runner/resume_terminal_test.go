@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -249,10 +250,10 @@ func TestRunnerResumeSurvivesMissingStateJSONBeforeAnyStage(t *testing.T) {
 // window for a blocked result: the stage.finished(blocked) event landed but
 // the process died before the terminal transition. Resume must apply the
 // IDENTICAL decision a live walk would have made (taskOutcome's blocked arm):
-// escalated, cause journaled, Blocked handler invoked with the blockers
-// parsed from the journaled outputs — never a re-dispatch of the stage. A
-// second Resume (the restart-loop AC) is then a pure no-op reporting
-// escalated, without re-invoking the handler.
+// escalated, cause journaled, Blocked handler invoked without fabricating
+// structured blockers that the live #545 envelope did not report — never a
+// re-dispatch of the stage. A second Resume (the restart-loop AC) is then a
+// pure no-op reporting escalated, without re-invoking the handler.
 func TestRunnerResumeReplaysBlockedFinishAsEscalated(t *testing.T) {
 	machine := fixtureMachine(t)
 	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
@@ -270,9 +271,8 @@ func TestRunnerResumeReplaysBlockedFinishAsEscalated(t *testing.T) {
 	}
 	if err := jr.Append(journal.Event{
 		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
-		Status:  string(apiv1.ResultBlocked),
-		Error:   &journal.ErrorDetail{Code: "DEPENDENCY_NOT_MET", Message: "blocked on #441"},
-		Outputs: map[string]interface{}{OutputBlockedBy: "441"},
+		Status: string(apiv1.ResultBlocked),
+		Error:  &journal.ErrorDetail{Code: "DEPENDENCY_NOT_READY", Message: "Blocked by #511"},
 	}); err != nil {
 		t.Fatalf("append stage.finished: %v", err)
 	}
@@ -282,12 +282,15 @@ func TestRunnerResumeReplaysBlockedFinishAsEscalated(t *testing.T) {
 
 	det := &countingDeterministic{}
 	var handlerCalls []BlockedOutcome
+	commenter := &recordingCommenter{}
 	r, err := New(Config{
 		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
 		Automated:        gate.NewAutomatedEvaluator(),
 		Worktrees:        wtMgr,
 		RunsDir:          runsDir,
 		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		Escalation:       &gate.EscalationNotifier{Poster: commenter},
+		ClaimedItems:     func(string) ([]string, error) { return []string{"510"}, nil },
 		Blocked: func(_ context.Context, o BlockedOutcome) error {
 			handlerCalls = append(handlerCalls, o)
 			return nil
@@ -315,9 +318,18 @@ func TestRunnerResumeReplaysBlockedFinishAsEscalated(t *testing.T) {
 	if len(handlerCalls) != 1 {
 		t.Fatalf("Blocked handler invoked %d times, want 1", len(handlerCalls))
 	}
-	if got := handlerCalls[0]; got.RunID != "run-blocked-crash" || got.Stage != "implement" ||
-		len(got.Blockers) != 1 || got.Blockers[0] != "441" {
-		t.Fatalf("BlockedOutcome = %+v, want run-blocked-crash/implement blocked on [441]", got)
+	if len(commenter.requests) != 1 {
+		t.Fatalf("escalation notifier invoked %d times, want 1", len(commenter.requests))
+	}
+	if got := commenter.requests[0]; got.Repository != providerRepositoryRef(in.RepoRef) ||
+		got.ID != "510" ||
+		!strings.Contains(got.Comment, "implement") ||
+		!strings.Contains(got.Comment, "DEPENDENCY_NOT_READY: Blocked by #511") {
+		t.Fatalf("escalation notification = %+v, want item 510 with stage and reason", got)
+	}
+	if got := handlerCalls[0]; got.RunID != "run-blocked-crash" || got.RepoRef != in.RepoRef || got.Stage != "implement" ||
+		got.Reason != "DEPENDENCY_NOT_READY: Blocked by #511" || len(got.Blockers) != 0 {
+		t.Fatalf("BlockedOutcome = %+v, want live #545 reason with no parsed blockers", got)
 	}
 
 	// Restart loop (#544 AC): every subsequent Resume is a pure no-op
@@ -332,6 +344,9 @@ func TestRunnerResumeReplaysBlockedFinishAsEscalated(t *testing.T) {
 	}
 	if len(handlerCalls) != 1 {
 		t.Fatalf("Blocked handler invoked %d times after second resume, want still 1", len(handlerCalls))
+	}
+	if len(commenter.requests) != 1 {
+		t.Fatalf("escalation notifier invoked %d times after second resume, want still 1", len(commenter.requests))
 	}
 	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-blocked-crash"))
 	if err != nil {
