@@ -896,6 +896,15 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				return nil, fmt.Errorf("runner secret registrar does not implement journal.Scrubber")
 			}
 			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
+			opts := []harness.Option{harness.WithHarnessConfig(spec.Model, spec.HarnessOptions)}
+			// Goober-level default timeout (#1070): raises this goober's built-in
+			// 30m harness bound so its bigger tasks aren't cut off, without
+			// annotating every stage. A stage's own Task.TimeoutSeconds still
+			// wins via env.Limits (invocationTimeout); this only moves the
+			// fallback that applies when a stage sets none.
+			if spec.TimeoutSeconds > 0 {
+				opts = append(opts, harness.WithTimeout(time.Duration(spec.TimeoutSeconds)*time.Second))
+			}
 			return harness.NewExecutor(
 				adapter,
 				injector,
@@ -904,7 +913,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				contextResolver,
 				scrubber,
 				instructionsByGoober[gooberName],
-				harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
+				opts...,
 			)
 		},
 		Automated:              gate.NewAutomatedEvaluator(),

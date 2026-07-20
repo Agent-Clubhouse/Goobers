@@ -129,6 +129,7 @@ const (
 	featureGooberHarnessCopilot           FeatureID = "goober.spec.harness.copilot"
 	featureGooberModel                    FeatureID = "goober.spec.model"
 	featureGooberHarnessOptions           FeatureID = "goober.spec.harnessOptions"
+	featureGooberTimeoutSeconds           FeatureID = "goober.spec.timeoutSeconds"
 	featureGooberCapabilities             FeatureID = "goober.spec.capabilities"
 	featureGooberSkills                   FeatureID = "goober.spec.skills"
 	featureGooberTools                    FeatureID = "goober.spec.tools"
@@ -244,6 +245,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGooberHarnessCopilot,
 		featureGooberModel,
 		featureGooberHarnessOptions,
+		featureGooberTimeoutSeconds,
 		featureGooberCapabilities,
 		featureGooberSkills,
 		featureGooberTools,
@@ -423,6 +425,9 @@ func FeaturesForGoober(spec apiv1.GooberSpec) ([]Feature, error) {
 	}
 	if spec.HarnessOptions != nil {
 		used.add(featureGooberHarnessOptions)
+	}
+	if spec.TimeoutSeconds > 0 {
+		used.add(featureGooberTimeoutSeconds)
 	}
 	if spec.Capabilities != nil {
 		used.add(featureGooberCapabilities)

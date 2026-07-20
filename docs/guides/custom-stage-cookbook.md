@@ -170,8 +170,13 @@ the `todos-found` gate must evaluate.
 ### Limits and environment
 
 - `timeoutSeconds` bounds each task attempt; the default for deterministic
-  commands is 10 minutes. A timeout kills the process group and returns a
-  retryable failure.
+  commands is 10 minutes, and for agentic stages 30 minutes. A timeout kills
+  the process group and returns a retryable failure.
+- To raise the baseline for a goober that does large work (a bigger
+  implementation task legitimately exceeding 30 minutes) without stamping
+  `timeoutSeconds` onto every stage, set `spec.timeoutSeconds` on the goober
+  itself. Precedence is task `timeoutSeconds` > goober `spec.timeoutSeconds` >
+  the built-in default; unset at both levels keeps the built-in.
 - `limits.maxTokens` and `limits.maxCostUSD` carry optional agent-usage bounds
   into the invocation envelope. `limits.maxDurationSeconds` is also accepted,
   but `timeoutSeconds` takes precedence when both are set.
