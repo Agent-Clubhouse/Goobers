@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -71,7 +70,7 @@ func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
 		case journal.EventStageStarted:
 			key := stageAttempt{stage: event.Stage, attempt: event.Attempt}
 			r.stageStarts[key] = event.Time
-			fmt.Fprintf(r.out, "stage %s started (run=%s, attempt=%d, elapsed=%s)\n",
+			pf(r.out, "stage %s started (run=%s, attempt=%d, elapsed=%s)\n",
 				event.Stage, r.runID, event.Attempt, r.runElapsed(event.Time))
 			transitioned = true
 		case journal.EventStageFinished:
@@ -81,12 +80,12 @@ func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
 				elapsed = event.Time.Sub(started)
 				delete(r.stageStarts, key)
 			}
-			fmt.Fprintf(r.out, "stage %s finished (run=%s, attempt=%d, status=%s, elapsed=%s)\n",
+			pf(r.out, "stage %s finished (run=%s, attempt=%d, status=%s, elapsed=%s)\n",
 				event.Stage, r.runID, event.Attempt, event.Status, conciseElapsed(elapsed))
 			transitioned = true
 		case journal.EventGatePaused:
 			if r.pausedGate != event.Gate {
-				fmt.Fprintf(r.out, "waiting: run %s paused at gate %s (elapsed=%s)\n",
+				pf(r.out, "waiting: run %s paused at gate %s (elapsed=%s)\n",
 					r.runID, event.Gate, r.runElapsed(event.Time))
 				r.pausedGate = event.Gate
 				transitioned = true
@@ -113,7 +112,7 @@ func (r *runWaitReporter) heartbeat(now time.Time) {
 	if r.terminal || runWaitHeartbeatInterval <= 0 || now.Sub(r.lastHeartbeat) < runWaitHeartbeatInterval {
 		return
 	}
-	fmt.Fprintf(r.out, "waiting: run %s has no new transition (elapsed=%s)\n",
+	pf(r.out, "waiting: run %s has no new transition (elapsed=%s)\n",
 		r.runID, conciseElapsed(now.Sub(r.lastTransition)))
 	r.lastHeartbeat = now
 }

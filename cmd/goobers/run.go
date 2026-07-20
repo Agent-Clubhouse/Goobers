@@ -439,10 +439,6 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 	}
 }
 
-func waitForRunTerminalInLayout(ctx context.Context, layout instance.Layout, runID string) (journal.RunPhase, error) {
-	return waitForRunTerminalInLayoutWithProgress(ctx, layout, runID, io.Discard)
-}
-
 func waitForRunTerminalInLayoutWithProgress(ctx context.Context, layout instance.Layout, runID string, progress io.Writer) (journal.RunPhase, error) {
 	reporter := newRunWaitReporter(runID, progress)
 	for {
