@@ -1348,11 +1348,14 @@ func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt i
 	stop := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		defer ticker.Stop()
+		var heartbeatErr error
+		defer func() {
+			ticker.Stop()
+			done <- heartbeatErr
+		}()
 		for {
 			select {
 			case <-stop:
-				done <- nil
 				return
 			case <-ticker.Ticks():
 				if err := jr.Append(journal.Event{
@@ -1361,7 +1364,7 @@ func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt i
 					Attempt:      attempt,
 					AttemptClass: class,
 				}); err != nil {
-					done <- fmt.Errorf("runner: journal stage.heartbeat for %q: %w", stage, err)
+					heartbeatErr = fmt.Errorf("runner: journal stage.heartbeat for %q: %w", stage, err)
 					return
 				}
 			}
