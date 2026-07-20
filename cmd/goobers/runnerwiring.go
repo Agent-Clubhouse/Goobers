@@ -486,47 +486,35 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
 			}
 			if len(o.Blockers) > 0 {
-				var cycles [][]string
+				var cycle blockedCycleResult
 				if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
-					recs[itemID] = blockedRecord{
+					recordKey := blockedRecordKey(repoRef, itemID)
+					recs[recordKey] = blockedRecord{
+						Repository: repoRef,
+						ItemID:     itemID,
 						Blockers:   o.Blockers,
 						RunID:      o.RunID,
 						Stage:      o.Stage,
 						Reason:     o.Reason,
 						RecordedAt: time.Now().UTC(),
 					}
-					cycles = findBlockedCycles(recs, itemID)
+					cycle = findBlockedCycle(recs, recordKey)
 					return true
 				}); err != nil {
 					errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
 				}
-				if len(cycles) > 0 {
-					paths := make([]string, 0, len(cycles))
-					var affected []string
-					affectedSeen := make(map[string]bool)
-					for _, cycle := range cycles {
-						paths = append(paths, issueCyclePath(cycle))
-						for _, cycleItemID := range cycle[:len(cycle)-1] {
-							if !affectedSeen[cycleItemID] {
-								affectedSeen[cycleItemID] = true
-								affected = append(affected, cycleItemID)
-							}
-						}
-					}
-					comment := fmt.Sprintf(
-						"Goobers detected circular issue dependency cycles: %s. Every issue in these cycles has been marked `%s` and removed from `%s` for human resolution.",
-						strings.Join(paths, "; "), providers.LabelNeedsHuman, providers.LabelReady,
-					)
-					for _, cycleItemID := range affected {
+				if len(cycle.Affected) > 0 {
+					comment := blockedCycleComment(cycle.Paths, cycle.MorePaths)
+					for _, cycleItem := range cycle.Affected {
 						cycleReq := providers.UpdateWorkItemRequest{
-							Repository:   repoRef,
-							ID:           cycleItemID,
+							Repository:   cycleItem.Repository,
+							ID:           cycleItem.ItemID,
 							Comment:      comment,
 							AddLabels:    []string{providers.LabelNeedsHuman},
 							RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
 						}
 						if _, err := poster.UpdateWorkItem(ctx, cycleReq); err != nil {
-							errs = append(errs, fmt.Errorf("escalate circular dependency on %s#%s: %w", repoRef.Name, cycleItemID, err))
+							errs = append(errs, fmt.Errorf("escalate circular dependency on %s#%s: %w", cycleItem.Repository.Name, cycleItem.ItemID, err))
 						}
 					}
 					continue
@@ -662,15 +650,65 @@ func issueRefList(numbers []string) string {
 }
 
 func issueCyclePath(numbers []string) string {
-	out := make([]byte, 0, len(numbers)*9)
-	for i, n := range numbers {
+	const (
+		maxNodes    = 12
+		maxIDLength = 32
+	)
+	display := numbers
+	if len(numbers) > maxNodes {
+		display = append([]string(nil), numbers[:maxNodes/2]...)
+		display = append(display, "")
+		display = append(display, numbers[len(numbers)-(maxNodes/2-1):]...)
+	}
+
+	out := make([]byte, 0, len(display)*9)
+	for i, n := range display {
 		if i > 0 {
 			out = append(out, " -> "...)
 		}
+		if n == "" {
+			out = append(out, "..."...)
+			continue
+		}
 		out = append(out, '#')
+		if len(n) > maxIDLength {
+			n = n[:maxIDLength-3] + "..."
+		}
 		out = append(out, n...)
 	}
 	return string(out)
+}
+
+const maxBlockedCycleCommentLength = 2000
+
+func blockedCycleComment(paths [][]string, morePaths bool) string {
+	const prefix = "Goobers detected circular issue dependencies. Representative cycles: "
+	suffix := fmt.Sprintf(
+		". Every issue in the cycle has been marked `%s` and removed from `%s` for human resolution.",
+		providers.LabelNeedsHuman, providers.LabelReady,
+	)
+	available := maxBlockedCycleCommentLength - len(prefix) - len(suffix)
+	var summaries strings.Builder
+	for _, path := range paths {
+		summary := issueCyclePath(path)
+		separator := ""
+		if summaries.Len() > 0 {
+			separator = "; "
+		}
+		if summaries.Len()+len(separator)+len(summary) > available {
+			morePaths = true
+			break
+		}
+		summaries.WriteString(separator)
+		summaries.WriteString(summary)
+	}
+	if morePaths {
+		const omitted = "; additional cycle paths omitted"
+		if summaries.Len()+len(omitted) <= available {
+			summaries.WriteString(omitted)
+		}
+	}
+	return prefix + summaries.String() + suffix
 }
 
 // newOpenPRProvider builds the GitHub client the open-PR lister polls; a package

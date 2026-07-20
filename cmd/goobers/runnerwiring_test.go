@@ -912,11 +912,11 @@ func TestBuildBlockedHandlerKnownBlockersRecordsAndParks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadBlockedRecords: %v", err)
 	}
-	rec, ok := recs["510"]
+	rec, ok := recs[blockedRecordKey(wantRepo, "510")]
 	if !ok {
 		t.Fatal("expected a blocked.json record for item 510")
 	}
-	if len(rec.Blockers) != 2 || rec.RunID != "run-1" {
+	if rec.Repository != wantRepo || rec.ItemID != "510" || len(rec.Blockers) != 2 || rec.RunID != "run-1" {
 		t.Fatalf("record = %+v, want blockers [441 442] from run-1", rec)
 	}
 }
@@ -965,9 +965,10 @@ func TestBuildBlockedHandlerEscalatesCircularDependency(t *testing.T) {
 	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
 		t.Fatalf("mkdir scheduler dir: %v", err)
 	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
-		"441": {Blockers: []string{"510"}, RunID: "prior-1"},
-		"442": {Blockers: []string{"510"}, RunID: "prior-2"},
+		blockedRecordKey(repo, "441"): {Repository: repo, ItemID: "441", Blockers: []string{"510"}, RunID: "prior-1"},
+		blockedRecordKey(repo, "442"): {Repository: repo, ItemID: "442", Blockers: []string{"510"}, RunID: "prior-2"},
 	}); err != nil {
 		t.Fatalf("seed blocked records: %v", err)
 	}
@@ -1012,8 +1013,103 @@ func TestBuildBlockedHandlerEscalatesCircularDependency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadBlockedRecords: %v", err)
 	}
-	if got := recs["510"].Blockers; !slices.Equal(got, []string{"441", "442"}) {
+	if got := recs[blockedRecordKey(repo, "510")].Blockers; !slices.Equal(got, []string{"441", "442"}) {
 		t.Fatalf("recorded blockers = %v, want [441 442]", got)
+	}
+}
+
+func TestBuildBlockedHandlerScopesCyclesByRepository(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	webRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	apiRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "api"}
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
+		blockedRecordKey(webRepo, "441"): {
+			Repository: webRepo, ItemID: "441", Blockers: []string{"999"}, RunID: "web-prior",
+		},
+		blockedRecordKey(apiRepo, "441"): {
+			Repository: apiRepo, ItemID: "441", Blockers: []string{"510"}, RunID: "api-prior",
+		},
+	}); err != nil {
+		t.Fatalf("seed blocked records: %v", err)
+	}
+	t.Setenv("BLOCKED_TOK", "web-token")
+	t.Setenv("BLOCKED_API_TOK", "api-token")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{
+		{Name: "acme/web", Env: "BLOCKED_TOK"},
+		{Name: "acme/api", Env: "BLOCKED_API_TOK"},
+	})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+		{Provider: "github", Owner: "acme", Name: "api", Token: instance.TokenRef{Env: "BLOCKED_API_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, resolver, &escTestRegistrar{})
+
+	if err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "web-current", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", ItemID: "510", Blockers: []string{"441"},
+	}); err != nil {
+		t.Fatalf("web handler: %v", err)
+	}
+	if len(fake.calls) != 1 || fake.calls[0].Repository != webRepo || fake.calls[0].ID != "510" || fake.calls[0].Comment != "" {
+		t.Fatalf("web calls = %+v, want only non-cycle parking for web#510", fake.calls)
+	}
+
+	if err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "api-current", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "api"},
+		Stage: "implement", ItemID: "510", Blockers: []string{"441"},
+	}); err != nil {
+		t.Fatalf("api handler: %v", err)
+	}
+	if len(fake.calls) != 3 {
+		t.Fatalf("calls = %+v, want web parking plus two API cycle updates", fake.calls)
+	}
+	for i, wantID := range []string{"510", "441"} {
+		got := fake.calls[i+1]
+		if got.Repository != apiRepo || got.ID != wantID || got.Comment == "" {
+			t.Errorf("API cycle call %d = %+v, want api#%s with a cycle comment", i, got, wantID)
+		}
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	for _, key := range []string{
+		blockedRecordKey(webRepo, "441"),
+		blockedRecordKey(webRepo, "510"),
+		blockedRecordKey(apiRepo, "441"),
+		blockedRecordKey(apiRepo, "510"),
+	} {
+		if _, ok := recs[key]; !ok {
+			t.Errorf("blocked records missing %q: %+v", key, recs)
+		}
+	}
+}
+
+func TestBlockedCycleCommentIsBounded(t *testing.T) {
+	paths := make([][]string, 20)
+	for i := range paths {
+		for j := 0; j < 100; j++ {
+			paths[i] = append(paths[i], strings.Repeat("9", 100))
+		}
+	}
+	comment := blockedCycleComment(paths, true)
+	if len(comment) > maxBlockedCycleCommentLength {
+		t.Fatalf("comment length = %d, want at most %d", len(comment), maxBlockedCycleCommentLength)
+	}
+	if !strings.Contains(comment, "additional cycle paths omitted") {
+		t.Fatalf("comment = %q, want omitted-path notice", comment)
 	}
 }
 
@@ -1027,8 +1123,9 @@ func TestBuildBlockedHandlerEscalatesCircularDependencyForPRClaim(t *testing.T) 
 	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
 		t.Fatalf("mkdir scheduler dir: %v", err)
 	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
-		"956": {Blockers: []string{"955"}, RunID: "prior"},
+		blockedRecordKey(repo, "956"): {Repository: repo, ItemID: "956", Blockers: []string{"955"}, RunID: "prior"},
 	}); err != nil {
 		t.Fatalf("seed blocked records: %v", err)
 	}
@@ -1064,7 +1161,7 @@ func TestBuildBlockedHandlerEscalatesCircularDependencyForPRClaim(t *testing.T) 
 	if err != nil {
 		t.Fatalf("loadBlockedRecords: %v", err)
 	}
-	if _, ok := recs["pr/955"]; !ok {
+	if _, ok := recs[blockedRecordKey(repo, "pr/955")]; !ok {
 		t.Fatal("blocked record did not retain PR claim key pr/955")
 	}
 }
