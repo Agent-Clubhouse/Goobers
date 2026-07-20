@@ -47,7 +47,15 @@ const DefaultClaimLease = 6 * time.Hour
 // ListWorkItems call below.
 const backlogScanCeiling = 250
 
+const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
+
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
+	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
+}
+
+// The barrier lets the blocked-record race regression pause immediately before
+// the lock-protected reconciliation and claim transaction.
+func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, beforeClaimTransaction func()) int {
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
@@ -241,19 +249,21 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	for itemID, record := range observedRecords {
 		remainingRecords[itemID] = record
 	}
-	eligible, changed, blockedWarnings, unresolvedRecords := filterBlockedEligibility(ctx, provider, repo, eligible, remainingRecords)
+	_, observedSkips, _, blockedWarnings := filterBlockedEligibility(
+		ctx,
+		provider,
+		repo,
+		append([]providers.WorkItem(nil), eligible...),
+		remainingRecords,
+	)
 	for _, warning := range blockedWarnings {
-		// Warn, never fail: blocked.json is a selection optimization, and a
-		// record we cannot resolve must not stall every backlog tick (#971).
+		// Warn, never fail the whole query: only the affected record stays
+		// parked when its provider state cannot be resolved.
 		pf(stderr, "warning: blocked records: %s\n", warning)
 	}
-	resolvedRecords := make(map[string]blockedRecord)
-	if changed {
-		for itemID, record := range observedRecords {
-			if _, remains := remainingRecords[itemID]; !remains {
-				resolvedRecords[itemID] = record
-			}
-		}
+	verifiedSkips := make(map[string]blockedEligibilitySkip, len(observedSkips))
+	for _, skip := range observedSkips {
+		verifiedSkips[skip.ItemID] = skip
 	}
 
 	// Claim order was an accident of whichever sort order the provider's
@@ -273,7 +283,14 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	if !*claim {
 		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
 			var rerr error
-			eligible, rerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), repo, eligible, resolvedRecords, unresolvedRecords)
+			eligible, _, rerr = reconcileBlockedEligibilityLocked(
+				blockedRecordsPath(l),
+				repo,
+				eligible,
+				observedRecords,
+				remainingRecords,
+				verifiedSkips,
+			)
 			return rerr
 		})
 		if err != nil {
@@ -325,7 +342,14 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 
 	if len(eligible) == 0 {
 		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
-			_, rerr := reconcileBlockedEligibilityLocked(blockedRecordsPath(l), repo, eligible, resolvedRecords, unresolvedRecords)
+			_, _, rerr := reconcileBlockedEligibilityLocked(
+				blockedRecordsPath(l),
+				repo,
+				eligible,
+				observedRecords,
+				remainingRecords,
+				verifiedSkips,
+			)
 			return rerr
 		})
 		if err != nil {
@@ -371,14 +395,51 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// share this run's id; each item gets its own ledger entry.
 	var claimed []providers.WorkItem
 	gaggle := providerGaggle()
+	if beforeClaimTransaction != nil {
+		beforeClaimTransaction()
+	}
 	err = withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
+		var lerr error
+		eligible, observedSkips, lerr = reconcileBlockedEligibilityLocked(
+			blockedRecordsPath(l),
+			repo,
+			eligible,
+			observedRecords,
+			remainingRecords,
+			verifiedSkips,
+		)
+		if lerr != nil {
+			return lerr
+		}
+		for _, skip := range observedSkips {
+			runner := map[string]any{
+				"annotation":   blockedEligibilitySkipAnnotation,
+				"itemId":       skip.ItemID,
+				"openBlockers": skip.OpenBlockers,
+			}
+			if skip.ItemStateUnresolved {
+				runner["itemStateUnresolved"] = true
+			}
+			if len(skip.UnresolvedBlockers) != 0 {
+				runner["unresolvedBlockers"] = skip.UnresolvedBlockers
+			}
+			if skip.VerificationPending {
+				runner["verificationPending"] = true
+			}
+			if jerr := instanceLog.Append(journal.Event{
+				Type:     journal.EventRunnerAnnotation,
+				Workflow: workflow,
+				RunID:    runID,
+				Reason:   skip.reason(),
+				Runner:   runner,
+			}); jerr != nil {
+				return fmt.Errorf("journal blocked eligibility skip for %s: %w", skip.ItemID, jerr)
+			}
+		}
+
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName), localscheduler.WithInstanceLog(instanceLog))
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
-		}
-		eligible, lerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), repo, eligible, resolvedRecords, unresolvedRecords)
-		if lerr != nil {
-			return lerr
 		}
 		for i := range eligible {
 			if len(claimed) >= maxItems {

@@ -255,6 +255,32 @@ func shortestBlockedPath(graph map[blockedCycleNode][]blockedCycleNode, start, t
 	return nil, false
 }
 
+type blockedEligibilitySkip struct {
+	ItemID              string
+	ItemStateUnresolved bool
+	OpenBlockers        []string
+	UnresolvedBlockers  []string
+	VerificationPending bool
+	record              blockedRecord
+}
+
+func (s blockedEligibilitySkip) reason() string {
+	if s.ItemStateUnresolved {
+		return fmt.Sprintf("learned block: item %s parked; item state unresolved", s.ItemID)
+	}
+	if s.VerificationPending {
+		return fmt.Sprintf("learned block: item %s parked; blocked record changed during eligibility check", s.ItemID)
+	}
+	if len(s.UnresolvedBlockers) != 0 {
+		return fmt.Sprintf(
+			"learned block: item %s parked; blocker state unresolved: %s",
+			s.ItemID,
+			strings.Join(s.UnresolvedBlockers, ","),
+		)
+	}
+	return fmt.Sprintf("learned block: item %s parked on open blocker(s): %s", s.ItemID, strings.Join(s.OpenBlockers, ","))
+}
+
 func blockedRecordsPath(l instance.Layout) string {
 	return filepath.Join(l.SchedulerDir(), blockedRecordsFileName)
 }
@@ -412,60 +438,91 @@ func migrateLegacyBlockedRecords(recs map[string]blockedRecord, repo providers.R
 	return changed
 }
 
-// reconcileBlockedEligibilityLocked applies provider-resolved removals to the
-// latest blocked-record state, then excludes every item that is still recorded
-// as blocked. An unchanged record whose own provider lookup failed remains
-// eligible, preserving per-record degradation; a concurrent replacement does
-// not inherit that exception. The caller must hold claims.lock through any
-// subsequent claim so a concurrent blocked-record update cannot race the
-// eligibility decision.
-func reconcileBlockedEligibilityLocked(path string, repo providers.RepositoryRef, eligible []providers.WorkItem, resolved, unresolved map[string]blockedRecord) ([]providers.WorkItem, error) {
+// reconcileBlockedEligibilityLocked applies provider-refreshed records to the
+// latest repository-scoped blocked-record state, then excludes every item that
+// is still recorded as blocked for this repository. It fails closed: a record
+// that changed since it was observed (a concurrent addition or replacement)
+// stays parked because its blocker state has not been verified this cycle, and
+// a record whose own item or blocker lookups could not be resolved stays parked
+// via its recorded skip rather than being released. The caller must hold
+// claims.lock through any subsequent claim so a blocked-record update cannot
+// race the eligibility decision.
+func reconcileBlockedEligibilityLocked(
+	path string,
+	repo providers.RepositoryRef,
+	eligible []providers.WorkItem,
+	observedRecords, refreshedRecords map[string]blockedRecord,
+	verifiedSkips map[string]blockedEligibilitySkip,
+) ([]providers.WorkItem, []blockedEligibilitySkip, error) {
 	current, err := loadBlockedRecords(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	changed := false
-	for itemID, observed := range resolved {
-		record, ok := current[itemID]
+	for recordKey, observed := range observedRecords {
+		record, ok := current[recordKey]
 		if !ok || !sameBlockedRecord(record, observed) {
 			continue
 		}
-		delete(current, itemID)
+		refreshed, remains := refreshedRecords[recordKey]
+		if !remains {
+			delete(current, recordKey)
+			changed = true
+			continue
+		}
+		if sameBlockedRecord(record, refreshed) {
+			continue
+		}
+		current[recordKey] = refreshed
 		changed = true
+		itemID := blockedRecordItemID(recordKey, observed)
+		if skip, ok := verifiedSkips[itemID]; ok && sameBlockedRecord(skip.record, observed) {
+			skip.record = refreshed
+			verifiedSkips[itemID] = skip
+		}
 	}
 	if changed {
 		if err := saveBlockedRecords(path, current); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
 	if len(current) == 0 {
-		return eligible, nil
+		return eligible, nil, nil
 	}
-	blockedCounts := make(map[string]int)
-	unresolvedCounts := make(map[string]int)
+	// After migration every record that applies to this repository has a
+	// distinct item id, so a per-item map is a faithful 1:1 view of the
+	// repository-scoped block state.
+	applicable := make(map[string]blockedRecord, len(current))
 	for recordKey, record := range current {
 		if !blockedRecordAppliesToRepository(record, repo) {
 			continue
 		}
-		itemID := blockedRecordItemID(recordKey, record)
-		blockedCounts[itemID]++
-		if observed, ok := unresolved[recordKey]; ok && sameBlockedRecord(record, observed) {
-			unresolvedCounts[itemID]++
-		}
+		applicable[blockedRecordItemID(recordKey, record)] = record
 	}
 	filtered := eligible[:0]
+	var skipped []blockedEligibilitySkip
 	for _, item := range eligible {
-		if blockedCounts[item.ID] == 0 {
+		record, blocked := applicable[item.ID]
+		if !blocked {
 			filtered = append(filtered, item)
 			continue
 		}
-		if unresolvedCounts[item.ID] == blockedCounts[item.ID] {
-			filtered = append(filtered, item)
+		// Only release on a verified skip whose record still matches what we
+		// checked. Any other state (a concurrently changed record) fails closed:
+		// the item stays parked until the next cycle re-verifies it.
+		if skip, ok := verifiedSkips[item.ID]; ok && sameBlockedRecord(record, skip.record) {
+			skipped = append(skipped, skip)
+			continue
 		}
+		skipped = append(skipped, blockedEligibilitySkip{
+			ItemID:              item.ID,
+			VerificationPending: true,
+			record:              record,
+		})
 	}
-	return filtered, nil
+	return filtered, skipped, nil
 }
 
 func sameBlockedRecord(a, b blockedRecord) bool {
@@ -478,33 +535,35 @@ func sameBlockedRecord(a, b blockedRecord) bool {
 		a.RecordedAt.Equal(b.RecordedAt)
 }
 
-// filterBlockedEligibility removes from eligible any item with a recorded
-// dependency block (#552) whose blockers are not all closed yet, so
-// `implementation` skips known-blocked work instead of re-spending a full
-// agentic attempt rediscovering the identical block every tick. It also keeps
-// blocked.json from accumulating dead weight (QA-1's gate condition):
+// filterBlockedEligibility refreshes each recorded dependency block (#552) for
+// the current repository against live provider state and reports which eligible
+// items must stay parked, so `implementation` skips known-blocked work instead
+// of re-spending a full agentic attempt rediscovering the identical block every
+// tick. It also keeps blocked.json from accumulating dead weight (QA-1's gate
+// condition):
 //
 //   - Self-heal: closed blockers are pruned; once every one of a record's
-//     blockers is closed, the record is cleared and the item is eligible
-//     again — no human involved.
+//     blockers is verified closed, the record is cleared and the item is
+//     eligible again — no human involved.
 //   - Prune: a record whose OWN item is no longer open (closed by any path —
 //     manual close, a downstream workflow, curation) is cleared outright,
 //     since there is nothing left to skip or heal.
 //
-// GetWorkItem calls are memoized per call (issue ids repeat across records/
-// blockers) and scoped to just the recorded items/blockers — a small,
-// bounded set proportional to how many items are CURRENTLY blocked, never to
-// backlog size. recs is mutated in place; changed reports whether the caller
-// must persist it.
-// It returns warnings rather than an error: no per-record lookup failure is
-// fatal here (see the degradation note below), so an error return would only
-// ever be nil. The caller surfaces warnings on stderr so a malformed record
-// stays visible instead of silently degrading selection forever. unresolved
-// identifies records whose own item lookup failed so the locked reconciliation
-// can preserve that per-record degradation if the record is still unchanged.
-func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, eligible []providers.WorkItem, recs map[string]blockedRecord) (filtered []providers.WorkItem, changed bool, warnings []string, unresolved map[string]blockedRecord) {
+// It fails closed on every unresolved provider lookup (#792): an item whose own
+// state cannot be resolved, or a record with any blocker whose state cannot be
+// resolved, is reported as a skip and stays parked rather than being released
+// or pruned — "we could not check" is never treated as "it closed". Records are
+// keyed and scoped by repository (recordKey), so a record belonging to another
+// repository is ignored here. GetWorkItem calls are memoized per call (issue ids
+// repeat across records/blockers) and scoped to just the recorded items/blockers
+// — a small, bounded set proportional to how many items are CURRENTLY blocked,
+// never to backlog size. recs is mutated in place; changed reports whether the
+// caller must persist it. It returns warnings rather than an error so a single
+// unresolvable record never stalls every backlog tick (#971); the caller
+// surfaces them on stderr.
+func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, eligible []providers.WorkItem, recs map[string]blockedRecord) (filtered []providers.WorkItem, skipped []blockedEligibilitySkip, changed bool, warnings []string) {
 	if len(recs) == 0 {
-		return eligible, false, nil, nil
+		return eligible, nil, false, nil
 	}
 
 	openCache := map[string]bool{}
@@ -521,80 +580,104 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 		return open, nil
 	}
 
-	// A lookup that cannot be resolved must not fail the whole stage. This
-	// function runs on every query-backlog tick, and query-backlog is the
-	// shared first stage of implementation and backlog-curation, so returning
-	// an error here halts all backlog progress over a single unresolvable key
-	// — which is exactly how one malformed "pr/"-prefixed record took the
-	// self-hosting loop down for ~45 minutes (#971). The blocked file is a
-	// selection OPTIMIZATION (skip work a prior run already proved blocked),
-	// never a correctness gate: the worst case from ignoring one bad record is
-	// that one item gets re-attempted and re-discovers its own block, which is
-	// strictly better than starving every workflow. So degrade per-record and
-	// keep going.
-	//
-	// Conservative in both directions: an unresolvable record is neither
-	// pruned (we cannot prove its item closed) nor treated as skippable (we
-	// cannot prove it still blocked), so it survives untouched for a later
-	// tick — or for a human reading the file — to resolve.
+	recordKeys := make([]string, 0, len(recs))
+	for recordKey := range recs {
+		recordKeys = append(recordKeys, recordKey)
+	}
+	sort.Strings(recordKeys)
+
+	eligibleIDs := make(map[string]bool, len(eligible))
+	for _, item := range eligible {
+		eligibleIDs[item.ID] = true
+	}
+
 	skip := make(map[string]bool, len(recs))
-	var lookupErrs []string
-	for recordKey, rec := range recs {
+	var remove []string
+	var lookupWarnings []string
+	for _, recordKey := range recordKeys {
+		rec := recs[recordKey]
 		if !blockedRecordAppliesToRepository(rec, repo) {
 			continue
 		}
 		itemID := blockedRecordItemID(recordKey, rec)
 		open, oerr := isOpen(itemID)
 		if oerr != nil {
-			lookupErrs = append(lookupErrs, fmt.Sprintf("check blocked item %s: %v", itemID, oerr))
-			if unresolved == nil {
-				unresolved = make(map[string]blockedRecord)
+			// Fail closed: an item whose own state cannot be resolved stays
+			// parked, never pruned and never released.
+			lookupWarnings = append(lookupWarnings, fmt.Sprintf("check blocked item %s: %v", itemID, oerr))
+			if eligibleIDs[itemID] {
+				skip[itemID] = true
+				skipped = append(skipped, blockedEligibilitySkip{
+					ItemID:              itemID,
+					ItemStateUnresolved: true,
+					record:              rec,
+				})
 			}
-			unresolved[recordKey] = rec
 			continue
 		}
 		if !open {
-			delete(recs, recordKey)
-			changed = true
+			remove = append(remove, recordKey)
 			continue
 		}
 
-		unresolved := false
-		openBlockers := make([]string, 0, len(rec.Blockers))
-		for _, blockerID := range rec.Blockers {
+		blockerIDs := append([]string(nil), rec.Blockers...)
+		sort.Strings(blockerIDs)
+		var openBlockers []string
+		var unresolvedBlockers []string
+		for _, blockerID := range blockerIDs {
 			blockerOpen, berr := isOpen(blockerID)
 			if berr != nil {
-				// Same degradation as above, one level down. An unresolvable
-				// blocker must not self-heal the record: "we could not check"
-				// is not "it closed", and treating it as closed would silently
-				// unblock an item whose dependency may still be open.
-				lookupErrs = append(lookupErrs, fmt.Sprintf("check blocker %s for %s: %v", blockerID, itemID, berr))
-				unresolved = true
-				break
+				// Same fail-closed rule one level down: an unresolvable blocker
+				// must not self-heal the record.
+				lookupWarnings = append(lookupWarnings, fmt.Sprintf("check blocker %s for %s: %v", blockerID, itemID, berr))
+				unresolvedBlockers = append(unresolvedBlockers, blockerID)
+				continue
 			}
 			if blockerOpen {
 				openBlockers = append(openBlockers, blockerID)
 			}
 		}
-		if unresolved {
-			skip[itemID] = true
+		if len(unresolvedBlockers) != 0 {
+			if eligibleIDs[itemID] {
+				skip[itemID] = true
+				skipped = append(skipped, blockedEligibilitySkip{
+					ItemID:             itemID,
+					OpenBlockers:       openBlockers,
+					UnresolvedBlockers: unresolvedBlockers,
+					record:             rec,
+				})
+			}
+			refreshedBlockers := append(append([]string(nil), openBlockers...), unresolvedBlockers...)
+			sort.Strings(refreshedBlockers)
+			if !slices.Equal(rec.Blockers, refreshedBlockers) {
+				rec.Blockers = refreshedBlockers
+				recs[recordKey] = rec
+				changed = true
+			}
 			continue
 		}
 		if len(openBlockers) == 0 {
-			delete(recs, recordKey)
-			changed = true
+			remove = append(remove, recordKey)
 			continue
 		}
-		if len(openBlockers) != len(rec.Blockers) {
+		if eligibleIDs[itemID] {
+			skip[itemID] = true
+			skipped = append(skipped, blockedEligibilitySkip{ItemID: itemID, OpenBlockers: openBlockers, record: rec})
+		}
+		if !slices.Equal(rec.Blockers, openBlockers) {
 			rec.Blockers = openBlockers
 			recs[recordKey] = rec
 			changed = true
 		}
-		skip[itemID] = true
+	}
+
+	for _, recordKey := range remove {
+		delete(recs, recordKey)
+		changed = true
 	}
 
 	if len(skip) == 0 {
-		return eligible, changed, lookupErrs, unresolved
+		return eligible, skipped, changed, lookupWarnings
 	}
 	out := eligible[:0]
 	for _, item := range eligible {
@@ -603,7 +686,7 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 		}
 		out = append(out, item)
 	}
-	return out, changed, lookupErrs, unresolved
+	return out, skipped, changed, lookupWarnings
 }
 
 func refreshBlockedEligibility(
@@ -613,18 +696,32 @@ func refreshBlockedEligibility(
 	repo providers.RepositoryRef,
 	eligible []providers.WorkItem,
 ) ([]providers.WorkItem, error) {
-	filtered := eligible
-	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogFilterBlocked, func() error {
-		recs, err := loadBlockedRecords(blockedRecordsPath(l))
-		if err != nil {
-			return err
-		}
-		var changed bool
-		filtered, changed, _, _ = filterBlockedEligibility(ctx, provider, repo, eligible, recs)
-		if !changed {
-			return nil
-		}
-		return saveBlockedRecords(blockedRecordsPath(l), recs)
+	observedRecords, err := snapshotBlockedRecordsForRepository(l, repo)
+	if err != nil {
+		return nil, err
+	}
+	refreshedRecords := make(map[string]blockedRecord, len(observedRecords))
+	for recordKey, record := range observedRecords {
+		refreshedRecords[recordKey] = record
+	}
+	candidates := append([]providers.WorkItem(nil), eligible...)
+	_, observedSkips, _, _ := filterBlockedEligibility(ctx, provider, repo, append([]providers.WorkItem(nil), candidates...), refreshedRecords)
+	verifiedSkips := make(map[string]blockedEligibilitySkip, len(observedSkips))
+	for _, skip := range observedSkips {
+		verifiedSkips[skip.ItemID] = skip
+	}
+	filtered := candidates
+	err = withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogFilterBlocked, func() error {
+		var reconcileErr error
+		filtered, _, reconcileErr = reconcileBlockedEligibilityLocked(
+			blockedRecordsPath(l),
+			repo,
+			filtered,
+			observedRecords,
+			refreshedRecords,
+			verifiedSkips,
+		)
+		return reconcileErr
 	})
 	return filtered, err
 }
