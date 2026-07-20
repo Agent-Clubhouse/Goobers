@@ -65,7 +65,6 @@ spec:
       capabilities:
         - github:pr:write
         - github:issues:write
-        - repo:push
       expectedOutputs:
         - selectedNumber
         - needsFullRemediation
@@ -297,9 +296,9 @@ spec:
       next: "@escalate"
 
   gates:
-    # A completed API update is terminal. Every conflict, substantive finding,
-    # failing check, unknown mergeability state, or non-behind candidate enters
-    # the existing gather/rebase/agentic path without changing its semantics.
+    # A completed API update is terminal. Every confirmed conflict, substantive
+    # finding, failing check, or non-behind candidate enters the existing
+    # gather/rebase/agentic path without changing its semantics.
     - name: update-behind-gate
       evaluator: automated
       automated:

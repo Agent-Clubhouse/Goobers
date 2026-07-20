@@ -12,6 +12,11 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+const (
+	updateBehindPRToken     = "pr-write-token"
+	updateBehindIssuesToken = "issues-write-token"
+)
+
 type updateBehindServer struct {
 	mergeable    *bool
 	labels       []string
@@ -116,7 +121,19 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 			"html_url": "https://github.test/pulls/55", "labels": labelsJSON(s.labels),
 		})
 	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wantToken := updateBehindPRToken
+		if r.URL.Path == prefix+"/issues/55" ||
+			(r.Method == http.MethodDelete && r.URL.Path == prefix+"/issues/55/labels/"+needsRemediationLabel) {
+			wantToken = updateBehindIssuesToken
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+wantToken {
+			t.Errorf("%s %s Authorization = %q, want bearer token for the operation's declared capability", r.Method, r.URL.Path, got)
+			http.Error(w, "wrong token", http.StatusUnauthorized)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	t.Cleanup(server.Close)
 	return server
 }
@@ -131,9 +148,8 @@ func runUpdateBehindPRTest(t *testing.T, state *updateBehindServer) (stdout, std
 	root := initDemo(t)
 	t.Setenv("GOOBERS_RUN_ID", "run-720")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
-	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
-	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
-	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", updateBehindPRToken)
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", updateBehindIssuesToken)
 	workspace := t.TempDir()
 	t.Chdir(workspace)
 
@@ -213,6 +229,18 @@ func TestUpdateBehindPRRoutesNonTrivialCandidatesToFullRemediation(t *testing.T)
 				t.Fatalf("labels = %v, want unchanged", state.labels)
 			}
 		})
+	}
+}
+
+func TestUpdateBehindPRAttemptsAPIWhileMergeabilityIsUnknown(t *testing.T) {
+	state := &updateBehindServer{}
+	_, _, result := runUpdateBehindPRTest(t, state)
+
+	if state.updateCalls != 1 {
+		t.Fatalf("update-branch calls = %d, want 1", state.updateCalls)
+	}
+	if result["needsFullRemediation"] != "false" {
+		t.Fatalf("result = %v, want API update to complete", result)
 	}
 }
 

@@ -45,20 +45,18 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if _, err := providerToken(capability.GitHubPRWrite); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if _, err := providerToken(capability.GitHubIssuesWrite); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	pushToken, err := providerToken(capability.RepoPush)
+	prToken, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(pushToken)
+	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	provider := newGitHubProvider(prToken)
+	issuesProvider := newGitHubProvider(issuesToken)
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
@@ -121,7 +119,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, fmt.Sprintf("update PR #%d branch", candidate.Number), err, "update-behind-result.json")
 	}
 	if hasAnyLabel(candidate.Labels, []string{needsRemediationLabel}) {
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		if _, err := issuesProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo,
 			ID:         strconv.Itoa(candidate.Number),
 			RemoveLabels: []string{
@@ -153,7 +151,7 @@ func canUpdateBehindPR(ctx context.Context, provider *providers.GitHubProvider, 
 	if err != nil {
 		return false, err
 	}
-	if mergeable == nil || !*mergeable {
+	if mergeable != nil && !*mergeable {
 		return false, nil
 	}
 	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
