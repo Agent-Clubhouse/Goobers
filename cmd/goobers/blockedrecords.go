@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,27 +28,42 @@ const blockedRecordsFileName = "blocked.json"
 // blockedRecord is one learned dependency block: the issue numbers the item
 // was reported blocked on, plus provenance for a human inspecting the file.
 type blockedRecord struct {
-	Blockers   []string  `json:"blockers"`
-	RunID      string    `json:"runId"`
-	Stage      string    `json:"stage,omitempty"`
-	Reason     string    `json:"reason,omitempty"`
-	RecordedAt time.Time `json:"recordedAt"`
+	Repository providers.RepositoryRef `json:"repository"`
+	ItemID     string                  `json:"itemId"`
+	Blockers   []string                `json:"blockers"`
+	RunID      string                  `json:"runId"`
+	Stage      string                  `json:"stage,omitempty"`
+	Reason     string                  `json:"reason,omitempty"`
+	RecordedAt time.Time               `json:"recordedAt"`
 }
 
 type parkedDependency struct {
-	ItemID   string
-	Blockers []string
+	ItemID             string
+	Blockers           []string
+	repositoryIdentity string
 }
 
-// findBlockedCycles returns every ordered cycle closed by itemKey's newly
-// recorded blocker edges. Each cycle repeats the item at the end to make the
-// closing edge explicit. Graph identities use provider lookup IDs so records
-// keyed by claim names such as "pr/955" connect to bare blocker IDs, while the
-// records map itself retains those claim keys for ledger operations.
-func findBlockedCycles(recs map[string]blockedRecord, itemKey string) [][]string {
+const maxBlockedCyclePaths = 3
+
+type blockedCycleNode struct {
+	Repository providers.RepositoryRef
+	ItemID     string
+}
+
+type blockedCycleResult struct {
+	Affected  []blockedCycleNode
+	Paths     [][]string
+	MorePaths bool
+}
+
+// findBlockedCycle identifies the strongly connected component containing the
+// newly recorded item. Forward/reverse reachability is linear in graph size;
+// representative shortest paths are capped so dense graphs cannot trigger the
+// factorial path enumeration the blocked handler previously performed.
+func findBlockedCycle(recs map[string]blockedRecord, itemKey string) blockedCycleResult {
 	record, ok := recs[itemKey]
-	if !ok {
-		return nil
+	if !ok || blockedRepositoryEmpty(record.Repository) {
+		return blockedCycleResult{}
 	}
 
 	keys := make([]string, 0, len(recs))
@@ -56,61 +72,194 @@ func findBlockedCycles(recs map[string]blockedRecord, itemKey string) [][]string
 	}
 	sort.Strings(keys)
 
-	graph := make(map[string][]string, len(recs))
+	graph := make(map[blockedCycleNode][]blockedCycleNode, len(recs))
+	edgeSeen := make(map[blockedCycleNode]map[blockedCycleNode]bool, len(recs))
 	for _, key := range keys {
-		id := blockedLookupID(key)
-		for _, blocker := range recs[key].Blockers {
-			blocker = blockedLookupID(blocker)
-			if !slices.Contains(graph[id], blocker) {
-				graph[id] = append(graph[id], blocker)
+		rec := recs[key]
+		if blockedRepositoryEmpty(rec.Repository) {
+			continue
+		}
+		node := blockedCycleNode{
+			Repository: rec.Repository,
+			ItemID:     blockedLookupID(blockedRecordItemID(key, rec)),
+		}
+		if _, ok := graph[node]; !ok {
+			graph[node] = nil
+		}
+		if edgeSeen[node] == nil {
+			edgeSeen[node] = make(map[blockedCycleNode]bool)
+		}
+		for _, blockerID := range rec.Blockers {
+			blocker := blockedCycleNode{
+				Repository: rec.Repository,
+				ItemID:     blockedLookupID(blockerID),
+			}
+			if !edgeSeen[node][blocker] {
+				graph[node] = append(graph[node], blocker)
+				edgeSeen[node][blocker] = true
 			}
 		}
 	}
 
-	itemID := blockedLookupID(itemKey)
-	var cycles [][]string
-	cycleSeen := make(map[string]bool)
-	for _, blocker := range record.Blockers {
-		path := []string{itemID}
-		onPath := map[string]bool{itemID: true}
-		var pathsToItem func(string)
-		pathsToItem = func(id string) {
-			id = blockedLookupID(id)
-			if id == itemID {
-				cycle := append(append([]string(nil), path...), id)
-				key := strings.Join(cycle, "\x00")
-				if !cycleSeen[key] {
-					cycleSeen[key] = true
-					cycles = append(cycles, cycle)
+	item := blockedCycleNode{
+		Repository: record.Repository,
+		ItemID:     blockedLookupID(blockedRecordItemID(itemKey, record)),
+	}
+	forward := reachableBlockedNodes(graph, item)
+	reverseGraph := make(map[blockedCycleNode][]blockedCycleNode, len(graph))
+	for from, edges := range graph {
+		if _, ok := reverseGraph[from]; !ok {
+			reverseGraph[from] = nil
+		}
+		for _, to := range edges {
+			reverseGraph[to] = append(reverseGraph[to], from)
+		}
+	}
+	backward := reachableBlockedNodes(reverseGraph, item)
+
+	component := make(map[blockedCycleNode]bool)
+	for node := range forward {
+		if backward[node] {
+			component[node] = true
+		}
+	}
+	if len(component) == 1 && !slices.Contains(graph[item], item) {
+		return blockedCycleResult{}
+	}
+
+	affected := []blockedCycleNode{item}
+	var others []blockedCycleNode
+	for node := range component {
+		if node != item {
+			others = append(others, node)
+		}
+	}
+	sort.Slice(others, func(i, j int) bool {
+		if left, right := blockedRepositoryIdentity(others[i].Repository), blockedRepositoryIdentity(others[j].Repository); left != right {
+			return left < right
+		}
+		return others[i].ItemID < others[j].ItemID
+	})
+	affected = append(affected, others...)
+
+	var paths [][]string
+	morePaths := false
+	for _, blocker := range graph[item] {
+		if !component[blocker] {
+			continue
+		}
+		if len(paths) == maxBlockedCyclePaths {
+			morePaths = true
+			break
+		}
+		returnPath, found := shortestBlockedPath(graph, blocker, item, component)
+		if !found {
+			continue
+		}
+		path := make([]string, 1, len(returnPath)+1)
+		path[0] = item.ItemID
+		for _, node := range returnPath {
+			path = append(path, node.ItemID)
+		}
+		paths = append(paths, path)
+	}
+	return blockedCycleResult{Affected: affected, Paths: paths, MorePaths: morePaths}
+}
+
+func reachableBlockedNodes(graph map[blockedCycleNode][]blockedCycleNode, start blockedCycleNode) map[blockedCycleNode]bool {
+	reached := map[blockedCycleNode]bool{start: true}
+	queue := []blockedCycleNode{start}
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+		for _, next := range graph[node] {
+			if reached[next] {
+				continue
+			}
+			reached[next] = true
+			queue = append(queue, next)
+		}
+	}
+	return reached
+}
+
+func shortestBlockedPath(graph map[blockedCycleNode][]blockedCycleNode, start, target blockedCycleNode, allowed map[blockedCycleNode]bool) ([]blockedCycleNode, bool) {
+	if start == target {
+		return []blockedCycleNode{target}, true
+	}
+	seen := map[blockedCycleNode]bool{start: true}
+	previous := make(map[blockedCycleNode]blockedCycleNode)
+	queue := []blockedCycleNode{start}
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+		for _, next := range graph[node] {
+			if !allowed[next] || seen[next] {
+				continue
+			}
+			seen[next] = true
+			previous[next] = node
+			if next == target {
+				path := []blockedCycleNode{target}
+				for current := target; current != start; {
+					current = previous[current]
+					path = append(path, current)
 				}
-				return
+				slices.Reverse(path)
+				return path, true
 			}
-			if onPath[id] {
-				return
-			}
-			onPath[id] = true
-			path = append(path, id)
-
-			for _, next := range graph[id] {
-				pathsToItem(next)
-			}
-			path = path[:len(path)-1]
-			delete(onPath, id)
+			queue = append(queue, next)
 		}
-		pathsToItem(blocker)
 	}
-	return cycles
+	return nil, false
 }
 
 func blockedRecordsPath(l instance.Layout) string {
 	return filepath.Join(l.SchedulerDir(), blockedRecordsFileName)
 }
 
-// blockedLookupID converts a blocked.json key into the id a provider lookup
-// expects. Keys come from whatever the claim ledger used for the run's
-// driving item, and the blocked handler is deliberately workflow-agnostic
-// (runnerwiring.go's buildBlockedHandler), so a pr-remediation run records
-// its claim name — "pr/955" — while issue-driven runs record a bare "955".
+func blockedRepositoryIdentity(repo providers.RepositoryRef) string {
+	if blockedRepositoryEmpty(repo) {
+		return ""
+	}
+	parts := []string{string(repo.Provider), repo.Owner}
+	if repo.Project != "" {
+		parts = append(parts, repo.Project)
+	}
+	parts = append(parts, repo.Name)
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	return strings.Join(parts, "/")
+}
+
+func blockedRecordKey(repo providers.RepositoryRef, itemID string) string {
+	return blockedRepositoryIdentity(repo) + "#" + url.PathEscape(itemID)
+}
+
+func blockedRecordItemID(key string, rec blockedRecord) string {
+	if rec.ItemID != "" {
+		return rec.ItemID
+	}
+	return key
+}
+
+func blockedRepositoryEmpty(repo providers.RepositoryRef) bool {
+	return repo.Provider == "" && repo.Owner == "" && repo.Project == "" && repo.Name == ""
+}
+
+func sameBlockedRepository(a, b providers.RepositoryRef) bool {
+	return a.Provider == b.Provider && a.Owner == b.Owner && a.Project == b.Project && a.Name == b.Name
+}
+
+func blockedRecordAppliesToRepository(rec blockedRecord, repo providers.RepositoryRef) bool {
+	return blockedRepositoryEmpty(rec.Repository) || sameBlockedRepository(rec.Repository, repo)
+}
+
+// blockedLookupID converts a recorded item id into the id a provider lookup
+// expects. Item ids come from whatever the claim ledger used for the run's
+// driving item, so a pr-remediation run records its claim name — "pr/955" —
+// while issue-driven runs record a bare "955".
 //
 // GetWorkItem builds its URL as .../issues/{id} literally, so a "pr/"-
 // prefixed id produced .../issues/pr/955: an invalid path, a 404, and (before
@@ -177,7 +326,7 @@ func snapshotBlockedRecords(l instance.Layout) (map[string]blockedRecord, error)
 // not inherit that exception. The caller must hold claims.lock through any
 // subsequent claim so a concurrent blocked-record update cannot race the
 // eligibility decision.
-func reconcileBlockedEligibilityLocked(path string, eligible []providers.WorkItem, resolved, unresolved map[string]blockedRecord) ([]providers.WorkItem, error) {
+func reconcileBlockedEligibilityLocked(path string, repo providers.RepositoryRef, eligible []providers.WorkItem, resolved, unresolved map[string]blockedRecord) ([]providers.WorkItem, error) {
 	current, err := loadBlockedRecords(path)
 	if err != nil {
 		return nil, err
@@ -201,14 +350,25 @@ func reconcileBlockedEligibilityLocked(path string, eligible []providers.WorkIte
 	if len(current) == 0 {
 		return eligible, nil
 	}
+	blockedCounts := make(map[string]int)
+	unresolvedCounts := make(map[string]int)
+	for recordKey, record := range current {
+		if !blockedRecordAppliesToRepository(record, repo) {
+			continue
+		}
+		itemID := blockedRecordItemID(recordKey, record)
+		blockedCounts[itemID]++
+		if observed, ok := unresolved[recordKey]; ok && sameBlockedRecord(record, observed) {
+			unresolvedCounts[itemID]++
+		}
+	}
 	filtered := eligible[:0]
 	for _, item := range eligible {
-		record, blocked := current[item.ID]
-		if !blocked {
+		if blockedCounts[item.ID] == 0 {
 			filtered = append(filtered, item)
 			continue
 		}
-		if observed, ok := unresolved[item.ID]; ok && sameBlockedRecord(record, observed) {
+		if unresolvedCounts[item.ID] == blockedCounts[item.ID] {
 			filtered = append(filtered, item)
 		}
 	}
@@ -216,7 +376,9 @@ func reconcileBlockedEligibilityLocked(path string, eligible []providers.WorkIte
 }
 
 func sameBlockedRecord(a, b blockedRecord) bool {
-	return slices.Equal(a.Blockers, b.Blockers) &&
+	return sameBlockedRepository(a.Repository, b.Repository) &&
+		a.ItemID == b.ItemID &&
+		slices.Equal(a.Blockers, b.Blockers) &&
 		a.RunID == b.RunID &&
 		a.Stage == b.Stage &&
 		a.Reason == b.Reason &&
@@ -284,18 +446,22 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 	// tick — or for a human reading the file — to resolve.
 	skip := make(map[string]bool, len(recs))
 	var lookupErrs []string
-	for itemID, rec := range recs {
+	for recordKey, rec := range recs {
+		if !blockedRecordAppliesToRepository(rec, repo) {
+			continue
+		}
+		itemID := blockedRecordItemID(recordKey, rec)
 		open, oerr := isOpen(itemID)
 		if oerr != nil {
 			lookupErrs = append(lookupErrs, fmt.Sprintf("check blocked item %s: %v", itemID, oerr))
 			if unresolved == nil {
 				unresolved = make(map[string]blockedRecord)
 			}
-			unresolved[itemID] = rec
+			unresolved[recordKey] = rec
 			continue
 		}
 		if !open {
-			delete(recs, itemID)
+			delete(recs, recordKey)
 			changed = true
 			continue
 		}
@@ -322,13 +488,13 @@ func filterBlockedEligibility(ctx context.Context, provider *providers.GitHubPro
 			continue
 		}
 		if len(openBlockers) == 0 {
-			delete(recs, itemID)
+			delete(recs, recordKey)
 			changed = true
 			continue
 		}
 		if len(openBlockers) != len(rec.Blockers) {
 			rec.Blockers = openBlockers
-			recs[itemID] = rec
+			recs[recordKey] = rec
 			changed = true
 		}
 		skip[itemID] = true
@@ -376,13 +542,20 @@ func listParkedDependencies(l instance.Layout) ([]parkedDependency, error) {
 		return nil, err
 	}
 	parked := make([]parkedDependency, 0, len(recs))
-	for itemID, rec := range recs {
+	for recordKey, rec := range recs {
 		blockers := append([]string(nil), rec.Blockers...)
 		sort.Strings(blockers)
-		parked = append(parked, parkedDependency{ItemID: itemID, Blockers: blockers})
+		parked = append(parked, parkedDependency{
+			ItemID:             blockedRecordItemID(recordKey, rec),
+			Blockers:           blockers,
+			repositoryIdentity: blockedRepositoryIdentity(rec.Repository),
+		})
 	}
 	sort.Slice(parked, func(i, j int) bool {
-		return parked[i].ItemID < parked[j].ItemID
+		if parked[i].ItemID != parked[j].ItemID {
+			return parked[i].ItemID < parked[j].ItemID
+		}
+		return parked[i].repositoryIdentity < parked[j].repositoryIdentity
 	})
 	return parked, nil
 }

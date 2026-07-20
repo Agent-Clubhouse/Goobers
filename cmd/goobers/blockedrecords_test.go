@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,76 +18,95 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func TestFindBlockedCycles(t *testing.T) {
+func blockedCycleTestRecords(repo providers.RepositoryRef, dependencies map[string][]string) map[string]blockedRecord {
+	recs := make(map[string]blockedRecord, len(dependencies))
+	for itemID, blockers := range dependencies {
+		recs[blockedRecordKey(repo, itemID)] = blockedRecord{
+			Repository: repo,
+			ItemID:     itemID,
+			Blockers:   blockers,
+		}
+	}
+	return recs
+}
+
+func TestFindBlockedCycle(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	tests := []struct {
-		name string
-		recs map[string]blockedRecord
-		item string
-		want [][]string
+		name         string
+		dependencies map[string][]string
+		item         string
+		wantAffected []string
+		wantPaths    [][]string
 	}{
 		{
 			name: "acyclic",
-			recs: map[string]blockedRecord{
-				"510": {Blockers: []string{"441"}},
-				"441": {Blockers: []string{"440"}},
+			dependencies: map[string][]string{
+				"510": {"441"},
+				"441": {"440"},
 			},
 			item: "510",
 		},
 		{
 			name: "two issue cycle",
-			recs: map[string]blockedRecord{
-				"510": {Blockers: []string{"441"}},
-				"441": {Blockers: []string{"510"}},
+			dependencies: map[string][]string{
+				"510": {"441"},
+				"441": {"510"},
 			},
-			item: "510",
-			want: [][]string{{"510", "441", "510"}},
+			item:         "510",
+			wantAffected: []string{"510", "441"},
+			wantPaths:    [][]string{{"510", "441", "510"}},
 		},
 		{
 			name: "self dependency",
-			recs: map[string]blockedRecord{
-				"510": {Blockers: []string{"510"}},
+			dependencies: map[string][]string{
+				"510": {"510"},
 			},
-			item: "510",
-			want: [][]string{{"510", "510"}},
+			item:         "510",
+			wantAffected: []string{"510"},
+			wantPaths:    [][]string{{"510", "510"}},
 		},
 		{
 			name: "longer cycle",
-			recs: map[string]blockedRecord{
-				"510": {Blockers: []string{"441"}},
-				"441": {Blockers: []string{"442"}},
-				"442": {Blockers: []string{"510"}},
+			dependencies: map[string][]string{
+				"510": {"441"},
+				"441": {"442"},
+				"442": {"510"},
 			},
-			item: "510",
-			want: [][]string{{"510", "441", "442", "510"}},
+			item:         "510",
+			wantAffected: []string{"510", "441", "442"},
+			wantPaths:    [][]string{{"510", "441", "442", "510"}},
 		},
 		{
 			name: "multiple cycles",
-			recs: map[string]blockedRecord{
-				"510": {Blockers: []string{"441", "442"}},
-				"441": {Blockers: []string{"510"}},
-				"442": {Blockers: []string{"510"}},
+			dependencies: map[string][]string{
+				"510": {"441", "442"},
+				"441": {"510"},
+				"442": {"510"},
 			},
-			item: "510",
-			want: [][]string{
+			item:         "510",
+			wantAffected: []string{"510", "441", "442"},
+			wantPaths: [][]string{
 				{"510", "441", "510"},
 				{"510", "442", "510"},
 			},
 		},
 		{
 			name: "pull request claim key",
-			recs: map[string]blockedRecord{
-				"pr/955": {Blockers: []string{"956"}},
-				"956":    {Blockers: []string{"955"}},
+			dependencies: map[string][]string{
+				"pr/955": {"956"},
+				"956":    {"955"},
 			},
-			item: "pr/955",
-			want: [][]string{{"955", "956", "955"}},
+			item:         "pr/955",
+			wantAffected: []string{"955", "956"},
+			wantPaths:    [][]string{{"955", "956", "955"}},
 		},
 		{
 			name: "unrelated reachable cycle",
-			recs: map[string]blockedRecord{
-				"510": {Blockers: []string{"441"}},
-				"441": {Blockers: []string{"442"}},
-				"442": {Blockers: []string{"441"}},
+			dependencies: map[string][]string{
+				"510": {"441"},
+				"441": {"442"},
+				"442": {"441"},
 			},
 			item: "510",
 		},
@@ -94,10 +114,42 @@ func TestFindBlockedCycles(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := findBlockedCycles(tc.recs, tc.item); !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("findBlockedCycles() = %v, want %v", got, tc.want)
+			recs := blockedCycleTestRecords(repo, tc.dependencies)
+			got := findBlockedCycle(recs, blockedRecordKey(repo, tc.item))
+			var gotAffected []string
+			for _, node := range got.Affected {
+				gotAffected = append(gotAffected, node.ItemID)
+			}
+			if !reflect.DeepEqual(gotAffected, tc.wantAffected) {
+				t.Errorf("affected = %v, want %v", gotAffected, tc.wantAffected)
+			}
+			if !reflect.DeepEqual(got.Paths, tc.wantPaths) {
+				t.Errorf("paths = %v, want %v", got.Paths, tc.wantPaths)
 			}
 		})
+	}
+}
+
+func TestFindBlockedCycleBoundsDenseGraphPaths(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	dependencies := make(map[string][]string)
+	const nodes = 12
+	for i := 0; i < nodes; i++ {
+		itemID := fmt.Sprintf("%d", 500+i)
+		for j := 0; j < nodes; j++ {
+			dependencies[itemID] = append(dependencies[itemID], fmt.Sprintf("%d", 500+j))
+		}
+	}
+
+	result := findBlockedCycle(blockedCycleTestRecords(repo, dependencies), blockedRecordKey(repo, "500"))
+	if len(result.Affected) != nodes {
+		t.Fatalf("affected nodes = %d, want %d", len(result.Affected), nodes)
+	}
+	if len(result.Paths) != maxBlockedCyclePaths {
+		t.Fatalf("representative paths = %d, want cap %d", len(result.Paths), maxBlockedCyclePaths)
+	}
+	if !result.MorePaths {
+		t.Fatal("MorePaths = false, want dense graph truncation reported")
 	}
 }
 
@@ -239,6 +291,48 @@ func TestFilterBlockedEligibilitySkipsWhileBlockerOpen(t *testing.T) {
 	}
 	if _, ok := recs["510"]; !ok {
 		t.Fatal("record for 510 was removed, want it to survive (blocker still open)")
+	}
+}
+
+func TestFilterBlockedEligibilityScopesSameNumberByRepository(t *testing.T) {
+	server, provider, webRepo := blockedFilterFixture(t)
+	server.addIssue(441, "web prerequisite", "goobers:ready")
+	server.addIssue(510, "web blocked item", "goobers:ready")
+	server.addIssue(511, "web unrelated item", "goobers:ready")
+	apiRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "api"}
+	webRecord := blockedRecord{Repository: webRepo, ItemID: "510", Blockers: []string{"441"}, RunID: "web-run"}
+	apiRecord := blockedRecord{Repository: apiRepo, ItemID: "510", Blockers: []string{"999"}, RunID: "api-run"}
+
+	recs := map[string]blockedRecord{
+		blockedRecordKey(webRepo, "510"): webRecord,
+		blockedRecordKey(apiRepo, "510"): apiRecord,
+	}
+	filtered, changed, warnings, _ := filterBlockedEligibility(
+		context.Background(), provider, webRepo,
+		[]providers.WorkItem{{ID: "510"}, {ID: "511"}}, recs,
+	)
+	if changed || len(warnings) != 0 {
+		t.Fatalf("changed = %v, warnings = %v; want only the web record evaluated cleanly", changed, warnings)
+	}
+	if len(filtered) != 1 || filtered[0].ID != "511" {
+		t.Fatalf("filtered = %v, want web#510 skipped and web#511 retained", filtered)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("records = %+v, want both repositories retained", recs)
+	}
+
+	filtered, changed, warnings, _ = filterBlockedEligibility(
+		context.Background(),
+		provider,
+		webRepo,
+		[]providers.WorkItem{{ID: "510"}, {ID: "511"}},
+		map[string]blockedRecord{blockedRecordKey(apiRepo, "510"): apiRecord},
+	)
+	if changed || len(warnings) != 0 {
+		t.Fatalf("other-repo-only changed = %v, warnings = %v; want a no-op", changed, warnings)
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("other-repo-only filtered = %v, want both web items eligible", filtered)
 	}
 }
 
@@ -461,7 +555,7 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 	if err := saveBlockedRecords(path, recs); err != nil {
 		t.Fatal(err)
 	}
-	reconciled, err := reconcileBlockedEligibilityLocked(path, append([]providers.WorkItem(nil), filtered...), nil, unresolved)
+	reconciled, err := reconcileBlockedEligibilityLocked(path, repo, append([]providers.WorkItem(nil), filtered...), nil, unresolved)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +568,7 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 	if err := saveBlockedRecords(path, map[string]blockedRecord{"not-a-real-key": replacement}); err != nil {
 		t.Fatal(err)
 	}
-	reconciled, err = reconcileBlockedEligibilityLocked(path, append([]providers.WorkItem(nil), filtered...), nil, unresolved)
+	reconciled, err = reconcileBlockedEligibilityLocked(path, repo, append([]providers.WorkItem(nil), filtered...), nil, unresolved)
 	if err != nil {
 		t.Fatal(err)
 	}
