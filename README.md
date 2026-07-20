@@ -63,6 +63,10 @@ bin/goobers init ./my-instance           # scaffold an instance root
 bin/goobers validate ./my-instance       # check instance.yaml + config/
 bin/goobers run default-implement ./my-instance   # trigger a run manually
 bin/goobers status ./my-instance         # list runs + their phase
+bin/goobers claims list ./my-instance    # inspect current claim leases
+bin/goobers claims release --force <item-id> ./my-instance # override a live holder
+# If an item ID is claimed in multiple namespaces, add:
+#   --gaggle=<name> --provider=<name>
 bin/goobers trace <run-id> ./my-instance # inspect one run's journal
 bin/goobers escalations ./my-instance    # list escalated runs
 bin/goobers escalations show <run-id> ./my-instance # inspect cause + artifact timeline

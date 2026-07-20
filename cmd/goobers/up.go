@@ -427,6 +427,8 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	// across daemon lifetimes are handled without waiting for the first tick.
 	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
 	triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
+	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
+	claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now))
 
 	// The periodic sweep runs on its own goroutine for the daemon's entire
 	// lifetime, concurrently with the main goroutine's own stdout/stderr
@@ -481,6 +483,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 				return
 			case <-delegationTicker.C:
 				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
+				claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now))
 			}
 		}
 	}()
