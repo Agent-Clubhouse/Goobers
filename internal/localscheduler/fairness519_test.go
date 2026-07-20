@@ -65,6 +65,29 @@ func TestTickRoundRobinSharesInstanceCapacity(t *testing.T) {
 	}
 }
 
+func TestTickRunsAfterTickAfterFairDispatch(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	afterTickCalls := 0
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:       "backlogged",
+		Readiness:      apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
+		BacklogCounter: &fakeBacklogCounter{count: 2},
+		Starter:        starter,
+	}}, WithAfterTick(func(context.Context) {
+		afterTickCalls++
+	}))
+
+	sched.Tick(context.Background(), time.Now())
+	sched.Wait()
+
+	if got := starter.count(); got != 2 {
+		t.Fatalf("starts = %d, want 2 fair-dispatch passes", got)
+	}
+	if afterTickCalls != 1 {
+		t.Fatalf("after-tick calls = %d, want 1", afterTickCalls)
+	}
+}
+
 func TestTickPrioritizesAgedWorkflowWhenCapacityReturns(t *testing.T) {
 	aBlock := make(chan struct{})
 	bBlock := make(chan struct{})

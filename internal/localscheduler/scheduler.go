@@ -96,6 +96,7 @@ type Scheduler struct {
 	now        func() time.Time
 	after      func(d time.Duration) <-chan time.Time
 	telemetry  SpanStarter
+	afterTick  func(context.Context)
 
 	mu         sync.Mutex
 	tickMu     sync.Mutex
@@ -136,6 +137,14 @@ func WithClock(now func() time.Time, after func(time.Duration) <-chan time.Time)
 func WithTelemetry(t SpanStarter) Option {
 	return func(s *Scheduler) {
 		s.telemetry = t
+	}
+}
+
+// WithAfterTick registers work that runs after each trigger evaluation, once
+// all scheduler decision spans opened by that tick have ended.
+func WithAfterTick(afterTick func(context.Context)) Option {
+	return func(s *Scheduler) {
+		s.afterTick = afterTick
 	}
 }
 
@@ -459,8 +468,11 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			}
 		}
 		if !attempted {
-			return
+			break
 		}
+	}
+	if s.afterTick != nil {
+		s.afterTick(ctx)
 	}
 }
 

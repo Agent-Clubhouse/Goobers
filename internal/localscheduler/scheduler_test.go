@@ -61,7 +61,7 @@ func (f *fakeStarter) count() int {
 	return len(f.starts)
 }
 
-func newTestScheduler(t *testing.T, entries []WorkflowEntry) (*Scheduler, string) {
+func newTestScheduler(t *testing.T, entries []WorkflowEntry, opts ...Option) (*Scheduler, string) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "scheduler")
 	log, _, err := journal.OpenInstanceLog(dir)
@@ -69,7 +69,7 @@ func newTestScheduler(t *testing.T, entries []WorkflowEntry) (*Scheduler, string
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = log.Close() })
-	return New(entries, log), dir
+	return New(entries, log, opts...), dir
 }
 
 func TestTickDispatchesDueWorkflow(t *testing.T) {
