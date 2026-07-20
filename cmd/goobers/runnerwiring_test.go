@@ -791,12 +791,9 @@ func TestBuildBlockedHandlerNilForRepoLessInstance(t *testing.T) {
 	}
 }
 
-// TestBuildBlockedHandlerKnownBlockersRecordsAndComments is #552's recording
-// half: a BlockedOutcome carrying parsed blockers records blocked.json (for
-// backlog-query's skip/self-heal filter) and posts a comment — without
-// touching goobers:ready/needs-human labels, since a dependency block is not
-// a park-for-human disposition.
-func TestBuildBlockedHandlerKnownBlockersRecordsAndComments(t *testing.T) {
+// TestBuildBlockedHandlerKnownBlockersRecordsAndParks retains #552's learned
+// dependency guard while applying #544's needs-human parking disposition.
+func TestBuildBlockedHandlerKnownBlockersRecordsAndParks(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
 	prev := newEscalationPoster
 	newEscalationPoster = func(string) gate.Commenter { return fake }
@@ -823,14 +820,21 @@ func TestBuildBlockedHandlerKnownBlockersRecordsAndComments(t *testing.T) {
 	}
 
 	if len(fake.calls) != 1 {
-		t.Fatalf("comment calls = %d, want 1", len(fake.calls))
+		t.Fatalf("parking calls = %d, want 1", len(fake.calls))
 	}
 	got := fake.calls[0]
-	if got.ID != "510" || len(got.AddLabels) != 0 || len(got.RemoveLabels) != 0 {
-		t.Fatalf("request = %+v, want ID 510 with no label changes (a dependency block self-heals, it doesn't park)", got)
+	if got.ID != "510" {
+		t.Fatalf("request ID = %q, want 510", got.ID)
 	}
-	if !strings.Contains(got.Comment, "#441") || !strings.Contains(got.Comment, "#442") {
-		t.Fatalf("comment = %q, want both blocker issue numbers", got.Comment)
+	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman {
+		t.Fatalf("AddLabels = %v, want [%s]", got.AddLabels, providers.LabelNeedsHuman)
+	}
+	wantRemoved := []string{providers.LabelReady, providers.LabelClaimed}
+	if !slices.Equal(got.RemoveLabels, wantRemoved) {
+		t.Fatalf("RemoveLabels = %v, want %v", got.RemoveLabels, wantRemoved)
+	}
+	if got.Comment != "" {
+		t.Fatalf("comment = %q, want empty (the shared escalation notifier owns the comment)", got.Comment)
 	}
 
 	recs, err := loadBlockedRecords(blockedRecordsPath(l))
@@ -846,10 +850,41 @@ func TestBuildBlockedHandlerKnownBlockersRecordsAndComments(t *testing.T) {
 	}
 }
 
-// TestBuildBlockedHandlerNoBlockersParksNeedsHuman is #544's park-on-fail-
-// attribution path: a blocked result with no parseable blockers gets no
-// blocked.json record (there's nothing for #552 to skip/self-heal on) — the
-// issue is parked goobers:needs-human instead, per the #539 convention.
+func TestBuildBlockedHandlerRecordFailureStillParks(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.WriteFile(l.SchedulerDir(), []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write scheduler blocker: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-1", Stage: "implement", ItemID: "510",
+		Reason: "DEPENDENCY_NOT_MET: unmet prerequisite", Blockers: []string{"441"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "record block for 510") {
+		t.Fatalf("handler error = %v, want blocked-record failure", err)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("parking calls = %d, want 1 despite blocked-record failure", len(fake.calls))
+	}
+	got := fake.calls[0]
+	wantRemoved := []string{providers.LabelReady, providers.LabelClaimed}
+	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman ||
+		!slices.Equal(got.RemoveLabels, wantRemoved) {
+		t.Fatalf("parking request = %+v, want needs-human added and ready/claimed removed", got)
+	}
+}
+
+// TestBuildBlockedHandlerNoBlockersParksNeedsHuman covers the unattributed
+// path: no blocked.json record, but the same #539 parking disposition.
 func TestBuildBlockedHandlerNoBlockersParksNeedsHuman(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
 	prev := newEscalationPoster
@@ -871,7 +906,7 @@ func TestBuildBlockedHandlerNoBlockersParksNeedsHuman(t *testing.T) {
 	}
 
 	if len(fake.calls) != 1 {
-		t.Fatalf("comment calls = %d, want 1", len(fake.calls))
+		t.Fatalf("parking calls = %d, want 1", len(fake.calls))
 	}
 	got := fake.calls[0]
 	if got.ID != "520" {
@@ -880,8 +915,12 @@ func TestBuildBlockedHandlerNoBlockersParksNeedsHuman(t *testing.T) {
 	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman {
 		t.Fatalf("AddLabels = %v, want [%s]", got.AddLabels, providers.LabelNeedsHuman)
 	}
-	if len(got.RemoveLabels) != 1 || got.RemoveLabels[0] != providers.LabelReady {
-		t.Fatalf("RemoveLabels = %v, want [%s]", got.RemoveLabels, providers.LabelReady)
+	wantRemoved := []string{providers.LabelReady, providers.LabelClaimed}
+	if !slices.Equal(got.RemoveLabels, wantRemoved) {
+		t.Fatalf("RemoveLabels = %v, want %v", got.RemoveLabels, wantRemoved)
+	}
+	if got.Comment != "" {
+		t.Fatalf("comment = %q, want empty (the shared escalation notifier owns the comment)", got.Comment)
 	}
 
 	recs, err := loadBlockedRecords(blockedRecordsPath(l))

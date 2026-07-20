@@ -1737,6 +1737,11 @@ func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 
 	var order []string
 	var got BlockedOutcome
+	commenter := &recordingCommenter{}
+	r.cfg.Escalation = &gate.EscalationNotifier{
+		Poster:     commenter,
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+	}
 	r.cfg.Blocked = func(_ context.Context, o BlockedOutcome) error {
 		order = append(order, "blocked")
 		got = o
@@ -1746,6 +1751,9 @@ func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 		order = append(order, "finalize")
 		if runID != "run-blocked" || phase != journal.PhaseEscalated {
 			t.Errorf("FinalizeTerminal got (%q, %q), want (run-blocked, escalated)", runID, phase)
+		}
+		if len(commenter.requests) != 1 {
+			t.Errorf("escalation notification calls = %d at finalization, want 1", len(commenter.requests))
 		}
 		return nil
 	}
@@ -1783,6 +1791,15 @@ func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 	}
 	if len(got.Blockers) != 2 || got.Blockers[0] != "441" || got.Blockers[1] != "442" {
 		t.Fatalf("Blockers = %v, want [441 442] (parsed, deduped, in order)", got.Blockers)
+	}
+	if len(commenter.requests) != 1 {
+		t.Fatalf("escalation notification calls = %d, want 1", len(commenter.requests))
+	}
+	notification := commenter.requests[0]
+	if notification.ID != "510" ||
+		!strings.Contains(notification.Comment, "implement") ||
+		!strings.Contains(notification.Comment, want.Reason) {
+		t.Fatalf("escalation notification = %+v, want item 510 with stage and blocked reason", notification)
 	}
 
 	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-blocked"))

@@ -104,7 +104,7 @@ type BlockedOutcome struct {
 
 // BlockedHandler is Config.Blocked's shape. Implementations are instance-level
 // (composition-root) policy: record the block for selection to skip (#552),
-// comment on / park the driving issue. Must tolerate an empty ItemID.
+// and park the driving issue. Must tolerate an empty ItemID.
 type BlockedHandler func(ctx context.Context, o BlockedOutcome) error
 
 // RateLimitedOutcome describes a stage failing with the typed
@@ -154,8 +154,9 @@ type Config struct {
 	// MaxRepasses bounds gate repass loops before escalating
 	// (gate.DefaultMaxRepasses if 0). See internal/gate.Evaluator.
 	MaxRepasses int
-	// Escalation notifies the driving backlog item's provider when a run
-	// escalates (internal/gate.EscalationNotifier). Optional — nil is a no-op.
+	// Escalation notifies the driving backlog item's provider when a gate or
+	// stage escalates the run (internal/gate.EscalationNotifier). Optional —
+	// nil is a no-op.
 	Escalation *gate.EscalationNotifier
 	// ClaimedItems resolves the backlog item id(s) a run currently claims, for
 	// runs started without an Item snapshot — scheduled/fan-out implementation
@@ -168,7 +169,7 @@ type Config struct {
 	ClaimedItems func(runID string) ([]string, error)
 	// Blocked handles the instance-level consequences of a stage reporting
 	// status "blocked" (#544/#545): recording the learned dependency block for
-	// selection to skip (#552) and surfacing/parking the driving issue. Called
+	// selection to skip (#552) and parking the driving issue. Called
 	// after the blocked cause is journaled and before the run's terminal
 	// run.finished event, so a claim-ledger lookup inside the handler still
 	// sees the run's claims (FinalizeTerminal releases them only after).
@@ -918,6 +919,44 @@ func (r *Runner) notifyBlocked(ctx context.Context, jr *journal.Run, o BlockedOu
 	return nil
 }
 
+// notifyBlockedEscalation surfaces a blocked stage through the same escalation
+// notifier used by terminal gates. Provider and claim-resolution failures are
+// journaled and swallowed so notification cannot prevent terminal cleanup.
+func (r *Runner) notifyBlockedEscalation(ctx context.Context, jr *journal.Run, runID string, item *apiv1.BacklogItem, o BlockedOutcome) error {
+	if r.cfg.Escalation == nil {
+		return nil
+	}
+	itemIDs, err := r.terminalGateItemIDs(runID, item)
+	if err != nil {
+		if aerr := jr.Append(journal.Event{
+			Type:  journal.EventError,
+			Stage: o.Stage,
+			Error: &journal.ErrorDetail{
+				Code:    "stage_terminal_item_resolution_failed",
+				Message: err.Error(),
+			},
+		}); aerr != nil {
+			return fmt.Errorf("runner: journal terminal item resolution failure for stage %q: %w", o.Stage, aerr)
+		}
+		return nil
+	}
+	for _, itemID := range itemIDs {
+		if err := r.cfg.Escalation.NotifyStageEscalated(ctx, itemID, o.Stage, o.Reason); err != nil {
+			if aerr := jr.Append(journal.Event{
+				Type:  journal.EventError,
+				Stage: o.Stage,
+				Error: &journal.ErrorDetail{
+					Code:    "stage_terminal_notification_failed",
+					Message: err.Error(),
+				},
+			}); aerr != nil {
+				return fmt.Errorf("runner: journal terminal notification failure for stage %q: %w", o.Stage, aerr)
+			}
+		}
+	}
+	return nil
+}
+
 // notifyRateLimited invokes the configured RateLimited handler (#712). A
 // handler error is journaled (rate_limited_handling_failed) and swallowed —
 // unlike notifyBlocked, this never gates the run's own terminal phase, so
@@ -1143,10 +1182,10 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		// immortal PhaseRunning pause (claim held to lease expiry, re-resumed
 		// on every restart, run.finished never journaled — #545's 6 live
 		// occurrences). The cause is journaled first (#305: finish() alone
-		// records only the bare phase), then the instance-level handler runs
-		// (recording the learned block for #552's selection skip / parking the
-		// issue) while the claim ledger still holds this run's claims, then
-		// the ordinary terminal path releases everything via FinalizeTerminal.
+		// records only the bare phase), then the escalation notifier and
+		// instance-level parking handler run while the claim ledger still holds
+		// this run's claims, then the ordinary terminal path releases everything
+		// via FinalizeTerminal.
 		o := BlockedOutcome{
 			RunID:    runID,
 			Stage:    t.Name,
@@ -1161,6 +1200,10 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 			Error: &journal.ErrorDetail{Code: "blocked_by_agent", Message: o.Reason},
 		}); aerr != nil {
 			res, err = r.failTerminal(runID, jr, t.Name, steps, fmt.Errorf("runner: journal blocked cause for %q: %w", t.Name, aerr))
+			return "", res, false, err
+		}
+		if nerr := r.notifyBlockedEscalation(context.WithoutCancel(ctx), jr, runID, item, o); nerr != nil {
+			res, err = r.failTerminal(runID, jr, t.Name, steps, nerr)
 			return "", res, false, err
 		}
 		// Same drain contract as notifyTerminalGate's call site: a SIGTERM

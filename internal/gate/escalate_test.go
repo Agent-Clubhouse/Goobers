@@ -49,6 +49,30 @@ func TestNotifyEscalatedPostsComment(t *testing.T) {
 	}
 }
 
+func TestNotifyStageEscalatedPostsComment(t *testing.T) {
+	poster := &fakeCommenter{}
+	n := &EscalationNotifier{
+		Poster:     poster,
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"},
+	}
+
+	if err := n.NotifyStageEscalated(context.Background(), "42", "implement", "blocked on issue 41"); err != nil {
+		t.Fatalf("NotifyStageEscalated: %v", err)
+	}
+	if poster.calls != 1 {
+		t.Fatalf("calls = %d, want 1", poster.calls)
+	}
+	if poster.lastReq.ID != "42" {
+		t.Fatalf("request = %+v, want id=42", poster.lastReq)
+	}
+	if poster.lastReq.Title != nil || poster.lastReq.Body != nil || poster.lastReq.State != "" || len(poster.lastReq.AddLabels) != 0 || len(poster.lastReq.RemoveLabels) != 0 {
+		t.Fatalf("request = %+v, want comment-only (no other field touched)", poster.lastReq)
+	}
+	if !strings.Contains(poster.lastReq.Comment, "implement") || !strings.Contains(poster.lastReq.Comment, "blocked on issue 41") {
+		t.Fatalf("comment = %q, want it to mention the stage and reason", poster.lastReq.Comment)
+	}
+}
+
 func TestNotifyEscalatedNoopWithoutPosterOrItem(t *testing.T) {
 	poster := &fakeCommenter{}
 	if err := (&EscalationNotifier{Poster: nil}).NotifyEscalated(context.Background(), "42", Result{}, "why"); err != nil {

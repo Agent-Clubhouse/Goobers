@@ -16,7 +16,7 @@ const (
 // marker meaning an item is scoped and eligible for implementation; the
 // needs-human label parks an item pending a human decision (the curator's
 // existing vocabulary — #539's convention; also applied when a stage reports
-// blocked without machine-readable blockers, #544).
+// blocked, #544).
 const (
 	LabelClaimed    = "goobers:claimed"
 	LabelReady      = "goobers:ready"

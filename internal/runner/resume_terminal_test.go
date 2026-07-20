@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/providers"
 )
 
 // overwriteStateJSON replaces runDir/state.json with a hand-built, possibly
@@ -282,12 +284,18 @@ func TestRunnerResumeReplaysBlockedFinishAsEscalated(t *testing.T) {
 
 	det := &countingDeterministic{}
 	var handlerCalls []BlockedOutcome
+	commenter := &recordingCommenter{}
 	r, err := New(Config{
 		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
 		Automated:        gate.NewAutomatedEvaluator(),
 		Worktrees:        wtMgr,
 		RunsDir:          runsDir,
 		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		Escalation: &gate.EscalationNotifier{
+			Poster:     commenter,
+			Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+		},
+		ClaimedItems: func(string) ([]string, error) { return []string{"510"}, nil },
 		Blocked: func(_ context.Context, o BlockedOutcome) error {
 			handlerCalls = append(handlerCalls, o)
 			return nil
@@ -315,6 +323,14 @@ func TestRunnerResumeReplaysBlockedFinishAsEscalated(t *testing.T) {
 	if len(handlerCalls) != 1 {
 		t.Fatalf("Blocked handler invoked %d times, want 1", len(handlerCalls))
 	}
+	if len(commenter.requests) != 1 {
+		t.Fatalf("escalation notifier invoked %d times, want 1", len(commenter.requests))
+	}
+	if got := commenter.requests[0]; got.ID != "510" ||
+		!strings.Contains(got.Comment, "implement") ||
+		!strings.Contains(got.Comment, "blocked on #441") {
+		t.Fatalf("escalation notification = %+v, want item 510 with stage and reason", got)
+	}
 	if got := handlerCalls[0]; got.RunID != "run-blocked-crash" || got.Stage != "implement" ||
 		len(got.Blockers) != 1 || got.Blockers[0] != "441" {
 		t.Fatalf("BlockedOutcome = %+v, want run-blocked-crash/implement blocked on [441]", got)
@@ -332,6 +348,9 @@ func TestRunnerResumeReplaysBlockedFinishAsEscalated(t *testing.T) {
 	}
 	if len(handlerCalls) != 1 {
 		t.Fatalf("Blocked handler invoked %d times after second resume, want still 1", len(handlerCalls))
+	}
+	if len(commenter.requests) != 1 {
+		t.Fatalf("escalation notifier invoked %d times after second resume, want still 1", len(commenter.requests))
 	}
 	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-blocked-crash"))
 	if err != nil {
