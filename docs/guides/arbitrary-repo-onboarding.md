@@ -378,7 +378,7 @@ goobers trace --transcripts <run-id> "$GOOBERS_INSTANCE"
 
 For the acceptance run, the implementation trace should show the claim,
 implement stage, reviewer verdict, local CI, branch push, PR open, CI poll, and
-issue close-out in order. The run journal under `runs/<run-id>/` and the
+issue close-out in order. The run journal under `gaggles/<gaggle>/runs/<run-id>/` and the
 instance journal under `scheduler/` are the durable sources; `status` and
 `trace` render them.
 
@@ -399,7 +399,7 @@ Press `Ctrl-C` in the foreground daemon, or send its exact process ID
 checkpoints before exiting. If a stage exceeds the bounded drain window, the
 next `goobers up` resumes the non-terminal run from its journal.
 
-Do not use `kill -9`, delete `runs/`, or delete `scheduler/` as a normal stop
+Do not use `kill -9`, delete `gaggles/*/runs/`, or delete `scheduler/` as a normal stop
 procedure. Confirm shutdown with:
 
 ```sh
