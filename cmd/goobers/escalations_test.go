@@ -244,3 +244,96 @@ func artifactNames(artifacts []readservice.ArtifactMetadata) string {
 	}
 	return strings.Join(names, ",")
 }
+
+func TestEscalationsShowUnfinishedStageArtifactsInTimeline(t *testing.T) {
+	root := t.TempDir()
+	startedAt := time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
+		RunID:           "escalated-open-stage",
+		Workflow:        "implementation",
+		WorkflowVersion: 3,
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "464"},
+		StartedAt:       startedAt,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEvent := func(event journal.Event) {
+		t.Helper()
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// query-backlog runs to completion.
+	appendEvent(journal.Event{Type: journal.EventStageStarted, Stage: "query-backlog", Attempt: 1})
+	queryRef, err := run.RecordStageArtifact("query-backlog", 1, "", "query.json", []byte(`{"item":464}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEvent(journal.Event{
+		Type:      journal.EventStageFinished,
+		Stage:     "query-backlog",
+		Attempt:   1,
+		Status:    string(apiv1.ResultSuccess),
+		Artifacts: []journal.Ref{queryRef},
+	})
+
+	// implement starts and produces an artifact, but the run escalates before it
+	// emits StageFinished — the stage is still open at escalation time.
+	appendEvent(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
+	resultRef, err := run.RecordStageArtifact("implement", 1, "", "result.json", []byte(`{"status":"in-progress"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdictRef, err := run.RecordArtifact("verdict.json", []byte(`{"decision":"needs-changes"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEvent(journal.Event{
+		Type:      journal.EventGateEvaluated,
+		Gate:      "review",
+		Verdict:   string(apiv1.VerdictNeedsChanges),
+		Target:    workflow.TargetEscalate,
+		Name:      "verdict.json",
+		Ref:       &verdictRef,
+		Artifacts: []journal.Ref{resultRef},
+		Runner: map[string]any{
+			"escalated":     true,
+			"repassAttempt": 3,
+		},
+	})
+	appendEvent(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)})
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "escalations", "show", "--json", "escalated-open-stage", root)
+	if code != 0 {
+		t.Fatalf("escalations show --json: code = %d, stderr = %q", code, stderr)
+	}
+	var got escalationInspection
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("escalations show --json produced invalid JSON: %v\n%s", err, stdout)
+	}
+
+	var implement *escalationArtifactStep
+	for i := range got.Timeline {
+		if got.Timeline[i].Stage == "implement" {
+			implement = &got.Timeline[i]
+		}
+	}
+	if implement == nil {
+		t.Fatalf("timeline missing implement stage: %+v", got.Timeline)
+	}
+	if implement.Status != "running" {
+		t.Fatalf("implement status = %q, want running (unfinished stage)", implement.Status)
+	}
+	// The fix: an unfinished stage's ArtifactsAfter is snapshotted at escalation
+	// instead of being left empty, so result.json is attributed to the timeline
+	// and not only to the run's current state.
+	if names := artifactNames(implement.ArtifactsAfter); !strings.Contains(names, "result.json") {
+		t.Fatalf("implement ArtifactsAfter = %q, want it to include result.json (unfinished-stage artifact)", names)
+	}
+}

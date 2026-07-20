@@ -246,6 +246,15 @@ func escalationArtifactTimeline(events []readservice.RunEvent) ([]escalationArti
 		}
 	}
 	for i := range timeline {
+		if timeline[i].Status == "running" {
+			// #464: a stage still open at escalation (StageStarted with no
+			// matching StageFinished) never reaches the finished branch above,
+			// so its ArtifactsAfter stayed empty and any artifacts it produced
+			// appeared only in the run's current state, not in the timeline.
+			// Snapshot the artifacts accumulated up to the escalation point so
+			// the unfinished stage's outputs are attributed to it here too.
+			timeline[i].ArtifactsAfter = cloneEscalationArtifacts(artifacts)
+		}
 		if timeline[i].ArtifactsAfter == nil {
 			timeline[i].ArtifactsAfter = []readservice.ArtifactMetadata{}
 		}
