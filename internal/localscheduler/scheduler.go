@@ -495,19 +495,24 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	for {
 		attempted := false
 		for _, gaggle := range gaggles {
-			candidate, tick, kind, ok := gaggle.next()
-			if !ok {
-				continue
-			}
-			attempted = true
-			_, admitted, reason := s.dispatch(ctx, candidate.entry, now, tick, kind)
-			if admitted {
-				candidate.dispatchedThisTick = true
-				continue
-			}
-			candidate.stopped = true
-			if reason == ReasonInstanceMaxParallel && !candidate.dispatchedThisTick {
-				s.recordPoolSkip(candidate.entry)
+			for {
+				candidate, tick, kind, ok := gaggle.next()
+				if !ok {
+					break
+				}
+				attempted = true
+				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, tick, kind)
+				if admitted {
+					candidate.dispatchedThisTick = true
+					break
+				}
+				candidate.stopped = true
+				if reason == ReasonInstanceMaxParallel {
+					if !candidate.dispatchedThisTick {
+						s.recordPoolSkip(candidate.entry)
+					}
+					break
+				}
 			}
 		}
 		if !attempted {
@@ -763,15 +768,18 @@ func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []st
 	for {
 		attempted := false
 		for _, gaggle := range gaggleNames {
-			index := next[gaggle]
-			if index >= len(byGaggle[gaggle]) {
-				continue
-			}
-			attempted = true
-			next[gaggle]++
-			entry := byGaggle[gaggle][index]
-			if runID, admitted, _ := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerSignal); admitted {
-				runIDs = append(runIDs, runID)
+			for next[gaggle] < len(byGaggle[gaggle]) {
+				entry := byGaggle[gaggle][next[gaggle]]
+				next[gaggle]++
+				attempted = true
+				runID, admitted, reason := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerSignal)
+				if admitted {
+					runIDs = append(runIDs, runID)
+					break
+				}
+				if reason == ReasonInstanceMaxParallel {
+					break
+				}
 			}
 		}
 		if !attempted {
