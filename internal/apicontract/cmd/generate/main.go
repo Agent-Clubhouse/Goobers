@@ -9,16 +9,27 @@ import (
 )
 
 func main() {
-	output := flag.String("output", "", "generated TypeScript output path")
+	contractOutput := flag.String("contract-output", "", "generated TypeScript contract output path")
+	fixturesOutput := flag.String("fixtures-output", "", "generated TypeScript wire fixtures output path")
 	flag.Parse()
-	if *output == "" {
-		log.Fatal("-output is required")
+	if *contractOutput == "" {
+		log.Fatal("-contract-output is required")
 	}
-	content, err := apicontract.TypeScriptContract()
+	if *fixturesOutput == "" {
+		log.Fatal("-fixtures-output is required")
+	}
+	contract, err := apicontract.TypeScriptContract()
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := os.WriteFile(*output, content, 0o644); err != nil {
+	if err := os.WriteFile(*contractOutput, contract, 0o644); err != nil {
+		log.Fatal(err)
+	}
+	fixtures, err := apicontract.TypeScriptWireFixtures()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := os.WriteFile(*fixturesOutput, fixtures, 0o644); err != nil {
 		log.Fatal(err)
 	}
 }

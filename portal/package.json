@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run typecheck && vite build",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:contract": "vitest run src/api/wireContract.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

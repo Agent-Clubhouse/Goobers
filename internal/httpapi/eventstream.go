@@ -44,19 +44,11 @@ var (
 )
 
 // Invalidation identifies versioned read models that clients should refetch.
-type Invalidation struct {
-	Cursor    string        `json:"cursor"`
-	Models    []string      `json:"models"`
-	RunIDs    []string      `json:"runIds,omitempty"`
-	Workflows []WorkflowRef `json:"workflows,omitempty"`
-}
+type Invalidation = apicontract.Invalidation
 
 // WorkflowRef identifies one workflow read model. An empty list with the
 // workflow model means all workflow inventory should be refetched.
-type WorkflowRef struct {
-	Gaggle string `json:"gaggle,omitempty"`
-	Name   string `json:"name"`
-}
+type WorkflowRef = apicontract.WorkflowRef
 
 // StreamEvent is one SSE message with a stable ID for client deduplication.
 type StreamEvent struct {

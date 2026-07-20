@@ -14,25 +14,30 @@ and [`docs/VISION.md`](docs/VISION.md).
 
 ## Development setup
 
-You need the Go toolchain declared in [`go.mod`](go.mod) (currently Go 1.26) and
-`make`. Lint uses [`golangci-lint`](https://golangci-lint.run) `v2.12.2` (schema-v2
-config in [`.golangci.yml`](.golangci.yml)).
+You need the Go toolchain declared in [`go.mod`](go.mod) (currently Go 1.26),
+Node.js 24 with npm, and `make`. Lint uses
+[`golangci-lint`](https://golangci-lint.run) `v2.12.2` (schema-v2 config in
+[`.golangci.yml`](.golangci.yml)).
 
 ```sh
-make help     # list all targets
-make ci       # the full local gate: fmt-check · vet · build · test · lint
+make help             # list all targets
+make ci               # full Go and portal merge gate
+make portal-ci        # install, type-check, build, test, and check the portal contract
+make portal-contract  # regenerate and verify the Go/TypeScript wire contract
 ```
 
 `make ci` is the full gate CI enforces on Ubuntu and macOS (see
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml)). If it's green locally,
-it exercises the same checks as those required jobs.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)). It runs the Go format,
+vet, build, race-test, and lint checks plus the portal build, typecheck, tests,
+and stale-fixture check. `make portal-ci` reproduces the portal portion alone;
+`make portal-contract` narrows that to the generated Go/TypeScript wire seam.
 
 ### CI platform matrix
 
 | Runner | Command | PR status | What it gates |
 |---|---|---|---|
-| `ubuntu-latest` | `make ci` | Required via the aggregate CI check | The full Linux build, test, race, format, vet, and lint gate |
-| `macos-latest` | `make ci` | Required via the aggregate CI check | The full macOS build, test, race, format, vet, and lint gate |
+| `ubuntu-latest` | `make ci` | Required via the aggregate CI check | The full Linux Go and portal gate |
+| `macos-latest` | `make ci` | Required via the aggregate CI check | The full macOS Go and portal gate |
 | `windows-latest` | `go vet ./...` and `go build ./...` | Advisory (allowed to fail) | Windows compilation while the platform abstractions and portable toolchain tracked by #620, #623, #625, #627, and #630 land |
 
 All three statuses are reported on every pull request, and one platform failure
