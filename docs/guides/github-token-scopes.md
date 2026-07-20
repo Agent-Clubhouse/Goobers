@@ -29,7 +29,8 @@ in `instance.yaml`:
 | Capability | Recommended fine-grained PAT permissions | Notes |
 |---|---|---|
 | `github:issues:read` | Issues: Read-only | Backlog polling, triage stages. |
-| `github:issues:write` | Issues: Read and write | Claim, comment, label, close. Does not imply repo content access. |
+| `github:issues:write` | Issues: Read and write | Create, claim, comment, ordinary-label, close. Does not authorize the `goobers:approved` trust decision. |
+| `github:issues:approve` | Issues: Read and write | Apply `goobers:approved` to nominated work. Keep this out of workflow stages unless self-approval is intentional. |
 | `github:pr:write` | Pull requests: Read and write, Contents: Read and write | Only for stages that open/update PRs. |
 | `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
@@ -125,6 +126,22 @@ new workflow:
 4. If two workflows need the same capability against the same repo, they can
    share a token ref; don't mint one PAT per workflow when one per
    *capability* covers it.
+
+For an intentionally self-directed nomination workflow, opt in at the stage
+that files issues:
+
+```yaml
+- name: nominate
+  type: agentic
+  goober: nominator
+  capabilities:
+    - github:issues:write
+    - github:issues:approve
+```
+
+The nominator goober definition must also list `github:issues:approve` as an
+allowed capability. Omitting it from the workflow stage preserves the default:
+nominated issues carry no trust label and wait for maintainer approval.
 
 ## Token lifecycle
 

@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	localrunner "github.com/goobers/goobers/internal/runner"
@@ -44,6 +45,19 @@ func loadNominationWorkflow(t *testing.T) apiv1.WorkflowSpec {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	return w.Spec
+}
+
+func loadNominator(t *testing.T) apiv1.GooberSpec {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(nominationConfigRoot, "goobers", "nominator", "goober.yaml"))
+	if err != nil {
+		t.Fatalf("read nominator goober.yaml: %v", err)
+	}
+	var g apiv1.Goober
+	if err := yaml.Unmarshal(raw, &g); err != nil {
+		t.Fatalf("unmarshal nominator: %v", err)
+	}
+	return g.Spec
 }
 
 type candidateFindingsFixture struct {
@@ -106,7 +120,14 @@ type nominatedIssue struct {
 // deterministically, so the test is reproducible without an LLM in the loop.
 // existing holds gap descriptions already covered by an open
 // goobers:nominated issue (dedupe query, run first).
-func nominateFixture(signals []rollup.Finding, existing map[string]bool, cap int) (filed []nominatedIssue, deduped int) {
+func nominateFixture(signals []rollup.Finding, existing map[string]bool, cap int, capabilities []string) (filed []nominatedIssue, deduped int) {
+	autoApprove := false
+	for _, granted := range capabilities {
+		if granted == string(capability.GitHubIssuesApprove) {
+			autoApprove = true
+			break
+		}
+	}
 	ordered := append([]rollup.Finding(nil), signals...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		iErr := ordered[i].Kind == rollup.FindingErrorSignature
@@ -124,10 +145,14 @@ func nominateFixture(signals []rollup.Finding, existing map[string]bool, cap int
 		if len(filed) >= cap {
 			continue
 		}
+		labels := []string{"goobers:nominated"}
+		if autoApprove {
+			labels = append(labels, "goobers:approved")
+		}
 		filed = append(filed, nominatedIssue{
 			title:    "nominated: " + s.Subject,
 			evidence: s.Subject,
-			labels:   []string{"goobers:nominated"},
+			labels:   labels,
 		})
 	}
 	return filed, deduped
@@ -211,7 +236,7 @@ func (n *fixtureNominator) Invoke(_ context.Context, env apiv1.InvocationEnvelop
 		return apiv1.ResultEnvelope{}, fmt.Errorf("decode candidate-findings handoff: %w", err)
 	}
 
-	filed, deduped := nominateFixture(candidates.Findings, n.existing, cap)
+	filed, deduped := nominateFixture(candidates.Findings, n.existing, cap, env.Capabilities)
 	n.gotFiled, n.gotDeduped = len(filed), deduped
 	n.summary = fmt.Sprintf(
 		"found %d candidates; %d deduped; filed %d; 0 skipped at per-run cap",
@@ -363,7 +388,7 @@ func TestWorkNominationDedupesOnSecondRun(t *testing.T) {
 // bounds filing even when more genuine candidates exist than the configured
 // per-run maximum.
 func TestWorkNominationCapsAtMaxPerRun(t *testing.T) {
-	filed, deduped := nominateFixture(fixtureSignals(), nil, 2)
+	filed, deduped := nominateFixture(fixtureSignals(), nil, 2, nil)
 	if len(filed) != 2 {
 		t.Fatalf("len(filed) = %d, want 2 (capped)", len(filed))
 	}
@@ -412,17 +437,74 @@ func TestWorkNominationNeverGrantsPushCapability(t *testing.T) {
 	}
 }
 
+func TestWorkNominationApprovalCapabilityIsStageOptIn(t *testing.T) {
+	spec := loadNominationWorkflow(t)
+	nominator := loadNominator(t)
+
+	nominatorAllowsApproval := false
+	nominateTask := -1
+	for _, granted := range nominator.Capabilities {
+		if granted == string(capability.GitHubIssuesApprove) {
+			nominatorAllowsApproval = true
+		}
+	}
+	for i, task := range spec.Tasks {
+		if task.Name != "nominate" {
+			continue
+		}
+		nominateTask = i
+		for _, declared := range task.Capabilities {
+			if declared == string(capability.GitHubIssuesApprove) {
+				t.Fatal("shipped nominate stage must leave self-approval disabled")
+			}
+		}
+	}
+	if !nominatorAllowsApproval {
+		t.Fatal("nominator must allow an operator to opt the stage into github:issues:approve")
+	}
+	if nominateTask == -1 {
+		t.Fatal("nominate task not found")
+	}
+
+	spec.Tasks[nominateTask].Capabilities = append(
+		spec.Tasks[nominateTask].Capabilities,
+		string(capability.GitHubIssuesApprove),
+	)
+	if _, err := workflow.Compile(
+		workflow.Definition{Name: "work-nomination", Version: 1, Spec: spec},
+		workflow.WithGoobers(map[string]apiv1.GooberSpec{"nominator": nominator}),
+	); err != nil {
+		t.Fatalf("compile opted-in work-nomination: %v", err)
+	}
+}
+
 // TestNominatedIssueComposesWithCuration is the fixture-layer form of issue
 // #26's composition AC: an issue this workflow files carries only the
 // nomination marker, leaving the maintainer trust decision and readiness
 // marker to backlog curation.
 func TestNominatedIssueComposesWithCuration(t *testing.T) {
-	filed, _ := nominateFixture(fixtureSignals()[:1], nil, 5)
+	filed, _ := nominateFixture(fixtureSignals()[:1], nil, 5, nil)
 	if len(filed) != 1 {
 		t.Fatalf("len(filed) = %d, want 1", len(filed))
 	}
 
 	if got := filed[0].labels; len(got) != 1 || got[0] != "goobers:nominated" {
 		t.Errorf("nominated issue labels = %v, want only goobers:nominated", got)
+	}
+}
+
+func TestNominatedIssueAutoApprovesOnlyWithCapability(t *testing.T) {
+	filed, _ := nominateFixture(
+		fixtureSignals()[:1],
+		nil,
+		5,
+		[]string{string(capability.GitHubIssuesApprove)},
+	)
+	if len(filed) != 1 {
+		t.Fatalf("len(filed) = %d, want 1", len(filed))
+	}
+	want := []string{"goobers:nominated", "goobers:approved"}
+	if !reflect.DeepEqual(filed[0].labels, want) {
+		t.Errorf("nominated issue labels = %v, want %v", filed[0].labels, want)
 	}
 }

@@ -42,11 +42,14 @@ You touch **issues only**. You have `github:issues:write` and
    - The `goobers:nominated` label and an evidence footer citing the
      run-id(s) your finding is based on (so a human can trace it back to
      the telemetry/journal that motivated it).
-5. Leave the issue **unclaimed** — no `goobers:approved` label, no
-   assignee. A human maintainer reviews and approves it before curation
-   (and eventually implementation) can touch it (`SEC-047`: this is a
-   public repo, so nothing you file is trusted input until a maintainer
-   explicitly approves it — including your own filings).
+5. Check whether `GOOBERS_CRED_GITHUB_ISSUES_APPROVE` is set without printing
+   its value. Normally it is absent: leave the issue unclaimed, with no
+   `goobers:approved` label or assignee, so a human maintainer supplies the
+   SEC-047 trust decision. When it is present, the workflow stage explicitly
+   opted into `github:issues:approve`; use that credential to add
+   `goobers:approved` immediately (for example,
+   `GH_TOKEN="$GOOBERS_CRED_GITHUB_ISSUES_APPROVE" gh issue edit <number> --add-label goobers:approved`).
+   Never add `goobers:ready`; curation still owns readiness.
 
 ## Noise controls
 
