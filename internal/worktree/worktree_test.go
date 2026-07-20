@@ -203,6 +203,37 @@ func TestWorktree_ValidateReservedPathsUsesRunBranchWhenHEADDetached(t *testing.
 	}
 }
 
+func TestWorktree_ValidateReservedPathsRestoresBranchWithCorruptMetadata(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/run-corrupt-metadata"
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-corrupt-metadata", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := wt.ActivateAssetPathGuard(); err != nil {
+		t.Fatalf("ActivateAssetPathGuard: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, wt.Path, "commit", "-m", "force-add assets")
+	if err := os.WriteFile(filepath.Join(wt.Path, ".git"), []byte("corrupt worktree metadata\n"), 0o644); err != nil {
+		t.Fatalf("corrupt worktree metadata: %v", err)
+	}
+
+	if err := wt.ValidateReservedPaths(ctx); !errors.Is(err, gooberassets.ErrWorkspaceCollision) {
+		t.Fatalf("ValidateReservedPaths error = %v, want ErrWorkspaceCollision", err)
+	}
+	branchRef := strings.TrimSpace(runTestGit(t, m.repoDirForKey(wt.key), "-c", "safe.bareRepository=all", "rev-parse", "refs/heads/"+branch))
+	if branchRef != wt.startRef {
+		t.Fatalf("run branch = %s, want restored ref %s", branchRef, wt.startRef)
+	}
+}
+
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -373,6 +404,41 @@ func TestManager_Create_AdoptsAndResetsExistingKey(t *testing.T) {
 	}
 }
 
+func TestManager_CreateRetryRestoresGuardedBranchWithCorruptMetadata(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	opts := CreateOptions{
+		RepoURL: repo, RunID: "run-retry", BaseRef: "main", Branch: "goobers/impl/run-retry",
+	}
+
+	first, err := m.Create(ctx, opts)
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	if err := first.ActivateAssetPathGuard(); err != nil {
+		t.Fatalf("ActivateAssetPathGuard: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(first.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, first.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, first.Path, "commit", "-m", "force-add assets")
+	if err := os.WriteFile(filepath.Join(first.Path, ".git"), []byte("corrupt worktree metadata\n"), 0o644); err != nil {
+		t.Fatalf("corrupt worktree metadata: %v", err)
+	}
+
+	retry, err := m.Create(ctx, opts)
+	if err != nil {
+		t.Fatalf("retry Create: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(retry.Path, gooberassets.WorkspaceDir)); !os.IsNotExist(err) {
+		t.Fatalf("guarded assets leaked into retry: %v", err)
+	}
+	branchRef := strings.TrimSpace(runTestGit(t, m.repoDirForKey(retry.key), "-c", "safe.bareRepository=all", "rev-parse", "refs/heads/"+opts.Branch))
+	if branchRef != retry.startRef {
+		t.Fatalf("retry branch = %s, want clean start ref %s", branchRef, retry.startRef)
+	}
+}
+
 func TestManager_Remove_TearsDown(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
@@ -395,6 +461,40 @@ func TestManager_Remove_TearsDown(t *testing.T) {
 	list := runTestGit(t, m.repoDirForKey(repoKey(repo)), "worktree", "list", "--porcelain")
 	if strings.Contains(list, wt.Path) {
 		t.Fatalf("git worktree list still shows removed worktree: %s", list)
+	}
+}
+
+func TestWorktree_RemoveRestoresGuardedBranchWithCorruptMetadata(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/remove-corrupt-metadata"
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "remove-corrupt-metadata", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := wt.ActivateAssetPathGuard(); err != nil {
+		t.Fatalf("ActivateAssetPathGuard: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, wt.Path, "commit", "-m", "force-add assets")
+	if err := os.WriteFile(filepath.Join(wt.Path, ".git"), []byte("corrupt worktree metadata\n"), 0o644); err != nil {
+		t.Fatalf("corrupt worktree metadata: %v", err)
+	}
+
+	removeErr := wt.Remove(ctx, RemoveOptions{})
+	branchRef := strings.TrimSpace(runTestGit(t, m.repoDirForKey(wt.key), "-c", "safe.bareRepository=all", "rev-parse", "refs/heads/"+branch))
+	if branchRef != wt.startRef {
+		t.Fatalf("run branch = %s, want restored ref %s", branchRef, wt.startRef)
+	}
+	if removeErr != nil {
+		if _, err := os.Stat(m.markerPath(wt.key, wt.RunID)); err != nil {
+			t.Fatalf("guard marker lost after failed removal: %v (remove error: %v)", err, removeErr)
+		}
 	}
 }
 

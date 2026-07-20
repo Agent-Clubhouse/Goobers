@@ -215,16 +215,8 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 	defer lock.Unlock()
 
 	repoDir := m.repoDirForKey(key)
-	if mk != nil && mk.AssetPathGuard && mk.Branch != "" && mk.StartRef != "" {
-		wt := &Worktree{
-			RunID:    mk.RunID,
-			Path:     path,
-			Branch:   mk.Branch,
-			manager:  m,
-			key:      key,
-			startRef: mk.StartRef,
-		}
-		if err := wt.restoreReservedBranch(ctx); err != nil {
+	if mk != nil {
+		if err := m.restoreReservedBranchFromMarker(ctx, key, path, *mk); err != nil {
 			return err
 		}
 	}
