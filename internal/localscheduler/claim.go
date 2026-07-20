@@ -219,7 +219,7 @@ func (l *ClaimLedger) MigrateLegacyClaims(resolve func(ClaimEntry) (ClaimNamespa
 // bypassed by a caller-supplied duration (e.g. a workflow's leaseDuration
 // input) reaching a live-lease branch that skips validation.
 func (l *ClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
-	return l.claim(itemID, ClaimKey{ExternalID: itemID}, runID, workflow, leaseDuration)
+	return l.claim(itemID, "", ClaimKey{ExternalID: itemID}, runID, workflow, leaseDuration)
 }
 
 // ClaimScoped acquires a claim namespaced by gaggle, provider, and external ID.
@@ -228,10 +228,10 @@ func (l *ClaimLedger) ClaimScoped(key ClaimKey, runID, workflow string, leaseDur
 	if err != nil {
 		return false, "", err
 	}
-	return l.claim(storageKey, key, runID, workflow, leaseDuration)
+	return l.claim(storageKey, key.ExternalID, key, runID, workflow, leaseDuration)
 }
 
-func (l *ClaimLedger) claim(storageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
+func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
 	if leaseDuration <= 0 {
 		return false, "", fmt.Errorf("localscheduler: lease duration must be positive, got %s", leaseDuration)
 	}
@@ -240,6 +240,13 @@ func (l *ClaimLedger) claim(storageKey string, key ClaimKey, runID, workflow str
 	defer l.mu.Unlock()
 
 	now := l.now()
+	// An unresolved item-only claim could belong to any namespace, so it
+	// remains exclusive against every scoped claimant until its lease expires.
+	if legacyStorageKey != "" {
+		if existing, held := l.entries[legacyStorageKey]; held && !existing.expired(now) {
+			return false, existing.RunID, nil
+		}
+	}
 	if existing, held := l.entries[storageKey]; held && !existing.expired(now) && existing.RunID != runID {
 		return false, existing.RunID, nil
 	}

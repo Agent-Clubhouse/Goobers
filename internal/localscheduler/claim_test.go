@@ -186,6 +186,14 @@ func TestMigrateLegacyClaimsRetainsUnresolvedEntries(t *testing.T) {
 	if !ok || entry.RunID != "run-removed" || entry.Gaggle != "" || entry.Provider != "" {
 		t.Fatalf("unresolved legacy claim = %+v, %v; want unchanged item-only claim", entry, ok)
 	}
+
+	key := ClaimKey{Gaggle: "beta", Provider: "github", ExternalID: "27"}
+	if ok, holder, err := ledger.ClaimScoped(key, "run-competing", "implementation", time.Hour); err != nil || ok || holder != "run-removed" {
+		t.Fatalf("scoped claim competing with unresolved legacy claim: ok=%v holder=%q err=%v", ok, holder, err)
+	}
+	if _, ok := ledger.LookupScoped(key); ok {
+		t.Fatal("competing scoped claim was recorded alongside unresolved legacy claim")
+	}
 }
 
 // TestClaimRejectsNonPositiveLeaseDuration is issue #235 edge 1: a
