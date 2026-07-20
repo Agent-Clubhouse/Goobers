@@ -551,6 +551,15 @@ func TestExecutorBoundsComposedCanonicalTranscript(t *testing.T) {
 		t.Fatalf("Outputs[transcriptDroppedBytes] = %v, want > %d", result.Outputs["transcriptDroppedBytes"], adapter.TranscriptDroppedBytes)
 	}
 	events := decodeTranscriptEvents(t, rec.spans[0].data)
+	if len(events) != 3 {
+		t.Fatalf("transcript events = %#v, want prompt, truncated final output, and marker", events)
+	}
+	if events[0].Role != "user" || events[0].Content == "" {
+		t.Fatalf("prompt event = %#v, want retained prompt content", events[0])
+	}
+	if events[1].Role != "assistant" || events[1].Content == "" || !events[1].Truncated {
+		t.Fatalf("final output event = %#v, want retained truncated assistant content", events[1])
+	}
 	marker := events[len(events)-1]
 	if marker.Role != "system" || !marker.Truncated || !strings.Contains(marker.Content, fmt.Sprintf("%.0f bytes dropped", dropped)) {
 		t.Fatalf("truncation marker = %#v", marker)
@@ -561,6 +570,49 @@ func TestExecutorBoundsComposedCanonicalTranscript(t *testing.T) {
 	}
 	if retained := len(rec.spans[0].data) - len(encodedMarker); retained > int(limit) {
 		t.Fatalf("retained transcript bytes = %d, want at most %d", retained, limit)
+	}
+}
+
+func TestExecutorPreservesFinalOutputWhenPromptExceedsTranscriptLimit(t *testing.T) {
+	const limit = int64(512)
+	const finalOutput = "captured final output"
+	adapter := &FakeAdapter{
+		Transcript: []byte(finalOutput),
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		strings.Repeat("long instructions ", int(limit)),
+		WithTranscriptLimit(limit),
+	)
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if truncated, _ := result.Outputs["transcriptTruncated"].(bool); !truncated {
+		t.Fatalf("Outputs[transcriptTruncated] = %v, want true", result.Outputs["transcriptTruncated"])
+	}
+	events := decodeTranscriptEvents(t, rec.spans[0].data)
+	if len(events) != 3 {
+		t.Fatalf("transcript events = %#v, want prompt, final output, and marker", events)
+	}
+	if events[0].Role != "user" || events[0].Content == "" || !events[0].Truncated {
+		t.Fatalf("prompt event = %#v, want retained truncated prompt content", events[0])
+	}
+	if events[1].Role != "assistant" || events[1].Content != finalOutput || !events[1].Truncated {
+		t.Fatalf("final output event = %#v, want preserved assistant content marked truncated", events[1])
 	}
 }
 
