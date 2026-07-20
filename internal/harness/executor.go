@@ -192,6 +192,14 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	if err := json.Unmarshal(out.Payload, &result); err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("%w: decode result envelope: %w", ErrInvalidCompletion, err)
 	}
+	if len(out.Metrics) > 0 {
+		if result.Metrics == nil {
+			result.Metrics = make(map[string]float64, len(out.Metrics))
+		}
+		for name, value := range out.Metrics {
+			result.Metrics[name] = value
+		}
+	}
 	if out.TranscriptTruncated {
 		// Mirrors internal/executor.ShellExecutor's stdoutTruncated/
 		// stderrTruncated outputs (#245): the recorded span already carries
@@ -294,6 +302,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 
 	out, runErr := e.adapter.Run(ctx, req)
+	telemetry.RecordAgentUsage(ctx, out.Metrics)
 	if len(out.Transcript) > 0 {
 		scrubbed := e.scrubber.Scrub(out.Transcript)
 		name := fmt.Sprintf("%s.transcript", e.adapter.Name())

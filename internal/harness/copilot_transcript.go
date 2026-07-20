@@ -11,9 +11,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 const maxCopilotSessionEventBytes = DefaultMaxTranscriptBytes
+
+// Copilot reports billing in nano-AI units: 1e9 nano-AIU is one $0.01 AI credit.
+const nanoAIUPerUSD = 100_000_000_000
 
 type transcriptEvent struct {
 	Role     string           `json:"role"`
@@ -84,7 +89,9 @@ type copilotErrorData struct {
 }
 
 type copilotShutdownData struct {
-	ModelMetrics map[string]struct {
+	TotalPremiumRequests *float64 `json:"totalPremiumRequests"`
+	TotalNanoAIU         *float64 `json:"totalNanoAiu"`
+	ModelMetrics         map[string]struct {
 		Requests struct {
 			Count *int64   `json:"count"`
 			Cost  *float64 `json:"cost"`
@@ -102,6 +109,7 @@ type copilotShutdownData struct {
 
 type transcriptCapture struct {
 	data         []byte
+	metrics      map[string]float64
 	truncated    bool
 	droppedBytes int64
 }
@@ -129,6 +137,7 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 	})
 	buf := newTranscriptBuffer(limit)
 	converted := false
+	var metrics map[string]float64
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -143,6 +152,12 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 			return transcriptCapture{}, false
 		}
 		events := convertCopilotSessionEvent(native)
+		if native.Type == "session.shutdown" {
+			if usage := copilotUsageMetrics(native.Data); len(usage) > 0 {
+				metrics = usage
+				converted = true
+			}
+		}
 		for _, event := range events {
 			encoded, err := json.Marshal(event)
 			if err != nil {
@@ -161,9 +176,62 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 	}
 	return transcriptCapture{
 		data:         buf.Bytes(),
+		metrics:      metrics,
 		truncated:    buf.Truncated(),
 		droppedBytes: buf.Dropped(),
 	}, true
+}
+
+func copilotUsageMetrics(raw json.RawMessage) map[string]float64 {
+	var data copilotShutdownData
+	if json.Unmarshal(raw, &data) != nil {
+		return nil
+	}
+
+	models := make([]string, 0, len(data.ModelMetrics))
+	for model := range data.ModelMetrics {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+
+	metrics := make(map[string]float64, 4)
+	var premiumRequests, nanoAIU float64
+	var hasPremiumRequests, hasNanoAIU bool
+	for _, model := range models {
+		metric := data.ModelMetrics[model]
+		if metric.Usage.InputTokens != nil {
+			metrics[telemetry.AttrGenAIUsageInputTokens] += float64(*metric.Usage.InputTokens)
+		}
+		if metric.Usage.OutputTokens != nil {
+			metrics[telemetry.AttrGenAIUsageOutputTokens] += float64(*metric.Usage.OutputTokens)
+		}
+		if metric.Requests.Cost != nil {
+			premiumRequests += *metric.Requests.Cost
+			hasPremiumRequests = true
+		}
+		if metric.TotalNanoAIU != nil {
+			nanoAIU += *metric.TotalNanoAIU
+			hasNanoAIU = true
+		}
+	}
+	if data.TotalPremiumRequests != nil {
+		premiumRequests = *data.TotalPremiumRequests
+		hasPremiumRequests = true
+	}
+	if data.TotalNanoAIU != nil {
+		nanoAIU = *data.TotalNanoAIU
+		hasNanoAIU = true
+	}
+	if hasPremiumRequests {
+		metrics[telemetry.AttrCopilotPremiumRequests] = premiumRequests
+	}
+	if hasNanoAIU {
+		metrics[telemetry.AttrUsageCostUSD] = nanoAIU / nanoAIUPerUSD
+	}
+	if len(metrics) == 0 {
+		return nil
+	}
+	return metrics
 }
 
 func convertCopilotSessionEvent(native copilotSessionEvent) []transcriptEvent {
