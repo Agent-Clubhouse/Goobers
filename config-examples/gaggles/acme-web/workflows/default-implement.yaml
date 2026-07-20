@@ -23,6 +23,7 @@ spec:
         command: ["goobers", "backlog-query", "--claim"]
       inputs:
         trustLabel: "goobers"
+        excludeLabels: "goobers/status:in-review"
         maxItems: "1"
         resultFile: "claimed-item.json"
       capabilities:

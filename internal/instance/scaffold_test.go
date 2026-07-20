@@ -77,8 +77,9 @@ func assertDefaultImplementationPublishesPR(t *testing.T, workflow apiv1.Workflo
 	for _, task := range workflow.Spec.Tasks {
 		tasks[task.Name] = task
 	}
-	if task := tasks["query-backlog"]; task.Next != "implement" {
-		t.Fatalf("query-backlog next = %q, want implement", task.Next)
+	if task := tasks["query-backlog"]; task.Next != "implement" ||
+		task.Inputs["excludeLabels"] != "goobers/status:in-review" {
+		t.Fatalf("query-backlog does not exclude completed in-review work: %+v", task)
 	}
 	if task := tasks["implement"]; task.Type != apiv1.TaskAgentic ||
 		len(task.Capabilities) != 1 || task.Capabilities[0] != "repo:push" ||

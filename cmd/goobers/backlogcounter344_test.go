@@ -19,7 +19,8 @@ func (r *backlogTestRegistrar) Register(secret []byte) {
 // TestBuildBacklogCounter is #344's composition-root wiring test, mirroring
 // TestBuildEscalationNotifier: nil for a repo-less instance or a workflow
 // with no backlog-item trigger; wired with the target repo and the
-// trigger's selector keys as required labels otherwise.
+// trigger's selector keys as required labels and the claim task's exclusions
+// otherwise.
 func TestBuildBacklogCounter(t *testing.T) {
 	repoRef := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}
 
@@ -48,6 +49,12 @@ func TestBuildBacklogCounter(t *testing.T) {
 	t.Run("wired with the target repo and selector labels", func(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"goobers:ready": "true"}}},
+			Tasks: []apiv1.Task{{
+				Name:   "query-backlog",
+				Type:   apiv1.TaskDeterministic,
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+				Inputs: map[string]string{"excludeLabels": "goobers/status:in-review"},
+			}},
 		}}
 		resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
 		if err != nil {
@@ -67,6 +74,9 @@ func TestBuildBacklogCounter(t *testing.T) {
 		if len(bc.labels) != 1 || bc.labels[0] != "goobers:ready" {
 			t.Fatalf("labels = %v, want [goobers:ready] (the selector's keys)", bc.labels)
 		}
+		if len(bc.excludeLabels) != 1 || bc.excludeLabels[0] != "goobers/status:in-review" {
+			t.Fatalf("excludeLabels = %v, want the backlog-query exclusion", bc.excludeLabels)
+		}
 	})
 }
 
@@ -74,8 +84,8 @@ func TestBuildBacklogCounter(t *testing.T) {
 // TestEscalationCommenterResolvesTokenPerCall: the counter resolves its
 // token fresh on each EligibleCount call (not captured at construction),
 // registers it for scrubbing, and queries the provider with the selector's
-// labels — proving #344's fan-out counting actually reaches a real
-// ListWorkItems call, not just returning a hardcoded value.
+// labels and exclusions — proving #344's fan-out counting reaches a real
+// ListWorkItems call and remains aligned with consecutive claim polls.
 func TestBacklogCounterResolvesTokenPerCallAndQueriesProvider(t *testing.T) {
 	t.Setenv("BACKLOG_TOK", "backlog-token-value")
 	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
@@ -94,11 +104,12 @@ func TestBacklogCounterResolvesTokenPerCallAndQueriesProvider(t *testing.T) {
 	t.Cleanup(func() { newGitHubProvider = prev })
 
 	bc := &backlogCounter{
-		ref:      "acme/web",
-		repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-		labels:   []string{"goobers:ready"},
-		resolver: resolver,
-		reg:      reg,
+		ref:           "acme/web",
+		repo:          providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+		labels:        []string{"goobers:ready"},
+		excludeLabels: []string{"goobers/status:in-review"},
+		resolver:      resolver,
+		reg:           reg,
 	}
 
 	count, err := bc.EligibleCount(context.Background())
@@ -107,6 +118,22 @@ func TestBacklogCounterResolvesTokenPerCallAndQueriesProvider(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("count = %d, want 2 (only the labeled items)", count)
+	}
+	if _, err := server.newGitHubProvider("backlog-token-value").UpdateWorkItemStatus(context.Background(), providers.UpdateWorkItemStatusRequest{
+		Repository: bc.repo,
+		ID:         "1",
+		Status:     providers.WorkItemStatusInReview,
+	}); err != nil {
+		t.Fatalf("mark issue in-review: %v", err)
+	}
+	for poll := 1; poll <= 2; poll++ {
+		count, err = bc.EligibleCount(context.Background())
+		if err != nil {
+			t.Fatalf("EligibleCount poll %d after in-review: %v", poll, err)
+		}
+		if count != 1 {
+			t.Fatalf("count on poll %d after in-review = %d, want 1", poll, count)
+		}
 	}
 	if len(reg.registered) == 0 || string(reg.registered[0]) != "backlog-token-value" {
 		t.Fatalf("registered secrets = %v, want the resolved token registered for scrubbing", reg.registered)

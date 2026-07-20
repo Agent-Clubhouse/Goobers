@@ -101,6 +101,18 @@ func TestInitThenValidate(t *testing.T) {
 	if !strings.Contains(stdout, "initialized instance at") {
 		t.Fatalf("init stdout = %q", stdout)
 	}
+	for _, want := range []string{
+		"Before goobers up can dispatch work:",
+		filepath.Join(root, "instance.yaml"),
+		filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml"),
+		"export GOOBERS_GITHUB_TOKEN=...",
+		"Add the 'goobers' label to an open issue",
+		"goobers up " + root,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("init stdout = %q, want setup guidance containing %q", stdout, want)
+		}
+	}
 
 	code, stdout, stderr = runArgs(t, "validate", root)
 	if code != 0 {
