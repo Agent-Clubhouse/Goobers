@@ -225,6 +225,13 @@ spec:
                     Task is a state in the workflow's state machine — the smallest unit of work the
                     engine tracks. It is exactly one of deterministic or agentic (TSK-002).
                   properties:
+                    continueOnError:
+                      description: |-
+                        ContinueOnError makes a ResultFailure best-effort: the failed status is
+                        journaled and remains visible to a following gate, but the runner advances
+                        to Next instead of failing the run. Outputs from the failed task are
+                        discarded so downstream tasks cannot consume partial results.
+                      type: boolean
                     expectedOutputs:
                       description: ExpectedOutputs are postconditions downstream gates
                         can validate (TSK-003).

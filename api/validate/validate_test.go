@@ -152,6 +152,45 @@ func TestWorkflowSchemaAcceptsExplicitManualOnlyTrigger(t *testing.T) {
 	}
 }
 
+func TestWorkflowSchemaValidatesContinueOnError(t *testing.T) {
+	v := newV(t)
+	workflow := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"metadata": {"name": "best-effort"},
+		"spec": {
+			"gaggle": "example",
+			"triggers": [{"type": "manual"}],
+			"start": "notify",
+			"tasks": [{
+				"name": "notify",
+				"type": "deterministic",
+				"goal": "Notify without failing the workflow.",
+				"run": {"command": ["false"]},
+				"continueOnError": VALUE
+			}]
+		}
+	}`
+	for _, tc := range []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "boolean", value: "true"},
+		{name: "non-boolean", value: `"true"`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := v.ValidateJSON("workflow.schema.json", []byte(strings.Replace(workflow, "VALUE", tc.value, 1)))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected schema validation to pass, got %v", err)
+			}
+		})
+	}
+}
+
 func TestConfigBadReportsCrossRefErrors(t *testing.T) {
 	v := newV(t)
 	report, err := v.ValidateDir("testdata/config-bad")

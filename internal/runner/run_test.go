@@ -225,13 +225,17 @@ type blockingDeterministic struct {
 	started  chan struct{}
 	release  chan struct{}
 	finished chan struct{}
+	result   apiv1.ResultEnvelope
 }
 
 func (b *blockingDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	close(b.started)
 	<-b.release
 	close(b.finished)
-	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	if b.result.Status == "" {
+		b.result.Status = apiv1.ResultSuccess
+	}
+	return b.result, nil
 }
 
 type fakeHeartbeatTicker struct {
@@ -300,6 +304,137 @@ func TestStageHeartbeatUsesFixedIntervalAndStopsWithAttempt(t *testing.T) {
 	case event := <-recorder.events:
 		t.Fatalf("heartbeat after attempt completion = %+v", event)
 	default:
+	}
+}
+
+func TestRunnerToleratedFailureStopsHeartbeatBeforeJournalingOutcome(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "notify",
+		Tasks: []apiv1.Task{{
+			Name: "notify", Type: apiv1.TaskDeterministic, Goal: "best-effort notification",
+			Run:             &apiv1.DeterministicRun{Command: []string{"false"}},
+			ContinueOnError: true,
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "tolerated-heartbeat", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	blocker := &blockingDeterministic{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}),
+		result: apiv1.ResultEnvelope{
+			Status:  apiv1.ResultFailure,
+			Outputs: map[string]interface{}{"partial": "must not escape"},
+		},
+	}
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(blocker.release) })
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return blocker, nil
+	}, nil)
+	ticker := &fakeHeartbeatTicker{
+		ticks:   make(chan time.Time, 1),
+		stopped: make(chan struct{}),
+	}
+	r.newHeartbeatTicker = func(time.Duration) heartbeatTicker { return ticker }
+
+	type startResult struct {
+		result Result
+		err    error
+	}
+	resultCh := make(chan startResult, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID:   "run-tolerated-heartbeat",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		resultCh <- startResult{result: result, err: err}
+	}()
+
+	select {
+	case <-blocker.started:
+	case <-time.After(time.Second):
+		t.Fatal("task did not start")
+	}
+	ticker.ticks <- time.Now()
+
+	runDir := filepath.Join(runsDir, "run-tolerated-heartbeat")
+	deadline := time.Now().Add(time.Second)
+	for {
+		rd, openErr := journal.OpenRead(runDir)
+		if openErr == nil {
+			events, eventsErr := rd.Events()
+			if eventsErr == nil {
+				sawHeartbeat := false
+				for _, event := range events {
+					sawHeartbeat = sawHeartbeat || event.Type == journal.EventStageHeartbeat
+				}
+				if sawHeartbeat {
+					break
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("heartbeat was not journaled while task was in flight")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	releaseOnce.Do(func() { close(blocker.release) })
+	var got startResult
+	select {
+	case got = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("run did not finish after task release")
+	}
+	if got.err != nil {
+		t.Fatalf("Start: %v", got.err)
+	}
+	if got.result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", got.result.Phase)
+	}
+	select {
+	case <-ticker.stopped:
+	default:
+		t.Fatal("heartbeat ticker was not stopped before the run completed")
+	}
+
+	rd, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	started, heartbeat, finished, tolerated, runFinished := -1, -1, -1, -1, -1
+	for i, event := range events {
+		switch {
+		case event.Type == journal.EventStageStarted && event.Stage == "notify":
+			started = i
+		case event.Type == journal.EventStageHeartbeat && event.Stage == "notify":
+			heartbeat = i
+		case event.Type == journal.EventStageFinished && event.Stage == "notify":
+			finished = i
+			if event.Status != string(apiv1.ResultFailure) || len(event.Outputs) != 0 {
+				t.Errorf("stage.finished = %+v, want failure with no outputs", event)
+			}
+		case event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode:
+			tolerated = i
+		case event.Type == journal.EventRunFinished:
+			runFinished = i
+		}
+	}
+	if started >= heartbeat || heartbeat >= finished || finished >= tolerated || tolerated >= runFinished {
+		t.Fatalf("event order indexes = started:%d heartbeat:%d finished:%d tolerated:%d run.finished:%d", started, heartbeat, finished, tolerated, runFinished)
 	}
 }
 
@@ -1713,6 +1848,247 @@ func TestRunnerTaskFailureWithGateNextStillBranches(t *testing.T) {
 	}
 	if !sawGateEval {
 		t.Fatal("expected the review gate to evaluate the failure, got no gate.evaluated event")
+	}
+}
+
+func TestRunnerTaskFailureContinueOnErrorMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		continueOnError bool
+		nextIsGate      bool
+		wantPhase       journal.RunPhase
+		wantAfter       bool
+	}{
+		{name: "default direct task fails", wantPhase: journal.PhaseFailed},
+		{name: "tolerated direct task advances", continueOnError: true, wantPhase: journal.PhaseCompleted, wantAfter: true},
+		{name: "default gate preserves unresolved failure", nextIsGate: true, wantPhase: journal.PhaseFailed},
+		{name: "tolerated gate completes unresolved failure", continueOnError: true, nextIsGate: true, wantPhase: journal.PhaseCompleted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next := "after"
+			var gates []apiv1.Gate
+			if tc.nextIsGate {
+				next = "observe-failure"
+				gates = []apiv1.Gate{{
+					Name:      "observe-failure",
+					Evaluator: apiv1.EvaluatorAutomated,
+					Automated: &apiv1.AutomatedGate{Check: "status-equals", Params: map[string]string{"equals": "success"}},
+					Branches:  map[string]string{"pass": "after", "fail": workflow.TerminalComplete},
+				}}
+			}
+			spec := apiv1.WorkflowSpec{
+				Gaggle:   "acme-web",
+				Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+				Start:    "notify",
+				Tasks: []apiv1.Task{
+					{
+						Name: "notify", Type: apiv1.TaskDeterministic, Goal: "best-effort notification",
+						Run:             &apiv1.DeterministicRun{Command: []string{"false"}},
+						ContinueOnError: tc.continueOnError, Next: next,
+					},
+					{Name: "after", Type: apiv1.TaskDeterministic, Goal: "continue", Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+				},
+				Gates: gates,
+			}
+			machine, err := workflow.Compile(workflow.Definition{Name: "continue-on-error", Version: 1, Spec: spec})
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			runID := strings.ReplaceAll(tc.name, " ", "-")
+			r, runsDir := newTestRunner(t, map[string]stubTaskResult{
+				runID + ":notify": {
+					status:  apiv1.ResultFailure,
+					outputs: map[string]interface{}{"partial": "must not escape a tolerated failure"},
+				},
+				runID + ":after": {status: apiv1.ResultSuccess},
+			}, gate.NewAutomatedEvaluator())
+
+			res, err := r.Start(context.Background(), StartInput{
+				RunID:   runID,
+				Machine: machine,
+				Gaggle:  "acme-web",
+				Trigger: journal.Trigger{Kind: journal.TriggerManual},
+				RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+			})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if res.Phase != tc.wantPhase {
+				t.Fatalf("phase = %q, want %q", res.Phase, tc.wantPhase)
+			}
+
+			rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+			if err != nil {
+				t.Fatalf("OpenRead: %v", err)
+			}
+			events, err := rd.Events()
+			if err != nil {
+				t.Fatalf("Events: %v", err)
+			}
+			var sawAfter, sawGateFailure, sawTolerated bool
+			for _, event := range events {
+				if event.Type == journal.EventStageStarted && event.Stage == "after" {
+					sawAfter = true
+				}
+				if event.Type == journal.EventGateEvaluated && event.Gate == "observe-failure" && event.Verdict == gate.OutcomeFail {
+					sawGateFailure = true
+				}
+				if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+					sawTolerated = true
+				}
+				if event.Type == journal.EventStageFinished && event.Stage == "notify" {
+					if event.Status != string(apiv1.ResultFailure) {
+						t.Errorf("notify status = %q, want failure", event.Status)
+					}
+					if tc.continueOnError && len(event.Outputs) != 0 {
+						t.Errorf("tolerated failure outputs = %v, want absent", event.Outputs)
+					}
+					if !tc.continueOnError && event.Outputs["partial"] == nil {
+						t.Errorf("default failure outputs = %v, want unchanged", event.Outputs)
+					}
+				}
+			}
+			if sawAfter != tc.wantAfter {
+				t.Errorf("after dispatched = %t, want %t", sawAfter, tc.wantAfter)
+			}
+			if tc.nextIsGate && !sawGateFailure {
+				t.Error("status-equals gate did not observe the failed stage status")
+			}
+			if sawTolerated != tc.continueOnError {
+				t.Errorf("tolerated failure event = %t, want %t", sawTolerated, tc.continueOnError)
+			}
+		})
+	}
+}
+
+func TestJournalToleratedFailureIsIdempotentPerAttempt(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-tolerated-note"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+	if err := jr.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "notify", Attempt: 1, Status: string(apiv1.ResultFailure),
+	}); err != nil {
+		t.Fatalf("Append stage.finished: %v", err)
+	}
+
+	if err := journalToleratedFailure(jr, "notify"); err != nil {
+		t.Fatalf("journalToleratedFailure first call: %v", err)
+	}
+	if err := journalToleratedFailure(jr, "notify"); err != nil {
+		t.Fatalf("journalToleratedFailure replay: %v", err)
+	}
+
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var notes int
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+			notes++
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("tolerated failure notes = %d, want 1 after replay", notes)
+	}
+}
+
+func TestJournalToleratedFailurePreservesInfraAttemptMetadataOnReplay(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-infra-tolerated-note"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+	if err := jr.Append(journal.Event{
+		Type:         journal.EventStageFinished,
+		Stage:        "notify",
+		Attempt:      2,
+		AttemptClass: journal.AttemptInfra,
+		Status:       string(apiv1.ResultFailure),
+	}); err != nil {
+		t.Fatalf("Append stage.finished: %v", err)
+	}
+
+	if err := journalToleratedFailure(jr, "notify"); err != nil {
+		t.Fatalf("journalToleratedFailure first call: %v", err)
+	}
+	if err := journalToleratedFailure(jr, "notify"); err != nil {
+		t.Fatalf("journalToleratedFailure replay: %v", err)
+	}
+
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var notes []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+			notes = append(notes, event)
+		}
+	}
+	if len(notes) != 1 {
+		t.Fatalf("tolerated failure notes = %d, want 1 after replay", len(notes))
+	}
+	if notes[0].Attempt != 2 || notes[0].AttemptClass != journal.AttemptInfra {
+		t.Fatalf("tolerated failure note attempt = %d class = %q, want attempt=2 class=infra", notes[0].Attempt, notes[0].AttemptClass)
+	}
+	for _, event := range journal.ConformanceView(events) {
+		if event.Type == journal.EventError && event.Stage == "notify" && event.ErrorCode == toleratedFailureErrorCode {
+			t.Fatalf("infra tolerated failure note leaked into conformance view: %+v", event)
+		}
+	}
+}
+
+func TestRunnerToleratedFailureDoesNotSatisfyInputsFrom(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "notify",
+		Tasks: []apiv1.Task{
+			{
+				Name: "notify", Type: apiv1.TaskDeterministic, Goal: "best-effort notification",
+				Run:             &apiv1.DeterministicRun{Command: []string{"false"}},
+				ContinueOnError: true, Next: "consumer",
+			},
+			{
+				Name: "consumer", Type: apiv1.TaskDeterministic, Goal: "consume output",
+				Run:        &apiv1.DeterministicRun{Command: []string{"true"}},
+				InputsFrom: map[string]string{"messageID": "messageID"},
+			},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "continue-on-error-inputs", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		"run-tolerated-inputs:notify": {
+			status:  apiv1.ResultFailure,
+			outputs: map[string]interface{}{"messageID": "partial-result"},
+		},
+	}, nil)
+
+	_, err = r.Start(context.Background(), StartInput{
+		RunID:   "run-tolerated-inputs",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `upstream output "messageID" not found`) {
+		t.Fatalf("Start error = %v, want missing tolerated-failure output", err)
 	}
 }
 

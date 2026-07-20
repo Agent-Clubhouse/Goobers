@@ -92,7 +92,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			{
 				Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll",
 				Run:    &apiv1.DeterministicRun{Command: []string{"false"}},
-				Inputs: map[string]string{"kind": "ci-poll"}, Next: "status-equals",
+				Inputs: map[string]string{"kind": "ci-poll"}, ContinueOnError: true, Next: "status-equals",
 			},
 		},
 		Gates: []apiv1.Gate{
@@ -309,6 +309,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"task.onTimeout.fail",
 		"task.onTimeout.salvage",
 		"task.expectedOutputs",
+		"task.continueOnError",
 		"task.next",
 		"stage.shell",
 		"stage.ci-poll",

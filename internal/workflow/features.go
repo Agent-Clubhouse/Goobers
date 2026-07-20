@@ -158,6 +158,7 @@ const (
 	featureTaskTimeoutFail                FeatureID = "task.onTimeout.fail"
 	featureTaskTimeoutSalvage             FeatureID = "task.onTimeout.salvage"
 	featureTaskExpectedOutputs            FeatureID = "task.expectedOutputs"
+	featureTaskContinueOnError            FeatureID = "task.continueOnError"
 	featureTaskNext                       FeatureID = "task.next"
 	featureStageShell                     FeatureID = "stage.shell"
 	featureStageCIPoll                    FeatureID = "stage.ci-poll"
@@ -271,6 +272,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTaskTimeoutFail,
 		featureTaskTimeoutSalvage,
 		featureTaskExpectedOutputs,
+		featureTaskContinueOnError,
 		featureTaskNext,
 		featureStageShell,
 		featureStageCIPoll,
@@ -526,6 +528,9 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 	}
 	if task.ExpectedOutputs != nil {
 		used.add(featureTaskExpectedOutputs)
+	}
+	if task.ContinueOnError {
+		used.add(featureTaskContinueOnError)
 	}
 	if task.Next != "" {
 		used.add(featureTaskNext)

@@ -516,7 +516,10 @@ type resumeContext struct {
 	attempt int
 }
 
-const interruptedAttemptErrorCode = "interrupted"
+const (
+	interruptedAttemptErrorCode = "interrupted"
+	toleratedFailureErrorCode   = "stage_failure_tolerated"
+)
 
 // walkSeed carries the walk-local state a resumed run must NOT start empty —
 // Start's fresh walk always begins with the zero value. pointers is the
@@ -709,13 +712,18 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			// gets the previous binding (gather-pr-context is provisioned on
 			// the run's own branch and checks the PR's branch out for itself;
 			// every stage after it is provisioned on the PR's branch directly).
-			if b := rebindWorkspaceBranch(t, result); b != "" {
-				workspaceBranch = b
+			if result.Status != apiv1.ResultFailure || !t.ContinueOnError {
+				if b := rebindWorkspaceBranch(t, result); b != "" {
+					workspaceBranch = b
+				}
 			}
 
 			next, res, advance, oerr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.Item, t, result, steps)
 			if oerr != nil {
 				return res, oerr
+			}
+			if result.Status == apiv1.ResultFailure && t.ContinueOnError {
+				lastResult.Outputs = nil
 			}
 			if !advance {
 				return res, nil
@@ -788,7 +796,8 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				// pass outcome resolved it → complete. A designed negative
 				// outcome (merge-pr's exit-0 `reasons` refusal, ci-poll's
 				// status output) is a ResultSuccess and never trips this.
-				if lastResult.Status == apiv1.ResultFailure && gr.Outcome != gate.OutcomePass {
+				subject, _ := in.Machine.Task(lastStage)
+				if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && gr.Outcome != gate.OutcomePass {
 					return r.finishStageFailure(in.RunID, jr, lastStage, steps, lastResult.Error)
 				}
 				return r.finish(in.RunID, jr, journal.PhaseCompleted, g.Name, steps)
@@ -1121,11 +1130,11 @@ func (r *Runner) finishStageFailure(runID string, jr *journal.Run, stage string,
 }
 
 // taskOutcome applies the #110 stage-status ruling to a finished task's
-// result: success advances to Next; failure advances only if Next is a gate
-// (which branches on it), otherwise ends the run PhaseFailed; blocked ends
-// the run PhaseEscalated (#544). advance=true means continue the walk at
-// next; advance=false means the walk is over — return res (already appended
-// its own terminal event, if any).
+// result: success advances to Next; failure advances when ContinueOnError is
+// set or Next is a gate (which branches on the honest failed status), otherwise
+// ends the run PhaseFailed; blocked ends the run PhaseEscalated (#544).
+// advance=true means continue the walk at next; advance=false means the walk is
+// over — return res (already appended its own terminal event, if any).
 //
 // Factored out of walk's live dispatch path so Resume (resume.go) can apply
 // the IDENTICAL transition when it finds the checkpointed task's last
@@ -1187,6 +1196,13 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 					return "", res, false, err
 				}
 			}
+		}
+		if t.ContinueOnError {
+			if aerr := journalToleratedFailure(jr, t.Name); aerr != nil {
+				res, err = r.failTerminal(runID, jr, t.Name, steps, fmt.Errorf("runner: journal tolerated failure for %q: %w", t.Name, aerr))
+				return "", res, false, err
+			}
+			break
 		}
 		// #415: a stage that self-identifies a non-retryable business
 		// disposition — status:failure with error.retryable==false and a
@@ -1264,6 +1280,43 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		return "", res, false, err
 	}
 	return t.Next, Result{}, true, nil
+}
+
+func journalToleratedFailure(jr *journal.Run, stage string) error {
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return err
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return err
+	}
+	var attempt int
+	var attemptClass journal.AttemptClass
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Stage != stage {
+			continue
+		}
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+			return nil
+		}
+		if event.Type == journal.EventStageFinished {
+			attempt = event.Attempt
+			attemptClass = event.AttemptClass
+			break
+		}
+	}
+	return jr.Append(journal.Event{
+		Type:         journal.EventError,
+		Stage:        stage,
+		Attempt:      attempt,
+		AttemptClass: attemptClass,
+		Error: &journal.ErrorDetail{
+			Code:    toleratedFailureErrorCode,
+			Message: fmt.Sprintf("stage %q failure tolerated by continueOnError", stage),
+		},
+	})
 }
 
 // finish prepares terminal cleanup, appends run.finished, then performs the
@@ -1518,10 +1571,14 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
+		outputs := result.Outputs
+		if result.Status == apiv1.ResultFailure && t.ContinueOnError {
+			outputs = nil
+		}
 		if err := jr.Append(journal.Event{
 			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 			Status: string(result.Status), Error: errorDetailFrom(result),
-			Outputs: result.Outputs, Artifacts: refsFrom(result.Artifacts),
+			Outputs: outputs, Artifacts: refsFrom(result.Artifacts),
 		}); err != nil {
 			err = fmt.Errorf("runner: journal stage.finished for %q: %w", t.Name, err)
 			span.Fail(err)
