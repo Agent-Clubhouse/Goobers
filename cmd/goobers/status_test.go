@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
@@ -287,7 +288,10 @@ func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing
 		})
 	}
 
-	got, err := buildStatusFleetSummary(workflows, runs, now, time.UTC)
+	lastEvals := map[localscheduler.WorkflowIdentity]time.Time{
+		{Gaggle: "fleet", Workflow: "scheduled"}: now,
+	}
+	got, err := buildStatusFleetSummary(workflows, runs, lastEvals, now, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,6 +321,97 @@ func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing
 		if len(line) > 80 {
 			t.Fatalf("summary line is %d columns, want at most 80: %q", len(line), line)
 		}
+	}
+}
+
+func TestStatusIntervalNextFireUsesDaemonStart(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	release, err := acquireInstanceLockWithIdentity(
+		filepath.Join(layout.SchedulerDir(), "up.lock"),
+		&daemonIdentity{
+			PID:          os.Getpid(),
+			StartedAt:    startedAt,
+			InstanceRoot: root,
+			Version:      "test",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	workflows := []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "interval"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "fleet",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"}},
+		},
+	}}
+	now := startedAt.Add(30 * time.Minute)
+	lastEvals, err := statusWorkflowLastEvals(layout, workflows, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, now, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next := got.Workflows[0].NextFire.At
+	want := time.Date(2026, time.July, 20, 10, 0, 0, 0, time.UTC)
+	if next == nil || !next.Equal(want) {
+		t.Fatalf("next fire = %v, want %s", next, want)
+	}
+}
+
+func TestStatusIntervalNextFireUsesLastFired(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	lastEval := time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	now := lastEval.Add(30 * time.Minute)
+	log, _, err := journal.OpenInstanceLog(
+		layout.SchedulerDir(),
+		journal.WithClock(func() time.Time { return lastEval }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{
+		Type:     journal.EventTriggerFired,
+		Gaggle:   "fleet",
+		Workflow: "interval",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	workflows := []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "interval"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "fleet",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"}},
+		},
+	}}
+	lastEvals, err := statusWorkflowLastEvals(layout, workflows, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, now, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next := got.Workflows[0].NextFire.At
+	want := time.Date(2026, time.July, 20, 10, 0, 0, 0, time.UTC)
+	if next == nil || !next.Equal(want) {
+		t.Fatalf("next fire = %v, want %s", next, want)
 	}
 }
 

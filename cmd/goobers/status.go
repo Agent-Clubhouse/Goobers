@@ -116,7 +116,13 @@ type statusWorkflowKey struct {
 	workflow string
 }
 
-func buildStatusFleetSummary(workflows []apiv1.Workflow, runs []runSummary, now time.Time, loc *time.Location) (statusFleetSummary, error) {
+func buildStatusFleetSummary(
+	workflows []apiv1.Workflow,
+	runs []runSummary,
+	lastEvals map[localscheduler.WorkflowIdentity]time.Time,
+	now time.Time,
+	loc *time.Location,
+) (statusFleetSummary, error) {
 	runsByWorkflow := make(map[statusWorkflowKey][]runSummary)
 	for _, run := range runs {
 		key := statusWorkflowKey{gaggle: run.Gaggle, workflow: run.Workflow}
@@ -137,7 +143,12 @@ func buildStatusFleetSummary(workflows []apiv1.Workflow, runs []runSummary, now 
 	}
 	for i := range sortedWorkflows {
 		def := &sortedWorkflows[i]
-		nextFire, err := statusWorkflowNextFire(def, now, loc)
+		identity := localscheduler.WorkflowIdentity{Gaggle: def.Spec.Gaggle, Workflow: def.Name}
+		lastEval := lastEvals[identity]
+		if lastEval.IsZero() {
+			lastEval = now
+		}
+		nextFire, err := statusWorkflowNextFire(def, lastEval, loc)
 		if err != nil {
 			return statusFleetSummary{}, fmt.Errorf("workflow %q: %w", def.Name, err)
 		}
@@ -196,7 +207,46 @@ func buildStatusFleetSummary(workflows []apiv1.Workflow, runs []runSummary, now 
 	return summary, nil
 }
 
-func statusWorkflowNextFire(workflow *apiv1.Workflow, now time.Time, loc *time.Location) (statusNextFire, error) {
+func statusWorkflowLastEvals(
+	layout instance.Layout,
+	workflows []apiv1.Workflow,
+	now time.Time,
+) (map[localscheduler.WorkflowIdentity]time.Time, error) {
+	identities := make([]localscheduler.WorkflowIdentity, len(workflows))
+	for i, workflow := range workflows {
+		identities[i] = localscheduler.WorkflowIdentity{
+			Gaggle:   workflow.Spec.Gaggle,
+			Workflow: workflow.Name,
+		}
+	}
+
+	startedAt := now
+	running, identity, err := inspectDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"))
+	if err != nil {
+		return nil, fmt.Errorf("inspect scheduler state: %w", err)
+	}
+	if running && identity != nil {
+		startedAt = identity.StartedAt
+	}
+
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		return nil, fmt.Errorf("read scheduler trigger history: %w", err)
+	}
+	fired := make([]localscheduler.TriggerFiredRecord, 0)
+	for _, event := range events {
+		if event.Type == journal.EventTriggerFired {
+			fired = append(fired, localscheduler.TriggerFiredRecord{
+				Gaggle:   event.Gaggle,
+				Workflow: event.Workflow,
+				Time:     event.Time,
+			})
+		}
+	}
+	return localscheduler.ReconstructLastEval(fired, identities, startedAt), nil
+}
+
+func statusWorkflowNextFire(workflow *apiv1.Workflow, lastEval time.Time, loc *time.Location) (statusNextFire, error) {
 	schedules := make([]localscheduler.Schedule, 0, len(workflow.Spec.Triggers))
 	for _, trigger := range workflow.Spec.Triggers {
 		if trigger.Type != apiv1.TriggerSchedule || trigger.Schedule == "" {
@@ -208,7 +258,7 @@ func statusWorkflowNextFire(workflow *apiv1.Workflow, now time.Time, loc *time.L
 		}
 		schedules = append(schedules, localscheduler.InLocation(schedule, loc))
 	}
-	if next, ok := localscheduler.NextScheduledFire(schedules, now); ok {
+	if next, ok := localscheduler.NextScheduledFire(schedules, lastEval); ok {
 		return statusNextFire{Kind: statusNextFireScheduled, At: &next}, nil
 	}
 	if len(workflow.Spec.Triggers) == 1 && workflow.Spec.Triggers[0].Type == apiv1.TriggerManual {
@@ -455,6 +505,13 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	loadRuns := func() ([]runSummary, error) {
 		return listStatusRuns(context.Background(), reads)
 	}
+	loadFleetSummary := func(runs []runSummary, now time.Time) (statusFleetSummary, error) {
+		lastEvals, err := statusWorkflowLastEvals(l, set.Workflows, now)
+		if err != nil {
+			return statusFleetSummary{}, err
+		}
+		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, now, statusLocation)
+	}
 	// Scheduler state is loaded per redraw so watch reflects both quota
 	// transitions and backlog-query's learned-dependency refresh.
 	loadStatusText := func(runs []runSummary, now time.Time) (string, error) {
@@ -462,7 +519,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			return "", nil
 		}
 		var text strings.Builder
-		summary, err := buildStatusFleetSummary(set.Workflows, runs, now, statusLocation)
+		summary, err := loadFleetSummary(runs, now)
 		if err != nil {
 			return "", err
 		}
@@ -501,7 +558,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	now := time.Now()
 	var fleetSummary *statusFleetSummary
 	if supportsWatch {
-		summary, err := buildStatusFleetSummary(set.Workflows, allRuns, now, statusLocation)
+		summary, err := loadFleetSummary(allRuns, now)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
