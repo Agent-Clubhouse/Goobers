@@ -936,7 +936,10 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 	}
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
-		if !event.KnownSchema() || event.Type != journal.EventStageFinished {
+		if !event.KnownSchema() ||
+			event.Type != journal.EventStageFinished ||
+			(event.Status != string(apiv1.ResultFailure) &&
+				event.Status != string(apiv1.ResultBlocked)) {
 			continue
 		}
 		cause.Selector = EscalationSelector{Kind: "stage", Name: event.Stage}

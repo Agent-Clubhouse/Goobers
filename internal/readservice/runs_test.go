@@ -943,6 +943,93 @@ func TestDirectStageEscalationIncludesCause(t *testing.T) {
 	}
 }
 
+func TestParkedStageEscalationUsesOriginatingFailure(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-parked-stage-escalation",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 17, 16, 15, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerItem, Ref: "511"},
+		false,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageStarted,
+		Stage:   "implement",
+		Attempt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "implement",
+		Attempt: 1,
+		Status:  string(apiv1.ResultFailure),
+		Error:   &journal.ErrorDetail{Code: "NEEDS_DECOMPOSITION", Message: "split this issue"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageStarted,
+		Stage:   "park-escalated",
+		Attempt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "park-escalated",
+		Attempt: 1,
+		Status:  string(apiv1.ResultSuccess),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseEscalated)
+
+	detail, err := service.GetRun(context.Background(), "run-parked-stage-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Escalation == nil ||
+		detail.Escalation.Selector.Kind != "stage" ||
+		detail.Escalation.Selector.Name != "implement" ||
+		detail.Escalation.TerminalReason != "split this issue" {
+		t.Fatalf("parked stage escalation = %+v", detail.Escalation)
+	}
+	events, err := service.RunEvents(context.Background(), "run-parked-stage-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var implementSeq, parkingSeq uint64
+	for _, event := range events.Events {
+		if event.Type != journal.EventStageFinished {
+			continue
+		}
+		switch event.Stage {
+		case "implement":
+			implementSeq = event.Seq
+		case "park-escalated":
+			parkingSeq = event.Seq
+		}
+	}
+	if detail.Escalation.CausalEventSeq != implementSeq ||
+		detail.Escalation.CausalEventSeq == parkingSeq {
+		t.Fatalf(
+			"causal event = %d, implement = %d, parking = %d",
+			detail.Escalation.CausalEventSeq,
+			implementSeq,
+			parkingSeq,
+		)
+	}
+}
+
 func TestDuplicateDiffEscalationUsesRunnerMetadata(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, clock := createFixtureRun(

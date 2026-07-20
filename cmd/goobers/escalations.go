@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
+	iofs "io/fs"
 	"strings"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
@@ -109,41 +110,30 @@ func runEscalationShow(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
-	runID := fs.Arg(0)
-	if !apiv1.ValidRunID(runID) {
-		pf(stderr, "error: invalid run id %q\n", runID)
-		return 2
-	}
 	root := "."
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
 	}
 
-	reads, err := readservice.NewOfflineRuns(instance.NewLayout(root))
+	layout := instance.NewLayout(root)
+	runID, err := resolveRunID(layout, fs.Arg(0))
+	if errors.Is(err, iofs.ErrNotExist) {
+		pf(stderr, "error: no run %q found in %s; list escalations with 'goobers escalations'\n", fs.Arg(0), root)
+		return 1
+	}
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	reads, err := readservice.NewOfflineRuns(layout)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	ctx := context.Background()
-	detail, matches, err := resolveTraceRun(ctx, reads, runID)
+	detail, err := reads.GetRun(ctx, runID)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	switch len(matches) {
-	case 0:
-		if detail.ID == "" {
-			pf(stderr, "error: no run %q found in %s; list escalations with 'goobers escalations'\n", runID, root)
-			return 1
-		}
-	case 1:
-		detail, err = reads.GetRun(ctx, matches[0])
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
-		}
-	default:
-		pf(stderr, "error: ambiguous prefix %q matches %d runs: %s\n", runID, len(matches), strings.Join(matches, ", "))
 		return 2
 	}
 	if detail.Phase != journal.PhaseEscalated {

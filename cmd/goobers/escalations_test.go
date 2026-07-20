@@ -122,6 +122,27 @@ func TestEscalationsShowArtifactTimelineAndCurrentState(t *testing.T) {
 	}
 }
 
+func TestEscalationsShowRejectsAmbiguousRunIDPrefix(t *testing.T) {
+	root := t.TempDir()
+	first := "escalated-ambiguous-one"
+	second := "escalated-ambiguous-two"
+	createEscalationInspectionRun(t, root, first)
+	createEscalationInspectionRun(t, root, second)
+
+	code, stdout, stderr := runArgs(t, "escalations", "show", "escalated-ambiguous", root)
+	if code != 2 {
+		t.Fatalf("escalations show: code = %d, want 2; stderr = %q", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("escalations show stdout = %q, want empty", stdout)
+	}
+	for _, want := range []string{"ambiguous prefix", first, second} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("escalations show stderr missing %q: %q", want, stderr)
+		}
+	}
+}
+
 func createEscalationInspectionRun(t *testing.T, root, runID string) {
 	t.Helper()
 	startedAt := time.Date(2026, time.July, 20, 8, 0, 0, 0, time.UTC)
