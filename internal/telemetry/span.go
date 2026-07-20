@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -29,42 +30,50 @@ func (s Span) Succeed(message string) {
 	if s.span == nil {
 		return
 	}
+	s.span.SetAttributes(attribute.String(AttrOutcome, OutcomeSuccess))
 	s.span.SetStatus(codes.Ok, s.scrub(message))
 	s.span.End()
 }
 
-// Complete finishes the span with a business-level outcome — a run/stage
-// result the executor reported cleanly (a dispatch success), which is NOT the
-// same axis as Succeed/Fail's genuine dispatch-success/infra-error meaning
-// (issue #710). businessStatus is recorded as a goobers.business_status span
-// attribute (AttrBusinessStatus) — captured into spans.jsonl's generic
-// Attributes map by JournalSpanExporter with no exporter changes needed — so
-// rollup/trace consumers can query the actual outcome. isFailure additionally
-// sets the OTel span status to codes.Error: before this, a business failure
-// (a task's ResultEnvelope status "failure", a run's terminal PhaseFailed)
-// called span.Succeed(status) unconditionally, reporting codes.Ok with the
-// literal string "failed" as its message — every span-based view (`goobers
-// trace`, rollup span queries) then read a died run as "ok", the exact gap
-// that made #705 a 16-hour mystery despite the real cause sitting one journal
-// line away in stage.finished the whole time. Every other business status
-// (success, completed, aborted, escalated, blocked's pre-#544 pause) keeps
-// codes.Ok — this only recategorizes the one outcome that was actively lying.
-func (s Span) Complete(businessStatus string, isFailure bool) {
+// Complete finishes a span with a business outcome.
+func (s Span) Complete(outcome string, isFailure bool) {
+	s.CompleteWithError(outcome, "", isFailure)
+}
+
+// CompleteWithError finishes a span and records a journal-aligned error code.
+func (s Span) CompleteWithError(outcome, errorCode string, isFailure bool) {
 	if s.span == nil {
 		return
 	}
-	businessStatus = s.scrub(businessStatus)
-	s.span.SetAttributes(attribute.String(AttrBusinessStatus, businessStatus))
+	outcome = s.scrub(outcome)
+	attrs := []attribute.KeyValue{attribute.String(AttrOutcome, outcome)}
+	if errorCode != "" {
+		errorCode = s.scrub(errorCode)
+		attrs = append(attrs, attribute.String(AttrErrorCode, errorCode))
+	}
 	if isFailure {
-		s.span.SetStatus(codes.Error, businessStatus)
+		errorType := errorCode
+		if errorType == "" {
+			errorType = outcome
+		}
+		attrs = append(attrs, attribute.String(AttrErrorType, errorType))
+	}
+	s.span.SetAttributes(attrs...)
+	if isFailure {
+		s.span.SetStatus(codes.Error, outcome)
 	} else {
-		s.span.SetStatus(codes.Ok, businessStatus)
+		s.span.SetStatus(codes.Ok, outcome)
 	}
 	s.span.End()
 }
 
 // Fail records err, marks the span as failed, and finishes it.
 func (s Span) Fail(err error) {
+	s.FailWithCode(err, "")
+}
+
+// FailWithCode records an operational failure and its journal error code.
+func (s Span) FailWithCode(err error, errorCode string) {
 	if s.span == nil {
 		return
 	}
@@ -72,9 +81,35 @@ func (s Span) Fail(err error) {
 		err = errors.New("span failed")
 	}
 	message := s.scrub(err.Error())
+	errorType := fmt.Sprintf("%T", err)
+	if errorCode != "" {
+		errorType = errorCode
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String(AttrOutcome, OutcomeFailure),
+		attribute.String(AttrErrorType, s.scrub(errorType)),
+	}
+	if errorCode != "" {
+		errorCode = s.scrub(errorCode)
+		attrs = append(attrs,
+			attribute.String(AttrErrorCode, errorCode),
+		)
+	}
+	s.span.SetAttributes(attrs...)
 	s.span.RecordError(errors.New(message))
 	s.span.SetStatus(codes.Error, message)
 	s.span.End()
+}
+
+// SetGateResult records the decision and repass count from gate.evaluated.
+func (s Span) SetGateResult(decision string, repassNumber int) {
+	if s.span == nil {
+		return
+	}
+	s.span.SetAttributes(
+		attribute.String(AttrGateDecision, s.scrub(decision)),
+		attribute.Int(AttrGateRepassNumber, repassNumber),
+	)
 }
 
 // Event records a named span event.

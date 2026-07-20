@@ -139,7 +139,7 @@ func TestSchedulerADORegistryScrubsTelemetryExporter(t *testing.T) {
 
 	encoded := base64.StdEncoding.EncodeToString([]byte("goobers:" + token))
 	_, span, err := client.StartSchedulerSpan(context.Background(), telemetry.SchedulerAttributes{
-		Gaggle: "gaggle", WorkflowID: "workflow", Action: "dispatch", Reason: encoded,
+		Gaggle: "gaggle", WorkflowID: "workflow", Action: encoded,
 	})
 	if err != nil {
 		t.Fatalf("StartSchedulerSpan: %v", err)
@@ -152,14 +152,14 @@ func TestSchedulerADORegistryScrubsTelemetryExporter(t *testing.T) {
 	}
 	found := false
 	for _, attr := range spans[0].Attributes() {
-		if attr.Key == telemetry.AttrSchedulerReason {
+		if attr.Key == telemetry.AttrStage {
 			found = true
 			if attr.Value.AsString() != journal.Redacted {
-				t.Fatalf("scheduler reason = %q, want redacted", attr.Value.AsString())
+				t.Fatalf("scheduler stage = %q, want redacted", attr.Value.AsString())
 			}
 		}
 	}
 	if !found {
-		t.Fatal("scheduler reason attribute was not exported")
+		t.Fatal("scheduler stage attribute was not exported")
 	}
 }

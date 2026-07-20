@@ -635,7 +635,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 			Gaggle:   entry.Gaggle,
 			Reason:   reason,
 		})
-		span.Succeed("skipped: " + reason)
+		span.Complete(telemetry.OutcomeBlocked, false)
 		return "", false, reason
 	}
 
@@ -718,7 +718,6 @@ func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, tick Tic
 		Gaggle:     entry.Gaggle,
 		WorkflowID: entry.Workflow,
 		Action:     "dispatch",
-		Reason:     fireReason(tick, kind),
 	}
 	_, span, err := s.telemetry.StartSchedulerSpan(ctx, attrs)
 	if err != nil {

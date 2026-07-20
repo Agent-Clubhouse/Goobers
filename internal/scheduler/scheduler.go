@@ -116,7 +116,7 @@ func (s *Scheduler) Dispatch(ctx context.Context, ev Event) (Decision, error) {
 		}
 		if !ready {
 			span.Event("blocked")
-			span.Succeed("blocked: " + c.Name())
+			span.Complete(telemetry.OutcomeBlocked, false)
 			return Decision{Started: false, Reason: c.Name() + ": " + reason}, nil
 		}
 	}
@@ -135,7 +135,7 @@ func (s *Scheduler) Dispatch(ctx context.Context, ev Event) (Decision, error) {
 		return Decision{}, fmt.Errorf("start run %q: %w", in.RunID, err)
 	}
 	if res.AlreadyRunning {
-		span.Succeed("already-running")
+		span.Complete(telemetry.OutcomeBlocked, false)
 		return Decision{Started: false, RunID: res.RunID, Reason: "run already in flight"}, nil
 	}
 	span.Succeed("started")
@@ -175,11 +175,10 @@ func (s *Scheduler) startSpan(ctx context.Context, in engine.RunInput, ev Event)
 		WorkflowID:      in.WorkflowName,
 		WorkflowVersion: strconv.Itoa(in.Version),
 		Action:          "evaluate",
-		Reason:          ev.Reason,
 	}
 	if ev.Item != nil {
 		attrs.ItemID = ev.Item.ID
-		attrs.ItemProvider = string(ev.Item.Provider)
+		attrs.ItemURL = ev.Item.URL
 	}
 	ctx, span, err := s.cfg.Telemetry.StartSchedulerSpan(ctx, attrs)
 	if err != nil {

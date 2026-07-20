@@ -144,12 +144,11 @@ func (s *runEnvStarter) Start(_ context.Context, in engine.RunInput) (engine.Sta
 		return engine.StartResult{}, err
 	}
 	runCtx, runSpan, err := s.tel.StartRun(context.Background(), telemetry.RunAttributes{
-		Gaggle:       in.Gaggle,
-		WorkflowID:   in.WorkflowName,
-		RunID:        runID,
-		Trigger:      string(apiv1.TriggerBacklogItem),
-		ItemID:       itemID(in),
-		ItemProvider: itemProvider(in),
+		Gaggle:     in.Gaggle,
+		WorkflowID: in.WorkflowName,
+		RunID:      runID,
+		ItemID:     itemID(in),
+		ItemURL:    itemURL(in),
 	})
 	if err != nil {
 		return engine.StartResult{}, err
@@ -197,14 +196,14 @@ func (g *taskSpanRuntime) Invoke(ctx context.Context, env apiv1.InvocationEnvelo
 		g.onInvoke(env)
 	}
 	_, span, err := g.tel.StartTask(g.runCtx, telemetry.TaskAttributes{
-		Gaggle:       env.Gaggle,
-		WorkflowID:   env.WorkflowID,
-		RunID:        g.runTraceID,
-		TaskID:       "implement",
-		TaskType:     string(apiv1.TaskAgentic),
-		GooberID:     "coder",
-		ItemID:       itemID2(env),
-		ItemProvider: itemProvider2(env),
+		Gaggle:     env.Gaggle,
+		WorkflowID: env.WorkflowID,
+		RunID:      g.runTraceID,
+		TaskID:     "implement",
+		TaskType:   string(apiv1.TaskAgentic),
+		GooberID:   "coder",
+		ItemID:     itemID2(env),
+		ItemURL:    itemURL2(env),
 	})
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
@@ -254,9 +253,9 @@ func itemID(in engine.RunInput) string {
 	return ""
 }
 
-func itemProvider(in engine.RunInput) string {
+func itemURL(in engine.RunInput) string {
 	if in.Item != nil {
-		return string(in.Item.Provider)
+		return in.Item.URL
 	}
 	return ""
 }
@@ -268,9 +267,9 @@ func itemID2(env apiv1.InvocationEnvelope) string {
 	return ""
 }
 
-func itemProvider2(env apiv1.InvocationEnvelope) string {
+func itemURL2(env apiv1.InvocationEnvelope) string {
 	if env.Item != nil {
-		return string(env.Item.Provider)
+		return env.Item.URL
 	}
 	return ""
 }

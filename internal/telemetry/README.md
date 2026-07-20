@@ -5,16 +5,16 @@ semantic model is fixed for v1:
 
 - `StartRun` opens the root span for a workflow run and uses `RunID` as the OTel
   trace id when it is a valid 32-character trace id.
-- `StartTask`, `StartGate`, and `StartSchedulerSpan` create spans under the run
-  context and attach stable Goobers attributes (`gaggle`, `workflowId`, `runId`,
-  `taskId`, `gate.decision`, and related fields).
+- `StartTask`, `StartGate`, and `StartSchedulerSpan` create spans for task
+  attempts, gate evaluations, and scheduler decisions. Their attributes come
+  from the canonical registry in `attributes.go` (`goobers.run.id`,
+  `goobers.workflow`, `goobers.stage`, `goobers.attempt.n`, and related keys).
 - `NewMemoryExporter` is for unit tests. `ExporterStdout` is the local default.
   `ExporterOTLP` sends spans to an OTLP collector.
 
 The workflow engine should call `StartRun` once per workflow run, then use the
-returned context for task/gate spans. Runtime code should wrap harness/evaluator
-execution with `StartTask`/`StartGate` using the canonical invocation envelope
-fields.
+returned context for task-attempt and gate-evaluation spans. Within-stage
+happenings are span events rather than peer stage spans.
 
 ## OTLP collector to ADX
 
@@ -51,4 +51,4 @@ service:
 The ADX exporter expects the target database and tables to exist before ingest.
 Use the provisioned ADX database output (`gooberrun` by default) rather than any
 project telemetry database. For v1, partition queries by
-`TraceAttributes.gaggle` to preserve gaggle isolation.
+`TraceAttributes.goobers.gaggle` to preserve gaggle isolation.

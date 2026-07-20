@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -100,7 +101,7 @@ type SpanRecord struct {
 	SpanID        string            `json:"spanId"`
 	ParentSpanID  string            `json:"parentSpanId,omitempty"`
 	Name          string            `json:"name"`
-	Kind          string            `json:"kind,omitempty"` // goobers.span.kind: run|task|gate|scheduler
+	Kind          string            `json:"kind,omitempty"` // run|task|gate|scheduler
 	StartTime     time.Time         `json:"startTime"`
 	EndTime       time.Time         `json:"endTime"`
 	Status        string            `json:"status"` // ok|error|unset
@@ -140,9 +141,7 @@ func (e *JournalSpanExporter) toSpanRecord(s sdktrace.ReadOnlySpan) SpanRecord {
 	if parent := s.Parent(); parent.HasSpanID() {
 		rec.ParentSpanID = parent.SpanID().String()
 	}
-	if kind, ok := rec.Attributes[AttrSpanKind]; ok {
-		rec.Kind = kind
-	}
+	rec.Kind = spanRecordKind(rec.Name)
 	if desc := s.Status().Description; desc != "" {
 		rec.StatusMessage = redactWith(e.scrubber, desc)
 	}
@@ -155,6 +154,21 @@ func (e *JournalSpanExporter) toSpanRecord(s sdktrace.ReadOnlySpan) SpanRecord {
 		})
 	}
 	return rec
+}
+
+func spanRecordKind(name string) string {
+	switch {
+	case strings.HasPrefix(name, "run/"):
+		return SpanKindRun
+	case strings.HasPrefix(name, "task/"):
+		return SpanKindTask
+	case strings.HasPrefix(name, "gate/"):
+		return SpanKindGate
+	case strings.HasPrefix(name, "scheduler/"):
+		return SpanKindScheduler
+	default:
+		return ""
+	}
 }
 
 func statusString(code codes.Code) string {

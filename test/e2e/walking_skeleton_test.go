@@ -30,6 +30,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -127,6 +128,14 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 	}
 	runsDir := filepath.Join(instanceRoot, "runs")
 	fixtureRepo := newSkeletonFixtureRepo(t)
+	tel, err := telemetry.New(context.Background(), telemetry.Config{
+		ServiceName:  "walking-skeleton",
+		SpanExporter: telemetry.NewJournalSpanExporter(runsDir, nil),
+	})
+	if err != nil {
+		t.Fatalf("new telemetry client: %v", err)
+	}
+	t.Cleanup(func() { _ = tel.Shutdown(context.Background()) })
 
 	resolver, err := credentials.NewResolver(nil)
 	if err != nil {
@@ -218,6 +227,7 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 		Automated: gate.NewAutomatedEvaluator(),
 		Worktrees: wtMgr,
 		RunsDir:   runsDir,
+		Telemetry: tel,
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
 			return fixtureRepo, nil
 		},
@@ -290,7 +300,11 @@ func TestWalkingSkeletonLocalRunnerCompletesWithRepass(t *testing.T) {
 	}
 	r, runsDir := newSkeletonRunner(t, coderAct, reviewerAct)
 
-	res, err := r.Start(context.Background(), skeletonStartInput("run-skeleton-1", machine))
+	runID, err := telemetry.NewRunID()
+	if err != nil {
+		t.Fatalf("NewRunID: %v", err)
+	}
+	res, err := r.Start(context.Background(), skeletonStartInput(runID, machine))
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -301,7 +315,7 @@ func TestWalkingSkeletonLocalRunnerCompletesWithRepass(t *testing.T) {
 		t.Fatalf("finalState = %q, want local-ci", res.FinalState)
 	}
 
-	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-skeleton-1"))
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
 	if err != nil {
 		t.Fatalf("OpenRead: %v", err)
 	}
@@ -383,6 +397,70 @@ func TestWalkingSkeletonLocalRunnerCompletesWithRepass(t *testing.T) {
 				t.Errorf("SpanBytes(%+v): %v", e.Ref, err)
 			}
 		}
+	}
+	assertSkeletonSpanAttributes(t, runsDir, runID, machine.Digest())
+}
+
+func assertSkeletonSpanAttributes(t *testing.T, runsDir, runID, workflowDigest string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(runsDir, runID, "spans", "spans.jsonl"))
+	if err != nil {
+		t.Fatalf("read OTel spans: %v", err)
+	}
+
+	counts := map[string]int{}
+	gateResults := map[string]int{}
+	for _, line := range bytes.Split(bytes.TrimSpace(raw), []byte("\n")) {
+		var span telemetry.SpanRecord
+		if err := json.Unmarshal(line, &span); err != nil {
+			t.Fatalf("decode OTel span: %v", err)
+		}
+		counts[span.Kind]++
+		for key, want := range map[string]string{
+			telemetry.AttrRunID:           runID,
+			telemetry.AttrGaggle:          "acme-web",
+			telemetry.AttrWorkflow:        "walking-skeleton",
+			telemetry.AttrWorkflowVersion: "1",
+			telemetry.AttrWorkflowDigest:  workflowDigest,
+			telemetry.AttrItemID:          "101",
+			telemetry.AttrItemURL:         "https://github.com/acme/web/issues/101",
+		} {
+			if got := span.Attributes[key]; got != want {
+				t.Errorf("span %q attribute %s = %q, want %q", span.Name, key, got, want)
+			}
+		}
+		if span.Attributes[telemetry.AttrOutcome] == "" {
+			t.Errorf("span %q has no %s", span.Name, telemetry.AttrOutcome)
+		}
+		for _, legacy := range []string{"gaggle", "workflowId", "runId", "goobers.span.kind", "goobers.business_status"} {
+			if _, ok := span.Attributes[legacy]; ok {
+				t.Errorf("span %q carries legacy attribute %q", span.Name, legacy)
+			}
+		}
+
+		switch span.Kind {
+		case telemetry.SpanKindTask:
+			if span.Attributes[telemetry.AttrStage] == "" ||
+				span.Attributes[telemetry.AttrStageType] == "" ||
+				span.Attributes[telemetry.AttrAttemptNumber] != "1" {
+				t.Errorf("task span %q has incomplete stage-attempt attributes: %+v", span.Name, span.Attributes)
+			}
+		case telemetry.SpanKindGate:
+			decision := span.Attributes[telemetry.AttrGateDecision]
+			repass := span.Attributes[telemetry.AttrGateRepassNumber]
+			if span.Attributes[telemetry.AttrStage] != "review" ||
+				span.Attributes[telemetry.AttrStageType] != telemetry.StageTypeGate ||
+				decision == "" || repass == "" {
+				t.Errorf("gate span %q has incomplete gate attributes: %+v", span.Name, span.Attributes)
+			}
+			gateResults[decision+"/"+repass]++
+		}
+	}
+	if counts[telemetry.SpanKindRun] != 1 || counts[telemetry.SpanKindTask] != 3 || counts[telemetry.SpanKindGate] != 2 {
+		t.Fatalf("OTel span kinds = %v, want run=1 task=3 gate=2", counts)
+	}
+	if gateResults["needs-changes/1"] != 1 || gateResults["pass/0"] != 1 {
+		t.Fatalf("gate span decisions/repasses = %v, want needs-changes/1 and pass/0", gateResults)
 	}
 }
 
@@ -475,6 +553,18 @@ func TestWalkingSkeletonLocalRunnerDeterministicJournal(t *testing.T) {
 		if !sawPolicyRetry {
 			t.Fatalf("Start(%s): expected a policy-retried implement attempt, saw none", runID)
 		}
+		spans := readSkeletonSpanRecords(t, runsDir, runID)
+		var sawPolicyRetrySpan bool
+		for _, span := range spans {
+			if span.Attributes[telemetry.AttrStage] == "implement" &&
+				span.Attributes[telemetry.AttrAttemptNumber] == "2" &&
+				span.Attributes[telemetry.AttrAttemptKind] == telemetry.AttemptKindPolicy {
+				sawPolicyRetrySpan = true
+			}
+		}
+		if !sawPolicyRetrySpan {
+			t.Fatalf("Start(%s): expected a policy-retried implement span, got %+v", runID, spans)
+		}
 		return journal.ConformanceView(events)
 	}
 
@@ -482,7 +572,7 @@ func TestWalkingSkeletonLocalRunnerDeterministicJournal(t *testing.T) {
 	// instance root/runsDir, so there's no on-disk collision, and pinning the
 	// identity is what makes RunID-embedding fields (artifact/span Name)
 	// comparable across the two runs.
-	const pinnedRunID = "run-skeleton-det"
+	const pinnedRunID = "11111111111111111111111111111111"
 	a := canon(pinnedRunID)
 	b := canon(pinnedRunID)
 
@@ -494,6 +584,23 @@ func TestWalkingSkeletonLocalRunnerDeterministicJournal(t *testing.T) {
 			t.Errorf("normative event %d differs:\n a: %s\n b: %s", i, a[i], b[i])
 		}
 	}
+}
+
+func readSkeletonSpanRecords(t *testing.T, runsDir, runID string) []telemetry.SpanRecord {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(runsDir, runID, "spans", "spans.jsonl"))
+	if err != nil {
+		t.Fatalf("read OTel spans for %s: %v", runID, err)
+	}
+	var spans []telemetry.SpanRecord
+	for _, line := range bytes.Split(bytes.TrimSpace(raw), []byte("\n")) {
+		var span telemetry.SpanRecord
+		if err := json.Unmarshal(line, &span); err != nil {
+			t.Fatalf("decode OTel span for %s: %v", runID, err)
+		}
+		spans = append(spans, span)
+	}
+	return spans
 }
 
 // simulateSkeletonCrashMidImplement hand-builds a run journal exactly to the
