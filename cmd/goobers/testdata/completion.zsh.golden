@@ -72,7 +72,7 @@ _goobers_completion()
             ;;
         status) flags+=(--daemon --json --phase --workflow --limit --watch --interval) ;;
         stats) flags+=(--since --json) ;;
-        trace) flags+=(--json --transcripts --transcript) ;;
+        trace) flags+=(--json --follow --transcripts --transcript) ;;
         escalations) flags+=(--json) ;;
         telemetry)
             case "${words[3]:-}" in

@@ -71,8 +71,8 @@ Usage:
                                 print current claim leases, optionally only expired leases
   goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]
                                 force-release a claim through the live daemon or claims.lock
-  goobers trace [--json] [--transcripts | --transcript=<stage>] <run-id> [path]
-                                show a run's journal events (+ spans if rolled up), or recorded agent transcripts
+  goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
+                                show a run's journal events, follow a live run, or show recorded agent transcripts
   goobers escalations [--json] [path]
                                 list escalated runs newest first
   goobers escalations show [--json] <run-id> [path]
