@@ -372,6 +372,9 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
 	}
 	c.reg.Register([]byte(token))
+	// PR remediation uses pr/<number> as its internal claim key; provider work
+	// item endpoints use the shared bare issue/PR number.
+	req.ID = blockedLookupID(req.ID)
 	return newEscalationPoster(token).UpdateWorkItem(ctx, req)
 }
 

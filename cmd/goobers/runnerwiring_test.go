@@ -1007,6 +1007,75 @@ func TestBuildBlockedHandlerResolvesItemFromClaimLedgerWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestPRClaimBlockedFlowNormalizesProviderID proves the claim ledger and
+// blocked-record store retain the namespaced PR key while provider operations
+// use GitHub's bare issue/PR number.
+func TestPRClaimBlockedFlowNormalizesProviderID(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("pr/955", "run-remediate", "pr-remediation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed PR claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	resolver := blockedHandlerTestResolver(t)
+	reg := &escTestRegistrar{}
+	h := buildBlockedHandler(l, cfg, resolver, reg)
+	outcome := runner.BlockedOutcome{
+		RunID: "run-remediate", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", Reason: "blocked on issue 956", Blockers: []string{"956"},
+	}
+	if err := h(context.Background(), outcome); err != nil {
+		t.Fatalf("blocked handler: %v", err)
+	}
+
+	ids, err := claimedItemIDsForRun(l, "run-remediate")
+	if err != nil {
+		t.Fatalf("claimedItemIDsForRun: %v", err)
+	}
+	if !slices.Equal(ids, []string{"pr/955"}) {
+		t.Fatalf("claimed item IDs = %v, want [pr/955]", ids)
+	}
+	notifier := buildEscalationNotifier(cfg, resolver, reg)
+	repository := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	if err := notifier.NotifyStageEscalated(context.Background(), repository, ids[0], outcome.Stage, outcome.Reason); err != nil {
+		t.Fatalf("NotifyStageEscalated: %v", err)
+	}
+
+	if len(fake.calls) != 2 {
+		t.Fatalf("provider calls = %+v, want parking and notification", fake.calls)
+	}
+	if fake.calls[0].ID != "955" || fake.calls[1].ID != "955" {
+		t.Fatalf("provider IDs = [%q %q], want bare PR number 955", fake.calls[0].ID, fake.calls[1].ID)
+	}
+	if fake.calls[1].Comment == "" {
+		t.Fatal("notification comment is empty")
+	}
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	if _, ok := recs["pr/955"]; !ok {
+		t.Fatalf("blocked records = %+v, want namespaced key pr/955", recs)
+	}
+	if _, ok := recs["955"]; ok {
+		t.Fatalf("blocked records = %+v, bare provider ID must not replace the claim key", recs)
+	}
+}
+
 // TestBuildBlockedHandlerNoClaimIsANoop proves a producer/schedule-triggered
 // run (no Item, no claim to resolve) is a clean no-op — the journaled
 // blocked_by_agent cause and escalated phase are the whole story; nothing to
