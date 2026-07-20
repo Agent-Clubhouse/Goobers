@@ -12,6 +12,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -36,22 +37,24 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 		Gaggle:          "acme-web",
 		WorkflowID:      "default-implement",
 		WorkflowVersion: "v7",
+		WorkflowDigest:  "sha256:workflow",
 		RunID:           runID,
 		ItemID:          "42",
-		ItemProvider:    "github",
-		Trigger:         "backlog",
+		ItemURL:         "https://github.com/acme/web/issues/42",
 	})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
 
 	_, taskSpan, err := client.StartTask(runCtx, TaskAttributes{
-		Gaggle:     "acme-web",
-		WorkflowID: "default-implement",
-		RunID:      runID,
-		TaskID:     "implement",
-		TaskType:   "agentic",
-		GooberID:   "coder",
+		Gaggle:      "acme-web",
+		WorkflowID:  "default-implement",
+		RunID:       runID,
+		TaskID:      "implement",
+		TaskType:    "agentic",
+		GooberID:    "coder",
+		Attempt:     2,
+		AttemptKind: AttemptKindPolicy,
 	})
 	if err != nil {
 		t.Fatalf("StartTask() error = %v", err)
@@ -60,18 +63,19 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	taskSpan.Succeed("task completed")
 
 	_, gateSpan, err := client.StartGate(runCtx, GateAttributes{
-		Gaggle:     "acme-web",
-		WorkflowID: "default-implement",
-		RunID:      runID,
-		GateID:     "qa",
-		Evaluator:  "agentic",
-		Decision:   "pass",
-		GooberID:   "reviewer",
+		Gaggle:       "acme-web",
+		WorkflowID:   "default-implement",
+		RunID:        runID,
+		GateID:       "qa",
+		Decision:     "pass",
+		RepassNumber: 1,
+		GooberID:     "reviewer",
 	})
 	if err != nil {
 		t.Fatalf("StartGate() error = %v", err)
 	}
-	gateSpan.End()
+	gateSpan.SetGateResult("pass", 1)
+	gateSpan.Complete(OutcomeSuccess, false)
 	runSpan.End()
 
 	if err := client.Flush(ctx); err != nil {
@@ -106,18 +110,21 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	}
 
 	runAttrs := attrMap(run)
-	assertAttr(t, runAttrs, AttrSpanKind, SpanKindRun)
 	assertAttr(t, runAttrs, AttrGaggle, "acme-web")
-	assertAttr(t, runAttrs, AttrWorkflowID, "default-implement")
+	assertAttr(t, runAttrs, AttrWorkflow, "default-implement")
+	assertAttr(t, runAttrs, AttrWorkflowVersion, "v7")
+	assertAttr(t, runAttrs, AttrWorkflowDigest, "sha256:workflow")
 	assertAttr(t, runAttrs, AttrRunID, runID)
 	assertAttr(t, runAttrs, AttrItemID, "42")
-	assertAttr(t, runAttrs, AttrTrigger, "backlog")
+	assertAttr(t, runAttrs, AttrItemURL, "https://github.com/acme/web/issues/42")
 
 	taskAttrs := attrMap(task)
-	assertAttr(t, taskAttrs, AttrSpanKind, SpanKindTask)
-	assertAttr(t, taskAttrs, AttrTaskID, "implement")
-	assertAttr(t, taskAttrs, AttrTaskType, "agentic")
-	assertAttr(t, taskAttrs, AttrGooberID, "coder")
+	assertAttr(t, taskAttrs, AttrStage, "implement")
+	assertAttr(t, taskAttrs, AttrStageType, "agentic")
+	assertAttr(t, taskAttrs, AttrGoober, "coder")
+	assertAttr(t, taskAttrs, AttrAttemptNumber, "2")
+	assertAttr(t, taskAttrs, AttrAttemptKind, AttemptKindPolicy)
+	assertAttr(t, taskAttrs, AttrOutcome, OutcomeSuccess)
 	if task.Status().Code != codes.Ok {
 		t.Fatalf("task status = %s, want OK", task.Status().Code)
 	}
@@ -126,13 +133,15 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	}
 
 	gateAttrs := attrMap(gate)
-	assertAttr(t, gateAttrs, AttrSpanKind, SpanKindGate)
-	assertAttr(t, gateAttrs, AttrGateID, "qa")
-	assertAttr(t, gateAttrs, AttrGateEvaluator, "agentic")
+	assertAttr(t, gateAttrs, AttrStage, "qa")
+	assertAttr(t, gateAttrs, AttrStageType, StageTypeGate)
+	assertAttr(t, gateAttrs, AttrGoober, "reviewer")
 	assertAttr(t, gateAttrs, AttrGateDecision, "pass")
+	assertAttr(t, gateAttrs, AttrGateRepassNumber, "1")
+	assertAttr(t, gateAttrs, AttrOutcome, OutcomeSuccess)
 }
 
-func TestSpanEventLimitBoundsRetryAccumulation(t *testing.T) {
+func TestSpanEventLimitBoundsAttemptAccumulation(t *testing.T) {
 	exporter := NewMemoryExporter()
 	client, err := New(context.Background(), Config{ServiceName: "telemetry-limit-test", SpanExporter: exporter})
 	if err != nil {
@@ -181,12 +190,10 @@ func TestSchedulerSpanAttributes(t *testing.T) {
 	})
 
 	_, span, err := client.StartSchedulerSpan(ctx, SchedulerAttributes{
-		Gaggle:       "acme-web",
-		WorkflowID:   "default-implement",
-		Action:       "claim",
-		Reason:       "capacity-available",
-		ItemID:       "42",
-		ItemProvider: "ado",
+		Gaggle:     "acme-web",
+		WorkflowID: "default-implement",
+		Action:     "claim",
+		ItemID:     "42",
 	})
 	if err != nil {
 		t.Fatalf("StartSchedulerSpan() error = %v", err)
@@ -195,10 +202,8 @@ func TestSchedulerSpanAttributes(t *testing.T) {
 
 	scheduler := findSpan(t, exporter.Spans(), "scheduler/claim")
 	attrs := attrMap(scheduler)
-	assertAttr(t, attrs, AttrSpanKind, SpanKindScheduler)
-	assertAttr(t, attrs, AttrSchedulerAction, "claim")
-	assertAttr(t, attrs, AttrSchedulerReason, "capacity-available")
-	assertAttr(t, attrs, AttrItemProvider, "ado")
+	assertAttr(t, attrs, AttrStage, "claim")
+	assertAttr(t, attrs, AttrStageType, StageTypeScheduler)
 }
 
 func TestSchedulerSpanCanUseRunTraceIDWithoutParentContext(t *testing.T) {
@@ -454,6 +459,9 @@ func TestSpanFailRecordsErrorStatus(t *testing.T) {
 	if task.Status().Description != "boom" {
 		t.Fatalf("task status description = %q, want boom", task.Status().Description)
 	}
+	if got := attrMap(task)[AttrErrorType]; got == "" {
+		t.Fatal("task error.type is empty")
+	}
 }
 
 func TestClientScrubsRegisteredCredentialBeforeExport(t *testing.T) {
@@ -472,7 +480,7 @@ func TestClientScrubsRegisteredCredentialBeforeExport(t *testing.T) {
 	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
 
 	_, span, err := client.StartSchedulerSpan(context.Background(), SchedulerAttributes{
-		Gaggle: "acme-web", WorkflowID: "wf", Action: "dispatch", Reason: secret,
+		Gaggle: "acme-web", WorkflowID: "wf", Action: secret,
 	})
 	if err != nil {
 		t.Fatalf("StartSchedulerSpan() error = %v", err)
@@ -480,12 +488,14 @@ func TestClientScrubsRegisteredCredentialBeforeExport(t *testing.T) {
 	span.Event("provider.request", attribute.String("authorization", secret))
 	span.Fail(errors.New("provider failed with " + secret))
 
-	exported := findSpan(t, exporter.Spans(), "scheduler/dispatch")
+	exported := exporter.Spans()[0]
 	if strings.Contains(exported.Status().Description, secret) {
 		t.Fatalf("registered credential leaked into span status: %q", exported.Status().Description)
 	}
-	if got := attrMap(exported)[AttrSchedulerReason]; got != journal.Redacted {
-		t.Fatalf("scheduler reason = %q, want redacted", got)
+	for key, value := range attrMap(exported) {
+		if strings.Contains(value, secret) {
+			t.Fatalf("registered credential leaked into span attribute %q: %q", key, value)
+		}
 	}
 	for _, event := range exported.Events() {
 		for _, attr := range event.Attributes {
@@ -496,17 +506,16 @@ func TestClientScrubsRegisteredCredentialBeforeExport(t *testing.T) {
 	}
 }
 
-// TestSpanCompleteRecordsBusinessStatus is issue #710's span-fix acceptance:
+// TestSpanCompleteRecordsOutcome is issue #710's span-fix acceptance:
 // a business failure (isFailure=true) sets OTel status codes.Error — the
 // prior span.Succeed(status) call reported codes.Ok for a failed run/stage
 // span, so `goobers trace`/rollup span queries couldn't distinguish a failed
 // run from a healthy one without reading free-text. Complete's second
-// property — the goobers.business_status attribute — is what an ok/success
-// business status ALSO needs recorded (not just the failure path), so a
-// rollup consumer can query the actual outcome vocabulary
-// (success/failed/completed/escalated/aborted) independent of OTel's own
-// coarser two-value axis.
-func TestSpanCompleteRecordsBusinessStatus(t *testing.T) {
+// property — the canonical goobers.outcome attribute — is what an ok/success
+// business status also needs recorded (not just the failure path), so a
+// rollup consumer can query the success/failure/blocked axis independent of
+// OTel's own coarser two-value axis.
+func TestSpanCompleteRecordsOutcome(t *testing.T) {
 	ctx := context.Background()
 	exporter := NewMemoryExporter()
 	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: exporter})
@@ -528,14 +537,14 @@ func TestSpanCompleteRecordsBusinessStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartTask() error = %v", err)
 	}
-	failedTask.Complete("failure", true)
+	failedTask.CompleteWithError("failure", "stage.failed", true)
 
 	_, okTask, err := client.StartTask(runCtx, TaskAttributes{Gaggle: "acme-web", WorkflowID: "wf", RunID: runID, TaskID: "implement"})
 	if err != nil {
 		t.Fatalf("StartTask() error = %v", err)
 	}
 	okTask.Complete("success", false)
-	runSpan.Complete("failed", true)
+	runSpan.Complete(OutcomeFailure, true)
 
 	spans := exporter.Spans()
 	failed := findSpan(t, spans, "task/pr-select")
@@ -545,24 +554,101 @@ func TestSpanCompleteRecordsBusinessStatus(t *testing.T) {
 	if failed.Status().Description != "failure" {
 		t.Fatalf("failed task status description = %q, want failure", failed.Status().Description)
 	}
-	if got := attrMap(failed)[AttrBusinessStatus]; got != "failure" {
-		t.Fatalf("failed task %s attribute = %q, want failure", AttrBusinessStatus, got)
+	if got := attrMap(failed)[AttrOutcome]; got != "failure" {
+		t.Fatalf("failed task %s attribute = %q, want failure", AttrOutcome, got)
+	}
+	if got := attrMap(failed)[AttrErrorCode]; got != "stage.failed" {
+		t.Fatalf("failed task %s attribute = %q, want stage.failed", AttrErrorCode, got)
+	}
+	if got := attrMap(failed)[AttrErrorType]; got != "stage.failed" {
+		t.Fatalf("failed task %s attribute = %q, want stage.failed", AttrErrorType, got)
 	}
 
 	ok := findSpan(t, spans, "task/implement")
 	if ok.Status().Code != codes.Ok {
 		t.Fatalf("ok task status = %s, want Ok", ok.Status().Code)
 	}
-	if got := attrMap(ok)[AttrBusinessStatus]; got != "success" {
-		t.Fatalf("ok task %s attribute = %q, want success", AttrBusinessStatus, got)
+	if got := attrMap(ok)[AttrOutcome]; got != "success" {
+		t.Fatalf("ok task %s attribute = %q, want success", AttrOutcome, got)
 	}
 
 	run := findSpan(t, spans, "run/wf")
 	if run.Status().Code != codes.Error {
 		t.Fatalf("run status = %s, want Error — the run's OWN terminal phase was failed", run.Status().Code)
 	}
-	if got := attrMap(run)[AttrBusinessStatus]; got != "failed" {
-		t.Fatalf("run %s attribute = %q, want failed", AttrBusinessStatus, got)
+	if got := attrMap(run)[AttrOutcome]; got != OutcomeFailure {
+		t.Fatalf("run %s attribute = %q, want failure", AttrOutcome, got)
+	}
+}
+
+func TestCanonicalAttributeRegistryDoesNotDrift(t *testing.T) {
+	want := []string{
+		"goobers.run.id",
+		"goobers.gaggle",
+		"goobers.workflow",
+		"goobers.workflow.version",
+		"goobers.workflow.digest",
+		"goobers.goober",
+		"goobers.stage",
+		"goobers.stage.type",
+		"goobers.attempt.n",
+		"goobers.attempt.kind",
+		"goobers.item.id",
+		"goobers.item.url",
+		"goobers.outcome",
+		"goobers.error.code",
+		"goobers.gate.decision",
+		"goobers.gate.repass.n",
+		"error.type",
+	}
+	got := AllAttributes()
+	if len(got) != len(want) {
+		t.Fatalf("attribute registry size = %d, want %d: %v", len(got), len(want), got)
+	}
+	seen := make(map[Attribute]bool, len(got))
+	for i, attr := range got {
+		if seen[attr] {
+			t.Fatalf("attribute registry contains duplicate %q", attr)
+		}
+		seen[attr] = true
+		if string(attr) != want[i] {
+			t.Errorf("attribute %d = %q, want %q", i, attr, want[i])
+		}
+		if !KnownAttribute(string(attr)) {
+			t.Errorf("KnownAttribute(%q) = false", attr)
+		}
+	}
+
+	for _, legacy := range []string{"gaggle", "workflowId", "runId", "goobers.span.kind", "goobers.business_status"} {
+		if KnownAttribute(legacy) {
+			t.Errorf("legacy attribute %q remains registered", legacy)
+		}
+	}
+}
+
+func TestCanonicalAttributeValuesMatchRuntimeContracts(t *testing.T) {
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"deterministic stage", string(apiv1.TaskDeterministic), StageTypeDeterministic},
+		{"agentic stage", string(apiv1.TaskAgentic), StageTypeAgentic},
+		{"policy attempt", string(journal.AttemptPolicy), AttemptKindPolicy},
+		{"infrastructure attempt", string(journal.AttemptInfra), AttemptKindInfra},
+		{"success outcome", string(apiv1.ResultSuccess), OutcomeSuccess},
+		{"failure outcome", string(apiv1.ResultFailure), OutcomeFailure},
+		{"blocked outcome", string(apiv1.ResultBlocked), OutcomeBlocked},
+		{"pass decision", string(apiv1.VerdictPass), "pass"},
+		{"fail decision", string(apiv1.VerdictFail), "fail"},
+		{"needs-changes decision", string(apiv1.VerdictNeedsChanges), "needs-changes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Fatalf("runtime value = %q, canonical telemetry value = %q", tc.got, tc.want)
+			}
+		})
 	}
 }
 
@@ -588,7 +674,7 @@ func spanNames(spans []sdktrace.ReadOnlySpan) []string {
 func attrMap(span sdktrace.ReadOnlySpan) map[string]string {
 	attrs := map[string]string{}
 	for _, attr := range span.Attributes() {
-		attrs[string(attr.Key)] = attr.Value.AsString()
+		attrs[string(attr.Key)] = attr.Value.Emit()
 	}
 	return attrs
 }

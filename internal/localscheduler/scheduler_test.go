@@ -1105,11 +1105,13 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	t.Cleanup(func() { _ = log.Close() })
 
 	sched := New([]WorkflowEntry{{
-		Workflow:  "implement",
-		Gaggle:    "acme-web",
-		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
-		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
-		Starter:   starter,
+		Workflow:        "implement",
+		WorkflowVersion: 7,
+		WorkflowDigest:  "sha256:workflow",
+		Gaggle:          "acme-web",
+		Readiness:       apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Schedules:       []Schedule{fakeSchedule{d: time.Hour}},
+		Starter:         starter,
 	}}, log, WithTelemetry(spans))
 
 	now := time.Now()
@@ -1121,8 +1123,13 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	spans.mu.Lock()
 	got := spans.calls[0]
 	spans.mu.Unlock()
-	if got.Gaggle != "acme-web" || got.WorkflowID != "implement" || got.Action != "dispatch" {
-		t.Fatalf("scheduler span attrs = %+v, want gaggle=acme-web workflowId=implement action=dispatch", got)
+	starter.mu.Lock()
+	startedRunID := starter.starts[0].RunID
+	starter.mu.Unlock()
+	if got.Gaggle != "acme-web" || got.WorkflowID != "implement" ||
+		got.WorkflowVersion != "7" || got.WorkflowDigest != "sha256:workflow" ||
+		got.RunID == "" || got.RunID != startedRunID || got.Action != "dispatch" {
+		t.Fatalf("scheduler span attrs = %+v, want pinned workflow identity and candidate run id %q", got, startedRunID)
 	}
 }
 

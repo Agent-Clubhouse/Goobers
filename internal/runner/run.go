@@ -365,14 +365,26 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		span.Fail(err)
 		return result, err
 	}
-	// #710: a business-failed run (walk returns a nil error — a Go-level
-	// dispatch error is Fail'd above instead) used to call span.Succeed here
-	// unconditionally, reporting codes.Ok with the literal message "failed".
-	// Anything reading spans (`goobers trace`, rollup span queries) then
-	// called a died run "ok" — the exact gap that made #705 a 16-hour mystery
-	// despite the real cause sitting one journal line away the whole time.
-	span.Complete(string(result.Phase), result.Phase == journal.PhaseFailed)
+	completeRunSpan(span, result)
 	return result, nil
+}
+
+func completeRunSpan(span telemetry.Span, result Result) {
+	outcome, isFailure := runSpanOutcome(result.Phase)
+	span.CompleteWithError(outcome, result.FailureCode, isFailure)
+}
+
+func runSpanOutcome(phase journal.RunPhase) (string, bool) {
+	switch phase {
+	case journal.PhaseCompleted:
+		return telemetry.OutcomeSuccess, false
+	case journal.PhaseRunning, journal.PhaseEscalated:
+		return telemetry.OutcomeBlocked, false
+	case journal.PhaseFailed, journal.PhaseAborted:
+		return telemetry.OutcomeFailure, true
+	default:
+		return telemetry.OutcomeFailure, true
+	}
 }
 
 // startRunSpan opens the run's root span, if telemetry is configured. A zero
@@ -388,12 +400,12 @@ func (r *Runner) startRunSpan(ctx context.Context, in StartInput) (context.Conte
 		Gaggle:          in.Gaggle,
 		WorkflowID:      in.Machine.Def.Name,
 		WorkflowVersion: strconv.Itoa(in.Machine.Def.Version),
+		WorkflowDigest:  in.Machine.Digest(),
 		RunID:           in.RunID,
-		Trigger:         string(in.Trigger.Kind),
 	}
 	if in.Item != nil {
 		attrs.ItemID = in.Item.ID
-		attrs.ItemProvider = string(in.Item.Provider)
+		attrs.ItemURL = in.Item.URL
 	}
 	ctx, span, err := r.cfg.Telemetry.StartRun(ctx, attrs)
 	if err != nil {
@@ -1282,11 +1294,6 @@ func (r *Runner) FinalizeTerminal(runID string, phase journal.RunPhase) error {
 // into this task's Inputs per t.InputsFrom (#132), the task-to-task analog
 // of evaluateGate's unconditional Outputs flatten.
 func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, workspaceBranch string) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
-	ctx, span := r.startTaskSpan(ctx, in, t)
-	defer span.End()
-
-	attemptCtx := context.WithoutCancel(ctx)
-
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -1300,7 +1307,6 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 	maxAttempts := policyMaxAttempts + DefaultMaxInfrastructureAttempts - 1
 	if startAttempt > policyMaxAttempts {
 		err := fmt.Errorf("runner: task %q has no attempts left after resume (interrupted attempt already exhausted its %d-attempt budget)", t.Name, policyMaxAttempts)
-		span.Fail(err)
 		return apiv1.ResultEnvelope{}, nil, err
 	}
 
@@ -1332,6 +1338,7 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		if class != journal.AttemptInfra || attempt == startAttempt {
 			policyAttempts++
 		}
+		attemptCtx, span := r.startTaskSpan(context.WithoutCancel(ctx), in, t, int(attempt), string(class))
 		if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: t.Name, Attempt: int(attempt), AttemptClass: class}); err != nil {
 			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
 			span.Fail(err)
@@ -1363,7 +1370,9 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 				Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
 			}); aerr != nil {
-				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal worktree removal error for %q: %w", t.Name, aerr)
+				err := fmt.Errorf("runner: journal worktree removal error for %q: %w", t.Name, aerr)
+				span.Fail(err)
+				return apiv1.ResultEnvelope{}, nil, err
 			}
 		}
 		if dispatchErr != nil {
@@ -1386,8 +1395,11 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 				Error: &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
 			}); aerr != nil {
-				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal executor error for %q: %w", t.Name, aerr)
+				err := fmt.Errorf("runner: journal executor error for %q: %w", t.Name, aerr)
+				span.Fail(err)
+				return apiv1.ResultEnvelope{}, nil, err
 			}
+			span.FailWithCode(dispatchErr, "executor_error")
 			if shouldRetry {
 				if backoff > 0 {
 					// Wait on the run-level ctx (not attemptCtx, which never
@@ -1410,7 +1422,6 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 				continue
 			}
 			err := fmt.Errorf("runner: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, retryCount, retryLimit)
-			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
@@ -1429,19 +1440,22 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		// dispatch error, never this. But span.Succeed unconditionally here
 		// meant a failed stage's own span reported codes.Ok with the literal
 		// message "failure", same defect as the run's root span above.
-		span.Complete(string(result.Status), result.Status == apiv1.ResultFailure)
+		errorCode := ""
+		if result.Error != nil {
+			errorCode = result.Error.Code
+		}
+		span.CompleteWithError(string(result.Status), errorCode, result.Status == apiv1.ResultFailure)
 		return result, contextPointersFor(t.Name, result.Artifacts), nil
 	}
 	// Unreachable: maxAttempts >= 1 always executes the loop body at least
 	// once, and every path inside either returns or continues.
 	err := fmt.Errorf("runner: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
-	span.Fail(err)
 	return apiv1.ResultEnvelope{}, nil, err
 }
 
-// startTaskSpan opens a task span under the run's trace, if telemetry is
+// startTaskSpan opens one task-attempt span under the run's trace, if telemetry is
 // configured. A zero telemetry.Span is safe to use (its methods no-op).
-func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task) (context.Context, telemetry.Span) {
+func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task, attempt int, attemptKind string) (context.Context, telemetry.Span) {
 	if r.cfg.Telemetry == nil {
 		return ctx, telemetry.Span{}
 	}
@@ -1449,14 +1463,17 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task)
 		Gaggle:          in.Gaggle,
 		WorkflowID:      in.Machine.Def.Name,
 		WorkflowVersion: strconv.Itoa(in.Machine.Def.Version),
+		WorkflowDigest:  in.Machine.Digest(),
 		RunID:           in.RunID,
 		TaskID:          t.Name,
 		TaskType:        string(t.Type),
 		GooberID:        t.Goober,
+		Attempt:         attempt,
+		AttemptKind:     attemptKind,
 	}
 	if in.Item != nil {
 		attrs.ItemID = in.Item.ID
-		attrs.ItemProvider = string(in.Item.Provider)
+		attrs.ItemURL = in.Item.URL
 	}
 	ctx, span, err := r.cfg.Telemetry.StartTask(ctx, attrs)
 	if err != nil {
@@ -1783,7 +1800,8 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		span.Fail(err)
 		return gate.Result{}, err, nil
 	} else if ok {
-		span.Succeed(recovered.Outcome)
+		span.SetGateResult(recovered.Outcome, recovered.Attempt)
+		span.Complete(telemetry.OutcomeSuccess, false)
 		return recovered, nil, nil
 	}
 
@@ -1928,7 +1946,8 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		span.Fail(err)
 		return gate.Result{}, err, nil
 	}
-	span.Succeed(result.Outcome)
+	span.SetGateResult(result.Outcome, result.Attempt)
+	span.Complete(telemetry.OutcomeSuccess, false)
 	return result, nil, nil
 }
 
@@ -1976,14 +1995,14 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 		Gaggle:          in.Gaggle,
 		WorkflowID:      in.Machine.Def.Name,
 		WorkflowVersion: strconv.Itoa(in.Machine.Def.Version),
+		WorkflowDigest:  in.Machine.Digest(),
 		RunID:           in.RunID,
 		GateID:          g.Name,
-		Evaluator:       string(g.Evaluator),
 		GooberID:        gooberName,
 	}
 	if in.Item != nil {
 		attrs.ItemID = in.Item.ID
-		attrs.ItemProvider = string(in.Item.Provider)
+		attrs.ItemURL = in.Item.URL
 	}
 	ctx, span, err := r.cfg.Telemetry.StartGate(ctx, attrs)
 	if err != nil {

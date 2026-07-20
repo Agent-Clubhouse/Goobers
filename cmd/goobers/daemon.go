@@ -239,6 +239,7 @@ func buildSchedulerDefinitions(
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
 		identity := localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}
+		machine := machines[identity]
 		// #341: a workflow may declare more than one schedule-type trigger
 		// (e.g. a weekday cadence and a separate weekend one) — collect all
 		// of them rather than stopping at the first; Scheduler.Tick fires if
@@ -261,14 +262,16 @@ func buildSchedulerDefinitions(
 			}
 		}
 		entries = append(entries, localscheduler.WorkflowEntry{
-			Workflow:       wf.Name,
-			Gaggle:         wf.Spec.Gaggle,
-			Readiness:      wf.Spec.Readiness,
-			Schedules:      scheds,
-			Signals:        sigs,
-			BacklogCounter: buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg),
-			Starter:        &trackedStarter{r: rn, machine: machines[identity], wg: wg, l: l, tel: tel, rollupDB: rollupDB, log: instanceLog},
-			RepoRef:        repoRefs[identity],
+			Workflow:        wf.Name,
+			WorkflowVersion: machine.Def.Version,
+			WorkflowDigest:  machine.Digest(),
+			Gaggle:          wf.Spec.Gaggle,
+			Readiness:       wf.Spec.Readiness,
+			Schedules:       scheds,
+			Signals:         sigs,
+			BacklogCounter:  buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg),
+			Starter:         &trackedStarter{r: rn, machine: machine, wg: wg, l: l, tel: tel, rollupDB: rollupDB, log: instanceLog},
+			RepoRef:         repoRefs[identity],
 		})
 	}
 

@@ -227,7 +227,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		span.Fail(err)
 		return result, err
 	}
-	span.Succeed(string(result.Phase))
+	completeRunSpan(span, result)
 	return result, nil
 }
 

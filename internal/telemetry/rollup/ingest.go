@@ -368,14 +368,18 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 			nullIfEmpty(s.StatusMessage), formatTime(s.StartTime), formatTime(s.EndTime), durationMillis(s.StartTime, s.EndTime)); err != nil {
 			return fmt.Errorf("rollup: insert span %s: %w", s.SpanID, err)
 		}
-		// businessStatus (issue #710) rides the span's own generic Attributes
+		// The canonical outcome rides the span's own generic Attributes
 		// map (Span.Complete sets it as an OTel attribute; JournalSpanExporter
 		// already captures every attribute into SpanRecord.Attributes with no
 		// exporter change needed) — a satellite row, not a spans column (see
 		// schema.go's v3 migration comment): empty/absent for a span
 		// predating this fix or one that never called Complete (a gate span,
 		// still Succeed/Fail).
-		if businessStatus := s.Attributes[telemetry.AttrBusinessStatus]; businessStatus != "" {
+		businessStatus := s.Attributes[telemetry.AttrOutcome]
+		if businessStatus == "" {
+			businessStatus = s.Attributes["goobers.business_status"]
+		}
+		if businessStatus != "" {
 			if _, err := tx.Exec(`
 				INSERT INTO span_business_status (run_id, span_id, business_status)
 				VALUES (?, ?, ?)`,

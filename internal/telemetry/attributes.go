@@ -1,54 +1,87 @@
 package telemetry
 
+import semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+
+// Attribute is a key in the canonical Goobers span attribute registry.
+type Attribute string
+
+// The canonical span attribute registry. Add new Goobers attributes here first.
 const (
-	// AttrSpanKind identifies the Goobers semantic kind for a span.
-	AttrSpanKind = "goobers.span.kind"
-	// AttrGaggle is the gaggle that owns the run.
-	AttrGaggle = "gaggle"
-	// AttrWorkflowID is the workflow definition id.
-	AttrWorkflowID = "workflowId"
-	// AttrWorkflowVersion is the pinned workflow definition version.
-	AttrWorkflowVersion = "workflow.version"
-	// AttrRunID is the workflow run id and OTel trace id.
-	AttrRunID = "runId"
-	// AttrItemID is the provider-native backlog item id.
-	AttrItemID = "item.id"
-	// AttrItemProvider is the backing backlog provider.
-	AttrItemProvider = "item.provider"
-	// AttrTrigger is the scheduler trigger that admitted the run.
-	AttrTrigger = "trigger"
-	// AttrTaskID is the task state id within the workflow.
-	AttrTaskID = "taskId"
-	// AttrTaskType identifies agentic versus deterministic tasks.
-	AttrTaskType = "task.type"
-	// AttrGooberID is the goober definition executing the task or review.
-	AttrGooberID = "goober.id"
-	// AttrGateID is the gate state id within the workflow.
-	AttrGateID = "gateId"
-	// AttrGateEvaluator identifies automated, agentic, or human evaluators.
-	AttrGateEvaluator = "gate.evaluator"
-	// AttrGateDecision records the gate outcome.
-	AttrGateDecision = "gate.decision"
-	// AttrSchedulerAction records the scheduler decision/action.
-	AttrSchedulerAction = "scheduler.action"
-	// AttrSchedulerReason records the scheduler's rationale.
-	AttrSchedulerReason = "scheduler.reason"
-	// AttrBusinessStatus records a run/stage span's actual business outcome
-	// (issue #710) — set via Span.Complete, distinct from OTel's own Ok/Error
-	// status axis (which Complete also sets, but coarser: only a business
-	// failure maps to codes.Error, every other outcome — success, completed,
-	// aborted, escalated — stays codes.Ok).
-	AttrBusinessStatus = "goobers.business_status"
+	AttrRunID            = "goobers.run.id"
+	AttrGaggle           = "goobers.gaggle"
+	AttrWorkflow         = "goobers.workflow"
+	AttrWorkflowVersion  = "goobers.workflow.version"
+	AttrWorkflowDigest   = "goobers.workflow.digest"
+	AttrGoober           = "goobers.goober"
+	AttrStage            = "goobers.stage"
+	AttrStageType        = "goobers.stage.type"
+	AttrAttemptNumber    = "goobers.attempt.n"
+	AttrAttemptKind      = "goobers.attempt.kind"
+	AttrItemID           = "goobers.item.id"
+	AttrItemURL          = "goobers.item.url"
+	AttrOutcome          = "goobers.outcome"
+	AttrErrorCode        = "goobers.error.code"
+	AttrGateDecision     = "goobers.gate.decision"
+	AttrGateRepassNumber = "goobers.gate.repass.n"
+	AttrErrorType        = string(semconv.ErrorTypeKey)
+)
+
+// AllAttributes returns every canonical attribute in declaration order.
+func AllAttributes() []Attribute {
+	return []Attribute{
+		AttrRunID,
+		AttrGaggle,
+		AttrWorkflow,
+		AttrWorkflowVersion,
+		AttrWorkflowDigest,
+		AttrGoober,
+		AttrStage,
+		AttrStageType,
+		AttrAttemptNumber,
+		AttrAttemptKind,
+		AttrItemID,
+		AttrItemURL,
+		AttrOutcome,
+		AttrErrorCode,
+		AttrGateDecision,
+		AttrGateRepassNumber,
+		Attribute(AttrErrorType),
+	}
+}
+
+// KnownAttribute reports whether key is in the canonical registry.
+func KnownAttribute(key string) bool {
+	for _, attr := range AllAttributes() {
+		if string(attr) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// Canonical values for span stage types, attempt kinds, and outcomes.
+const (
+	StageTypeDeterministic = "deterministic"
+	StageTypeAgentic       = "agentic"
+	StageTypeGate          = "gate"
+	StageTypeScheduler     = "scheduler"
+
+	AttemptKindPolicy = "policy"
+	AttemptKindInfra  = "infra"
+
+	OutcomeSuccess = "success"
+	OutcomeFailure = "failure"
+	OutcomeBlocked = "blocked"
 )
 
 const (
-	// SpanKindRun marks the root workflow run span.
+	// SpanKindRun marks the root workflow run span in journal span records.
 	SpanKindRun = "run"
-	// SpanKindTask marks a workflow task span.
+	// SpanKindTask marks a workflow task span in journal span records.
 	SpanKindTask = "task"
-	// SpanKindGate marks a workflow gate span.
+	// SpanKindGate marks a workflow gate span in journal span records.
 	SpanKindGate = "gate"
-	// SpanKindScheduler marks a scheduler decision span.
+	// SpanKindScheduler marks a scheduler decision span in journal span records.
 	SpanKindScheduler = "scheduler"
 )
 
@@ -57,37 +90,41 @@ type RunAttributes struct {
 	Gaggle          string
 	WorkflowID      string
 	WorkflowVersion string
+	WorkflowDigest  string
 	RunID           string
 	ItemID          string
-	ItemProvider    string
-	Trigger         string
+	ItemURL         string
 }
 
-// TaskAttributes describes a task execution span.
+// TaskAttributes describes one task attempt span.
 type TaskAttributes struct {
 	Gaggle          string
 	WorkflowID      string
 	WorkflowVersion string
+	WorkflowDigest  string
 	RunID           string
 	TaskID          string
 	TaskType        string
 	GooberID        string
+	Attempt         int
+	AttemptKind     string
 	ItemID          string
-	ItemProvider    string
+	ItemURL         string
 }
 
-// GateAttributes describes a gate evaluation span.
+// GateAttributes describes one gate evaluation span.
 type GateAttributes struct {
 	Gaggle          string
 	WorkflowID      string
 	WorkflowVersion string
+	WorkflowDigest  string
 	RunID           string
 	GateID          string
-	Evaluator       string
 	Decision        string
+	RepassNumber    int
 	GooberID        string
 	ItemID          string
-	ItemProvider    string
+	ItemURL         string
 }
 
 // SchedulerAttributes describes a scheduler decision span.
@@ -95,9 +132,9 @@ type SchedulerAttributes struct {
 	Gaggle          string
 	WorkflowID      string
 	WorkflowVersion string
+	WorkflowDigest  string
 	RunID           string
 	Action          string
-	Reason          string
 	ItemID          string
-	ItemProvider    string
+	ItemURL         string
 }

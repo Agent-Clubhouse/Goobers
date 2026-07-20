@@ -87,6 +87,7 @@ func backlogEvent() Event {
 func TestTriggerFiresStartsRun(t *testing.T) {
 	st := &fakeStarter{}
 	s := newScheduler(t, Config{Starter: st})
+	wantRunID := engine.RunID("web", "flow", "github:42")
 
 	d, err := s.Dispatch(context.Background(), backlogEvent())
 	if err != nil {
@@ -95,11 +96,14 @@ func TestTriggerFiresStartsRun(t *testing.T) {
 	if !d.Started {
 		t.Fatalf("expected a run to start, got: %+v", d)
 	}
-	if d.RunID != "web/flow/github:42" {
-		t.Errorf("RunID = %q, want web/flow/github:42", d.RunID)
+	if d.RunID != wantRunID {
+		t.Errorf("RunID = %q, want %q", d.RunID, wantRunID)
 	}
 	if st.lastInput.Version != 1 {
 		t.Errorf("started version = %d, want 1 (pinned)", st.lastInput.Version)
+	}
+	if st.lastInput.WorkflowDigest == "" {
+		t.Error("started input missing pinned workflow digest")
 	}
 	if st.lastInput.Item == nil || st.lastInput.Item.ID != "42" {
 		t.Errorf("started input missing the backlog item: %+v", st.lastInput.Item)
@@ -109,6 +113,7 @@ func TestTriggerFiresStartsRun(t *testing.T) {
 // TestReadinessBlocksRun: an unsatisfied readiness condition holds the run.
 func TestReadinessBlocksRun(t *testing.T) {
 	st := &fakeStarter{}
+	runID := engine.RunID("web", "flow", "github:42")
 	block := ReadinessFunc{Label: "capacity", Fn: func(context.Context, Event) (bool, string, error) {
 		return false, "no idle workers", nil
 	}}
@@ -124,7 +129,7 @@ func TestReadinessBlocksRun(t *testing.T) {
 	if !strings.Contains(d.Reason, "capacity") {
 		t.Errorf("reason = %q, want it to mention the blocking condition", d.Reason)
 	}
-	if st.count("web/flow/github:42") != 0 {
+	if st.count(runID) != 0 {
 		t.Error("starter must not be called when readiness blocks")
 	}
 }
@@ -150,7 +155,7 @@ func TestBacklogClaimIdempotentNoDoubleStart(t *testing.T) {
 	if !strings.Contains(d2.Reason, "already") {
 		t.Errorf("second reason = %q, want it to note already-running", d2.Reason)
 	}
-	if got := st.count("web/flow/github:42"); got != 2 {
+	if got := st.count(engine.RunID("web", "flow", "github:42")); got != 2 {
 		t.Errorf("starter saw %d attempts; both should target one run id", got)
 	}
 }
@@ -190,6 +195,18 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	for _, sp := range exp.Spans() {
 		if sp.Name() == "scheduler/evaluate" {
 			found = true
+			attrs := map[string]string{}
+			for _, attr := range sp.Attributes() {
+				attrs[string(attr.Key)] = attr.Value.Emit()
+			}
+			if attrs[telemetry.AttrRunID] == "" ||
+				attrs[telemetry.AttrWorkflowVersion] != "1" ||
+				attrs[telemetry.AttrWorkflowDigest] == "" {
+				t.Errorf("scheduler identity attrs = %#v", attrs)
+			}
+			if got := sp.SpanContext().TraceID().String(); got != attrs[telemetry.AttrRunID] {
+				t.Errorf("scheduler trace id = %q, want run id %q", got, attrs[telemetry.AttrRunID])
+			}
 		}
 	}
 	if !found {
