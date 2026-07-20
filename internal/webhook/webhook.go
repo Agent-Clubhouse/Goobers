@@ -41,6 +41,70 @@ type InstanceJournal interface {
 	Append(journal.Event) error
 }
 
+// DispatchGate serializes webhook acceptance with daemon shutdown.
+type DispatchGate struct {
+	mu        sync.RWMutex
+	ctx       context.Context
+	cancel    context.CancelFunc
+	accepting bool
+	stopped   bool
+}
+
+// NewDispatchGate creates a stopped gate whose context is canceled only while
+// holding the shutdown side of the gate.
+func NewDispatchGate(parent context.Context) (*DispatchGate, error) {
+	if parent == nil {
+		return nil, errors.New("webhook dispatch context is required")
+	}
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	return &DispatchGate{ctx: ctx, cancel: cancel}, nil
+}
+
+// Context returns the daemon context governed by the gate.
+func (g *DispatchGate) Context() context.Context {
+	return g.ctx
+}
+
+// Start begins accepting webhook dispatches unless shutdown has already begun.
+func (g *DispatchGate) Start() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.stopped {
+		return false
+	}
+	g.accepting = true
+	return true
+}
+
+// Stop prevents new dispatches, waits for an accepted dispatch to return, and
+// then cancels the daemon context before releasing the gate.
+func (g *DispatchGate) Stop() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.stopped {
+		return
+	}
+	g.accepting = false
+	g.stopped = true
+	g.cancel()
+}
+
+func (g *DispatchGate) isAccepting() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.accepting
+}
+
+func (g *DispatchGate) dispatch(signal func(context.Context)) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	if !g.accepting {
+		return false
+	}
+	signal(g.ctx)
+	return true
+}
+
 // SignalName returns the internal signal subscription for a GitHub event.
 func SignalName(event string) string {
 	return signalPrefix + strings.TrimSpace(event)
@@ -62,11 +126,10 @@ func ValidSignature(secret, body []byte, signature string) bool {
 // bounded in-memory set so an identical delivery is acknowledged without
 // waking workflows twice during one daemon lifetime.
 type Handler struct {
-	ctx      context.Context
 	secret   []byte
 	signaler Signaler
 	journal  InstanceJournal
-	ready    func() bool
+	gate     *DispatchGate
 	now      func() time.Time
 
 	mu         sync.Mutex
@@ -75,10 +138,7 @@ type Handler struct {
 }
 
 // NewHandler constructs the authenticated GitHub webhook endpoint.
-func NewHandler(ctx context.Context, secret []byte, signaler Signaler, instanceJournal InstanceJournal, ready func() bool) (*Handler, error) {
-	if ctx == nil {
-		return nil, errors.New("webhook context is required")
-	}
+func NewHandler(secret []byte, signaler Signaler, instanceJournal InstanceJournal, gate *DispatchGate) (*Handler, error) {
 	if len(secret) == 0 {
 		return nil, errors.New("webhook secret is required")
 	}
@@ -88,16 +148,15 @@ func NewHandler(ctx context.Context, secret []byte, signaler Signaler, instanceJ
 	if instanceJournal == nil {
 		return nil, errors.New("webhook instance journal is required")
 	}
-	if ready == nil {
-		return nil, errors.New("webhook readiness check is required")
+	if gate == nil {
+		return nil, errors.New("webhook dispatch gate is required")
 	}
 	copiedSecret := append([]byte(nil), secret...)
 	return &Handler{
-		ctx:        ctx,
 		secret:     copiedSecret,
 		signaler:   signaler,
 		journal:    instanceJournal,
-		ready:      ready,
+		gate:       gate,
 		now:        time.Now,
 		deliveries: make(map[string]struct{}),
 	}, nil
@@ -114,7 +173,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !h.accepting() {
+	if !h.gate.isAccepting() {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -155,21 +214,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("%s must be present and no longer than %d bytes", deliveryHeader, maxHeaderBytes), http.StatusBadRequest)
 		return
 	}
-	if !h.accepting() {
+	now := h.now()
+	if !h.gate.dispatch(func(ctx context.Context) {
+		if h.seen(delivery) {
+			return
+		}
+		h.signaler.Signal(ctx, SignalName(event), now)
+	}) {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if h.seen(delivery) {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-
-	h.signaler.Signal(h.ctx, SignalName(event), h.now())
 	w.WriteHeader(http.StatusAccepted)
-}
-
-func (h *Handler) accepting() bool {
-	return h.ctx.Err() == nil && h.ready()
 }
 
 func (h *Handler) rejectInvalidSignature(w http.ResponseWriter) {

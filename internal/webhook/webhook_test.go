@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,31 +49,47 @@ func (r *countingReader) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 
-func alwaysReady() bool { return true }
+func startedDispatchGate(t *testing.T, parent context.Context) *DispatchGate {
+	t.Helper()
+	gate, err := NewDispatchGate(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gate.Start() {
+		t.Fatal("dispatch gate did not start")
+	}
+	t.Cleanup(gate.Stop)
+	return gate
+}
 
 func TestNewHandlerValidatesDependencies(t *testing.T) {
 	signaler := &recordingSignaler{}
 	instanceLog := &recordingJournal{}
+	gate := startedDispatchGate(t, context.Background())
 	cases := []struct {
 		name     string
-		ctx      context.Context
 		secret   []byte
 		signaler Signaler
 		journal  InstanceJournal
-		ready    func() bool
+		gate     *DispatchGate
 	}{
-		{name: "context", secret: []byte("secret"), signaler: signaler, journal: instanceLog, ready: alwaysReady},
-		{name: "secret", ctx: context.Background(), signaler: signaler, journal: instanceLog, ready: alwaysReady},
-		{name: "signaler", ctx: context.Background(), secret: []byte("secret"), journal: instanceLog, ready: alwaysReady},
-		{name: "journal", ctx: context.Background(), secret: []byte("secret"), signaler: signaler, ready: alwaysReady},
-		{name: "readiness", ctx: context.Background(), secret: []byte("secret"), signaler: signaler, journal: instanceLog},
+		{name: "secret", signaler: signaler, journal: instanceLog, gate: gate},
+		{name: "signaler", secret: []byte("secret"), journal: instanceLog, gate: gate},
+		{name: "journal", secret: []byte("secret"), signaler: signaler, gate: gate},
+		{name: "dispatch gate", secret: []byte("secret"), signaler: signaler, journal: instanceLog},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := NewHandler(tc.ctx, tc.secret, tc.signaler, tc.journal, tc.ready); err == nil {
+			if _, err := NewHandler(tc.secret, tc.signaler, tc.journal, tc.gate); err == nil {
 				t.Fatal("NewHandler unexpectedly succeeded")
 			}
 		})
+	}
+}
+
+func TestNewDispatchGateRejectsNilContext(t *testing.T) {
+	if _, err := NewDispatchGate(nil); err == nil {
+		t.Fatal("NewDispatchGate unexpectedly succeeded")
 	}
 }
 
@@ -106,7 +121,7 @@ func TestValidSignatureGitHubVector(t *testing.T) {
 func TestHandlerRoutesGitHubEventNames(t *testing.T) {
 	const secret = "webhook-test-secret"
 	signaler := &recordingSignaler{}
-	handler, err := NewHandler(context.Background(), []byte(secret), signaler, &recordingJournal{}, alwaysReady)
+	handler, err := NewHandler([]byte(secret), signaler, &recordingJournal{}, startedDispatchGate(t, context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +141,7 @@ func TestHandlerRoutesGitHubEventNames(t *testing.T) {
 func TestHandlerRejectsInvalidSignatureAndJournals(t *testing.T) {
 	signaler := &recordingSignaler{}
 	instanceLog := &recordingJournal{}
-	handler, err := NewHandler(context.Background(), []byte("right-secret"), signaler, instanceLog, alwaysReady)
+	handler, err := NewHandler([]byte("right-secret"), signaler, instanceLog, startedDispatchGate(t, context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +164,7 @@ func TestHandlerRejectsInvalidSignatureAndJournals(t *testing.T) {
 func TestHandlerSuppressesReplayedDelivery(t *testing.T) {
 	const secret = "webhook-test-secret"
 	signaler := &recordingSignaler{}
-	handler, err := NewHandler(context.Background(), []byte(secret), signaler, &recordingJournal{}, alwaysReady)
+	handler, err := NewHandler([]byte(secret), signaler, &recordingJournal{}, startedDispatchGate(t, context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +182,7 @@ func TestHandlerSuppressesReplayedDelivery(t *testing.T) {
 
 func TestHandlerRejectsUnsupportedRequestShapes(t *testing.T) {
 	const secret = "webhook-test-secret"
-	handler, err := NewHandler(context.Background(), []byte(secret), &recordingSignaler{}, &recordingJournal{}, alwaysReady)
+	handler, err := NewHandler([]byte(secret), &recordingSignaler{}, &recordingJournal{}, startedDispatchGate(t, context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,10 +223,13 @@ func TestHandlerRejectsUnsupportedRequestShapes(t *testing.T) {
 
 func TestHandlerRejectsDeliveriesOutsideReadyLifecycle(t *testing.T) {
 	const secret = "webhook-test-secret"
-	var ready atomic.Bool
 	signaler := &recordingSignaler{}
 	ctx, cancel := context.WithCancel(context.Background())
-	handler, err := NewHandler(ctx, []byte(secret), signaler, &recordingJournal{}, ready.Load)
+	gate, err := NewDispatchGate(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler([]byte(secret), signaler, &recordingJournal{}, gate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,15 +238,16 @@ func TestHandlerRejectsDeliveriesOutsideReadyLifecycle(t *testing.T) {
 	if response := deliver(t, handler, secret, "issues", "startup", body); response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("startup status = %d, want %d", response.Code, http.StatusServiceUnavailable)
 	}
-	ready.Store(true)
+	if !gate.Start() {
+		t.Fatal("dispatch gate did not start")
+	}
 	if response := deliver(t, handler, secret, "issues", "ready", body); response.Code != http.StatusAccepted {
 		t.Fatalf("ready status = %d, want %d", response.Code, http.StatusAccepted)
 	}
-	ready.Store(false)
+	gate.Stop()
 	if response := deliver(t, handler, secret, "issues", "shutdown", body); response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("shutdown status = %d, want %d", response.Code, http.StatusServiceUnavailable)
 	}
-	ready.Store(true)
 	cancel()
 	if response := deliver(t, handler, secret, "issues", "canceled", body); response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("canceled-context status = %d, want %d", response.Code, http.StatusServiceUnavailable)
@@ -238,8 +257,52 @@ func TestHandlerRejectsDeliveriesOutsideReadyLifecycle(t *testing.T) {
 	}
 }
 
+func TestHandlerDoesNotDispatchWhenShutdownStartsInFinalWindow(t *testing.T) {
+	const secret = "webhook-test-secret"
+	signaler := &recordingSignaler{}
+	gate := startedDispatchGate(t, context.Background())
+	handler, err := NewHandler([]byte(secret), signaler, &recordingJournal{}, gate)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	finalWindow := make(chan struct{})
+	release := make(chan struct{})
+	handler.now = func() time.Time {
+		close(finalWindow)
+		<-release
+		return time.Unix(1, 0)
+	}
+	body := []byte(`{}`)
+	request := httptest.NewRequest(http.MethodPost, Path, bytes.NewReader(body))
+	request.Header.Set(signatureHeader, sign(secret, body))
+	request.Header.Set(eventHeader, "issues")
+	request.Header.Set(deliveryHeader, "shutdown-race")
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(response, request)
+	}()
+
+	<-finalWindow
+	gate.Stop()
+	close(release)
+	<-done
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	if got := signaler.names(); len(got) != 0 {
+		t.Fatalf("shutdown-race delivery signaled %v", got)
+	}
+	if gate.Context().Err() == nil {
+		t.Fatal("dispatch context was not canceled by shutdown")
+	}
+}
+
 func TestHandlerRejectsOversizedContentLengthWithoutReading(t *testing.T) {
-	handler, err := NewHandler(context.Background(), []byte("secret"), &recordingSignaler{}, &recordingJournal{}, alwaysReady)
+	handler, err := NewHandler([]byte("secret"), &recordingSignaler{}, &recordingJournal{}, startedDispatchGate(t, context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +322,7 @@ func TestHandlerRejectsOversizedContentLengthWithoutReading(t *testing.T) {
 }
 
 func TestHandlerFailsClosedWhenRejectionCannotBeJournaled(t *testing.T) {
-	handler, err := NewHandler(context.Background(), []byte("right-secret"), &recordingSignaler{}, &recordingJournal{err: errors.New("disk full")}, alwaysReady)
+	handler, err := NewHandler([]byte("right-secret"), &recordingSignaler{}, &recordingJournal{err: errors.New("disk full")}, startedDispatchGate(t, context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}

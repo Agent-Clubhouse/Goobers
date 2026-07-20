@@ -131,9 +131,31 @@ func runUp(args []string, stdout, stderr io.Writer) int {
 // runUpContext is runUp's testable core: the OS signal wiring lives only in
 // runUp, so tests can drive shutdown deterministically via ctx cancellation
 // instead of sending real signals.
-func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Writer) int {
+	webhookGate, err := webhookhttp.NewDispatchGate(parentCtx)
+	if err != nil {
+		pf(stderr, "error: initialize daemon lifecycle: %v\n", err)
+		return 1
+	}
+	ctx := webhookGate.Context()
+	var ready atomic.Bool
+	stopDaemon := func() {
+		ready.Store(false)
+		webhookGate.Stop()
+	}
+	parentBridgeDone := make(chan struct{})
+	go func() {
+		defer close(parentBridgeDone)
+		select {
+		case <-parentCtx.Done():
+			stopDaemon()
+		case <-ctx.Done():
+		}
+	}()
+	defer func() {
+		stopDaemon()
+		<-parentBridgeDone
+	}()
 
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -204,7 +226,6 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pln(stdout, warning)
 	}
 
-	var ready atomic.Bool
 	reads, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      l,
 		Config:      setup.Config,
@@ -332,7 +353,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
-	webhookServer, err := buildWebhookServer(ctx, setup, sched, ready.Load, webhookLog)
+	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -365,8 +386,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		if apiStopped {
 			return
 		}
-		ready.Store(false)
-		cancel()
+		stopDaemon()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
 		defer shutdownCancel()
 		if err := apiServer.Shutdown(shutdownCtx); err != nil {
@@ -497,7 +517,9 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		}
 	}()
 
-	ready.Store(true)
+	if webhookGate.Start() {
+		ready.Store(true)
+	}
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at http://%s%s\n", root, len(setup.Entries), apiServer.Address(), httpapi.Prefix)
 	if webhookServer != nil {
 		pf(stdout, "GitHub webhooks listening at http://%s%s\n", webhookServer.Address(), webhookhttp.Path)
@@ -537,7 +559,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			configFailed = true
 			pf(stderr, "error: config watcher stopped: %v\n", reloadErr)
 		}
-		cancel()
+		stopDaemon()
 		runErr = <-schedulerDone
 	case serveErr, ok := <-apiServer.Errors():
 		apiFailed = true
@@ -545,7 +567,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			serveErr = errors.New("server stopped unexpectedly")
 		}
 		pf(stderr, "error: HTTP API stopped: %v\n", serveErr)
-		cancel()
+		stopDaemon()
 		runErr = <-schedulerDone
 	case serveErr, ok := <-webhookErrors:
 		webhookFailed = true
@@ -553,11 +575,10 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			serveErr = errors.New("server stopped unexpectedly")
 		}
 		pf(stderr, "error: webhook listener stopped: %v\n", serveErr)
-		cancel()
+		stopDaemon()
 		runErr = <-schedulerDone
 	}
-	ready.Store(false)
-	cancel()
+	stopDaemon()
 	if *watchConfig && !configWatcherDone {
 		if reloadErr := <-configDone; reloadErr != nil {
 			configFailed = true

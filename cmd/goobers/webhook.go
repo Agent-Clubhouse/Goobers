@@ -43,7 +43,7 @@ func webhookConfigurationWarning(set *instance.ConfigSet, cfg *instance.Config) 
 	return ""
 }
 
-func buildWebhookServer(ctx context.Context, setup *schedulerSetup, sched *localscheduler.Scheduler, ready func() bool, errorLog *log.Logger) (*httpapi.Server, error) {
+func buildWebhookServer(ctx context.Context, setup *schedulerSetup, sched *localscheduler.Scheduler, gate *webhookhttp.DispatchGate, errorLog *log.Logger) (*httpapi.Server, error) {
 	if !hasWebhookTriggers(setup.Definitions) || !setup.Config.WebhookSecretConfigured() {
 		return nil, nil
 	}
@@ -60,7 +60,7 @@ func buildWebhookServer(ctx context.Context, setup *schedulerSetup, sched *local
 		return nil, fmt.Errorf("resolve webhook secret: %w", err)
 	}
 	setup.SharedRegistry.Register([]byte(secret))
-	handler, err := webhookhttp.NewHandler(ctx, []byte(secret), sched, setup.InstanceLog, ready)
+	handler, err := webhookhttp.NewHandler([]byte(secret), sched, setup.InstanceLog, gate)
 	if err != nil {
 		return nil, fmt.Errorf("initialize webhook handler: %w", err)
 	}
