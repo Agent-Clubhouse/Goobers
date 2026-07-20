@@ -13,6 +13,8 @@ import type {
   AttemptList,
   TelemetryStatsResult,
   TelemetryErrorsPage,
+  ModelInvalidation,
+  ApiErrorEnvelope,
 } from "./types";
 
 export interface GoWireFixtures {
@@ -28,6 +30,8 @@ export interface GoWireFixtures {
   stageAttempts: AttemptList;
   telemetryStats: TelemetryStatsResult;
   telemetryErrors: TelemetryErrorsPage;
+  eventInvalidation: ModelInvalidation;
+  errorEnvelope: ApiErrorEnvelope;
 }
 
 export const goWireFixtures = {
@@ -586,5 +590,28 @@ export const goWireFixtures = {
       }
     ],
     "nextCursor": "next-error"
+  },
+  "eventInvalidation": {
+    "cursor": "fixture:9",
+    "models": [
+      "instance",
+      "run",
+      "workflow"
+    ],
+    "runIds": [
+      "run-123"
+    ],
+    "workflows": [
+      {
+        "gaggle": "core",
+        "name": "implementation"
+      }
+    ]
+  },
+  "errorEnvelope": {
+    "error": {
+      "code": "not_found",
+      "message": "requested resource was not found"
+    }
   }
 } as const satisfies GoWireFixtures;

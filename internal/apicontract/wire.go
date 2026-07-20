@@ -14,18 +14,20 @@ import (
 )
 
 type wireFixtures struct {
-	Health          readservice.Health               `json:"health"`
-	Instance        readservice.Instance             `json:"instance"`
-	Gaggles         readservice.GagglePage           `json:"gaggles"`
-	Goobers         readservice.GooberPage           `json:"goobers"`
-	Workflows       readservice.WorkflowPage         `json:"workflows"`
-	WorkflowDetail  readservice.WorkflowDetail       `json:"workflowDetail"`
-	Runs            readservice.RunList              `json:"runs"`
-	RunDetail       readservice.RunDetail            `json:"runDetail"`
-	RunEvents       readservice.EventList            `json:"runEvents"`
-	StageAttempts   readservice.AttemptList          `json:"stageAttempts"`
-	TelemetryStats  readservice.TelemetryStatsResult `json:"telemetryStats"`
-	TelemetryErrors readservice.TelemetryErrorsPage  `json:"telemetryErrors"`
+	Health            readservice.Health               `json:"health"`
+	Instance          readservice.Instance             `json:"instance"`
+	Gaggles           readservice.GagglePage           `json:"gaggles"`
+	Goobers           readservice.GooberPage           `json:"goobers"`
+	Workflows         readservice.WorkflowPage         `json:"workflows"`
+	WorkflowDetail    readservice.WorkflowDetail       `json:"workflowDetail"`
+	Runs              readservice.RunList              `json:"runs"`
+	RunDetail         readservice.RunDetail            `json:"runDetail"`
+	RunEvents         readservice.EventList            `json:"runEvents"`
+	StageAttempts     readservice.AttemptList          `json:"stageAttempts"`
+	TelemetryStats    readservice.TelemetryStatsResult `json:"telemetryStats"`
+	TelemetryErrors   readservice.TelemetryErrorsPage  `json:"telemetryErrors"`
+	EventInvalidation Invalidation                     `json:"eventInvalidation"`
+	ErrorEnvelope     ErrorEnvelope                    `json:"errorEnvelope"`
 }
 
 var wireFixtureTypes = []struct {
@@ -44,6 +46,8 @@ var wireFixtureTypes = []struct {
 	{name: "stageAttempts", scriptType: "AttemptList"},
 	{name: "telemetryStats", scriptType: "TelemetryStatsResult"},
 	{name: "telemetryErrors", scriptType: "TelemetryErrorsPage"},
+	{name: "eventInvalidation", scriptType: "ModelInvalidation"},
+	{name: "errorEnvelope", scriptType: "ApiErrorEnvelope"},
 }
 
 // TypeScriptWireFixtures renders representative Go response values that the
@@ -400,6 +404,21 @@ func newWireFixtures() wireFixtures {
 				OccurredAt: timestamp,
 			}},
 			NextCursor: "next-error",
+		},
+		EventInvalidation: Invalidation{
+			Cursor: "fixture:9",
+			Models: []string{"instance", "run", "workflow"},
+			RunIDs: []string{"run-123"},
+			Workflows: []WorkflowRef{{
+				Gaggle: "core",
+				Name:   "implementation",
+			}},
+		},
+		ErrorEnvelope: ErrorEnvelope{
+			Error: APIError{
+				Code:    "not_found",
+				Message: "requested resource was not found",
+			},
 		},
 	}
 }

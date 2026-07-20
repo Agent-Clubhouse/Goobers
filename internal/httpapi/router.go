@@ -84,15 +84,10 @@ func (f authorizerFunc) Authorize(r *http.Request) error { return f(r) }
 var AllowAll Authorizer = authorizerFunc(func(*http.Request) error { return nil })
 
 // ErrorEnvelope is the single error shape returned by every API route.
-type ErrorEnvelope struct {
-	Error APIError `json:"error"`
-}
+type ErrorEnvelope = apicontract.ErrorEnvelope
 
 // APIError is a stable machine code and safe human-readable message.
-type APIError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
+type APIError = apicontract.APIError
 
 // Router registers read-only routes behind an Authorizer.
 type Router struct {
