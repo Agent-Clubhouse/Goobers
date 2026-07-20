@@ -119,7 +119,7 @@ func runSignal(args []string, stdout, stderr io.Writer) int {
 	// race by blocking until each run's own journal shows it under way.
 	exitCode := 0
 	for _, runID := range runIDs {
-		phase, err := waitForRunTerminalInLayout(ctx, l, runID)
+		phase, err := waitForRunTerminalInLayoutWithProgress(ctx, l, runID, stderr)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2

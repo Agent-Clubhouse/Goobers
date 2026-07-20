@@ -64,6 +64,12 @@ func TestRunCompletesDeterministicWorkflow(t *testing.T) {
 	if !strings.Contains(stdout, "phase=completed") {
 		t.Fatalf("expected the real runner to complete the deterministic task, stdout = %q", stdout)
 	}
+	if !strings.Contains(stderr, "stage local-ci started") || !strings.Contains(stderr, "stage local-ci finished") {
+		t.Fatalf("run stderr missing stage transitions: %q", stderr)
+	}
+	if strings.Contains(stdout, "stage local-ci") {
+		t.Fatalf("stage progress leaked to stdout: %q", stdout)
+	}
 	runID := runIDFromRunStdout(t, stdout)
 
 	// status lists the run, completed.

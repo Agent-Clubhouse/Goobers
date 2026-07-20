@@ -23,6 +23,9 @@ const (
 	// EventGateStarted marks a gate evaluation beginning. It is recovery
 	// bookkeeping, excluded from cross-runner conformance.
 	EventGateStarted EventType = "gate.started"
+	// EventGatePaused marks a run waiting for a human decision at a gate. It is
+	// operational state, excluded from cross-runner conformance.
+	EventGatePaused EventType = "gate.paused"
 	// EventGateEvaluated records a gate verdict and the branch it selected.
 	EventGateEvaluated EventType = "gate.evaluated"
 	// EventArtifactRecorded records an artifact committed by content digest.
@@ -119,7 +122,7 @@ type Event struct {
 	// heartbeat and the class is not "infra".
 	AttemptClass AttemptClass `json:"attemptClass,omitempty"`
 	// Gate is the gate name for gate.* events. Normative on gate.evaluated;
-	// gate.started is excluded as recovery bookkeeping.
+	// gate.started and gate.paused are excluded as operational state.
 	Gate string `json:"gate,omitempty"`
 	// Verdict is the gate decision for gate.evaluated. Normative.
 	Verdict string `json:"verdict,omitempty"`
@@ -209,8 +212,8 @@ func (e Event) IsConformanceNormative() bool {
 		return false
 	}
 	switch e.Type {
-	case EventStageHeartbeat, EventGateStarted, EventRepaired:
-		// Pre-dispatch gate markers and torn-write repair are durability
+	case EventStageHeartbeat, EventGateStarted, EventGatePaused, EventRepaired:
+		// Gate markers and torn-write repair are durability/operational
 		// mechanics; heartbeats are operational liveness, not orchestration
 		// outcomes.
 		return false

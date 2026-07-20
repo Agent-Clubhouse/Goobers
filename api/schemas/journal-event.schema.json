@@ -28,6 +28,7 @@
         "stage.heartbeat",
         "stage.finished",
         "gate.started",
+        "gate.paused",
         "gate.evaluated",
         "artifact.recorded",
         "span.recorded",
@@ -44,7 +45,7 @@
         "config.reloaded",
         "config.reload.rejected"
       ],
-      "x-conformance": "conditional: stage.heartbeat and gate.started are excluded; all other event types are normative unless separately excluded"
+      "x-conformance": "conditional: stage.heartbeat, gate.started, and gate.paused are excluded; all other event types are normative unless separately excluded"
     },
     "branch": {
       "description": "Parallel-branch id. 0 at tiers 1-2; reserved for tier-3 parallel branches. Secondary ordering key.",
@@ -76,7 +77,7 @@
       "x-conformance": "conditional: excluded for stage.heartbeat and when 'infra'"
     },
     "gate": {
-      "description": "Gate name for gate.* events. gate.started is recovery bookkeeping and excluded from conformance; gate.evaluated is normative.",
+      "description": "Gate name for gate.* events. gate.started and gate.paused are operational bookkeeping excluded from conformance; gate.evaluated is normative.",
       "type": "string",
       "x-conformance": "normative"
     },

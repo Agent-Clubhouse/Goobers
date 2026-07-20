@@ -293,9 +293,7 @@ func (r *Run) SetMachineState(state string) {
 // Checkpoint writes state.json immediately, reflecting the current
 // MachineState. Most transitions checkpoint implicitly as part of Append or
 // RecordArtifact; call Checkpoint directly when a transition pauses without
-// either — e.g. a human gate (ARCHITECTURE.md §5: "a human gate executes
-// nothing"), which appends no event but still must leave state.json pointing
-// at the correct resume state.
+// either.
 func (r *Run) Checkpoint() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

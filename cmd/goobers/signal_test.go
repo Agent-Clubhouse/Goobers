@@ -67,6 +67,12 @@ func TestSignalDispatchesSubscribedWorkflow(t *testing.T) {
 	if !strings.Contains(stdout, "created run") {
 		t.Fatalf("stdout = %q, want a mention of the created run", stdout)
 	}
+	if !strings.Contains(stderr, "stage local-ci started") || !strings.Contains(stderr, "stage local-ci finished") {
+		t.Fatalf("signal stderr missing stage transitions: %q", stderr)
+	}
+	if strings.Contains(stdout, "stage local-ci") {
+		t.Fatalf("stage progress leaked to stdout: %q", stdout)
+	}
 
 	events, err := journal.ReadInstanceLog(l.SchedulerDir())
 	if err != nil {
