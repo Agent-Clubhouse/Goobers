@@ -3,6 +3,7 @@ package localscheduler
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1130,6 +1131,62 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 		got.WorkflowVersion != "7" || got.WorkflowDigest != "sha256:workflow" ||
 		got.RunID == "" || got.RunID != startedRunID || got.Action != "dispatch" {
 		t.Fatalf("scheduler span attrs = %+v, want pinned workflow identity and candidate run id %q", got, startedRunID)
+	}
+}
+
+func TestSkippedDispatchDoesNotCreateRunDirectory(t *testing.T) {
+	root := t.TempDir()
+	runsDir := filepath.Join(root, "gaggles", "acme-web", "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(filepath.Join(root, "scheduler"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	client, err := telemetry.New(context.Background(), telemetry.Config{
+		ServiceName:  "goobers-test",
+		SpanExporter: telemetry.NewPerGaggleJournalSpanExporter(root, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	starter := &fakeStarter{}
+	sched := New([]WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "acme-web",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+		Starter:   starter,
+	}}, log, WithTelemetry(client))
+	sched.conditions.ReconcileWorkflows(map[WorkflowIdentity]int{
+		{Gaggle: "acme-web", Workflow: "implement"}: 1,
+	})
+
+	sched.Tick(context.Background(), time.Now().Add(2*time.Hour))
+
+	if starter.count() != 0 {
+		t.Fatal("skipped dispatch started a run")
+	}
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("runs directory contains %d entries after skipped dispatch", len(entries))
+	}
+	events, err := journal.ReadInstanceLog(filepath.Join(root, "scheduler"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[1].Type != journal.EventTickSkipped {
+		t.Fatalf("scheduler events = %#v, want trigger.fired then tick.skipped", events)
+	}
+	if _, err := os.Stat(filepath.Join(root, "scheduler", "spans", "spans.jsonl")); err != nil {
+		t.Fatalf("scheduler span was not journaled: %v", err)
 	}
 }
 

@@ -162,6 +162,48 @@ func TestPerGaggleJournalSpanExporterRoutesToScopedRunDirectory(t *testing.T) {
 	}
 }
 
+func TestPerGaggleJournalSpanExporterRoutesSchedulerSpanToInstanceJournal(t *testing.T) {
+	root := t.TempDir()
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(context.Background(), Config{
+		ServiceName:  "goobers-test",
+		SpanExporter: NewPerGaggleJournalSpanExporter(root, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	_, span, err := client.StartSchedulerSpan(context.Background(), SchedulerAttributes{
+		Gaggle: "alpha", WorkflowID: "implementation", RunID: runID, Action: "dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.Complete(OutcomeBlocked, false)
+
+	path := filepath.Join(root, "scheduler", spansDirName, spanFileName)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open scheduler spans: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	var got SpanRecord
+	if err := json.NewDecoder(f).Decode(&got); err != nil {
+		t.Fatalf("decode scheduler span: %v", err)
+	}
+	if got.TraceID != runID || got.Kind != SpanKindScheduler || got.Name != "scheduler/dispatch" {
+		t.Fatalf("scheduler span = %#v", got)
+	}
+	runDir := filepath.Join(root, "gaggles", "alpha", "runs", runID)
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("scheduler span created run directory %s: %v", runDir, err)
+	}
+}
+
 func TestPerGaggleJournalSpanExporterRoutesToRetainedFlatJournal(t *testing.T) {
 	root := t.TempDir()
 	runID, err := NewRunID()

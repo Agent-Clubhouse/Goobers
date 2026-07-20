@@ -130,6 +130,45 @@ func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {
 	}
 }
 
+func TestBuildSchedulerSetupCleansSpansOnlyRunDirectories(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	spansOnly := filepath.Join(l.RunsDir(), "scheduler-exhaust", "spans")
+	if err := os.MkdirAll(spansOnly, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spansOnly, "spans.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	realRun := filepath.Join(l.RunsDir(), "real-run")
+	if err := os.MkdirAll(realRun, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realRun, "events.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(context.Background())
+
+	runDirs, err := l.RunDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, runsDir := range runDirs {
+		if _, err := os.Stat(filepath.Join(runsDir, "scheduler-exhaust")); !os.IsNotExist(err) {
+			t.Fatalf("spans-only run directory survived startup in %s: %v", runsDir, err)
+		}
+		if _, err := os.Stat(filepath.Join(runsDir, "real-run", "events.jsonl")); err != nil {
+			t.Fatalf("real run was not preserved in %s: %v", runsDir, err)
+		}
+	}
+}
+
 // TestUpIdlesThenDrainsOnCancel is issue #23's core daemon-loop acceptance:
 // `goobers up` starts the scheduler+runner daemon, and a cancelled context
 // (standing in for SIGINT/SIGTERM — runUp itself wires the real signal via

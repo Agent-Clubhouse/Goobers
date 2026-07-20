@@ -27,14 +27,13 @@ const (
 )
 
 // JournalSpanExporter is an OpenTelemetry sdktrace.SpanExporter that writes
-// completed spans under a run's journal directory: runs/<traceID>/spans/spans.jsonl.
-// A Goobers run IS an OTel trace (NewRunID mints the trace id used as the run
-// id), so grouping exported spans by trace id is exactly grouping them by run.
-// Spans are telemetry, not the conformance-normative journal (§3.3, §4) — this
-// exporter never touches events.jsonl/run.yaml/state.json.
+// completed run spans under runs/<traceID>/spans/spans.jsonl and, when
+// instance-scoped, scheduler spans under scheduler/spans/spans.jsonl. Spans are
+// telemetry, not the conformance-normative journal (§3.3, §4).
 type JournalSpanExporter struct {
 	runsDir       string
 	perGaggleRoot string
+	schedulerDir  string
 	scrubber      journal.Scrubber
 }
 
@@ -51,24 +50,35 @@ func NewJournalSpanExporter(runsDir string, scrubber journal.Scrubber) *JournalS
 	return &JournalSpanExporter{runsDir: runsDir, scrubber: scrubber}
 }
 
-// NewPerGaggleJournalSpanExporter creates an exporter that routes each span to
-// <instance-root>/gaggles/<gaggle>/runs using its goobers.gaggle attribute,
-// except when the run already has a retained flat journal under runs/.
+// NewPerGaggleJournalSpanExporter creates an exporter that routes run spans to
+// <instance-root>/gaggles/<gaggle>/runs using their goobers.gaggle attribute,
+// except when the run already has a retained flat journal under runs/. It
+// routes scheduler spans to the instance-level scheduler directory.
 func NewPerGaggleJournalSpanExporter(instanceRoot string, scrubber journal.Scrubber) *JournalSpanExporter {
 	exporter := NewJournalSpanExporter("", scrubber)
 	exporter.perGaggleRoot = instanceRoot
+	exporter.schedulerDir = filepath.Join(instanceRoot, "scheduler")
 	return exporter
 }
 
-// ExportSpans writes each span as one JSON line under its run's spans/
-// directory, grouping the batch by trace id so one call may fan out across
-// several concurrent runs. Attribute and event values are redacted before
-// write (TEL-013 defense in depth).
+// ExportSpans writes run spans under their run directories and scheduler spans
+// to the instance-level scheduler/spans/spans.jsonl file. Attribute and event
+// values are redacted before write (TEL-013 defense in depth).
 func (e *JournalSpanExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
 	byTrace := make(map[string][]sdktrace.ReadOnlySpan, len(spans))
+	var schedulerSpans []sdktrace.ReadOnlySpan
 	for _, s := range spans {
+		if e.schedulerDir != "" && spanRecordKind(s.Name()) == SpanKindScheduler {
+			schedulerSpans = append(schedulerSpans, s)
+			continue
+		}
 		traceID := s.SpanContext().TraceID().String()
 		byTrace[traceID] = append(byTrace[traceID], s)
+	}
+	if len(schedulerSpans) > 0 {
+		if err := e.writeSpans(filepath.Join(e.schedulerDir, spansDirName), "scheduler", schedulerSpans); err != nil {
+			return err
+		}
 	}
 	for traceID, group := range byTrace {
 		if err := e.writeGroup(traceID, group); err != nil {
@@ -97,8 +107,12 @@ func (e *JournalSpanExporter) writeGroup(traceID string, spans []sdktrace.ReadOn
 		}
 	}
 	dir := filepath.Join(runsDir, traceID, spansDirName)
+	return e.writeSpans(dir, "run "+traceID, spans)
+}
+
+func (e *JournalSpanExporter) writeSpans(dir, owner string, spans []sdktrace.ReadOnlySpan) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("telemetry: create spans dir for run %s: %w", traceID, err)
+		return fmt.Errorf("telemetry: create spans dir for %s: %w", owner, err)
 	}
 
 	path := filepath.Join(dir, spanFileName)
@@ -111,7 +125,7 @@ func (e *JournalSpanExporter) writeGroup(traceID string, spans []sdktrace.ReadOn
 	enc := json.NewEncoder(f)
 	for _, s := range spans {
 		if err := enc.Encode(e.toSpanRecord(s)); err != nil {
-			return fmt.Errorf("telemetry: encode span for run %s: %w", traceID, err)
+			return fmt.Errorf("telemetry: encode span for %s: %w", owner, err)
 		}
 	}
 	return f.Sync()

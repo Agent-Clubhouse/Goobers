@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,5 +94,42 @@ func TestRecordSpanScrubsSecret(t *testing.T) {
 	}
 	if !strings.Contains(string(got), Redacted) {
 		t.Fatalf("span blob does not contain the redaction placeholder: %q", got)
+	}
+}
+
+func TestCleanupSpansOnlyRunsPreservesJournals(t *testing.T) {
+	runsDir := t.TempDir()
+	spansOnly := filepath.Join(runsDir, "spans-only")
+	realRun := filepath.Join(runsDir, "real-run")
+	checkpointedRun := filepath.Join(runsDir, "checkpointed-run")
+	for _, dir := range []string{spansOnly, realRun, checkpointedRun} {
+		if err := os.MkdirAll(filepath.Join(dir, dirSpans), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, dirSpans, "spans.jsonl"), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(realRun, fileEvents), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkpointedRun, fileState), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := CleanupSpansOnlyRuns([]string{runsDir})
+	if err != nil {
+		t.Fatalf("CleanupSpansOnlyRuns: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if _, err := os.Stat(spansOnly); !os.IsNotExist(err) {
+		t.Fatalf("spans-only directory still exists: %v", err)
+	}
+	for _, dir := range []string{realRun, checkpointedRun} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("preserved run %s: %v", dir, err)
+		}
 	}
 }
