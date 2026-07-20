@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/goobers/goobers/internal/telemetry"
 )
@@ -58,9 +59,91 @@ func composedTranscript(prompt string, output []byte, model string, truncated bo
 }
 
 func boundCanonicalTranscript(data []byte, limit, alreadyDropped int64) ([]byte, int64, error) {
-	buf := newTranscriptBuffer(limit)
-	_, _ = buf.Write(data)
-	return finalizeCanonicalTranscript(buf, alreadyDropped)
+	if limit <= 0 {
+		limit = DefaultMaxTranscriptBytes
+	}
+	if int64(len(data)) <= limit {
+		return data, alreadyDropped, nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var events []transcriptEvent
+	for {
+		var event transcriptEvent
+		if err := decoder.Decode(&event); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, 0, err
+		}
+		events = append(events, event)
+	}
+
+	retained, err := truncateTranscriptContents(events, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	dropped := alreadyDropped + int64(len(data)-len(retained))
+	marker, err := marshalTranscriptEvents(transcriptEvent{
+		Role:      "system",
+		Content:   fmt.Sprintf("[transcript truncated: %d bytes dropped]", dropped),
+		Truncated: true,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return append(retained, marker...), dropped, nil
+}
+
+func truncateTranscriptContents(events []transcriptEvent, limit int64) ([]byte, error) {
+	contents := make([][]rune, len(events))
+	maxRunes := 0
+	lastAssistant := -1
+	for i := range events {
+		contents[i] = []rune(events[i].Content)
+		if len(contents[i]) > maxRunes {
+			maxRunes = len(contents[i])
+		}
+		if events[i].Role == "assistant" {
+			lastAssistant = i
+		}
+	}
+
+	encode := func(contentRunes int, forceTruncated bool) ([]byte, error) {
+		candidate := append([]transcriptEvent(nil), events...)
+		for i := range candidate {
+			if len(contents[i]) > contentRunes {
+				candidate[i].Content = string(contents[i][:contentRunes])
+			}
+			if forceTruncated && len(contents[i]) > 0 {
+				candidate[i].Truncated = true
+			} else if len(contents[i]) > contentRunes || i == lastAssistant {
+				candidate[i].Truncated = true
+			}
+		}
+		return marshalTranscriptEvents(candidate...)
+	}
+
+	// A shared rune cap gives both prompt and final output a retained prefix;
+	// shorter content is preserved in full before either record can disappear.
+	bestRunes := -1
+	for low, high := 0, maxRunes; low <= high; {
+		mid := low + (high-low)/2
+		candidate, err := encode(mid, true)
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(candidate)) <= limit {
+			bestRunes = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	if bestRunes < 0 {
+		return nil, nil
+	}
+	return encode(bestRunes, false)
 }
 
 func finalizeCanonicalTranscript(buf *syncBuffer, alreadyDropped int64) ([]byte, int64, error) {
