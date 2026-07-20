@@ -109,18 +109,84 @@ func TestClaimsListStandaloneAndStaleFilter(t *testing.T) {
 	}
 }
 
-func TestClaimsReleaseStandaloneIsDistinctlyJournaled(t *testing.T) {
+func seedJournaledClaim(t *testing.T, root, itemID, runID string, terminal bool) {
+	t.Helper()
+	l := instance.NewLayout(root)
+	run, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implement",
+		WorkflowVersion: 1,
+		Gaggle:          "example",
+		StartedAt:       time.Now(),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal {
+		if err := run.Append(journal.Event{
+			Type:   journal.EventRunFinished,
+			Status: string(journal.PhaseCompleted),
+		}); err != nil {
+			_ = run.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	err = withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogClaim, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+		if err != nil {
+			return err
+		}
+		ok, _, err := ledger.Claim(itemID, runID, "implement", time.Hour)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("claim %s was refused", itemID)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaimsReleaseRequiresForceForNonTerminalHolderAndJournalsActor(t *testing.T) {
 	root := initDemo(t)
-	seedClaims(t, root, time.Now())
+	runID := strings.Repeat("a", 32)
+	seedJournaledClaim(t, root, "issue-9", runID, false)
 
 	code, stdout, stderr := runArgs(t, "claims", "release", "issue-9", root)
+	if code != 1 {
+		t.Fatalf("release without force: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{"issue-9", "holder run " + runID, "age ", "expires "} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("preview stdout=%q, want %q", stdout, want)
+		}
+	}
+	if !strings.Contains(stderr, "--force") {
+		t.Fatalf("stderr=%q, want --force refusal", stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(instance.NewLayout(root).SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := ledger.Lookup("issue-9"); !held {
+		t.Fatal("release without --force removed a non-terminal holder")
+	}
+
+	code, stdout, stderr = runArgs(t, "claims", "release", "--force", "issue-9", root)
 	if code != 0 {
 		t.Fatalf("release: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "was held by run run-b") {
+	if !strings.Contains(stdout, "was held by run "+runID) {
 		t.Fatalf("stdout=%q, want prior holder", stdout)
 	}
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(instance.NewLayout(root).SchedulerDir(), claimLedgerFileName))
+	ledger, err = localscheduler.OpenClaimLedger(filepath.Join(instance.NewLayout(root).SchedulerDir(), claimLedgerFileName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,11 +198,26 @@ func TestClaimsReleaseStandaloneIsDistinctlyJournaled(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, event := range events {
-		if event.Type == journal.EventClaimForceReleased && event.Name == "issue-9" && event.RunID == "run-b" {
+		if event.Type == journal.EventClaimForceReleased && event.Name == "issue-9" &&
+			event.RunID == runID && event.Runner["actor"] == claimAdminActorCLI {
 			return
 		}
 	}
 	t.Fatalf("force-release event not found: %+v", events)
+}
+
+func TestClaimsReleaseTerminalHolderDoesNotRequireForce(t *testing.T) {
+	root := initDemo(t)
+	runID := strings.Repeat("b", 32)
+	seedJournaledClaim(t, root, "issue-10", runID, true)
+
+	code, stdout, stderr := runArgs(t, "claims", "release", "issue-10", root)
+	if code != 0 {
+		t.Fatalf("terminal release: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "holder run "+runID) || !strings.Contains(stdout, "released claim issue-10") {
+		t.Fatalf("stdout=%q, want preview and release", stdout)
+	}
 }
 
 func TestClaimsReleaseUnknownItemIsBusinessError(t *testing.T) {
@@ -172,7 +253,7 @@ func TestClaimsCommandsPreserveClaimNamespaces(t *testing.T) {
 		t.Fatalf("partially scoped release: code=%d stderr=%q", code, stderr)
 	}
 	code, stdout, stderr = runArgs(
-		t, "claims", "release", "--gaggle=alpha", "--provider=github", "issue-9", root,
+		t, "claims", "release", "--force", "--gaggle=alpha", "--provider=github", "issue-9", root,
 	)
 	if code != 0 {
 		t.Fatalf("scoped release: code=%d stdout=%q stderr=%q", code, stdout, stderr)
@@ -200,11 +281,13 @@ func TestClaimAdminDelegationRoundTrip(t *testing.T) {
 	}
 	defer func() { _ = log.Close() }()
 
-	requestID, err := writeClaimAdminRequest(schedulerDir, claimAdminRequest{
-		Operation: claimAdminOperationRelease,
-		ItemID:    "issue-9",
-		Gaggle:    "alpha",
-		Provider:  "github",
+	rejectedID, err := writeClaimAdminRequest(schedulerDir, claimAdminRequest{
+		Operation:     claimAdminOperationRelease,
+		ItemID:        "issue-9",
+		Gaggle:        "alpha",
+		Provider:      "github",
+		ExpectedRunID: "run-alpha",
+		Actor:         claimAdminActorCLI,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +295,30 @@ func TestClaimAdminDelegationRoundTrip(t *testing.T) {
 	if err := sweepPendingClaimAdminRequests(schedulerDir, log, time.Now); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := pollClaimAdminResponse(context.Background(), schedulerDir, requestID, testResponseWait)
+	resp, err := pollClaimAdminResponse(context.Background(), schedulerDir, rejectedID, testResponseWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Code != claimAdminCodeLiveHolder || !strings.Contains(resp.Error, "--force") {
+		t.Fatalf("non-terminal release response=%+v", resp)
+	}
+
+	requestID, err := writeClaimAdminRequest(schedulerDir, claimAdminRequest{
+		Operation:     claimAdminOperationRelease,
+		ItemID:        "issue-9",
+		Gaggle:        "alpha",
+		Provider:      "github",
+		ExpectedRunID: "run-alpha",
+		Force:         true,
+		Actor:         claimAdminActorCLI,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sweepPendingClaimAdminRequests(schedulerDir, log, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = pollClaimAdminResponse(context.Background(), schedulerDir, requestID, testResponseWait)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,16 +361,27 @@ func TestClaimsCommandsDelegateToLiveDaemon(t *testing.T) {
 	if code != 0 || !strings.Contains(stdout, "issue-9") {
 		t.Fatalf("live list: code=%d stdout=%q stderr=%q", code, stdout, commandStderr)
 	}
-	code, stdout, commandStderr = runArgs(t, "claims", "release", "issue-9", root)
+	code, stdout, commandStderr = runArgs(t, "claims", "release", "--force", "issue-9", root)
 	if code != 0 {
 		t.Fatalf("live release: code=%d stdout=%q stderr=%q", code, stdout, commandStderr)
 	}
 
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	var reclaimed bool
+	var holder string
+	// This is the same locked ledger claim that backlog-query performs when the
+	// next relevant workflow tick reaches its claim stage.
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogClaim, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+		if err != nil {
+			return err
+		}
+		reclaimed, holder, err = ledger.Claim("issue-9", "run-next-tick", "implement", time.Hour)
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, held := ledger.Lookup("issue-9"); held {
-		t.Fatal("live daemon did not release issue-9")
+	if !reclaimed || holder != "run-next-tick" {
+		t.Fatalf("next workflow claim after live release: reclaimed=%v holder=%q", reclaimed, holder)
 	}
 }

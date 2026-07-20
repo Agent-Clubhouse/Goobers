@@ -180,7 +180,11 @@ _goobers_completion()
             [[ "${COMP_WORDS[2]:-}" == "redact" ]] && flags+=" --run --path --reason --secret-file"
             ;;
         claims)
-            [[ "${COMP_WORDS[2]:-}" == "list" ]] && flags+=" --json --stale"
+            if [[ "${COMP_WORDS[2]:-}" == "list" ]]; then
+                flags+=" --json --stale"
+            elif [[ "${COMP_WORDS[2]:-}" == "release" ]]; then
+                flags+=" --force"
+            fi
             ;;
         backlog-query) flags+=" --claim --release" ;;
         apply-verdict) flags+=" --gate" ;;
@@ -345,7 +349,11 @@ _goobers_completion()
             [[ "${words[3]:-}" == "redact" ]] && flags+=(--run --path --reason --secret-file)
             ;;
         claims)
-            [[ "${words[3]:-}" == "list" ]] && flags+=(--json --stale)
+            if [[ "${words[3]:-}" == "list" ]]; then
+                flags+=(--json --stale)
+            elif [[ "${words[3]:-}" == "release" ]]; then
+                flags+=(--force)
+            fi
             ;;
         backlog-query) flags+=(--claim --release) ;;
         apply-verdict) flags+=(--gate) ;;
@@ -518,6 +526,7 @@ complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_sub
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l secret-file -r -d 'Secret file'
 complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l stale -d 'Show only expired claims'
+complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from release' -l force -d 'Release a claim held by a non-terminal run'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l claim -d 'Claim an item'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l release -d 'Release a claim'
 complete -c goobers -n '__fish_seen_subcommand_from apply-verdict' -l gate -r -d 'Gate name'

@@ -13,6 +13,8 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+const forceReleaseActorCLI = "cli"
+
 // ClaimKey identifies one provider item within a gaggle.
 type ClaimKey struct {
 	Gaggle     string
@@ -338,7 +340,7 @@ func (l *ClaimLedger) release(storageKey, runID string) error {
 // reserved for operator recovery of stuck claims and journals a distinct event
 // so the override cannot be mistaken for normal run cleanup.
 func (l *ClaimLedger) ForceRelease(itemID string) error {
-	return l.forceRelease(itemID)
+	return l.forceRelease(itemID, forceReleaseActorCLI)
 }
 
 // ForceReleaseScoped force-releases a claim identified by its scoped key.
@@ -347,22 +349,30 @@ func (l *ClaimLedger) ForceReleaseScoped(key ClaimKey) error {
 	if err != nil {
 		return err
 	}
-	return l.forceRelease(storageKey)
+	return l.forceRelease(storageKey, forceReleaseActorCLI)
 }
 
-// ForceReleaseEntry force-releases entry without losing its namespace.
-func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry) error {
+// ForceReleaseEntry force-releases entry without losing its namespace and
+// records actor in the distinct administrative journal event.
+func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry, actor string) error {
 	if entry.Gaggle == "" || entry.Provider == "" {
-		return l.ForceRelease(entry.ItemID)
+		return l.forceRelease(entry.ItemID, actor)
 	}
-	return l.ForceReleaseScoped(ClaimKey{
+	storageKey, err := (ClaimKey{
 		Gaggle:     entry.Gaggle,
 		Provider:   entry.Provider,
 		ExternalID: entry.ExternalID,
-	})
+	}).storageKey()
+	if err != nil {
+		return err
+	}
+	return l.forceRelease(storageKey, actor)
 }
 
-func (l *ClaimLedger) forceRelease(storageKey string) error {
+func (l *ClaimLedger) forceRelease(storageKey, actor string) error {
+	if actor == "" {
+		return errors.New("localscheduler: force-release actor is required")
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -375,7 +385,7 @@ func (l *ClaimLedger) forceRelease(storageKey string) error {
 		l.entries[storageKey] = entry
 		return err
 	}
-	l.journal(journal.EventClaimForceReleased, entry)
+	l.journalWithRunner(journal.EventClaimForceReleased, entry, map[string]any{"actor": actor})
 	return nil
 }
 
@@ -543,6 +553,10 @@ func (l *ClaimLedger) persist() error {
 // — a journal write failure here is deliberately swallowed rather than failing
 // the claim/release operation the ledger already committed.
 func (l *ClaimLedger) journal(eventType journal.EventType, entry ClaimEntry) {
+	l.journalWithRunner(eventType, entry, nil)
+}
+
+func (l *ClaimLedger) journalWithRunner(eventType journal.EventType, entry ClaimEntry, runner map[string]any) {
 	if l.log == nil {
 		return
 	}
@@ -552,5 +566,6 @@ func (l *ClaimLedger) journal(eventType journal.EventType, entry ClaimEntry) {
 		Gaggle:   entry.Gaggle,
 		RunID:    entry.RunID,
 		Workflow: entry.Workflow,
+		Runner:   runner,
 	})
 }

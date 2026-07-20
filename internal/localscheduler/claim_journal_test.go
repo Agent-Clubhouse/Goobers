@@ -29,7 +29,11 @@ func TestClaimLedgerJournalsTransitions(t *testing.T) {
 	if _, _, err := l.Claim("issue-9", "run-b", "implement", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.ForceRelease("issue-9"); err != nil {
+	entry, held := l.Lookup("issue-9")
+	if !held {
+		t.Fatal("issue-9 is not held")
+	}
+	if err := l.ForceReleaseEntry(entry, "cli"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -46,7 +50,8 @@ func TestClaimLedgerJournalsTransitions(t *testing.T) {
 	if events[1].Type != journal.EventClaimReleased || events[1].Name != "issue-8" {
 		t.Errorf("claim.released not journaled correctly: %+v", events[1])
 	}
-	if events[3].Type != journal.EventClaimForceReleased || events[3].Name != "issue-9" || events[3].RunID != "run-b" {
+	if events[3].Type != journal.EventClaimForceReleased || events[3].Name != "issue-9" ||
+		events[3].RunID != "run-b" || events[3].Runner["actor"] != "cli" {
 		t.Errorf("claim.force_released not journaled correctly: %+v", events[3])
 	}
 }

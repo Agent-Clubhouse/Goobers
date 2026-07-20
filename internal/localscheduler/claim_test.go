@@ -371,7 +371,7 @@ func TestForceReleaseEntryPreservesOtherNamespaces(t *testing.T) {
 	if !held {
 		t.Fatal("alpha claim is not held")
 	}
-	if err := l.ForceReleaseEntry(entry); err != nil {
+	if err := l.ForceReleaseEntry(entry, "cli"); err != nil {
 		t.Fatalf("ForceReleaseEntry: %v", err)
 	}
 	if _, held := l.LookupScoped(alpha); held {
