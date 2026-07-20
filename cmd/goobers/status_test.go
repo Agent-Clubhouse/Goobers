@@ -65,7 +65,7 @@ func TestStatusRejectsNonInstanceRoot(t *testing.T) {
 // the legitimate case: a real instance root that simply has no runs yet
 // still reports actionable no-runs guidance at exit 0.
 func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	code, stdout, stderr := runArgs(t, "status", root)
 	if code != 0 {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
@@ -78,7 +78,7 @@ func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
 }
 
 func TestStatusJSON(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	oldStartedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
 	newStartedAt := oldStartedAt.Add(time.Hour)
 	writeStatusRun(t, root, "a-new", "new-workflow", "new-gaggle", newStartedAt)
@@ -211,7 +211,7 @@ func TestStatusReadFailurePreservesUsageIOExitCode(t *testing.T) {
 }
 
 func TestStatusJSONEmptyInstance(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	code, stdout, stderr := runArgs(t, "status", "--json", root)
 	if code != 0 {
 		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
@@ -222,7 +222,7 @@ func TestStatusJSONEmptyInstance(t *testing.T) {
 }
 
 func TestStatusDefaultTableOutputUnchanged(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
 	writeStatusRun(t, root, "fixture-run", "fixture-workflow", "fixture", startedAt)
 
@@ -303,7 +303,7 @@ func TestStatusFiltersByWorkflowBeforeLimit(t *testing.T) {
 }
 
 func TestStatusJSONFiltersByMultiplePhases(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
 	writeStatusRunWithPhase(t, root, "completed-run", "implementation", "goobers", startedAt, journal.PhaseCompleted)
 	writeStatusRunWithPhase(
@@ -340,7 +340,7 @@ func TestStatusJSONFiltersByMultiplePhases(t *testing.T) {
 }
 
 func TestStatusFiltersCompose(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
 	writeStatusRunWithPhase(t, root, "merge-old", "merge-review", "goobers", startedAt, journal.PhaseFailed)
 	writeStatusRunWithPhase(

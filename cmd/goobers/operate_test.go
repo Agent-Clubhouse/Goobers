@@ -23,6 +23,29 @@ func initDemo(t *testing.T) string {
 	return root
 }
 
+func initScheduledDemo(t *testing.T) string {
+	t.Helper()
+	root := initDemo(t)
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	raw, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(
+		string(raw),
+		"    - type: manual",
+		"    - type: schedule\n      schedule: \"@every 24h\"",
+		1,
+	)
+	if updated == string(raw) {
+		t.Fatalf("starter workflow did not contain expected manual trigger:\n%s", raw)
+	}
+	if err := os.WriteFile(workflowPath, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 // TestRunCompletesDeterministicWorkflow exercises `goobers run` end to end
 // against the real runner (issue #23's daemon-loop follow-up rewired both
 // `run` and `up` off the old escalation stub) — a deterministic-only fixture

@@ -15,7 +15,7 @@ import (
 )
 
 func TestStatusAndRunsListShareRunTable(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	start := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
 	writeStatusRunWithPhase(t, root, "old-run", "implementation", "goobers", start, journal.PhaseFailed)
 	writeStatusRunWithPhase(t, root, "middle-run", "implementation", "goobers", start.Add(time.Minute), journal.PhaseFailed)

@@ -67,8 +67,16 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "type": "string", "enum": ["manual", "backlog-item", "schedule", "signal"] },
-        "selector": { "type": "object", "additionalProperties": { "type": "string" } },
+        "type": {
+          "type": "string",
+          "enum": ["manual", "backlog-item", "schedule", "signal"],
+          "description": "Trigger kind. backlog-item is reserved for V1 and has no V0 runtime consumer; use a schedule whose first task runs backlog-query --claim."
+        },
+        "selector": {
+          "type": "object",
+          "description": "Reserved for V1 backlog-item routing; accepted by the V0 schema but not consumed at runtime.",
+          "additionalProperties": { "type": "string" }
+        },
         "schedule": { "type": "string" },
         "signal": { "type": "string" }
       }

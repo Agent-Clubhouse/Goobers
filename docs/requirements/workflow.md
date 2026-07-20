@@ -52,10 +52,10 @@ everything a goober does happens inside a workflow, at every deployment tier.
 ### Triggers, readiness & scheduling
 - **WF-010 (MUST):** A Workflow MUST declare its trigger(s): schedule/cron/
   time-since-last-run (**ships first, V0**), backlog-item-available, and/or external
-  signal. Direct backlog-item and signal triggers remain in the model and layer onto
-  the same scheduler **post-V0 (deferred; no committed milestone yet)**; at V0
-  backlog consumption is expressed as a **cron-triggered workflow whose first stage
-  queries and claims eligible items** (see `WF-055`, `SCH-041`).
+  signal. Direct backlog-item triggers and their selectors remain in the schema but
+  are **reserved for V1** and have no V0 runtime consumer. At V0 backlog consumption
+  is expressed as a **cron-triggered workflow whose first stage queries and claims
+  eligible items** (see `WF-055`, `SCH-041`).
 - **WF-011 (MUST):** A Workflow MUST declare readiness conditions (e.g. max parallel
   runs, run budgets, worker/resource capacity). A run MUST start only when the
   trigger has fired AND readiness conditions are satisfied. *(All tiers)*
@@ -100,9 +100,10 @@ everything a goober does happens inside a workflow, at every deployment tier.
   so no unit of work is processed more than once. (See Scheduler spec.)
 
 ### Routing
-- **WF-040 (MUST):** The platform MUST map an incoming unit of work (e.g. a backlog
-  item) to the correct workflow. Mechanism owned by the Scheduler spec (labels +
-  selectors — unchanged by tier).
+- **WF-040 (MUST, V1):** The platform MUST map an incoming unit of work (e.g. a
+  backlog item) to the correct workflow. Mechanism owned by the Scheduler spec
+  (labels + selectors). The V0 schema reserves these fields but does not consume
+  them at runtime.
 
 ### Run journal & runner-seam contract
 - **WF-050 (MUST):** Every run MUST produce an append-only, content-digested **run
