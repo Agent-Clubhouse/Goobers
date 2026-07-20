@@ -171,13 +171,6 @@ func (s *fakeGitHubServer) addOpenPR(number int, head, base, headSHA, baseSHA st
 	}
 }
 
-// addCompare registers the fixture answer for GET .../compare/base...head.
-func (s *fakeGitHubServer) addCompare(base, head, mergeBaseSHA string, files []fakePRFile) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.compares[base+"..."+head] = fakeCompare{mergeBaseSHA: mergeBaseSHA, files: files}
-}
-
 // setBranchTip records the live tip SHA a branch's ref resolves to for
 // GitHubProvider.BranchTipSHA (GET .../git/ref/heads/<branch>) — the base-
 // advance signal the merge-escalated self-heal check reads (#1052). Distinct
@@ -560,9 +553,8 @@ func (s *fakeGitHubServer) handleCommitItem(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// handleCompare serves GET .../compare/{base}...{head} from the fixture
-// registered via addCompare; an unregistered pair is a 404, matching a real
-// "unknown ref" response.
+// handleCompare serves GET .../compare/{base}...{head} from the fixture map;
+// an unregistered pair is a 404, matching a real "unknown ref" response.
 func (s *fakeGitHubServer) handleCompare(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/repos/"+s.owner+"/"+s.repo+"/compare/")
 	s.mu.Lock()
