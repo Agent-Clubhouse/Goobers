@@ -68,6 +68,27 @@ api:
 	}
 }
 
+func TestLoadConfigWebhook(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+webhook:
+  listen: "[::1]:9091"
+  secret:
+    env: GITHUB_WEBHOOK_SECRET
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.WebhookListenAddress(); got != "[::1]:9091" {
+		t.Fatalf("WebhookListenAddress = %q, want [::1]:9091", got)
+	}
+	if !cfg.WebhookSecretConfigured() || cfg.Webhook.Secret.Env != "GITHUB_WEBHOOK_SECRET" {
+		t.Fatalf("unexpected webhook secret ref: %+v", cfg.Webhook.Secret)
+	}
+}
+
 func TestLoadConfigFileTokenRef(t *testing.T) {
 	path := writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1
@@ -247,6 +268,25 @@ func TestConfigValidate(t *testing.T) {
 			name:    "API invalid port",
 			cfg:     Config{API: APIConfig{Listen: "127.0.0.1:70000"}},
 			wantErr: "must be a number",
+		},
+		{
+			name:    "webhook all interfaces",
+			cfg:     Config{Webhook: WebhookConfig{Listen: "0.0.0.0:8081"}},
+			wantErr: "webhook.listen",
+		},
+		{
+			name: "webhook secret both env and file",
+			cfg: Config{Webhook: WebhookConfig{
+				Secret: TokenRef{Env: "WEBHOOK_SECRET", File: "/run/secrets/webhook"},
+			}},
+			wantErr: "webhook.secret must reference exactly one",
+		},
+		{
+			name: "webhook loopback and env secret",
+			cfg: Config{Webhook: WebhookConfig{
+				Listen: "127.0.0.2:0",
+				Secret: TokenRef{Env: "WEBHOOK_SECRET"},
+			}},
 		},
 		{
 			name: "credentials unknown capability",

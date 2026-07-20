@@ -21,14 +21,14 @@ var backlogClaimPattern = regexp.MustCompile(`(?s)backlog-query.*--claim`)
 // CheckWarnings reports non-fatal workflow diagnostics.
 func CheckWarnings(def Definition) []string {
 	var warnings []string
-	hasSchedule := false
+	hasAutonomousTrigger := false
 	for _, trigger := range def.Spec.Triggers {
-		if trigger.Type == apiv1.TriggerSchedule {
-			hasSchedule = true
+		if trigger.Type == apiv1.TriggerSchedule || trigger.Type == apiv1.TriggerWebhook {
+			hasAutonomousTrigger = true
 			break
 		}
 	}
-	if !hasSchedule {
+	if !hasAutonomousTrigger {
 		warnings = append(warnings, fmt.Sprintf(
 			"workflow %q has no schedule trigger; it will not fire autonomously — run it with `goobers run %s`",
 			def.Name,
@@ -250,9 +250,10 @@ func CheckGateOutcomes(def Definition) []string {
 }
 
 // triggerFieldProblems reports a trigger declared without the field its own
-// type requires to do anything (#125): type=signal with no Signal name has
-// nothing to fire on. type=schedule's own requirement (a non-empty Schedule
-// expression) is already covered by scheduleProblems.
+// type requires to do anything (#125): type=signal with no Signal name and
+// type=webhook with no event names have nothing to fire on. type=schedule's
+// own requirement (a non-empty Schedule expression) is already covered by
+// scheduleProblems.
 //
 // #125 also flagged type=backlog-item with no Selector — deliberately NOT
 // enforced here: Selector (WF-040/SCH-010) has no runtime consumer anywhere
@@ -275,6 +276,16 @@ func triggerFieldProblems(def Definition) []string {
 				continue
 			}
 			problems = append(problems, fmt.Sprintf("trigger[%d] type=signal requires a signal name", i))
+		case apiv1.TriggerWebhook:
+			if len(tr.Events) == 0 {
+				problems = append(problems, fmt.Sprintf("trigger[%d] type=webhook requires at least one event name", i))
+				continue
+			}
+			for eventIndex, event := range tr.Events {
+				if strings.TrimSpace(event) == "" {
+					problems = append(problems, fmt.Sprintf("trigger[%d] type=webhook event[%d] must not be empty", i, eventIndex))
+				}
+			}
 		}
 	}
 	if manualIndex >= 0 && len(def.Spec.Triggers) != 1 {

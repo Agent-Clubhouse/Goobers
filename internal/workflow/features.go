@@ -139,6 +139,7 @@ const (
 	featureTriggerBacklogItemSelector     FeatureID = "trigger.backlog-item.selector"
 	featureTriggerSchedule                FeatureID = "trigger.schedule"
 	featureTriggerSignal                  FeatureID = "trigger.signal"
+	featureTriggerWebhook                 FeatureID = "trigger.webhook"
 	featureTaskName                       FeatureID = "task.name"
 	featureTaskDeterministic              FeatureID = "task.deterministic"
 	featureTaskAgentic                    FeatureID = "task.agentic"
@@ -252,6 +253,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTriggerBacklogItemSelector,
 		featureTriggerSchedule,
 		featureTriggerSignal,
+		featureTriggerWebhook,
 		featureTaskName,
 		featureTaskDeterministic,
 		featureTaskAgentic,
@@ -468,6 +470,8 @@ func addTriggerFeatures(used featureSet, trigger apiv1.Trigger) {
 		used.add(featureTriggerSchedule)
 	case apiv1.TriggerSignal:
 		used.add(featureTriggerSignal)
+	case apiv1.TriggerWebhook:
+		used.add(featureTriggerWebhook)
 	}
 }
 

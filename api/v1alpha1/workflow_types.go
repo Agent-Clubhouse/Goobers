@@ -3,8 +3,8 @@ package v1alpha1
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 // TriggerType differentiates workflow archetypes without splitting the taxonomy:
-// workflows run manually, consume backlog items, or react to a schedule or
-// external signal (WF-010, WF-013).
+// workflows run manually, consume backlog items, or react to a schedule,
+// external signal, or GitHub webhook (WF-010, WF-013).
 type TriggerType string
 
 const (
@@ -19,12 +19,15 @@ const (
 	// TriggerSignal fires on an external signal (incl. another workflow's output,
 	// always routed through the scheduler — WF-014).
 	TriggerSignal TriggerType = "signal"
+	// TriggerWebhook fires when the daemon receives a signed GitHub webhook for
+	// one of the declared event names. Delivery reuses the signal scheduler path.
+	TriggerWebhook TriggerType = "webhook"
 )
 
 // Trigger declares one condition under which the scheduler may start a run. A run
 // starts only when a trigger fires AND readiness is satisfied (WF-011).
 type Trigger struct {
-	// +kubebuilder:validation:Enum=manual;backlog-item;schedule;signal
+	// +kubebuilder:validation:Enum=manual;backlog-item;schedule;signal;webhook
 	// +kubebuilder:validation:Required
 	Type TriggerType `json:"type" yaml:"type"`
 	// Selector is reserved for V1 backlog-item routing via k8s-style label
@@ -38,6 +41,11 @@ type Trigger struct {
 	// Signal is the named external signal for type=signal.
 	// +optional
 	Signal string `json:"signal,omitempty" yaml:"signal,omitempty"`
+	// Events are GitHub webhook event names (for example pull_request, issues,
+	// or check_suite) for type=webhook.
+	// +kubebuilder:validation:MinItems=1
+	// +optional
+	Events []string `json:"events,omitempty" yaml:"events,omitempty"`
 }
 
 // ReadinessConditions bound when a run may start and how emergent chains are

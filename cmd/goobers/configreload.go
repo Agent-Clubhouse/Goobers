@@ -118,6 +118,9 @@ func (r *configReloader) poll(now time.Time) error {
 			err:    fmt.Errorf("config directory invalid: %w", err),
 		})
 	}
+	if webhookListenerTopologyChanged(r.setup.Definitions, set) {
+		return r.reject(digest, errors.New("adding the first or removing the last webhook trigger requires a daemon restart"))
+	}
 	if err := r.layout.MigrateLegacyRuntime(configuredGaggleNames(set)); err != nil {
 		return r.reject(digest, err)
 	}

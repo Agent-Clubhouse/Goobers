@@ -50,6 +50,10 @@ Edit `my-instance/config/` to shape your workforce: the gaggle's `project`
 and `backlog` repo references, the goober's `harness`/`skills`/`tools`, and the
 workflow's `triggers`/`tasks`/`gates`.
 
+For event-driven workflows, see [GitHub webhook triggers](github-webhooks.md).
+The daemon keeps that listener on loopback; tunnel or reverse-proxy exposure is
+an operator choice.
+
 ## 4. `validate` — check it
 
 ```sh

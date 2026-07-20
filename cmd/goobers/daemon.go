@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -351,6 +352,11 @@ func buildSchedulerDefinitions(
 			}
 			if trigger.Type == apiv1.TriggerSignal && trigger.Signal != "" {
 				sigs = append(sigs, trigger.Signal)
+			}
+			if trigger.Type == apiv1.TriggerWebhook {
+				for _, event := range trigger.Events {
+					sigs = append(sigs, webhookhttp.SignalName(event))
+				}
 			}
 		}
 		entries = append(entries, localscheduler.WorkflowEntry{

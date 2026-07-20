@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
+	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -139,7 +140,8 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers up [--quiet] [--diagnostics] [path]\n\n"+
 			"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n"+
-			"plus the local runner and loopback HTTP API (default path \".\"). Blocks\n"+
+			"plus the local runner, loopback HTTP API, and configured GitHub webhook\n"+
+			"listener (default path \".\"). Blocks\n"+
 			"until interrupted (SIGINT/SIGTERM), then drains in-flight runs before\n"+
 			"exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,\n"+
 			"2 = usage/IO error.\n\n"+
@@ -198,6 +200,9 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	defer setup.Shutdown(context.Background())
 	printValidationWarnings(stdout, setup.Validation.CLIWarnings())
+	if warning := webhookConfigurationWarning(setup.Definitions, setup.Config); warning != "" {
+		pln(stdout, warning)
+	}
 
 	var ready atomic.Bool
 	reads, err := readservice.NewLocal(readservice.LocalSources{
@@ -326,6 +331,12 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
+	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
+	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookLog)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	runDirs, err := l.RunDirs()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -340,6 +351,15 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pf(stderr, "error: start HTTP API: %v\n", err)
 		return 1
 	}
+	if webhookServer != nil {
+		if err := webhookServer.Start(); err != nil {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
+			_ = apiServer.Shutdown(shutdownCtx)
+			shutdownCancel()
+			pf(stderr, "error: start webhook listener: %v\n", err)
+			return 1
+		}
+	}
 	apiStopped := false
 	defer func() {
 		if apiStopped {
@@ -351,6 +371,11 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		defer shutdownCancel()
 		if err := apiServer.Shutdown(shutdownCtx); err != nil {
 			pf(stderr, "error: %v\n", err)
+		}
+		if webhookServer != nil {
+			if err := webhookServer.Shutdown(shutdownCtx); err != nil {
+				pf(stderr, "error: shut down webhook listener: %v\n", err)
+			}
 		}
 	}()
 
@@ -474,6 +499,9 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 	ready.Store(true)
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at http://%s%s\n", root, len(setup.Entries), apiServer.Address(), httpapi.Prefix)
+	if webhookServer != nil {
+		pf(stdout, "GitHub webhooks listening at http://%s%s\n", webhookServer.Address(), webhookhttp.Path)
+	}
 	if diagnosticsMode {
 		pln(stdout, "diagnostics mode: ON — long-running stages get periodic process samples + lsof + un-truncated output recorded as run artifacts")
 	}
@@ -491,8 +519,13 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	go func() { schedulerDone <- sched.Run(ctx) }()
 	var runErr error
 	apiFailed := false
+	webhookFailed := false
 	configFailed := false
 	configWatcherDone := false
+	var webhookErrors <-chan error
+	if webhookServer != nil {
+		webhookErrors = webhookServer.Errors()
+	}
 	select {
 	case runErr = <-schedulerDone:
 	case reloadErr := <-configDone:
@@ -514,6 +547,14 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pf(stderr, "error: HTTP API stopped: %v\n", serveErr)
 		cancel()
 		runErr = <-schedulerDone
+	case serveErr, ok := <-webhookErrors:
+		webhookFailed = true
+		if !ok {
+			serveErr = errors.New("server stopped unexpectedly")
+		}
+		pf(stderr, "error: webhook listener stopped: %v\n", serveErr)
+		cancel()
+		runErr = <-schedulerDone
 	}
 	ready.Store(false)
 	cancel()
@@ -527,11 +568,19 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
 	shutdownErr := apiServer.Shutdown(shutdownCtx)
+	var webhookShutdownErr error
+	if webhookServer != nil {
+		webhookShutdownErr = webhookServer.Shutdown(shutdownCtx)
+	}
 	shutdownCancel()
 	apiStopped = true
 	if shutdownErr != nil {
 		apiFailed = true
 		pf(stderr, "error: %v\n", shutdownErr)
+	}
+	if webhookShutdownErr != nil {
+		webhookFailed = true
+		pf(stderr, "error: shut down webhook listener: %v\n", webhookShutdownErr)
 	}
 	if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
 		apiFailed = true
@@ -561,7 +610,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	} else {
 		pf(stdout, "shutdown timed out after %s: some runs may still be checkpointing\n", drainGrace)
 	}
-	if apiFailed || configFailed {
+	if apiFailed || webhookFailed || configFailed {
 		return 1
 	}
 	return 0

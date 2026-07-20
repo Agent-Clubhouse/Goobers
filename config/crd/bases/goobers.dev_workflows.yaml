@@ -360,6 +360,14 @@ spec:
                     Trigger declares one condition under which the scheduler may start a run. A run
                     starts only when a trigger fires AND readiness is satisfied (WF-011).
                   properties:
+                    events:
+                      description: |-
+                        Events are GitHub webhook event names (for example pull_request, issues,
+                        or check_suite) for type=webhook.
+                      items:
+                        type: string
+                      minItems: 1
+                      type: array
                     schedule:
                       description: |-
                         Schedule is a cron expression or interval (e.g. "@every 1h") for
@@ -378,13 +386,14 @@ spec:
                     type:
                       description: |-
                         TriggerType differentiates workflow archetypes without splitting the taxonomy:
-                        workflows run manually, consume backlog items, or react to a schedule or
-                        external signal (WF-010, WF-013).
+                        workflows run manually, consume backlog items, or react to a schedule,
+                        external signal, or GitHub webhook (WF-010, WF-013).
                       enum:
                       - manual
                       - backlog-item
                       - schedule
                       - signal
+                      - webhook
                       type: string
                   required:
                   - type
