@@ -66,10 +66,6 @@ Usage:
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
   goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)
   goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock
-  goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]
-                                print current claim leases, optionally only expired leases
-  goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]
-                                force-release a claim through the live daemon or claims.lock
   goobers trace [--json] [--transcripts | --transcript=<stage>] <run-id> [path]
                                 show a run's journal events (+ spans if rolled up), or recorded agent transcripts
   goobers escalations [--json] [path]

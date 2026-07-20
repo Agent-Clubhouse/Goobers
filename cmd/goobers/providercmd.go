@@ -76,8 +76,6 @@ const (
 	claimLockOperationCloseOutLookup       = "issue-close-out.lookup"
 	claimLockOperationCloseOutRelease      = "issue-close-out.release"
 	claimLockOperationMigration            = "claim-ledger.migrate"
-	claimLockOperationAdminList            = "claims.list"
-	claimLockOperationAdminRelease         = "claims.release"
 
 	claimLockSlowThreshold = 5 * time.Second
 )

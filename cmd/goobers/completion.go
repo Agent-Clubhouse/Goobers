@@ -145,7 +145,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal claims backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
+        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -178,13 +178,6 @@ _goobers_completion()
             ;;
         journal)
             [[ "${COMP_WORDS[2]:-}" == "redact" ]] && flags+=" --run --path --reason --secret-file"
-            ;;
-        claims)
-            if [[ "${COMP_WORDS[2]:-}" == "list" ]]; then
-                flags+=" --json --stale"
-            elif [[ "${COMP_WORDS[2]:-}" == "release" ]]; then
-                flags+=" --force"
-            fi
             ;;
         backlog-query) flags+=" --claim --release" ;;
         apply-verdict) flags+=" --gate" ;;
@@ -247,9 +240,6 @@ _goobers_completion()
         journal)
             (( COMP_CWORD == 2 )) && candidates="redact"
             ;;
-        claims)
-            (( COMP_CWORD == 2 )) && candidates="list release"
-            ;;
     esac
 
     if (( dynamic == 1 )) || [[ -n "${candidates}" ]]; then
@@ -293,7 +283,6 @@ _goobers_completion()
             'telemetry:query telemetry'
             'telemetry-query:emit candidate findings'
             'journal:manage run journals'
-            'claims:inspect or force-release claims'
             'backlog-query:query or claim backlog work'
             'push-branch:push the current run branch'
             'open-pr:open or update the current run pull request'
@@ -347,13 +336,6 @@ _goobers_completion()
             ;;
         journal)
             [[ "${words[3]:-}" == "redact" ]] && flags+=(--run --path --reason --secret-file)
-            ;;
-        claims)
-            if [[ "${words[3]:-}" == "list" ]]; then
-                flags+=(--json --stale)
-            elif [[ "${words[3]:-}" == "release" ]]; then
-                flags+=(--force)
-            fi
             ;;
         backlog-query) flags+=(--claim --release) ;;
         apply-verdict) flags+=(--gate) ;;
@@ -445,13 +427,6 @@ _goobers_completion()
                 return
             fi
             ;;
-        claims)
-            if (( CURRENT == 3 )); then
-                candidates=(list release)
-                _describe 'command' candidates
-                return
-            fi
-            ;;
     esac
 
     _directories
@@ -470,7 +445,7 @@ function __goobers_completion_runs
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal claims backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -488,7 +463,6 @@ complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_su
 complete -c goobers -n '__fish_seen_subcommand_from runs; and test (count (commandline -opc)) -eq 2' -f -a 'list du'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'stats errors'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
-complete -c goobers -n '__fish_seen_subcommand_from claims; and test (count (commandline -opc)) -eq 2' -f -a 'list release'
 
 complete -c goobers -n '__fish_seen_subcommand_from scaffold' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-harness -d 'Check agent harnesses'
@@ -524,9 +498,6 @@ complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_sub
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l path -r -d 'Journal path'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l reason -r -d 'Redaction reason'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l secret-file -r -d 'Secret file'
-complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'
-complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l stale -d 'Show only expired claims'
-complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from release' -l force -d 'Release a claim held by a non-terminal run'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l claim -d 'Claim an item'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l release -d 'Release a claim'
 complete -c goobers -n '__fish_seen_subcommand_from apply-verdict' -l gate -r -d 'Gate name'

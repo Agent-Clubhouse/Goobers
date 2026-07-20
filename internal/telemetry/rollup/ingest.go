@@ -292,8 +292,7 @@ func gateRunnerJSON(ev journalEvent) (sql.NullString, error) {
 }
 
 // IngestSchedulerLog reads the instance journal (scheduler/events.jsonl) —
-// trigger.fired/tick.skipped/claim.acquired/claim.released/
-// claim.force_released, scheduler
+// trigger.fired/tick.skipped/claim.acquired/claim.released, scheduler
 // decisions, claim transitions, the instance-level run.started/run.finished
 // echoes localscheduler's dispatch appends, and instance-level errors — and
 // (re)populates scheduler_events (issue #128: this was never ingested at
@@ -322,7 +321,7 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	}
 	for _, ev := range events {
 		switch ev.Type {
-		case eventTriggerFired, eventTickSkipped, eventClaimAcquired, eventClaimReleased, eventClaimForceReleased, eventRunStarted, eventRunFinished, eventError:
+		case eventTriggerFired, eventTickSkipped, eventClaimAcquired, eventClaimReleased, eventRunStarted, eventRunFinished, eventError:
 			if _, err := tx.Exec(`
 				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)

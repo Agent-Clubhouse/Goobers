@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal claims backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
+        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -39,13 +39,6 @@ _goobers_completion()
             ;;
         journal)
             [[ "${COMP_WORDS[2]:-}" == "redact" ]] && flags+=" --run --path --reason --secret-file"
-            ;;
-        claims)
-            if [[ "${COMP_WORDS[2]:-}" == "list" ]]; then
-                flags+=" --json --stale"
-            elif [[ "${COMP_WORDS[2]:-}" == "release" ]]; then
-                flags+=" --force"
-            fi
             ;;
         backlog-query) flags+=" --claim --release" ;;
         apply-verdict) flags+=" --gate" ;;
@@ -107,9 +100,6 @@ _goobers_completion()
             ;;
         journal)
             (( COMP_CWORD == 2 )) && candidates="redact"
-            ;;
-        claims)
-            (( COMP_CWORD == 2 )) && candidates="list release"
             ;;
     esac
 

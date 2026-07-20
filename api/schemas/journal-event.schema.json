@@ -40,7 +40,6 @@
         "tick.skipped",
         "claim.acquired",
         "claim.released",
-        "claim.force_released",
         "claim_lock_slow",
         "config.reloaded",
         "config.reload.rejected"
