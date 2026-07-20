@@ -15,37 +15,59 @@ and [`docs/VISION.md`](docs/VISION.md).
 ## Development setup
 
 You need the Go toolchain declared in [`go.mod`](go.mod) (currently Go 1.26),
-Node.js 24 with npm, and `make`. Lint uses
+Node.js 24 with npm, Git, and
 [`golangci-lint`](https://golangci-lint.run) `v2.12.2` (schema-v2 config in
 [`.golangci.yml`](.golangci.yml)).
 
 ```sh
-make help             # list all targets
-make ci               # full Go and portal merge gate
+go run ./test/ci      # portable full Go and portal merge gate
+make ci               # optional Unix compatibility alias
+make help             # list Unix convenience targets
 make portal-ci        # install, type-check, build, test, and check the portal contract
 make portal-contract  # regenerate and verify the Go/TypeScript wire contract
 ```
 
-`make ci` is the full gate CI enforces on Ubuntu and macOS (see
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml)). It runs the Go format,
-vet, build, race-test, and lint checks plus the portal build, typecheck, tests,
-and stale-fixture check. `make portal-ci` reproduces the portal portion alone;
+`go run ./test/ci` is the cross-platform entrypoint CI enforces (see
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)). It launches each tool
+without Bash or POSIX-shell syntax and runs the existing Go format, vet, build,
+race-test, and lint checks plus the portal build, typecheck, tests, and
+stale-fixture check. On Windows, the runner uses stock `cmd.exe` only to invoke
+Node's standard `npm.cmd` shim. The strategy deliberately keeps the Go
+toolchain as the only task-runner prerequisite: GNU Make is **not** required on
+Windows.
+`make ci` is a thin compatibility shim for existing Darwin and Linux workflows.
+The other Make targets remain optional POSIX-shell conveniences;
+`make portal-ci` reproduces the portal portion alone, and
 `make portal-contract` narrows that to the generated Go/TypeScript wire seam.
+
+The portability audit found the old CI graph depended on a globally selected
+Bash, shell command substitution and conditionals for `fmt-check`, POSIX
+environment-prefix assignments for tests, and shell calls for build metadata.
+The Go runner replaces those CI-path constructs with direct process and
+environment APIs. Non-CI Make conveniences such as `help`, `cover`, and `clean`
+still use Unix tools and are not the supported Windows path.
+
+### Platform prerequisites
+
+| Platform | Required tools | Full gate invocation |
+|---|---|---|
+| Linux | Go from `go.mod`, Node.js 24 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
+| macOS | Go from `go.mod`, Node.js 24 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
+| Windows | Go from `go.mod`, Node.js 24 with npm, Git for Windows, `golangci-lint` v2.12.2 | `go run ./test/ci` from PowerShell or Command Prompt; Bash and GNU Make are not required |
 
 ### CI platform matrix
 
 | Runner | Command | PR status | What it gates |
 |---|---|---|---|
-| `ubuntu-latest` | `make ci` | Required via the aggregate CI check | The full Linux Go and portal gate |
-| `macos-latest` | `make ci` | Required via the aggregate CI check | The full macOS Go and portal gate |
-| `windows-latest` | `go vet ./...` and `go build ./...` | Advisory (allowed to fail) | Windows compilation while the platform abstractions and portable toolchain tracked by #620, #623, #625, #627, and #630 land |
+| `ubuntu-latest` | `go run ./test/ci` | Required via the aggregate CI check | The full Linux Go and portal gate |
+| `macos-latest` | `go run ./test/ci` | Required via the aggregate CI check | The full macOS Go and portal gate |
+| `windows-latest` | Not yet enabled (#633) | None | The portable entrypoint is ready; remaining Windows runtime abstractions land separately |
 
-All three statuses are reported on every pull request, and one platform failure
-does not cancel the others. The required `make ci (fmt-check · vet · build ·
-test · lint)` status aggregates the matrix and fails when either Ubuntu or macOS
-fails. Go module and build caches are scoped to each runner OS. Once the listed
-Windows prerequisites land and the job is stable, Windows will run `make ci`
-and become a required check.
+The required `make ci (fmt-check · vet · build · test · lint)` status keeps its
+existing name for branch-protection compatibility and fails when either current
+platform leg fails. Go module and build caches are scoped to each runner OS.
+Once the remaining Windows prerequisites land, Windows will run the same
+portable command and become a required leg without adding Make or Bash.
 
 ## Workflow
 
@@ -53,7 +75,7 @@ and become a required check.
 2. Create a topic branch: `git checkout -b <area>/<short-description>`.
 3. Make your change. Keep the diff scoped to one logical concern.
 4. **Add tests** for new behavior and error paths — untested new behavior will be sent back.
-5. Run `make ci` locally until green.
+5. Run `go run ./test/ci` locally until green (`make ci` is the Unix alias).
 6. Open a **pull request against `main`**, filling in the
    [PR template](.github/PULL_REQUEST_TEMPLATE.md).
 7. The required Ubuntu and macOS CI checks must pass. Address review feedback; keep the
@@ -63,7 +85,7 @@ and become a required check.
 
 `main` is protected. The active repository rules require:
 
-- **CI is green** — the required Ubuntu and macOS `make ci` checks pass on the latest commit.
+- **CI is green** — the required Ubuntu and macOS portable CI checks pass on the latest commit.
 - **Approvals** — none. The required approval count is zero, and
   [CODEOWNER](.github/CODEOWNERS) approval is not required. CODEOWNERS are still
   requested for review, but those requests are advisory.
