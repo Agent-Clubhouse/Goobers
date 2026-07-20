@@ -92,7 +92,8 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 			"Inspect a bounded page of remote goobers/* branches. The default is a\n"+
 			"dry-run: no branch is deleted. --delete opts into deletion only for a\n"+
 			"branch whose local run journal proves ownership, has been terminal for\n"+
-			"at least 168h by default, and has no open pull request. Every candidate\n"+
+			"at least 168h by default, has no remote activity in that window, and has\n"+
+			"no open pull request. Every candidate\n"+
 			"decision and deletion outcome is appended to scheduler/events.jsonl.\n"+
 			"The default batch is 25 and the hard ceiling is 100 candidates. Task inputs deleteBranches,\n"+
 			"maxBranches, minimumAge, and after provide the same workflow-stage\n"+
@@ -340,6 +341,50 @@ func reconcileRemoteBranches(ctx context.Context, provider providers.BranchRecon
 			}
 			continue
 		}
+		if current.LastActivityAt == nil || current.LastActivityAt.IsZero() {
+			report.Preserved++
+			report.Failures++
+			event.Outcome, event.Reason, event.Err = "preserved", "branch-activity-unavailable",
+				fmt.Errorf("branch %q has no remote activity timestamp", branch.Name)
+			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
+				return report, err
+			}
+			continue
+		}
+		event.LastActivityAt = *current.LastActivityAt
+		if opts.Now().Sub(*current.LastActivityAt) < opts.MinimumAge {
+			report.Preserved++
+			event.Outcome, event.Reason = "preserved", "branch-activity-recent"
+			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
+				return report, err
+			}
+			continue
+		}
+
+		pr, open, lookupErr = provider.FindPullRequestByBranch(ctx, opts.Repository, branch.Name, "")
+		if lookupErr != nil {
+			report.Preserved++
+			report.Failures++
+			event.Outcome, event.Reason, event.Err = "preserved", "provider-lookup-failed", lookupErr
+			if isProviderRateLimit(lookupErr) {
+				event.Reason = "rate-limited"
+			}
+			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
+				return report, err
+			}
+			if isProviderRateLimit(lookupErr) {
+				return report, &branchReconcileProviderError{err: lookupErr}
+			}
+			continue
+		}
+		if open {
+			report.Preserved++
+			event.Outcome, event.Reason, event.PullRequest = "preserved", "open-pull-request-before-delete", pr.ID
+			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
+				return report, err
+			}
+			continue
+		}
 
 		event.Outcome, event.Reason = "delete-approved", ""
 		if err := appendBranchReconcileEvent(log, branch, event); err != nil {
@@ -435,14 +480,15 @@ func terminalBranchRunPhase(phase journal.RunPhase) bool {
 }
 
 type branchReconcileEvent struct {
-	Kind        string
-	Outcome     string
-	Reason      string
-	Owner       *branchReconcileOwner
-	MinimumAge  time.Duration
-	PullRequest string
-	ObservedSHA string
-	Err         error
+	Kind           string
+	Outcome        string
+	Reason         string
+	Owner          *branchReconcileOwner
+	MinimumAge     time.Duration
+	PullRequest    string
+	ObservedSHA    string
+	LastActivityAt time.Time
+	Err            error
 }
 
 func appendBranchReconcileEvent(log *journal.InstanceLog, branch providers.BranchSummary, detail branchReconcileEvent) error {
@@ -478,6 +524,9 @@ func appendBranchReconcileEvent(log *journal.InstanceLog, branch providers.Branc
 	if detail.ObservedSHA != "" {
 		fields["observedSHA"] = detail.ObservedSHA
 	}
+	if !detail.LastActivityAt.IsZero() {
+		fields["lastActivityAt"] = detail.LastActivityAt.UTC().Format(time.RFC3339)
+	}
 	event := journal.Event{Type: journal.EventRunnerAnnotation, Runner: fields}
 	if detail.Err != nil {
 		code := "branch_reconcile_failed"
@@ -493,6 +542,8 @@ func appendBranchReconcileEvent(log *journal.InstanceLog, branch providers.Branc
 				code = "branch_provider_lookup_failed"
 			case "branch-tip-unavailable":
 				code = "branch_tip_unavailable"
+			case "branch-activity-unavailable":
+				code = "branch_activity_unavailable"
 			case "delete-failed":
 				code = "branch_delete_failed"
 			}

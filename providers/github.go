@@ -218,8 +218,9 @@ func (p *GitHubProvider) ListBranches(ctx context.Context, req ListBranchesReque
 	return branches, nil
 }
 
-// GetBranch reads one exact branch ref for reconciliation's pre-delete
-// staleness check. A missing ref is reported separately from provider failure.
+// GetBranch reads one exact branch ref and its latest repository activity for
+// reconciliation's pre-delete staleness check. A missing ref is reported
+// separately from provider failure.
 func (p *GitHubProvider) GetBranch(ctx context.Context, repo RepositoryRef, name string) (BranchSummary, bool, error) {
 	if err := requireOwnerRepo(repo); err != nil {
 		return BranchSummary{}, false, err
@@ -251,7 +252,30 @@ func (p *GitHubProvider) GetBranch(ctx context.Context, repo RepositoryRef, name
 	if ref.Ref != headPrefix+name {
 		return BranchSummary{}, false, fmt.Errorf("provider returned branch ref %q for %q", ref.Ref, name)
 	}
-	return BranchSummary{Name: name, SHA: ref.Object.SHA, URL: ref.URL}, true, nil
+	activityEndpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "activity")
+	if err != nil {
+		return BranchSummary{}, false, err
+	}
+	activityEndpoint, err = addQuery(activityEndpoint, url.Values{
+		"direction": []string{"desc"},
+		"per_page":  []string{"1"},
+		"ref":       []string{headPrefix + name},
+	})
+	if err != nil {
+		return BranchSummary{}, false, err
+	}
+	var activities []githubRepositoryActivity
+	if err := p.do(ctx, http.MethodGet, activityEndpoint, nil, &activities); err != nil {
+		return BranchSummary{}, false, err
+	}
+	branch := BranchSummary{Name: name, SHA: ref.Object.SHA, URL: ref.URL}
+	if len(activities) > 0 {
+		if activities[0].Ref != headPrefix+name {
+			return BranchSummary{}, false, fmt.Errorf("provider returned activity for ref %q instead of %q", activities[0].Ref, headPrefix+name)
+		}
+		branch.LastActivityAt = &activities[0].Timestamp
+	}
+	return branch, true, nil
 }
 
 // DeleteBranch removes a GitHub branch ref. A missing ref is an idempotent
@@ -2070,6 +2094,11 @@ type githubRef struct {
 		SHA string `json:"sha"`
 		URL string `json:"url"`
 	} `json:"object"`
+}
+
+type githubRepositoryActivity struct {
+	Ref       string    `json:"ref"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type githubContentResponse struct {

@@ -19,14 +19,15 @@ import (
 )
 
 type fakeBranchReconcileProvider struct {
-	branches      []providers.BranchSummary
-	listErr       error
-	openPRs       map[string]providers.PullRequestResult
-	lookupErrs    map[string]error
-	current       map[string]providers.BranchSummary
-	getErrs       map[string]error
-	deleteResults map[string]providers.DeleteBranchResult
-	deleteErrs    map[string]error
+	branches              []providers.BranchSummary
+	listErr               error
+	openPRs               map[string]providers.PullRequestResult
+	openPRsOnSecondLookup map[string]providers.PullRequestResult
+	lookupErrs            map[string]error
+	current               map[string]providers.BranchSummary
+	getErrs               map[string]error
+	deleteResults         map[string]providers.DeleteBranchResult
+	deleteErrs            map[string]error
 
 	listRequests   []providers.ListBranchesRequest
 	lookupBranches []string
@@ -59,9 +60,20 @@ func (f *fakeBranchReconcileProvider) FindPullRequestByBranch(_ context.Context,
 	if base != "" {
 		return providers.PullRequestResult{}, false, errors.New("branch reconciliation must search every base")
 	}
+	previousLookups := 0
+	for _, branch := range f.lookupBranches {
+		if branch == head {
+			previousLookups++
+		}
+	}
 	f.lookupBranches = append(f.lookupBranches, head)
 	if err := f.lookupErrs[head]; err != nil {
 		return providers.PullRequestResult{}, false, err
+	}
+	if previousLookups > 0 {
+		if pr, ok := f.openPRsOnSecondLookup[head]; ok {
+			return pr, true, nil
+		}
 	}
 	pr, ok := f.openPRs[head]
 	return pr, ok, nil
@@ -140,13 +152,17 @@ func branchReconcileEvents(t *testing.T, dir string) []journal.Event {
 	return reconciled
 }
 
+func branchSummary(name, sha string, activityAt time.Time) providers.BranchSummary {
+	return providers.BranchSummary{Name: name, SHA: sha, LastActivityAt: &activityAt}
+}
+
 func TestReconcileRemoteBranchesDryRunNeverDeletes(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	runsDir := t.TempDir()
 	branch := createBranchReconcileRun(t, runsDir, "implementation", "old-run", now.Add(-8*24*time.Hour), true, true)
 	logDir, log := openBranchReconcileLog(t)
 	provider := &fakeBranchReconcileProvider{
-		branches:      []providers.BranchSummary{{Name: branch, SHA: "old-sha"}},
+		branches:      []providers.BranchSummary{branchSummary(branch, "old-sha", now.Add(-8*24*time.Hour))},
 		deleteResults: map[string]providers.DeleteBranchResult{branch: {Deleted: true}},
 	}
 
@@ -241,6 +257,21 @@ func TestReconcileBranchesCommandDefaultsToDryRun(t *testing.T) {
 			if err := json.NewEncoder(w).Encode([]map[string]any{}); err != nil {
 				t.Fatal(err)
 			}
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/your-org/your-repo/git/ref/heads/"+branch:
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"ref": "refs/heads/" + branch, "object": map[string]string{"sha": "branch-sha"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/your-org/your-repo/activity":
+			if got := r.URL.Query().Get("ref"); got != "refs/heads/"+branch {
+				t.Fatalf("activity ref = %q", got)
+			}
+			if err := json.NewEncoder(w).Encode([]map[string]any{{
+				"ref": "refs/heads/" + branch, "timestamp": now.Add(-8 * 24 * time.Hour),
+			}}); err != nil {
+				t.Fatal(err)
+			}
 		case r.Method == http.MethodDelete:
 			deleteCalls++
 			w.WriteHeader(http.StatusNoContent)
@@ -291,7 +322,7 @@ func TestReconcileRemoteBranchesDeletesOnlySafeOwnedCandidate(t *testing.T) {
 	logDir, log := openBranchReconcileLog(t)
 	provider := &fakeBranchReconcileProvider{
 		branches: []providers.BranchSummary{
-			{Name: eligible, SHA: "eligible-sha"}, {Name: withPR}, {Name: young}, {Name: active},
+			branchSummary(eligible, "eligible-sha", old), {Name: withPR}, {Name: young}, {Name: active},
 			{Name: unproven}, {Name: missing}, {Name: malformed},
 		},
 		openPRs: map[string]providers.PullRequestResult{
@@ -318,7 +349,7 @@ func TestReconcileRemoteBranchesDeletesOnlySafeOwnedCandidate(t *testing.T) {
 		report.Preserved != 6 || report.Ambiguous != 3 || report.Failures != 0 {
 		t.Fatalf("report = %+v", report)
 	}
-	if len(provider.lookupBranches) != 2 {
+	if len(provider.lookupBranches) != 3 {
 		t.Fatalf("PR lookups = %v, want only old terminal owned branches", provider.lookupBranches)
 	}
 	if len(provider.deleteBranches) != 1 || provider.deleteBranches[0] != eligible {
@@ -389,6 +420,116 @@ func TestReconcileRemoteBranchesPreservesConcurrentlyUpdatedTip(t *testing.T) {
 		events[0].Runner["reason"] != "branch-tip-changed" ||
 		events[0].Runner["sha"] != "listed-sha" ||
 		events[0].Runner["observedSHA"] != "pushed-sha" {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestReconcileRemoteBranchesPreservesRecentRemoteActivity(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	runsDir := t.TempDir()
+	branch := createBranchReconcileRun(t, runsDir, "implementation", "recent-push", now.Add(-30*24*time.Hour), true, true)
+	logDir, log := openBranchReconcileLog(t)
+	provider := &fakeBranchReconcileProvider{
+		branches: []providers.BranchSummary{{Name: branch, SHA: "same-sha"}},
+		current: map[string]providers.BranchSummary{
+			branch: branchSummary(branch, "same-sha", now.Add(-time.Hour)),
+		},
+	}
+
+	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunsDir:    runsDir,
+		Prefix:     branchReconcilePrefix,
+		Limit:      25,
+		MinimumAge: 7 * 24 * time.Hour,
+		Delete:     true,
+		Now:        func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("reconcileRemoteBranches: %v", err)
+	}
+	if report.Candidates != 1 || report.Preserved != 1 || report.Deleted != 0 || report.Failures != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(provider.deleteBranches) != 0 {
+		t.Fatalf("delete calls = %v, want none", provider.deleteBranches)
+	}
+	events := branchReconcileEvents(t, logDir)
+	if len(events) != 1 || events[0].Runner["reason"] != "branch-activity-recent" ||
+		events[0].Runner["lastActivityAt"] != now.Add(-time.Hour).Format(time.RFC3339) {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestReconcileRemoteBranchesPreservesUnknownRemoteActivity(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	runsDir := t.TempDir()
+	branch := createBranchReconcileRun(t, runsDir, "implementation", "unknown-activity", now.Add(-30*24*time.Hour), true, true)
+	logDir, log := openBranchReconcileLog(t)
+	provider := &fakeBranchReconcileProvider{
+		branches: []providers.BranchSummary{{Name: branch, SHA: "same-sha"}},
+	}
+
+	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunsDir:    runsDir,
+		Prefix:     branchReconcilePrefix,
+		Limit:      25,
+		MinimumAge: 7 * 24 * time.Hour,
+		Delete:     true,
+		Now:        func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("reconcileRemoteBranches: %v", err)
+	}
+	if report.Candidates != 1 || report.Preserved != 1 || report.Deleted != 0 || report.Failures != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(provider.deleteBranches) != 0 {
+		t.Fatalf("delete calls = %v, want none", provider.deleteBranches)
+	}
+	events := branchReconcileEvents(t, logDir)
+	if len(events) != 1 || events[0].Runner["reason"] != "branch-activity-unavailable" ||
+		events[0].Error == nil || events[0].Error.Code != "branch_activity_unavailable" {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestReconcileRemoteBranchesRechecksOpenPRBeforeDelete(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	runsDir := t.TempDir()
+	branch := createBranchReconcileRun(t, runsDir, "implementation", "late-open-pr", now.Add(-30*24*time.Hour), true, true)
+	logDir, log := openBranchReconcileLog(t)
+	provider := &fakeBranchReconcileProvider{
+		branches: []providers.BranchSummary{
+			branchSummary(branch, "branch-sha", now.Add(-30*24*time.Hour)),
+		},
+		openPRsOnSecondLookup: map[string]providers.PullRequestResult{
+			branch: {ID: "84", Number: 84, URL: "https://github.example/pr/84"},
+		},
+	}
+
+	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunsDir:    runsDir,
+		Prefix:     branchReconcilePrefix,
+		Limit:      25,
+		MinimumAge: 7 * 24 * time.Hour,
+		Delete:     true,
+		Now:        func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("reconcileRemoteBranches: %v", err)
+	}
+	if report.Candidates != 1 || report.Preserved != 1 || report.Deleted != 0 || report.Failures != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(provider.lookupBranches) != 2 || len(provider.deleteBranches) != 0 {
+		t.Fatalf("PR lookups = %v, delete calls = %v", provider.lookupBranches, provider.deleteBranches)
+	}
+	events := branchReconcileEvents(t, logDir)
+	if len(events) != 1 || events[0].Runner["reason"] != "open-pull-request-before-delete" ||
+		events[0].Runner["pullRequest"] != "84" {
 		t.Fatalf("events = %+v", events)
 	}
 }
@@ -480,8 +621,8 @@ func TestReconcileRemoteBranchesJournalsMutationFailureAndContinues(t *testing.T
 	logDir, log := openBranchReconcileLog(t)
 	provider := &fakeBranchReconcileProvider{
 		branches: []providers.BranchSummary{
-			{Name: failed, SHA: "failed-sha"},
-			{Name: deleted, SHA: "deleted-sha"},
+			branchSummary(failed, "failed-sha", now.Add(-8*24*time.Hour)),
+			branchSummary(deleted, "deleted-sha", now.Add(-8*24*time.Hour)),
 		},
 		deleteErrs: map[string]error{failed: errors.New("delete denied")},
 		deleteResults: map[string]providers.DeleteBranchResult{
@@ -524,7 +665,7 @@ func TestReconcileRemoteBranchesPreservesBranchOnDeleteRateLimit(t *testing.T) {
 	logDir, log := openBranchReconcileLog(t)
 	rateLimit := &providers.RateLimitError{Endpoint: "delete-ref", Status: 429}
 	provider := &fakeBranchReconcileProvider{
-		branches:   []providers.BranchSummary{{Name: branch, SHA: "branch-sha"}},
+		branches:   []providers.BranchSummary{branchSummary(branch, "branch-sha", now.Add(-8*24*time.Hour))},
 		deleteErrs: map[string]error{branch: rateLimit},
 	}
 

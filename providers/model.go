@@ -141,11 +141,12 @@ type ListBranchesRequest struct {
 	Limit      int           `json:"limit"`
 }
 
-// BranchSummary is the remote ref identity needed for branch reconciliation.
+// BranchSummary is the remote ref identity and activity needed for branch reconciliation.
 type BranchSummary struct {
-	Name string `json:"name"`
-	SHA  string `json:"sha"`
-	URL  string `json:"url,omitempty"`
+	Name           string     `json:"name"`
+	SHA            string     `json:"sha"`
+	URL            string     `json:"url,omitempty"`
+	LastActivityAt *time.Time `json:"lastActivityAt,omitempty"`
 }
 
 // DeleteBranchRequest identifies a remote branch ref to remove.

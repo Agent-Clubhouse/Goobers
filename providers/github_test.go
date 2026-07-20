@@ -249,6 +249,7 @@ func TestGitHubProviderListBranchesValidatesBound(t *testing.T) {
 }
 
 func TestGitHubProviderGetBranch(t *testing.T) {
+	activityAt := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name      string
 		status    int
@@ -262,19 +263,37 @@ func TestGitHubProviderGetBranch(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet {
-					t.Fatalf("method = %s, want GET", r.Method)
-				}
-				if r.URL.Path != "/repos/acme/app/git/ref/heads/goobers/implementation/run-1" {
-					t.Fatalf("path = %q", r.URL.Path)
-				}
-				w.WriteHeader(tc.status)
-				if tc.status == http.StatusOK {
+				assertMethod(t, r, http.MethodGet)
+				switch r.URL.Path {
+				case "/repos/acme/app/git/ref/heads/goobers/implementation/run-1":
+					w.WriteHeader(tc.status)
+					if tc.status != http.StatusOK {
+						return
+					}
 					writeJSON(t, w, map[string]interface{}{
 						"ref":    "refs/heads/goobers/implementation/run-1",
 						"url":    "ref-url",
 						"object": map[string]string{"sha": "tip-sha"},
 					})
+				case "/repos/acme/app/activity":
+					if tc.status != http.StatusOK {
+						t.Fatal("activity requested after missing or failed ref lookup")
+					}
+					if got := r.URL.Query().Get("ref"); got != "refs/heads/goobers/implementation/run-1" {
+						t.Fatalf("activity ref = %q", got)
+					}
+					if got := r.URL.Query().Get("direction"); got != "desc" {
+						t.Fatalf("activity direction = %q", got)
+					}
+					if got := r.URL.Query().Get("per_page"); got != "1" {
+						t.Fatalf("activity per_page = %q", got)
+					}
+					writeJSON(t, w, []map[string]interface{}{{
+						"ref":       "refs/heads/goobers/implementation/run-1",
+						"timestamp": activityAt,
+					}})
+				default:
+					t.Fatalf("path = %q", r.URL.Path)
 				}
 			}))
 			defer server.Close()
@@ -294,7 +313,8 @@ func TestGitHubProviderGetBranch(t *testing.T) {
 			if found != tc.wantFound {
 				t.Fatalf("found = %t, want %t", found, tc.wantFound)
 			}
-			if found && (branch.Name != "goobers/implementation/run-1" || branch.SHA != "tip-sha" || branch.URL != "ref-url") {
+			if found && (branch.Name != "goobers/implementation/run-1" || branch.SHA != "tip-sha" ||
+				branch.URL != "ref-url" || branch.LastActivityAt == nil || !branch.LastActivityAt.Equal(activityAt)) {
 				t.Fatalf("branch = %+v", branch)
 			}
 		})
