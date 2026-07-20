@@ -52,21 +52,21 @@ type journalEvent struct {
 
 // Event type values, mirroring internal/journal's EventType constants.
 const (
-	eventStageStarted       = "stage.started"
-	eventStageFinished      = "stage.finished"
-	eventGateEvaluated      = "gate.evaluated"
-	eventRefTouched         = "ref.touched"
-	eventError              = "error"
-	eventRunStarted         = "run.started"
-	eventRunFinished        = "run.finished"
-	eventSpanRecorded       = "span.recorded"
-	eventTriggerFired       = "trigger.fired"
-	eventTickSkipped        = "tick.skipped"
-	eventWorkflowStarved    = "workflow.starved"
-	eventClaimAcquired      = "claim.acquired"
-	eventClaimReleased      = "claim.released"
-	eventClaimForceReleased = "claim.force_released"
+	eventStageStarted  = "stage.started"
+	eventStageFinished = "stage.finished"
+	eventGateEvaluated = "gate.evaluated"
+	eventRefTouched    = "ref.touched"
+	eventError         = "error"
+	eventRunStarted    = "run.started"
+	eventRunFinished   = "run.finished"
+	eventSpanRecorded  = "span.recorded"
+	eventTriggerFired  = "trigger.fired"
+	eventTickSkipped   = "tick.skipped"
+	eventClaimAcquired = "claim.acquired"
+	eventClaimReleased = "claim.released"
 )
+
+const eventWorkflowStarved = "workflow.starved"
 
 // journalRef mirrors internal/journal.Ref.
 type journalRef struct {
