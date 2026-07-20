@@ -41,6 +41,7 @@ type journalEvent struct {
 	Status       string              `json:"status,omitempty"`
 	Ref          *journalRef         `json:"ref,omitempty"`
 	Name         string              `json:"name,omitempty"`
+	DataSchema   string              `json:"dataSchema,omitempty"`
 	ExternalRef  *journalExternalRef `json:"externalRef,omitempty"`
 	Error        *journalErrorDetail `json:"error,omitempty"`
 	Redaction    *journalRedaction   `json:"redaction,omitempty"`

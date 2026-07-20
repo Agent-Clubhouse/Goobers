@@ -129,8 +129,10 @@ entire point of D1–D3 being OTel-real.
 
 Every agentic stage attempt SHOULD produce a **transcript artifact**
 (`transcript.jsonl`, a journal artifact: digested, scrubbed, pointer in the result
-envelope). Records follow the GenAI-events shape: `{role, content, model, usage,
-tool_call…}` per line. Three capture sources, in order of preference:
+envelope). Records use the versioned GenAI-events schema
+`goobers.dev/telemetry/genai-event/v1`: `{schema, role, content, model, usage,
+tool_call…}` per line. Unversioned records remain readable as legacy data and
+are not backfilled. Three capture sources, in order of preference:
 
 1. **Harness-native**: the adapter converts the harness's own structured
    session/transcript output (Copilot CLI session logs; Claude Code transcripts).

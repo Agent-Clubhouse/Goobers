@@ -57,7 +57,7 @@ func (db *DB) IngestRun(runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "stage_attempts", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "span_business_status"}
+var perRunTables = []string{"runs", "stage_attempts", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status"}
 
 func deleteRun(tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -236,6 +236,13 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 				VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				runID, ev.Seq, ev.Stage, ev.Name, digest, size, formatTime(ev.Time)); err != nil {
 				return fmt.Errorf("rollup: insert harness_transcript seq %d: %w", ev.Seq, err)
+			}
+			if ev.DataSchema != "" {
+				if _, err := tx.Exec(`
+					INSERT INTO harness_transcript_schemas (run_id, seq, schema)
+					VALUES (?, ?, ?)`, runID, ev.Seq, ev.DataSchema); err != nil {
+					return fmt.Errorf("rollup: insert harness_transcript schema seq %d: %w", ev.Seq, err)
+				}
 			}
 
 		case eventRefTouched:

@@ -110,6 +110,10 @@ type Outcome struct {
 	// MaxTranscriptBytes — a truncated transcript carries a trailing marker
 	// (#245), never a silently cut-off blob.
 	Transcript []byte
+	// TranscriptSchema identifies Transcript's record shape when the adapter
+	// already produced structured events. Empty means the Executor must emit
+	// the adapter-composed canonical prompt/output floor.
+	TranscriptSchema string
 	// TranscriptTruncated reports whether Transcript was capped.
 	TranscriptTruncated bool
 	// TranscriptDroppedBytes is how many transcript bytes were discarded past

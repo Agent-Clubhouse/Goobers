@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -48,6 +49,7 @@ type fakeRecorder struct {
 
 type recordedSpan struct {
 	stage, name string
+	schema      string
 	data        []byte
 }
 
@@ -56,11 +58,11 @@ type recordedArtifact struct {
 	data []byte
 }
 
-func (f *fakeRecorder) RecordSpan(stage, name string, data []byte) (journal.Ref, error) {
+func (f *fakeRecorder) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error) {
 	if f.err != nil {
 		return journal.Ref{}, f.err
 	}
-	f.spans = append(f.spans, recordedSpan{stage: stage, name: name, data: append([]byte(nil), data...)})
+	f.spans = append(f.spans, recordedSpan{stage: stage, name: name, schema: dataSchema, data: append([]byte(nil), data...)})
 	return journal.Ref{Digest: journal.Digest(data)}, nil
 }
 
@@ -146,8 +148,18 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 	if rec.spans[0].stage != "implement" {
 		t.Fatalf("span stage = %q, want %q", rec.spans[0].stage, "implement")
 	}
-	if string(rec.spans[0].data) != "implementing... done" {
-		t.Fatalf("span data = %q", rec.spans[0].data)
+	if rec.spans[0].schema != telemetry.GenAIEventSchema {
+		t.Fatalf("span schema = %q, want %q", rec.spans[0].schema, telemetry.GenAIEventSchema)
+	}
+	events := decodeTranscriptEvents(t, rec.spans[0].data)
+	if len(events) != 2 {
+		t.Fatalf("transcript events = %#v, want prompt and final output", events)
+	}
+	if events[0].Role != "user" || !strings.Contains(events[0].Content, "implement the thing") || !strings.Contains(events[0].Content, "be a good coder") {
+		t.Fatalf("prompt event = %#v", events[0])
+	}
+	if events[1].Role != "assistant" || events[1].Content != "implementing... done" {
+		t.Fatalf("final output event = %#v", events[1])
 	}
 }
 
@@ -451,6 +463,10 @@ func TestExecutorInvokeSurfacesTranscriptTruncation(t *testing.T) {
 	}
 	if dropped, _ := result.Outputs["transcriptDroppedBytes"].(float64); dropped != 999 {
 		t.Fatalf("Outputs[transcriptDroppedBytes] = %v, want 999", result.Outputs["transcriptDroppedBytes"])
+	}
+	events := decodeTranscriptEvents(t, rec.spans[0].data)
+	if len(events) != 2 || !events[1].Truncated {
+		t.Fatalf("truncated transcript events = %#v", events)
 	}
 }
 

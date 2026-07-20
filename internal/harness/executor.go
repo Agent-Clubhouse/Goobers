@@ -39,11 +39,12 @@ var ErrDeclaredArtifactPathEscape = errors.New("harness: declared artifact file 
 // here, not at the runner's wiring site.
 var _ invoke.Goober = (*Executor)(nil)
 
-// SpanRecorder captures a within-stage trace span (GBO-020) — satisfied by
-// (*internal/journal.Run).RecordSpan without this package taking on journal's
-// full durability/event-log machinery, only its small, stable Ref value type.
+// SpanRecorder captures a schema-aware within-stage trace span (GBO-020) —
+// satisfied by (*internal/journal.Run).RecordSpanWithSchema without this
+// package taking on journal's full durability/event-log machinery, only its
+// small, stable Ref value type.
 type SpanRecorder interface {
-	RecordSpan(stage, name string, data []byte) (journal.Ref, error)
+	RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error)
 }
 
 // ArtifactRecorder persists stage output bytes into the run journal by content
@@ -294,10 +295,19 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 
 	out, runErr := e.adapter.Run(ctx, req)
+	if out.TranscriptSchema == "" {
+		prompt := e.scrubber.Scrub([]byte(renderPrompt(req)))
+		output := e.scrubber.Scrub(out.Transcript)
+		out.Transcript, err = composedTranscript(string(prompt), output, req.Model, out.TranscriptTruncated)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: encode transcript floor: %w", err)
+		}
+		out.TranscriptSchema = telemetry.GenAIEventSchema
+	}
 	if len(out.Transcript) > 0 {
 		scrubbed := e.scrubber.Scrub(out.Transcript)
 		name := fmt.Sprintf("%s.transcript", e.adapter.Name())
-		if _, spanErr := e.recorder.RecordSpan(env.TaskID, name, scrubbed); spanErr != nil && runErr == nil {
+		if _, spanErr := e.recorder.RecordSpanWithSchema(env.TaskID, name, out.TranscriptSchema, scrubbed); spanErr != nil && runErr == nil {
 			runErr = fmt.Errorf("harness: record span: %w", spanErr)
 		}
 	}

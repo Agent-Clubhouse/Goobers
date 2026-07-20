@@ -14,6 +14,7 @@ func TestRecordSpanRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordSpan: %v", err)
 	}
+
 	if !strings.HasPrefix(ref.Path, dirSpans+"/") {
 		t.Fatalf("span Ref.Path = %q, want it under %q", ref.Path, dirSpans)
 	}
@@ -41,11 +42,15 @@ func TestRecordSpanRoundTrip(t *testing.T) {
 			found = &events[i]
 		}
 	}
+
 	if found == nil {
 		t.Fatal("no span.recorded event found")
 	}
 	if found.Stage != "implement" || found.Name != "copilot-cli.transcript" {
 		t.Fatalf("span event = %+v, want stage=implement name=copilot-cli.transcript", found)
+	}
+	if found.DataSchema != "" {
+		t.Fatalf("legacy span dataSchema = %q, want empty", found.DataSchema)
 	}
 	if found.IsConformanceNormative() {
 		t.Fatal("span.recorded must be excluded from conformance (harness/LLM output, §3.3)")
@@ -57,6 +62,30 @@ func TestRecordSpanRoundTrip(t *testing.T) {
 	}
 	if string(got) != string(transcript) {
 		t.Fatalf("SpanBytes = %q, want %q", got, transcript)
+	}
+}
+
+func TestRecordSpanWithSchemaRoundTrip(t *testing.T) {
+	run, root := newRun(t)
+
+	const dataSchema = "goobers.dev/telemetry/genai-event/v1"
+	if _, err := run.RecordSpanWithSchema("implement", "copilot-cli.transcript", dataSchema, []byte(`{"role":"user"}`)); err != nil {
+		t.Fatalf("RecordSpanWithSchema: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	rd, err := OpenRead(filepath.Join(root, testIdentity().RunID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if got := events[len(events)-1].DataSchema; got != dataSchema {
+		t.Fatalf("span dataSchema = %q, want %q", got, dataSchema)
 	}
 }
 
