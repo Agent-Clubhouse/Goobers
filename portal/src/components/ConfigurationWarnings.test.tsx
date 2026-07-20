@@ -226,7 +226,7 @@ describe("ConfigurationWarnings", () => {
     // Route directly: this test is about dismissal surviving a route change,
     // not about how the daemon-backed workflows index renders its links.
     act(() => {
-      window.location.hash = "#/workflow/implementation";
+      window.location.hash = "#/workflow/core/implementation";
       window.dispatchEvent(new HashChangeEvent("hashchange"));
     });
 
@@ -312,7 +312,7 @@ describe("ConfigurationWarnings", () => {
   });
 
   it("loads exact workflow-scoped warnings from the existing workflow endpoint", async () => {
-    window.location.hash = "#/workflow/implementation";
+    window.location.hash = "#/workflow/core/implementation";
     const warningClient = {
       getInstance: vi.fn(),
       getWorkflow: vi.fn().mockResolvedValue({ warnings: [workflowWarning] }),
@@ -322,7 +322,7 @@ describe("ConfigurationWarnings", () => {
     expect(await screen.findByText(workflowWarning.scope)).toBeInTheDocument();
     expect(screen.getByText(workflowWarning.explanation)).toBeInTheDocument();
     expect(warningClient.getWorkflow).toHaveBeenCalledWith(
-      "goobers",
+      "core",
       "implementation",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );

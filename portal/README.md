@@ -5,9 +5,10 @@ This directory contains the production UI for the Dashboard / Portal milestone
 
 It is a React/Vite application with reusable shell, navigation, dense-list,
 graph, inspector, status, icon, theme, accessibility, query-state, and typed
-daemon-client modules. Overview, Workflows, and run detail read the live daemon
-API, as do configuration warnings on the overview and workflow routes; the
-remaining prototype routes use static fixtures until their vertical slices land.
+daemon-client modules. Overview, workflow inventory and detail, and run detail
+read the live daemon API, as do configuration warnings on the overview and
+workflow routes; the remaining prototype routes use static fixtures until their
+vertical slices land.
 
 ## Run it
 
@@ -78,10 +79,9 @@ The full product and architecture authority is
 
 ## Current boundaries
 
-- Workflow detail still uses static data intentionally shaped around a
-  representative workflow. Overview, workflow inventory, gaggle rosters, run
-  detail, and configuration warnings use the HTTP daemon adapter, with the
-  fixture adapter reserved for tests.
+- Workflow detail uses the current definition, canonical graph, stage summaries,
+  and recent runs from the HTTP daemon adapter. The fixture adapter is reserved
+  for tests.
 - Attempt, artifact, replay, and escalation views remain deferred to their
   dedicated portal slices.
 - Run detail uses the pinned graph topology and an ordered stage presentation

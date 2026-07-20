@@ -355,7 +355,7 @@ describe("live page integration", () => {
     expect(await screen.findByText("VER001")).toBeInTheDocument();
 
     act(() => {
-      window.location.hash = "#/workflow/implementation";
+      window.location.hash = "#/workflow/core/implementation";
       window.dispatchEvent(new HashChangeEvent("hashchange"));
     });
     expect(
