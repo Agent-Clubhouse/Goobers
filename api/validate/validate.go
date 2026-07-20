@@ -695,6 +695,16 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 	for _, msg := range wf.CheckStageContracts(def) {
 		r.add(Error, file, "Workflow", w.Name, "%s", msg)
 	}
+	// Required-input contracts (#1061). The input-side analog of the above:
+	// a deterministic stage that invokes a `goobers` subcommand without
+	// wiring an input that subcommand hard-requires. This is what a
+	// hand-maintained instance config drifting behind the binary produces —
+	// merge-review's apply-verdict losing its selectedHeadSha wiring stalled
+	// every election for a full build, and nothing static caught it. Also an
+	// error: the stage fails on every run, unconditionally.
+	for _, msg := range wf.CheckStageRequiredInputs(def) {
+		r.add(Error, file, "Workflow", w.Name, "%s", msg)
+	}
 	// Only the breaking half is reported here. CheckStageContractWarnings
 	// covers the same omission on outputs nothing reads yet, which #881's
 	// VER003 "expectedOutputs is declared but not enforced" already warns
