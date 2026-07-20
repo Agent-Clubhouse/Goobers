@@ -133,17 +133,29 @@ func TestWorkflowEndpointsLoadScopedProductionDefinitionsAndWarnings(t *testing.
 		beta.Identity != (readservice.WorkflowReference{Gaggle: "beta", Name: "deploy"}) {
 		t.Fatalf("workflow identities = %+v / %+v", alpha.Identity, beta.Identity)
 	}
-	if len(alpha.Warnings) != 1 {
+	if len(alpha.Warnings) != 2 {
 		t.Fatalf("alpha warnings = %+v", alpha.Warnings)
 	}
-	warning := alpha.Warnings[0]
-	if warning.Code != validate.WarningCompatibility || warning.Severity != validate.Warning ||
-		warning.Scope != "gaggles/alpha/workflows/deploy.yaml Gaggle/alpha Workflow/deploy" ||
-		!strings.Contains(warning.Explanation, "inputs.resultFile") {
-		t.Fatalf("alpha warning = %+v", warning)
+	claimWarning := alpha.Warnings[0]
+	if claimWarning.Code != validate.WarningCompatibility || claimWarning.Severity != validate.Warning ||
+		claimWarning.Scope != "gaggles/alpha/workflows/deploy.yaml Gaggle/alpha Workflow/deploy" ||
+		!strings.Contains(claimWarning.Explanation, "inputs.resultFile") {
+		t.Fatalf("alpha claim warning = %+v", claimWarning)
 	}
-	if len(beta.Warnings) != 0 {
+	triggerWarning := alpha.Warnings[1]
+	if triggerWarning.Code != validate.WarningCompatibility || triggerWarning.Severity != validate.Warning ||
+		triggerWarning.Scope != "gaggles/alpha/workflows/deploy.yaml Gaggle/alpha Workflow/deploy" ||
+		!strings.Contains(triggerWarning.Explanation, "has no autonomous trigger") {
+		t.Fatalf("alpha trigger warning = %+v", triggerWarning)
+	}
+	if len(beta.Warnings) != 1 {
 		t.Fatalf("beta warnings = %+v", beta.Warnings)
+	}
+	betaTriggerWarning := beta.Warnings[0]
+	if betaTriggerWarning.Code != validate.WarningCompatibility || betaTriggerWarning.Severity != validate.Warning ||
+		betaTriggerWarning.Scope != "gaggles/beta/workflows/deploy.yaml Gaggle/beta Workflow/deploy" ||
+		!strings.Contains(betaTriggerWarning.Explanation, "has no autonomous trigger") {
+		t.Fatalf("beta trigger warning = %+v", betaTriggerWarning)
 	}
 
 	response := httptest.NewRecorder()
@@ -155,7 +167,8 @@ func TestWorkflowEndpointsLoadScopedProductionDefinitionsAndWarnings(t *testing.
 	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Items) != 1 || len(page.Items[0].Warnings) != 1 || page.Items[0].Warnings[0] != warning {
+	if len(page.Items) != 1 || len(page.Items[0].Warnings) != 2 ||
+		page.Items[0].Warnings[0] != claimWarning || page.Items[0].Warnings[1] != triggerWarning {
 		t.Fatalf("alpha list warnings = %+v", page.Items)
 	}
 }
