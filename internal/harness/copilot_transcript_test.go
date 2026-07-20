@@ -245,6 +245,43 @@ func TestCopilotAdapterPrefersNativeSessionTranscript(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterKeepsStdoutWhenNativeLogOnlyHasUsage(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	floor := []byte("stdout compatibility floor")
+	native := []byte(`{"type":"session.shutdown","data":{"totalPremiumRequests":2,"totalNanoAiu":3000,"modelMetrics":{}}}` + "\n")
+	runner := &fakeProcessRunner{
+		result: ProcessResult{Transcript: floor, ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			if err := WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}); err != nil {
+				return err
+			}
+			return writeNativeSessionLog(req, native)
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    pushCredentials(t, "unused", "unused"),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !bytes.Equal(out.Transcript, floor) {
+		t.Fatalf("Transcript = %q, want floor %q", out.Transcript, floor)
+	}
+	wantMetrics := map[string]float64{
+		telemetry.AttrCopilotPremiumRequests: 2,
+		telemetry.AttrUsageCostUSD:           0.00000003,
+	}
+	if !mapsEqual(out.Metrics, wantMetrics) {
+		t.Fatalf("usage metrics = %#v, want %#v", out.Metrics, wantMetrics)
+	}
+}
+
 func TestCopilotAdapterFallsBackWhenNativeSessionLogUnavailable(t *testing.T) {
 	oversized := []byte(`{"type":"user.message","data":{"content":"native prefix"}}` + "\n")
 	oversized = append(oversized, bytes.Repeat([]byte("x"), int(maxCopilotSessionEventBytes)+1)...)

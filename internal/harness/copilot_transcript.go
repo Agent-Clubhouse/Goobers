@@ -153,9 +153,11 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 		}
 		events := convertCopilotSessionEvent(native)
 		if native.Type == "session.shutdown" {
-			if usage := copilotUsageMetrics(native.Data); len(usage) > 0 {
+			if usage, ok := copilotUsageMetrics(native.Data); ok {
 				metrics = usage
-				converted = true
+				if len(usage) > 0 {
+					converted = true
+				}
 			}
 		}
 		for _, event := range events {
@@ -182,10 +184,10 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 	}, true
 }
 
-func copilotUsageMetrics(raw json.RawMessage) map[string]float64 {
+func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, bool) {
 	var data copilotShutdownData
 	if json.Unmarshal(raw, &data) != nil {
-		return nil
+		return nil, false
 	}
 
 	models := make([]string, 0, len(data.ModelMetrics))
@@ -229,9 +231,9 @@ func copilotUsageMetrics(raw json.RawMessage) map[string]float64 {
 		metrics[telemetry.AttrUsageCostUSD] = nanoAIU / nanoAIUPerUSD
 	}
 	if len(metrics) == 0 {
-		return nil
+		return nil, true
 	}
-	return metrics
+	return metrics, true
 }
 
 func convertCopilotSessionEvent(native copilotSessionEvent) []transcriptEvent {
