@@ -66,13 +66,24 @@ values in YAML:
 ```sh
 export GOOBERS_GITHUB_TOKEN=github_pat_...
 export GOOBERS_COPILOT_TOKEN=github_pat_...
-export COPILOT_GITHUB_TOKEN="$GOOBERS_COPILOT_TOKEN"
 ```
 
-`GOOBERS_COPILOT_TOKEN` is the source named by `instance.yaml`;
-`COPILOT_GITHUB_TOKEN` also makes the same token available to the direct
-Copilot CLI authentication probe run by `validate --check-harness` and daemon
-startup.
+`GOOBERS_COPILOT_TOKEN` is the source named by `instance.yaml`. Goobers injects
+it as `COPILOT_GITHUB_TOKEN` only into agentic subprocesses that declare
+`agent:model`.
+
+The harness preflight intentionally runs with a default-deny base environment,
+so it does not inherit an ambient `COPILOT_GITHUB_TOKEN`. Before validation,
+sign in once with the same OS account that will run the daemon:
+
+```sh
+copilot login
+```
+
+Complete the device flow and keep that account's credential store (or
+`~/.copilot/` fallback) persistent. `validate --check-harness` and daemon
+startup use this stored sign-in; live agentic stages use the capability-scoped
+token from `instance.yaml`.
 
 The reviewer in this guide is an agentic gate that returns a journaled verdict;
 it does not submit a native GitHub review. A separate
@@ -156,14 +167,53 @@ when directory names and references agree.
    connections in the manifest.
 4. Replace every remaining `spec.gaggle: acme-web` with `spec.gaggle:
    widget`.
-5. In `goobers/reviewer/goober.yaml`, remove `merge-review` from
+5. Add `agent:model` to `spec.capabilities` in the retained curator,
+   implementer, and reviewer goober definitions. Preserve their existing
+   grants.
+6. In `goobers/reviewer/goober.yaml`, remove `merge-review` from
    `spec.workflows` because that workflow was removed.
-6. Replace references to "Acme Web" in each `instructions.md`. Tell the
+7. Replace references to "Acme Web" in each `instructions.md`. Tell the
    implementer and reviewer where the repository's conventions live, which
    fast targeted checks to use, and what changes are out of scope.
-7. In `workflows/implementation.yaml`, replace
+8. In `workflows/implementation.yaml`, replace
    `command: ["make", "ci"]` in the `local-ci` stage with the target
    repository's real non-interactive CI command.
+
+The goober capability lists should retain their workload grants while adding
+the model credential:
+
+```yaml
+# curator
+capabilities:
+  - agent:model
+  - github:issues:write
+
+# implementer
+capabilities:
+  - agent:model
+  - repo:push
+
+# reviewer
+capabilities:
+  - agent:model
+```
+
+Also add `agent:model` to each retained agentic task's capabilities:
+
+```yaml
+# workflows/backlog-curation.yaml: curate
+capabilities:
+  - agent:model
+  - github:issues:write
+
+# workflows/implementation.yaml: implement
+capabilities:
+  - agent:model
+  - repo:push
+```
+
+The agentic review gate has no task-level capability list; it receives
+`agent:model` from the reviewer goober definition.
 
 The resulting config should have this shape:
 
@@ -356,13 +406,17 @@ procedure. Confirm shutdown with:
 goobers status --daemon "$GOOBERS_INSTANCE"
 ```
 
-## 10. Add a second gaggle
+## 10. Add a second gaggle for the same repository
 
-Once the first repository works, add a second `repos` entry. In the current
-local credential model, use one fine-grained repository token selected for
-every repository in this instance. If the repositories require credentials
-from different identities, use separate instance roots instead of broadening
-one token.
+The current local runtime resolves several built-in provider and cleanup stages
+through the first `repos` entry. Until repository selection is gaggle-aware,
+keep exactly one operational repository in each instance root. To operate
+against another repository, repeat this guide with a separate instance root.
+
+Multiple gaggles can safely share the configured repository. For example, add a
+documentation gaggle with its own workflow names, budget, isolation identity,
+and non-overlapping backlog labels. Update `instance.yaml` without adding a
+second `repos` entry:
 
 ```yaml
 apiVersion: goobers.dev/v1alpha1
@@ -371,11 +425,6 @@ repos:
   - provider: github
     owner: acme
     name: widget-service
-    token:
-      env: GOOBERS_GITHUB_TOKEN
-  - provider: github
-    owner: acme
-    name: payments-service
     token:
       env: GOOBERS_GITHUB_TOKEN
 credentials:
@@ -389,58 +438,55 @@ runConditions:
   maxParallelRuns: 2
   workflowDailyBudgets:
     widget-implementation: 2
-    payments-implementation: 2
+    widget-docs-implementation: 2
 ```
 
-Duplicate the first gaggle directory as `config/gaggles/payments/`, then:
+Duplicate the first gaggle directory as `config/gaggles/widget-docs/`, then:
 
 1. Change the copied gaggle's directory, `metadata.name`,
    `spec.isolation.namespace`, `spec.isolation.identityRef`, every
-   `spec.gaggle`, project/backlog repository, display names, and instruction
-   text. Give the isolation fields values unique to the second gaggle, such as
-   `namespace: gaggle-payments` and `identityRef: payments-identity`; do not
-   retain the first gaggle's values.
+   `spec.gaggle`, display names, and instruction text. Keep both its project
+   and backlog on `acme/widget-service`. Give the isolation fields values
+   unique to the second gaggle, such as `namespace: gaggle-widget-docs` and
+   `identityRef: widget-docs-identity`; do not retain the first gaggle's
+   values.
 2. Give both gaggles' goobers and workflows globally unique names. For
    example, rename the goober directories and `metadata.name` values to
-   `widget-curator` / `payments-curator`, `widget-implementer` /
-   `payments-implementer`, and `widget-reviewer` / `payments-reviewer`; rename
-   the workflows to `widget-implementation` / `payments-implementation` and
-   their curation equivalents. Update task `goober` values, the review gate's
-   `agentic.goober`, and each goober's `spec.workflows` references.
-3. Add repository/backlog connections for `payments` and add `payments` to
-   `config/manifest.yaml`:
+   `widget-curator` / `widget-docs-curator`, `widget-implementer` /
+   `widget-docs-implementer`, and `widget-reviewer` /
+   `widget-docs-reviewer`; rename the workflows to `widget-implementation` /
+   `widget-docs-implementation` and their curation equivalents. Update task
+   `goober` values, the review gate's `agentic.goober`, and each goober's
+   `spec.workflows` references.
+3. Leave the existing repository/backlog connections unchanged and add
+   `widget-docs` to `config/manifest.yaml`:
 
    ```yaml
    spec:
-     connections:
-       - name: widget-repo
-         type: repo
-         provider: github
-         secretRef:
-           name: shared-repo-token
-       - name: widget-backlog
-         type: backlog
-         provider: github
-         secretRef:
-           name: shared-repo-token
-       - name: payments-repo
-         type: repo
-         provider: github
-         secretRef:
-           name: shared-repo-token
-       - name: payments-backlog
-         type: backlog
-         provider: github
-         secretRef:
-           name: shared-repo-token
      gaggles:
        - widget
-       - payments
+       - widget-docs
    ```
 
-4. Point each gaggle's `project.connectionRef` and
-   `backlog.connectionRef` at its matching connections.
-5. Bootstrap the label taxonomy in the second repository.
+4. Keep both gaggles' `project.connectionRef` and `backlog.connectionRef`
+   pointed at those shared connections.
+5. Route issues disjointly. Create `area:core` and `area:docs` in the target
+   repository:
+
+   ```sh
+   create_label "area:core" "0052CC" "Routed to the core widget gaggle"
+   create_label "area:docs" "0075CA" "Routed to the widget docs gaggle"
+   ```
+
+   In each workflow's `query-backlog` inputs, preserve `trustLabel` and the
+   existing exclusions, then set these required labels:
+
+   | Gaggle | Curation `requireLabels` | Implementation `requireLabels` |
+   |---|---|---|
+   | `widget` | `"area:core"` | `"goobers:ready,area:core"` |
+   | `widget-docs` | `"area:docs"` | `"goobers:ready,area:docs"` |
+
+   Apply exactly one routing area to each approved issue.
 6. Re-run both validation commands and restart the daemon.
 
 `goobers status` includes a `GAGGLE` column, and each run identity and telemetry
@@ -449,10 +495,10 @@ gaggles; each workflow's `readiness` and the named daily budgets apply to that
 workflow. Use unique workflow names in filters and manual runs:
 
 ```sh
-goobers run payments-backlog-curation "$GOOBERS_INSTANCE"
-goobers status --workflow payments-implementation "$GOOBERS_INSTANCE"
+goobers run widget-docs-backlog-curation "$GOOBERS_INSTANCE"
+goobers status --workflow widget-docs-implementation "$GOOBERS_INSTANCE"
 ```
 
-This completes the tier-1/2 onboarding path: each repository has an explicit
-trust gate, independent workforce definitions and budgets, observable
+This completes the tier-1/2 onboarding path: the repository has an explicit
+trust gate, independently routed workforce definitions and budgets, observable
 curation/implementation cycles, and a safe daemon lifecycle.
