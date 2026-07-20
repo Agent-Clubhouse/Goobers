@@ -81,6 +81,11 @@ type TerminalPreparer func(runID string, phase journal.RunPhase, jr *journal.Run
 // implementations must be idempotent.
 type TerminalFinalizer func(runID string, phase journal.RunPhase) error
 
+// TerminalNotifier performs a best-effort side effect for a newly-terminal
+// live run. Errors are deliberately ignored so notification delivery can never
+// affect run processing.
+type TerminalNotifier func(runID string, phase journal.RunPhase, finalState string) error
+
 // BlockedOutcome describes a run terminating because a stage reported status
 // "blocked" (#544/#545) — the value Config.Blocked receives.
 type BlockedOutcome struct {
@@ -212,6 +217,10 @@ type Config struct {
 	// FinalizeTerminal performs instance-level cleanup for every terminal run,
 	// after run.finished is durable. Optional; errors are surfaced to the caller.
 	FinalizeTerminal TerminalFinalizer
+	// NotifyTerminal reports a newly-terminal live run after run.finished is
+	// durable and before instance-level cleanup. Optional and best-effort:
+	// errors never affect the run and startup recovery does not invoke it.
+	NotifyTerminal TerminalNotifier
 	// MaxSteps overrides DefaultMaxSteps when > 0.
 	MaxSteps int
 	// RepoCloneURL derives the git remote URL worktree.Manager clones from a
@@ -1276,6 +1285,9 @@ func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, f
 		return Result{}, fmt.Errorf("runner: journal run.finished: %w", err)
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
+	if r.cfg.NotifyTerminal != nil {
+		_ = r.cfg.NotifyTerminal(runID, phase, finalState)
+	}
 	if err := r.FinalizeTerminal(runID, phase); err != nil {
 		return res, err
 	}

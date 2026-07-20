@@ -30,6 +30,7 @@ repos:
       env: GITHUB_TOKEN
 runConditions:
   maxParallelRuns: 2
+notifications: true
 `)
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -46,6 +47,9 @@ runConditions:
 	}
 	if cfg.RunConditions.MaxParallelRuns != 2 {
 		t.Fatalf("expected maxParallelRuns=2, got %d", cfg.RunConditions.MaxParallelRuns)
+	}
+	if !cfg.Notifications {
+		t.Fatal("expected notifications to be enabled")
 	}
 	if cfg.APIListenAddress() != DefaultAPIListenAddress {
 		t.Fatalf("APIListenAddress = %q, want %q", cfg.APIListenAddress(), DefaultAPIListenAddress)

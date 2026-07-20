@@ -32,6 +32,10 @@ credentials:
       env: GOOBERS_GITHUB_REVIEW_TOKEN
 telemetry:
   enabled: true
+# Opt in to native notifications for escalated and failed runs. The equivalent
+# one-shot daemon override is `goobers up --notify` (`--notify=all` includes
+# completed and aborted runs too).
+# notifications: true
 # Optional instance-level ceilings on top of each workflow's own `readiness`
 # block: maxParallelRuns caps total concurrent runs across every workflow in
 # this instance; workflowBudgets (a map of workflow name -> runs/hour)

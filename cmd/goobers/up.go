@@ -137,7 +137,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers up [--quiet] [--diagnostics] [path]\n\n"+
+		pf(stderr, "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [path]\n\n"+
 			"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n"+
 			"plus the local runner and loopback HTTP API (default path \".\"). Blocks\n"+
 			"until interrupted (SIGINT/SIGTERM), then drains in-flight runs before\n"+
@@ -152,6 +152,8 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	diagnostics := fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
 	watchConfig := fs.Bool("watch-config", false, "experimental: hot-reload config edits without a restart (default off; superseded by the Workflow CD config source, #453)")
+	var notifications notifyFlag
+	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -190,7 +192,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 
 	var wg sync.WaitGroup
-	setup, err := buildSchedulerSetup(ctx, l, &wg)
+	setup, err := buildSchedulerSetup(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
 	if err != nil {
 		printValidationIssues(stderr, validationReportFromError(err))
 		pf(stderr, "error: %v\n", err)

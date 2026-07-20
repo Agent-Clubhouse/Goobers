@@ -65,8 +65,9 @@ type schedulerSetup struct {
 	// Unlike OpenPRRefresher this needs no background Run loop (it's pushed to,
 	// not polled), so it's wired uniformly for both `up` and `run` in
 	// SchedulerOptions rather than needing an up.go-only branch. Never nil.
-	ProviderQuota  *localscheduler.ProviderQuotaState
-	SharedRegistry *journal.RegistryScrubber
+	ProviderQuota    *localscheduler.ProviderQuotaState
+	SharedRegistry   *journal.RegistryScrubber
+	TerminalNotifier runner.TerminalNotifier
 }
 
 type schedulerDefinitions struct {
@@ -88,7 +89,11 @@ type schedulerDefinitions struct {
 // workflow — everything localscheduler.New needs. wg is threaded into every
 // entry's trackedStarter so a caller (up's daemon loop, or run's single
 // foreground trigger) can track dispatched runs uniformly.
-func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGroup) (_ *schedulerSetup, err error) {
+func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGroup, setupOpts ...schedulerSetupOption) (_ *schedulerSetup, err error) {
+	var options schedulerSetupOptions
+	for _, apply := range setupOpts {
+		apply(&options)
+	}
 	cfg, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
 		return nil, err
@@ -133,6 +138,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	// keyed by digest, so many runs feeding it is fine.
 	sharedReg := journal.NewRegistryScrubber()
 	sharedScrubber := journal.Chain(sharedReg, journal.NewPatternScrubber())
+	terminalNotifier := buildTerminalNotifier(l, cfg, sharedScrubber, options)
 
 	var tel *telemetry.Client
 	var rollupDB *rollup.DB
@@ -192,11 +198,11 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	// schedulerSetup.ProviderQuota's doc comment for why a shared pointer,
 	// not a Scheduler-owned field, is needed here.
 	providerQuota := localscheduler.NewProviderQuotaState()
-	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, tel, rollupDB, instanceLog, sharedReg, nil, providerQuota)
+	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, tel, rollupDB, instanceLog, sharedReg, nil, providerQuota, terminalNotifier)
 	if err != nil {
 		return nil, err
 	}
-	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(l, cfg, set, tel, instanceLog, sharedReg, providerQuota)
+	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(l, cfg, set, tel, instanceLog, sharedReg, providerQuota, terminalNotifier)
 	if err != nil {
 		return nil, err
 	}
@@ -237,6 +243,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		OpenPRRefresher:   definitions.OpenPRRefresher,
 		ProviderQuota:     providerQuota,
 		SharedRegistry:    sharedReg,
+		TerminalNotifier:  terminalNotifier,
 	}, nil
 }
 
@@ -286,6 +293,7 @@ func buildSchedulerDefinitions(
 	sharedReg *journal.RegistryScrubber,
 	wtManagers map[string]*worktree.Manager,
 	providerQuota *localscheduler.ProviderQuotaState,
+	terminalNotifier runner.TerminalNotifier,
 ) (*schedulerDefinitions, error) {
 	goobers := goobersByName(set)
 	machines, err := compiledMachines(set, goobers)
@@ -306,7 +314,7 @@ func buildSchedulerDefinitions(
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
 		scoped := l.ForGaggle(gaggle)
-		rn, manager, err := buildRuntimeRunner(scoped, cfg, goobers, tel, instanceLog, sharedReg, wtManagers[gaggle], providerQuota)
+		rn, manager, err := buildRuntimeRunner(scoped, cfg, goobers, tel, instanceLog, sharedReg, wtManagers[gaggle], providerQuota, terminalNotifier)
 		if err != nil {
 			return nil, err
 		}
@@ -396,12 +404,13 @@ func buildRetainedLegacyRunner(
 	instanceLog *journal.InstanceLog,
 	sharedReg *journal.RegistryScrubber,
 	providerQuota *localscheduler.ProviderQuotaState,
+	terminalNotifier runner.TerminalNotifier,
 ) (*runner.Runner, *worktree.Manager, error) {
 	retained, err := retainedLegacyRuntimeExists(l)
 	if err != nil || !retained {
 		return nil, nil, err
 	}
-	return buildRuntimeRunner(l, cfg, goobersByName(set), tel, instanceLog, sharedReg, nil, providerQuota)
+	return buildRuntimeRunner(l, cfg, goobersByName(set), tel, instanceLog, sharedReg, nil, providerQuota, terminalNotifier)
 }
 
 func retainedLegacyRuntimeExists(l instance.Layout) (bool, error) {
@@ -429,6 +438,7 @@ func buildRuntimeRunner(
 	sharedReg *journal.RegistryScrubber,
 	manager *worktree.Manager,
 	providerQuota *localscheduler.ProviderQuotaState,
+	terminalNotifier runner.TerminalNotifier,
 ) (*runner.Runner, *worktree.Manager, error) {
 	runnerCfg, manager, err := buildRunnerConfig(l, cfg, goobers, tel, sharedReg, manager)
 	if err != nil {
@@ -442,6 +452,7 @@ func buildRuntimeRunner(
 		return finalizeTerminalRun(l, instanceLog, manager, runID)
 	}
 	runnerCfg.RateLimited = buildRateLimitedHandler(providerQuota)
+	runnerCfg.NotifyTerminal = terminalNotifier
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, nil, err
