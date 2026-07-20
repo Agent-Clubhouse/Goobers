@@ -478,6 +478,9 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 			Owner:    o.RepoRef.Owner,
 			Name:     o.RepoRef.Name,
 		}
+		if blockedRepositoryEmpty(repoRef) {
+			return fmt.Errorf("blocked outcome for run %s has no repository", o.RunID)
+		}
 		for _, itemID := range itemIDs {
 			req := providers.UpdateWorkItemRequest{
 				Repository:   repoRef,

@@ -1287,7 +1287,7 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 // the IDENTICAL transition when it finds the checkpointed task's last
 // attempt already finished, not interrupted — the walk must not re-dispatch
 // it (#107), just pick up the same decision a live walk would have made
-// right after runTask returned. ctx/item feed only the blocked arm's
+// right after runTask returned. ctx/repoRef/item feed only the blocked arm's
 // instance-level handler (Config.Blocked); the transition decision itself
 // stays pure.
 func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run, machine *workflow.Machine, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {

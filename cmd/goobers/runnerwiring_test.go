@@ -1026,8 +1026,12 @@ func TestBuildBlockedHandlerEscalatesCircularDependency(t *testing.T) {
 
 func TestBuildBlockedHandlerScopesCyclesByRepository(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
+	var tokens []string
 	prev := newEscalationPoster
-	newEscalationPoster = func(string) gate.Commenter { return fake }
+	newEscalationPoster = func(token string) gate.Commenter {
+		tokens = append(tokens, token)
+		return fake
+	}
 	t.Cleanup(func() { newEscalationPoster = prev })
 
 	l := instance.NewLayout(t.TempDir())
@@ -1055,17 +1059,15 @@ func TestBuildBlockedHandlerScopesCyclesByRepository(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewResolver: %v", err)
 	}
-	webCfg := &instance.Config{Repos: []instance.RepoRef{
+	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
-	}}
-	apiCfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "api", Token: instance.TokenRef{Env: "BLOCKED_API_TOK"}},
 	}}
-	webHandler := buildBlockedHandler(l, webCfg, resolver, &escTestRegistrar{})
-	apiHandler := buildBlockedHandler(l, apiCfg, resolver, &escTestRegistrar{})
+	handler := buildBlockedHandler(l, cfg, resolver, &escTestRegistrar{})
 
-	if err := webHandler(context.Background(), runner.BlockedOutcome{
-		RunID: "web-current", Stage: "implement", ItemID: "510", Blockers: []string{"441"},
+	if err := handler(context.Background(), runner.BlockedOutcome{
+		RunID: "web-current", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", ItemID: "510", Blockers: []string{"441"},
 	}); err != nil {
 		t.Fatalf("web handler: %v", err)
 	}
@@ -1073,8 +1075,9 @@ func TestBuildBlockedHandlerScopesCyclesByRepository(t *testing.T) {
 		t.Fatalf("web calls = %+v, want only a non-cycle blocked comment for web#510", fake.calls)
 	}
 
-	if err := apiHandler(context.Background(), runner.BlockedOutcome{
-		RunID: "api-current", Stage: "implement", ItemID: "510", Blockers: []string{"441"},
+	if err := handler(context.Background(), runner.BlockedOutcome{
+		RunID: "api-current", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "api"},
+		Stage: "implement", ItemID: "510", Blockers: []string{"441"},
 	}); err != nil {
 		t.Fatalf("api handler: %v", err)
 	}
@@ -1086,6 +1089,9 @@ func TestBuildBlockedHandlerScopesCyclesByRepository(t *testing.T) {
 		if got.Repository != apiRepo || got.ID != wantID || got.Comment == "" {
 			t.Errorf("API cycle call %d = %+v, want api#%s with a cycle comment", i, got, wantID)
 		}
+	}
+	if want := []string{"web-token", "api-token", "api-token"}; !slices.Equal(tokens, want) {
+		t.Fatalf("poster tokens = %v, want %v", tokens, want)
 	}
 
 	recs, err := loadBlockedRecords(blockedRecordsPath(l))
@@ -1439,7 +1445,10 @@ func TestBuildBlockedHandlerNoClaimIsANoop(t *testing.T) {
 	}}
 	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
 
-	err := h(context.Background(), runner.BlockedOutcome{RunID: "run-producer", Stage: "curate", Reason: "blocked"})
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-producer", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "curate", Reason: "blocked",
+	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
