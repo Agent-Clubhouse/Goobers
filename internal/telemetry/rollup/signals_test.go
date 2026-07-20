@@ -97,6 +97,7 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 		instanceEventLine(5, "run.finished", `"workflow":"nominate","runId":"`+fixtureRunID+`","status":"completed"`),
 		instanceEventLine(6, "claim.released", `"runId":"`+fixtureRunID+`"`),
 		instanceEventLine(7, "error", `"error":{"code":"claim_recovery_failed","message":"corrupt claims ledger"}`),
+		instanceEventLine(8, "workflow.starved", `"workflow":"nominate","reason":"consecutive instance pool skips: 3","skipCount":3`),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -110,8 +111,8 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchedulerEvents: %v", err)
 	}
-	if len(events) != 7 {
-		t.Fatalf("scheduler events = %d, want 7: %#v", len(events), events)
+	if len(events) != 8 {
+		t.Fatalf("scheduler events = %d, want 8: %#v", len(events), events)
 	}
 	if events[1].Type != "tick.skipped" || events[1].Reason != "conditions: max-parallel" {
 		t.Fatalf("tick.skipped row = %#v", events[1])
@@ -121,6 +122,9 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	}
 	if events[6].Type != "error" || events[6].ErrorCode != "claim_recovery_failed" || events[6].ErrorClass != "unknown" {
 		t.Fatalf("error row = %#v", events[6])
+	}
+	if events[7].Type != "workflow.starved" || events[7].Workflow != "nominate" || events[7].Reason != "consecutive instance pool skips: 3" {
+		t.Fatalf("workflow.starved row = %#v", events[7])
 	}
 
 	signatures, err := db.TopErrorSignatures(StatsRequest{}, 10)
@@ -138,8 +142,8 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchedulerEvents filtered: %v", err)
 	}
-	if len(filtered) != 4 {
-		t.Fatalf("filtered scheduler events = %d, want 4 (trigger.fired/tick.skipped/run.started/run.finished): %#v", len(filtered), filtered)
+	if len(filtered) != 5 {
+		t.Fatalf("filtered scheduler events = %d, want 5 including workflow.starved: %#v", len(filtered), filtered)
 	}
 }
 

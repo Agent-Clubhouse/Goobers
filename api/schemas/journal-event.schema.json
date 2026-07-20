@@ -19,7 +19,7 @@
       "x-conformance": "normative"
     },
     "type": {
-      "description": "Event kind. trigger.fired, tick.skipped, claim lifecycle/lock, and config.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
+      "description": "Event kind. trigger.fired, tick.skipped, workflow.starved, claim lifecycle/lock, and config.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
       "type": "string",
       "enum": [
         "run.started",
@@ -38,6 +38,7 @@
         "repaired",
         "trigger.fired",
         "tick.skipped",
+        "workflow.starved",
         "claim.acquired",
         "claim.released",
         "claim_lock_slow",
@@ -148,8 +149,14 @@
       "x-conformance": "not applicable (instance journal, not a run's conformance set)"
     },
     "reason": {
-      "description": "Instance-journal only: short, stable explanation for a tick.skipped decision.",
+      "description": "Instance-journal only: short, stable explanation for a tick.skipped or workflow.starved decision.",
       "type": "string",
+      "x-conformance": "not applicable (instance journal, not a run's conformance set)"
+    },
+    "skipCount": {
+      "description": "Instance-journal only: consecutive shared-pool refusal count at a workflow.starved threshold crossing.",
+      "type": "integer",
+      "minimum": 1,
       "x-conformance": "not applicable (instance journal, not a run's conformance set)"
     }
   },

@@ -219,9 +219,6 @@ func (c *Conditions) AdmitWorkflow(identity WorkflowIdentity, r apiv1.ReadinessC
 	if c.active[identity] >= int(maxConcurrent) {
 		return false, ReasonMaxParallel
 	}
-	if c.instanceMaxParallel > 0 && c.totalActive >= c.instanceMaxParallel {
-		return false, ReasonInstanceMaxParallel
-	}
 
 	// Open-PR cap (#353): a workflow that opts in (MaxOpenPRs > 0) is throttled
 	// once its own un-merged PRs reach the cap, so a loop outrunning human (or
@@ -266,6 +263,11 @@ func (c *Conditions) AdmitWorkflow(identity WorkflowIdentity, r apiv1.ReadinessC
 	if maxRunsPerDay > 0 && len(starts) >= int(maxRunsPerDay) {
 		c.starts[identity] = starts
 		return false, ReasonDailyBudget
+	}
+	// Check the shared pool after every workflow-specific readiness condition,
+	// so a pool refusal means this workflow was otherwise dispatchable.
+	if c.instanceMaxParallel > 0 && c.totalActive >= c.instanceMaxParallel {
+		return false, ReasonInstanceMaxParallel
 	}
 	c.starts[identity] = append(starts, now)
 
