@@ -255,6 +255,44 @@ func TestCIPollExecutor_BoundsSummariesCheckCountAndScalarOutput(t *testing.T) {
 	}
 }
 
+func TestMarshalCIChecksArtifactPrioritizesFailuresBeforePendingChecks(t *testing.T) {
+	checks := make([]providers.CheckDetail, maxCIChecks+1)
+	for i := range maxCIChecks {
+		checks[i] = providers.CheckDetail{
+			Name:  fmt.Sprintf("pending-%02d", i),
+			State: providers.CheckStatePending,
+		}
+	}
+	failing := providers.CheckDetail{
+		Name:    "failed-after-pending",
+		State:   providers.CheckStateFailing,
+		URL:     "https://ci.example/failed",
+		Summary: "failure details",
+	}
+	checks[maxCIChecks] = failing
+
+	data, err := marshalCIChecksArtifact(checks)
+	if err != nil {
+		t.Fatalf("marshalCIChecksArtifact: %v", err)
+	}
+	var artifact CIChecksArtifact
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		t.Fatalf("decode %s: %v", CIChecksArtifactName, err)
+	}
+	if len(artifact.Checks) != maxCIChecks {
+		t.Fatalf("retained checks = %d, want %d", len(artifact.Checks), maxCIChecks)
+	}
+	if artifact.Checks[0] != failing {
+		t.Fatalf("first retained check = %+v, want failing check %+v", artifact.Checks[0], failing)
+	}
+	if artifact.Checks[1] != checks[0] || artifact.Checks[maxCIChecks-1] != checks[maxCIChecks-2] {
+		t.Fatalf("pending checks did not retain provider order: %+v", artifact.Checks)
+	}
+	if !artifact.Metadata.Truncated || artifact.Metadata.ChecksDropped != 1 {
+		t.Fatalf("metadata = %+v, want one dropped check", artifact.Metadata)
+	}
+}
+
 func TestBoundFailedCheckNamesReportsOmittedCount(t *testing.T) {
 	first := strings.Repeat("a", 100)
 	second := strings.Repeat("b", 100)
