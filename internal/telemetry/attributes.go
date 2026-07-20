@@ -5,6 +5,7 @@ import semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 // Attribute is a key in the canonical Goobers span attribute registry.
 type Attribute string
 
+// The canonical span attribute registry. Add new Goobers attributes here first.
 const (
 	AttrRunID            = "goobers.run.id"
 	AttrGaggle           = "goobers.gaggle"
@@ -58,6 +59,7 @@ func KnownAttribute(key string) bool {
 	return false
 }
 
+// Canonical values for span stage types, attempt kinds, and outcomes.
 const (
 	StageTypeDeterministic = "deterministic"
 	StageTypeAgentic       = "agentic"
