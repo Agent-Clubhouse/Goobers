@@ -197,6 +197,8 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	mk := marker{
 		RunID:      opts.RunID,
 		OwnerRunID: opts.OwnerRunID,
+		Branch:     opts.Branch,
+		StartRef:   startRef,
 		PID:        os.Getpid(),
 		CreatedAt:  time.Now(),
 		Status:     statusActive,
@@ -222,28 +224,77 @@ func (wt *Worktree) ValidateReservedPaths(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("worktree: inspect indexed asset path for run %s: %w", wt.RunID, err)
 	}
-	committed, err := gitOutput(ctx, wt.Path, "log", "--full-history", "--format=%H", wt.startRef+"..HEAD", "--", gooberassets.WorkspaceDir)
+	headCommitted, err := wt.reservedPathCommits(ctx, wt.Path, "HEAD")
 	if err != nil {
-		return fmt.Errorf("worktree: inspect committed asset path for run %s: %w", wt.RunID, err)
+		return err
 	}
-	if indexed == "" && committed == "" {
+	branchRef, branchCommitted, err := wt.inspectReservedBranch(ctx)
+	if err != nil {
+		return err
+	}
+	if indexed == "" && !headCommitted && !branchCommitted {
 		return nil
 	}
 
 	var rollbackErr error
-	if wt.Branch != "" {
-		currentRef, err := gitOutput(ctx, wt.Path, "rev-parse", "HEAD")
-		if err != nil {
-			rollbackErr = err
-		} else if currentRef != wt.startRef {
-			rollbackErr = runGit(ctx, wt.Path, "update-ref", "refs/heads/"+wt.Branch, wt.startRef, currentRef)
-		}
+	if branchRef != "" && branchRef != wt.startRef {
+		rollbackErr = wt.rollbackBranch(ctx, branchRef)
 	}
 	collision := fmt.Errorf("%w: %s must not be tracked on the run branch", gooberassets.ErrWorkspaceCollision, gooberassets.WorkspaceDir)
 	if rollbackErr != nil {
 		return fmt.Errorf("worktree: remove reserved asset path from run %s: %w", wt.RunID, errors.Join(collision, rollbackErr))
 	}
 	return collision
+}
+
+func (wt *Worktree) reservedPathCommits(ctx context.Context, dir, endRef string) (bool, error) {
+	committed, err := gitOutput(ctx, dir, "log", "--full-history", "--format=%H", wt.startRef+".."+endRef, "--", gooberassets.WorkspaceDir)
+	if err != nil {
+		return false, fmt.Errorf("worktree: inspect committed asset path for run %s: %w", wt.RunID, err)
+	}
+	return committed != "", nil
+}
+
+func (wt *Worktree) inspectReservedBranch(ctx context.Context) (string, bool, error) {
+	if wt.Branch == "" {
+		return "", false, nil
+	}
+	repoDir := wt.manager.repoDirForKey(wt.key)
+	refName := "refs/heads/" + wt.Branch
+	currentRef, err := gitOutput(ctx, repoDir, "rev-parse", "--verify", refName)
+	if err != nil {
+		return "", false, fmt.Errorf("worktree: resolve run branch %q for run %s: %w", wt.Branch, wt.RunID, err)
+	}
+	committed, err := wt.reservedPathCommits(ctx, repoDir, refName)
+	if err != nil {
+		return "", false, err
+	}
+	return currentRef, committed, nil
+}
+
+func (wt *Worktree) rollbackBranch(ctx context.Context, currentRef string) error {
+	return runGit(
+		ctx,
+		wt.manager.repoDirForKey(wt.key),
+		"update-ref",
+		"refs/heads/"+wt.Branch,
+		wt.startRef,
+		currentRef,
+	)
+}
+
+func (wt *Worktree) restoreReservedBranch(ctx context.Context) error {
+	currentRef, committed, err := wt.inspectReservedBranch(ctx)
+	if err != nil {
+		return err
+	}
+	if !committed || currentRef == wt.startRef {
+		return nil
+	}
+	if err := wt.rollbackBranch(ctx, currentRef); err != nil {
+		return fmt.Errorf("worktree: restore run branch after reserved asset commit for run %s: %w", wt.RunID, err)
+	}
+	return nil
 }
 
 // Diff returns the unified diff of this worktree's branch against baseRef

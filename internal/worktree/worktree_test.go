@@ -175,6 +175,34 @@ func TestWorktree_ValidateReservedPathsRejectsAssetsInMergeParent(t *testing.T) 
 	}
 }
 
+func TestWorktree_ValidateReservedPathsUsesRunBranchWhenHEADDetached(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/run-detached"
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-detached", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, wt.Path, "commit", "-m", "force-add assets")
+	assetCommit := strings.TrimSpace(runTestGit(t, wt.Path, "rev-parse", "HEAD"))
+	runTestGit(t, wt.Path, "switch", "--detach", wt.startRef)
+
+	if err := wt.ValidateReservedPaths(ctx); !errors.Is(err, gooberassets.ErrWorkspaceCollision) {
+		t.Fatalf("ValidateReservedPaths error = %v, want ErrWorkspaceCollision", err)
+	}
+	branchRef := strings.TrimSpace(runTestGit(t, m.repoDirForKey(wt.key), "-c", "safe.bareRepository=all", "rev-parse", "refs/heads/"+branch))
+	if branchRef != wt.startRef {
+		t.Fatalf("run branch = %s, want rollback to %s (asset commit %s)", branchRef, wt.startRef, assetCommit)
+	}
+}
+
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -508,6 +536,65 @@ func TestManager_Reap_RemovesDeadProcessOrphan(t *testing.T) {
 	}
 	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
 		t.Fatalf("expected orphaned worktree removed, stat err = %v", err)
+	}
+}
+
+func TestManager_Reap_RestoresReservedPathBranchAfterCrash(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/crashed-assets"
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "crashed-assets", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, wt.Path, "commit", "-m", "force-add assets")
+
+	const fakeDeadPID = 999999
+	prev := processAlive
+	processAlive = func(pid int) bool { return pid != fakeDeadPID }
+	t.Cleanup(func() { processAlive = prev })
+	mk, err := readMarker(m.markerPath(wt.key, wt.RunID))
+	if err != nil {
+		t.Fatalf("readMarker: %v", err)
+	}
+	mk.PID = fakeDeadPID
+	if err := writeMarker(m.markerPath(wt.key, wt.RunID), mk); err != nil {
+		t.Fatalf("writeMarker: %v", err)
+	}
+
+	restarted, err := NewManager(m.Root)
+	if err != nil {
+		t.Fatalf("restart manager: %v", err)
+	}
+	results, warnings, err := restarted.Reap(ctx, ReapOptions{})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected Reap warnings: %+v", warnings)
+	}
+	if len(results) != 1 || results[0].RunID != wt.RunID || results[0].Reason != ReapReasonOrphaned {
+		t.Fatalf("unexpected Reap results: %+v", results)
+	}
+	branchRef := strings.TrimSpace(runTestGit(t, restarted.repoDirForKey(wt.key), "-c", "safe.bareRepository=all", "rev-parse", "refs/heads/"+branch))
+	if branchRef != wt.startRef {
+		t.Fatalf("run branch = %s, want restored ref %s", branchRef, wt.startRef)
+	}
+
+	next, err := restarted.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "next-stage", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create next stage: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(next.Path, gooberassets.WorkspaceDir)); !os.IsNotExist(err) {
+		t.Fatalf("crashed stage assets leaked into next stage: %v", err)
 	}
 }
 
