@@ -39,6 +39,9 @@ type Config struct {
 	Webhook       WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
 	Telemetry     TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	RunConditions RunConditions   `json:"runConditions,omitempty" yaml:"runConditions,omitempty"`
+	// Notifications opts `goobers up` into native desktop notifications for
+	// escalated and failed runs. It defaults to false.
+	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
 	// Credentials sources individual capabilities from their own token refs,
 	// beyond the default of backing every credentialed capability with the
 	// first repo's token (#287, multi-token credentials). Each entry points one

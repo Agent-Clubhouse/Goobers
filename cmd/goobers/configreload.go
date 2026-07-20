@@ -136,6 +136,7 @@ func (r *configReloader) poll(now time.Time) error {
 		r.setup.SharedRegistry,
 		r.setup.WorktreesByGaggle,
 		r.setup.ProviderQuota,
+		r.setup.TerminalNotifier,
 	)
 	if err != nil {
 		return r.reject(digest, &configReportError{report: report, err: err})

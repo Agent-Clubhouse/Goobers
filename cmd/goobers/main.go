@@ -47,7 +47,8 @@ Usage:
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
   goobers validate [flags] [path]  validate an instance or checked-in config source tree
-  goobers up [--quiet] [path]   run the daemon (scheduler + runner + loopback HTTP API)
+  goobers up [--quiet] [--notify[=all]] [path]
+                                run the daemon (scheduler + runner + loopback HTTP API)
   goobers dashboard [--port=<port|auto>] [--no-open] [path]
                                 serve and open the local operations portal
   goobers run <workflow> [--no-wait] [path]

@@ -252,6 +252,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		journal.NewRegistryScrubber(),
 		nil,
 		localscheduler.NewProviderQuotaState(),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
