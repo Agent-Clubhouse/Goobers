@@ -246,7 +246,7 @@ func mustWriteFile(t *testing.T, path, content string) {
 
 func runTestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", bareRepoSafeArgs(args)...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

@@ -20,32 +20,6 @@ const maxCopilotSessionEventBytes = DefaultMaxTranscriptBytes
 // Copilot reports billing in nano-AI units: 1e9 nano-AIU is one $0.01 AI credit.
 const nanoAIUPerUSD = 100_000_000_000
 
-type transcriptEvent struct {
-	Role     string           `json:"role"`
-	Content  string           `json:"content,omitempty"`
-	Model    string           `json:"model,omitempty"`
-	Usage    *transcriptUsage `json:"usage,omitempty"`
-	ToolCall *transcriptTool  `json:"tool_call,omitempty"`
-}
-
-type transcriptUsage struct {
-	InputTokens      *int64   `json:"input_tokens,omitempty"`
-	OutputTokens     *int64   `json:"output_tokens,omitempty"`
-	CacheReadTokens  *int64   `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens *int64   `json:"cache_write_tokens,omitempty"`
-	ReasoningTokens  *int64   `json:"reasoning_tokens,omitempty"`
-	Requests         *int64   `json:"requests,omitempty"`
-	Cost             *float64 `json:"cost,omitempty"`
-	NanoAIU          *float64 `json:"nano_aiu,omitempty"`
-}
-
-type transcriptTool struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name,omitempty"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-	Success   *bool           `json:"success,omitempty"`
-}
-
 type copilotSessionEvent struct {
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`

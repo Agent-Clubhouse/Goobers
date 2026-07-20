@@ -1071,8 +1071,11 @@ func TestBuildBlockedHandlerScopesCyclesByRepository(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("web handler: %v", err)
 	}
-	if len(fake.calls) != 1 || fake.calls[0].Repository != webRepo || fake.calls[0].ID != "510" || fake.calls[0].Comment == "" {
-		t.Fatalf("web calls = %+v, want only a non-cycle blocked comment for web#510", fake.calls)
+	if len(fake.calls) != 1 || fake.calls[0].Repository != webRepo || fake.calls[0].ID != "510" ||
+		fake.calls[0].Comment != "" ||
+		!slices.Equal(fake.calls[0].AddLabels, []string{providers.LabelNeedsHuman}) ||
+		!slices.Equal(fake.calls[0].RemoveLabels, []string{providers.LabelReady, providers.LabelClaimed}) {
+		t.Fatalf("web calls = %+v, want one non-cycle parking update for web#510", fake.calls)
 	}
 
 	if err := handler(context.Background(), runner.BlockedOutcome{
@@ -1418,10 +1421,10 @@ func TestPRClaimBlockedFlowNormalizesProviderID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadBlockedRecords: %v", err)
 	}
-	if _, ok := recs["pr/955"]; !ok {
-		t.Fatalf("blocked records = %+v, want namespaced key pr/955", recs)
+	if _, ok := recs[blockedRecordKey(repository, "pr/955")]; !ok {
+		t.Fatalf("blocked records = %+v, want repository-scoped PR claim key", recs)
 	}
-	if _, ok := recs["955"]; ok {
+	if _, ok := recs[blockedRecordKey(repository, "955")]; ok {
 		t.Fatalf("blocked records = %+v, bare provider ID must not replace the claim key", recs)
 	}
 }
