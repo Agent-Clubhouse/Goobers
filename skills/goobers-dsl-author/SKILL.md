@@ -51,14 +51,42 @@ validator for the target release. Do not invent fields from prose or examples.
    and no write capabilities when the description does not require another
    choice. Use lowercase DNS-style slugs derived from the user's names. Never
    guess credentials or place a secret in YAML.
-4. **Sketch the state graph.** Show `start -> task -> gate(outcome) -> target`
+4. **Choose the target layout.** Do this before assigning paths:
+   - For a checked-in config source tree, put `instance.yaml.example`,
+     `manifest.yaml`, and `gaggles/` at the repository root. This is the
+     default when the user asks for a new config repo.
+   - For an initialized instance, use its existing `instance.yaml` and put
+     definitions under `config/`. Update `instance.yaml` only when the request
+     changes instance-level connections or settings.
+
+   These layouts are not interchangeable. Populate the instance file or
+   template with the requested target repo and provider, plus the credential
+   references required by the generated capabilities. Use only env or file
+   references, never secret values.
+5. **Sketch the state graph.** Show `start -> task -> gate(outcome) -> target`
    before writing YAML. Every referenced state must exist and every declared
    state must be reachable.
-5. **Generate the files.** For a new gaggle, normally produce:
+6. **Generate the files.** For a new gaggle in a checked-in config source tree,
+   normally produce:
 
    ```text
+   instance.yaml.example                   # valid, secret-free instance template
+   manifest.yaml                           # add the gaggle name when applicable
+   gaggles/<gaggle>/
+     gaggle.yaml
+     goobers/<goober>/
+       goober.yaml
+       instructions.md
+     workflows/<workflow>.yaml
+   ```
+
+   In an initialized instance, use the same definition tree beneath `config/`
+   and retain its root-level `instance.yaml`:
+
+   ```text
+   instance.yaml
    config/
-     manifest.yaml                         # add the gaggle name when applicable
+     manifest.yaml
      gaggles/<gaggle>/
        gaggle.yaml
        goobers/<goober>/
@@ -70,7 +98,7 @@ validator for the target release. Do not invent fields from prose or examples.
    If the user already has a gaggle, only create or update the definitions
    required by the request. A goober needs matching `instructions.md`; do not
    emit a YAML-only worker that references a missing file.
-6. **Validate and repair.** Run the target release's validator when available,
+7. **Validate and repair.** Run the target release's validator when available,
    fix every error, and rerun it. Schema checks alone are insufficient because
    state reachability, cross-references, schedules, gate outcomes, and
    capability admission are compiler checks.

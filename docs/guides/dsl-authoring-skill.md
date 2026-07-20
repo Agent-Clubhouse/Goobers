@@ -37,16 +37,25 @@ For example:
 > otherwise abort. The triager may read code and write issues but must never
 > push code or open pull requests.
 
-The skill first explains the terms involved, then sketches the state graph and
-generates the applicable paths:
+The skill first explains the terms involved, chooses an output layout, then
+sketches the state graph and generates the applicable paths. For a new
+checked-in config source tree, it emits a complete tree that can be validated
+directly:
 
 ```text
-config/manifest.yaml
-config/gaggles/acme-api/gaggle.yaml
-config/gaggles/acme-api/goobers/triager/goober.yaml
-config/gaggles/acme-api/goobers/triager/instructions.md
-config/gaggles/acme-api/workflows/test-and-triage.yaml
+instance.yaml.example
+manifest.yaml
+gaggles/acme-api/gaggle.yaml
+gaggles/acme-api/goobers/triager/goober.yaml
+gaggles/acme-api/goobers/triager/instructions.md
+gaggles/acme-api/workflows/test-and-triage.yaml
 ```
+
+The instance template uses the requested `acme/api` GitHub connection and
+environment-variable references for the repo and model credentials, never
+secret values. For an existing initialized instance, the skill instead keeps
+its root-level `instance.yaml` and writes `manifest.yaml` and `gaggles/`
+beneath `config/`.
 
 For that request, the graph is a scheduled workflow with a deterministic test
 task, an automated status gate, and an agentic triage task. The goober and its
@@ -80,6 +89,10 @@ goobers validate ./my-instance
 # manifest.yaml, and gaggles/
 goobers validate --source-tree ./my-config
 ```
+
+The `--source-tree` path is the config root itself: do not add an extra
+`config/` directory beneath it. The initialized-instance command instead
+expects `instance.yaml` and `config/` beneath the supplied path.
 
 The validator checks more than JSON Schema: it compiles workflows to catch
 broken state references, unreachable states, invalid schedules, incomplete
