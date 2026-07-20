@@ -209,41 +209,12 @@ func buildStatusFleetSummary(
 
 func statusWorkflowLastEvals(
 	layout instance.Layout,
-	workflows []apiv1.Workflow,
-	now time.Time,
 ) (map[localscheduler.WorkflowIdentity]time.Time, error) {
-	identities := make([]localscheduler.WorkflowIdentity, len(workflows))
-	for i, workflow := range workflows {
-		identities[i] = localscheduler.WorkflowIdentity{
-			Gaggle:   workflow.Spec.Gaggle,
-			Workflow: workflow.Name,
-		}
-	}
-
-	startedAt := now
-	running, identity, err := inspectDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"))
+	evaluations, err := localscheduler.ReadTriggerEvaluations(layout.SchedulerDir())
 	if err != nil {
-		return nil, fmt.Errorf("inspect scheduler state: %w", err)
+		return nil, fmt.Errorf("read scheduler trigger state: %w", err)
 	}
-	if running && identity != nil {
-		startedAt = identity.StartedAt
-	}
-
-	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
-	if err != nil {
-		return nil, fmt.Errorf("read scheduler trigger history: %w", err)
-	}
-	fired := make([]localscheduler.TriggerFiredRecord, 0)
-	for _, event := range events {
-		if event.Type == journal.EventTriggerFired {
-			fired = append(fired, localscheduler.TriggerFiredRecord{
-				Gaggle:   event.Gaggle,
-				Workflow: event.Workflow,
-				Time:     event.Time,
-			})
-		}
-	}
-	return localscheduler.ReconstructLastEval(fired, identities, startedAt), nil
+	return evaluations, nil
 }
 
 func statusWorkflowNextFire(workflow *apiv1.Workflow, lastEval time.Time, loc *time.Location) (statusNextFire, error) {
@@ -506,7 +477,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return listStatusRuns(context.Background(), reads)
 	}
 	loadFleetSummary := func(runs []runSummary, now time.Time) (statusFleetSummary, error) {
-		lastEvals, err := statusWorkflowLastEvals(l, set.Workflows, now)
+		lastEvals, err := statusWorkflowLastEvals(l)
 		if err != nil {
 			return statusFleetSummary{}, err
 		}

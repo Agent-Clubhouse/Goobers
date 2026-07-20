@@ -106,6 +106,37 @@ func TestTickDispatchesDueWorkflow(t *testing.T) {
 	}
 }
 
+func TestTickDispatchesWhenTriggerStatePersistenceFails(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	scheduler, dir := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+		Starter:   starter,
+	}})
+	scheduler.writeTriggerState = func(string, map[WorkflowIdentity]time.Time) error {
+		return errors.New("state unavailable")
+	}
+	scheduler.mu.Lock()
+	lastEval := scheduler.triggers[WorkflowIdentity{Workflow: "implement"}].LastEval
+	scheduler.mu.Unlock()
+
+	scheduler.Tick(context.Background(), lastEval.Add(time.Hour))
+	waitForCount(t, starter.count, 1)
+	scheduler.Wait()
+
+	events, err := journal.ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Error != nil &&
+			event.Error.Code == "trigger_state_persist_failed" {
+			return
+		}
+	}
+	t.Fatal("trigger-state persistence failure was not journaled")
+}
+
 func TestReloadUsesNewStarterWithoutChangingInflightRun(t *testing.T) {
 	oldBlock := make(chan struct{})
 	oldStarter := &fakeStarter{block: oldBlock, result: StartResult{Phase: journal.PhaseCompleted}}
@@ -257,6 +288,7 @@ func TestReconcileKeepsDuplicateWorkflowTriggerHistoryDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if err := past.Append(journal.Event{
 		Type: journal.EventTriggerFired, Gaggle: "beta", Workflow: "deploy",
 	}); err != nil {
@@ -292,6 +324,74 @@ func TestReconcileKeepsDuplicateWorkflowTriggerHistoryDistinct(t *testing.T) {
 	sched.Wait()
 	if got := alpha.count(); got != 0 {
 		t.Fatalf("alpha starts = %d, want 0 from its recent scoped firing", got)
+	}
+}
+
+func TestReconcileIgnoresNonScheduleTriggerHistory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	scheduledAt := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
+	eventTime := scheduledAt
+	past, _, err := journal.OpenInstanceLog(dir, journal.WithClock(func() time.Time { return eventTime }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Append(journal.Event{
+		Type: journal.EventTriggerFired, Gaggle: "fleet", Workflow: "interval", Reason: "scheduled",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = scheduledAt.Add(30 * time.Minute)
+	if err := past.Append(journal.Event{
+		Type: journal.EventTriggerFired, Gaggle: "fleet", Workflow: "interval", Reason: "manual",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	scheduler := New([]WorkflowEntry{{
+		Gaggle: "fleet", Workflow: "interval", Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+	}}, log)
+	if err := scheduler.ReconcileAll(nil, scheduledAt.Add(45*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	evaluations, err := ReadTriggerEvaluations(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := WorkflowIdentity{Gaggle: "fleet", Workflow: "interval"}
+	if got := evaluations[identity]; !got.Equal(scheduledAt) {
+		t.Fatalf("LastEval = %s, want scheduled fire %s", got, scheduledAt)
+	}
+}
+
+func TestScheduledTriggerFiredClassificationMatchesFireReasons(t *testing.T) {
+	tests := []struct {
+		name string
+		tick TickResult
+		kind journal.TriggerKind
+		want bool
+	}{
+		{name: "scheduled", kind: journal.TriggerSchedule, want: true},
+		{name: "catch up", tick: TickResult{CatchUp: true, MissedTicks: 2}, kind: journal.TriggerSchedule, want: true},
+		{name: "manual", kind: journal.TriggerManual},
+		{name: "signal", kind: journal.TriggerSignal},
+		{name: "backlog item", kind: journal.TriggerItem},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason := fireReason(tt.tick, tt.kind)
+			if got := scheduledTriggerFired(reason); got != tt.want {
+				t.Fatalf("scheduledTriggerFired(%q) = %t, want %t", reason, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -769,9 +869,9 @@ func TestSignalReasonIsSignalNotScheduled(t *testing.T) {
 // TestDispatchRefusesWhenTriggerFiredJournalFails is issue #142/SCH-031: a
 // failed trigger.fired append used to be silently swallowed, so dispatch
 // would start a run whose firing was never durably recorded — on restart,
-// ReconstructLastEval (which derives LastEval purely from trigger.fired
-// history) would then replay that same nominal firing, double-dispatching a
-// run for it. Refusing to dispatch when the append fails closes that gap.
+// ReconstructLastEval would then replay that same nominal scheduled firing,
+// double-dispatching a run for it. Refusing to dispatch when the append fails
+// closes that gap.
 func TestDispatchRefusesWhenTriggerFiredJournalFails(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "scheduler")
 	log, _, err := journal.OpenInstanceLog(dir)

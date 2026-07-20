@@ -2,6 +2,11 @@ package localscheduler
 
 import "time"
 
+const (
+	triggerReasonScheduled     = "scheduled"
+	triggerReasonCatchUpPrefix = "catch-up "
+)
+
 // TriggerState tracks one workflow's cron evaluation state: its schedules
 // (#341 — a workflow may declare more than one) and the last instant it was
 // evaluated, so a tick can decide whether any of them is due. All schedules
@@ -13,8 +18,9 @@ type TriggerState struct {
 	// LastEval is the last instant this trigger was evaluated (fired or not).
 	// It must be initialized explicitly — by the daemon's start time for a
 	// trigger never seen before, or by the timestamp of its most recent
-	// trigger.fired instance-journal event on restart (see ReconstructLastEval)
-	// — so missed-tick catch-up is well-defined rather than an epoch backfill.
+	// scheduled trigger.fired instance-journal event on restart (see
+	// ReconstructLastEval) — so missed-tick catch-up is well-defined rather
+	// than an epoch backfill.
 	LastEval time.Time
 }
 
@@ -82,10 +88,10 @@ func Tick(t TriggerState, now time.Time) TickResult {
 }
 
 // ReconstructLastEval derives the LastEval baseline for each workflow's trigger
-// after a restart, from the instance journal's trigger.fired history: the most
-// recent fire time for a workflow, or startedAt for a workflow never observed
-// (no epoch backfill — a trigger the daemon has never evaluated starts counting
-// from daemon start, not from year zero).
+// after a restart, from the instance journal's scheduled trigger.fired
+// history: the most recent scheduled fire time for a workflow, or startedAt
+// for a workflow never observed (no epoch backfill — a trigger the daemon has
+// never evaluated starts counting from daemon start, not from year zero).
 func ReconstructLastEval(fired []TriggerFiredRecord, workflows []WorkflowIdentity, startedAt time.Time) map[WorkflowIdentity]time.Time {
 	last := make(map[WorkflowIdentity]time.Time, len(workflows))
 	seen := make(map[WorkflowIdentity]bool, len(workflows))

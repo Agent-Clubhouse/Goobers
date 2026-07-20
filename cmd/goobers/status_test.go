@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -324,27 +325,43 @@ func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing
 	}
 }
 
-func TestStatusIntervalNextFireUsesDaemonStart(t *testing.T) {
+type statusSchedulerStarter struct {
+	started atomic.Int32
+}
+
+func (s *statusSchedulerStarter) Start(context.Context, localscheduler.StartRequest) (localscheduler.StartResult, error) {
+	s.started.Add(1)
+	return localscheduler.StartResult{Phase: journal.PhaseCompleted}, nil
+}
+
+func TestStatusIntervalNextFireMatchesSchedulerAfterManualFire(t *testing.T) {
 	root := t.TempDir()
 	layout := instance.NewLayout(root)
-	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	startedAt := time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
-	release, err := acquireInstanceLockWithIdentity(
-		filepath.Join(layout.SchedulerDir(), "up.lock"),
-		&daemonIdentity{
-			PID:          os.Getpid(),
-			StartedAt:    startedAt,
-			InstanceRoot: root,
-			Version:      "test",
-		},
-	)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
-
+	t.Cleanup(func() { _ = log.Close() })
+	schedule, err := localscheduler.ParseSchedule("@every 1h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &statusSchedulerStarter{}
+	entry := localscheduler.WorkflowEntry{
+		Workflow:  "interval",
+		Gaggle:    "fleet",
+		Schedules: []localscheduler.Schedule{localscheduler.InLocation(schedule, time.UTC)},
+		Starter:   starter,
+	}
+	scheduler := localscheduler.New([]localscheduler.WorkflowEntry{entry}, log)
+	startedAt := time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	if err := scheduler.ReconcileAll(nil, startedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scheduler.Trigger(context.Background(), "interval", startedAt.Add(30*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.Wait()
 	workflows := []apiv1.Workflow{{
 		ObjectMeta: metav1.ObjectMeta{Name: "interval"},
 		Spec: apiv1.WorkflowSpec{
@@ -353,7 +370,7 @@ func TestStatusIntervalNextFireUsesDaemonStart(t *testing.T) {
 		},
 	}}
 	now := startedAt.Add(30 * time.Minute)
-	lastEvals, err := statusWorkflowLastEvals(layout, workflows, now)
+	lastEvals, err := statusWorkflowLastEvals(layout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,31 +384,41 @@ func TestStatusIntervalNextFireUsesDaemonStart(t *testing.T) {
 	if next == nil || !next.Equal(want) {
 		t.Fatalf("next fire = %v, want %s", next, want)
 	}
+
+	scheduler.Tick(context.Background(), want)
+	scheduler.Wait()
+	if got := starter.started.Load(); got != 2 {
+		t.Fatalf("scheduler dispatches = %d, want manual fire plus scheduled fire", got)
+	}
 }
 
-func TestStatusIntervalNextFireUsesLastFired(t *testing.T) {
+func TestStatusIntervalNextFireMatchesSchedulerAfterReload(t *testing.T) {
 	root := t.TempDir()
 	layout := instance.NewLayout(root)
-	lastEval := time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
-	now := lastEval.Add(30 * time.Minute)
-	log, _, err := journal.OpenInstanceLog(
-		layout.SchedulerDir(),
-		journal.WithClock(func() time.Time { return lastEval }),
-	)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := log.Append(journal.Event{
-		Type:     journal.EventTriggerFired,
-		Gaggle:   "fleet",
-		Workflow: "interval",
-	}); err != nil {
+	t.Cleanup(func() { _ = log.Close() })
+	schedule, err := localscheduler.ParseSchedule("@every 1h")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := log.Close(); err != nil {
+	starter := &statusSchedulerStarter{}
+	scheduler := localscheduler.New(nil, log)
+	startedAt := time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	if err := scheduler.ReconcileAll(nil, startedAt); err != nil {
 		t.Fatal(err)
 	}
-
+	reloadedAt := startedAt.Add(30 * time.Minute)
+	if err := scheduler.Reload([]localscheduler.WorkflowEntry{{
+		Workflow:  "interval",
+		Gaggle:    "fleet",
+		Schedules: []localscheduler.Schedule{localscheduler.InLocation(schedule, time.UTC)},
+		Starter:   starter,
+	}}, nil, reloadedAt, "old", "new"); err != nil {
+		t.Fatal(err)
+	}
 	workflows := []apiv1.Workflow{{
 		ObjectMeta: metav1.ObjectMeta{Name: "interval"},
 		Spec: apiv1.WorkflowSpec{
@@ -399,19 +426,30 @@ func TestStatusIntervalNextFireUsesLastFired(t *testing.T) {
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"}},
 		},
 	}}
-	lastEvals, err := statusWorkflowLastEvals(layout, workflows, now)
+	lastEvals, err := statusWorkflowLastEvals(layout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, now, time.UTC)
+	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, reloadedAt, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	next := got.Workflows[0].NextFire.At
-	want := time.Date(2026, time.July, 20, 10, 0, 0, 0, time.UTC)
+	want := time.Date(2026, time.July, 20, 10, 30, 0, 0, time.UTC)
 	if next == nil || !next.Equal(want) {
 		t.Fatalf("next fire = %v, want %s", next, want)
+	}
+
+	scheduler.Tick(context.Background(), want.Add(-time.Minute))
+	scheduler.Wait()
+	if got := starter.started.Load(); got != 0 {
+		t.Fatalf("scheduler dispatched %d runs before status next fire", got)
+	}
+	scheduler.Tick(context.Background(), want)
+	scheduler.Wait()
+	if got := starter.started.Load(); got != 1 {
+		t.Fatalf("scheduler dispatches = %d at status next fire, want 1", got)
 	}
 }
 

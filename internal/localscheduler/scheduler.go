@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -90,13 +91,14 @@ type SpanStarter interface {
 // evaluation, run conditions, and the Starter seam together into one
 // idle-between-ticks loop, journaling every decision to the instance journal.
 type Scheduler struct {
-	workflows  map[WorkflowIdentity]WorkflowEntry
-	conditions *Conditions
-	log        *journal.InstanceLog
-	now        func() time.Time
-	after      func(d time.Duration) <-chan time.Time
-	telemetry  SpanStarter
-	afterTick  func(context.Context)
+	workflows         map[WorkflowIdentity]WorkflowEntry
+	conditions        *Conditions
+	log               *journal.InstanceLog
+	now               func() time.Time
+	after             func(d time.Duration) <-chan time.Time
+	telemetry         SpanStarter
+	afterTick         func(context.Context)
+	writeTriggerState func(string, map[WorkflowIdentity]time.Time) error
 
 	mu         sync.Mutex
 	tickMu     sync.Mutex
@@ -198,6 +200,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		backlogLastCheck:     make(map[WorkflowIdentity]time.Time),
 		consecutivePoolSkips: make(map[WorkflowIdentity]int),
 		wake:                 make(chan struct{}, 1),
+		writeTriggerState:    writeTriggerEvaluations,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -265,7 +268,7 @@ func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
 		startsCutoff = resetAt
 	}
 	for _, ev := range events {
-		if ev.Type == journal.EventTriggerFired {
+		if ev.Type == journal.EventTriggerFired && scheduledTriggerFired(ev.Reason) {
 			fired = append(fired, TriggerFiredRecord{Gaggle: ev.Gaggle, Workflow: ev.Workflow, Time: ev.Time})
 		}
 		if ev.Type == journal.EventRunStarted && ev.Time.After(startsCutoff) {
@@ -279,6 +282,9 @@ func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.persistTriggerEvaluationsLocked(last); err != nil {
+		return err
+	}
 	for identity := range s.triggers {
 		ts := s.triggers[identity]
 		at := last[identity]
@@ -417,8 +423,22 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			s.mu.Lock()
 			ts := s.triggers[identity]
 			res := Tick(ts, now)
+			var persistErr error
+			if res.LastEval != ts.LastEval {
+				evaluations := s.triggerEvaluationsLocked()
+				evaluations[identity] = res.LastEval
+				persistErr = s.persistTriggerEvaluationsLocked(evaluations)
+			}
 			s.triggers[identity] = TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: res.LastEval}
 			s.mu.Unlock()
+			if persistErr != nil {
+				s.journalEvent(journal.Event{
+					Type:     journal.EventError,
+					Workflow: entry.Workflow,
+					Gaggle:   entry.Gaggle,
+					Error:    &journal.ErrorDetail{Code: "trigger_state_persist_failed", Message: persistErr.Error()},
+				})
+			}
 			if res.Fire {
 				candidate.schedule = res
 				candidate.scheduleDue = true
@@ -518,6 +538,13 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		},
 	}); err != nil {
 		return fmt.Errorf("localscheduler: journal config reload: %w", err)
+	}
+	evaluations := make(map[WorkflowIdentity]time.Time, len(triggers))
+	for identity, state := range triggers {
+		evaluations[identity] = state.LastEval
+	}
+	if err := s.persistTriggerEvaluationsLocked(evaluations); err != nil {
+		return err
 	}
 
 	s.conditions.SetOpenPRCounter(openPRs)
@@ -713,12 +740,12 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	// decision already made, so a write failure doesn't roll it back), a
 	// failed trigger.fired append MUST stop this dispatch here rather than
 	// being swallowed (SCH-031, issue #142): ReconstructLastEval rebuilds
-	// each workflow's LastEval purely from trigger.fired history after a
-	// restart, so a fire that started a run but never durably recorded
-	// having fired would replay on the very next restart — dispatching a
-	// second run for the same nominal firing. Refusing to dispatch keeps the
-	// invariant that a run only ever starts once its trigger.fired record
-	// has durably landed.
+	// each workflow's LastEval from scheduled trigger.fired history after a
+	// restart, so a scheduled fire that started a run but never durably
+	// recorded having fired would replay on the very next restart —
+	// dispatching a second run for the same nominal firing. Refusing every
+	// trigger kind keeps the invariant that a run only ever starts once its
+	// trigger.fired record has durably landed.
 	if err := s.appendJournalEvent(journal.Event{
 		Type:     journal.EventTriggerFired,
 		Workflow: entry.Workflow,
@@ -860,9 +887,9 @@ func fireReason(tick TickResult, kind journal.TriggerKind) string {
 		return "backlog item ready"
 	}
 	if tick.CatchUp {
-		return fmt.Sprintf("catch-up (missed %d)", tick.MissedTicks)
+		return fmt.Sprintf("%s(missed %d)", triggerReasonCatchUpPrefix, tick.MissedTicks)
 	}
-	return "scheduled"
+	return triggerReasonScheduled
 }
 
 // nextWakeup computes how long to sleep until the earliest workflow trigger is
@@ -920,4 +947,23 @@ func (s *Scheduler) appendJournalEvent(ev journal.Event) error {
 		return nil
 	}
 	return s.log.Append(ev)
+}
+
+func (s *Scheduler) triggerEvaluationsLocked() map[WorkflowIdentity]time.Time {
+	evaluations := make(map[WorkflowIdentity]time.Time, len(s.triggers))
+	for identity, state := range s.triggers {
+		evaluations[identity] = state.LastEval
+	}
+	return evaluations
+}
+
+func (s *Scheduler) persistTriggerEvaluationsLocked(evaluations map[WorkflowIdentity]time.Time) error {
+	if s.log == nil {
+		return nil
+	}
+	return s.writeTriggerState(s.log.Dir(), evaluations)
+}
+
+func scheduledTriggerFired(reason string) bool {
+	return reason == "" || reason == triggerReasonScheduled || strings.HasPrefix(reason, triggerReasonCatchUpPrefix)
 }
