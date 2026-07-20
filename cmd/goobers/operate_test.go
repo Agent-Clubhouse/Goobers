@@ -87,6 +87,58 @@ func TestRunCompletesDeterministicWorkflow(t *testing.T) {
 	}
 }
 
+func TestRunToleratesFailedNotifyStageAndTracesIt(t *testing.T) {
+	root := initDeterministicDemo(t)
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	workflow := `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: manual
+  start: do-work
+  tasks:
+    - name: do-work
+      type: deterministic
+      goal: complete the required work
+      run:
+        command: ["true"]
+      next: notify
+    - name: notify
+      type: deterministic
+      goal: send a best-effort notification
+      run:
+        command: ["false"]
+      continueOnError: true
+`
+	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "run", "default-implement", root)
+	if code != 0 || !strings.Contains(stdout, "phase=completed") {
+		t.Fatalf("run: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	runID := runIDFromRunStdout(t, stdout)
+
+	code, stdout, stderr = runArgs(t, "trace", runID, root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{
+		"stage=notify attempt=1 status=failure",
+		"code=stage_failure_tolerated",
+		"continueOnError",
+		"run.finished status=completed",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("trace stdout missing %q: %q", want, stdout)
+		}
+	}
+}
+
 func TestRunNoWaitReturnsAfterStandaloneDispatch(t *testing.T) {
 	root := initDeterministicDemo(t)
 

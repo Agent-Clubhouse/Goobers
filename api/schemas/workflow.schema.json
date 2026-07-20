@@ -125,6 +125,7 @@
           }
         },
         "expectedOutputs": { "type": "array", "items": { "type": "string" } },
+        "continueOnError": { "type": "boolean" },
         "onTimeout": { "type": "string", "enum": ["fail", "salvage"] },
         "next": { "type": "string" }
       },

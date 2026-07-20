@@ -171,6 +171,12 @@ type Task struct {
 	// accepts but does not enforce this field; validation emits VER003 when set.
 	// +optional
 	ExpectedOutputs []string `json:"expectedOutputs,omitempty" yaml:"expectedOutputs,omitempty"`
+	// ContinueOnError makes a ResultFailure best-effort: the failed status is
+	// journaled and remains visible to a following gate, but the runner advances
+	// to Next instead of failing the run. Outputs from the failed task are
+	// discarded so downstream tasks cannot consume partial results.
+	// +optional
+	ContinueOnError bool `json:"continueOnError,omitempty" yaml:"continueOnError,omitempty"`
 	// InputsFrom declares an explicit, small output->input handoff from the
 	// immediately preceding task's ResultEnvelope.Outputs into this task's
 	// Inputs: InputsFrom[inputKey] = outputKey. Unlike a gate (which receives
