@@ -69,8 +69,10 @@ func TestGatherSiblingContextUnchangedSiblingsCostZeroCalls(t *testing.T) {
 		t.Fatalf("first gather siblings = %+v, want #11 and #12", first)
 	}
 	filesN, checksN := server.requestCounts()
-	if filesN != 2 || checksN != 4 {
-		t.Fatalf("first gather cost = %d files + %d check-state requests, want 2 + 4 (nothing cached yet)", filesN, checksN)
+	if filesN != 3 || checksN != 4 {
+		// 3 files = 2 siblings + the selected PR's own files, now fetched for
+		// deterministic overlap (#989); 4 check-state = 2 per sibling.
+		t.Fatalf("first gather cost = %d files + %d check-state requests, want 3 + 4 (nothing cached yet)", filesN, checksN)
 	}
 
 	server.resetRequestCounts()
@@ -162,8 +164,10 @@ func TestGatherSiblingContextNoCacheFlagForcesFreshGather(t *testing.T) {
 
 	_, stdout := gatherSiblingContext(t, root, "--no-cache")
 	filesN, checksN := server.requestCounts()
-	if filesN != 2 || checksN != 4 {
-		t.Fatalf("--no-cache gather cost = %d files + %d check-state requests, want the full fresh 2 + 4", filesN, checksN)
+	if filesN != 3 || checksN != 4 {
+		// 3 files = 2 siblings + the selected PR's own files (#989); --no-cache
+		// bypasses the memo so nothing is reused.
+		t.Fatalf("--no-cache gather cost = %d files + %d check-state requests, want the full fresh 3 + 4", filesN, checksN)
 	}
 	if !strings.Contains(stdout, "0 reused from cache") {
 		t.Fatalf("stdout = %q, want it to report 0 reused from cache", stdout)
@@ -188,8 +192,10 @@ func TestGatherSiblingContextCorruptCacheDegradesToFreshGather(t *testing.T) {
 		t.Fatalf("post-corruption gather siblings = %+v, want #11 and #12", siblings)
 	}
 	filesN, _ := server.requestCounts()
-	if filesN != 2 {
-		t.Fatalf("post-corruption gather files requests = %d, want the full fresh 2", filesN)
+	if filesN != 3 {
+		// 2 siblings + the selected PR's own files (#989); a corrupt cache
+		// degrades to a full fresh gather, reusing nothing.
+		t.Fatalf("post-corruption gather files requests = %d, want the full fresh 3", filesN)
 	}
 
 	// The successful gather rewrote a valid memo — the next run reuses it.
