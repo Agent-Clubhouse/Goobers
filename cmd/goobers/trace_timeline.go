@@ -35,7 +35,6 @@ type traceTimelineAttempt struct {
 	Usage          []traceTimelineUsage `json:"usage,omitempty"`
 	startedSeq     uint64
 	finishedSeq    uint64
-	sourceClass    journal.AttemptClass
 }
 
 type traceTimelineGate struct {
@@ -112,12 +111,11 @@ func buildTraceTimeline(
 			index := stageIndex(event.Stage)
 			repass := event.AttemptClass == "" && len(timeline[index].Attempts) > 0
 			attempt := traceTimelineAttempt{
-				Number:      event.Attempt,
-				Class:       timelineAttemptClass(event.AttemptClass),
-				Repass:      repass,
-				Branch:      event.Branch,
-				startedSeq:  event.Seq,
-				sourceClass: event.AttemptClass,
+				Number:     event.Attempt,
+				Class:      timelineAttemptClass(event.AttemptClass),
+				Repass:     repass,
+				Branch:     event.Branch,
+				startedSeq: event.Seq,
 			}
 			if !event.Time.IsZero() {
 				started := event.Time
@@ -131,10 +129,9 @@ func buildTraceTimeline(
 			if ref == nil {
 				index := stageIndex(event.Stage)
 				timeline[index].Attempts = append(timeline[index].Attempts, traceTimelineAttempt{
-					Number:      event.Attempt,
-					Class:       timelineAttemptClass(event.AttemptClass),
-					Branch:      event.Branch,
-					sourceClass: event.AttemptClass,
+					Number: event.Attempt,
+					Class:  timelineAttemptClass(event.AttemptClass),
+					Branch: event.Branch,
 				})
 				ref = &timelineAttemptRef{stage: index, attempt: len(timeline[index].Attempts) - 1}
 			}
@@ -208,8 +205,7 @@ func findTimelineAttempt(timeline []traceTimelineStage, event journal.Event) *ti
 			attempt := timeline[stageIndex].Attempts[attemptIndex]
 			if attempt.finishedSeq == 0 &&
 				attempt.Number == event.Attempt &&
-				attempt.Branch == event.Branch &&
-				attempt.sourceClass == event.AttemptClass {
+				attempt.Branch == event.Branch {
 				return &timelineAttemptRef{stage: stageIndex, attempt: attemptIndex}
 			}
 		}
@@ -219,6 +215,7 @@ func findTimelineAttempt(timeline []traceTimelineStage, event journal.Event) *ti
 
 func finishTimelineAttempt(attempt *traceTimelineAttempt, event journal.Event, status string) {
 	attempt.finishedSeq = event.Seq
+	attempt.Class = timelineAttemptClass(event.AttemptClass)
 	attempt.Status = status
 	if event.Time.IsZero() {
 		return

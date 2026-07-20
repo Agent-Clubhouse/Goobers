@@ -205,6 +205,62 @@ func TestBuildTraceTimelineRetriesGateUsageAndTornEvents(t *testing.T) {
 	}
 }
 
+func TestBuildTraceTimelinePairsInterruptedResumeAttempt(t *testing.T) {
+	base := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	timeline := buildTraceTimeline(
+		readservice.RunDetail{RunSummary: readservice.RunSummary{Phase: journal.PhaseCompleted}},
+		timelineRunEvents(
+			journal.Event{
+				Seq: 1, Type: journal.EventStageStarted, Stage: "implement", Attempt: 1, Time: base,
+			},
+			journal.Event{
+				Seq: 2, Type: journal.EventStageHeartbeat, Stage: "implement", Attempt: 1,
+				Time: base.Add(time.Minute),
+			},
+			journal.Event{
+				Seq: 3, Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+				AttemptClass: journal.AttemptInfra, Status: string(apiv1.ResultFailure),
+				Error: &journal.ErrorDetail{
+					Code:    "interrupted",
+					Message: "attempt was in flight when the runner was interrupted",
+				},
+				Time: base.Add(2 * time.Minute),
+			},
+			journal.Event{
+				Seq: 4, Type: journal.EventStageStarted, Stage: "implement", Attempt: 2,
+				AttemptClass: journal.AttemptPolicy, Time: base.Add(3 * time.Minute),
+			},
+			journal.Event{
+				Seq: 5, Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
+				AttemptClass: journal.AttemptPolicy, Status: string(apiv1.ResultSuccess),
+				Time: base.Add(5 * time.Minute),
+			},
+		),
+		nil,
+		base.Add(6*time.Minute),
+	)
+
+	if len(timeline) != 1 || len(timeline[0].Attempts) != 2 {
+		t.Fatalf("timeline = %+v", timeline)
+	}
+	interrupted := timeline[0].Attempts[0]
+	if interrupted.Number != 1 ||
+		interrupted.Class != string(journal.AttemptInfra) ||
+		interrupted.Status != string(apiv1.ResultFailure) ||
+		interrupted.StartedAt == nil ||
+		!interrupted.StartedAt.Equal(base) ||
+		interrupted.FinishedAt == nil ||
+		!interrupted.FinishedAt.Equal(base.Add(2*time.Minute)) ||
+		interrupted.DurationMillis == nil ||
+		*interrupted.DurationMillis != int64((2*time.Minute)/time.Millisecond) {
+		t.Fatalf("interrupted attempt = %+v", interrupted)
+	}
+	retry := timeline[0].Attempts[1]
+	if retry.Number != 2 || retry.Class != string(journal.AttemptPolicy) {
+		t.Fatalf("retry attempt = %+v", retry)
+	}
+}
+
 func TestBuildTraceTimelineLiveAttemptUsesElapsedSoFar(t *testing.T) {
 	base := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
 	timeline := buildTraceTimeline(
