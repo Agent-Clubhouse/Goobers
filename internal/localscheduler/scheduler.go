@@ -118,6 +118,11 @@ type Scheduler struct {
 	// consecutivePoolSkips ages workflows that were due and otherwise ready
 	// but could not enter the shared instance concurrency pool.
 	consecutivePoolSkips map[WorkflowIdentity]int
+	// lastDispatchedGaggle is the cursor for work-conserving round-robin
+	// dispatch across gaggles. hasDispatchedGaggle distinguishes the initial
+	// state from a legacy single-gaggle entry whose gaggle name is empty.
+	lastDispatchedGaggle string
+	hasDispatchedGaggle  bool
 }
 
 // Option configures a Scheduler.
@@ -386,9 +391,32 @@ func (c *tickCandidate) next() (TickResult, journal.TriggerKind, bool) {
 	return TickResult{}, "", false
 }
 
+type tickGaggle struct {
+	candidates []*tickCandidate
+	nextIndex  int
+}
+
+func (g *tickGaggle) next() (*tickCandidate, TickResult, journal.TriggerKind, bool) {
+	for range len(g.candidates) {
+		candidate := g.candidates[g.nextIndex]
+		g.nextIndex = (g.nextIndex + 1) % len(g.candidates)
+		if candidate.stopped {
+			continue
+		}
+		tick, kind, ok := candidate.next()
+		if ok {
+			return candidate, tick, kind, true
+		}
+	}
+	return nil, TickResult{}, "", false
+}
+
 // Tick evaluates every workflow's trigger at now, orders due workflows by
-// starvation age, and dispatches one item per workflow per pass until demand or
-// capacity is exhausted.
+// starvation age within each gaggle, and dispatches one item per ready gaggle
+// per pass until demand or capacity is exhausted. The gaggle order resumes
+// after the most recently admitted gaggle. With G continuously ready gaggles,
+// this bounds a gaggle's wait to G-1 successful dispatches by other gaggles.
+// Gaggles without ready work are omitted, so they never reserve capacity.
 func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
@@ -446,13 +474,28 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		return candidates[i].entry.Gaggle < candidates[j].entry.Gaggle
 	})
 
+	byGaggle := make(map[string]*tickGaggle)
+	gaggleNames := make([]string, 0)
+	for _, candidate := range candidates {
+		gaggle := candidate.entry.Gaggle
+		group, ok := byGaggle[gaggle]
+		if !ok {
+			group = &tickGaggle{}
+			byGaggle[gaggle] = group
+			gaggleNames = append(gaggleNames, gaggle)
+		}
+		group.candidates = append(group.candidates, candidate)
+	}
+	gaggleNames = s.orderedGaggles(gaggleNames)
+	gaggles := make([]*tickGaggle, 0, len(gaggleNames))
+	for _, name := range gaggleNames {
+		gaggles = append(gaggles, byGaggle[name])
+	}
+
 	for {
 		attempted := false
-		for _, candidate := range candidates {
-			if candidate.stopped {
-				continue
-			}
-			tick, kind, ok := candidate.next()
+		for _, gaggle := range gaggles {
+			candidate, tick, kind, ok := gaggle.next()
 			if !ok {
 				continue
 			}
@@ -474,6 +517,38 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	if s.afterTick != nil {
 		s.afterTick(ctx)
 	}
+}
+
+func (s *Scheduler) orderedGaggles(gaggles []string) []string {
+	sort.Strings(gaggles)
+	if len(gaggles) < 2 {
+		return gaggles
+	}
+
+	s.mu.Lock()
+	last, hasLast := s.lastDispatchedGaggle, s.hasDispatchedGaggle
+	s.mu.Unlock()
+	if !hasLast {
+		return gaggles
+	}
+
+	start := sort.Search(len(gaggles), func(i int) bool {
+		return gaggles[i] > last
+	})
+	if start == len(gaggles) {
+		start = 0
+	}
+	ordered := make([]string, 0, len(gaggles))
+	ordered = append(ordered, gaggles[start:]...)
+	ordered = append(ordered, gaggles[:start]...)
+	return ordered
+}
+
+func (s *Scheduler) recordGaggleDispatch(gaggle string) {
+	s.mu.Lock()
+	s.lastDispatchedGaggle = gaggle
+	s.hasDispatchedGaggle = true
+	s.mu.Unlock()
 }
 
 // Reload atomically replaces the configured workflows between scheduler ticks.
@@ -649,9 +724,12 @@ func (s *Scheduler) RecordTriggerRefusal(workflow, reason string) {
 // so a conditions-driven skip is silent per subscriber (best-effort, the same
 // semantics a cron Tick's skip has) rather than a caller-facing error; the
 // skip is still journaled via dispatch's own tick.skipped event. Returns the
-// run ids of every workflow actually admitted, in workflow-name order for
-// determinism.
+// run ids of every workflow actually admitted, in bounded-fair gaggle order
+// and workflow-name order within each gaggle.
 func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []string {
+	s.tickMu.Lock()
+	defer s.tickMu.Unlock()
+
 	s.mu.Lock()
 	var subscribed []WorkflowEntry
 	for _, e := range s.workflows {
@@ -664,16 +742,40 @@ func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []st
 	}
 	s.mu.Unlock()
 	sort.Slice(subscribed, func(i, j int) bool {
-		if subscribed[i].Workflow != subscribed[j].Workflow {
-			return subscribed[i].Workflow < subscribed[j].Workflow
+		if subscribed[i].Gaggle != subscribed[j].Gaggle {
+			return subscribed[i].Gaggle < subscribed[j].Gaggle
 		}
-		return subscribed[i].Gaggle < subscribed[j].Gaggle
+		return subscribed[i].Workflow < subscribed[j].Workflow
 	})
 
-	var runIDs []string
+	byGaggle := make(map[string][]WorkflowEntry)
+	gaggleNames := make([]string, 0)
 	for _, entry := range subscribed {
-		if runID, admitted, _ := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerSignal); admitted {
-			runIDs = append(runIDs, runID)
+		if _, ok := byGaggle[entry.Gaggle]; !ok {
+			gaggleNames = append(gaggleNames, entry.Gaggle)
+		}
+		byGaggle[entry.Gaggle] = append(byGaggle[entry.Gaggle], entry)
+	}
+	gaggleNames = s.orderedGaggles(gaggleNames)
+
+	var runIDs []string
+	next := make(map[string]int, len(gaggleNames))
+	for {
+		attempted := false
+		for _, gaggle := range gaggleNames {
+			index := next[gaggle]
+			if index >= len(byGaggle[gaggle]) {
+				continue
+			}
+			attempted = true
+			next[gaggle]++
+			entry := byGaggle[gaggle][index]
+			if runID, admitted, _ := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerSignal); admitted {
+				runIDs = append(runIDs, runID)
+			}
+		}
+		if !attempted {
+			break
 		}
 	}
 	return runIDs
@@ -743,6 +845,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		return "", false, reason
 	}
 	s.resetPoolSkips(identity)
+	s.recordGaggleDispatch(entry.Gaggle)
 
 	s.journalEvent(journal.Event{
 		Type:     journal.EventRunStarted,

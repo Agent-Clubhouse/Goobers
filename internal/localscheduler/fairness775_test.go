@@ -1,0 +1,271 @@
+package localscheduler
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
+)
+
+type releaseGate struct {
+	ch   chan struct{}
+	once sync.Once
+}
+
+func newReleaseGate(t *testing.T) *releaseGate {
+	t.Helper()
+	gate := &releaseGate{ch: make(chan struct{})}
+	t.Cleanup(gate.release)
+	return gate
+}
+
+func (g *releaseGate) release() {
+	g.once.Do(func() { close(g.ch) })
+}
+
+func TestTickBoundsFairDispatchAcrossGaggles(t *testing.T) {
+	alphaGate := newReleaseGate(t)
+	betaGate := newReleaseGate(t)
+	gammaGate := newReleaseGate(t)
+	alphaA := &fakeStarter{block: alphaGate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	alphaB := &fakeStarter{block: alphaGate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	alphaC := &fakeStarter{block: alphaGate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	beta := &fakeStarter{block: betaGate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	gamma := &fakeStarter{block: gammaGate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+
+	sched, dir := newTestScheduler(t, []WorkflowEntry{
+		{Gaggle: "alpha", Workflow: "a-hot", BacklogCounter: &fakeBacklogCounter{count: 1}, Starter: alphaA},
+		{Gaggle: "alpha", Workflow: "b-hot", BacklogCounter: &fakeBacklogCounter{count: 1}, Starter: alphaB},
+		{Gaggle: "alpha", Workflow: "c-hot", BacklogCounter: &fakeBacklogCounter{count: 1}, Starter: alphaC},
+		{Gaggle: "beta", Workflow: "z-beta", BacklogCounter: &fakeBacklogCounter{count: 1}, Starter: beta},
+		{Gaggle: "gamma", Workflow: "zz-gamma", BacklogCounter: &fakeBacklogCounter{count: 1}, Starter: gamma},
+	})
+	sched.conditions.SetInstanceLimits(1, nil, nil)
+
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	want := []struct {
+		gaggle string
+		gate   *releaseGate
+		count  func() int
+	}{
+		{gaggle: "alpha", gate: alphaGate, count: alphaA.count},
+		{gaggle: "beta", gate: betaGate, count: beta.count},
+		{gaggle: "gamma", gate: gammaGate, count: gamma.count},
+	}
+	for i, turn := range want {
+		sched.Tick(context.Background(), now.Add(time.Duration(i)*(backlogPollInterval+time.Second)))
+		waitForCount(t, turn.count, 1)
+
+		events, err := journal.ReadInstanceLog(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var started []string
+		for _, event := range events {
+			if event.Type == journal.EventRunStarted {
+				started = append(started, event.Gaggle)
+			}
+		}
+		if len(started) != i+1 || started[i] != turn.gaggle {
+			t.Fatalf("run.started gaggles after turn %d = %v, want prefix [alpha beta gamma]", i+1, started)
+		}
+
+		turn.gate.release()
+		sched.Wait()
+	}
+
+	if got := alphaA.count() + alphaB.count() + alphaC.count(); got != 1 {
+		t.Fatalf("hot gaggle starts = %d, want 1 before both peers receive their bounded turn", got)
+	}
+}
+
+func TestTickInterleavesWorkflowFanoutByGaggle(t *testing.T) {
+	gate := newReleaseGate(t)
+	alphaA := &fakeStarter{block: gate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	alphaB := &fakeStarter{block: gate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	beta := &fakeStarter{block: gate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, dir := newTestScheduler(t, []WorkflowEntry{
+		{
+			Gaggle:         "alpha",
+			Workflow:       "a-hot",
+			Readiness:      apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
+			BacklogCounter: &fakeBacklogCounter{count: 2},
+			Starter:        alphaA,
+		},
+		{
+			Gaggle:         "alpha",
+			Workflow:       "b-hot",
+			Readiness:      apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
+			BacklogCounter: &fakeBacklogCounter{count: 2},
+			Starter:        alphaB,
+		},
+		{
+			Gaggle:         "beta",
+			Workflow:       "z-peer",
+			Readiness:      apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
+			BacklogCounter: &fakeBacklogCounter{count: 2},
+			Starter:        beta,
+		},
+	})
+	sched.conditions.SetInstanceLimits(6, nil, nil)
+
+	sched.Tick(context.Background(), time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC))
+	waitForCount(t, alphaA.count, 2)
+	waitForCount(t, alphaB.count, 2)
+	waitForCount(t, beta.count, 2)
+
+	events, err := journal.ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started []string
+	for _, event := range events {
+		if event.Type == journal.EventRunStarted {
+			started = append(started, event.Workflow)
+		}
+	}
+	want := []string{"a-hot", "z-peer", "b-hot", "z-peer", "a-hot", "b-hot"}
+	if len(started) != len(want) {
+		t.Fatalf("run.started workflow order = %v, want %v", started, want)
+	}
+	for i := range want {
+		if started[i] != want[i] {
+			t.Fatalf("run.started workflow order = %v, want %v", started, want)
+		}
+	}
+
+	gate.release()
+	sched.Wait()
+}
+
+func TestTickQuietGaggleDoesNotReserveCapacity(t *testing.T) {
+	gate := newReleaseGate(t)
+	hot := &fakeStarter{block: gate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	quiet := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{
+		{
+			Gaggle:         "hot",
+			Workflow:       "implement",
+			Readiness:      apiv1.ReadinessConditions{MaxConcurrentRuns: 3},
+			BacklogCounter: &fakeBacklogCounter{count: 3},
+			Starter:        hot,
+		},
+		{
+			Gaggle:         "quiet",
+			Workflow:       "curate",
+			BacklogCounter: &fakeBacklogCounter{},
+			Starter:        quiet,
+		},
+	})
+	sched.conditions.SetInstanceLimits(3, nil, nil)
+
+	sched.Tick(context.Background(), time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC))
+	waitForCount(t, hot.count, 3)
+	if got := quiet.count(); got != 0 {
+		t.Fatalf("quiet gaggle starts = %d, want 0", got)
+	}
+
+	gate.release()
+	sched.Wait()
+}
+
+func TestSignalUsesFairGaggleCursor(t *testing.T) {
+	alphaAGate := newReleaseGate(t)
+	alphaBGate := newReleaseGate(t)
+	betaGate := newReleaseGate(t)
+	alphaA := &fakeStarter{block: alphaAGate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	alphaB := &fakeStarter{block: alphaBGate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	beta := &fakeStarter{block: betaGate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, dir := newTestScheduler(t, []WorkflowEntry{
+		{Gaggle: "alpha", Workflow: "a-hot", Signals: []string{"ready"}, Starter: alphaA},
+		{Gaggle: "alpha", Workflow: "b-hot", Signals: []string{"ready"}, Starter: alphaB},
+		{Gaggle: "beta", Workflow: "z-beta", Signals: []string{"ready"}, Starter: beta},
+	})
+	sched.conditions.SetInstanceLimits(1, nil, nil)
+
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	if runIDs := sched.Signal(context.Background(), "ready", now); len(runIDs) != 1 {
+		t.Fatalf("first signal run IDs = %v, want one shared-capacity admission", runIDs)
+	}
+	waitForCount(t, alphaA.count, 1)
+	alphaAGate.release()
+	sched.Wait()
+
+	if runIDs := sched.Signal(context.Background(), "ready", now.Add(time.Minute)); len(runIDs) != 1 {
+		t.Fatalf("second signal run IDs = %v, want one shared-capacity admission", runIDs)
+	}
+	waitForCount(t, beta.count, 1)
+	if got := alphaB.count(); got != 0 {
+		t.Fatalf("second alpha workflow starts = %d, want beta to receive the next gaggle turn", got)
+	}
+
+	events, err := journal.ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started []string
+	for _, event := range events {
+		if event.Type == journal.EventRunStarted {
+			started = append(started, event.Gaggle)
+		}
+	}
+	if len(started) != 2 || started[0] != "alpha" || started[1] != "beta" {
+		t.Fatalf("signal run.started gaggles = %v, want [alpha beta]", started)
+	}
+
+	betaGate.release()
+	sched.Wait()
+}
+
+func TestTickPreservesSingleGaggleWorkflowOrder(t *testing.T) {
+	gate := newReleaseGate(t)
+	first := &fakeStarter{block: gate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	second := &fakeStarter{block: gate.ch, result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, dir := newTestScheduler(t, []WorkflowEntry{
+		{
+			Gaggle:         "only",
+			Workflow:       "a-first",
+			Readiness:      apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
+			BacklogCounter: &fakeBacklogCounter{count: 2},
+			Starter:        first,
+		},
+		{
+			Gaggle:         "only",
+			Workflow:       "b-second",
+			Readiness:      apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+			BacklogCounter: &fakeBacklogCounter{count: 1},
+			Starter:        second,
+		},
+	})
+	sched.conditions.SetInstanceLimits(3, nil, nil)
+
+	sched.Tick(context.Background(), time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC))
+	waitForCount(t, first.count, 2)
+	waitForCount(t, second.count, 1)
+
+	events, err := journal.ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started []string
+	for _, event := range events {
+		if event.Type == journal.EventRunStarted {
+			started = append(started, event.Workflow)
+		}
+	}
+	want := []string{"a-first", "b-second", "a-first"}
+	if len(started) != len(want) {
+		t.Fatalf("single-gaggle run.started order = %v, want %v", started, want)
+	}
+	for i := range want {
+		if started[i] != want[i] {
+			t.Fatalf("single-gaggle run.started order = %v, want %v", started, want)
+		}
+	}
+
+	gate.release()
+	sched.Wait()
+}
