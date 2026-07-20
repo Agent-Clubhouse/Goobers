@@ -1,10 +1,6 @@
 package main
 
-import (
-	"path/filepath"
-
-	"github.com/goobers/goobers/internal/journal"
-)
+import "github.com/goobers/goobers/internal/journal"
 
 // claimedIssueFromJournal recovers the issue this run claimed — its id and title
 // — from the run journal. This is resume-safe, unlike the claim ledger (which
@@ -19,7 +15,10 @@ import (
 // doesn't claim, or a run whose journal is unreadable) — callers fall back to
 // their generic behavior rather than failing.
 func claimedIssueFromJournal(root, runID string) (id, title string, ok bool) {
-	dir := filepath.Join(layoutFor(root).RunsDir(), runID)
+	dir, err := runDirFor(layoutFor(root), runID)
+	if err != nil {
+		return "", "", false
+	}
 	rd, err := journal.OpenRead(dir)
 	if err != nil {
 		return "", "", false

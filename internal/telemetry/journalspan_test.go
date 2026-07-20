@@ -123,12 +123,84 @@ func TestJournalSpanExporterAppendsAcrossExportCalls(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StartRun: %v", err)
 		}
+
 		_ = rctx
 		run.Succeed("ok")
 	}
 	recs := readSpanRecords(t, dir, runID)
 	if len(recs) != 3 {
 		t.Fatalf("expected 3 appended span records, got %d", len(recs))
+	}
+}
+
+func TestPerGaggleJournalSpanExporterRoutesToScopedRunDirectory(t *testing.T) {
+	root := t.TempDir()
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(context.Background(), Config{
+		ServiceName:  "goobers-test",
+		SpanExporter: NewPerGaggleJournalSpanExporter(root, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	_, span, err := client.StartRun(context.Background(), RunAttributes{
+		Gaggle: "alpha", WorkflowID: "implementation", RunID: runID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.Succeed("done")
+
+	path := filepath.Join(root, "gaggles", "alpha", "runs", runID, spansDirName, spanFileName)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("scoped spans file %s: %v", path, err)
+	}
+}
+
+func TestPerGaggleJournalSpanExporterRoutesToRetainedFlatJournal(t *testing.T) {
+	root := t.TempDir()
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := journal.Create(filepath.Join(root, "runs"), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "alpha",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(context.Background(), Config{
+		ServiceName:  "goobers-test",
+		SpanExporter: NewPerGaggleJournalSpanExporter(root, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	_, span, err := client.StartRun(context.Background(), RunAttributes{
+		Gaggle: "alpha", WorkflowID: "implementation", RunID: runID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.Succeed("done")
+
+	flatPath := filepath.Join(root, "runs", runID, spansDirName, spanFileName)
+	if _, err := os.Stat(flatPath); err != nil {
+		t.Fatalf("retained flat spans file %s: %v", flatPath, err)
+	}
+	scopedRun := filepath.Join(root, "gaggles", "alpha", "runs", runID)
+	if _, err := os.Stat(scopedRun); !os.IsNotExist(err) {
+		t.Fatalf("exporter created duplicate scoped run %s: %v", scopedRun, err)
 	}
 }
 

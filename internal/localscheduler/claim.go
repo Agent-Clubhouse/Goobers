@@ -2,7 +2,9 @@ package localscheduler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"sync"
@@ -11,13 +13,40 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// ClaimKey identifies one provider item within a gaggle.
+type ClaimKey struct {
+	Gaggle     string
+	Provider   string
+	ExternalID string
+}
+
+// ClaimNamespace identifies the gaggle and provider that own a legacy claim.
+type ClaimNamespace struct {
+	Gaggle   string
+	Provider string
+}
+
+// ErrLegacyClaimOwnershipUnresolved tells migration to retain a legacy claim
+// unchanged until a later startup can resolve it or its lease expires.
+var ErrLegacyClaimOwnershipUnresolved = errors.New("legacy claim ownership unresolved")
+
+func (k ClaimKey) storageKey() (string, error) {
+	if k.Gaggle == "" || k.Provider == "" || k.ExternalID == "" {
+		return "", fmt.Errorf("localscheduler: claim key requires gaggle, provider, and external ID")
+	}
+	return "v2|" + url.QueryEscape(k.Gaggle) + "|" + url.QueryEscape(k.Provider) + "|" + url.QueryEscape(k.ExternalID), nil
+}
+
 // ClaimEntry is one lease in the claim ledger.
 type ClaimEntry struct {
-	ItemID    string    `json:"itemId"`
-	RunID     string    `json:"runId"`
-	Workflow  string    `json:"workflow"`
-	ClaimedAt time.Time `json:"claimedAt"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	ItemID     string    `json:"itemId"`
+	Gaggle     string    `json:"gaggle,omitempty"`
+	Provider   string    `json:"provider,omitempty"`
+	ExternalID string    `json:"externalId,omitempty"`
+	RunID      string    `json:"runId"`
+	Workflow   string    `json:"workflow"`
+	ClaimedAt  time.Time `json:"claimedAt"`
+	ExpiresAt  time.Time `json:"expiresAt"`
 }
 
 // expired reports whether the lease is no longer live at now.
@@ -76,10 +105,102 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 	if len(data) == 0 {
 		return l, nil
 	}
+
 	if err := json.Unmarshal(data, &l.entries); err != nil {
 		return nil, fmt.Errorf("localscheduler: parse claim ledger %q: %w", path, err)
 	}
+	for storageKey, entry := range l.entries {
+		if entry.ItemID == "" {
+			entry.ItemID = storageKey
+		}
+		if entry.ExternalID == "" {
+			entry.ExternalID = entry.ItemID
+		}
+		l.entries[storageKey] = entry
+	}
 	return l, nil
+}
+
+// MigrateLegacyNamespace upgrades pre-GAG-011 item-only keys into the sole
+// active gaggle/provider namespace. Empty namespace values are accepted only
+// when there is nothing to migrate.
+func (l *ClaimLedger) MigrateLegacyNamespace(gaggle, provider string) error {
+	return l.MigrateLegacyClaims(func(ClaimEntry) (ClaimNamespace, error) {
+		if gaggle == "" || provider == "" {
+			return ClaimNamespace{}, fmt.Errorf("legacy claim requires a gaggle and provider")
+		}
+		return ClaimNamespace{Gaggle: gaggle, Provider: provider}, nil
+	})
+}
+
+// MigrateLegacyClaims upgrades pre-GAG-011 item-only keys using authoritative
+// ownership resolved independently for each live claim.
+func (l *ClaimLedger) MigrateLegacyClaims(resolve func(ClaimEntry) (ClaimNamespace, error)) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	legacy := make(map[string]ClaimEntry)
+	for storageKey, entry := range l.entries {
+		if entry.Gaggle == "" && entry.Provider == "" {
+			legacy[storageKey] = entry
+		}
+	}
+	if len(legacy) == 0 {
+		return nil
+	}
+	if resolve == nil {
+		return fmt.Errorf("localscheduler: legacy claim migration requires an ownership resolver")
+	}
+
+	type migration struct {
+		legacyKey string
+		scopedKey string
+		entry     ClaimEntry
+	}
+	migrations := make([]migration, 0, len(legacy))
+	planned := make(map[string]struct{}, len(legacy))
+	for storageKey, entry := range legacy {
+		namespace, err := resolve(entry)
+		if err != nil {
+			if errors.Is(err, ErrLegacyClaimOwnershipUnresolved) {
+				continue
+			}
+			return fmt.Errorf("localscheduler: resolve legacy claim %q ownership: %w", entry.ItemID, err)
+		}
+		key := ClaimKey{Gaggle: namespace.Gaggle, Provider: namespace.Provider, ExternalID: entry.ItemID}
+		scopedKey, err := key.storageKey()
+		if err != nil {
+			return err
+		}
+		if _, exists := l.entries[scopedKey]; exists {
+			return fmt.Errorf("localscheduler: cannot migrate legacy claim %q: scoped claim already exists", entry.ItemID)
+		}
+		if _, exists := planned[scopedKey]; exists {
+			return fmt.Errorf("localscheduler: cannot migrate duplicate legacy claim %q", entry.ItemID)
+		}
+		planned[scopedKey] = struct{}{}
+		entry.Gaggle = namespace.Gaggle
+		entry.Provider = namespace.Provider
+		entry.ExternalID = entry.ItemID
+		migrations = append(migrations, migration{legacyKey: storageKey, scopedKey: scopedKey, entry: entry})
+	}
+	if len(migrations) == 0 {
+		return nil
+	}
+
+	previous := make(map[string]ClaimEntry, len(l.entries))
+	for storageKey, entry := range l.entries {
+		previous[storageKey] = entry
+	}
+	for _, migration := range migrations {
+		delete(l.entries, migration.legacyKey)
+		l.entries[migration.scopedKey] = migration.entry
+	}
+	if err := l.persist(); err != nil {
+		l.entries = previous
+		return err
+	}
+	return nil
 }
 
 // Claim attempts to atomically acquire itemID for runID under workflow, for
@@ -98,6 +219,19 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 // bypassed by a caller-supplied duration (e.g. a workflow's leaseDuration
 // input) reaching a live-lease branch that skips validation.
 func (l *ClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
+	return l.claim(itemID, "", ClaimKey{ExternalID: itemID}, runID, workflow, leaseDuration)
+}
+
+// ClaimScoped acquires a claim namespaced by gaggle, provider, and external ID.
+func (l *ClaimLedger) ClaimScoped(key ClaimKey, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
+	storageKey, err := key.storageKey()
+	if err != nil {
+		return false, "", err
+	}
+	return l.claim(storageKey, key.ExternalID, key, runID, workflow, leaseDuration)
+}
+
+func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
 	if leaseDuration <= 0 {
 		return false, "", fmt.Errorf("localscheduler: lease duration must be positive, got %s", leaseDuration)
 	}
@@ -106,19 +240,29 @@ func (l *ClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.D
 	defer l.mu.Unlock()
 
 	now := l.now()
-	if existing, held := l.entries[itemID]; held && !existing.expired(now) && existing.RunID != runID {
+	// An unresolved item-only claim could belong to any namespace, so it
+	// remains exclusive against every scoped claimant until its lease expires.
+	if legacyStorageKey != "" {
+		if existing, held := l.entries[legacyStorageKey]; held && !existing.expired(now) {
+			return false, existing.RunID, nil
+		}
+	}
+	if existing, held := l.entries[storageKey]; held && !existing.expired(now) && existing.RunID != runID {
 		return false, existing.RunID, nil
 	}
 
-	prev, hadPrev := l.entries[itemID]
+	prev, hadPrev := l.entries[storageKey]
 	entry := ClaimEntry{
-		ItemID:    itemID,
-		RunID:     runID,
-		Workflow:  workflow,
-		ClaimedAt: now,
-		ExpiresAt: now.Add(leaseDuration),
+		ItemID:     key.ExternalID,
+		Gaggle:     key.Gaggle,
+		Provider:   key.Provider,
+		ExternalID: key.ExternalID,
+		RunID:      runID,
+		Workflow:   workflow,
+		ClaimedAt:  now,
+		ExpiresAt:  now.Add(leaseDuration),
 	}
-	l.entries[itemID] = entry
+	l.entries[storageKey] = entry
 	if err := l.persist(); err != nil {
 		// Roll back the in-memory mutation so a failed persist leaves the item
 		// exactly as it was — claimable if it was unheld, or still held by its
@@ -126,9 +270,9 @@ func (l *ClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.D
 		// state must never diverge: without this, a persist blip would strand the
 		// item as un-claimable in memory while nothing durably holds it.
 		if hadPrev {
-			l.entries[itemID] = prev
+			l.entries[storageKey] = prev
 		} else {
-			delete(l.entries, itemID)
+			delete(l.entries, storageKey)
 		}
 		return false, "", err
 	}
@@ -142,14 +286,40 @@ func (l *ClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.D
 // completion and crash-recovery can race to release the same item, and both
 // outcomes are fine as long as exactly one claimant ever wins.
 func (l *ClaimLedger) Release(itemID, runID string) error {
+	return l.release(itemID, runID)
+}
+
+// ReleaseScoped releases a claim identified by its scoped key.
+func (l *ClaimLedger) ReleaseScoped(key ClaimKey, runID string) error {
+	storageKey, err := key.storageKey()
+	if err != nil {
+		return err
+	}
+	return l.release(storageKey, runID)
+}
+
+// ReleaseEntry releases entry without reconstructing whether it came from a
+// scoped or legacy ledger key.
+func (l *ClaimLedger) ReleaseEntry(entry ClaimEntry, runID string) error {
+	if entry.Gaggle == "" || entry.Provider == "" {
+		return l.Release(entry.ItemID, runID)
+	}
+	return l.ReleaseScoped(ClaimKey{
+		Gaggle:     entry.Gaggle,
+		Provider:   entry.Provider,
+		ExternalID: entry.ExternalID,
+	}, runID)
+}
+
+func (l *ClaimLedger) release(storageKey, runID string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	entry, held := l.entries[itemID]
+	entry, held := l.entries[storageKey]
 	if !held || entry.RunID != runID {
 		return nil
 	}
-	delete(l.entries, itemID)
+	delete(l.entries, storageKey)
 	if err := l.persist(); err != nil {
 		// Same rollback discipline as Claim: a failed persist must not leave
 		// memory believing the item is free while the durable ledger (if the
@@ -157,7 +327,7 @@ func (l *ClaimLedger) Release(itemID, runID string) error {
 		// held — otherwise the item could be double-claimed while this run
 		// still holds it, or the caller believes the release succeeded and
 		// finalizes the run while the ledger still lists it as claimed.
-		l.entries[itemID] = entry
+		l.entries[storageKey] = entry
 		return err
 	}
 	l.journal(journal.EventClaimReleased, entry)
@@ -191,11 +361,15 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	var released []ClaimEntry
-	for id, entry := range l.entries {
+	type releasedClaim struct {
+		storageKey string
+		entry      ClaimEntry
+	}
+	var released []releasedClaim
+	for storageKey, entry := range l.entries {
 		if entry.expired(now) {
-			delete(l.entries, id)
-			released = append(released, entry)
+			delete(l.entries, storageKey)
+			released = append(released, releasedClaim{storageKey: storageKey, entry: entry})
 		}
 	}
 	if len(released) == 0 {
@@ -208,15 +382,17 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 		// via the (nil, err) return, the exact set the caller would need to
 		// retry or reconcile — restoring them makes a failed pass a clean
 		// no-op the caller can safely retry on its next periodic call.
-		for _, entry := range released {
-			l.entries[entry.ItemID] = entry
+		for _, claim := range released {
+			l.entries[claim.storageKey] = claim.entry
 		}
 		return nil, err
 	}
-	for _, entry := range released {
-		l.journal(journal.EventClaimReleased, entry)
+	entries := make([]ClaimEntry, 0, len(released))
+	for _, claim := range released {
+		l.journal(journal.EventClaimReleased, claim.entry)
+		entries = append(entries, claim.entry)
 	}
-	return released, nil
+	return entries, nil
 }
 
 // Lookup returns the current entry for itemID, if any live or expired claim
@@ -224,9 +400,22 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 // callers wanting only live claims should check ExpiresAt themselves or use
 // RecoverExpired first).
 func (l *ClaimLedger) Lookup(itemID string) (ClaimEntry, bool) {
+	return l.lookup(itemID)
+}
+
+// LookupScoped returns the entry for a gaggle/provider/external-ID key.
+func (l *ClaimLedger) LookupScoped(key ClaimKey) (ClaimEntry, bool) {
+	storageKey, err := key.storageKey()
+	if err != nil {
+		return ClaimEntry{}, false
+	}
+	return l.lookup(storageKey)
+}
+
+func (l *ClaimLedger) lookup(storageKey string) (ClaimEntry, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	e, ok := l.entries[itemID]
+	e, ok := l.entries[storageKey]
 	return e, ok
 }
 
@@ -294,6 +483,7 @@ func (l *ClaimLedger) journal(eventType journal.EventType, entry ClaimEntry) {
 	_ = l.log.Append(journal.Event{
 		Type:     eventType,
 		Name:     entry.ItemID,
+		Gaggle:   entry.Gaggle,
 		RunID:    entry.RunID,
 		Workflow: entry.Workflow,
 	})

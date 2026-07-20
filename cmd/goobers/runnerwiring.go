@@ -38,7 +38,7 @@ func buildTelemetryClient(ctx context.Context, l instance.Layout, scrubber journ
 	return telemetry.New(ctx, telemetry.Config{
 		ServiceName:    "goobers",
 		ServiceVersion: version.Get().Version,
-		SpanExporter:   telemetry.NewJournalSpanExporter(l.RunsDir(), scrubber),
+		SpanExporter:   telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
 		Batch:          true,
 	})
 }

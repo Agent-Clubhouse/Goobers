@@ -79,7 +79,7 @@ func completionCandidates(kind, start string) []string {
 		sort.Strings(names)
 		return names
 	case "runs":
-		runs, err := listRuns(layout.RunsDir())
+		runs, err := listLayoutRuns(layout, false)
 		if err != nil {
 			return nil
 		}

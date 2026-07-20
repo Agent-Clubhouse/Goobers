@@ -2,10 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -42,7 +43,13 @@ type journalArtifact struct {
 // evidence into a reviewer-facing PR body. Workflows without reviewer or
 // local-ci evidence keep open-pr's generic fallback.
 func renderStructuredPRBody(root, runID, issueID, issueTitle string) (string, bool, error) {
-	runDir := filepath.Join(layoutFor(root).RunsDir(), runID)
+	runDir, err := runDirFor(layoutFor(root), runID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
 	if _, err := os.Stat(runDir); err != nil {
 		if os.IsNotExist(err) {
 			return "", false, nil

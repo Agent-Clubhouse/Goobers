@@ -19,6 +19,11 @@ import (
 // (delete-then-insert), so the resulting rows are identical regardless of
 // processing order or whether a run was previously ingested incrementally.
 func Rebuild(dbPath, runsDir, schedulerDir string) error {
+	return RebuildAll(dbPath, []string{runsDir}, schedulerDir)
+}
+
+// RebuildAll derives telemetry.db from every per-gaggle run root.
+func RebuildAll(dbPath string, runsDirs []string, schedulerDir string) error {
 	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
 		if err := os.Remove(dbPath + suffix); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("rollup: remove existing %s%s: %w", dbPath, suffix, err)
@@ -31,13 +36,17 @@ func Rebuild(dbPath, runsDir, schedulerDir string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	dirs, err := runDirs(runsDir)
-	if err != nil {
-		return err
-	}
-	for _, dir := range dirs {
-		if err := db.IngestRun(dir); err != nil {
-			return fmt.Errorf("rollup: ingest %s: %w", dir, err)
+	roots := append([]string(nil), runsDirs...)
+	sort.Strings(roots)
+	for _, runsDir := range roots {
+		dirs, err := runDirs(runsDir)
+		if err != nil {
+			return err
+		}
+		for _, dir := range dirs {
+			if err := db.IngestRun(dir); err != nil {
+				return fmt.Errorf("rollup: ingest %s: %w", dir, err)
+			}
 		}
 	}
 	if err := db.IngestSchedulerLog(schedulerDir); err != nil {

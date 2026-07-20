@@ -308,38 +308,44 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 }
 
 func (s *Local) runSummaries(ctx context.Context, skipUnreadable bool) ([]RunSummary, error) {
-	entries, err := os.ReadDir(s.sources.Layout.RunsDir())
+	runDirs, err := s.sources.Layout.RunDirs()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []RunSummary{}, nil
-		}
-		return nil, fmt.Errorf("read runs directory: %w", err)
+		return nil, err
 	}
 
 	observedAt := s.now().UTC()
-	summaries := make([]RunSummary, 0, len(entries))
-	for _, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if !entry.IsDir() {
-			continue
-		}
-		run, err := s.openRun(entry.Name())
+	var summaries []RunSummary
+	for _, runsDir := range runDirs {
+		entries, err := os.ReadDir(runsDir)
 		if err != nil {
-			if skipUnreadable || errors.Is(err, ErrNotFound) {
+			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return nil, err
+			return nil, fmt.Errorf("read runs directory: %w", err)
 		}
-		summary, err := summarizeRun(run, observedAt)
-		if err != nil {
-			if skipUnreadable {
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if !entry.IsDir() {
 				continue
 			}
-			return nil, fmt.Errorf("summarize run %q: %w", entry.Name(), err)
+			run, err := s.openRun(entry.Name())
+			if err != nil {
+				if skipUnreadable || errors.Is(err, ErrNotFound) {
+					continue
+				}
+				return nil, err
+			}
+			summary, err := summarizeRun(run, observedAt)
+			if err != nil {
+				if skipUnreadable {
+					continue
+				}
+				return nil, fmt.Errorf("summarize run %q: %w", entry.Name(), err)
+			}
+			summaries = append(summaries, summary)
 		}
-		summaries = append(summaries, summary)
 	}
 
 	sort.Slice(summaries, func(i, j int) bool {
@@ -358,22 +364,29 @@ func (s *Local) RunIDs(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(s.sources.Layout.RunsDir())
+	runDirs, err := s.sources.Layout.RunDirs()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []string{}, nil
-		}
-		return nil, fmt.Errorf("read runs directory: %w", err)
+		return nil, err
 	}
-	ids := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	var ids []string
+	for _, runsDir := range runDirs {
+		entries, err := os.ReadDir(runsDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("read runs directory: %w", err)
 		}
-		if entry.IsDir() && apiv1.ValidRunID(entry.Name()) {
-			ids = append(ids, entry.Name())
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if entry.IsDir() && apiv1.ValidRunID(entry.Name()) {
+				ids = append(ids, entry.Name())
+			}
 		}
 	}
+	sort.Strings(ids)
 	return ids, nil
 }
 
@@ -707,7 +720,13 @@ func (s *Local) openRun(runID string) (runRead, error) {
 	if !apiv1.ValidRunID(runID) {
 		return runRead{}, fmt.Errorf("%w: invalid run id", ErrInvalidArgument)
 	}
-	dir := filepath.Join(s.sources.Layout.RunsDir(), runID)
+	dir, err := s.sources.Layout.FindRunDir(runID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
+		}
+		return runRead{}, err
+	}
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

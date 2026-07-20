@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -314,6 +316,161 @@ func TestUpSkipsUnresolvableWorkflowWithWarningNotFatal(t *testing.T) {
 	}
 	if recovery.Gaggle != "example" || recovery.Workflow != "no-such-workflow" {
 		t.Fatalf("instance-log workflow identity = %q/%q, want example/no-such-workflow", recovery.Gaggle, recovery.Workflow)
+	}
+}
+
+func TestUpSkipsRunFromRemovedGaggleWithWarningNotFatal(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	removed := l.ForGaggle("removed")
+
+	jr, err := journal.Create(removed.RunsDir(), journal.RunIdentity{
+		RunID: "removed-gaggle-run", Workflow: "default-implement", WorkflowVersion: 1, Gaggle: "removed",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jr.SetMachineState("local-ci")
+	if err := jr.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() { done <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("code = %d (the daemon must still start after gaggle removal), stderr = %q", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runUpContext did not return after ctx cancellation")
+	}
+
+	if !strings.Contains(stdout.String(), "warning: run removed-gaggle-run") {
+		t.Fatalf("stdout = %q, want a warning naming the removed gaggle's run", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "no runner configured") {
+		t.Fatalf("stderr = %q, removed gaggle must not be fatal", stderr.String())
+	}
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovery journal.Event
+	for _, ev := range events {
+		if ev.Type == journal.EventError && ev.RunID == "removed-gaggle-run" {
+			recovery = ev
+		}
+	}
+	if recovery.Gaggle != "removed" || recovery.Workflow != "default-implement" {
+		t.Fatalf("instance-log workflow identity = %q/%q, want removed/default-implement", recovery.Gaggle, recovery.Workflow)
+	}
+	if recovery.Error == nil || recovery.Error.Code != "resume_unresolvable_gaggle" {
+		t.Fatalf("instance-log recovery error = %+v, want resume_unresolvable_gaggle", recovery.Error)
+	}
+}
+
+func TestResumeRetainedFlatRunUsesLegacyRuntime(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	runID, err := telemetry.NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newStuckRun(t, layout, runID, "default-implement")
+
+	secondGaggleDir := filepath.Join(layout.ConfigDir(), "gaggles", "second")
+	if err := os.MkdirAll(secondGaggleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secondGaggle := `apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: second
+spec:
+  project:
+    provider: github
+    owner: your-org
+    name: your-repo
+    branch: main
+    connectionRef: repo-token
+  backlog:
+    provider: github
+    project: your-org/your-repo
+    connectionRef: repo-token
+  isolation:
+    namespace: gaggle-second
+`
+	if err := os.WriteFile(filepath.Join(secondGaggleDir, "gaggle.yaml"), []byte(secondGaggle), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(layout.ConfigDir(), "manifest.yaml")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedManifest := strings.Replace(string(manifest), "    - example\n", "    - example\n    - second\n", 1)
+	if updatedManifest == string(manifest) {
+		t.Fatal("fixture manifest did not contain the example gaggle")
+	}
+	if err := os.WriteFile(manifestPath, []byte(updatedManifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), layout, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(context.Background())
+	if setup.LegacyRunner == nil || setup.LegacyWorktrees == nil {
+		t.Fatal("retained flat runtime did not receive a legacy runner")
+	}
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
+	runDirs, err := layout.RunDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sched.ReconcileAll(runDirs, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, warned, err := resumeInterruptedRunsWithRunners(
+		context.Background(), layout, setup.Runners, setup.LegacyRunner, setup.Machines, setup.RepoRefs,
+		setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warned) != 0 || len(resumed) != 1 || resumed[0] != runID {
+		t.Fatalf("resumed=%v warned=%v, want [%s] and no warnings", resumed, warned, runID)
+	}
+	waitForRunPhase(t, layout.RunsDir(), runID, journal.PhaseCompleted)
+	wg.Wait()
+
+	if _, err := os.Stat(filepath.Join(layout.RunsDir(), runID, "spans", "spans.jsonl")); err != nil {
+		t.Fatalf("retained run spans were not written beside the flat journal: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.ForGaggle("example").RunsDir(), runID)); !os.IsNotExist(err) {
+		t.Fatalf("retained run was copied into the scoped root: %v", err)
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.RunID == runID && event.Error != nil && event.Error.Code == "telemetry_ingest_run_failed" {
+			t.Fatalf("retained run telemetry used the wrong journal root: %s", event.Error.Message)
+		}
 	}
 }
 

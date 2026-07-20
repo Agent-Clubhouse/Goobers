@@ -330,6 +330,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// batch (maxItems 20), implementation a single item (maxItems 1). All claims
 	// share this run's id; each item gets its own ledger entry.
 	var claimed []providers.WorkItem
+	gaggle := providerGaggle()
 	err = withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName), localscheduler.WithInstanceLog(instanceLog))
 		if lerr != nil {
@@ -344,7 +345,17 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 				break
 			}
 			item := eligible[i]
-			ok, _, cerr := ledger.Claim(item.ID, runID, workflow, leaseDuration)
+			var ok bool
+			var cerr error
+			if gaggle == "" {
+				ok, _, cerr = ledger.Claim(item.ID, runID, workflow, leaseDuration)
+			} else {
+				ok, _, cerr = ledger.ClaimScoped(localscheduler.ClaimKey{
+					Gaggle:     gaggle,
+					Provider:   string(repo.Provider),
+					ExternalID: item.ID,
+				}, runID, workflow, leaseDuration)
+			}
 			if cerr != nil {
 				return fmt.Errorf("claim %s in ledger: %w", item.ID, cerr)
 			}
@@ -499,7 +510,7 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 		// is belt-and-suspenders for the "nothing to report" stdout case
 		// below, not required for correctness.
 		for _, entry := range ledger.ForRunAll(runID) {
-			if rerr := ledger.Release(entry.ItemID, runID); rerr != nil {
+			if rerr := ledger.ReleaseEntry(entry, runID); rerr != nil {
 				return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
 			}
 			released = append(released, entry.ItemID)

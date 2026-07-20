@@ -208,7 +208,12 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 // otherwise the seeded count never comes back down and the workflow starves
 // for the rest of the daemon's life.
 func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
-	active, runs, err := activeRuns(runsDir)
+	return s.ReconcileAll([]string{runsDir}, now)
+}
+
+// ReconcileAll reconciles durable state across all per-gaggle run roots.
+func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
+	active, runs, err := activeRuns(runsDirs)
 	if err != nil {
 		return fmt.Errorf("localscheduler: reconcile active runs: %w", err)
 	}
@@ -249,7 +254,7 @@ func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 			fired = append(fired, TriggerFiredRecord{Gaggle: ev.Gaggle, Workflow: ev.Workflow, Time: ev.Time})
 		}
 		if ev.Type == journal.EventRunStarted && ev.Time.After(startsCutoff) {
-			for _, identity := range resolveRunStartedIdentities(runsDir, ev, identities) {
+			for _, identity := range resolveRunStartedIdentities(runsDirs, ev, identities) {
 				starts[identity] = append(starts[identity], ev.Time)
 			}
 		}
@@ -268,7 +273,7 @@ func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 	return nil
 }
 
-func resolveRunStartedIdentities(runsDir string, event journal.Event, workflows []WorkflowIdentity) []WorkflowIdentity {
+func resolveRunStartedIdentities(runsDirs []string, event journal.Event, workflows []WorkflowIdentity) []WorkflowIdentity {
 	if identity, ok := resolveWorkflowIdentity(event.Gaggle, event.Workflow, workflows); ok {
 		return []WorkflowIdentity{identity}
 	}
@@ -277,12 +282,14 @@ func resolveRunStartedIdentities(runsDir string, event journal.Event, workflows 
 	}
 
 	if apiv1.ValidRunID(event.RunID) {
-		reader, err := journal.OpenRead(filepath.Join(runsDir, event.RunID))
-		if err == nil {
-			run, err := reader.Identity()
-			if err == nil && run.RunID == event.RunID && run.Workflow == event.Workflow {
-				if identity, ok := resolveWorkflowIdentity(run.Gaggle, run.Workflow, workflows); ok {
-					return []WorkflowIdentity{identity}
+		for _, runsDir := range runsDirs {
+			reader, err := journal.OpenRead(filepath.Join(runsDir, event.RunID))
+			if err == nil {
+				run, err := reader.Identity()
+				if err == nil && run.RunID == event.RunID && run.Workflow == event.Workflow {
+					if identity, ok := resolveWorkflowIdentity(run.Gaggle, run.Workflow, workflows); ok {
+						return []WorkflowIdentity{identity}
+					}
 				}
 			}
 		}

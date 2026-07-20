@@ -27,9 +27,20 @@ bin/goobers init ./my-instance
 ```
 
 Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one
-implement-only workflow), and the empty `runs/`, `scheduler/`, `workcopies/`,
-`telemetry.db` placeholders (ARCHITECTURE.md §6). Safe to re-run — existing
+implement-only workflow), and the empty `gaggles/`, `scheduler/`, and
+`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each
+gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run — existing
 pieces are left untouched.
+
+**Upgrading a flat V0 instance:** on first startup, an instance with one active
+gaggle automatically moves populated top-level `runs/` and `workcopies/` into
+`gaggles/<gaggle>/` when no scoped runtime state exists yet. If several gaggles
+are active, Goobers preserves the populated flat directories as a compatibility
+root: retained journals remain readable and resumable while new runs use scoped
+directories. Goobers also keeps that root separate if the configuration later
+returns to one gaggle, because mixed historical state cannot be assigned safely.
+Operators may relocate retained journals by their recorded gaggle during a
+maintenance window; retained Git workcopies should stay at their legacy paths.
 
 ## 3. Configure
 
@@ -130,7 +141,7 @@ bin/goobers reset-rate-limit ./my-instance
 
 This writes a small marker under `scheduler/` that moves the rate window's floor
 to now, so the next `goobers up`/`goobers run` starts with a fresh budget. It
-**preserves `runs/`** — the append-only run journals that are the durable
+**preserves `gaggles/*/runs/`** — the append-only run journals that are the durable
 execution record (`trace` reads them). Wiping the instance root to reset the
 rate window destroys those journals as a side effect; this command doesn't.
 Stop the daemon first if one is running — the reset is applied when the

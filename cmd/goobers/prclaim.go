@@ -151,12 +151,17 @@ func claimPullRequestInOrder(
 			return fmt.Errorf("open claim ledger: %w", err)
 		}
 		for _, candidate := range candidates {
-			ok, _, err := ledger.Claim(
-				pullRequestClaimKey(candidate.Number),
-				runID,
-				workflow,
-				leaseDuration,
-			)
+			itemID := pullRequestClaimKey(candidate.Number)
+			var ok bool
+			if gaggle := providerGaggle(); gaggle != "" {
+				ok, _, err = ledger.ClaimScoped(localscheduler.ClaimKey{
+					Gaggle:     gaggle,
+					Provider:   string(providers.ProviderGitHub),
+					ExternalID: itemID,
+				}, runID, workflow, leaseDuration)
+			} else {
+				ok, _, err = ledger.Claim(itemID, runID, workflow, leaseDuration)
+			}
 			if err != nil {
 				return fmt.Errorf("claim PR #%d in ledger: %w", candidate.Number, err)
 			}

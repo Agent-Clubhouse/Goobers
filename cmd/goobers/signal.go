@@ -90,7 +90,12 @@ func runSignal(args []string, stdout, stderr io.Writer) int {
 
 	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets, setup.RunConditions.WorkflowDailyBudgets))
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
-	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
+	runDirs, err := l.RunDirs()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if err := sched.ReconcileAll(runDirs, time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -114,7 +119,7 @@ func runSignal(args []string, stdout, stderr io.Writer) int {
 	// race by blocking until each run's own journal shows it under way.
 	exitCode := 0
 	for _, runID := range runIDs {
-		phase, err := waitForRunTerminal(ctx, l.RunsDir(), runID)
+		phase, err := waitForRunTerminalInLayout(ctx, l, runID)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2

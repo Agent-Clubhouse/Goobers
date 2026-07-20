@@ -20,7 +20,7 @@ type WorkflowIdentity struct {
 // from the event log, the durable source of truth; state.json can lag a
 // crash-fsynced run.finished event.
 func ActiveRunCounts(runsDir string) (map[string]int, error) {
-	scoped, _, err := activeRuns(runsDir)
+	scoped, _, err := activeRuns([]string{runsDir})
 	counts := map[string]int{}
 	for identity, count := range scoped {
 		counts[identity.Workflow] += count
@@ -32,19 +32,31 @@ func ActiveRunCounts(runsDir string) (map[string]int, error) {
 // Inventory readers use this projection because workflow names are only unique
 // within a gaggle.
 func ActiveRunCountsByWorkflow(runsDir string) (map[WorkflowIdentity]int, error) {
-	counts, _, err := activeRuns(runsDir)
+	counts, _, err := activeRuns([]string{runsDir})
 	return counts, err
 }
 
-func activeRuns(runsDir string) (map[WorkflowIdentity]int, map[string]WorkflowIdentity, error) {
+// ActiveRunCountsByWorkflowDirs returns active counts across several gaggle
+// run roots.
+func ActiveRunCountsByWorkflowDirs(runsDirs []string) (map[WorkflowIdentity]int, error) {
+	counts, _, err := activeRuns(runsDirs)
+	return counts, err
+}
+
+func activeRuns(runsDirs []string) (map[WorkflowIdentity]int, map[string]WorkflowIdentity, error) {
 	counts := map[WorkflowIdentity]int{}
 	runs := map[string]WorkflowIdentity{}
-	err := visitActiveRuns(runsDir, func(id journal.RunIdentity) {
-		identity := WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
-		counts[identity]++
-		runs[id.RunID] = identity
-	})
-	return counts, runs, err
+	for _, runsDir := range runsDirs {
+		err := visitActiveRuns(runsDir, func(id journal.RunIdentity) {
+			identity := WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
+			counts[identity]++
+			runs[id.RunID] = identity
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return counts, runs, nil
 }
 
 func visitActiveRuns(runsDir string, visit func(journal.RunIdentity)) error {

@@ -93,6 +93,39 @@ func TestTelemetryQueryAggregateFilter(t *testing.T) {
 	}
 }
 
+func TestTelemetryQueryScopesFindingsToRunGaggle(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	writeFixtureRunWithErrorForGaggle(t, l.ForGaggle("alpha"), "alpha-run", "alpha")
+	writeFixtureRunWithErrorForGaggle(t, l.ForGaggle("bravo"), "bravo-run", "bravo")
+	rebuildTelemetryQueryRollup(t, root)
+	t.Setenv("GOOBERS_GAGGLE", "alpha")
+
+	code, stdout, stderr := runArgs(t,
+		"telemetry-query",
+		"--aggregate", "error-signature",
+		"--threshold", "min-error-signature-count=1",
+		root,
+	)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	var got candidateFindingsArtifact
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Findings) != 1 {
+		t.Fatalf("findings = %+v, want one error-signature finding", got.Findings)
+	}
+	flagged := got.Findings[0].FlaggedRuns
+	if len(flagged) != 1 || flagged[0].RunID != "alpha-run" {
+		t.Fatalf("flagged runs = %+v, want only alpha-run", flagged)
+	}
+	if strings.Contains(stdout, "bravo-run") {
+		t.Fatalf("gaggle-scoped output leaked bravo-run: %s", stdout)
+	}
+}
+
 func TestTelemetryQueryArtifactDeterministicForFixedInput(t *testing.T) {
 	root := initDemo(t)
 	writeFixtureRunWithError(t, root)
@@ -108,11 +141,11 @@ func TestTelemetryQueryArtifactDeterministicForFixedInput(t *testing.T) {
 	thresholds.MinErrorSignatureCount = 1
 	since := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
 	aggregates := telemetryAggregateValues{telemetryAggregateStageFailureRate, telemetryAggregateErrorSignature}
-	first, err := detectCandidateFindings(db, 24*time.Hour, since, aggregates, thresholds)
+	first, err := detectCandidateFindings(db, 24*time.Hour, since, "", aggregates, thresholds)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := detectCandidateFindings(db, 24*time.Hour, since, aggregates, thresholds)
+	second, err := detectCandidateFindings(db, 24*time.Hour, since, "", aggregates, thresholds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +256,11 @@ func TestTelemetryQueryRejectsInvalidTypedFlags(t *testing.T) {
 func rebuildTelemetryQueryRollup(t *testing.T, root string) {
 	t.Helper()
 	l := instance.NewLayout(root)
-	if err := rollup.Rebuild(l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
+	runDirs, err := l.RunDirs()
+	if err != nil {
+		t.Fatalf("list run roots: %v", err)
+	}
+	if err := rollup.RebuildAll(l.TelemetryDB(), runDirs, l.SchedulerDir()); err != nil {
 		t.Fatalf("rebuild rollup: %v", err)
 	}
 }
