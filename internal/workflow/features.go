@@ -319,18 +319,16 @@ func (s featureSet) ids() []FeatureID {
 // def. VER-2 consumes the returned levels to enforce compatibility policy.
 func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	used := featureSet{}
-	used.add(featureWorkflowGaggle, featureWorkflowTriggers, featureWorkflowStart)
+	used.add(
+		featureWorkflowGaggle,
+		featureWorkflowTriggers,
+		featureWorkflowReadiness,
+		featureWorkflowMaxConcurrentRuns,
+		featureWorkflowMaxRunsPerHour,
+		featureWorkflowStart,
+	)
 	if def.Spec.DisplayName != "" {
 		used.add(featureWorkflowDisplayName)
-	}
-	if readinessSet(def.Spec.Readiness) {
-		used.add(featureWorkflowReadiness)
-	}
-	if def.Spec.Readiness.MaxConcurrentRuns != 0 {
-		used.add(featureWorkflowMaxConcurrentRuns)
-	}
-	if def.Spec.Readiness.MaxRunsPerHour != 0 {
-		used.add(featureWorkflowMaxRunsPerHour)
 	}
 	if def.Spec.Readiness.MaxRunsPerDay != 0 {
 		used.add(featureWorkflowMaxRunsPerDay)
@@ -385,9 +383,7 @@ func FeaturesForGoober(spec apiv1.GooberSpec) ([]Feature, error) {
 	if spec.Tools != nil {
 		used.add(featureGooberTools)
 	}
-	if spec.ScaleFactor != 0 {
-		used.add(featureGooberScaleFactor)
-	}
+	used.add(featureGooberScaleFactor)
 	if spec.Workflows != nil {
 		used.add(featureGooberWorkflows)
 	}
@@ -411,14 +407,6 @@ func CheckGooberFeatures(spec apiv1.GooberSpec) []string {
 		return nil
 	}
 	return []string{err.Error()}
-}
-
-func readinessSet(readiness apiv1.ReadinessConditions) bool {
-	return readiness.MaxConcurrentRuns != 0 ||
-		readiness.MaxRunsPerHour != 0 ||
-		readiness.MaxRunsPerDay != 0 ||
-		readiness.MaxChainDepth != 0 ||
-		readiness.MaxOpenPRs != 0
 }
 
 func addTriggerFeatures(used featureSet, trigger apiv1.Trigger) {

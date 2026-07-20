@@ -155,7 +155,13 @@ func TestFeaturesForWorkflowResolvesImplicitDefaults(t *testing.T) {
 		t.Fatalf("FeaturesForWorkflow: %v", err)
 	}
 	got := featureIDs(features)
-	for _, want := range []FeatureID{featureTaskTimeoutFail, featureStageWorkspaceRepo} {
+	for _, want := range []FeatureID{
+		featureWorkflowReadiness,
+		featureWorkflowMaxConcurrentRuns,
+		featureWorkflowMaxRunsPerHour,
+		featureTaskTimeoutFail,
+		featureStageWorkspaceRepo,
+	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("resolved features do not contain implicit default %q", want)
 		}
@@ -164,6 +170,21 @@ func TestFeaturesForWorkflowResolvesImplicitDefaults(t *testing.T) {
 		if slices.Contains(got, unwanted) {
 			t.Errorf("resolved features unexpectedly contain %q", unwanted)
 		}
+	}
+}
+
+func TestFeaturesForGooberResolvesImplicitDefaults(t *testing.T) {
+	features, err := FeaturesForGoober(apiv1.GooberSpec{
+		Gaggle:       "example",
+		Role:         "coder",
+		Instructions: "instructions.md",
+	})
+	if err != nil {
+		t.Fatalf("FeaturesForGoober: %v", err)
+	}
+	got := featureIDs(features)
+	if !slices.Contains(got, featureGooberScaleFactor) {
+		t.Errorf("resolved features do not contain implicit default %q", featureGooberScaleFactor)
 	}
 }
 
