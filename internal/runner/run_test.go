@@ -433,7 +433,7 @@ func TestRunnerToleratedFailureStopsHeartbeatBeforeJournalingOutcome(t *testing.
 			runFinished = i
 		}
 	}
-	if !(started < heartbeat && heartbeat < finished && finished < tolerated && tolerated < runFinished) {
+	if started >= heartbeat || heartbeat >= finished || finished >= tolerated || tolerated >= runFinished {
 		t.Fatalf("event order indexes = started:%d heartbeat:%d finished:%d tolerated:%d run.finished:%d", started, heartbeat, finished, tolerated, runFinished)
 	}
 }
