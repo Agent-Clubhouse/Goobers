@@ -48,6 +48,37 @@ func seedClaims(t *testing.T, root string, now time.Time) {
 	}
 }
 
+func seedScopedClaims(t *testing.T, root string, now time.Time) {
+	t.Helper()
+	l := instance.NewLayout(root)
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationAdminRelease, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(
+			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+			localscheduler.WithLedgerClock(func() time.Time { return now }),
+		)
+		if err != nil {
+			return err
+		}
+		for _, claim := range []struct {
+			key   localscheduler.ClaimKey
+			runID string
+		}{
+			{key: localscheduler.ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "issue-9"}, runID: "run-alpha"},
+			{key: localscheduler.ClaimKey{Gaggle: "beta", Provider: "github", ExternalID: "issue-9"}, runID: "run-beta"},
+		} {
+			if ok, _, err := ledger.ClaimScoped(claim.key, claim.runID, "implement", time.Hour); err != nil {
+				return err
+			} else if !ok {
+				return fmt.Errorf("scoped claim %+v was refused", claim.key)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClaimsListStandaloneAndStaleFilter(t *testing.T) {
 	root := initDemo(t)
 	seedClaims(t, root, time.Now())
@@ -116,9 +147,52 @@ func TestClaimsReleaseUnknownItemIsBusinessError(t *testing.T) {
 	}
 }
 
+func TestClaimsCommandsPreserveClaimNamespaces(t *testing.T) {
+	root := initDemo(t)
+	seedScopedClaims(t, root, time.Now())
+
+	code, stdout, stderr := runArgs(t, "claims", "list", "--gaggle=alpha", "--json", root)
+	if code != 0 {
+		t.Fatalf("scoped list: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var entries []localscheduler.ClaimEntry
+	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
+		t.Fatalf("decode scoped JSON: %v\n%s", err, stdout)
+	}
+	if len(entries) != 1 || entries[0].Gaggle != "alpha" || entries[0].Provider != "github" {
+		t.Fatalf("scoped list entries=%+v", entries)
+	}
+
+	code, _, stderr = runArgs(t, "claims", "release", "issue-9", root)
+	if code != 1 || !strings.Contains(stderr, "multiple namespaces") {
+		t.Fatalf("ambiguous release: code=%d stderr=%q", code, stderr)
+	}
+	code, _, stderr = runArgs(t, "claims", "release", "--gaggle=alpha", "issue-9", root)
+	if code != 2 || !strings.Contains(stderr, "must be supplied together") {
+		t.Fatalf("partially scoped release: code=%d stderr=%q", code, stderr)
+	}
+	code, stdout, stderr = runArgs(
+		t, "claims", "release", "--gaggle=alpha", "--provider=github", "issue-9", root,
+	)
+	if code != 0 {
+		t.Fatalf("scoped release: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(instance.NewLayout(root).SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := ledger.LookupScoped(localscheduler.ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "issue-9"}); held {
+		t.Fatal("alpha claim is still held")
+	}
+	if entry, held := ledger.LookupScoped(localscheduler.ClaimKey{Gaggle: "beta", Provider: "github", ExternalID: "issue-9"}); !held || entry.RunID != "run-beta" {
+		t.Fatalf("beta claim changed: %+v held=%v", entry, held)
+	}
+}
+
 func TestClaimAdminDelegationRoundTrip(t *testing.T) {
 	root := initDemo(t)
-	seedClaims(t, root, time.Now())
+	seedScopedClaims(t, root, time.Now())
 	schedulerDir := instance.NewLayout(root).SchedulerDir()
 	log, _, err := journal.OpenInstanceLog(schedulerDir)
 	if err != nil {
@@ -129,6 +203,8 @@ func TestClaimAdminDelegationRoundTrip(t *testing.T) {
 	requestID, err := writeClaimAdminRequest(schedulerDir, claimAdminRequest{
 		Operation: claimAdminOperationRelease,
 		ItemID:    "issue-9",
+		Gaggle:    "alpha",
+		Provider:  "github",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +216,7 @@ func TestClaimAdminDelegationRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Released == nil || resp.Released.ItemID != "issue-9" || resp.Released.RunID != "run-b" {
+	if resp.Released == nil || resp.Released.ItemID != "issue-9" || resp.Released.RunID != "run-alpha" || resp.Released.Gaggle != "alpha" {
 		t.Fatalf("response=%+v", resp)
 	}
 }

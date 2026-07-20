@@ -348,6 +348,40 @@ func TestForceReleaseIgnoresOwnerAndPreservesOtherClaims(t *testing.T) {
 	}
 }
 
+func TestForceReleaseEntryPreservesOtherNamespaces(t *testing.T) {
+	l, err := OpenClaimLedger(filepath.Join(t.TempDir(), "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "42"}
+	beta := ClaimKey{Gaggle: "beta", Provider: "github", ExternalID: "42"}
+	for _, claim := range []struct {
+		key   ClaimKey
+		runID string
+	}{
+		{key: alpha, runID: "run-alpha"},
+		{key: beta, runID: "run-beta"},
+	} {
+		if ok, _, err := l.ClaimScoped(claim.key, claim.runID, "implement", time.Minute); err != nil || !ok {
+			t.Fatalf("ClaimScoped(%+v): ok=%v err=%v", claim.key, ok, err)
+		}
+	}
+
+	entry, held := l.LookupScoped(alpha)
+	if !held {
+		t.Fatal("alpha claim is not held")
+	}
+	if err := l.ForceReleaseEntry(entry); err != nil {
+		t.Fatalf("ForceReleaseEntry: %v", err)
+	}
+	if _, held := l.LookupScoped(alpha); held {
+		t.Fatal("alpha claim is still held")
+	}
+	if entry, held := l.LookupScoped(beta); !held || entry.RunID != "run-beta" {
+		t.Fatalf("beta claim changed: %+v held=%v", entry, held)
+	}
+}
+
 func TestSnapshotReturnsAllClaimsInItemOrder(t *testing.T) {
 	l, err := OpenClaimLedger(filepath.Join(t.TempDir(), "claims.json"))
 	if err != nil {
