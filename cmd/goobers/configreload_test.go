@@ -211,7 +211,7 @@ func waitForConfigEvent(t *testing.T, schedulerDir string, eventType journal.Eve
 	return journal.Event{}
 }
 
-func TestConfigDirectoryDigestOnlyTracksLoadedConfigFiles(t *testing.T) {
+func TestConfigDirectoryDigestOnlyTracksLoadedConfigAndAssets(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "manifest.yaml"), []byte("kind: A\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -248,13 +248,28 @@ func TestConfigDirectoryDigestOnlyTracksLoadedConfigFiles(t *testing.T) {
 		t.Fatalf("non-config churn changed digest: got %s, want %s", got, baseline)
 	}
 
+	asset := filepath.Join(root, "gaggles", "example", "goobers", "coder", "assets", ".hidden", "reference.txt")
+	if err := os.MkdirAll(filepath.Dir(asset), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(asset, []byte("static reference"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withAsset, err := configDirectoryDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withAsset == baseline {
+		t.Fatalf("asset addition did not change digest: %s", withAsset)
+	}
+
 	// A real change to a loaded config file MUST move the digest.
 	if err := os.WriteFile(filepath.Join(root, "manifest.yaml"), []byte("kind: B\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := configDirectoryDigest(root); err != nil {
 		t.Fatal(err)
-	} else if got == baseline {
+	} else if got == withAsset {
 		t.Fatalf("config edit did not change digest: %s", got)
 	}
 }

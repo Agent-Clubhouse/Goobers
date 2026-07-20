@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 
@@ -148,6 +149,47 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 	}
 	if string(rec.spans[0].data) != "implementing... done" {
 		t.Fatalf("span data = %q", rec.spans[0].data)
+	}
+}
+
+func TestExecutorMaterializesAssetsBeforeInvocation(t *testing.T) {
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, "templates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "templates", "review.md"), []byte("review carefully"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := gooberassets.Load(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+		data, err := os.ReadFile(filepath.Join(req.Workspace, gooberassets.WorkspaceDir, "templates", "review.md"))
+		if err != nil {
+			return err
+		}
+		if string(data) != "review carefully" {
+			return fmt.Errorf("asset content = %q", data)
+		}
+		return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	}}
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+		WithAssetBundle(bundle),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir())); err != nil {
+		t.Fatalf("Invoke: %v", err)
 	}
 }
 

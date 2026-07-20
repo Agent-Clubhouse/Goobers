@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/gooberassets"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -308,6 +309,9 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			return err
 		}
 		if d.IsDir() {
+			if gooberassets.IsSourceDir(path) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))

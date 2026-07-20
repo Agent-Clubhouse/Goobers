@@ -30,10 +30,8 @@ func newSourceRepo(t *testing.T) string {
 }
 
 // TestManager_Create_ExcludesHarnessScratch is #240's regression guard: the
-// harness scratch dir (.goobers/) written into a provisioned run worktree must
-// be invisible to git — a `git add -A && commit` (the common agent pattern)
-// captures none of it — even though the target repo has no .goobers entry in
-// its own .gitignore.
+// harness-owned paths written into a provisioned run worktree must be invisible
+// to git, even though the target repo has no matching .gitignore entries.
 func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t) // foreign repo: no .goobers in its .gitignore (it has none)
@@ -51,11 +49,12 @@ func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
 	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "prompt.md"), "the full prompt")
 	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "result.json"), "{}")
 	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "context", "blob"), "materialized context")
+	mustWriteFile(t, filepath.Join(wt.Path, ".goober-assets", "reference.md"), "goober reference")
 	mustWriteFile(t, filepath.Join(wt.Path, "src.txt"), "real implementation change")
 
 	// (a) status shows the real change but not the scratch dir.
 	status := runTestGit(t, wt.Path, "status", "--porcelain")
-	if strings.Contains(status, ".goobers") {
+	if strings.Contains(status, ".goobers") || strings.Contains(status, ".goober-assets") {
 		t.Fatalf("git status leaks harness scratch:\n%s", status)
 	}
 	if !strings.Contains(status, "src.txt") {
@@ -66,7 +65,7 @@ func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
 	runTestGit(t, wt.Path, "add", "-A")
 	runTestGit(t, wt.Path, "-c", "user.email=t@e.test", "-c", "user.name=t", "commit", "-m", "impl")
 	committed := runTestGit(t, wt.Path, "show", "--name-only", "--pretty=format:", "HEAD")
-	if strings.Contains(committed, ".goobers") {
+	if strings.Contains(committed, ".goobers") || strings.Contains(committed, ".goober-assets") {
 		t.Fatalf("committed tree contains harness scratch:\n%s", committed)
 	}
 	if !strings.Contains(committed, "src.txt") {

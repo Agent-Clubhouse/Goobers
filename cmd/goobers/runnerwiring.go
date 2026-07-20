@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
@@ -735,8 +736,12 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 // config-examples/, selfhost/) lays goobers out at the same fixed path, so
 // that layout convention is reproduced here rather than widening ConfigSet's
 // shape for this one field.
+func gooberDefinitionDir(configDir string, spec apiv1.GooberSpec, gooberName string) string {
+	return filepath.Join(configDir, "gaggles", spec.Gaggle, "goobers", gooberName)
+}
+
 func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string) string {
-	return filepath.Join(configDir, "gaggles", spec.Gaggle, "goobers", gooberName, spec.Instructions)
+	return filepath.Join(gooberDefinitionDir(configDir, spec, gooberName), spec.Instructions)
 }
 
 // buildRunnerConfig assembles the runner.Config the daemon (`goobers up`) and
@@ -789,12 +794,18 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		return runner.Config{}, nil, err
 	}
 	instructionsByGoober := make(map[string]string, len(goobers))
+	assetsByGoober := make(map[string]*gooberassets.Bundle, len(goobers))
 	for name, spec := range goobers {
 		instructions, err := os.ReadFile(instructionsPath(l.ConfigDir(), spec, name))
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("read goober %q instructions: %w", name, err)
 		}
 		instructionsByGoober[name] = string(instructions)
+		assets, err := gooberassets.Load(filepath.Join(gooberDefinitionDir(l.ConfigDir(), spec, name), gooberassets.SourceDir))
+		if err != nil {
+			return runner.Config{}, nil, fmt.Errorf("load goober %q assets: %w", name, err)
+		}
+		assetsByGoober[name] = assets
 	}
 
 	// An agentic gate's reviewer has no stage-level capabilities of its own, so
@@ -896,7 +907,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				return nil, fmt.Errorf("runner secret registrar does not implement journal.Scrubber")
 			}
 			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
-			opts := []harness.Option{harness.WithHarnessConfig(spec.Model, spec.HarnessOptions)}
+			opts := []harness.Option{
+				harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
+				harness.WithAssetBundle(assetsByGoober[gooberName]),
+			}
 			// Goober-level default timeout (#1070): raises this goober's built-in
 			// 30m harness bound so its bigger tasks aren't cut off, without
 			// annotating every stage. A stage's own Task.TimeoutSeconds still

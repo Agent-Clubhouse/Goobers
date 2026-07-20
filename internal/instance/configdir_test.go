@@ -2,6 +2,8 @@ package instance
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -64,6 +66,32 @@ func TestLoadConfigDirInvalid(t *testing.T) {
 	}
 	if report == nil || !report.HasErrors() {
 		t.Fatalf("expected a report with errors, got %+v", report)
+	}
+}
+
+func TestLoadConfigDirIgnoresAssetDefinitions(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(validConfigDir)); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "goober.yaml")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := filepath.Join(filepath.Dir(source), "assets", "duplicate.yaml")
+	if err := os.MkdirAll(filepath.Dir(asset), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(asset, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	set, report, err := LoadConfigDir(root)
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if len(set.Goobers) != 5 {
+		t.Fatalf("asset definition leaked into config set: got %d goobers", len(set.Goobers))
 	}
 }
 

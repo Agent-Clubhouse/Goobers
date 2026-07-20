@@ -88,6 +88,27 @@ func TestExampleConfigPasses(t *testing.T) {
 	}
 }
 
+func TestGooberAssetsAreOpaqueToConfigValidation(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {
+		t.Fatal(err)
+	}
+	asset := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "assets", "fixture.yaml")
+	if err := os.MkdirAll(filepath.Dir(asset), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(asset, []byte("not: [valid yaml"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := newV(t).ValidateDir(root)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if report.HasErrors() {
+		t.Fatalf("asset fixture was parsed as config:\n%s", joinIssues(report))
+	}
+}
+
 func TestGooberSchemaPreservesAdapterOwnedHarnessConfig(t *testing.T) {
 	v := newV(t)
 	goober := `{

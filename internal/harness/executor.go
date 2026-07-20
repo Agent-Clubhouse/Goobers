@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -80,6 +81,7 @@ type Executor struct {
 	scrubber        journal.Scrubber
 	validator       *validate.Validator
 	instructions    string
+	assets          *gooberassets.Bundle
 	model           string
 	harnessOptions  map[string]apiextensionsv1.JSON
 	resultPath      string
@@ -119,6 +121,11 @@ func WithHarnessConfig(model string, options map[string]apiextensionsv1.JSON) Op
 			}
 		}
 	}
+}
+
+// WithAssetBundle supplies the goober's optional static assets.
+func WithAssetBundle(bundle *gooberassets.Bundle) Option {
+	return func(e *Executor) { e.assets = bundle }
 }
 
 // NewExecutor builds an Executor for one goober: adapter is the harness to
@@ -270,6 +277,9 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 // journaled diagnostics (via the returned error plus the recorded span) beyond
 // a bare error string.
 func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (Outcome, error) {
+	if err := e.assets.Materialize(env.Workspace); err != nil {
+		return Outcome{}, fmt.Errorf("harness: materialize goober assets: %w", err)
+	}
 	creds, err := e.injector.Materialize(ctx, env.Capabilities)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: materialize credentials: %w", err)
