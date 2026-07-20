@@ -47,6 +47,17 @@ type GooberSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +optional
 	HarnessOptions map[string]apiextensionsv1.JSON `json:"harnessOptions,omitempty" yaml:"harnessOptions,omitempty"`
+	// TimeoutSeconds is the default per-attempt wall-clock bound for this
+	// goober's agentic stages, overriding the harness's built-in 30m default
+	// (internal/harness.DefaultTimeout). A stage's own Task.TimeoutSeconds, when
+	// set, takes precedence over this — precedence is task > goober > built-in
+	// default. Unset preserves the built-in default. Raise it for a goober that
+	// does large work (a bigger implementation task legitimately exceeding 30m)
+	// without annotating every stage that invokes it; leave it unset for
+	// goobers whose work fits the default.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty" yaml:"timeoutSeconds,omitempty"`
 	// Capabilities are the capability grants this goober holds (e.g.
 	// "github:issues:write", "repo:push", "telemetry:read"). A stage invoking
 	// this goober may only use capabilities in this set; undeclared use fails

@@ -10,6 +10,12 @@ spec:
   harness: copilot
   model: auto
   harnessOptions: {}
+  # Default per-attempt bound for this goober's agentic work, above the built-in
+  # 30m (#1070). The implementer drives both implementation.yaml and
+  # pr-remediation.yaml's `implement` stage — the biggest single-attempt tasks
+  # in the system — and 30m recurrently cut off legitimately-large items. A
+  # stage's own timeoutSeconds still overrides this if it needs to.
+  timeoutSeconds: 3600
   # Implement-only: this stage never opens the PR or touches issues directly
   # (those are separate deterministic stages in the implementation
   # workflow) — repo:push covers the git side. agent:model sources the Copilot

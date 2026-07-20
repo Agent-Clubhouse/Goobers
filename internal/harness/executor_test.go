@@ -206,6 +206,32 @@ func TestExecutorUsesInvocationTimeout(t *testing.T) {
 	}
 }
 
+// TestExecutorUsesConfiguredFallbackTimeout is the goober-level default-timeout
+// path (#1070): when a stage declares no per-attempt limit, the session is
+// bounded by the executor's configured timeout (which the runner wires from
+// GooberSpec.TimeoutSeconds) rather than the built-in 30m default.
+func TestExecutorUsesConfiguredFallbackTimeout(t *testing.T) {
+	rec := &fakeRecorder{}
+	var got time.Duration
+	adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+		got = req.Timeout
+		return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	}}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "", WithTimeout(90*time.Minute))
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+	env := testEnvelope(t.TempDir())
+	// No env.Limits.MaxDurationSeconds — the stage sets no per-attempt timeout.
+	if _, err := exec.Invoke(context.Background(), env); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if got != 90*time.Minute {
+		t.Fatalf("request timeout = %s, want 90m (the configured fallback, not the 30m built-in)", got)
+	}
+}
+
 // TestExecutorMarksSessionTimeout is #724: a harness session timeout must
 // surface across the invoke seam as invoke.IsTimeout so the runner can apply a
 // stage's OnTimeout salvage policy without importing this package. A non-timeout

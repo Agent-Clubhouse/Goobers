@@ -125,6 +125,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		Gaggle: "example", Role: "coder", DisplayName: "Coder", Instructions: "instructions.md",
 		Harness: apiv1.HarnessCopilot, Model: "claude-sonnet-5",
 		HarnessOptions: map[string]apiextensionsv1.JSON{"effort": {Raw: []byte(`"high"`)}},
+		TimeoutSeconds: 3600,
 		Capabilities:   []string{"repo:push"}, Skills: []string{"go"}, Tools: []string{"shell"},
 		ScaleFactor: 2, Workflows: []string{"all-features"},
 	}
@@ -217,6 +218,28 @@ func TestFeaturesForGooberResolvesImplicitDefaults(t *testing.T) {
 	}
 }
 
+// TestFeaturesForGooberTimeoutSeconds pins that the goober-level default
+// timeout (#1070) is a recognized, resolvable feature only when set — an
+// unset field must not pull it into the surface (mirroring model/harnessOptions).
+func TestFeaturesForGooberTimeoutSeconds(t *testing.T) {
+	base := apiv1.GooberSpec{Gaggle: "example", Role: "coder", Instructions: "instructions.md"}
+	if features, err := FeaturesForGoober(base); err != nil {
+		t.Fatalf("FeaturesForGoober (unset): %v", err)
+	} else if slices.Contains(featureIDs(features), featureGooberTimeoutSeconds) {
+		t.Errorf("unset TimeoutSeconds must not surface %q", featureGooberTimeoutSeconds)
+	}
+
+	withTimeout := base
+	withTimeout.TimeoutSeconds = 3600
+	features, err := FeaturesForGoober(withTimeout)
+	if err != nil {
+		t.Fatalf("FeaturesForGoober (set): %v", err)
+	}
+	if !slices.Contains(featureIDs(features), featureGooberTimeoutSeconds) {
+		t.Errorf("set TimeoutSeconds must surface %q", featureGooberTimeoutSeconds)
+	}
+}
+
 func TestCompileConsumesFeatureRegistry(t *testing.T) {
 	all := AllFeatures()
 	filtered := make([]Feature, 0, len(all)-1)
@@ -282,6 +305,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"goober.spec.harness.copilot",
 		"goober.spec.model",
 		"goober.spec.harnessOptions",
+		"goober.spec.timeoutSeconds",
 		"goober.spec.capabilities",
 		"goober.spec.skills",
 		"goober.spec.tools",
