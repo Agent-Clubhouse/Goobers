@@ -8,6 +8,7 @@ import {
   type RunEvent,
   type RunPhase,
   type RunSummary,
+  type WorkflowDetail,
   type WorkflowGraph,
   type WorkflowSummary,
 } from "../api/types";
@@ -126,7 +127,42 @@ function graph(gaggle: string): WorkflowGraph {
     edges: [
       { source: "query", target: "implement" },
       { source: "implement", target: "review" },
+      { source: "review", target: "", outcome: "approve", terminal: "complete" },
       { source: "review", target: "implement", outcome: "needs-changes" },
+      { source: "review", target: "@escalate", outcome: "fail", terminal: "escalate" },
+    ],
+  };
+}
+
+function workflowDetail(gaggle: string): WorkflowDetail {
+  return {
+    ...workflow(gaggle),
+    graph: graph(gaggle),
+    stages: [
+      {
+        name: "query",
+        kind: "deterministic",
+        goal: "Claim the next approved backlog item.",
+        owner: null,
+        evaluator: "",
+        capabilities: ["github:issues:write"],
+      },
+      {
+        name: "implement",
+        kind: "agentic",
+        goal: "Implement the claimed item in an isolated worktree.",
+        owner: { gaggle, name: "implementer" },
+        evaluator: "",
+        capabilities: ["repo:push"],
+      },
+      {
+        name: "review",
+        kind: "gate",
+        goal: "Review the implementation and select its next target.",
+        owner: { gaggle, name: "implementer" },
+        evaluator: "agentic",
+        capabilities: ["repo:read"],
+      },
     ],
   };
 }
@@ -377,18 +413,8 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       tools: { items: [toolsWorkflow], page: page(1) },
     },
     workflowDetails: {
-      [fixtureKey("core", "implementation")]: {
-        ...coreWorkflow,
-        graph: {
-          name: "implementation",
-          version: 7,
-          digest: "sha256:core",
-          start: "implement",
-          nodes: [],
-          edges: [],
-        },
-        stages: [],
-      },
+      [fixtureKey("core", "implementation")]: workflowDetail("core"),
+      [fixtureKey("tools", "implementation")]: workflowDetail("tools"),
     },
     runs: { runs: runSummaries },
     runDetails: Object.fromEntries(

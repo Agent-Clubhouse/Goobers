@@ -245,7 +245,7 @@ function DefinitionList({ label, values }: { label: string; values: string[] }) 
   );
 }
 
-function formatTriggers(workflow: WorkflowSummary): string {
+export function formatTriggers(workflow: WorkflowSummary): string {
   if (workflow.triggers.length === 0) {
     return "Manual";
   }

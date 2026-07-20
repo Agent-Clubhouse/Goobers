@@ -1140,6 +1140,7 @@ summary:focus-visible {
   display: grid;
   gap: 16px;
   grid-template-columns: minmax(0, 1fr) 300px;
+  margin-top: 34px;
 }
 
 .graph-panel,
@@ -1154,6 +1155,275 @@ summary:focus-visible {
 .graph-panel {
   min-width: 0;
   padding: 18px;
+}
+
+.workflow-detail-meta {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 720px;
+}
+
+.workflow-definition-pin {
+  max-width: 240px;
+  overflow-wrap: anywhere;
+}
+
+.workflow-config-summary {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  margin-bottom: 0;
+  padding: 0 16px;
+}
+
+.workflow-stale-error {
+  align-items: center;
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  padding: 10px 12px;
+}
+
+.workflow-stale-error span {
+  display: grid;
+  gap: 2px;
+}
+
+.workflow-stale-error small {
+  color: var(--muted-strong);
+}
+
+.workflow-config-summary dl {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 90px minmax(220px, 1.5fr);
+  margin: 0;
+}
+
+.workflow-config-summary dl > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px 16px;
+}
+
+.workflow-config-summary dl > div + div {
+  border-left: 1px solid var(--line);
+}
+
+.workflow-config-summary dt {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.workflow-config-summary dd {
+  font-size: 11px;
+  font-weight: 650;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.workflow-graph-shell {
+  display: grid;
+  gap: 9px;
+}
+
+.workflow-graph-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.workflow-graph-controls button {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 680;
+  min-height: 28px;
+  padding: 5px 8px;
+}
+
+.workflow-graph-controls button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.workflow-graph-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.graph-control-divider {
+  background: var(--line);
+  height: 20px;
+  margin: 0 3px;
+  width: 1px;
+}
+
+.graph-zoom-value {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9px;
+  min-width: 34px;
+  text-align: center;
+}
+
+.workflow-graph-viewport {
+  background-color: var(--surface);
+  background-image: radial-gradient(var(--line) 0.7px, transparent 0.7px);
+  background-size: 16px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  height: 360px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  position: relative;
+  scrollbar-gutter: stable;
+}
+
+.workflow-graph-sizer {
+  min-height: 100%;
+  min-width: 100%;
+  position: relative;
+}
+
+.workflow-graph-surface {
+  left: 0;
+  position: absolute;
+  top: 0;
+  transform-origin: top left;
+}
+
+.workflow-graph-edges {
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+  position: absolute;
+}
+
+.workflow-graph-edge {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.workflow-graph-edge-repass {
+  stroke-dasharray: 5 4;
+}
+
+.workflow-graph-arrow {
+  fill: var(--line-strong);
+}
+
+.workflow-graph-edge-label {
+  fill: var(--muted-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 720;
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 4px;
+  text-anchor: middle;
+}
+
+.workflow-graph-node,
+.workflow-terminal {
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-sizing: border-box;
+  display: grid;
+  gap: 4px;
+  height: 86px;
+  padding: 10px 12px;
+  position: absolute;
+  text-align: left;
+  width: 172px;
+}
+
+.workflow-graph-node {
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.workflow-graph-node:hover,
+.workflow-graph-node[aria-pressed="true"] {
+  border-color: var(--accent);
+}
+
+.workflow-graph-node[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.workflow-graph-node:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.workflow-graph-node strong,
+.workflow-terminal strong {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.workflow-node-agentic {
+  border-left: 3px solid var(--accent);
+}
+
+.workflow-node-gate {
+  border-color: var(--warning);
+  border-style: dashed;
+}
+
+.workflow-node-actor {
+  color: var(--muted);
+  font-size: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-terminal {
+  align-content: center;
+  background: var(--bg);
+  border-width: 2px;
+}
+
+.workflow-terminal span {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workflow-terminal-complete {
+  border-color: var(--success);
+}
+
+.workflow-terminal-abort,
+.workflow-terminal-escalate {
+  border-color: var(--danger);
+}
+
+.workflow-runs-grid,
+.workflow-runs-grid ~ .data-row {
+  grid-template-columns: minmax(280px, 1.6fr) 120px minmax(120px, 0.8fr) 90px 18px;
+}
+
+.definition-panel .property-list dd {
+  max-width: 170px;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .graph-canvas {
@@ -2522,6 +2792,29 @@ summary:focus-visible {
     flex-wrap: wrap;
   }
 
+  .workflow-config-summary dl {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-config-summary dl > div {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .workflow-config-summary dl > div + div {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .workflow-graph-controls {
+    justify-content: flex-start;
+  }
+
+  .workflow-graph-viewport {
+    background-image: none;
+    height: 420px;
+  }
+
   .configuration-warning-heading {
     align-items: start;
     display: grid;
@@ -2550,6 +2843,7 @@ summary:focus-visible {
 
   .data-row,
   .workflow-grid ~ .data-row,
+  .workflow-runs-grid ~ .data-row,
   .all-runs-grid ~ .data-row,
   .data-row:has(.stage-progress),
   .data-row:has(.outcome-cell) {
