@@ -504,17 +504,19 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 					errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
 				}
 				if len(cycle.Affected) > 0 {
-					comment := blockedCycleComment(cycle.Paths, cycle.MorePaths)
+					comments := blockedCycleComments(cycle)
 					for _, cycleItem := range cycle.Affected {
-						cycleReq := providers.UpdateWorkItemRequest{
-							Repository:   cycleItem.Repository,
-							ID:           cycleItem.ItemID,
-							Comment:      comment,
-							AddLabels:    []string{providers.LabelNeedsHuman},
-							RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
-						}
-						if _, err := poster.UpdateWorkItem(ctx, cycleReq); err != nil {
-							errs = append(errs, fmt.Errorf("escalate circular dependency on %s#%s: %w", cycleItem.Repository.Name, cycleItem.ItemID, err))
+						for _, comment := range comments {
+							cycleReq := providers.UpdateWorkItemRequest{
+								Repository:   cycleItem.Repository,
+								ID:           cycleItem.ItemID,
+								Comment:      comment,
+								AddLabels:    []string{providers.LabelNeedsHuman},
+								RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
+							}
+							if _, err := poster.UpdateWorkItem(ctx, cycleReq); err != nil {
+								errs = append(errs, fmt.Errorf("escalate circular dependency on %s#%s: %w", cycleItem.Repository.Name, cycleItem.ItemID, err))
+							}
 						}
 					}
 					continue
@@ -804,6 +806,45 @@ func blockedCycleComment(paths [][]string, morePaths bool) string {
 		summaries.WriteString(additionalPathsOmitted)
 	}
 	return prefix + summaries.String() + suffix
+}
+
+func blockedCycleComments(cycle blockedCycleResult) []string {
+	report := blockedCycleComment(cycle.Paths, cycle.MorePaths)
+	itemIDs := make([]string, len(cycle.Affected))
+	for i, item := range cycle.Affected {
+		itemIDs[i] = item.ItemID
+	}
+
+	memberList := " Affected issues: " + issueRefList(itemIDs) + "."
+	if len(report)+len(memberList) <= maxBlockedCycleCommentLength {
+		return []string{report + memberList}
+	}
+
+	comments := []string{report}
+	const prefix = "Affected issues in this dependency cycle: "
+	var current strings.Builder
+	current.WriteString(prefix)
+	for _, itemID := range itemIDs {
+		separator := ""
+		if current.Len() > len(prefix) {
+			separator = ", "
+		}
+		reference := "#" + itemID
+		if current.Len()+len(separator)+len(reference)+1 > maxBlockedCycleCommentLength {
+			current.WriteByte('.')
+			comments = append(comments, current.String())
+			current.Reset()
+			current.WriteString(prefix)
+			separator = ""
+		}
+		current.WriteString(separator)
+		current.WriteString(reference)
+	}
+	if current.Len() > len(prefix) {
+		current.WriteByte('.')
+		comments = append(comments, current.String())
+	}
+	return comments
 }
 
 func completeCycleSummaries(paths [][]string, morePaths bool, maxLength int, additionalPathsOmitted string) (string, bool) {
