@@ -185,6 +185,69 @@ func TestGitHubProviderDeleteBranch(t *testing.T) {
 	}
 }
 
+func TestGitHubProviderListBranchesIsBoundedAndCursorable(t *testing.T) {
+	var calls int
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/repos/acme/app/git/matching-refs/heads/goobers" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if r.URL.Query().Get("per_page") != "100" {
+			t.Fatalf("per_page = %q, want 100", r.URL.Query().Get("per_page"))
+		}
+		if calls == 1 {
+			w.Header().Set("Link", "<"+server.URL+r.URL.Path+"?page=2&per_page=100>; rel=\"next\"")
+			writeJSON(t, w, []map[string]interface{}{
+				{"ref": "refs/tags/goobers/workflow/run-tag", "object": map[string]string{"sha": "sha-tag"}},
+				{"ref": "refs/heads/goobers-other", "object": map[string]string{"sha": "sha-other"}},
+				{"ref": "refs/heads/goobers/workflow/run-a", "url": "ref-a", "object": map[string]string{"sha": "sha-a"}},
+			})
+			return
+		}
+		if r.URL.Query().Get("page") != "2" {
+			t.Fatalf("page = %q, want 2", r.URL.Query().Get("page"))
+		}
+		writeJSON(t, w, []map[string]interface{}{
+			{"ref": "refs/heads/goobers/workflow/run-c", "url": "ref-c", "object": map[string]string{"sha": "sha-c"}},
+			{"ref": "refs/tags/goobers/workflow/run-tag", "object": map[string]string{"sha": "sha-tag"}},
+			{"ref": "refs/heads/goobers/workflow/run-b", "url": "ref-b", "object": map[string]string{"sha": "sha-b"}},
+		})
+	}))
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	branches, err := provider.ListBranches(context.Background(), ListBranchesRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+		Prefix:     "goobers/",
+		After:      "goobers/workflow/run-a",
+		Limit:      1,
+	})
+	if err != nil {
+		t.Fatalf("ListBranches: %v", err)
+	}
+	if len(branches) != 1 || branches[0].Name != "goobers/workflow/run-b" || branches[0].SHA != "sha-b" || branches[0].URL != "ref-b" {
+		t.Fatalf("branches = %+v", branches)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestGitHubProviderListBranchesValidatesBound(t *testing.T) {
+	provider := NewGitHubProvider("token")
+	repo := RepositoryRef{Owner: "acme", Name: "app"}
+	if _, err := provider.ListBranches(context.Background(), ListBranchesRequest{Repository: repo, Limit: 1}); err == nil {
+		t.Fatal("missing prefix: err = nil")
+	}
+	if _, err := provider.ListBranches(context.Background(), ListBranchesRequest{Repository: repo, Prefix: "goobers/"}); err == nil {
+		t.Fatal("zero limit: err = nil")
+	}
+}
+
 func TestGitHubProviderRepoAndBacklogOperations(t *testing.T) {
 	// issueLabels is the live label set for issue 7; the label sub-API handlers
 	// below mutate it so the re-GET in UpdateWorkItemStatus observes the swap

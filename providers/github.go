@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -166,6 +167,55 @@ func (p *GitHubProvider) CreateBranch(ctx context.Context, req BranchRequest) (B
 		},
 	})
 	return BranchResult{Name: req.Name, SHA: out.Object.SHA, URL: out.URL}, nil
+}
+
+// ListBranches returns a bounded lexicographic page of remote refs matching a
+// prefix. It follows GitHub pagination until the requested page is full; After
+// makes repeated bounded sweeps progress without depending on page numbers that
+// shift when an earlier branch is deleted.
+func (p *GitHubProvider) ListBranches(ctx context.Context, req ListBranchesRequest) ([]BranchSummary, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return nil, err
+	}
+	if req.Prefix == "" {
+		return nil, fmt.Errorf("branch prefix is required")
+	}
+	if req.Limit < 1 {
+		return nil, fmt.Errorf("branch limit must be positive")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "git", "matching-refs", "heads", req.Prefix)
+	if err != nil {
+		return nil, err
+	}
+	const headPrefix = "refs/heads/"
+	branches := make([]BranchSummary, 0, req.Limit)
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var refs []githubRef
+		if err := json.Unmarshal(page, &refs); err != nil {
+			return fmt.Errorf("decode branch refs: %w", err)
+		}
+		for _, ref := range refs {
+			if !strings.HasPrefix(ref.Ref, headPrefix) {
+				continue
+			}
+			name := strings.TrimPrefix(ref.Ref, headPrefix)
+			if !strings.HasPrefix(name, req.Prefix) || (req.After != "" && name <= req.After) {
+				continue
+			}
+			branches = append(branches, BranchSummary{Name: name, SHA: ref.Object.SHA, URL: ref.URL})
+		}
+		sort.Slice(branches, func(i, j int) bool { return branches[i].Name < branches[j].Name })
+		if len(branches) >= req.Limit {
+			return errStopPaging
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if len(branches) > req.Limit {
+		branches = branches[:req.Limit]
+	}
+	return branches, nil
 }
 
 // DeleteBranch removes a GitHub branch ref. A missing ref is an idempotent
@@ -333,11 +383,14 @@ func (p *GitHubProvider) FindPullRequestByBranch(ctx context.Context, repo Repos
 	if err != nil {
 		return PullRequestResult{}, false, err
 	}
-	endpoint, err = addQuery(endpoint, url.Values{
+	query := url.Values{
 		"head":  []string{repo.Owner + ":" + head},
-		"base":  []string{base},
 		"state": []string{"open"},
-	})
+	}
+	if base != "" {
+		query.Set("base", base)
+	}
+	endpoint, err = addQuery(endpoint, query)
 	if err != nil {
 		return PullRequestResult{}, false, err
 	}

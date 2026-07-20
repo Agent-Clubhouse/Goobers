@@ -133,6 +133,21 @@ type BranchResult struct {
 	URL  string `json:"url,omitempty"`
 }
 
+// ListBranchesRequest selects a bounded, stable page of remote branches.
+type ListBranchesRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	Prefix     string        `json:"prefix"`
+	After      string        `json:"after,omitempty"`
+	Limit      int           `json:"limit"`
+}
+
+// BranchSummary is the remote ref identity needed for branch reconciliation.
+type BranchSummary struct {
+	Name string `json:"name"`
+	SHA  string `json:"sha"`
+	URL  string `json:"url,omitempty"`
+}
+
 // DeleteBranchRequest identifies a remote branch ref to remove.
 type DeleteBranchRequest struct {
 	Repository RepositoryRef `json:"repository"`

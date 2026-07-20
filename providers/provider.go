@@ -69,6 +69,14 @@ type BranchDeleter interface {
 	DeleteBranch(context.Context, DeleteBranchRequest) (DeleteBranchResult, error)
 }
 
+// BranchReconciliationProvider exposes the bounded reads and mutation needed
+// to reconcile stale run branches without widening every RepoProvider backend.
+type BranchReconciliationProvider interface {
+	ListBranches(context.Context, ListBranchesRequest) ([]BranchSummary, error)
+	FindPullRequestByBranch(context.Context, RepositoryRef, string, string) (PullRequestResult, bool, error)
+	DeleteBranch(context.Context, DeleteBranchRequest) (DeleteBranchResult, error)
+}
+
 // PullRequestReviewSubmitter publishes provider-native review verdicts. It is
 // separate from RepoProvider because V1's native-review protocol is currently
 // implemented only for GitHub.

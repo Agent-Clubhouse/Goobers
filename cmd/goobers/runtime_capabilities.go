@@ -126,6 +126,7 @@ var cliCommands = []cliCommand{
 		subcommand("claims release", "release", apicontract.ActionMaintenance, runClaimsRelease),
 	),
 	command("backlog-query", apicontract.ActionWorkflowExecution, runBacklogQuery),
+	command("reconcile-branches", apicontract.ActionWorkflowExecution, runReconcileBranches),
 	command("push-branch", apicontract.ActionWorkflowExecution, runPushBranch),
 	command("open-pr", apicontract.ActionWorkflowExecution, runOpenPR),
 	command("issue-close-out", apicontract.ActionWorkflowExecution, runIssueCloseOut),
