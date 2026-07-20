@@ -30,13 +30,14 @@ const (
 // definition at the version the run started on, so the run is unaffected by later
 // re-registrations (WF-016).
 type RunInput struct {
-	RunID        string             `json:"runId"`
-	Gaggle       string             `json:"gaggle"`
-	WorkflowName string             `json:"workflowName"`
-	Version      int                `json:"version"`
-	Spec         apiv1.WorkflowSpec `json:"spec"`
-	RepoRef      apiv1.RepoRef      `json:"repoRef"`
-	Item         *apiv1.BacklogItem `json:"item,omitempty"`
+	RunID          string             `json:"runId"`
+	Gaggle         string             `json:"gaggle"`
+	WorkflowName   string             `json:"workflowName"`
+	Version        int                `json:"version"`
+	WorkflowDigest string             `json:"workflowDigest"`
+	Spec           apiv1.WorkflowSpec `json:"spec"`
+	RepoRef        apiv1.RepoRef      `json:"repoRef"`
+	Item           *apiv1.BacklogItem `json:"item,omitempty"`
 }
 
 // RunResult is the terminal outcome of a workflow run.

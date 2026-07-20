@@ -429,8 +429,10 @@ func assertSkeletonSpanAttributes(t *testing.T, runsDir, runID, workflowDigest s
 				t.Errorf("span %q attribute %s = %q, want %q", span.Name, key, got, want)
 			}
 		}
-		if span.Attributes[telemetry.AttrOutcome] == "" {
-			t.Errorf("span %q has no %s", span.Name, telemetry.AttrOutcome)
+		switch outcome := span.Attributes[telemetry.AttrOutcome]; outcome {
+		case telemetry.OutcomeSuccess, telemetry.OutcomeFailure, telemetry.OutcomeBlocked:
+		default:
+			t.Errorf("span %q %s = %q, want success, failure, or blocked", span.Name, telemetry.AttrOutcome, outcome)
 		}
 		for _, legacy := range []string{"gaggle", "workflowId", "runId", "goobers.span.kind", "goobers.business_status"} {
 			if _, ok := span.Attributes[legacy]; ok {

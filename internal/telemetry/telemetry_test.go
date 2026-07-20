@@ -513,9 +513,8 @@ func TestClientScrubsRegisteredCredentialBeforeExport(t *testing.T) {
 // run from a healthy one without reading free-text. Complete's second
 // property — the canonical goobers.outcome attribute — is what an ok/success
 // business status also needs recorded (not just the failure path), so a
-// rollup consumer can query the actual outcome vocabulary
-// (success/failed/completed/escalated/aborted) independent of OTel's own
-// coarser two-value axis.
+// rollup consumer can query the success/failure/blocked axis independent of
+// OTel's own coarser two-value axis.
 func TestSpanCompleteRecordsOutcome(t *testing.T) {
 	ctx := context.Background()
 	exporter := NewMemoryExporter()
@@ -545,7 +544,7 @@ func TestSpanCompleteRecordsOutcome(t *testing.T) {
 		t.Fatalf("StartTask() error = %v", err)
 	}
 	okTask.Complete("success", false)
-	runSpan.Complete("failed", true)
+	runSpan.Complete(OutcomeFailure, true)
 
 	spans := exporter.Spans()
 	failed := findSpan(t, spans, "task/pr-select")
@@ -577,8 +576,8 @@ func TestSpanCompleteRecordsOutcome(t *testing.T) {
 	if run.Status().Code != codes.Error {
 		t.Fatalf("run status = %s, want Error — the run's OWN terminal phase was failed", run.Status().Code)
 	}
-	if got := attrMap(run)[AttrOutcome]; got != "failed" {
-		t.Fatalf("run %s attribute = %q, want failed", AttrOutcome, got)
+	if got := attrMap(run)[AttrOutcome]; got != OutcomeFailure {
+		t.Fatalf("run %s attribute = %q, want failure", AttrOutcome, got)
 	}
 }
 

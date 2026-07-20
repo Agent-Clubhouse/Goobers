@@ -365,14 +365,26 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		span.Fail(err)
 		return result, err
 	}
-	// #710: a business-failed run (walk returns a nil error — a Go-level
-	// dispatch error is Fail'd above instead) used to call span.Succeed here
-	// unconditionally, reporting codes.Ok with the literal message "failed".
-	// Anything reading spans (`goobers trace`, rollup span queries) then
-	// called a died run "ok" — the exact gap that made #705 a 16-hour mystery
-	// despite the real cause sitting one journal line away the whole time.
-	span.CompleteWithError(string(result.Phase), result.FailureCode, result.Phase == journal.PhaseFailed)
+	completeRunSpan(span, result)
 	return result, nil
+}
+
+func completeRunSpan(span telemetry.Span, result Result) {
+	outcome, isFailure := runSpanOutcome(result.Phase)
+	span.CompleteWithError(outcome, result.FailureCode, isFailure)
+}
+
+func runSpanOutcome(phase journal.RunPhase) (string, bool) {
+	switch phase {
+	case journal.PhaseCompleted:
+		return telemetry.OutcomeSuccess, false
+	case journal.PhaseRunning, journal.PhaseEscalated:
+		return telemetry.OutcomeBlocked, false
+	case journal.PhaseFailed, journal.PhaseAborted:
+		return telemetry.OutcomeFailure, true
+	default:
+		return telemetry.OutcomeFailure, true
+	}
 }
 
 // startRunSpan opens the run's root span, if telemetry is configured. A zero

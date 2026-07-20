@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -25,11 +26,13 @@ import (
 // Tick/signal delivery evaluates whichever are set, since nothing prevents
 // a workflow from declaring more than one trigger type.
 type WorkflowEntry struct {
-	Workflow  string
-	Gaggle    string
-	Readiness apiv1.ReadinessConditions
-	Schedules []Schedule
-	Signals   []string
+	Workflow        string
+	WorkflowVersion int
+	WorkflowDigest  string
+	Gaggle          string
+	Readiness       apiv1.ReadinessConditions
+	Schedules       []Schedule
+	Signals         []string
 	// BacklogCounter, when set, marks this workflow as backlog-item-triggered
 	// (#344): Tick polls it every backlogPollInterval instead of (or in
 	// addition to, if Schedules is also set) evaluating a cron schedule, and
@@ -595,14 +598,25 @@ func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []st
 // not admitted — the run-conditions skip reason, so Trigger can surface it to
 // a human caller instead of silently doing nothing.
 //
-// The telemetry span it opens covers only the decision (trigger -> admit/skip
-// -> run-id mint), not the run itself: entry.Starter.Start runs in its own
+// The telemetry span it opens covers only the decision (trigger -> admit/skip),
+// not the run itself: entry.Starter.Start runs in its own
 // goroutine below and outlives dispatch's return, so the run gets its own
-// root span (via runner.Runner.startRunSpan) on its own trace rather than a
-// child of a span that already ended — same rationale as
-// internal/scheduler.Scheduler.startSpan omitting RunID.
+// root span (via runner.Runner.startRunSpan). The candidate run ID is minted
+// first so both spans share its trace even when admission blocks the dispatch.
 func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, tick TickResult, kind journal.TriggerKind) (runID string, admitted bool, skipReason string) {
-	span := s.startSpan(ctx, entry, tick, kind)
+	runID, err := newRunID()
+	if err != nil {
+		reason := "run-id generation failed: " + err.Error()
+		s.journalEvent(journal.Event{
+			Type:     journal.EventTickSkipped,
+			Workflow: entry.Workflow,
+			Gaggle:   entry.Gaggle,
+			Reason:   reason,
+		})
+		return "", false, reason
+	}
+
+	span := s.startSpan(ctx, entry, runID)
 	defer span.End()
 
 	// Unlike the journalEvent calls below (best-effort: they record a
@@ -636,20 +650,6 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 			Reason:   reason,
 		})
 		span.Complete(telemetry.OutcomeBlocked, false)
-		return "", false, reason
-	}
-
-	runID, err := newRunID()
-	if err != nil {
-		s.conditions.ReleaseWorkflow(identity)
-		reason := "run-id generation failed: " + err.Error()
-		s.journalEvent(journal.Event{
-			Type:     journal.EventTickSkipped,
-			Workflow: entry.Workflow,
-			Gaggle:   entry.Gaggle,
-			Reason:   reason,
-		})
-		span.Fail(err)
 		return "", false, reason
 	}
 
@@ -710,14 +710,17 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 // startSpan opens a scheduler decision span for entry's dispatch, if
 // telemetry is configured. A zero telemetry.Span is safe to use (its methods
 // no-op), so callers need no nil checks.
-func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, tick TickResult, kind journal.TriggerKind) telemetry.Span {
+func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, runID string) telemetry.Span {
 	if s.telemetry == nil {
 		return telemetry.Span{}
 	}
 	attrs := telemetry.SchedulerAttributes{
-		Gaggle:     entry.Gaggle,
-		WorkflowID: entry.Workflow,
-		Action:     "dispatch",
+		Gaggle:          entry.Gaggle,
+		WorkflowID:      entry.Workflow,
+		WorkflowVersion: strconv.Itoa(entry.WorkflowVersion),
+		WorkflowDigest:  entry.WorkflowDigest,
+		RunID:           runID,
+		Action:          "dispatch",
 	}
 	_, span, err := s.telemetry.StartSchedulerSpan(ctx, attrs)
 	if err != nil {

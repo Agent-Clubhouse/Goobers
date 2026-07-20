@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 
@@ -27,9 +29,10 @@ type Starter interface {
 	Start(ctx context.Context, in RunInput) (StartResult, error)
 }
 
-// RunID builds a deterministic run id from its non-empty parts joined by "/".
+// RunID builds a deterministic OpenTelemetry trace ID from its non-empty parts.
 // Using the same parts (e.g. gaggle, workflow, item id) yields the same id, so a
-// second Start for the same unit of work is rejected as already-running.
+// second Start for the same unit of work is rejected as already-running and all
+// telemetry for that run can share the same trace.
 func RunID(parts ...string) string {
 	cleaned := make([]string, 0, len(parts))
 	for _, p := range parts {
@@ -37,7 +40,11 @@ func RunID(parts ...string) string {
 			cleaned = append(cleaned, p)
 		}
 	}
-	return strings.Join(cleaned, "/")
+	if len(cleaned) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(cleaned, "/")))
+	return hex.EncodeToString(sum[:16])
 }
 
 // workflowStarter is the slice of the Temporal client the TemporalStarter needs.

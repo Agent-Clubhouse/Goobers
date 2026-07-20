@@ -103,6 +103,34 @@ func initDeterministicDemo(t *testing.T) string {
 	return root
 }
 
+func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(context.Background())
+
+	for identity, machine := range setup.Machines {
+		var found bool
+		for _, entry := range setup.Entries {
+			if entry.Gaggle != identity.Gaggle || entry.Workflow != identity.Workflow {
+				continue
+			}
+			found = true
+			if entry.WorkflowVersion != machine.Def.Version || entry.WorkflowDigest != machine.Digest() {
+				t.Errorf("workflow entry identity = version %d digest %q, want version %d digest %q",
+					entry.WorkflowVersion, entry.WorkflowDigest, machine.Def.Version, machine.Digest())
+			}
+		}
+		if !found {
+			t.Errorf("missing workflow entry for %+v", identity)
+		}
+	}
+}
+
 // TestUpIdlesThenDrainsOnCancel is issue #23's core daemon-loop acceptance:
 // `goobers up` starts the scheduler+runner daemon, and a cancelled context
 // (standing in for SIGINT/SIGTERM — runUp itself wires the real signal via

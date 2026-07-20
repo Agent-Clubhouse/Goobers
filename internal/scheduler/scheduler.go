@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/backlog"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -147,13 +148,18 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 	if !ok {
 		return engine.RunInput{}, fmt.Errorf("scheduler: workflow %q is not registered", ev.WorkflowName)
 	}
+	machine, err := workflow.Compile(def)
+	if err != nil {
+		return engine.RunInput{}, fmt.Errorf("scheduler: compile pinned workflow %q: %w", ev.WorkflowName, err)
+	}
 	in := engine.RunInput{
-		RunID:        engine.RunID(s.cfg.Gaggle, def.Name, ev.DedupeKey),
-		Gaggle:       s.cfg.Gaggle,
-		WorkflowName: def.Name,
-		Version:      def.Version,
-		Spec:         def.Spec,
-		RepoRef:      s.cfg.Repo,
+		RunID:          engine.RunID(s.cfg.Gaggle, def.Name, ev.DedupeKey),
+		Gaggle:         s.cfg.Gaggle,
+		WorkflowName:   def.Name,
+		Version:        def.Version,
+		WorkflowDigest: machine.Digest(),
+		Spec:           def.Spec,
+		RepoRef:        s.cfg.Repo,
 	}
 	if ev.Item != nil {
 		bi := backlog.FromWorkItem(*ev.Item)
@@ -164,8 +170,8 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 
 // startSpan opens a scheduler span for the dispatch, if telemetry is configured.
 // A zero telemetry.Span is safe to use (its methods no-op), so callers need no
-// nil checks. RunID is intentionally omitted: the run's OTel trace id is created
-// by the engine when the run executes; correlating the two is runtime wiring.
+// nil checks. The deterministic run ID is also the trace ID, correlating this
+// decision with the run before the engine starts it.
 func (s *Scheduler) startSpan(ctx context.Context, in engine.RunInput, ev Event) (context.Context, telemetry.Span) {
 	if s.cfg.Telemetry == nil {
 		return ctx, telemetry.Span{}
@@ -174,6 +180,8 @@ func (s *Scheduler) startSpan(ctx context.Context, in engine.RunInput, ev Event)
 		Gaggle:          s.cfg.Gaggle,
 		WorkflowID:      in.WorkflowName,
 		WorkflowVersion: strconv.Itoa(in.Version),
+		WorkflowDigest:  in.WorkflowDigest,
+		RunID:           in.RunID,
 		Action:          "evaluate",
 	}
 	if ev.Item != nil {
