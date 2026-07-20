@@ -898,6 +898,7 @@ func knownAutomatedCheckNames() []string {
 	for name := range checks {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 
