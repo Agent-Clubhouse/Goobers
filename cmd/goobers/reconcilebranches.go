@@ -395,9 +395,17 @@ func reconcileRemoteBranches(ctx context.Context, provider providers.BranchRecon
 			return report, err
 		}
 
-		result, deleteErr := provider.DeleteBranch(ctx, providers.DeleteBranchRequest{Repository: opts.Repository, Name: branch.Name})
+		result, deleteErr := provider.DeleteBranch(ctx, providers.DeleteBranchRequest{
+			Repository:  opts.Repository,
+			Name:        branch.Name,
+			ExpectedSHA: current.SHA,
+		})
 		mutation := branchReconcileEvent{Kind: "mutation", Owner: &owner}
+		var tipChanged *providers.BranchTipChangedError
 		switch {
+		case errors.As(deleteErr, &tipChanged):
+			report.Preserved++
+			mutation.Outcome, mutation.Reason = "preserved", "branch-tip-changed"
 		case deleteErr != nil:
 			report.Preserved++
 			report.Failures++

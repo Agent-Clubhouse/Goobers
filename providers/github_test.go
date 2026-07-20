@@ -2,10 +2,14 @@ package providers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -182,6 +186,114 @@ func TestGitHubProviderDeleteBranch(t *testing.T) {
 				t.Fatalf("calls = %d, want 1", calls)
 			}
 		})
+	}
+}
+
+func TestGitHubProviderDeleteBranchUsesExpectedSHALease(t *testing.T) {
+	runner := &fakeEnvironmentRunner{}
+	provider := NewGitHubProvider("secret-token", func(p *GitHubProvider) {
+		p.Runner = runner
+	})
+	result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
+		Repository: RepositoryRef{
+			Owner: "acme",
+			Name:  "app",
+			URL:   "https://github.example/acme/app.git",
+		},
+		Name:        "goobers/implementation/run-1",
+		ExpectedSHA: "validated-sha",
+	})
+	if err != nil {
+		t.Fatalf("DeleteBranch returned error: %v", err)
+	}
+	if !result.Deleted {
+		t.Fatal("Deleted = false, want true")
+	}
+	if len(runner.calls) != 1 || runner.calls[0].name != "git" ||
+		!slicesEqual(runner.calls[0].args[:3], []string{"init", "--bare", "--quiet"}) {
+		t.Fatalf("runner calls = %+v", runner.calls)
+	}
+	if len(runner.envCalls) != 1 {
+		t.Fatalf("environment runner calls = %+v", runner.envCalls)
+	}
+	call := runner.envCalls[0]
+	if call.name != "git" || len(call.args) != 6 ||
+		!strings.HasPrefix(call.args[0], "--git-dir=") ||
+		call.args[1] != "push" ||
+		call.args[2] != "--porcelain" ||
+		call.args[3] != "--force-with-lease=refs/heads/goobers/implementation/run-1:validated-sha" ||
+		call.args[4] != "https://github.example/acme/app.git" ||
+		call.args[5] != ":refs/heads/goobers/implementation/run-1" {
+		t.Fatalf("push call = %+v", call)
+	}
+	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:secret-token"))
+	if !containsString(call.env, "GIT_CONFIG_VALUE_0=AUTHORIZATION: basic "+auth) {
+		t.Fatal("push environment does not contain the injected authorization header")
+	}
+}
+
+func TestGitHubProviderDeleteBranchPreservesStaleLease(t *testing.T) {
+	runner := &fakeEnvironmentRunner{
+		envOutput: []byte("! refs/heads/run:refs/heads/run [rejected] (stale info)\n"),
+		envErr:    errors.New("exit status 1"),
+	}
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) {
+		p.Runner = runner
+	})
+	result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
+		Repository:  RepositoryRef{Owner: "acme", Name: "app"},
+		Name:        "goobers/implementation/run-1",
+		ExpectedSHA: "validated-sha",
+	})
+	var tipChanged *BranchTipChangedError
+	if !errors.As(err, &tipChanged) {
+		t.Fatalf("DeleteBranch error = %v, want BranchTipChangedError", err)
+	}
+	if result.Deleted {
+		t.Fatal("Deleted = true for a stale lease")
+	}
+}
+
+func TestGitHubProviderDeleteBranchLeaseRejectsConcurrentPush(t *testing.T) {
+	remoteDir := filepath.Join(t.TempDir(), "remote.git")
+	workDir := filepath.Join(t.TempDir(), "work")
+	runGitTest(t, "init", "--bare", "--quiet", remoteDir)
+	runGitTest(t, "init", "--quiet", workDir)
+	runGitTest(t, "-C", workDir, "config", "user.name", "Goobers Test")
+	runGitTest(t, "-C", workDir, "config", "user.email", "goobers@example.test")
+
+	tracked := filepath.Join(workDir, "tracked.txt")
+	if err := os.WriteFile(tracked, []byte("validated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, "-C", workDir, "add", "tracked.txt")
+	runGitTest(t, "-C", workDir, "commit", "--quiet", "-m", "validated tip")
+	ref := "refs/heads/goobers/implementation/run-1"
+	runGitTest(t, "-C", workDir, "push", "--quiet", remoteDir, "HEAD:"+ref)
+	validatedSHA := strings.TrimSpace(runGitTest(t, "--git-dir="+remoteDir, "rev-parse", ref))
+
+	if err := os.WriteFile(tracked, []byte("concurrent push\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, "-C", workDir, "commit", "--quiet", "-am", "concurrent push")
+	runGitTest(t, "-C", workDir, "push", "--quiet", remoteDir, "HEAD:"+ref)
+	concurrentSHA := strings.TrimSpace(runGitTest(t, "--git-dir="+remoteDir, "rev-parse", ref))
+
+	provider := NewGitHubProvider("")
+	result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
+		Repository:  RepositoryRef{Owner: "acme", Name: "app", URL: remoteDir},
+		Name:        "goobers/implementation/run-1",
+		ExpectedSHA: validatedSHA,
+	})
+	var tipChanged *BranchTipChangedError
+	if !errors.As(err, &tipChanged) {
+		t.Fatalf("DeleteBranch error = %v, want BranchTipChangedError", err)
+	}
+	if result.Deleted {
+		t.Fatal("Deleted = true for a stale lease")
+	}
+	if got := strings.TrimSpace(runGitTest(t, "--git-dir="+remoteDir, "rev-parse", ref)); got != concurrentSHA {
+		t.Fatalf("remote tip = %s, want concurrent tip %s", got, concurrentSHA)
 	}
 }
 
@@ -1815,4 +1927,61 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte
 	f.name = name
 	f.args = append([]string(nil), args...)
 	return nil, nil
+}
+
+type runnerCall struct {
+	name string
+	args []string
+	env  []string
+}
+
+type fakeEnvironmentRunner struct {
+	calls     []runnerCall
+	envCalls  []runnerCall
+	envOutput []byte
+	envErr    error
+}
+
+func (f *fakeEnvironmentRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	f.calls = append(f.calls, runnerCall{name: name, args: append([]string(nil), args...)})
+	return nil, nil
+}
+
+func (f *fakeEnvironmentRunner) RunWithEnv(_ context.Context, env []string, name string, args ...string) ([]byte, error) {
+	f.envCalls = append(f.envCalls, runnerCall{
+		name: name,
+		args: append([]string(nil), args...),
+		env:  append([]string(nil), env...),
+	})
+	return f.envOutput, f.envErr
+}
+
+func slicesEqual(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func runGitTest(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return string(out)
 }

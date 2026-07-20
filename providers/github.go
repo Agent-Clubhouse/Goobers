@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -278,17 +279,18 @@ func (p *GitHubProvider) GetBranch(ctx context.Context, repo RepositoryRef, name
 	return branch, true, nil
 }
 
-// DeleteBranch removes a GitHub branch ref. A missing ref is an idempotent
-// no-op, reported through DeleteBranchResult rather than as an error — both
-// #605's post-merge cleanup and #607's orphaned-branch cleanup call this
-// with a branch that may already be gone (a concurrent cleanup, or a human
-// deleted it manually) and neither wants that treated as failure.
+// DeleteBranch removes a GitHub branch ref. ExpectedSHA opts into an atomic
+// force-with-lease deletion; callers without a lease retain the idempotent REST
+// deletion used by post-merge cleanup.
 func (p *GitHubProvider) DeleteBranch(ctx context.Context, req DeleteBranchRequest) (DeleteBranchResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return DeleteBranchResult{}, err
 	}
 	if req.Name == "" {
 		return DeleteBranchResult{}, fmt.Errorf("branch name is required")
+	}
+	if req.ExpectedSHA != "" {
+		return p.deleteBranchWithLease(ctx, req)
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "git", "refs", "heads", req.Name)
 	if err != nil {
@@ -310,6 +312,64 @@ func (p *GitHubProvider) DeleteBranch(ctx context.Context, req DeleteBranchReque
 		Operation: "delete",
 	})
 	return DeleteBranchResult{Deleted: deleted}, nil
+}
+
+func (p *GitHubProvider) deleteBranchWithLease(ctx context.Context, req DeleteBranchRequest) (DeleteBranchResult, error) {
+	runner, ok := p.Runner.(environmentCommandRunner)
+	if !ok {
+		return DeleteBranchResult{}, fmt.Errorf("conditional branch deletion requires an environment-capable command runner")
+	}
+	gitDir, err := os.MkdirTemp("", "goobers-delete-branch-*")
+	if err != nil {
+		return DeleteBranchResult{}, fmt.Errorf("create temporary git directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(gitDir) }()
+
+	if out, err := p.Runner.Run(ctx, "git", "init", "--bare", "--quiet", gitDir); err != nil {
+		return DeleteBranchResult{}, fmt.Errorf("initialize temporary git directory: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	token, err := p.resolveToken(ctx)
+	if err != nil {
+		return DeleteBranchResult{}, err
+	}
+	remoteURL := req.Repository.URL
+	if remoteURL == "" {
+		remoteURL = fmt.Sprintf("https://github.com/%s/%s.git", req.Repository.Owner, req.Repository.Name)
+	}
+	ref := "refs/heads/" + req.Name
+	args := []string{
+		"--git-dir=" + gitDir,
+		"push",
+		"--porcelain",
+		"--force-with-lease=" + ref + ":" + req.ExpectedSHA,
+		remoteURL,
+		":" + ref,
+	}
+	out, err := runner.RunWithEnv(ctx, githubGitAuthEnv(token), "git", args...)
+	if err != nil {
+		if strings.Contains(string(out), "(stale info)") {
+			return DeleteBranchResult{}, &BranchTipChangedError{Name: req.Name, ExpectedSHA: req.ExpectedSHA}
+		}
+		return DeleteBranchResult{}, fmt.Errorf("delete branch with lease: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       fmt.Sprintf("%s/%s@%s", req.Repository.Owner, req.Repository.Name, req.Name),
+		Operation: "delete",
+	})
+	return DeleteBranchResult{Deleted: true}, nil
+}
+
+func githubGitAuthEnv(token string) []string {
+	if token == "" {
+		return os.Environ()
+	}
+	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	return append(os.Environ(),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.extraheader",
+		"GIT_CONFIG_VALUE_0=AUTHORIZATION: basic "+auth,
+	)
 }
 
 // Commit writes file changes to a GitHub branch.

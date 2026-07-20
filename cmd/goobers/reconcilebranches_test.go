@@ -33,6 +33,7 @@ type fakeBranchReconcileProvider struct {
 	lookupBranches []string
 	getBranches    []string
 	deleteBranches []string
+	deleteRequests []providers.DeleteBranchRequest
 }
 
 func (f *fakeBranchReconcileProvider) ListBranches(_ context.Context, req providers.ListBranchesRequest) ([]providers.BranchSummary, error) {
@@ -81,6 +82,7 @@ func (f *fakeBranchReconcileProvider) FindPullRequestByBranch(_ context.Context,
 
 func (f *fakeBranchReconcileProvider) DeleteBranch(_ context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
 	f.deleteBranches = append(f.deleteBranches, req.Name)
+	f.deleteRequests = append(f.deleteRequests, req)
 	if err := f.deleteErrs[req.Name]; err != nil {
 		return providers.DeleteBranchResult{}, err
 	}
@@ -638,6 +640,46 @@ func TestReconcileRemoteBranchesRechecksOpenPRBeforeDelete(t *testing.T) {
 	events := branchReconcileEvents(t, logDir)
 	if len(events) != 1 || events[0].Runner["reason"] != "open-pull-request-before-delete" ||
 		events[0].Runner["pullRequest"] != "84" {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestReconcileRemoteBranchesPreservesPushAfterFinalCheck(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	runsDir := t.TempDir()
+	branch := createBranchReconcileRun(t, runsDir, "implementation", "push-before-delete", now.Add(-30*24*time.Hour), true, true)
+	logDir, log := openBranchReconcileLog(t)
+	provider := &fakeBranchReconcileProvider{
+		branches: []providers.BranchSummary{
+			branchSummary(branch, "validated-sha", now.Add(-30*24*time.Hour)),
+		},
+		deleteErrs: map[string]error{
+			branch: &providers.BranchTipChangedError{Name: branch, ExpectedSHA: "validated-sha"},
+		},
+	}
+
+	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunsDir:    runsDir,
+		Prefix:     branchReconcilePrefix,
+		Limit:      25,
+		MinimumAge: 7 * 24 * time.Hour,
+		Delete:     true,
+		Now:        func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("reconcileRemoteBranches: %v", err)
+	}
+	if report.Candidates != 1 || report.Preserved != 1 || report.Deleted != 0 || report.Failures != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(provider.deleteRequests) != 1 || provider.deleteRequests[0].ExpectedSHA != "validated-sha" {
+		t.Fatalf("delete requests = %+v", provider.deleteRequests)
+	}
+	events := branchReconcileEvents(t, logDir)
+	if len(events) != 2 || events[0].Runner["outcome"] != "delete-approved" ||
+		events[1].Runner["event"] != "mutation" || events[1].Runner["outcome"] != "preserved" ||
+		events[1].Runner["reason"] != "branch-tip-changed" {
 		t.Fatalf("events = %+v", events)
 	}
 }

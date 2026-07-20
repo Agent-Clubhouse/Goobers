@@ -1,6 +1,9 @@
 package providers
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // ProviderKind identifies a concrete provider backend.
 type ProviderKind string
@@ -151,13 +154,25 @@ type BranchSummary struct {
 
 // DeleteBranchRequest identifies a remote branch ref to remove.
 type DeleteBranchRequest struct {
-	Repository RepositoryRef `json:"repository"`
-	Name       string        `json:"name"`
+	Repository  RepositoryRef `json:"repository"`
+	Name        string        `json:"name"`
+	ExpectedSHA string        `json:"expectedSha,omitempty"`
 }
 
 // DeleteBranchResult reports whether the branch existed and was deleted.
 type DeleteBranchResult struct {
 	Deleted bool `json:"deleted"`
+}
+
+// BranchTipChangedError reports that a conditional branch deletion lost its
+// lease because the remote ref no longer points at the expected commit.
+type BranchTipChangedError struct {
+	Name        string
+	ExpectedSHA string
+}
+
+func (e *BranchTipChangedError) Error() string {
+	return fmt.Sprintf("branch %q no longer points at expected SHA %s", e.Name, e.ExpectedSHA)
 }
 
 // CommitChangeType identifies how a file changes in a commit.
