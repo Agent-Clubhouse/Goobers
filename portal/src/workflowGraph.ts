@@ -11,6 +11,7 @@ const COLUMN_GAP = 92;
 const ROW_GAP = 54;
 const PADDING = 48;
 const CYCLE_LANE_HEIGHT = 34;
+const PARALLEL_EDGE_LANE_GAP = 28;
 
 export const MIN_GRAPH_ZOOM = 0.75;
 export const MAX_GRAPH_ZOOM = 1.4;
@@ -212,9 +213,17 @@ export function layoutWorkflowGraph(graph: WorkflowGraph): WorkflowGraphLayout {
       const targetX = target.x;
       const targetY = target.y + target.height / 2;
       const midpoint = (sourceX + targetX) / 2;
-      path = `M ${sourceX} ${sourceY} C ${midpoint} ${sourceY}, ${midpoint} ${targetY}, ${targetX} ${targetY}`;
+      const parallelEdges = edge.terminal
+        ? [edge]
+        : (outgoing.get(edge.source) ?? []).filter(
+            (candidate) => !candidate.terminal && candidate.target === edge.target,
+          );
+      const parallelIndex = parallelEdges.indexOf(edge);
+      const laneOffset =
+        (parallelIndex - (parallelEdges.length - 1) / 2) * PARALLEL_EDGE_LANE_GAP;
+      path = `M ${sourceX} ${sourceY} C ${midpoint} ${sourceY + laneOffset}, ${midpoint} ${targetY + laneOffset}, ${targetX} ${targetY}`;
       labelX = midpoint;
-      labelY = (sourceY + targetY) / 2 - 9;
+      labelY = (sourceY + targetY) / 2 + laneOffset - 9;
     }
 
     return [

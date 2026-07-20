@@ -41,6 +41,21 @@ const fixtures: Record<string, WorkflowGraph> = {
       { source: "repair", target: "@escalate", terminal: "escalate" },
     ],
   },
+  converging: {
+    name: "converging",
+    version: 1,
+    digest: "sha256:converging",
+    start: "choose",
+    nodes: [
+      { id: "choose", kind: "gate", evaluator: "automated" },
+      { id: "continue", kind: "deterministic" },
+    ],
+    edges: [
+      { source: "choose", target: "continue", outcome: "accept" },
+      { source: "choose", target: "continue", outcome: "override" },
+      { source: "continue", target: "", terminal: "complete" },
+    ],
+  },
   cyclic: {
     name: "cyclic",
     version: 1,
@@ -100,6 +115,15 @@ describe("canonical workflow graph layout", () => {
     expect(repass?.labelY).toBeGreaterThan(
       Math.max(...layout.nodes.map((node) => node.y + node.height)),
     );
+  });
+
+  it("keeps converging outcome labels in separate lanes", () => {
+    const layout = layoutWorkflowGraph(fixtures.converging);
+    const branches = layout.edges.filter((edge) => edge.edge.source === "choose");
+
+    expect(branches).toHaveLength(2);
+    expect(branches[0].path).not.toBe(branches[1].path);
+    expect(Math.abs(branches[0].labelY - branches[1].labelY)).toBeGreaterThanOrEqual(28);
   });
 
   it("keeps fit and manual zoom within readable boundaries", () => {
