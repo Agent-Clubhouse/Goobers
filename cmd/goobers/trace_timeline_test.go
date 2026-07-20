@@ -261,6 +261,44 @@ func TestBuildTraceTimelinePairsInterruptedResumeAttempt(t *testing.T) {
 	}
 }
 
+func TestBuildTraceTimelinePreservesErrorOnlyTornAttempt(t *testing.T) {
+	finishedAt := time.Date(2026, time.July, 20, 12, 2, 0, 0, time.UTC)
+	timeline := buildTraceTimeline(
+		readservice.RunDetail{RunSummary: readservice.RunSummary{Phase: journal.PhaseFailed}},
+		timelineRunEvents(journal.Event{
+			Seq:          2,
+			Branch:       3,
+			Type:         journal.EventError,
+			Stage:        "implement",
+			Attempt:      2,
+			AttemptClass: journal.AttemptInfra,
+			Time:         finishedAt,
+			Error: &journal.ErrorDetail{
+				Code:    "executor_error",
+				Message: "dispatch failed",
+			},
+		}),
+		nil,
+		finishedAt,
+	)
+
+	if len(timeline) != 1 || len(timeline[0].Attempts) != 1 {
+		t.Fatalf("timeline = %+v", timeline)
+	}
+	attempt := timeline[0].Attempts[0]
+	if attempt.Number != 2 ||
+		attempt.Class != string(journal.AttemptInfra) ||
+		attempt.Branch != 3 ||
+		attempt.Status != string(apiv1.ResultFailure) ||
+		attempt.StartedAt != nil ||
+		attempt.FinishedAt == nil ||
+		!attempt.FinishedAt.Equal(finishedAt) ||
+		attempt.DurationMillis != nil ||
+		attempt.InFlight {
+		t.Fatalf("error-only attempt = %+v", attempt)
+	}
+}
+
 func TestBuildTraceTimelineLiveAttemptUsesElapsedSoFar(t *testing.T) {
 	base := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
 	timeline := buildTraceTimeline(

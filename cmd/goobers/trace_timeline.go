@@ -143,7 +143,13 @@ func buildTraceTimeline(
 			}
 			ref := findTimelineAttempt(timeline, event)
 			if ref == nil {
-				continue
+				index := stageIndex(event.Stage)
+				timeline[index].Attempts = append(timeline[index].Attempts, traceTimelineAttempt{
+					Number: event.Attempt,
+					Class:  timelineAttemptClass(event.AttemptClass),
+					Branch: event.Branch,
+				})
+				ref = &timelineAttemptRef{stage: index, attempt: len(timeline[index].Attempts) - 1}
 			}
 			finishTimelineAttempt(
 				&timeline[ref.stage].Attempts[ref.attempt],
