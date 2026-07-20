@@ -48,6 +48,9 @@ spec:
         - selectedHeadSha
         - selectedBaseSha
         - reviewDigest
+        # #990: deterministic file-overlap set, threaded to elect-lander +
+        # apply-verdict. Empty string when nothing overlaps.
+        - overlappingSiblingsCsv
       next: review
 
     - name: apply-verdict
@@ -58,6 +61,8 @@ spec:
       inputsFrom:
         selectedNumber: selectedNumber
         reviewDigest: reviewDigest
+        # #990: same deterministic overlap set the election used.
+        overlappingSiblings: overlappingSiblingsCsv
       inputs:
         resultFile: "verdict-result.json"
         # MUST match elect-lander's electionPolicy. apply-verdict re-derives
@@ -89,6 +94,8 @@ spec:
         selectedHeadSha: selectedHeadSha
         selectedBaseSha: selectedBaseSha
         reviewDigest: reviewDigest
+        # #990: deterministic overlap set; passed through below for apply-verdict.
+        overlappingSiblings: overlappingSiblingsCsv
       inputs:
         # Outputs reach the runner ONLY through a declared result file — a
         # stage without one always reports empty Outputs, however much its
@@ -105,6 +112,8 @@ spec:
         - selectedHeadSha
         - selectedBaseSha
         - reviewDigest
+        # Passed through for apply-verdict on the parked branch (#990).
+        - overlappingSiblingsCsv
       next: elect-gate
 
     - name: merge-pr

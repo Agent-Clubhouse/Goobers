@@ -97,6 +97,12 @@ spec:
         # and it is conditional — listing a key that legitimately isn't
         # always present would misstate this stage's actual postcondition.
         - reviewDigest
+        # overlappingSiblingsCsv (#990): the deterministic file-overlap set as
+        # a comma-separated scalar string, threaded to elect-lander and
+        # apply-verdict so sequencing routing uses ground truth, not only the
+        # reviewer's classification. Empty string when nothing overlaps (same
+        # always-emitted, possibly-empty shape as reviewDigest above).
+        - overlappingSiblingsCsv
       next: review
 
     - name: apply-verdict
@@ -115,6 +121,10 @@ spec:
         # existing recordVerdict already provide, not new plumbing).
         selectedNumber: selectedNumber
         reviewDigest: reviewDigest
+        # #990: the same deterministic overlap set the election used —
+        # gather-sibling-context emits it on the review-gate branch,
+        # elect-lander passes it through on the parked branch.
+        overlappingSiblings: overlappingSiblingsCsv
       inputs:
         resultFile: "verdict-result.json"
         # MUST match elect-lander's electionPolicy below. apply-verdict
@@ -150,6 +160,10 @@ spec:
         selectedHeadSha: selectedHeadSha
         selectedBaseSha: selectedBaseSha
         reviewDigest: reviewDigest
+        # #990: the deterministic file-overlap set (backstops the election so a
+        # green file-collision reaches sequencing even if the reviewer
+        # under-named the blockers). Passed through below for apply-verdict.
+        overlappingSiblings: overlappingSiblingsCsv
       inputs:
         # Outputs reach the runner ONLY through a declared result file: the
         # shell executor harvests them inside `if resultFile != ""` and a
@@ -177,6 +191,9 @@ spec:
         - selectedHeadSha
         - selectedBaseSha
         - reviewDigest
+        # Passed through so apply-verdict on the parked (not-elected) branch
+        # resolves the same deterministic overlap set (#990).
+        - overlappingSiblingsCsv
       next: elect-gate
 
     - name: merge-pr

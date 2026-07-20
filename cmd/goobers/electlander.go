@@ -149,6 +149,11 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	selectedBaseSha := providerInput("selectedBaseSha", "")
 	reviewDigest := providerInput("reviewDigest", "")
 	resultFile := providerInput("resultFile", "election.json")
+	// Deterministic file-overlap set threaded from gather-sibling-context
+	// (#990). Parsed for the election backstop; passed through verbatim so
+	// apply-verdict on the parked (not-elected) branch resolves it too.
+	overlappingSiblingsCsv := providerInput("overlappingSiblings", "")
+	overlappingSiblings := parseOverlappingSiblings(overlappingSiblingsCsv)
 
 	// #834: the lander-election policy is workflow-configurable. An unknown
 	// name falls back to the deterministic default (fifo) rather than failing
@@ -163,11 +168,12 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	// two possible successor stages resolve their inputsFrom against.
 	writeResult := func(elected bool) int {
 		data, err := json.Marshal(map[string]string{
-			"elected":         strconv.FormatBool(elected),
-			"selectedNumber":  strconv.Itoa(selectedNumber),
-			"selectedHeadSha": selectedHeadSha,
-			"selectedBaseSha": selectedBaseSha,
-			"reviewDigest":    reviewDigest,
+			"elected":                strconv.FormatBool(elected),
+			"selectedNumber":         strconv.Itoa(selectedNumber),
+			"selectedHeadSha":        selectedHeadSha,
+			"selectedBaseSha":        selectedBaseSha,
+			"reviewDigest":           reviewDigest,
+			"overlappingSiblingsCsv": overlappingSiblingsCsv,
 		})
 		if err != nil {
 			pf(stderr, "error: marshal election result: %v\n", err)
@@ -196,7 +202,13 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if !electionDecision(verdict.Findings, selectedNumber, policy) {
+	// Fold the deterministic overlap set (#990) into the findings used for the
+	// election so a green PR whose only issue is a file collision is elected/
+	// parked even if the reviewer under-named or missed the blocking siblings;
+	// a verdict carrying a real defect is left unchanged (never electable).
+	effectiveFindings := withOverlapBackstop(verdict.Findings, overlappingSiblings)
+
+	if !electionDecision(effectiveFindings, selectedNumber, policy) {
 		pf(stdout, "PR #%d: not the elected lander under policy %q (or verdict carries a real defect) — routing to apply-verdict\n", selectedNumber, resolvedPolicy)
 		return writeResult(false)
 	}
@@ -245,6 +257,6 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	}
 
 	pf(stdout, "elected PR #%d as the lander of its blocked cluster (blockers %v, policy %q) — routing to merge\n",
-		selectedNumber, unionBlockingPRs(verdict.Findings), resolvedPolicy)
+		selectedNumber, unionBlockingPRs(effectiveFindings), resolvedPolicy)
 	return writeResult(true)
 }
