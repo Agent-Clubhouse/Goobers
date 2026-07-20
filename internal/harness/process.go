@@ -99,6 +99,12 @@ func (b *syncBuffer) Bytes() []byte {
 	return out
 }
 
+func (b *syncBuffer) retainedBytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
+}
+
 // Truncated reports whether the cap was hit. Safe to call concurrently with
 // Write, for the same reason as Bytes.
 func (b *syncBuffer) Truncated() bool {

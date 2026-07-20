@@ -3,6 +3,7 @@ package harness
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 
 	"github.com/goobers/goobers/internal/telemetry"
 )
@@ -54,4 +55,29 @@ func composedTranscript(prompt string, output []byte, model string, truncated bo
 		transcriptEvent{Role: "user", Content: prompt},
 		transcriptEvent{Role: "assistant", Content: string(output), Model: model, Truncated: truncated},
 	)
+}
+
+func boundCanonicalTranscript(data []byte, limit, alreadyDropped int64) ([]byte, int64, error) {
+	buf := newTranscriptBuffer(limit)
+	_, _ = buf.Write(data)
+	return finalizeCanonicalTranscript(buf, alreadyDropped)
+}
+
+func finalizeCanonicalTranscript(buf *syncBuffer, alreadyDropped int64) ([]byte, int64, error) {
+	retained := buf.retainedBytes()
+	if !buf.Truncated() {
+		return retained, alreadyDropped, nil
+	}
+
+	end := bytes.LastIndexByte(retained, '\n') + 1
+	dropped := alreadyDropped + buf.Dropped() + int64(len(retained)-end)
+	marker, err := marshalTranscriptEvents(transcriptEvent{
+		Role:      "system",
+		Content:   fmt.Sprintf("[transcript truncated: %d bytes dropped]", dropped),
+		Truncated: true,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return append(retained[:end], marker...), dropped, nil
 }
