@@ -3,12 +3,84 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestGitHubProviderUpdateBranchUsesExpectedHeadLease(t *testing.T) {
+	var requestBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPut)
+		if r.URL.Path != "/repos/acme/app/pulls/42/update-branch" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		decodeJSON(t, r, &requestBody)
+		w.WriteHeader(http.StatusAccepted)
+		writeJSON(t, w, map[string]string{
+			"message": "Updating pull request branch.",
+			"url":     "https://api.github.test/repos/acme/app/pulls/42",
+		})
+	}))
+	defer server.Close()
+
+	rec := &recordingRecorder{}
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL }, WithMutationRecorder(rec))
+	result, err := provider.UpdateBranch(context.Background(), UpdateBranchRequest{
+		Repository:      RepositoryRef{Owner: "acme", Name: "app"},
+		PullID:          "42",
+		ExpectedHeadSHA: "deadbeef",
+	})
+	if err != nil {
+		t.Fatalf("UpdateBranch returned error: %v", err)
+	}
+	if requestBody["expected_head_sha"] != "deadbeef" {
+		t.Fatalf("expected_head_sha = %q, want deadbeef", requestBody["expected_head_sha"])
+	}
+	if result.Number != 42 || result.Message != "Updating pull request branch." {
+		t.Fatalf("result = %+v", result)
+	}
+	ref, ok := rec.last()
+	if !ok || ref.Operation != "update-branch" {
+		t.Fatalf("recorded ref = (%+v, %v), want update-branch", ref, ok)
+	}
+}
+
+func TestGitHubProviderUpdateBranchReturnsTypedRejection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		writeJSON(t, w, map[string]string{"message": "expected head SHA did not match"})
+	}))
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	_, err := provider.UpdateBranch(context.Background(), UpdateBranchRequest{
+		Repository:      RepositoryRef{Owner: "acme", Name: "app"},
+		PullID:          "42",
+		ExpectedHeadSHA: "stale",
+	})
+	var updateErr *UpdateBranchError
+	if !errors.As(err, &updateErr) {
+		t.Fatalf("error = %v, want *UpdateBranchError", err)
+	}
+	if updateErr.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(updateErr.Message, "expected head SHA") {
+		t.Fatalf("typed error = %+v", updateErr)
+	}
+}
+
+func TestGitHubProviderUpdateBranchRequiresExpectedHead(t *testing.T) {
+	provider := NewGitHubProvider("token")
+	_, err := provider.UpdateBranch(context.Background(), UpdateBranchRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+		PullID:     "42",
+	})
+	if err == nil || !strings.Contains(err.Error(), "expected head SHA is required") {
+		t.Fatalf("error = %v, want expected-head validation", err)
+	}
+}
 
 func TestGitHubProviderMapsWorkItemsAndStatus(t *testing.T) {
 	mux := http.NewServeMux()

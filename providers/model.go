@@ -320,6 +320,22 @@ type ClosePullRequestResult struct {
 	State  string `json:"state"`
 }
 
+// UpdateBranchRequest asks a provider to incorporate the current base branch
+// into a pull request's head branch. ExpectedHeadSHA is mandatory optimistic
+// concurrency: the update must be refused if the head moved after selection.
+type UpdateBranchRequest struct {
+	Repository      RepositoryRef `json:"repository"`
+	PullID          string        `json:"pullId"`
+	ExpectedHeadSHA string        `json:"expectedHeadSha"`
+}
+
+// UpdateBranchResult reports an accepted pull request branch update.
+type UpdateBranchResult struct {
+	Number  int    `json:"number"`
+	Message string `json:"message,omitempty"`
+	URL     string `json:"url,omitempty"`
+}
+
 // MergeMethod controls how a provider incorporates a pull request's commits.
 type MergeMethod string
 

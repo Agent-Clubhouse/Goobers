@@ -93,6 +93,7 @@ Usage:
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
   goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)
+  goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
   goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)
@@ -104,7 +105,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-query/telemetry-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/apply-verdict/post-merge/gather-pr-context/
+pr-select/gather-sibling-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
 rebase-pr/remediation-checkpoint/push-remediated are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
 #359/#360/#361/#362/#363/#364/#392): invoked by the runner as a deterministic

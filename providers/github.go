@@ -537,6 +537,78 @@ func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequ
 	return ClosePullRequestResult{Number: out.Number, Merged: out.Merged, State: state}, nil
 }
 
+// UpdateBranchError is a typed rejection from GitHub's update-branch endpoint.
+// StatusCode distinguishes lease/conflict validation failures (422) from
+// permission failures (403) without requiring callers to parse error strings.
+type UpdateBranchError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *UpdateBranchError) Error() string {
+	return fmt.Sprintf("update pull request branch failed: status %d: %s", e.StatusCode, e.Message)
+}
+
+// UpdateBranch merges a pull request's current base into its head through
+// GitHub's native update-branch endpoint. expected_head_sha is always sent:
+// omitting the lease would allow a stale selector to update a head it never
+// inspected.
+func (p *GitHubProvider) UpdateBranch(ctx context.Context, req UpdateBranchRequest) (UpdateBranchResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return UpdateBranchResult{}, err
+	}
+	if req.PullID == "" {
+		return UpdateBranchResult{}, fmt.Errorf("pull id is required")
+	}
+	if req.ExpectedHeadSHA == "" {
+		return UpdateBranchResult{}, fmt.Errorf("expected head SHA is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "update-branch")
+	if err != nil {
+		return UpdateBranchResult{}, err
+	}
+	resp, err := p.send(ctx, http.MethodPut, endpoint, map[string]string{"expected_head_sha": req.ExpectedHeadSHA})
+	if err != nil {
+		return UpdateBranchResult{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return UpdateBranchResult{}, fmt.Errorf("read update-branch response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		message := strings.TrimSpace(string(body))
+		var failure struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(body, &failure) == nil && failure.Message != "" {
+			message = failure.Message
+		}
+		return UpdateBranchResult{}, &UpdateBranchError{
+			StatusCode: resp.StatusCode,
+			Message:    message,
+		}
+	}
+	var out struct {
+		Message string `json:"message"`
+		URL     string `json:"url"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return UpdateBranchResult{}, fmt.Errorf("decode update-branch response: %w", err)
+	}
+	number, _ := strconv.Atoi(req.PullID)
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, req.PullID),
+		URL:       out.URL,
+		Operation: "update-branch",
+		Fields: map[string]FieldDigest{
+			"headSha": {Before: digestString(req.ExpectedHeadSHA)},
+		},
+	})
+	return UpdateBranchResult{Number: number, Message: out.Message, URL: out.URL}, nil
+}
+
 // MergePullRequest merges a GitHub pull request (issue #360) via the
 // dedicated merge endpoint (PUT .../pulls/{number}/merge) — distinct from
 // ClosePullRequest's PATCH state=closed, which merely closes without

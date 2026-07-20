@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -124,6 +125,22 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "pr-context.json")
 	}
+	if claimedNumber, ok, err := claimedPullRequestNumber(root); err != nil {
+		pf(stderr, "error: resolve this run's existing PR claim: %v\n", err)
+		return 1
+	} else if ok {
+		var claimed []providers.PullRequestSummary
+		for _, pr := range prs {
+			if pr.Number == claimedNumber {
+				claimed = append(claimed, pr)
+				break
+			}
+		}
+		if len(claimed) == 0 {
+			return writeNoWorkResult(stdout, stderr, fmt.Sprintf("this run's claimed PR #%d is no longer open", claimedNumber))
+		}
+		prs = claimed
+	}
 
 	// #716's core fix, applied upstream of #596's tier selection: a PR
 	// carrying goobers:merge-escalated only stays excluded from EVERY tier
@@ -147,30 +164,9 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// local git query, no provider call) and reused across the candidate loop.
 	heldBranches := worktreeHeldBranches(".")
 
-	var nonBlocked []providers.PullRequestSummary
-	for _, pr := range prs {
-		if heldBranches[pr.Head] {
-			continue
-		}
-		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("check escalation state for PR #%d", pr.Number), err, "pr-context.json")
-		}
-		if blocked {
-			continue
-		}
-		// #748: also exclude a PR parked goobers:blocked-on-sibling whose
-		// named blockers are not all resolved yet — same blocker-aware
-		// self-heal pr-select applies, so gather-pr-context (pr-remediation's
-		// selection) never spends a cycle on a PR waiting purely on a sibling.
-		sibBlocked, err := blockedOnSiblingStillBlocks(ctx, provider, repo, pr)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "pr-context.json")
-		}
-		if sibBlocked {
-			continue
-		}
-		nonBlocked = append(nonBlocked, pr)
+	nonBlocked, err := filterRemediationPullRequests(ctx, provider, repo, prs, heldBranches)
+	if err != nil {
+		return failProviderStage(stderr, "filter remediation candidates", err, "pr-context.json")
 	}
 
 	fetchedBases := make(map[string]bool)
@@ -338,6 +334,35 @@ func gatherPRVerdict(comments []providers.Comment, author string) *apiv1.Verdict
 		}
 	}
 	return legacy
+}
+
+// filterRemediationPullRequests applies the shared exclusion rules before
+// either the API fast lane or the full worktree-backed remediation path selects
+// a candidate. heldBranches is nil for the API-only lane, which can safely
+// update a branch even while another local worktree has it checked out.
+func filterRemediationPullRequests(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary, heldBranches map[string]bool) ([]providers.PullRequestSummary, error) {
+	var eligible []providers.PullRequestSummary
+	for _, pr := range prs {
+		if heldBranches[pr.Head] {
+			continue
+		}
+		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
+		if err != nil {
+			return nil, fmt.Errorf("check escalation state for PR #%d: %w", pr.Number, err)
+		}
+		if blocked {
+			continue
+		}
+		blocked, err = blockedOnSiblingStillBlocks(ctx, provider, repo, pr)
+		if err != nil {
+			return nil, fmt.Errorf("check blocked-on-sibling state for PR #%d: %w", pr.Number, err)
+		}
+		if blocked {
+			continue
+		}
+		eligible = append(eligible, pr)
+	}
+	return eligible, nil
 }
 
 // remediationPriorityFor classifies a single PR's remediation urgency,

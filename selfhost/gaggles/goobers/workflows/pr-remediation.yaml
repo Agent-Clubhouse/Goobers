@@ -12,13 +12,14 @@ spec:
   # The second executor at the whole-open-PR-set altitude (V0.5,
   # docs/design/v0/pr-lifecycle-loop.md §2/§5): re-enters on an EXISTING PR
   # merge-review flagged goobers:needs-remediation, rather than opening a new
-  # one, or whose CI is failing. gather-pr-context (issue #362) is the
-  # entrypoint — it replaces
-  # implementation's query-backlog head; rebase-pr (issue #363, design doc §5
+  # one, or whose CI is failing. update-behind-pr is the API-only entrypoint:
+  # it completes the mechanical stale-base case without a worktree and routes
+  # everything else to gather-pr-context (issue #362), which replaces
+  # implementation's query-backlog head. rebase-pr (issue #363, design doc §5
   # D3) rebases and routes on the combination of rebase outcome + verdict
-  # findings; remediation-checkpoint (issue #364, design doc §6 D4/D5) runs
-  # on the "needs agent" branch to detect a stuck PR (same diff pushed twice,
-  # or the liberal repass budget exhausted) and escalate.
+  # findings; remediation-checkpoint (issue #364, design doc §6 D4/D5) runs on
+  # the "needs agent" branch to detect a stuck PR (same diff pushed twice, or
+  # the liberal repass budget exhausted) and escalate.
   #
   # The agentic implement/review/local-ci chain is WIRED (issue #392, design
   # doc §10's "share the goober, copy the stage wiring"): implement, the
@@ -45,9 +46,32 @@ spec:
   readiness:
     maxConcurrentRuns: 1
     maxRunsPerHour: 2
-  start: gather-pr-context
+  start: update-behind-pr
   tasks:
-    # Entrypoint (issue #362, design doc §5): select one open, goober-
+    # Cheap API-only lane (#720): this scratch stage selects by the same
+    # priority rules as gather-pr-context and uses GitHub's update-branch
+    # endpoint when the candidate is behind, mergeable, CI-clean, and carries
+    # no substantive finding. It terminates after that provider mutation, so no
+    # repository worktree or rebase stage is provisioned for the dominant
+    # mechanical-update case. Anything non-trivial falls through unchanged.
+    - name: update-behind-pr
+      type: deterministic
+      goal: Update a clean behind-base PR through the provider API, or route it to full remediation.
+      run:
+        command: ["goobers", "update-behind-pr"]
+        workspace: scratch
+      inputs:
+        resultFile: "update-behind-result.json"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+        - repo:push
+      expectedOutputs:
+        - selectedNumber
+        - needsFullRemediation
+      next: update-behind-gate
+
+    # Full-remediation context stage (issue #362, design doc §5): select one open, goober-
     # authored PR labeled needs-remediation or reporting failing CI, check out
     # ITS branch into this
     # run's worktree (replacing whatever branch the runner's worktree
@@ -273,6 +297,20 @@ spec:
       next: "@escalate"
 
   gates:
+    # A completed API update is terminal. Every conflict, substantive finding,
+    # failing check, unknown mergeability state, or non-behind candidate enters
+    # the existing gather/rebase/agentic path without changing its semantics.
+    - name: update-behind-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: needsFullRemediation
+          equals: "false"
+      branches:
+        pass: ""
+        fail: gather-pr-context
+
     # Automated branch on rebase-pr's own needsAgent output (internal/
     # gate's generic "output-equals" check — Inputs[params.key] compared to
     # params.equals; no new check needed, this already existed for exactly

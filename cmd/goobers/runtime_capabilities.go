@@ -137,6 +137,7 @@ var cliCommands = []cliCommand{
 	command("apply-verdict", apicontract.ActionWorkflowExecution, runApplyVerdict),
 	command("elect-lander", apicontract.ActionWorkflowExecution, runElectLander),
 	command("post-merge", apicontract.ActionWorkflowExecution, runPostMerge),
+	command("update-behind-pr", apicontract.ActionWorkflowExecution, runUpdateBehindPR),
 	command("gather-pr-context", apicontract.ActionWorkflowExecution, runGatherPRContext),
 	command("rebase-pr", apicontract.ActionWorkflowExecution, runRebasePR),
 	command("remediation-checkpoint", apicontract.ActionWorkflowExecution, runRemediationCheckpoint),
