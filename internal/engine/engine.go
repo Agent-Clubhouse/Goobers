@@ -65,10 +65,6 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		return RunResult{}, err
 	}
 
-	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: activityTimeout,
-	})
-
 	upstream := map[string]apiv1.ResultEnvelope{}
 	state := in.Spec.Start
 	steps := 0
@@ -124,7 +120,8 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 }
 
 func runTask(ctx workflow.Context, in RunInput, t apiv1.Task) (apiv1.ResultEnvelope, error) {
-	env := buildInvocation(in, t.Name, t.Goal, t.Inputs)
+	env := buildInvocation(in, t.Name, t.Goal, t.Inputs, wf.TaskLimits(t))
+	ctx = stageActivityContext(ctx, env.Limits)
 	var res apiv1.ResultEnvelope
 	if t.Type == apiv1.TaskAgentic {
 		if err := workflow.ExecuteActivity(ctx, ActInvokeGoober, env).Get(ctx, &res); err != nil {
@@ -149,7 +146,8 @@ func evaluateGate(ctx workflow.Context, g apiv1.Gate, in RunInput) (string, erro
 		if g.Automated != nil {
 			conf = *g.Automated
 		}
-		env := buildInvocation(in, g.Name, "automated gate: "+g.Name, nil)
+		env := buildInvocation(in, g.Name, "automated gate: "+g.Name, nil, wf.GateLimits(g))
+		ctx := stageActivityContext(ctx, env.Limits)
 		var outcome string
 		if err := workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome); err != nil {
 			return "", err
@@ -157,7 +155,8 @@ func evaluateGate(ctx workflow.Context, g apiv1.Gate, in RunInput) (string, erro
 		return outcome, nil
 
 	case apiv1.EvaluatorAgentic:
-		env := buildInvocation(in, g.Name, "review gate: "+g.Name, nil)
+		env := buildInvocation(in, g.Name, "review gate: "+g.Name, nil, wf.GateLimits(g))
+		ctx := stageActivityContext(ctx, env.Limits)
 		var verdict apiv1.Verdict
 		if err := workflow.ExecuteActivity(ctx, ActReviewGoober, env).Get(ctx, &verdict); err != nil {
 			return "", err
@@ -180,7 +179,7 @@ func evaluateGate(ctx workflow.Context, g apiv1.Gate, in RunInput) (string, erro
 // superseded Temporal engine has no local journal to point into, so it passes no
 // context pointers; the local runner (#17) populates them. The run's per-stage
 // results still aggregate into RunResult.Outputs for the run's own return value.
-func buildInvocation(in RunInput, stateName, goal string, inputs map[string]string) apiv1.InvocationEnvelope {
+func buildInvocation(in RunInput, stateName, goal string, inputs map[string]string, limits apiv1.Limits) apiv1.InvocationEnvelope {
 	env := apiv1.InvocationEnvelope{
 		TaskID:     in.RunID + ":" + stateName,
 		WorkflowID: in.WorkflowName,
@@ -189,6 +188,7 @@ func buildInvocation(in RunInput, stateName, goal string, inputs map[string]stri
 		Goal:       goal,
 		RepoRef:    in.RepoRef,
 		Item:       in.Item,
+		Limits:     limits,
 	}
 	if len(inputs) > 0 {
 		env.Inputs = make(map[string]interface{}, len(inputs))
@@ -197,4 +197,12 @@ func buildInvocation(in RunInput, stateName, goal string, inputs map[string]stri
 		}
 	}
 	return env
+}
+
+func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Context {
+	timeout := activityTimeout
+	if limits.MaxDurationSeconds > 0 {
+		timeout = time.Duration(limits.MaxDurationSeconds) * time.Second
+	}
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: timeout})
 }

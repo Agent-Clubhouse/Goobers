@@ -86,6 +86,7 @@ func TestShellExecutor_RunSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
 	}
@@ -94,6 +95,40 @@ func TestShellExecutor_RunSuccess(t *testing.T) {
 	}
 	if got := string(rec.recorded["task-1/stdout.log"]); !strings.Contains(got, "hello") {
 		t.Fatalf("stdout artifact = %q, want it to contain %q", got, "hello")
+	}
+}
+
+func TestShellExecutor_UsesDeclaredEnvironment(t *testing.T) {
+	exec, rec := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `printf %s "$GREETING"`},
+		Env:     map[string]string{"GREETING": "hello-from-dsl"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if got := string(rec.recorded["task-1/stdout.log"]); got != "hello-from-dsl" {
+		t.Fatalf("stdout = %q, want declared environment value", got)
+	}
+}
+
+func TestShellExecutor_TypedTimeoutOverridesLegacyInput(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Limits.MaxDurationSeconds = 7
+	env.Inputs = map[string]interface{}{InputTimeout: "2m"}
+
+	got, err := exec.timeoutFor(env)
+	if err != nil {
+		t.Fatalf("timeoutFor: %v", err)
+	}
+	if got != 7*time.Second {
+		t.Fatalf("timeout = %s, want 7s from invocation limits", got)
 	}
 }
 

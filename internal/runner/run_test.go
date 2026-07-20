@@ -245,6 +245,15 @@ func (alwaysFailAutomated) Evaluate(context.Context, apiv1.AutomatedGate, apiv1.
 	return "fail", nil
 }
 
+type envelopeCapturingAutomated struct {
+	env apiv1.InvocationEnvelope
+}
+
+func (c *envelopeCapturingAutomated) Evaluate(_ context.Context, _ apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
+	c.env = env
+	return gate.OutcomePass, nil
+}
+
 // --- fixture repo: a local bare repo, so the test needs no network access ---
 
 func newFixtureRepo(t *testing.T) string {
@@ -794,6 +803,60 @@ func TestRunnerThreadsInputsFromUpstreamOutputs(t *testing.T) {
 	}
 	if got := ciPollEnv.Inputs["prNumber"]; got != "42" {
 		t.Fatalf("ci-poll env.Inputs[prNumber] = %v, want \"42\" (threaded from open-pr's Outputs)", got)
+	}
+}
+
+func TestRunnerPopulatesDeclaredTaskAndGateLimits(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+			Run:            &apiv1.DeterministicRun{Command: []string{"true"}},
+			TimeoutSeconds: 90,
+			Limits:         &apiv1.Limits{MaxTokens: 2500, MaxCostUSD: 3.5},
+			Next:           "quality",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "quality",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals", TimeoutSeconds: 12},
+			Branches:  map[string]string{gate.OutcomePass: workflow.TerminalComplete, gate.OutcomeFail: workflow.TargetAbort},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "limits-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-limits:build": {status: apiv1.ResultSuccess},
+	}}
+	auto := &envelopeCapturingAutomated{}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, auto)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-limits",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	taskLimits := det.received["run-limits:build"].Limits
+	if taskLimits.MaxDurationSeconds != 90 || taskLimits.MaxTokens != 2500 || taskLimits.MaxCostUSD != 3.5 {
+		t.Fatalf("task limits = %+v, want declared timeout/token/cost limits", taskLimits)
+	}
+	if auto.env.Limits.MaxDurationSeconds != 12 {
+		t.Fatalf("gate limits = %+v, want 12s duration", auto.env.Limits)
 	}
 }
 

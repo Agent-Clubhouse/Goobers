@@ -289,7 +289,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		TelemetryDir:       telemetry.PrepareStageTelemetryDir(env.Workspace),
 		Credentials:        creds,
 		ContextPaths:       contextPaths,
-		Timeout:            e.timeout,
+		Timeout:            invocationTimeout(env, e.timeout),
 		MaxTranscriptBytes: e.transcriptLimit,
 	}
 
@@ -319,6 +319,13 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return Outcome{}, fmt.Errorf("%w: %s", ErrNoCompletion, completionPath)
 	}
 	return out, nil
+}
+
+func invocationTimeout(env apiv1.InvocationEnvelope, fallback time.Duration) time.Duration {
+	if env.Limits.MaxDurationSeconds > 0 {
+		return time.Duration(env.Limits.MaxDurationSeconds) * time.Second
+	}
+	return fallback
 }
 
 // liftArtifactFile reads a stage's declared InputArtifactFile (if any) out of

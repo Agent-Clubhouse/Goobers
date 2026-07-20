@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
@@ -121,6 +122,7 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 			})
 		},
 	}
+
 	injector := testInjector(t, "", "", noopRegistrar{})
 	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "be a good coder")
 	if err != nil {
@@ -179,6 +181,28 @@ func TestExecutorPassesHarnessConfig(t *testing.T) {
 	}
 	if _, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir())); err != nil {
 		t.Fatalf("Invoke: %v", err)
+	}
+}
+
+func TestExecutorUsesInvocationTimeout(t *testing.T) {
+	rec := &fakeRecorder{}
+	var got time.Duration
+	adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+		got = req.Timeout
+		return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	}}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "", WithTimeout(time.Hour))
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+	env := testEnvelope(t.TempDir())
+	env.Limits.MaxDurationSeconds = 45
+	if _, err := exec.Invoke(context.Background(), env); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if got != 45*time.Second {
+		t.Fatalf("request timeout = %s, want 45s", got)
 	}
 }
 

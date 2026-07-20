@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
@@ -195,6 +196,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 
 	if err := recordStart(e.Journal, g.Name, e.Attempts[g.Name]+1); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal evaluation start: %w", g.Name, err)
+	}
+	if env.Limits.MaxDurationSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(env.Limits.MaxDurationSeconds)*time.Second)
+		defer cancel()
 	}
 
 	var outcome string

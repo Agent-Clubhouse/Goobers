@@ -109,19 +109,32 @@ func TestWorkflowRoundTrip(t *testing.T) {
 					Name: "implement", Type: TaskAgentic, Goober: "coder",
 					Goal: "Implement the item.", Capabilities: []string{"repo:push", "github:pr:write"},
 					Retry:           &RetryPolicy{MaxAttempts: 2, BackoffSeconds: 30},
+					TimeoutSeconds:  1800,
+					Limits:          &Limits{MaxTokens: 2_000_000, MaxCostUSD: 5},
 					ExpectedOutputs: []string{"pull-request"}, Next: "tests",
 				},
 				{
 					Name: "tests", Type: TaskDeterministic,
-					Run:  &DeterministicRun{Command: []string{"make", "test"}},
-					Goal: "Run the test suite.", Next: "review",
+					Run:  &DeterministicRun{Command: []string{"make", "test"}, Env: map[string]string{"CI": "true"}},
+					Goal: "Run the test suite.", Next: "ci-gate",
 				},
 			},
 			Gates: []Gate{
 				{
+					Name:      "ci-gate",
+					Evaluator: EvaluatorAutomated,
+					Automated: &AutomatedGate{
+						Check:               "ci-status",
+						TimeoutSeconds:      600,
+						Retry:               &RetryPolicy{MaxAttempts: 3, BackoffSeconds: 10},
+						PollIntervalSeconds: 15,
+					},
+					Branches: map[string]string{"pass": "review", "fail": "review", "timeout": "review"},
+				},
+				{
 					Name:      "review",
 					Evaluator: EvaluatorAgentic,
-					Agentic:   &AgenticGate{Goober: "reviewer"},
+					Agentic:   &AgenticGate{Goober: "reviewer", TimeoutSeconds: 900, Retry: &RetryPolicy{MaxAttempts: 2}},
 					Branches:  map[string]string{"pass": "approve", "needs-changes": "implement"},
 				},
 				{

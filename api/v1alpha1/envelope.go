@@ -95,10 +95,13 @@ type BacklogItem struct {
 // Limits bound a stage's execution. Zero values mean "no explicit limit".
 type Limits struct {
 	// MaxDurationSeconds caps wall-clock time for the stage.
+	// +kubebuilder:validation:Minimum=0
 	MaxDurationSeconds int32 `json:"maxDurationSeconds,omitempty"`
 	// MaxTokens caps model tokens the run may consume.
+	// +kubebuilder:validation:Minimum=0
 	MaxTokens int64 `json:"maxTokens,omitempty"`
 	// MaxCostUSD caps the run's spend.
+	// +kubebuilder:validation:Minimum=0
 	MaxCostUSD float64 `json:"maxCostUSD,omitempty"`
 }
 

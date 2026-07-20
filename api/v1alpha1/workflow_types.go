@@ -143,11 +143,20 @@ type Task struct {
 	// new attempt, never overwritten history.
 	// +optional
 	Retry *RetryPolicy `json:"retry,omitempty" yaml:"retry,omitempty"`
+	// TimeoutSeconds bounds one attempt's wall-clock execution. Unset preserves
+	// the executor's default timeout.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty" yaml:"timeoutSeconds,omitempty"`
+	// Limits bound this task's duration and agent usage. TimeoutSeconds, when
+	// set, is the authoritative duration and is copied into the invocation
+	// envelope's Limits.MaxDurationSeconds.
+	// +optional
+	Limits *Limits `json:"limits,omitempty" yaml:"limits,omitempty"`
 	// OnTimeout selects what the runner does when this stage's agentic session
-	// hits its wall-clock timeout (the harness session timeout — currently a
-	// flat 30m, internal/harness.DefaultTimeout; not yet per-stage configurable,
-	// #151). Empty or "fail" (the default) discards the timed-out attempt and
-	// lets Task.Retry run, failing the run once the budget is exhausted —
+	// hits its wall-clock timeout. Empty or "fail" (the default) discards the
+	// timed-out attempt and lets Task.Retry run, failing the run once the budget
+	// is exhausted —
 	// historically this discarded real, in-progress work whose only remaining
 	// step was CI (#724). "salvage" instead checks the run branch for a viable
 	// committed diff and, if present, completes the stage with that diff so the
@@ -201,6 +210,10 @@ type DeterministicRun struct {
 	// Command is the command + args to execute.
 	// +kubebuilder:validation:Required
 	Command []string `json:"command" yaml:"command"`
+	// Env is the explicit environment supplied to the command in addition to
+	// the runner's minimal base environment and capability-scoped credentials.
+	// +optional
+	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
 	// Image optionally selects the command's container image. The V0 local
 	// runner executes commands directly and does not honor this field;
 	// validation emits VER003 when set.
@@ -287,6 +300,19 @@ type AutomatedGate struct {
 	// Params parameterize the check (e.g. {"key": "coverage", "threshold": "80"}).
 	// +optional
 	Params map[string]string `json:"params,omitempty" yaml:"params,omitempty"`
+	// TimeoutSeconds bounds one evaluator attempt.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty" yaml:"timeoutSeconds,omitempty"`
+	// Retry declares the evaluator retry bound. Runtime retry semantics are
+	// implemented separately from this declarative contract.
+	// +optional
+	Retry *RetryPolicy `json:"retry,omitempty" yaml:"retry,omitempty"`
+	// PollIntervalSeconds declares remote CI polling cadence for checks that
+	// poll, such as ci-status (GT-020).
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	PollIntervalSeconds int32 `json:"pollIntervalSeconds,omitempty" yaml:"pollIntervalSeconds,omitempty"`
 }
 
 // AgenticGate invokes a scoped reviewer goober.
@@ -294,6 +320,14 @@ type AgenticGate struct {
 	// Goober names the reviewer goober that returns a Verdict.
 	// +kubebuilder:validation:Required
 	Goober string `json:"goober" yaml:"goober"`
+	// TimeoutSeconds bounds one reviewer attempt.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty" yaml:"timeoutSeconds,omitempty"`
+	// Retry declares the evaluator retry bound. Runtime retry semantics are
+	// implemented separately from this declarative contract.
+	// +optional
+	Retry *RetryPolicy `json:"retry,omitempty" yaml:"retry,omitempty"`
 }
 
 // HumanGate pauses for an explicit human decision, surfaced in the portal.

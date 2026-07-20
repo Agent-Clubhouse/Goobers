@@ -88,6 +88,7 @@
           "required": ["command"],
           "properties": {
             "command": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "env": { "type": "object", "additionalProperties": { "type": "string" } },
             "image": { "type": "string" },
             "network": { "type": "string", "enum": ["none"] },
             "workspace": { "type": "string", "enum": ["repo", "scratch"] }
@@ -103,6 +104,16 @@
           "properties": {
             "maxAttempts": { "type": "integer", "minimum": 1 },
             "backoffSeconds": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxDurationSeconds": { "type": "integer", "minimum": 0 },
+            "maxTokens": { "type": "integer", "minimum": 0 },
+            "maxCostUSD": { "type": "number", "minimum": 0 }
           }
         },
         "expectedOutputs": { "type": "array", "items": { "type": "string" } },
@@ -145,14 +156,37 @@
               "type": "object",
               "description": "Check parameters. Output equality checks use key+equals; numeric checks use key+threshold; output-matches uses key+pattern (RE2).",
               "additionalProperties": { "type": "string" }
-            }
+            },
+            "timeoutSeconds": { "type": "integer", "minimum": 1 },
+            "retry": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["maxAttempts"],
+              "properties": {
+                "maxAttempts": { "type": "integer", "minimum": 1 },
+                "backoffSeconds": { "type": "integer", "minimum": 0 }
+              }
+            },
+            "pollIntervalSeconds": { "type": "integer", "minimum": 1 }
           }
         },
         "agentic": {
           "type": "object",
           "additionalProperties": false,
           "required": ["goober"],
-          "properties": { "goober": { "type": "string", "minLength": 1 } }
+          "properties": {
+            "goober": { "type": "string", "minLength": 1 },
+            "timeoutSeconds": { "type": "integer", "minimum": 1 },
+            "retry": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["maxAttempts"],
+              "properties": {
+                "maxAttempts": { "type": "integer", "minimum": 1 },
+                "backoffSeconds": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
         },
         "human": {
           "type": "object",

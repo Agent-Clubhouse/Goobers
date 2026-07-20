@@ -105,7 +105,7 @@ func TestBaseEnvStillBlocksSecretShapedVars(t *testing.T) {
 func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 	inputs := map[string]interface{}{"trustLabel": "goobers:approved"}
 
-	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "/instances/demo", true, inputs)
+	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "/instances/demo", true, inputs, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=true): %v", err)
 	}
@@ -120,7 +120,7 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 		}
 	}
 
-	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "/instances/demo", false, inputs)
+	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "/instances/demo", false, inputs, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=false): %v", err)
 	}
@@ -136,12 +136,36 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 
 	// Even when requested, GOOBERS_INSTANCE_ROOT is omitted if unset (empty
 	// instanceRoot — see ShellExecutor.InstanceRoot), preserving prior behavior.
-	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "", true, nil)
+	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "", true, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(empty instanceRoot): %v", err)
 	}
+
 	if hasEnvPrefix(emptyRoot, "GOOBERS_INSTANCE_ROOT") {
 		t.Errorf("empty instanceRoot should omit GOOBERS_INSTANCE_ROOT, got %v", emptyRoot)
+	}
+}
+
+func TestBuildStageEnvIncludesDeclaredEnvironment(t *testing.T) {
+	env, err := buildStageEnv(
+		context.Background(),
+		nil,
+		nil,
+		nil,
+		"",
+		"",
+		"",
+		false,
+		nil,
+		map[string]string{"FEATURE_FLAG": "enabled", "EMPTY_VALUE": ""},
+	)
+	if err != nil {
+		t.Fatalf("buildStageEnv: %v", err)
+	}
+	for _, want := range []string{"FEATURE_FLAG=enabled", "EMPTY_VALUE="} {
+		if !hasEnv(env, want) {
+			t.Errorf("declared environment missing %q from %v", want, env)
+		}
 	}
 }
 
