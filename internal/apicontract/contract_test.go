@@ -294,12 +294,25 @@ func TestGeneratedPortalContractIsCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join("..", "..", "portal", "src", "api", "contract.generated.ts")
+	assertGeneratedFileCurrent(t, "contract.generated.ts", want)
+}
+
+func TestGeneratedPortalWireFixturesAreCurrent(t *testing.T) {
+	want, err := TypeScriptWireFixtures()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertGeneratedFileCurrent(t, "wire.generated.ts", want)
+}
+
+func assertGeneratedFileCurrent(t *testing.T, name string, want []byte) {
+	t.Helper()
+	path := filepath.Join("..", "..", "portal", "src", "api", name)
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, want) {
-		t.Fatal("portal API contract is stale; run go generate ./internal/apicontract")
+		t.Fatalf("portal API contract %s is stale; run go generate ./internal/apicontract", name)
 	}
 }

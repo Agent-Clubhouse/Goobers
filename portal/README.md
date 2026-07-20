@@ -38,12 +38,22 @@ uses another address, set the proxy target when starting the portal:
 GOOBERS_DAEMON_URL=http://127.0.0.1:9090 npm --prefix portal run dev
 ```
 
-The production build and component tests are:
+The portal CI gate is reproduced locally with:
 
 ```bash
-npm --prefix portal test
-npm --prefix portal run build
+make portal-ci
 ```
+
+This lockfile-installs dependencies, type-checks, builds, runs the portal tests,
+and verifies the generated Go wire fixtures. To reproduce only the Go/TypeScript
+contract gate, including fixture regeneration and the stale-output diff:
+
+```bash
+make portal-contract
+```
+
+`make generate` intentionally updates the checked-in route contract and wire
+fixtures after a Go contract change.
 
 The production build writes `cmd/goobers/portal-dist`, which is embedded in the
 `goobers` binary.

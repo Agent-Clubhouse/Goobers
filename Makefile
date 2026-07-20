@@ -131,10 +131,14 @@ JOURNAL_TEST_FSYNC_OFF := GOOBERS_DISABLE_FSYNC=1
 test:
 	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
 
-## portal-ci: Install, type-check, build, and test the portal.
-.PHONY: portal-install portal-build portal-test portal-ci
+## portal-ci: Install, type-check, build, test, and verify the Go wire contract.
+.PHONY: portal-install portal-typecheck portal-build portal-test portal-contract portal-ci
 portal-install:
 	$(NPM) --prefix portal ci --no-audit --no-fund
+
+## portal-typecheck: Install and type-check the portal.
+portal-typecheck: portal-install
+	$(NPM) --prefix portal run typecheck
 
 portal-build: portal-install
 	$(NPM) --prefix portal run build
@@ -142,7 +146,14 @@ portal-build: portal-install
 portal-test: portal-install
 	$(NPM) --prefix portal test
 
-portal-ci: portal-build portal-test
+## portal-contract: Regenerate, diff, type-check, and test the Go/TypeScript wire contract.
+portal-contract: portal-install
+	$(GO) generate ./internal/apicontract
+	git diff --exit-code -- portal/src/api/contract.generated.ts portal/src/api/wire.generated.ts
+	$(NPM) --prefix portal run typecheck
+	$(NPM) --prefix portal run test:contract
+
+portal-ci: portal-build portal-test portal-contract
 
 ## cover: Show total test coverage.
 .PHONY: cover

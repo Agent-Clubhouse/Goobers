@@ -2,7 +2,7 @@
 // capabilities shared by the Go API and portal client.
 package apicontract
 
-//go:generate go run ./cmd/generate -output ../../portal/src/api/contract.generated.ts
+//go:generate go run ./cmd/generate -contract-output ../../portal/src/api/contract.generated.ts -fixtures-output ../../portal/src/api/wire.generated.ts
 
 import (
 	"fmt"
