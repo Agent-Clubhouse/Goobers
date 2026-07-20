@@ -914,11 +914,14 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		RepassCount: summary.RepassCount,
 		RetryCount:  summary.RetryCount,
 	}
+	terminalStage := successfulTerminalStage(records)
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
 		if event.KnownSchema() &&
 			event.Type == journal.EventGateEvaluated &&
-			(event.Target == workflow.TargetEscalate || gateMarkedEscalated(event)) {
+			(event.Target == workflow.TargetEscalate ||
+				gateMarkedEscalated(event) ||
+				(terminalStage != "" && event.Target == terminalStage)) {
 			cause.Selector = EscalationSelector{Kind: "gate", Name: event.Gate}
 			cause.SelectedBranch = event.Verdict
 			cause.TerminalReason = gateEscalationReason(event)
@@ -956,6 +959,20 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		break
 	}
 	return cause, nil
+}
+
+func successfulTerminalStage(records []journal.EventRecord) string {
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventStageFinished {
+			continue
+		}
+		if event.Status == string(apiv1.ResultSuccess) {
+			return event.Stage
+		}
+		return ""
+	}
+	return ""
 }
 
 func gateRepassCount(records []journal.EventRecord, gate string) (int, error) {
