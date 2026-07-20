@@ -10,8 +10,9 @@ import (
 // production handler assembly.
 func SurfaceActions() []apicontract.SurfaceAction {
 	router := &Router{
-		mux:        http.NewServeMux(),
-		authorizer: AllowAll,
+		mux:           http.NewServeMux(),
+		authenticator: NullAuthenticator{},
+		authorizer:    AllowAll,
 	}
 	registerV1Routes(router, nil, nil)
 	// The events route is part of the versioned surface even though its stream
