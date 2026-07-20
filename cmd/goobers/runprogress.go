@@ -37,6 +37,7 @@ type runWaitReporter struct {
 	lastHeartbeat  time.Time
 	stageStarts    map[stageAttempt]time.Time
 	pausedGate     string
+	terminal       bool
 }
 
 func newRunWaitReporter(runID string, out io.Writer) *runWaitReporter {
@@ -56,7 +57,6 @@ func newRunWaitReporter(runID string, out io.Writer) *runWaitReporter {
 
 func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
 	transitioned := false
-	terminal := false
 	for _, event := range events {
 		if event.Seq <= r.lastSeq {
 			continue
@@ -67,7 +67,7 @@ func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
 		case journal.EventRunStarted:
 			r.runStarted = event.Time
 		case journal.EventRunFinished:
-			terminal = true
+			r.terminal = true
 		case journal.EventStageStarted:
 			key := stageAttempt{stage: event.Stage, attempt: event.Attempt}
 			r.stageStarts[key] = event.Time
@@ -103,14 +103,14 @@ func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
 		r.lastHeartbeat = now
 		return
 	}
-	if terminal {
+	if r.terminal {
 		return
 	}
 	r.heartbeat(now)
 }
 
 func (r *runWaitReporter) heartbeat(now time.Time) {
-	if runWaitHeartbeatInterval <= 0 || now.Sub(r.lastHeartbeat) < runWaitHeartbeatInterval {
+	if r.terminal || runWaitHeartbeatInterval <= 0 || now.Sub(r.lastHeartbeat) < runWaitHeartbeatInterval {
 		return
 	}
 	fmt.Fprintf(r.out, "waiting: run %s has no new transition (elapsed=%s)\n",

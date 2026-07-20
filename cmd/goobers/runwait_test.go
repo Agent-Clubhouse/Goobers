@@ -138,19 +138,23 @@ func TestRunWaitReporterRateLimitsHeartbeats(t *testing.T) {
 	}
 }
 
-func TestRunWaitReporterDoesNotHeartbeatAfterTerminalEvent(t *testing.T) {
+func TestRunWaitReporterRetainsTerminalEventAcrossPolls(t *testing.T) {
 	oldHeartbeat := runWaitHeartbeatInterval
 	runWaitHeartbeatInterval = time.Second
 	t.Cleanup(func() { runWaitHeartbeatInterval = oldHeartbeat })
 
 	var progress synchronizedBuffer
 	reporter := newRunWaitReporter("finished", &progress)
-	reporter.observe([]journal.Event{{
+	events := []journal.Event{{
 		Seq: 1, Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted),
-	}}, reporter.lastHeartbeat.Add(runWaitHeartbeatInterval))
+	}}
+	terminalAt := reporter.lastHeartbeat.Add(runWaitHeartbeatInterval)
+	reporter.observe(events, terminalAt)
+	reporter.observe(events, terminalAt.Add(runWaitHeartbeatInterval))
+	reporter.heartbeat(terminalAt.Add(2 * runWaitHeartbeatInterval))
 
 	if got := progress.String(); got != "" {
-		t.Fatalf("progress after run.finished = %q, want no heartbeat", got)
+		t.Fatalf("progress after durable run.finished with stale checkpoint = %q, want no heartbeat", got)
 	}
 }
 
