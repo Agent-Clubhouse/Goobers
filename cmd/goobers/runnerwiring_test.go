@@ -1005,6 +1005,42 @@ func TestBlockedCycleCommentIsBounded(t *testing.T) {
 	if !strings.Contains(comment, "additional cycle paths omitted") {
 		t.Fatalf("comment = %q, want omitted-path notice", comment)
 	}
+	if !strings.Contains(comment, "cycle members omitted") {
+		t.Fatalf("comment = %q, want explicit omitted-member notice", comment)
+	}
+
+	singleCycleComment := blockedCycleComment(paths[:1], false)
+	if len(singleCycleComment) > maxBlockedCycleCommentLength {
+		t.Fatalf("single-cycle comment length = %d, want at most %d", len(singleCycleComment), maxBlockedCycleCommentLength)
+	}
+	if !strings.Contains(singleCycleComment, "cycle members omitted") {
+		t.Fatalf("single-cycle comment = %q, want explicit omitted-member notice", singleCycleComment)
+	}
+	if strings.Contains(singleCycleComment, "additional cycle paths omitted") {
+		t.Fatalf("single-cycle comment = %q, did not want omitted-path notice", singleCycleComment)
+	}
+}
+
+func TestBlockedCycleCommentPreservesLongSingleCycle(t *testing.T) {
+	path := []string{
+		"1001", "1002", "1003", "1004", "1005", "1006", "1007",
+		"1008", "1009", "1010", "1011", "1012", "1013", "1014",
+		"1015", "1016", "1017", "1018", "1019", "1020",
+	}
+	path = append(path, path[0])
+
+	wantMembers := make([]string, len(path))
+	for i, number := range path {
+		wantMembers[i] = "#" + number
+	}
+	wantPath := strings.Join(wantMembers, cyclePathSeparator)
+	comment := blockedCycleComment([][]string{path}, false)
+	if !strings.Contains(comment, wantPath) {
+		t.Fatalf("comment = %q, want complete ordered cycle %q", comment, wantPath)
+	}
+	if strings.Contains(comment, "cycle members omitted") {
+		t.Fatalf("comment = %q, did not want member truncation", comment)
+	}
 }
 
 func TestBuildBlockedHandlerEscalatesCircularDependencyForPRClaim(t *testing.T) {
