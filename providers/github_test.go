@@ -237,8 +237,25 @@ func TestGitHubProviderDeleteBranchPreservesStaleLease(t *testing.T) {
 		envOutput: []byte("! refs/heads/run:refs/heads/run [rejected] (stale info)\n"),
 		envErr:    errors.New("exit status 1"),
 	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/app/git/ref/heads/goobers/implementation/run-1":
+			writeJSON(t, w, map[string]any{
+				"ref": "refs/heads/goobers/implementation/run-1",
+				"object": map[string]string{
+					"sha": "concurrent-sha",
+				},
+			})
+		case "/repos/acme/app/activity":
+			writeJSON(t, w, []map[string]any{})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
 	provider := NewGitHubProvider("token", func(p *GitHubProvider) {
 		p.Runner = runner
+		p.BaseURL = server.URL
 	})
 	result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
 		Repository:  RepositoryRef{Owner: "acme", Name: "app"},
@@ -251,6 +268,90 @@ func TestGitHubProviderDeleteBranchPreservesStaleLease(t *testing.T) {
 	}
 	if result.Deleted {
 		t.Fatal("Deleted = true for a stale lease")
+	}
+}
+
+func TestGitHubProviderDeleteBranchLeaseTreatsConcurrentDeletionAsAbsent(t *testing.T) {
+	runner := &fakeEnvironmentRunner{
+		envOutput: []byte("! refs/heads/run:refs/heads/run [rejected] (stale info)\n"),
+		envErr:    errors.New("exit status 1"),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/app/git/ref/heads/goobers/implementation/run-1" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) {
+		p.Runner = runner
+		p.BaseURL = server.URL
+	})
+
+	result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
+		Repository:  RepositoryRef{Owner: "acme", Name: "app"},
+		Name:        "goobers/implementation/run-1",
+		ExpectedSHA: "validated-sha",
+	})
+	if err != nil {
+		t.Fatalf("DeleteBranch returned error: %v", err)
+	}
+	if result.Deleted {
+		t.Fatal("Deleted = true for an already absent branch")
+	}
+}
+
+func TestGitHubProviderDeleteBranchLeaseClassifiesRateLimits(t *testing.T) {
+	tests := []struct {
+		name          string
+		output        string
+		wantStatus    int
+		wantSecondary bool
+	}{
+		{
+			name:       "too many requests",
+			output:     "fatal: unable to access repository: The requested URL returned error: 429\n",
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			name:          "secondary limit",
+			output:        "remote: You have exceeded a secondary rate limit. Please wait before retrying.\nfatal: HTTP 403\n",
+			wantStatus:    http.StatusForbidden,
+			wantSecondary: true,
+		},
+		{
+			name:          "abuse limit",
+			output:        "remote: You have triggered an abuse detection mechanism.\nfatal: HTTP 403\n",
+			wantStatus:    http.StatusForbidden,
+			wantSecondary: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeEnvironmentRunner{
+				envOutput: []byte(tc.output),
+				envErr:    errors.New("exit status 1"),
+			}
+			provider := NewGitHubProvider("token", func(p *GitHubProvider) {
+				p.Runner = runner
+			})
+
+			result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
+				Repository:  RepositoryRef{Owner: "acme", Name: "app"},
+				Name:        "goobers/implementation/run-1",
+				ExpectedSHA: "validated-sha",
+			})
+			var rateLimitErr *RateLimitError
+			if !errors.As(err, &rateLimitErr) {
+				t.Fatalf("DeleteBranch error = %v, want RateLimitError", err)
+			}
+			if rateLimitErr.Status != tc.wantStatus || rateLimitErr.Secondary != tc.wantSecondary {
+				t.Fatalf("RateLimitError = %+v", rateLimitErr)
+			}
+			if result.Deleted {
+				t.Fatal("Deleted = true for a rate-limited push")
+			}
+		})
 	}
 }
 
@@ -279,7 +380,23 @@ func TestGitHubProviderDeleteBranchLeaseRejectsConcurrentPush(t *testing.T) {
 	runGitTest(t, "-C", workDir, "push", "--quiet", remoteDir, "HEAD:"+ref)
 	concurrentSHA := strings.TrimSpace(runGitTest(t, "--git-dir="+remoteDir, "rev-parse", ref))
 
-	provider := NewGitHubProvider("")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/app/git/ref/heads/goobers/implementation/run-1":
+			writeJSON(t, w, map[string]any{
+				"ref":    ref,
+				"object": map[string]string{"sha": concurrentSHA},
+			})
+		case "/repos/acme/app/activity":
+			writeJSON(t, w, []map[string]any{})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	provider := NewGitHubProvider("", func(p *GitHubProvider) {
+		p.BaseURL = server.URL
+	})
 	result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
 		Repository:  RepositoryRef{Owner: "acme", Name: "app", URL: remoteDir},
 		Name:        "goobers/implementation/run-1",

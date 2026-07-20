@@ -36,6 +36,20 @@ type fakeBranchReconcileProvider struct {
 	deleteRequests []providers.DeleteBranchRequest
 }
 
+type rateLimitedBranchDeleteRunner struct {
+	pushes int
+}
+
+func (r *rateLimitedBranchDeleteRunner) Run(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	return nil, nil
+}
+
+func (r *rateLimitedBranchDeleteRunner) RunWithEnv(_ context.Context, _ []string, _ string, _ ...string) ([]byte, error) {
+	r.pushes++
+	return []byte("remote: You have exceeded a secondary rate limit. Please wait before retrying.\nfatal: HTTP 403\n"),
+		errors.New("exit status 1")
+}
+
 func (f *fakeBranchReconcileProvider) ListBranches(_ context.Context, req providers.ListBranchesRequest) ([]providers.BranchSummary, error) {
 	f.listRequests = append(f.listRequests, req)
 	return f.branches, f.listErr
@@ -808,19 +822,64 @@ func TestReconcileRemoteBranchesJournalsMutationFailureAndContinues(t *testing.T
 	}
 }
 
-func TestReconcileRemoteBranchesPreservesBranchOnDeleteRateLimit(t *testing.T) {
+func TestReconcileRemoteBranchesStopsOnGitHubDeleteRateLimit(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	runsDir := t.TempDir()
-	branch := createBranchReconcileRun(t, runsDir, "implementation", "delete-rate-limit", now.Add(-8*24*time.Hour), true, true)
+	old := now.Add(-8 * 24 * time.Hour)
+	branch := createBranchReconcileRun(t, runsDir, "implementation", "delete-rate-limit", old, true, true)
+	notReached := createBranchReconcileRun(t, runsDir, "implementation", "not-reached", old, true, true)
 	logDir, log := openBranchReconcileLog(t)
-	rateLimit := &providers.RateLimitError{Endpoint: "delete-ref", Status: 429}
-	provider := &fakeBranchReconcileProvider{
-		branches:   []providers.BranchSummary{branchSummary(branch, "branch-sha", now.Add(-8*24*time.Hour))},
-		deleteErrs: map[string]error{branch: rateLimit},
-	}
+	var pullCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/app/git/matching-refs/heads/goobers":
+			if err := json.NewEncoder(w).Encode([]map[string]any{
+				{"ref": "refs/heads/" + branch, "object": map[string]string{"sha": "branch-sha"}},
+				{"ref": "refs/heads/" + notReached, "object": map[string]string{"sha": "other-sha"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/app/pulls":
+			if got := r.URL.Query().Get("head"); got != "acme:"+branch {
+				t.Fatalf("pull lookup reached unexpected branch: %q", got)
+			}
+			pullCalls++
+			if err := json.NewEncoder(w).Encode([]map[string]any{}); err != nil {
+				t.Fatal(err)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/app/git/ref/heads/"+branch:
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"ref": "refs/heads/" + branch, "object": map[string]string{"sha": "branch-sha"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/app/activity":
+			if err := json.NewEncoder(w).Encode([]map[string]any{{
+				"ref": "refs/heads/" + branch, "timestamp": old,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("unexpected provider request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	runner := &rateLimitedBranchDeleteRunner{}
+	provider := providers.NewGitHubProvider("token",
+		func(provider *providers.GitHubProvider) {
+			provider.BaseURL = server.URL
+			provider.Runner = runner
+		},
+		providers.WithMaxRateLimitRetries(0),
+	)
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		Repository: providers.RepositoryRef{
+			Provider: providers.ProviderGitHub,
+			Owner:    "acme",
+			Name:     "app",
+			URL:      "https://github.example/acme/app.git",
+		},
 		RunsDir:    runsDir,
 		Prefix:     branchReconcilePrefix,
 		Limit:      10,
@@ -828,11 +887,16 @@ func TestReconcileRemoteBranchesPreservesBranchOnDeleteRateLimit(t *testing.T) {
 		Delete:     true,
 		Now:        func() time.Time { return now },
 	})
-	if !errors.Is(err, rateLimit) {
+	var rateLimit *providers.RateLimitError
+	if !errors.As(err, &rateLimit) {
 		t.Fatalf("error = %v, want rate limit", err)
 	}
-	if report.Candidates != 1 || report.Deleted != 0 || report.Preserved != 1 || report.Failures != 1 {
+	if report.Scanned != 1 || report.Candidates != 1 || report.Deleted != 0 ||
+		report.Preserved != 1 || report.Failures != 1 || report.NextAfter != branch {
 		t.Fatalf("report = %+v", report)
+	}
+	if pullCalls != 2 || runner.pushes != 1 {
+		t.Fatalf("pull calls = %d, pushes = %d", pullCalls, runner.pushes)
 	}
 	events := branchReconcileEvents(t, logDir)
 	if len(events) != 2 || events[0].Runner["outcome"] != "delete-approved" ||

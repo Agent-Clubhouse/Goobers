@@ -347,7 +347,17 @@ func (p *GitHubProvider) deleteBranchWithLease(ctx context.Context, req DeleteBr
 	}
 	out, err := runner.RunWithEnv(ctx, githubGitAuthEnv(token), "git", args...)
 	if err != nil {
+		if rateLimitErr := githubGitPushRateLimitError(req.Repository, out); rateLimitErr != nil {
+			return DeleteBranchResult{}, rateLimitErr
+		}
 		if strings.Contains(string(out), "(stale info)") {
+			_, found, lookupErr := p.GetBranch(ctx, req.Repository, req.Name)
+			if lookupErr != nil {
+				return DeleteBranchResult{}, fmt.Errorf("resolve conditional branch deletion rejection: %w", lookupErr)
+			}
+			if !found {
+				return DeleteBranchResult{}, nil
+			}
 			return DeleteBranchResult{}, &BranchTipChangedError{Name: req.Name, ExpectedSHA: req.ExpectedSHA}
 		}
 		return DeleteBranchResult{}, fmt.Errorf("delete branch with lease: %w: %s", err, strings.TrimSpace(string(out)))
@@ -358,6 +368,30 @@ func (p *GitHubProvider) deleteBranchWithLease(ctx context.Context, req DeleteBr
 		Operation: "delete",
 	})
 	return DeleteBranchResult{Deleted: true}, nil
+}
+
+func githubGitPushRateLimitError(repo RepositoryRef, output []byte) *RateLimitError {
+	message := strings.ToLower(string(output))
+	secondary := strings.Contains(message, "secondary rate limit") ||
+		strings.Contains(message, "abuse detection") ||
+		strings.Contains(message, "abuse rate limit")
+	status := 0
+	switch {
+	case strings.Contains(message, "error: 429"),
+		strings.Contains(message, "http 429"),
+		strings.Contains(message, "status 429"),
+		strings.Contains(message, "too many requests"):
+		status = http.StatusTooManyRequests
+	case secondary, strings.Contains(message, "rate limit exceeded"):
+		status = http.StatusForbidden
+	default:
+		return nil
+	}
+	return &RateLimitError{
+		Endpoint:  fmt.Sprintf("git push %s/%s", repo.Owner, repo.Name),
+		Status:    status,
+		Secondary: secondary,
+	}
 }
 
 func githubGitAuthEnv(token string) []string {
