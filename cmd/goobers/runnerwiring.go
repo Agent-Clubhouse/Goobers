@@ -486,7 +486,7 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
 			}
 			if len(o.Blockers) > 0 {
-				var cycle []string
+				var cycles [][]string
 				if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
 					recs[itemID] = blockedRecord{
 						Blockers:   o.Blockers,
@@ -495,17 +495,29 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 						Reason:     o.Reason,
 						RecordedAt: time.Now().UTC(),
 					}
-					cycle = findBlockedCycle(recs, itemID)
+					cycles = findBlockedCycles(recs, itemID)
 					return true
 				}); err != nil {
 					errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
 				}
-				if len(cycle) > 0 {
+				if len(cycles) > 0 {
+					paths := make([]string, 0, len(cycles))
+					var affected []string
+					affectedSeen := make(map[string]bool)
+					for _, cycle := range cycles {
+						paths = append(paths, issueCyclePath(cycle))
+						for _, cycleItemID := range cycle[:len(cycle)-1] {
+							if !affectedSeen[cycleItemID] {
+								affectedSeen[cycleItemID] = true
+								affected = append(affected, cycleItemID)
+							}
+						}
+					}
 					comment := fmt.Sprintf(
-						"Goobers detected a circular issue dependency: %s. Every issue in this cycle has been marked `%s` and removed from `%s` for human resolution.",
-						issueCyclePath(cycle), providers.LabelNeedsHuman, providers.LabelReady,
+						"Goobers detected circular issue dependency cycles: %s. Every issue in these cycles has been marked `%s` and removed from `%s` for human resolution.",
+						strings.Join(paths, "; "), providers.LabelNeedsHuman, providers.LabelReady,
 					)
-					for _, cycleItemID := range cycle[:len(cycle)-1] {
+					for _, cycleItemID := range affected {
 						cycleReq := providers.UpdateWorkItemRequest{
 							Repository:   repoRef,
 							ID:           cycleItemID,
