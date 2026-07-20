@@ -317,6 +317,66 @@ func TestUpSkipsUnresolvableWorkflowWithWarningNotFatal(t *testing.T) {
 	}
 }
 
+func TestUpSkipsRunFromRemovedGaggleWithWarningNotFatal(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	removed := l.ForGaggle("removed")
+
+	jr, err := journal.Create(removed.RunsDir(), journal.RunIdentity{
+		RunID: "removed-gaggle-run", Workflow: "default-implement", WorkflowVersion: 1, Gaggle: "removed",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jr.SetMachineState("local-ci")
+	if err := jr.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() { done <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("code = %d (the daemon must still start after gaggle removal), stderr = %q", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runUpContext did not return after ctx cancellation")
+	}
+
+	if !strings.Contains(stdout.String(), "warning: run removed-gaggle-run") {
+		t.Fatalf("stdout = %q, want a warning naming the removed gaggle's run", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "no runner configured") {
+		t.Fatalf("stderr = %q, removed gaggle must not be fatal", stderr.String())
+	}
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovery journal.Event
+	for _, ev := range events {
+		if ev.Type == journal.EventError && ev.RunID == "removed-gaggle-run" {
+			recovery = ev
+		}
+	}
+	if recovery.Gaggle != "removed" || recovery.Workflow != "default-implement" {
+		t.Fatalf("instance-log workflow identity = %q/%q, want removed/default-implement", recovery.Gaggle, recovery.Workflow)
+	}
+	if recovery.Error == nil || recovery.Error.Code != "resume_unresolvable_gaggle" {
+		t.Fatalf("instance-log recovery error = %+v, want resume_unresolvable_gaggle", recovery.Error)
+	}
+}
+
 // TestRunAbortMarksRunTerminal and its siblings cover issue #135's
 // `goobers run abort <run-id>` recovery path.
 func TestRunAbortMarksRunTerminal(t *testing.T) {

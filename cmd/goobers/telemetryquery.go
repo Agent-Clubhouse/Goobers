@@ -236,7 +236,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = db.Close() }()
 
-	result, err := detectCandidateFindings(db, *window, since, aggregates, thresholds)
+	result, err := detectCandidateFindings(db, *window, since, os.Getenv("GOOBERS_GAGGLE"), aggregates, thresholds)
 	if err != nil {
 		pf(stderr, "error: query candidate findings: %v\n", err)
 		return 1
@@ -248,11 +248,12 @@ func detectCandidateFindings(
 	db *rollup.DB,
 	window time.Duration,
 	since time.Time,
+	gaggle string,
 	aggregates telemetryAggregateValues,
 	thresholds rollup.Thresholds,
 ) (candidateFindingsArtifact, error) {
 	findings, err := db.Detect(rollup.DetectRequest{
-		StatsRequest: rollup.StatsRequest{Since: since},
+		StatsRequest: rollup.StatsRequest{Gaggle: gaggle, Since: since},
 		Thresholds:   thresholds,
 	})
 	if err != nil {

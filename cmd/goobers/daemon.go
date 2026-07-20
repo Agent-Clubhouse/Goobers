@@ -444,9 +444,9 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // error). Scheduler.ReleaseReconciled only releases runs actually seeded by
 // Reconcile, so terminal cleanup cannot consume another run's slot.
 //
-// A run whose workflow no longer resolves in the current config (renamed or
-// removed, issue #135 point 2) is skipped with a warning journaled to log,
-// not a fatal error — a stale run must never prevent the daemon from
+// A run whose workflow or gaggle no longer resolves in the current config
+// (renamed or removed, issue #135 point 2) is skipped with a warning journaled
+// to log, not a fatal error — a stale run must never prevent the daemon from
 // starting; recovering it is `goobers run abort <run-id>` (abort.go).
 //
 // Each resumed run also incrementally ingests into rollupDB once its outcome
@@ -494,9 +494,6 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			if runners != nil {
 				rn = runners[id.Gaggle]
 			}
-			if rn == nil {
-				return resumed, warned, fmt.Errorf("no runner configured for gaggle %q", id.Gaggle)
-			}
 			runLayout := l
 			if id.Gaggle != "" {
 				runLayout = l.ForGaggle(id.Gaggle)
@@ -509,8 +506,19 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			if phase, err := rd.Phase(); err == nil {
 				switch phase {
 				case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-					if err := rn.FinalizeTerminal(id.RunID, phase); err != nil {
-						return resumed, warned, fmt.Errorf("finalize terminal run %q: %w", id.RunID, err)
+					var finalizeErr error
+					if rn != nil {
+						finalizeErr = rn.FinalizeTerminal(id.RunID, phase)
+					} else {
+						manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir())
+						if managerErr != nil {
+							finalizeErr = managerErr
+						} else {
+							finalizeErr = finalizeTerminalRun(runLayout, log, manager, id.RunID)
+						}
+					}
+					if finalizeErr != nil {
+						return resumed, warned, fmt.Errorf("finalize terminal run %q: %w", id.RunID, finalizeErr)
 					}
 					release(id.RunID, id.Workflow)
 					continue // terminal: nothing to resume
@@ -519,14 +527,20 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 
 			identity := localscheduler.WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
 			machine, ok := machines[identity]
-			if !ok {
+			if rn == nil || !ok {
 				warned = append(warned, id.RunID)
 				if log != nil {
+					code := "resume_unresolvable_workflow"
+					message := fmt.Sprintf("run %q references unknown workflow %q — recover with `goobers run abort %s`", id.RunID, id.Workflow, id.RunID)
+					if rn == nil {
+						code = "resume_unresolvable_gaggle"
+						message = fmt.Sprintf("run %q references inactive gaggle %q — recover with `goobers run abort %s`", id.RunID, id.Gaggle, id.RunID)
+					}
 					_ = log.Append(journal.Event{
 						Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
 						Error: &journal.ErrorDetail{
-							Code:    "resume_unresolvable_workflow",
-							Message: fmt.Sprintf("run %q references unknown workflow %q — recover with `goobers run abort %s`", id.RunID, id.Workflow, id.RunID),
+							Code:    code,
+							Message: message,
 						},
 					})
 				}
