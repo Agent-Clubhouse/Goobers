@@ -216,6 +216,22 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	}, nil
 }
 
+// ActivateAssetPathGuard persists that this invocation reserves the asset
+// workspace, allowing crash recovery to distinguish it from a stage for which
+// the same path is ordinary repository content.
+func (wt *Worktree) ActivateAssetPathGuard() error {
+	markerPath := wt.manager.markerPath(wt.key, wt.RunID)
+	mk, err := readMarker(markerPath)
+	if err != nil {
+		return fmt.Errorf("worktree: read marker for run %s: %w", wt.RunID, err)
+	}
+	mk.AssetPathGuard = true
+	if err := writeMarker(markerPath, mk); err != nil {
+		return fmt.Errorf("worktree: activate asset path guard for run %s: %w", wt.RunID, err)
+	}
+	return nil
+}
+
 // ValidateReservedPaths rejects a stage that forced the materialized asset
 // directory into the index or any commit it added, rewinding those commits so
 // the reserved content cannot cross the shared run-branch boundary.

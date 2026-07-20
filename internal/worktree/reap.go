@@ -215,7 +215,7 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 	defer lock.Unlock()
 
 	repoDir := m.repoDirForKey(key)
-	if mk != nil && mk.Branch != "" && mk.StartRef != "" {
+	if mk != nil && mk.AssetPathGuard && mk.Branch != "" && mk.StartRef != "" {
 		wt := &Worktree{
 			RunID:    mk.RunID,
 			Path:     path,

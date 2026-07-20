@@ -551,6 +551,9 @@ func TestManager_Reap_RestoresReservedPathBranchAfterCrash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	if err := wt.ActivateAssetPathGuard(); err != nil {
+		t.Fatalf("ActivateAssetPathGuard: %v", err)
+	}
 	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
 	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
 	runTestGit(t, wt.Path, "commit", "-m", "force-add assets")
@@ -595,6 +598,60 @@ func TestManager_Reap_RestoresReservedPathBranchAfterCrash(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(next.Path, gooberassets.WorkspaceDir)); !os.IsNotExist(err) {
 		t.Fatalf("crashed stage assets leaked into next stage: %v", err)
+	}
+}
+
+func TestManager_Reap_PreservesRepositoryAssetPathWithoutGuard(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	repositoryAsset := filepath.Join(repo, gooberassets.WorkspaceDir, "reference.md")
+	mustWriteFile(t, repositoryAsset, "original repository content\n")
+	runTestGit(t, repo, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, repo, "commit", "-m", "add repository asset path")
+
+	m := newTestManager(t)
+	const branch = "goobers/impl/crashed-no-assets"
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "crashed-no-assets", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "legitimate stage change\n")
+	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, wt.Path, "commit", "-m", "update repository asset path")
+	wantRef := strings.TrimSpace(runTestGit(t, wt.Path, "rev-parse", "HEAD"))
+
+	const fakeDeadPID = 999999
+	prev := processAlive
+	processAlive = func(pid int) bool { return pid != fakeDeadPID }
+	t.Cleanup(func() { processAlive = prev })
+	mk, err := readMarker(m.markerPath(wt.key, wt.RunID))
+	if err != nil {
+		t.Fatalf("readMarker: %v", err)
+	}
+	mk.PID = fakeDeadPID
+	if err := writeMarker(m.markerPath(wt.key, wt.RunID), mk); err != nil {
+		t.Fatalf("writeMarker: %v", err)
+	}
+
+	restarted, err := NewManager(m.Root)
+	if err != nil {
+		t.Fatalf("restart manager: %v", err)
+	}
+	results, warnings, err := restarted.Reap(ctx, ReapOptions{})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected Reap warnings: %+v", warnings)
+	}
+	if len(results) != 1 || results[0].RunID != wt.RunID || results[0].Reason != ReapReasonOrphaned {
+		t.Fatalf("unexpected Reap results: %+v", results)
+	}
+	branchRef := strings.TrimSpace(runTestGit(t, restarted.repoDirForKey(wt.key), "-c", "safe.bareRepository=all", "rev-parse", "refs/heads/"+branch))
+	if branchRef != wantRef {
+		t.Fatalf("run branch = %s, want legitimate no-assets commit %s", branchRef, wantRef)
 	}
 }
 

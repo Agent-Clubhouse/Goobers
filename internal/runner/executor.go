@@ -16,6 +16,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
@@ -74,17 +75,35 @@ type assetBundleGoober interface {
 // call that materializes a real bundle.
 type gooberInvocation struct {
 	invoke.Goober
-	invoked bool
+	activateAssetPathGuard func() error
+	invoked                bool
 }
 
 func (g *gooberInvocation) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	if err := g.prepare(); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	g.invoked = true
 	return g.Goober.Invoke(ctx, env)
 }
 
 func (g *gooberInvocation) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	if err := g.prepare(); err != nil {
+		return apiv1.Verdict{}, err
+	}
 	g.invoked = true
 	return g.Goober.Review(ctx, env)
+}
+
+func (g *gooberInvocation) prepare() error {
+	assets, ok := g.Goober.(assetBundleGoober)
+	if !ok || !assets.HasAssetBundle() || g.activateAssetPathGuard == nil {
+		return nil
+	}
+	if err := g.activateAssetPathGuard(); err != nil {
+		return fmt.Errorf("activate goober asset path guard: %w", err)
+	}
+	return nil
 }
 
 func (g *gooberInvocation) materializedAssets() bool {

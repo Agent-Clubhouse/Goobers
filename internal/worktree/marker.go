@@ -26,13 +26,14 @@ const (
 // enough state for Manager.Reap to tell a live run apart from one whose
 // owning process died mid-stage.
 type marker struct {
-	RunID      string    `json:"run_id"`
-	OwnerRunID string    `json:"owner_run_id,omitempty"`
-	Branch     string    `json:"branch,omitempty"`
-	StartRef   string    `json:"start_ref,omitempty"`
-	PID        int       `json:"pid"`
-	CreatedAt  time.Time `json:"created_at"`
-	Status     status    `json:"status"`
+	RunID          string    `json:"run_id"`
+	OwnerRunID     string    `json:"owner_run_id,omitempty"`
+	Branch         string    `json:"branch,omitempty"`
+	StartRef       string    `json:"start_ref,omitempty"`
+	AssetPathGuard bool      `json:"asset_path_guard,omitempty"`
+	PID            int       `json:"pid"`
+	CreatedAt      time.Time `json:"created_at"`
+	Status         status    `json:"status"`
 }
 
 func writeMarker(path string, m marker) error {

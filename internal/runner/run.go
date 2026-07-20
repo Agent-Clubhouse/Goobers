@@ -1888,7 +1888,10 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		if err != nil {
 			return apiv1.ResultEnvelope{}, nil, err, nil
 		}
-		agentInvocation = &gooberInvocation{Goober: ag}
+		agentInvocation = &gooberInvocation{
+			Goober:                 ag,
+			activateAssetPathGuard: workspace.ActivateAssetPathGuard,
+		}
 		if err := recordContextManifest(jr, env, t.Name, attempt, class); err != nil {
 			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err), nil
 		}
@@ -2137,6 +2140,7 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	var env apiv1.InvocationEnvelope
 	var gateTelemetryDir string
 	var agentInvocation *gooberInvocation
+	var workspace *stageWorkspace
 	if g.Evaluator == apiv1.EvaluatorAutomated {
 		env = apiv1.InvocationEnvelope{
 			TaskID:     in.RunID + ":" + g.Name,
@@ -2159,7 +2163,6 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		if g.Evaluator == apiv1.EvaluatorAgentic {
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
-		var workspace *stageWorkspace
 		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, workflow.GateLimits(g), upstream, apiv1.WorkspaceRepo, workspaceBranch)
 		if err != nil {
 			err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
@@ -2259,7 +2262,10 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 			// different agentic gates in the same run may target different
 			// reviewer goobers. gate.Evaluator reads this field fresh on every
 			// Evaluate call, so mutating it here between calls is safe.
-			agentInvocation = &gooberInvocation{Goober: ag}
+			agentInvocation = &gooberInvocation{
+				Goober:                 ag,
+				activateAssetPathGuard: workspace.ActivateAssetPathGuard,
+			}
 			gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: agentInvocation}
 		}
 	}
@@ -2339,6 +2345,13 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 type stageWorkspace struct {
 	path     string
 	worktree *worktree.Worktree
+}
+
+func (w *stageWorkspace) ActivateAssetPathGuard() error {
+	if w.worktree == nil {
+		return nil
+	}
+	return w.worktree.ActivateAssetPathGuard()
 }
 
 func (w *stageWorkspace) ValidateReservedPaths(ctx context.Context) error {
