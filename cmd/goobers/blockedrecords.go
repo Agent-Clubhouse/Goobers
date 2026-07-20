@@ -39,41 +39,67 @@ type parkedDependency struct {
 	Blockers []string
 }
 
-// findBlockedCycle returns one ordered cycle containing itemID, including
-// itemID again at the end to make the closing edge explicit. Looking only for
-// a cycle through the newly recorded item avoids changing acyclic additions
-// because of an unrelated malformed cycle already present in blocked.json.
-func findBlockedCycle(recs map[string]blockedRecord, itemID string) []string {
-	record, ok := recs[itemID]
+// findBlockedCycles returns every ordered cycle closed by itemKey's newly
+// recorded blocker edges. Each cycle repeats the item at the end to make the
+// closing edge explicit. Graph identities use provider lookup IDs so records
+// keyed by claim names such as "pr/955" connect to bare blocker IDs, while the
+// records map itself retains those claim keys for ledger operations.
+func findBlockedCycles(recs map[string]blockedRecord, itemKey string) [][]string {
+	record, ok := recs[itemKey]
 	if !ok {
 		return nil
 	}
 
-	for _, blocker := range record.Blockers {
-		seen := map[string]bool{itemID: true}
-		var pathToItem func(string, []string) []string
-		pathToItem = func(id string, path []string) []string {
-			if id == itemID {
-				return append(path, id)
-			}
-			if seen[id] {
-				return nil
-			}
-			seen[id] = true
-			path = append(path, id)
+	keys := make([]string, 0, len(recs))
+	for key := range recs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
 
-			for _, next := range recs[id].Blockers {
-				if cycle := pathToItem(next, path); cycle != nil {
-					return cycle
-				}
+	graph := make(map[string][]string, len(recs))
+	for _, key := range keys {
+		id := blockedLookupID(key)
+		for _, blocker := range recs[key].Blockers {
+			blocker = blockedLookupID(blocker)
+			if !slices.Contains(graph[id], blocker) {
+				graph[id] = append(graph[id], blocker)
 			}
-			return nil
-		}
-		if cycle := pathToItem(blocker, []string{itemID}); cycle != nil {
-			return cycle
 		}
 	}
-	return nil
+
+	itemID := blockedLookupID(itemKey)
+	var cycles [][]string
+	cycleSeen := make(map[string]bool)
+	for _, blocker := range record.Blockers {
+		path := []string{itemID}
+		onPath := map[string]bool{itemID: true}
+		var pathsToItem func(string)
+		pathsToItem = func(id string) {
+			id = blockedLookupID(id)
+			if id == itemID {
+				cycle := append(append([]string(nil), path...), id)
+				key := strings.Join(cycle, "\x00")
+				if !cycleSeen[key] {
+					cycleSeen[key] = true
+					cycles = append(cycles, cycle)
+				}
+				return
+			}
+			if onPath[id] {
+				return
+			}
+			onPath[id] = true
+			path = append(path, id)
+
+			for _, next := range graph[id] {
+				pathsToItem(next)
+			}
+			path = path[:len(path)-1]
+			delete(onPath, id)
+		}
+		pathsToItem(blocker)
+	}
+	return cycles
 }
 
 func blockedRecordsPath(l instance.Layout) string {

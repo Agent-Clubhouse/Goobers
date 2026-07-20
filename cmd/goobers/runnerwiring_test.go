@@ -863,7 +863,7 @@ func TestBuildBlockedHandlerEscalatesCircularDependency(t *testing.T) {
 		t.Fatalf("mkdir scheduler dir: %v", err)
 	}
 	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
-		"441": {Blockers: []string{"442"}, RunID: "prior-1"},
+		"441": {Blockers: []string{"510"}, RunID: "prior-1"},
 		"442": {Blockers: []string{"510"}, RunID: "prior-2"},
 	}); err != nil {
 		t.Fatalf("seed blocked records: %v", err)
@@ -875,7 +875,7 @@ func TestBuildBlockedHandlerEscalatesCircularDependency(t *testing.T) {
 
 	err := h(context.Background(), runner.BlockedOutcome{
 		RunID: "run-cycle", Stage: "implement", ItemID: "510",
-		Reason: "DEPENDENCY_NOT_MET: unmet prerequisite", Blockers: []string{"441"},
+		Reason: "DEPENDENCY_NOT_MET: unmet prerequisite", Blockers: []string{"441", "442"},
 	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
@@ -895,8 +895,10 @@ func TestBuildBlockedHandlerEscalatesCircularDependency(t *testing.T) {
 		if !slices.Equal(got.RemoveLabels, []string{providers.LabelReady}) {
 			t.Errorf("call %d RemoveLabels = %v, want [%s]", i, got.RemoveLabels, providers.LabelReady)
 		}
-		if !strings.Contains(got.Comment, "#510 -> #441 -> #442 -> #510") {
-			t.Errorf("call %d comment = %q, want full ordered cycle", i, got.Comment)
+		for _, path := range []string{"#510 -> #441 -> #510", "#510 -> #442 -> #510"} {
+			if !strings.Contains(got.Comment, path) {
+				t.Errorf("call %d comment = %q, want ordered cycle %q", i, got.Comment, path)
+			}
 		}
 	}
 
@@ -904,8 +906,58 @@ func TestBuildBlockedHandlerEscalatesCircularDependency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadBlockedRecords: %v", err)
 	}
-	if got := recs["510"].Blockers; !slices.Equal(got, []string{"441"}) {
-		t.Fatalf("recorded blockers = %v, want [441]", got)
+	if got := recs["510"].Blockers; !slices.Equal(got, []string{"441", "442"}) {
+		t.Fatalf("recorded blockers = %v, want [441 442]", got)
+	}
+}
+
+func TestBuildBlockedHandlerEscalatesCircularDependencyForPRClaim(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
+		"956": {Blockers: []string{"955"}, RunID: "prior"},
+	}); err != nil {
+		t.Fatalf("seed blocked records: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-cycle", Stage: "implement", ItemID: "pr/955",
+		Reason: "DEPENDENCY_NOT_MET: unmet prerequisite", Blockers: []string{"956"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	wantIDs := []string{"955", "956"}
+	if len(fake.calls) != len(wantIDs) {
+		t.Fatalf("update calls = %d, want %d: %+v", len(fake.calls), len(wantIDs), fake.calls)
+	}
+	for i, got := range fake.calls {
+		if got.ID != wantIDs[i] {
+			t.Errorf("call %d ID = %q, want %q", i, got.ID, wantIDs[i])
+		}
+		if !strings.Contains(got.Comment, "#955 -> #956 -> #955") {
+			t.Errorf("call %d comment = %q, want normalized ordered cycle", i, got.Comment)
+		}
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	if _, ok := recs["pr/955"]; !ok {
+		t.Fatal("blocked record did not retain PR claim key pr/955")
 	}
 }
 

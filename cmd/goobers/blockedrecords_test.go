@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -17,12 +17,12 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func TestFindBlockedCycle(t *testing.T) {
+func TestFindBlockedCycles(t *testing.T) {
 	tests := []struct {
 		name string
 		recs map[string]blockedRecord
 		item string
-		want []string
+		want [][]string
 	}{
 		{
 			name: "acyclic",
@@ -39,7 +39,7 @@ func TestFindBlockedCycle(t *testing.T) {
 				"441": {Blockers: []string{"510"}},
 			},
 			item: "510",
-			want: []string{"510", "441", "510"},
+			want: [][]string{{"510", "441", "510"}},
 		},
 		{
 			name: "self dependency",
@@ -47,7 +47,7 @@ func TestFindBlockedCycle(t *testing.T) {
 				"510": {Blockers: []string{"510"}},
 			},
 			item: "510",
-			want: []string{"510", "510"},
+			want: [][]string{{"510", "510"}},
 		},
 		{
 			name: "longer cycle",
@@ -57,7 +57,29 @@ func TestFindBlockedCycle(t *testing.T) {
 				"442": {Blockers: []string{"510"}},
 			},
 			item: "510",
-			want: []string{"510", "441", "442", "510"},
+			want: [][]string{{"510", "441", "442", "510"}},
+		},
+		{
+			name: "multiple cycles",
+			recs: map[string]blockedRecord{
+				"510": {Blockers: []string{"441", "442"}},
+				"441": {Blockers: []string{"510"}},
+				"442": {Blockers: []string{"510"}},
+			},
+			item: "510",
+			want: [][]string{
+				{"510", "441", "510"},
+				{"510", "442", "510"},
+			},
+		},
+		{
+			name: "pull request claim key",
+			recs: map[string]blockedRecord{
+				"pr/955": {Blockers: []string{"956"}},
+				"956":    {Blockers: []string{"955"}},
+			},
+			item: "pr/955",
+			want: [][]string{{"955", "956", "955"}},
 		},
 		{
 			name: "unrelated reachable cycle",
@@ -72,8 +94,8 @@ func TestFindBlockedCycle(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := findBlockedCycle(tc.recs, tc.item); !slices.Equal(got, tc.want) {
-				t.Fatalf("findBlockedCycle() = %v, want %v", got, tc.want)
+			if got := findBlockedCycles(tc.recs, tc.item); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("findBlockedCycles() = %v, want %v", got, tc.want)
 			}
 		})
 	}
