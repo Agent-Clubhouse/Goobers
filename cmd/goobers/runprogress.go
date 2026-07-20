@@ -3,12 +3,24 @@ package main
 import (
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
 )
 
 var runWaitHeartbeatInterval = 30 * time.Second
+
+type synchronizedWriter struct {
+	mu  sync.Mutex
+	out io.Writer
+}
+
+func (w *synchronizedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.out.Write(p)
+}
 
 type stageAttempt struct {
 	stage   string
@@ -44,6 +56,7 @@ func newRunWaitReporter(runID string, out io.Writer) *runWaitReporter {
 
 func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
 	transitioned := false
+	terminal := false
 	for _, event := range events {
 		if event.Seq <= r.lastSeq {
 			continue
@@ -53,6 +66,8 @@ func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
 		switch event.Type {
 		case journal.EventRunStarted:
 			r.runStarted = event.Time
+		case journal.EventRunFinished:
+			terminal = true
 		case journal.EventStageStarted:
 			key := stageAttempt{stage: event.Stage, attempt: event.Attempt}
 			r.stageStarts[key] = event.Time
@@ -86,6 +101,9 @@ func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
 	if transitioned {
 		r.lastTransition = now
 		r.lastHeartbeat = now
+		return
+	}
+	if terminal {
 		return
 	}
 	r.heartbeat(now)

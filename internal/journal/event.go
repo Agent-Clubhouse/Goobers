@@ -23,7 +23,7 @@ const (
 	// EventGateStarted marks a gate evaluation beginning. It is recovery
 	// bookkeeping, excluded from cross-runner conformance.
 	EventGateStarted EventType = "gate.started"
-	// EventGatePaused marks a run waiting for a human decision at a gate. It is
+	// EventGatePaused marks a run waiting at a gate for its verdict. It is
 	// operational state, excluded from cross-runner conformance.
 	EventGatePaused EventType = "gate.paused"
 	// EventGateEvaluated records a gate verdict and the branch it selected.

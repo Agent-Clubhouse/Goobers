@@ -725,12 +725,13 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 		}
 
 		if g, ok := in.Machine.Gate(state); ok {
+			// The machine remains at this gate until its evaluator records a
+			// verdict. Persist that wait before dispatch so observers can
+			// distinguish it from an active stage.
+			if err := jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
+				return Result{}, fmt.Errorf("runner: journal pause at gate %q: %w", g.Name, err)
+			}
 			if g.Evaluator == apiv1.EvaluatorHuman {
-				// A human gate executes nothing (§5): persist the pause so
-				// waiters can distinguish it from an active evaluator.
-				if err := jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
-					return Result{}, fmt.Errorf("runner: journal pause at gate %q: %w", g.Name, err)
-				}
 				return Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: steps}, nil
 			}
 
