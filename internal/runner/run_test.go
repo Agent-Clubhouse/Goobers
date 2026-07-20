@@ -5433,8 +5433,25 @@ func TestCachedVerdictFromOutputsFailsClosed(t *testing.T) {
 		{name: "invalid decision", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
 			verdict.Decision = "approved"
 		}},
+		{name: "invalid finding severity", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Findings = []apiv1.Finding{{
+				Severity: "notice", Message: "bad severity", Class: apiv1.FindingSubstantive,
+			}}
+		}},
+		{name: "blank finding message", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Findings = []apiv1.Finding{{
+				Severity: apiv1.SeverityError, Message: " ", Class: apiv1.FindingSubstantive,
+			}}
+		}},
+		{name: "missing finding class", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Findings = []apiv1.Finding{{
+				Severity: apiv1.SeverityError, Message: "not routable",
+			}}
+		}},
 		{name: "invalid finding", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
-			verdict.Findings = []apiv1.Finding{{Class: apiv1.FindingCrossPRBlocked}}
+			verdict.Findings = []apiv1.Finding{{
+				Severity: apiv1.SeverityError, Message: "missing blockers", Class: apiv1.FindingCrossPRBlocked,
+			}}
 		}},
 	}
 	for _, tt := range tests {

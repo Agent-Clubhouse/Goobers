@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gooberruntime"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -96,17 +97,12 @@ func findCachedVerdict(ctx context.Context, provider authenticatedBacklogProvide
 }
 
 func cachedVerdictUsable(v apiv1.Verdict, wantDigest, wantHeadSHA, wantBaseSHA string) bool {
-	if !v.Decision.IsValid() ||
+	if gooberruntime.ValidateMergeReviewVerdict(v) != nil ||
 		v.Digest != wantDigest ||
 		strings.TrimSpace(v.SourceRunID) == "" ||
 		v.HeadSHA != wantHeadSHA ||
 		v.BaseSHA != wantBaseSHA {
 		return false
-	}
-	for _, finding := range v.Findings {
-		if !finding.IsValid() {
-			return false
-		}
 	}
 	return true
 }

@@ -418,8 +418,25 @@ func TestFindCachedVerdictRejectsUnusablePriorData(t *testing.T) {
 		{name: "wrong head pin", mutate: func(v *apiv1.Verdict) { v.HeadSHA = "other" }},
 		{name: "missing base pin", mutate: func(v *apiv1.Verdict) { v.BaseSHA = "" }},
 		{name: "invalid decision", mutate: func(v *apiv1.Verdict) { v.Decision = "approved" }},
+		{name: "invalid finding severity", mutate: func(v *apiv1.Verdict) {
+			v.Findings = []apiv1.Finding{{
+				Severity: "notice", Message: "bad severity", Class: apiv1.FindingSubstantive,
+			}}
+		}},
+		{name: "blank finding message", mutate: func(v *apiv1.Verdict) {
+			v.Findings = []apiv1.Finding{{
+				Severity: apiv1.SeverityError, Message: " ", Class: apiv1.FindingSubstantive,
+			}}
+		}},
+		{name: "missing finding class", mutate: func(v *apiv1.Verdict) {
+			v.Findings = []apiv1.Finding{{
+				Severity: apiv1.SeverityError, Message: "not routable",
+			}}
+		}},
 		{name: "invalid finding", mutate: func(v *apiv1.Verdict) {
-			v.Findings = []apiv1.Finding{{Class: apiv1.FindingCrossPRBlocked}}
+			v.Findings = []apiv1.Finding{{
+				Severity: apiv1.SeverityError, Message: "missing blockers", Class: apiv1.FindingCrossPRBlocked,
+			}}
 		}},
 	}
 	for _, tt := range tests {

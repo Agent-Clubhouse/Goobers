@@ -14,6 +14,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/gooberruntime"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -2279,17 +2280,12 @@ func cachedVerdictFromOutputs(outputs map[string]interface{}) *apiv1.Verdict {
 
 	var verdict apiv1.Verdict
 	if err := json.Unmarshal([]byte(raw), &verdict); err != nil ||
-		!verdict.Decision.IsValid() ||
+		gooberruntime.ValidateMergeReviewVerdict(verdict) != nil ||
 		verdict.Digest != digest ||
 		strings.TrimSpace(verdict.SourceRunID) == "" ||
 		verdict.HeadSHA != headSHA ||
 		verdict.BaseSHA != baseSHA {
 		return nil
-	}
-	for _, finding := range verdict.Findings {
-		if !finding.IsValid() {
-			return nil
-		}
 	}
 	return &verdict
 }
