@@ -44,6 +44,16 @@ spec:
               everything needed to materialize the goober as ephemeral pods when a workflow
               invokes it (GBO-001, GBO-002).
             properties:
+              capabilities:
+                description: |-
+                  Capabilities are the capability grants this goober holds (e.g.
+                  "github:issues:write", "repo:push", "telemetry:read"). A stage invoking
+                  this goober may only use capabilities in this set; undeclared use fails
+                  closed at compile time, and locally the credentials for an ungranted
+                  capability are simply never materialized (ARCHITECTURE.md §5, SEC-042).
+                items:
+                  type: string
+                type: array
               displayName:
                 description: DisplayName is the human-facing name shown on the portal
                   dashboard.
@@ -58,11 +68,43 @@ spec:
                 enum:
                 - copilot
                 type: string
+              harnessOptions:
+                additionalProperties:
+                  type: string
+                description: |-
+                  HarnessOptions are harness-specific string settings. The platform treats
+                  the map as opaque and the selected harness adapter validates its entries.
+                type: object
               instructions:
                 description: |-
                   Instructions points at the markdown file defining this goober's
                   behavior/persona/scope, relative to the goober definition directory. The
                   file is markdown with optional YAML frontmatter (see config-as-code docs).
+                type: string
+              model:
+                description: |-
+                  Model selects the harness model. Values are scoped to Harness and
+                  validated by its adapter before a run starts.
+                enum:
+                - auto
+                - claude-sonnet-5
+                - claude-sonnet-4.6
+                - claude-sonnet-4.5
+                - claude-haiku-4.5
+                - claude-opus-4.8
+                - claude-opus-4.7
+                - claude-opus-4.6
+                - gpt-5.6-sol
+                - gpt-5.6-terra
+                - gpt-5.6-luna
+                - gpt-5.5
+                - gpt-5.4
+                - gpt-5.3-codex
+                - gpt-5.4-mini
+                - gpt-5-mini
+                - gemini-3.1-pro-preview
+                - gemini-3.5-flash
+                - mai-code-1-flash-picker
                 type: string
               role:
                 description: Role is the goober's role, e.g. "coder", "perf-hunter",

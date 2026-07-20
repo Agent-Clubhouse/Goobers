@@ -83,6 +83,34 @@ func TestExampleConfigPasses(t *testing.T) {
 	}
 }
 
+func TestGooberSchemaAcceptsHarnessConfigAndRejectsUnknownModel(t *testing.T) {
+	v := newV(t)
+	goober := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Goober",
+		"metadata": {"name": "coder"},
+		"spec": {
+			"gaggle": "example",
+			"role": "coder",
+			"instructions": "instructions.md",
+			"harness": "copilot",
+			"model": MODEL,
+			"harnessOptions": {
+				"context": "long_context",
+				"reasoningEffort": "high"
+			}
+		}
+	}`
+	valid := strings.Replace(goober, "MODEL", `"claude-sonnet-4.5"`, 1)
+	if err := v.ValidateJSON("goober.schema.json", []byte(valid)); err != nil {
+		t.Fatalf("valid harness config failed schema validation: %v", err)
+	}
+	invalid := strings.Replace(goober, "MODEL", `"unknown-model"`, 1)
+	if err := v.ValidateJSON("goober.schema.json", []byte(invalid)); err == nil {
+		t.Fatal("unknown model passed schema validation")
+	}
+}
+
 func TestWorkflowSchemaAcceptsExplicitManualOnlyTrigger(t *testing.T) {
 	v := newV(t)
 	workflow := `{

@@ -75,6 +75,11 @@ func TestGooberRoundTrip(t *testing.T) {
 			DisplayName:  "Coder",
 			Instructions: "instructions.md",
 			Harness:      HarnessCopilot,
+			Model:        "claude-sonnet-4.5",
+			HarnessOptions: map[string]string{
+				"context":         "long_context",
+				"reasoningEffort": "high",
+			},
 			Capabilities: []string{"repo:push", "github:pr:write"},
 			Skills:       []string{"implement", "run-tests"},
 			Tools:        []string{"github", "shell"},

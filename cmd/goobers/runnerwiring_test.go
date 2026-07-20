@@ -89,6 +89,38 @@ func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
 	}
 }
 
+func TestCompiledMachinesRejectsInvalidHarnessConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		spec apiv1.GooberSpec
+		want string
+	}{
+		{
+			name: "unknown model",
+			spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot, Model: "unknown-model"},
+			want: `unknown model "unknown-model"`,
+		},
+		{
+			name: "unknown option",
+			spec: apiv1.GooberSpec{
+				Harness:        apiv1.HarnessCopilot,
+				HarnessOptions: map[string]string{"temperature": "0.2"},
+			},
+			want: `unknown harness option "temperature"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := compiledMachines(
+				&instance.ConfigSet{},
+				map[string]apiv1.GooberSpec{"coder": tc.spec},
+			)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("compiledMachines error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // TestBuildCredentialsDefault: with no credentials: block, the first repo's
 // token backs every credentialed capability and agent:model is absent (it must
 // be sourced explicitly, never defaulted to the repo token).

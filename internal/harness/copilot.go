@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -24,6 +25,44 @@ const defaultPromptFlag = "-p"
 // Copilot may use) is deferred to V1 (SEC-044); V0's capability enforcement
 // is the credential-scoping this adapter already does via EnvCapabilities.
 var defaultExtraArgs = []string{"--allow-all-tools", "--log-level", "error"}
+
+var copilotModels = map[string]struct{}{
+	"auto":                    {},
+	"claude-sonnet-5":         {},
+	"claude-sonnet-4.6":       {},
+	"claude-sonnet-4.5":       {},
+	"claude-haiku-4.5":        {},
+	"claude-opus-4.8":         {},
+	"claude-opus-4.7":         {},
+	"claude-opus-4.6":         {},
+	"gpt-5.6-sol":             {},
+	"gpt-5.6-terra":           {},
+	"gpt-5.6-luna":            {},
+	"gpt-5.5":                 {},
+	"gpt-5.4":                 {},
+	"gpt-5.3-codex":           {},
+	"gpt-5.4-mini":            {},
+	"gpt-5-mini":              {},
+	"gemini-3.1-pro-preview":  {},
+	"gemini-3.5-flash":        {},
+	"mai-code-1-flash-picker": {},
+}
+
+var copilotOptionValues = map[string]map[string]struct{}{
+	"context": {
+		"default":      {},
+		"long_context": {},
+	},
+	"reasoningEffort": {
+		"none":    {},
+		"minimal": {},
+		"low":     {},
+		"medium":  {},
+		"high":    {},
+		"xhigh":   {},
+		"max":     {},
+	},
+}
 
 // CopilotAdapter is the V0 harness adapter for the GitHub Copilot CLI
 // (GBO-040): it renders the invocation envelope + goober instructions into a
@@ -74,6 +113,32 @@ type CopilotAdapter struct {
 
 // Name returns the adapter's registry name.
 func (c *CopilotAdapter) Name() string { return "copilot-cli" }
+
+// ValidateConfig rejects model and option values the Copilot CLI adapter does
+// not know how to express. This is called during config admission.
+func (c *CopilotAdapter) ValidateConfig(model string, options map[string]string) error {
+	if model != "" {
+		if _, ok := copilotModels[model]; !ok {
+			return fmt.Errorf("unknown model %q", model)
+		}
+	}
+	names := make([]string, 0, len(options))
+	for name := range options {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		value := options[name]
+		allowed, ok := copilotOptionValues[name]
+		if !ok {
+			return fmt.Errorf("unknown harness option %q", name)
+		}
+		if _, ok := allowed[value]; !ok {
+			return fmt.Errorf("invalid %s value %q", name, value)
+		}
+	}
+	return nil
+}
 
 // Preflight verifies the Copilot CLI binary is on PATH and responds to a
 // version check, returning an actionable error otherwise (GBO-011; wired into
@@ -160,6 +225,15 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		extra = defaultExtraArgs
 	}
 	argv := append(append([]string{}, c.Command...), flag, prompt)
+	if req.Model != "" {
+		argv = append(argv, "--model", req.Model)
+	}
+	if value, ok := req.HarnessOptions["context"]; ok {
+		argv = append(argv, "--context", value)
+	}
+	if value, ok := req.HarnessOptions["reasoningEffort"]; ok {
+		argv = append(argv, "--reasoning-effort", value)
+	}
 	argv = append(argv, extra...)
 
 	env, err := c.credentialEnv(ctx, req)

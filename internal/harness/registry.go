@@ -60,6 +60,19 @@ func (r *Registry) Get(name string) (Adapter, error) {
 	return a, nil
 }
 
+// ValidateConfig validates harness-scoped configuration through the adapter
+// registered under name.
+func (r *Registry) ValidateConfig(name, model string, options map[string]string) error {
+	adapter, err := r.Get(name)
+	if err != nil {
+		return err
+	}
+	if err := ValidateConfig(adapter, model, options); err != nil {
+		return fmt.Errorf("harness: invalid %q configuration: %w", name, err)
+	}
+	return nil
+}
+
 // Names returns the registered adapter names, for diagnostics.
 func (r *Registry) Names() []string {
 	names := make([]string, 0, len(r.adapters))

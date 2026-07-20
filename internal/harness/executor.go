@@ -78,6 +78,8 @@ type Executor struct {
 	scrubber        journal.Scrubber
 	validator       *validate.Validator
 	instructions    string
+	model           string
+	harnessOptions  map[string]string
 	resultPath      string
 	verdictPath     string
 	timeout         time.Duration
@@ -102,6 +104,20 @@ func WithTimeout(d time.Duration) Option { return func(e *Executor) { e.timeout 
 // in memory for every harness session this Executor drives (default
 // DefaultMaxTranscriptBytes, #245).
 func WithTranscriptLimit(n int64) Option { return func(e *Executor) { e.transcriptLimit = n } }
+
+// WithHarnessConfig supplies the goober's adapter-validated model and opaque
+// harness options to every session driven by this Executor.
+func WithHarnessConfig(model string, options map[string]string) Option {
+	return func(e *Executor) {
+		e.model = model
+		if options != nil {
+			e.harnessOptions = make(map[string]string, len(options))
+			for name, value := range options {
+				e.harnessOptions[name] = value
+			}
+		}
+	}
+}
 
 // NewExecutor builds an Executor for one goober: adapter is the harness to
 // drive, injector resolves credentials scoped per invocation's declared
@@ -264,6 +280,8 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		Mode:               mode,
 		Envelope:           env,
 		Instructions:       e.instructions,
+		Model:              e.model,
+		HarnessOptions:     e.harnessOptions,
 		Workspace:          env.Workspace,
 		CompletionPath:     completionPath,
 		TelemetryDir:       telemetry.PrepareStageTelemetryDir(env.Workspace),

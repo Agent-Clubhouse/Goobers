@@ -67,6 +67,10 @@ type RunRequest struct {
 	// Instructions is the goober's resolved instructions.md body (persona,
 	// scope, done-criteria) — goober-level, not per-invocation.
 	Instructions string
+	// Model is the optional harness-scoped model selected by the goober.
+	Model string
+	// HarnessOptions are the goober's opaque, adapter-validated settings.
+	HarnessOptions map[string]string
 	// Workspace is the working directory the harness runs in — normally
 	// Envelope.Workspace, threaded explicitly so tests can point it
 	// elsewhere.
@@ -130,6 +134,26 @@ type Adapter interface {
 	// together with an empty/absent Payload — callers rely on
 	// ErrNoCompletion for that distinction.
 	Run(ctx context.Context, req RunRequest) (Outcome, error)
+}
+
+// ConfigValidator is implemented by adapters that expose model or option
+// configuration. Validation runs while definitions are admitted, before a
+// harness process or run attempt starts.
+type ConfigValidator interface {
+	ValidateConfig(model string, options map[string]string) error
+}
+
+// ValidateConfig delegates model and option validation to adapter. An adapter
+// without a validator may only be used with an empty harness configuration.
+func ValidateConfig(adapter Adapter, model string, options map[string]string) error {
+	validator, ok := adapter.(ConfigValidator)
+	if !ok {
+		if model != "" || len(options) > 0 {
+			return fmt.Errorf("harness: %s does not support model or harness options", adapter.Name())
+		}
+		return nil
+	}
+	return validator.ValidateConfig(model, options)
 }
 
 // readCompletion reads the harness's declared completion file back out of the

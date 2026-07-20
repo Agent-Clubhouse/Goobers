@@ -8,6 +8,8 @@ spec:
   displayName: Implementer
   instructions: instructions.md
   harness: copilot
+  model: auto
+  harnessOptions: {}
   # Implement-only: this stage never opens the PR or touches issues directly
   # (those are separate deterministic stages in the implementation
   # workflow) — repo:push covers the git side. agent:model sources the Copilot

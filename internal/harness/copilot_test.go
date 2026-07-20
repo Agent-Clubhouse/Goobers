@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
@@ -273,6 +275,89 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 	for _, arg := range runner.lastReq.Command {
 		if strings.Contains(arg, "push-token-value") {
 			t.Fatalf("token leaked into argv: %v", runner.lastReq.Command)
+		}
+	}
+}
+
+func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
+	adapter := &CopilotAdapter{}
+	for _, tc := range []struct {
+		name    string
+		model   string
+		options map[string]string
+		wantErr string
+	}{
+		{name: "valid", model: "claude-sonnet-4.5", options: map[string]string{"context": "long_context", "reasoningEffort": "high"}},
+		{name: "unknown model", model: "not-a-model", wantErr: "unknown model"},
+		{name: "unknown option", options: map[string]string{"temperature": "0.2"}, wantErr: "unknown harness option"},
+		{name: "unknown option value", options: map[string]string{"reasoningEffort": "extreme"}, wantErr: "invalid reasoningEffort"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := adapter.ValidateConfig(tc.model, tc.options)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateConfig: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ValidateConfig error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter = &CopilotAdapter{Command: []string{"copilot"}, ExtraArgs: []string{}, Runner: runner}
+	req := RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Model:          "claude-sonnet-4.5",
+		HarnessOptions: map[string]string{"context": "long_context", "reasoningEffort": "high"},
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+	}
+	if _, err := adapter.Run(context.Background(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	command := strings.Join(runner.lastReq.Command, " ")
+	for _, want := range []string{
+		"--model claude-sonnet-4.5",
+		"--context long_context",
+		"--reasoning-effort high",
+	} {
+		if !strings.Contains(command, want) {
+			t.Errorf("command = %q, want %q", command, want)
+		}
+	}
+}
+
+func TestCopilotModelVocabularyMatchesSchema(t *testing.T) {
+	data, err := schemas.FS.ReadFile("goober.schema.json")
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	var schema struct {
+		Properties map[string]struct {
+			Properties map[string]struct {
+				Enum []string `json:"enum"`
+			} `json:"properties"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	models := schema.Properties["spec"].Properties["model"].Enum
+	if len(models) != len(copilotModels) {
+		t.Fatalf("schema models = %v, adapter models = %v", models, copilotModels)
+	}
+	for _, model := range models {
+		if _, ok := copilotModels[model]; !ok {
+			t.Errorf("schema model %q is not accepted by the Copilot adapter", model)
 		}
 	}
 }

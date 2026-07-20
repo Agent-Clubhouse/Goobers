@@ -147,6 +147,37 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExecutorPassesHarnessConfig(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			if req.Model != "claude-sonnet-4.5" {
+				return fmt.Errorf("model = %q", req.Model)
+			}
+			if req.HarnessOptions["reasoningEffort"] != "high" {
+				return fmt.Errorf("harness options = %#v", req.HarnessOptions)
+			}
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+		WithHarnessConfig("claude-sonnet-4.5", map[string]string{"reasoningEffort": "high"}),
+	)
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+	if _, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir())); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+}
+
 // TestExecutorMarksSessionTimeout is #724: a harness session timeout must
 // surface across the invoke seam as invoke.IsTimeout so the runner can apply a
 // stage's OnTimeout salvage policy without importing this package. A non-timeout

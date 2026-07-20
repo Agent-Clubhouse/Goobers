@@ -35,6 +35,15 @@ type GooberSpec struct {
 	// +kubebuilder:default=copilot
 	// +optional
 	Harness Harness `json:"harness,omitempty" yaml:"harness,omitempty"`
+	// Model selects the harness model. Values are scoped to Harness and
+	// validated by its adapter before a run starts.
+	// +kubebuilder:validation:Enum=auto;claude-sonnet-5;claude-sonnet-4.6;claude-sonnet-4.5;claude-haiku-4.5;claude-opus-4.8;claude-opus-4.7;claude-opus-4.6;gpt-5.6-sol;gpt-5.6-terra;gpt-5.6-luna;gpt-5.5;gpt-5.4;gpt-5.3-codex;gpt-5.4-mini;gpt-5-mini;gemini-3.1-pro-preview;gemini-3.5-flash;mai-code-1-flash-picker
+	// +optional
+	Model string `json:"model,omitempty" yaml:"model,omitempty"`
+	// HarnessOptions are harness-specific string settings. The platform treats
+	// the map as opaque and the selected harness adapter validates its entries.
+	// +optional
+	HarnessOptions map[string]string `json:"harnessOptions,omitempty" yaml:"harnessOptions,omitempty"`
 	// Capabilities are the capability grants this goober holds (e.g.
 	// "github:issues:write", "repo:push", "telemetry:read"). A stage invoking
 	// this goober may only use capabilities in this set; undeclared use fails
