@@ -17,7 +17,7 @@ import (
 
 func TestConvertCopilotSessionEventsFixture(t *testing.T) {
 	native := readTestData(t, "copilot-session-events.jsonl")
-	want := readTestData(t, "copilot-transcript.jsonl")
+	want := canonicalTranscriptFixture(t, readTestData(t, "copilot-transcript.jsonl"))
 
 	for i := 0; i < 2; i++ {
 		got, ok := convertCopilotSessionEvents(bytes.NewReader(native), 0)
@@ -26,6 +26,9 @@ func TestConvertCopilotSessionEventsFixture(t *testing.T) {
 		}
 		if !bytes.Equal(got.data, want) {
 			t.Fatalf("converted transcript:\n%s\nwant:\n%s", got.data, want)
+		}
+		if events := decodeTranscriptEvents(t, got.data); len(events) != 9 {
+			t.Fatalf("converted transcript events = %d, want 9", len(events))
 		}
 		if got.truncated || got.droppedBytes != 0 {
 			t.Fatalf("unexpected truncation: truncated=%v dropped=%d", got.truncated, got.droppedBytes)
@@ -172,7 +175,7 @@ func TestCopilotUsageMatchesEnvelopeAndSpan(t *testing.T) {
 
 func TestConvertCopilotSessionEventsSalvagesPartialTrailingRecord(t *testing.T) {
 	native := append(readTestData(t, "copilot-session-events.jsonl"), []byte("{partial")...)
-	want := readTestData(t, "copilot-transcript.jsonl")
+	want := canonicalTranscriptFixture(t, readTestData(t, "copilot-transcript.jsonl"))
 
 	got, ok := convertCopilotSessionEvents(bytes.NewReader(native), 0)
 	if !ok {
@@ -196,7 +199,7 @@ func TestCopilotAdapterPrefersNativeSessionTranscript(t *testing.T) {
 		t.Fatalf("write Copilot config: %v", err)
 	}
 	native := readTestData(t, "copilot-session-events.jsonl")
-	want := readTestData(t, "copilot-transcript.jsonl")
+	want := canonicalTranscriptFixture(t, readTestData(t, "copilot-transcript.jsonl"))
 	runner := &fakeProcessRunner{
 		result: ProcessResult{Transcript: []byte("stdout compatibility floor"), ExitCode: 0},
 		act: func(req ProcessRequest) error {
@@ -235,6 +238,9 @@ func TestCopilotAdapterPrefersNativeSessionTranscript(t *testing.T) {
 	}
 	if !bytes.Equal(out.Transcript, want) {
 		t.Fatalf("Transcript:\n%s\nwant native conversion:\n%s", out.Transcript, want)
+	}
+	if out.TranscriptSchema != telemetry.GenAIEventSchema {
+		t.Fatalf("TranscriptSchema = %q, want %q", out.TranscriptSchema, telemetry.GenAIEventSchema)
 	}
 	path, ok := nativeSessionLogPath(runner.lastReq)
 	if !ok {

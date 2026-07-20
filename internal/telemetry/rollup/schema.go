@@ -180,4 +180,17 @@ CREATE TABLE IF NOT EXISTS scheduler_errors (
 	occurred_at  TEXT
 );
 `,
+	// v5 (issue #779): schema-stamp new transcript writes without altering or
+	// backfilling existing harness_transcripts rows. A missing satellite row is
+	// the explicit legacy representation.
+	`
+CREATE TABLE IF NOT EXISTS harness_transcript_schemas (
+	run_id TEXT NOT NULL,
+	seq    INTEGER NOT NULL,
+	schema TEXT NOT NULL,
+	PRIMARY KEY (run_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_harness_transcript_schemas_run ON harness_transcript_schemas(run_id);
+`,
 }

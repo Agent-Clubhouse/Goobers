@@ -161,12 +161,11 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 			}
 		}
 		for _, event := range events {
-			encoded, err := json.Marshal(event)
+			encoded, err := marshalTranscriptEvents(event)
 			if err != nil {
 				return transcriptCapture{}, false
 			}
 			_, _ = buf.Write(encoded)
-			_, _ = buf.Write([]byte{'\n'})
 			converted = true
 		}
 	}

@@ -190,14 +190,14 @@ func (db *DB) GateVerdicts(runID string) ([]GateVerdict, error) {
 	return out, rows.Err()
 }
 
-// HarnessTranscript is a queryable row from the harness_transcripts table — a
-// pointer at a within-stage agent transcript/tool-output blob a harness
-// executor recorded (journal.Run.RecordSpan, GBO-020); the blob itself stays
-// content-addressed in the run journal's spans/ store (issue #128).
+// HarnessTranscript is a queryable transcript pointer and its optional content
+// schema. Empty Schema identifies a legacy unversioned row; the blob itself
+// stays content-addressed in the run journal's spans/ store.
 type HarnessTranscript struct {
 	Seq        uint64
 	Stage      string
 	Name       string
+	Schema     string
 	RefDigest  string
 	RefSize    int64
 	OccurredAt time.Time
@@ -207,8 +207,10 @@ type HarnessTranscript struct {
 // in seq order.
 func (db *DB) HarnessTranscripts(runID string) ([]HarnessTranscript, error) {
 	rows, err := db.sql.Query(`
-		SELECT seq, stage, name, ref_digest, ref_size, occurred_at FROM harness_transcripts
-		WHERE run_id = ? ORDER BY seq`, runID)
+		SELECT h.seq, h.stage, h.name, COALESCE(s.schema, ''), h.ref_digest, h.ref_size, h.occurred_at
+		FROM harness_transcripts h
+		LEFT JOIN harness_transcript_schemas s ON s.run_id = h.run_id AND s.seq = h.seq
+		WHERE h.run_id = ? ORDER BY h.seq`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query harness_transcripts: %w", err)
 	}
@@ -219,7 +221,7 @@ func (db *DB) HarnessTranscripts(runID string) ([]HarnessTranscript, error) {
 		var h HarnessTranscript
 		var digest, occurredAt sql.NullString
 		var size sql.NullInt64
-		if err := rows.Scan(&h.Seq, &h.Stage, &h.Name, &digest, &size, &occurredAt); err != nil {
+		if err := rows.Scan(&h.Seq, &h.Stage, &h.Name, &h.Schema, &digest, &size, &occurredAt); err != nil {
 			return nil, fmt.Errorf("rollup: scan harness_transcript: %w", err)
 		}
 		h.RefDigest, h.RefSize = digest.String, size.Int64

@@ -311,6 +311,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 			out.Metrics = native.metrics
 			if len(native.data) > 0 {
 				out.Transcript = native.data
+				out.TranscriptSchema = telemetry.GenAIEventSchema
 				out.TranscriptTruncated = native.truncated
 				out.TranscriptDroppedBytes = native.droppedBytes
 			}

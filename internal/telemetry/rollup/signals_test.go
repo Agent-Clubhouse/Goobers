@@ -24,7 +24,8 @@ func TestIngestRunCapturesHarnessTranscripts(t *testing.T) {
 	events := strings.Join([]string{
 		rawEventLine(1, "run.started"),
 		`{"schema":"goobers.dev/journal/event/v1","seq":2,"branch":0,"time":"2026-07-13T00:00:02Z","type":"span.recorded","stage":"implement","name":"copilot-transcript","ref":{"path":"spans/sha256/ab/cdef","digest":"sha256:abcdef","size":4096}}`,
-		rawEventLine(3, "run.finished"),
+		`{"schema":"goobers.dev/journal/event/v1","seq":3,"branch":0,"time":"2026-07-13T00:00:03Z","type":"span.recorded","stage":"review","name":"copilot-transcript","dataSchema":"goobers.dev/telemetry/genai-event/v1","ref":{"path":"spans/sha256/12/3456","digest":"sha256:123456","size":2048}}`,
+		rawEventLine(4, "run.finished"),
 	}, "\n") + "\n"
 	writeRunWithRawEvents(t, runsDir, fixtureRunID, events, "")
 
@@ -37,12 +38,18 @@ func TestIngestRunCapturesHarnessTranscripts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HarnessTranscripts: %v", err)
 	}
-	if len(transcripts) != 1 {
-		t.Fatalf("transcripts = %#v, want exactly 1", transcripts)
+	if len(transcripts) != 2 {
+		t.Fatalf("transcripts = %#v, want exactly 2", transcripts)
 	}
 	tr := transcripts[0]
 	if tr.Stage != "implement" || tr.Name != "copilot-transcript" || tr.RefDigest != "sha256:abcdef" || tr.RefSize != 4096 {
 		t.Fatalf("unexpected transcript row: %#v", tr)
+	}
+	if tr.Schema != "" {
+		t.Fatalf("legacy transcript schema = %q, want empty", tr.Schema)
+	}
+	if got := transcripts[1].Schema; got != "goobers.dev/telemetry/genai-event/v1" {
+		t.Fatalf("canonical transcript schema = %q", got)
 	}
 }
 
