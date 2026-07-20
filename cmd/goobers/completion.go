@@ -86,7 +86,7 @@ func completionCandidates(kind, start string) []string {
 		}
 		return recentCompletionRunIDs(runs)
 	case "escalations":
-		runs, err := listRuns(layout.RunsDir())
+		runs, err := listLayoutRuns(layout, false)
 		if err != nil {
 			return nil
 		}

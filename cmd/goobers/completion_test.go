@@ -70,14 +70,40 @@ func TestCompletionCandidatesFromNestedInstance(t *testing.T) {
 	}
 
 	started := time.Date(2026, time.July, 16, 10, 0, 0, 0, time.UTC)
-	createListRun(t, instance.NewLayout(root).RunsDir(), "older-run", started)
-	createListRun(t, instance.NewLayout(root).RunsDir(), "newer-run", started.Add(time.Minute))
+	layout := instance.NewLayout(root)
+	createListRun(t, layout.RunsDir(), "older-run", started)
+	createListRun(t, layout.RunsDir(), "newer-run", started.Add(time.Minute))
 	writeStatusRunWithPhase(t, root, "escalated-run", "implementation", "goobers", started.Add(2*time.Minute), journal.PhaseEscalated)
-	if got, want := completionCandidates("runs", nested), []string{"escalated-run", "newer-run", "older-run"}; !reflect.DeepEqual(got, want) {
+	createCompletionRunWithPhase(t, layout.ForGaggle("goobers").RunsDir(), "scoped-escalated-run", started.Add(3*time.Minute), journal.PhaseEscalated)
+	if got, want := completionCandidates("runs", nested), []string{"scoped-escalated-run", "escalated-run", "newer-run", "older-run"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("run candidates = %v, want %v", got, want)
 	}
-	if got, want := completionCandidates("escalations", nested), []string{"escalated-run"}; !reflect.DeepEqual(got, want) {
+	if got, want := completionCandidates("escalations", nested), []string{"scoped-escalated-run", "escalated-run"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("escalation candidates = %v, want %v", got, want)
+	}
+}
+
+func createCompletionRunWithPhase(
+	t *testing.T,
+	runsDir, runID string,
+	startedAt time.Time,
+	phase journal.RunPhase,
+) {
+	t.Helper()
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID:     runID,
+		Workflow:  "implementation",
+		Gaggle:    "goobers",
+		StartedAt: startedAt,
+	}, nil)
+	if err != nil {
+		t.Fatalf("create completion fixture run: %v", err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
+		t.Fatalf("finish completion fixture run: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close completion fixture run: %v", err)
 	}
 }
 
