@@ -57,12 +57,15 @@ validator for the target release. Do not invent fields from prose or examples.
      default when the user asks for a new config repo.
    - For an initialized instance, use its existing `instance.yaml` and put
      definitions under `config/`. Update `instance.yaml` only when the request
-     changes instance-level connections or settings.
+     changes target repos, env/file credential grants, or instance settings.
 
-   These layouts are not interchangeable. Populate the instance file or
-   template with the requested target repo and provider, plus the credential
-   references required by the generated capabilities. Use only env or file
-   references, never secret values.
+   These layouts are not interchangeable. In either layout, declare every
+   named provider connection under `manifest.yaml`'s `spec.connections`, and
+   make every generated gaggle `connectionRef` match one of those entries.
+   The instance file or template has no named `connections` field: populate it
+   with the requested target repo and provider, plus the env/file credential
+   references required by the generated capabilities. Never emit secret
+   values.
 5. **Sketch the state graph.** Show `start -> task -> gate(outcome) -> target`
    before writing YAML. Every referenced state must exist and every declared
    state must be reachable.
@@ -71,7 +74,7 @@ validator for the target release. Do not invent fields from prose or examples.
 
    ```text
    instance.yaml.example                   # valid, secret-free instance template
-   manifest.yaml                           # add the gaggle name when applicable
+   manifest.yaml                           # add the gaggle and named connections
    gaggles/<gaggle>/
      gaggle.yaml
      goobers/<goober>/
@@ -125,8 +128,12 @@ Apply the complete checklist in `references/dsl-reference.md`. In particular:
   explicit non-success terminals.
 - Pass non-scalar stage data through content-digested artifact pointers.
   Result `outputs` are scalars only.
-- Reference secrets and connections by name; never emit tokens, passwords, or
-  credential values.
+- Declare named connections in `manifest.yaml`; every gaggle `connectionRef`
+  must resolve to a `spec.connections` entry. Do not put named connections in
+  `instance.yaml`.
+- Reference secrets by name in the manifest and use env/file token references
+  in `instance.yaml(.example)`; never emit tokens, passwords, or credential
+  values.
 
 For an initialized, single-gaggle instance, `goobers scaffold goober <name>
 <instance>` and `goobers scaffold workflow <name> <instance>` may provide a

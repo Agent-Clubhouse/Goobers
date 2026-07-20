@@ -32,6 +32,57 @@ Definition schemas reject unknown fields. `metadata.name` starts and ends with
 a lowercase letter or digit and otherwise uses lowercase letters, digits, and
 hyphens.
 
+### Manifest and local instance
+
+`manifest.yaml` owns every named connection referenced by a gaggle. A minimal
+manifest for a GitHub project and backlog is:
+
+```yaml
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: acme-config
+spec:
+  instance:
+    name: acme
+    environment: dev
+  connections:
+    - name: github-repo
+      type: repo
+      provider: github
+      secretRef:
+        name: github-token
+    - name: github-backlog
+      type: backlog
+      provider: github
+      secretRef:
+        name: github-token
+  gaggles:
+    - acme-api
+```
+
+For a tier 1-2 source tree, `instance.yaml.example` separately declares target
+repos and the concrete env/file credential sources needed by capabilities:
+
+```yaml
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: api
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+credentials:
+  - capability: agent:model
+    token:
+      env: GOOBERS_COPILOT_TOKEN
+```
+
+`instance.yaml(.example)` has no `connections` field and does not define names
+for gaggle lookup. Add or omit capability credential grants according to the
+generated tasks; never invent a credential value.
+
 ### Gaggle
 
 Required semantic content:
@@ -43,8 +94,10 @@ Required semantic content:
 - `spec.isolation.namespace`.
 
 The gaggle has one primary project and one singleton backlog. Connection names
-refer to the manifest or instance configuration; credentials never appear in
-the gaggle.
+refer only to entries under `manifest.yaml`'s `spec.connections`; credentials
+never appear in the gaggle. Every non-empty project or backlog `connectionRef`
+must resolve there. Use a `repo` connection for the project and a `backlog`
+connection for the backlog.
 
 ### Goober
 
@@ -121,7 +174,12 @@ referenced goober's capability list.
 ## Pre-validation checklist
 
 - All resource and state names are unique and valid.
-- The manifest includes a newly added gaggle.
+- The manifest includes every newly added gaggle.
+- Every gaggle `connectionRef` resolves to a named `spec.connections` entry in
+  the manifest with the appropriate connection type.
+- `instance.yaml(.example)` lists the target repos and env/file credential
+  sources required by the generated capabilities; it has no named
+  `connections` field.
 - Gaggle, goober, and workflow references agree exactly.
 - Every `start`, `next`, and branch target exists or is a reserved terminal.
 - Every task and gate is reachable from `start`.

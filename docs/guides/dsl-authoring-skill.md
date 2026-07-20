@@ -51,11 +51,12 @@ gaggles/acme-api/goobers/triager/instructions.md
 gaggles/acme-api/workflows/test-and-triage.yaml
 ```
 
-The instance template uses the requested `acme/api` GitHub connection and
-environment-variable references for the repo and model credentials, never
-secret values. For an existing initialized instance, the skill instead keeps
-its root-level `instance.yaml` and writes `manifest.yaml` and `gaggles/`
-beneath `config/`.
+The manifest declares the named GitHub repo and backlog connections referenced
+by the gaggle. The instance template separately declares the `acme/api` target
+repo and environment-variable references for the repo and model credentials,
+never secret values; instance files do not contain named connections. For an
+existing initialized instance, the skill instead keeps its root-level
+`instance.yaml` and writes `manifest.yaml` and `gaggles/` beneath `config/`.
 
 For that request, the graph is a scheduled workflow with a deterministic test
 task, an automated status gate, and an agentic triage task. The goober and its
