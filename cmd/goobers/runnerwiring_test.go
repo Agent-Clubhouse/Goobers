@@ -50,21 +50,28 @@ func resolveGrants(t *testing.T, r credentials.Resolver, grants []credentials.Gr
 }
 
 // TestBuildEnvCapabilities is #288's wiring: the Copilot adapter's capability→
-// env-var map routes agent:model to COPILOT_GITHUB_TOKEN and every org-repo
-// capability to GH_TOKEN — two DISTINCT vars, so one subprocess can hold both
-// tokens (§3.3). A collision (agent:model sharing GH_TOKEN) would clobber one.
+// env-var map routes agent:model to COPILOT_GITHUB_TOKEN, the nomination
+// approval authority to its dedicated GOOBERS_CRED_* variable, and other
+// org-repo capabilities to GH_TOKEN.
 func TestBuildEnvCapabilities(t *testing.T) {
 	envCaps := buildEnvCapabilities()
 	if got := envCaps["agent:model"]; got != "COPILOT_GITHUB_TOKEN" {
 		t.Fatalf("agent:model env = %q, want COPILOT_GITHUB_TOKEN", got)
 	}
 	for _, c := range credentialedCapabilities {
-		if got := envCaps[string(c)]; got != credentialGrantEnv {
-			t.Fatalf("capability %s env = %q, want %q", c, got, credentialGrantEnv)
+		want := credentialGrantEnv
+		if c == capability.GitHubIssuesApprove {
+			want = executor.CredentialEnvVar(string(c))
+		}
+		if got := envCaps[string(c)]; got != want {
+			t.Fatalf("capability %s env = %q, want %q", c, got, want)
 		}
 	}
 	if envCaps["agent:model"] == credentialGrantEnv {
 		t.Fatalf("agent:model must map to a var distinct from the github-tool var %q, else the two tokens collide", credentialGrantEnv)
+	}
+	if got := envCaps["github:issues:approve"]; got != "GOOBERS_CRED_GITHUB_ISSUES_APPROVE" {
+		t.Fatalf("github:issues:approve env = %q, want dedicated approval variable", got)
 	}
 }
 
@@ -415,6 +422,30 @@ func TestBuildCredentialsOverride(t *testing.T) {
 	// The other repo-backed capabilities are untouched by the override.
 	if got["github:issues:write"] != "tokenA" || got["github:pr:write"] != "tokenA" {
 		t.Fatalf("non-overridden capabilities changed: %+v", got)
+	}
+}
+
+func TestBuildCredentialsApprovalOverride(t *testing.T) {
+	t.Setenv("GH_TOKEN_A", "tokenA")
+	t.Setenv("APPROVAL_TOKEN_B", "tokenB")
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
+		},
+		Credentials: []instance.CredentialGrant{
+			{Capability: "github:issues:approve", Token: instance.TokenRef{Env: "APPROVAL_TOKEN_B"}},
+		},
+	}
+	resolver, grants, err := buildCredentials(cfg)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	got := resolveGrants(t, resolver, grants)
+	if got["github:issues:approve"] != "tokenB" {
+		t.Fatalf("github:issues:approve = %q, want tokenB", got["github:issues:approve"])
+	}
+	if got["github:issues:write"] != "tokenA" {
+		t.Fatalf("github:issues:write = %q, want repo token tokenA", got["github:issues:write"])
 	}
 }
 

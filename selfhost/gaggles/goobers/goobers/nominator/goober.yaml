@@ -10,12 +10,12 @@ spec:
   harness: copilot
   model: auto
   harnessOptions: {}
-  # Files issues from evidence only — never touches code or PRs. read-only on
-  # telemetry, write-only (issues) on the backlog. agent:model sources the
-  # Copilot model token (COPILOT_GITHUB_TOKEN) distinct from the github tool's
-  # GH_TOKEN (issue #289 / multi-token creds §3.3).
+  # Files issues from evidence only — never touches code or PRs. The separate
+  # approval authority is materialized only when the invoking workflow stage
+  # explicitly opts in; the checked-in work-nomination workflow does not.
   capabilities:
     - github:issues:write
+    - github:issues:approve
     - telemetry:read
     - agent:model
   skills:

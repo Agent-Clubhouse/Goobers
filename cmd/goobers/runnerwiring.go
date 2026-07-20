@@ -147,8 +147,8 @@ var newAgenticAdapter func(gooberName string, envCaps map[string]string) harness
 // providers.GitHubProvider over the resolved repo token.
 var newPRPoller func(token string) executor.PRPoller
 
-// credentialGrantEnv is the environment variable the Copilot CLI reads a
-// credentialed capability's token from (internal/harness.CopilotAdapter's
+// credentialGrantEnv is the environment variable the Copilot CLI reads most
+// credentialed capabilities' tokens from (internal/harness.CopilotAdapter's
 // EnvCapabilities convention — matches internal/harness/copilot_test.go's
 // {"repo:push": "GH_TOKEN"} fixture).
 const credentialGrantEnv = "GH_TOKEN"
@@ -158,29 +158,29 @@ const credentialGrantEnv = "GH_TOKEN"
 // for model auth (§3.3), so mapping agent:model to a DISTINCT env var from
 // credentialGrantEnv lets one agentic subprocess carry a personal "Copilot
 // Requests" PAT for the model (agent:model → COPILOT_GITHUB_TOKEN) AND the
-// org-repo token for the github tool (credentialedCapabilities → GH_TOKEN) at
-// once — credentialEnv appends both, and because the vars differ neither
+// org-repo token for the github tool (ordinary repo capabilities → GH_TOKEN)
+// at once — credentialEnv appends both, and because the vars differ neither
 // clobbers the other (#288, multi-token credentials 2/3).
 const copilotModelEnv = "COPILOT_GITHUB_TOKEN"
 
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
-	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubIssuesApprove, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
 }
 
 // buildEnvCapabilities maps each capability the Copilot adapter injects to the
-// environment variable the CLI reads its token from: the org-repo capabilities
-// to GH_TOKEN (the github tool's var) and agent:model to COPILOT_GITHUB_TOKEN
-// (the model backend's var, #288, §3.3). The two vars are distinct on purpose —
-// credentialEnv appends one entry per declared capability, so a stage declaring
-// both agent:model and an org-repo capability carries both tokens in a single
-// subprocess with neither clobbering the other.
+// environment variable that consumes its token. General org-repo capabilities
+// use GH_TOKEN (the github tool's var), github:issues:approve uses its dedicated
+// GOOBERS_CRED_* variable so the nominator can detect and exercise that opt-in
+// separately, and agent:model uses COPILOT_GITHUB_TOKEN (the model backend's
+// var, #288, §3.3).
 func buildEnvCapabilities() map[string]string {
 	envCaps := make(map[string]string, len(credentialedCapabilities)+1)
 	for _, c := range credentialedCapabilities {
 		envCaps[string(c)] = credentialGrantEnv
 	}
+	envCaps[string(capability.GitHubIssuesApprove)] = executor.CredentialEnvVar(string(capability.GitHubIssuesApprove))
 	envCaps[string(capability.AgentModel)] = copilotModelEnv
 	return envCaps
 }
