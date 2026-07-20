@@ -104,6 +104,13 @@ func TestTraceJSONIncludesFailedRunErrorAndSpans(t *testing.T) {
 	if terminalError == nil || terminalError.Code != "stage_failed" || terminalError.Message != "implementation failed" {
 		t.Fatalf("events missing terminal error: %#v", got.Events)
 	}
+	if got.TerminalCause == nil ||
+		got.TerminalCause.Phase != journal.PhaseFailed ||
+		got.TerminalCause.Stage != "implement" ||
+		got.TerminalCause.Code != "stage_failed" ||
+		got.TerminalCause.Message != "implementation failed" {
+		t.Fatalf("terminal cause = %#v", got.TerminalCause)
+	}
 	if len(got.Spans) != 1 || got.Spans[0].Name != "task/implement" ||
 		got.Spans[0].Status != "error" || got.Spans[0].DurationMs != 1500 {
 		t.Fatalf("spans = %#v", got.Spans)
@@ -851,8 +858,14 @@ func TestTraceShowsEscalationSummary(t *testing.T) {
 		"  gate: review\n" +
 		"  repass count: 4\n" +
 		"  last needs-changes reason: " + reason + "\n\n"
-	if !strings.HasPrefix(stdout, wantSummary) {
-		t.Fatalf("trace stdout = %q, want prefix %q", stdout, wantSummary)
+	if !strings.HasPrefix(stdout, "timeline:\n") {
+		t.Fatalf("trace stdout = %q, want timeline prefix", stdout)
+	}
+	if !strings.Contains(stdout, "  terminal: escalated - gate review - repass budget exhausted\n") {
+		t.Fatalf("trace stdout missing terminal cause: %q", stdout)
+	}
+	if !strings.Contains(stdout, "\n"+wantSummary) {
+		t.Fatalf("trace stdout = %q, want escalation summary %q", stdout, wantSummary)
 	}
 	if !strings.Contains(stdout, "events:") {
 		t.Fatalf("trace stdout missing raw events after summary: %q", stdout)

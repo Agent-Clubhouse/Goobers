@@ -188,15 +188,26 @@ func runTraceWithFactories(
 		return 2
 	}
 	escalation := traceEscalation(detail, traceEscalationDetail, ledger.Events)
+	transcripts, transcriptErr := reads.RunTranscripts(ctx, runID, "")
+	if transcriptErr != nil {
+		// Usage is optional timeline enrichment. A missing or torn transcript
+		// must not make the canonical event trace unavailable.
+		transcripts = nil
+	}
+	now := time.Now()
+	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, now)
+	terminal := terminalCause(detail, ledger.Events)
 	if *jsonOutput {
 		result := traceJSONResult{
-			Identity:   identity,
-			Phase:      detail.Phase,
-			State:      state,
-			Repasses:   repasses,
-			Escalation: escalation,
-			Events:     traceJSONEvents(ledger.Events),
-			Spans:      spans,
+			Identity:      identity,
+			Phase:         detail.Phase,
+			State:         state,
+			Repasses:      repasses,
+			Timeline:      timeline,
+			TerminalCause: terminal,
+			Escalation:    escalation,
+			Events:        traceJSONEvents(ledger.Events),
+			Spans:         spans,
 		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
 			pf(stderr, "error: encode trace: %v\n", err)
@@ -210,6 +221,7 @@ func runTraceWithFactories(
 		return 2
 	}
 
+	printTraceTimeline(stdout, timeline, terminal)
 	if escalation != nil {
 		printEscalationSummary(stdout, *escalation)
 	}
@@ -223,7 +235,7 @@ func runTraceWithFactories(
 	pf(stdout, "started:  %s\n", detail.StartedAt.Format("2006-01-02T15:04:05Z07:00"))
 	if state != nil {
 		pf(stdout, "phase:    %s (machineState=%q, lastSeq=%d)\n", state.Phase, state.MachineState, state.LastSeq)
-		pf(stdout, "last activity: %s (%s)\n", formatLastActivity(time.Now(), state.UpdatedAt), state.UpdatedAt.Format(time.RFC3339))
+		pf(stdout, "last activity: %s (%s)\n", formatLastActivity(now, state.UpdatedAt), state.UpdatedAt.Format(time.RFC3339))
 	}
 	pf(stdout, "repasses: %d\n", repasses)
 	pln(stdout, "\nevents:")
@@ -312,13 +324,15 @@ func traceEventsTerminal(events []readservice.RunEvent) bool {
 }
 
 type traceJSONResult struct {
-	Identity   journal.RunIdentity  `json:"identity"`
-	Phase      journal.RunPhase     `json:"phase"`
-	State      *journal.State       `json:"state,omitempty"`
-	Repasses   int                  `json:"repasses"`
-	Escalation *escalationSummary   `json:"escalation,omitempty"`
-	Events     []traceJSONEvent     `json:"events"`
-	Spans      []rollup.SpanSummary `json:"spans"`
+	Identity      journal.RunIdentity  `json:"identity"`
+	Phase         journal.RunPhase     `json:"phase"`
+	State         *journal.State       `json:"state,omitempty"`
+	Repasses      int                  `json:"repasses"`
+	Timeline      []traceTimelineStage `json:"timeline"`
+	TerminalCause *traceTerminalCause  `json:"terminalCause,omitempty"`
+	Escalation    *escalationSummary   `json:"escalation,omitempty"`
+	Events        []traceJSONEvent     `json:"events"`
+	Spans         []rollup.SpanSummary `json:"spans"`
 }
 
 type traceJSONEvent struct {
