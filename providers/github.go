@@ -347,13 +347,23 @@ func (p *GitHubProvider) FindPullRequestByBranch(ctx context.Context, repo Repos
 	return PullRequestResult{ID: strconv.Itoa(pr.Number), Number: pr.Number, URL: pr.HTMLURL}, true, nil
 }
 
-// ListOpenPullRequestHeads returns the head-branch ref of every open PR on the
-// repo. Used by the scheduler's open-PR-count throttle (#353) to count the
-// loop's own un-merged sibling PRs (those under the goobers/ run-branch
-// namespace) so it can pace dispatch. Single page of up to 100 — ample for a
-// dogfood loop; a full paginator is a follow-up if a repo ever carries >100
-// open PRs (at which point the cap has long since engaged anyway).
-func (p *GitHubProvider) ListOpenPullRequestHeads(ctx context.Context, repo RepositoryRef) ([]string, error) {
+// OpenPRSummary is the slim per-PR view the open-PR-count throttle (#353/#986)
+// needs: the head-branch ref (to bucket by workflow run-branch namespace) and
+// the PR's labels (to exclude human-parked PRs the daemon cannot drain from the
+// cap). Deliberately minimal — the throttle never needs the full PR.
+type OpenPRSummary struct {
+	Head   string
+	Labels []string
+}
+
+// ListOpenPullRequests returns the head-branch ref and labels of every open PR
+// on the repo. Used by the scheduler's open-PR-count throttle (#353) to count
+// the loop's own un-merged sibling PRs (those under the goobers/ run-branch
+// namespace), excluding human-parked ones (#986), so it can pace dispatch.
+// Single page of up to 100 — ample for a dogfood loop; a full paginator is a
+// follow-up if a repo ever carries >100 open PRs (at which point the cap has
+// long since engaged anyway).
+func (p *GitHubProvider) ListOpenPullRequests(ctx context.Context, repo RepositoryRef) ([]OpenPRSummary, error) {
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls")
 	if err != nil {
 		return nil, err
@@ -369,11 +379,15 @@ func (p *GitHubProvider) ListOpenPullRequestHeads(ctx context.Context, repo Repo
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
 		return nil, err
 	}
-	heads := make([]string, 0, len(out))
+	prs := make([]OpenPRSummary, 0, len(out))
 	for _, pr := range out {
-		heads = append(heads, pr.Head.Ref)
+		labels := make([]string, 0, len(pr.Labels))
+		for _, l := range pr.Labels {
+			labels = append(labels, l.Name)
+		}
+		prs = append(prs, OpenPRSummary{Head: pr.Head.Ref, Labels: labels})
 	}
-	return heads, nil
+	return prs, nil
 }
 
 // updatePullRequest applies title/body edits to an already-open PR (its
@@ -1887,6 +1901,7 @@ type githubPullRequest struct {
 	Head    struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
+	Labels []githubLabel `json:"labels"`
 }
 
 type githubPullRequestDetail struct {

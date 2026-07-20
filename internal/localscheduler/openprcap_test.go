@@ -79,14 +79,22 @@ func TestAdmitOpenPRCap(t *testing.T) {
 }
 
 type fakeOpenPRLister struct {
-	heads []string
-	err   error
-	calls int
+	heads  []string
+	labels map[string][]string // head -> labels, for the exclusion tests
+	err    error
+	calls  int
 }
 
-func (f *fakeOpenPRLister) ListOpenPullRequestHeads(_ context.Context, _ providers.RepositoryRef) ([]string, error) {
+func (f *fakeOpenPRLister) ListOpenPullRequests(_ context.Context, _ providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
 	f.calls++
-	return f.heads, f.err
+	if f.err != nil {
+		return nil, f.err
+	}
+	prs := make([]providers.OpenPRSummary, 0, len(f.heads))
+	for _, h := range f.heads {
+		prs = append(prs, providers.OpenPRSummary{Head: h, Labels: f.labels[h]})
+	}
+	return prs, nil
 }
 
 // TestOpenPRRefresherCountsRunBranchHeads is #353/#891: the refresher counts
@@ -100,7 +108,7 @@ func TestOpenPRRefresherCountsRunBranchHeads(t *testing.T) {
 		"goobers/implementation-helper/run-4",
 		"feature/human-authored",
 	}}
-	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour)
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil)
 
 	if _, known := r.OpenPRCount("implementation"); known {
 		t.Fatal("expected unknown before the first poll (Admit fails open until then)")
@@ -121,11 +129,36 @@ func TestOpenPRRefresherCountsRunBranchHeads(t *testing.T) {
 	}
 }
 
+// TestOpenPRRefresherExcludesHumanParkedPRs is #986: a PR carrying an excluded
+// (human-parked) label is dropped from the count, so a pool full of
+// merge-escalated PRs the daemon can't drain doesn't starve new work — while
+// PRs with other labels (or none) still count for backpressure.
+func TestOpenPRRefresherExcludesHumanParkedPRs(t *testing.T) {
+	const escalated = "goobers:merge-escalated"
+	lister := &fakeOpenPRLister{
+		heads: []string{
+			"goobers/implementation/run-1", // counts
+			"goobers/implementation/run-2", // parked → excluded
+			"goobers/implementation/run-3", // needs-remediation still counts (drainable)
+		},
+		labels: map[string][]string{
+			"goobers/implementation/run-2": {escalated},
+			"goobers/implementation/run-3": {"goobers:needs-remediation"},
+		},
+	}
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, []string{escalated})
+
+	r.pollOnce(context.Background())
+	if n, known := r.OpenPRCount("implementation"); !known || n != 2 {
+		t.Fatalf("count=%d known=%v, want 2 (run-1 + run-3; run-2 excluded as human-parked)", n, known)
+	}
+}
+
 // TestOpenPRRefresherFailsOpenOnError is #353's fail-open contract: a poll error
 // leaves the count "unknown" so Admit doesn't block on a transient GitHub hiccup.
 func TestOpenPRRefresherFailsOpenOnError(t *testing.T) {
 	lister := &fakeOpenPRLister{err: errors.New("github unavailable")}
-	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour)
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil)
 
 	r.pollOnce(context.Background())
 	if _, known := r.OpenPRCount("implementation"); known {
@@ -145,7 +178,7 @@ func TestOpenPRRefresherFailsOpenOnError(t *testing.T) {
 // returns on context cancellation (its lifecycle under the daemon WaitGroup).
 func TestOpenPRRefresherRunPollsAndStops(t *testing.T) {
 	lister := &fakeOpenPRLister{heads: []string{"goobers/implementation/run-1"}}
-	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour)
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
