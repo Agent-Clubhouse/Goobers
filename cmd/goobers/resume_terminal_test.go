@@ -239,7 +239,7 @@ func TestResumeScanFinalizesTerminalRunFromRemovedGaggle(t *testing.T) {
 
 	var released []string
 	resumed, warned, err := resumeInterruptedRunsWithRunners(
-		context.Background(), l, setup.Runners, nil, setup.Machines, setup.RepoRefs,
+		context.Background(), l, setup.Runners, nil, setup.RunnerRegistry, setup.Machines, setup.RepoRefs,
 		setup.InstanceLog, setup.Telemetry, setup.RollupDB,
 		func(_ string, workflow string) { released = append(released, workflow) }, &wg,
 	)

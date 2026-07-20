@@ -42,6 +42,42 @@ func newRun(t *testing.T) (*Run, string) {
 	return run, root
 }
 
+func TestObserveActivityRefreshesWatchdogClockWithoutJournalAppend(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	run, root := newRunWithClock(t, func() time.Time { return now })
+	defer run.Close()
+
+	now = now.Add(2 * time.Minute)
+	run.ObserveActivity()
+	if stale := run.IfLastActivityBefore(now.Add(-time.Minute), func(time.Time) {
+		t.Fatal("fresh observed activity was claimed as stale")
+	}); stale {
+		t.Fatal("observed activity did not refresh the watchdog clock")
+	}
+
+	reader, err := OpenRead(filepath.Join(root, testIdentity().RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != EventRunStarted {
+		t.Fatalf("events after observed activity = %+v, want only run.started", events)
+	}
+}
+
+func newRunWithClock(t *testing.T, clock func() time.Time) (*Run, string) {
+	t.Helper()
+	root := t.TempDir()
+	run, err := Create(root, testIdentity(), nil, WithClock(clock))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	return run, root
+}
+
 func TestCreateAndRoundTrip(t *testing.T) {
 	run, root := newRun(t)
 

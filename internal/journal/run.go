@@ -267,6 +267,18 @@ func (r *Run) IfLastActivityBefore(cutoff time.Time, claim func(time.Time)) bool
 	return true
 }
 
+// ObserveActivity makes live executor progress immediately visible to the
+// watchdog without adding another durable event. Heartbeat events still
+// coalesce that progress for crash recovery and inspection.
+func (r *Run) ObserveActivity() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now()
+	if r.lastActivity.Before(now) {
+		r.lastActivity = now
+	}
+}
+
 // RepairAppendBoundary restores events.jsonl after an Append failure. A torn
 // final record is discarded and recorded with a repaired event; a complete
 // final record is retained. The sequence is reconstructed from the surviving

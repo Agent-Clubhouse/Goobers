@@ -131,6 +131,7 @@ func (r *configReloader) poll(now time.Time) error {
 		set,
 		report,
 		r.wg,
+		r.setup.RunnerRegistry,
 		r.setup.Telemetry,
 		r.setup.RollupDB,
 		r.setup.InstanceLog,
@@ -155,6 +156,7 @@ func (r *configReloader) poll(now time.Time) error {
 	if err := r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest); err != nil {
 		return err
 	}
+	r.setup.RunnerRegistry.Replace(definitions.Runners)
 	r.setup.Runner = definitions.Runner
 	r.setup.Runners = definitions.Runners
 	r.setup.Worktrees = definitions.Worktrees

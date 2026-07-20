@@ -46,7 +46,7 @@ func (d *liveStalledDeterministic) Run(ctx context.Context, _ apiv1.InvocationEn
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
-func TestSweepStalledRunsEscalatesLiveAdmittedRun(t *testing.T) {
+func TestSweepStalledRunsEscalatesLiveAdmittedRunAcrossReload(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
 	if err != nil {
@@ -80,6 +80,15 @@ func TestSweepStalledRunsEscalatesLiveAdmittedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reloadedRunner, err := runner.New(runner.Config{
+		Worktrees: manager,
+		RunsDir:   layout.RunsDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runners := newDaemonRunnerRegistry()
+	runners.Replace(map[string]*runner.Runner{"example": runRunner})
 	machine, err := workflow.Compile(workflow.Definition{
 		Name: "implementation", Version: 1,
 		Spec: apiv1.WorkflowSpec{
@@ -101,7 +110,7 @@ func TestSweepStalledRunsEscalatesLiveAdmittedRun(t *testing.T) {
 		Workflow:  "implementation",
 		Gaggle:    "example",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
-		Starter:   &trackedStarter{r: runRunner, machine: machine, wg: &tracked, l: layout, log: log},
+		Starter:   &trackedStarter{r: runRunner, machine: machine, wg: &tracked, l: layout, log: log, runners: runners},
 	}}, log)
 	runID, err := sched.Trigger(context.Background(), "implementation", time.Now())
 	if err != nil {
@@ -128,11 +137,12 @@ func TestSweepStalledRunsEscalatesLiveAdmittedRun(t *testing.T) {
 		t.Fatalf("trigger before live sweep error = %v, want max-parallel refusal", err)
 	}
 
+	runners.Replace(map[string]*runner.Runner{"example": reloadedRunner})
 	now := time.Now().Add(2 * time.Hour)
 	if err := sweepStalledRuns(
 		layout,
-		nil,
-		runRunner,
+		runners,
+		reloadedRunner,
 		log,
 		nil,
 		nil,
@@ -406,7 +416,8 @@ func TestSweepStalledRunsTerminalizesRemovedGaggleRoot(t *testing.T) {
 		notified = append(notified, runID+":"+string(phase))
 		return nil
 	}
-	if err := sweepStalledRuns(layout, map[string]*runner.Runner{}, nil, log, prepare, notify, nil, now, 45*time.Minute); err != nil {
+	runners := newDaemonRunnerRegistry()
+	if err := sweepStalledRuns(layout, runners, nil, log, prepare, notify, nil, now, 45*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 

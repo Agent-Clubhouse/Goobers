@@ -58,6 +58,7 @@ func (t wallHeartbeatTicker) Stop()                   { t.ticker.Stop() }
 
 type journalAppender interface {
 	Append(journal.Event) error
+	ObserveActivity()
 }
 
 type stageHeartbeat struct {
@@ -1617,6 +1618,7 @@ func (r *Runner) startStageHeartbeat(ctx context.Context, jr journalAppender, st
 	done := make(chan error, 1)
 	var progressed atomic.Bool
 	ctx = invoke.WithProgressReporter(ctx, func() {
+		jr.ObserveActivity()
 		progressed.Store(true)
 	})
 	go func() {
@@ -1653,14 +1655,9 @@ func (r *Runner) startStageHeartbeat(ctx context.Context, jr journalAppender, st
 type gateHeartbeatGoober struct {
 	goober  invoke.Goober
 	runner  *Runner
-	journal gateHeartbeatJournal
+	journal *journal.Run
 	stage   string
 	attempt int
-}
-
-type gateHeartbeatJournal interface {
-	journalAppender
-	RepairAppendBoundary() error
 }
 
 func (g gateHeartbeatGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {

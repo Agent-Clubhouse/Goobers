@@ -448,6 +448,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		set,
 		nil,
 		&wg,
+		newDaemonRunnerRegistry(),
 		nil,
 		nil,
 		log,

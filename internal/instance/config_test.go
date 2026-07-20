@@ -64,6 +64,9 @@ func TestStalledRunTimeout(t *testing.T) {
 	if got, err := (RunConditions{}).StalledRunTimeoutDuration(); err != nil || got != DefaultStalledRunTimeout {
 		t.Fatalf("default StalledRunTimeoutDuration = %s, %v; want %s", got, err, DefaultStalledRunTimeout)
 	}
+	if got, err := (RunConditions{StalledRunTimeout: "1ns"}).StalledRunTimeoutDuration(); err != nil || got != time.Nanosecond {
+		t.Fatalf("shortest StalledRunTimeoutDuration = %s, %v; want 1ns", got, err)
+	}
 	for _, value := range []string{"not-a-duration", "0s", "-1m"} {
 		t.Run(value, func(t *testing.T) {
 			cfg := Config{RunConditions: RunConditions{StalledRunTimeout: value}}

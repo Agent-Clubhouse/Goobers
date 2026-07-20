@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -15,9 +16,72 @@ import (
 
 type stalledTerminalPreparer func(instance.Layout) (runner.TerminalPreparer, error)
 
+// daemonRunnerRegistry retains each live run's owning Runner while atomically
+// swapping the configured fallback runners during config reload.
+type daemonRunnerRegistry struct {
+	mu      sync.RWMutex
+	current map[string]*runner.Runner
+	owners  map[string]*runner.Runner
+}
+
+func newDaemonRunnerRegistry() *daemonRunnerRegistry {
+	return &daemonRunnerRegistry{owners: make(map[string]*runner.Runner)}
+}
+
+func (r *daemonRunnerRegistry) Replace(current map[string]*runner.Runner) {
+	if r == nil {
+		return
+	}
+	replacement := make(map[string]*runner.Runner, len(current))
+	for gaggle, rn := range current {
+		replacement[gaggle] = rn
+	}
+	r.mu.Lock()
+	r.current = replacement
+	r.mu.Unlock()
+}
+
+func (r *daemonRunnerRegistry) Track(runID string, owner *runner.Runner) func() {
+	if r == nil || owner == nil {
+		return func() {}
+	}
+	r.mu.Lock()
+	if r.owners == nil {
+		r.owners = make(map[string]*runner.Runner)
+	}
+	if _, exists := r.owners[runID]; exists {
+		r.mu.Unlock()
+		return func() {}
+	}
+	r.owners[runID] = owner
+	r.mu.Unlock()
+	return func() {
+		r.mu.Lock()
+		if r.owners[runID] == owner {
+			delete(r.owners, runID)
+		}
+		r.mu.Unlock()
+	}
+}
+
+func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Runner) *runner.Runner {
+	if r == nil {
+		return fallback
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if owner := r.owners[runID]; owner != nil {
+		return owner
+	}
+	if gaggle != "" {
+		return r.current[gaggle]
+	}
+	return fallback
+}
+
 func sweepStalledRuns(
 	l instance.Layout,
-	runners map[string]*runner.Runner,
+	runners *daemonRunnerRegistry,
 	fallback *runner.Runner,
 	log *journal.InstanceLog,
 	prepare stalledTerminalPreparer,
@@ -75,13 +139,12 @@ func sweepStalledRuns(
 				continue
 			}
 
-			runRunner := fallback
 			runLayout := l
 			if filepath.Clean(runsDir) != filepath.Clean(l.RunsDir()) {
 				rootGaggle := filepath.Base(filepath.Dir(runsDir))
 				runLayout = l.ForGaggle(rootGaggle)
-				runRunner = runners[rootGaggle]
 			}
+			runRunner := runners.Resolve(identity.RunID, runLayout.Gaggle(), fallback)
 			if runRunner == nil {
 				runRunner = terminalizers[runsDir]
 				if runRunner == nil {

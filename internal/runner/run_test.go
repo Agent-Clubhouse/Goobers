@@ -278,12 +278,17 @@ func (t *fakeHeartbeatTicker) Stop() {
 }
 
 type heartbeatRecorder struct {
-	events chan journal.Event
+	events     chan journal.Event
+	activities atomic.Int32
 }
 
-func (r heartbeatRecorder) Append(event journal.Event) error {
+func (r *heartbeatRecorder) Append(event journal.Event) error {
 	r.events <- event
 	return nil
+}
+
+func (r *heartbeatRecorder) ObserveActivity() {
+	r.activities.Add(1)
 }
 
 func TestStageHeartbeatUsesFixedIntervalAndStopsWithAttempt(t *testing.T) {
@@ -300,7 +305,7 @@ func TestStageHeartbeatUsesFixedIntervalAndStopsWithAttempt(t *testing.T) {
 		},
 	}
 	recorder := heartbeatRecorder{events: make(chan journal.Event, 1)}
-	ctx, heartbeat := r.startStageHeartbeat(context.Background(), recorder, "implement", 2, journal.AttemptPolicy)
+	ctx, heartbeat := r.startStageHeartbeat(context.Background(), &recorder, "implement", 2, journal.AttemptPolicy)
 
 	ticker.ticks <- time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
 	select {
@@ -310,6 +315,9 @@ func TestStageHeartbeatUsesFixedIntervalAndStopsWithAttempt(t *testing.T) {
 	}
 
 	invoke.ReportProgress(ctx)
+	if got := recorder.activities.Load(); got != 1 {
+		t.Fatalf("observed activities = %d, want 1", got)
+	}
 	ticker.ticks <- time.Date(2026, time.July, 20, 9, 1, 0, 0, time.UTC)
 	select {
 	case event := <-recorder.events:

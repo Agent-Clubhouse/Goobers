@@ -445,8 +445,8 @@ spec:
 	}
 
 	resumed, warned, err := resumeInterruptedRunsWithRunners(
-		context.Background(), layout, setup.Runners, setup.LegacyRunner, setup.Machines, setup.RepoRefs,
-		setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg,
+		context.Background(), layout, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, setup.Machines,
+		setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg,
 	)
 	if err != nil {
 		t.Fatal(err)

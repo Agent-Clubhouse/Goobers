@@ -22,6 +22,32 @@ func (d *wedgedDeterministic) Run(context.Context, apiv1.InvocationEnvelope, api
 	select {}
 }
 
+type progressingGateReviewer struct {
+	started  chan struct{}
+	progress chan struct{}
+	reported chan struct{}
+	release  chan struct{}
+}
+
+func (r *progressingGateReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{}, nil
+}
+
+func (r *progressingGateReviewer) Review(ctx context.Context, _ apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	close(r.started)
+	for {
+		select {
+		case <-r.progress:
+			invoke.ReportProgress(ctx)
+			r.reported <- struct{}{}
+		case <-r.release:
+			return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+		case <-ctx.Done():
+			return apiv1.Verdict{}, context.Cause(ctx)
+		}
+	}
+}
+
 func TestEscalateStalledUsesTerminalPath(t *testing.T) {
 	now := time.Date(2026, 7, 20, 20, 0, 0, 0, time.UTC)
 	eventTime := now.Add(-2 * time.Hour)
@@ -349,5 +375,120 @@ func TestEscalateStalledTakesOverWedgedOwnerAfterIdleHeartbeatTicks(t *testing.T
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Start did not return after watchdog takeover")
+	}
+}
+
+func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *testing.T) {
+	reviewer := &progressingGateReviewer{
+		started:  make(chan struct{}),
+		progress: make(chan struct{}),
+		reported: make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	released := false
+	defer func() {
+		if !released {
+			close(reviewer.release)
+		}
+	}()
+	runID := "progressing-gate"
+	machine := agenticGateMachine(t)
+	r := newAgenticGateRunner(t, map[string]stubTaskResult{
+		runID + ":implement": {status: apiv1.ResultSuccess},
+	}, reviewer, nil)
+	taskTicker := &fakeHeartbeatTicker{ticks: make(chan time.Time), stopped: make(chan struct{})}
+	gateTicker := &fakeHeartbeatTicker{ticks: make(chan time.Time), stopped: make(chan struct{})}
+	tickerCalls := 0
+	r.newHeartbeatTicker = func(time.Duration) heartbeatTicker {
+		tickerCalls++
+		if tickerCalls == 1 {
+			return taskTicker
+		}
+		return gateTicker
+	}
+
+	type startOutcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan startOutcome, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID:   runID,
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{
+				Provider: apiv1.ProviderGitHub,
+				Owner:    "acme",
+				Name:     "web",
+				Branch:   "main",
+			},
+		})
+		done <- startOutcome{result: result, err: err}
+	}()
+
+	select {
+	case <-reviewer.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agentic reviewer did not start")
+	}
+	timeout := 20 * time.Millisecond
+	time.Sleep(2 * timeout)
+	reviewer.progress <- struct{}{}
+	select {
+	case <-reviewer.reported:
+	case <-time.After(time.Second):
+		t.Fatal("agentic reviewer did not report progress")
+	}
+
+	result, escalated, err := r.EscalateStalled(runID, time.Now(), timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if escalated || result.Phase != journal.PhaseRunning {
+		t.Fatalf("progressing gate escalated=%v result=%+v", escalated, result)
+	}
+
+	select {
+	case gateTicker.ticks <- time.Now():
+	case <-time.After(time.Second):
+		t.Fatal("gate heartbeat goroutine did not receive tick")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		reader, err := journal.OpenRead(filepath.Join(r.cfg.RunsDir, runID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		events, err := reader.Events()
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, event := range events {
+			if event.Type == journal.EventStageHeartbeat && event.Stage == "review" && event.Attempt == 1 {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("agentic gate progress did not emit a heartbeat")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	close(reviewer.release)
+	released = true
+	select {
+	case outcome := <-done:
+		if outcome.err != nil || outcome.result.Phase != journal.PhaseCompleted {
+			t.Fatalf("Start() = %+v, %v", outcome.result, outcome.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not finish after reviewer release")
 	}
 }
