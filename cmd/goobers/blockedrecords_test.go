@@ -375,7 +375,7 @@ func TestFilterBlockedEligibilityScopesSameNumberByRepository(t *testing.T) {
 	}
 }
 
-func TestFilterBlockedEligibilityQuarantinesLegacyUnscopedRecords(t *testing.T) {
+func TestFilterBlockedEligibilityUsesMigratedLegacyRecords(t *testing.T) {
 	server, provider, repo := blockedFilterFixture(t)
 	server.addIssue(441, "prerequisite", "goobers:ready")
 	server.addIssue(510, "legacy blocked item", "goobers:ready")
@@ -391,6 +391,9 @@ func TestFilterBlockedEligibilityQuarantinesLegacyUnscopedRecords(t *testing.T) 
 			RunID:      "scoped-run",
 		},
 	}
+	if !migrateLegacyBlockedRecords(recs, repo) {
+		t.Fatal("legacy migration reported no change")
+	}
 
 	filtered, changed, warnings, _ := filterBlockedEligibility(
 		context.Background(),
@@ -402,14 +405,14 @@ func TestFilterBlockedEligibilityQuarantinesLegacyUnscopedRecords(t *testing.T) 
 	if changed || len(warnings) != 0 {
 		t.Fatalf("changed = %v, warnings = %v; want both records retained without warnings", changed, warnings)
 	}
-	if len(filtered) != 2 {
-		t.Fatalf("filtered = %v, want two eligible items", filtered)
+	if len(filtered) != 1 || filtered[0].ID != "512" {
+		t.Fatalf("filtered = %v, want only unrelated item 512", filtered)
 	}
-	if got := []string{filtered[0].ID, filtered[1].ID}; !reflect.DeepEqual(got, []string{"510", "512"}) {
-		t.Fatalf("eligible IDs = %v, want legacy-unscoped 510 and unrelated 512", got)
+	if _, legacy := recs["510"]; legacy {
+		t.Fatalf("records = %+v, want the legacy key removed", recs)
 	}
-	if len(recs) != 2 {
-		t.Fatalf("records = %+v, want quarantined legacy record retained for operator inspection", recs)
+	if migrated, ok := recs[blockedRecordKey(repo, "510")]; !ok || migrated.Repository != repo || migrated.ItemID != "510" {
+		t.Fatalf("records = %+v, want legacy record scoped to the active repository", recs)
 	}
 }
 
@@ -497,11 +500,9 @@ func TestBacklogQuerySkipsKnownBlockedThenSelfHeals(t *testing.T) {
 	}
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
 	recs := map[string]blockedRecord{
-		blockedRecordKey(repo, "510"): {
-			Repository: repo,
-			ItemID:     "510",
-			Blockers:   []string{"441"},
-			RunID:      "prior-run",
+		"510": {
+			Blockers: []string{"441"},
+			RunID:    "prior-run",
 		},
 	}
 	if err := saveBlockedRecords(blockedRecordsPath(l), recs); err != nil {
@@ -532,8 +533,15 @@ func TestBacklogQuerySkipsKnownBlockedThenSelfHeals(t *testing.T) {
 	if noWork["claimed"] != false {
 		t.Fatalf("first tick claimed = %v, want false (510's blocker 441 is still open)", noWork["claimed"])
 	}
-	if recs, _ := loadBlockedRecords(blockedRecordsPath(l)); len(recs) != 1 {
-		t.Fatalf("blocked.json after first tick = %+v, want the record to survive", recs)
+	recs, err = loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("reload migrated blocked.json: %v", err)
+	}
+	if _, legacy := recs["510"]; legacy {
+		t.Fatalf("blocked.json after first tick = %+v, want legacy key migrated", recs)
+	}
+	if migrated, ok := recs[blockedRecordKey(repo, "510")]; !ok || migrated.Repository != repo || migrated.ItemID != "510" {
+		t.Fatalf("blocked.json after first tick = %+v, want scoped migrated record", recs)
 	}
 
 	// Second tick: 441 closes — self-heal fires, 510 becomes eligible and is

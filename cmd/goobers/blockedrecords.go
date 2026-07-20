@@ -294,9 +294,9 @@ func sameBlockedRepository(a, b providers.RepositoryRef) bool {
 }
 
 func blockedRecordAppliesToRepository(rec blockedRecord, repo providers.RepositoryRef) bool {
-	// Records written before repository scoping cannot be attributed safely.
-	// Keep them available to blocked list/clear, but quarantine them from
-	// provider-backed eligibility instead of applying them to every repository.
+	// The provider-backed selection path migrates legacy records before calling
+	// this helper. Keep any remaining unscoped record quarantined rather than
+	// applying it to every repository.
 	return !blockedRepositoryEmpty(rec.Repository) && sameBlockedRepository(rec.Repository, repo)
 }
 
@@ -361,6 +361,55 @@ func snapshotBlockedRecords(l instance.Layout) (map[string]blockedRecord, error)
 		return err
 	})
 	return recs, err
+}
+
+// snapshotBlockedRecordsForRepository migrates records written before
+// repository scoping to the repository the old writer always used. The
+// migration runs under claims.lock and is persisted before selection sees the
+// snapshot, so an upgrade preserves the existing skip/self-heal behavior
+// without allowing legacy records to match every repository.
+func snapshotBlockedRecordsForRepository(l instance.Layout, repo providers.RepositoryRef) (map[string]blockedRecord, error) {
+	var recs map[string]blockedRecord
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogFilterBlocked, func() error {
+		var err error
+		recs, err = loadBlockedRecords(blockedRecordsPath(l))
+		if err != nil {
+			return err
+		}
+		if migrateLegacyBlockedRecords(recs, repo) {
+			return saveBlockedRecords(blockedRecordsPath(l), recs)
+		}
+		return nil
+	})
+	return recs, err
+}
+
+func migrateLegacyBlockedRecords(recs map[string]blockedRecord, repo providers.RepositoryRef) bool {
+	if blockedRepositoryEmpty(repo) {
+		return false
+	}
+	keys := make([]string, 0, len(recs))
+	for key := range recs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	changed := false
+	for _, key := range keys {
+		rec := recs[key]
+		if !blockedRepositoryEmpty(rec.Repository) {
+			continue
+		}
+		rec.Repository = repo
+		rec.ItemID = blockedRecordItemID(key, rec)
+		scopedKey := blockedRecordKey(repo, rec.ItemID)
+		if _, exists := recs[scopedKey]; !exists {
+			recs[scopedKey] = rec
+		}
+		delete(recs, key)
+		changed = true
+	}
+	return changed
 }
 
 // reconcileBlockedEligibilityLocked applies provider-resolved removals to the

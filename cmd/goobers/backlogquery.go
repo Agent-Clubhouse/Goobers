@@ -225,7 +225,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// Dependency-aware skip (#552): snapshot blocked.json under its local
 	// lock, then resolve every provider-backed issue state after releasing it.
 	// A stalled provider must never prevent terminal claim finalization.
-	observedRecords, err := snapshotBlockedRecords(l)
+	observedRecords, err := snapshotBlockedRecordsForRepository(l, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

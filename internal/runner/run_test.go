@@ -1773,12 +1773,13 @@ func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 	}
 	want := BlockedOutcome{
 		RunID:    "run-blocked",
+		RepoRef:  apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Stage:    "implement",
 		ItemID:   "510",
 		Reason:   "DEPENDENCY_NOT_MET: issues #441 and #442 must merge first",
 		Blockers: []string{"441", "442"},
 	}
-	if got.RunID != want.RunID || got.Stage != want.Stage || got.ItemID != want.ItemID || got.Reason != want.Reason {
+	if got.RunID != want.RunID || got.RepoRef != want.RepoRef || got.Stage != want.Stage || got.ItemID != want.ItemID || got.Reason != want.Reason {
 		t.Fatalf("BlockedOutcome = %+v, want %+v", got, want)
 	}
 	if len(got.Blockers) != 2 || got.Blockers[0] != "441" || got.Blockers[1] != "442" {

@@ -315,9 +315,9 @@ func TestRunnerResumeReplaysBlockedFinishAsEscalated(t *testing.T) {
 	if len(handlerCalls) != 1 {
 		t.Fatalf("Blocked handler invoked %d times, want 1", len(handlerCalls))
 	}
-	if got := handlerCalls[0]; got.RunID != "run-blocked-crash" || got.Stage != "implement" ||
+	if got := handlerCalls[0]; got.RunID != "run-blocked-crash" || got.RepoRef != in.RepoRef || got.Stage != "implement" ||
 		len(got.Blockers) != 1 || got.Blockers[0] != "441" {
-		t.Fatalf("BlockedOutcome = %+v, want run-blocked-crash/implement blocked on [441]", got)
+		t.Fatalf("BlockedOutcome = %+v, want run-blocked-crash in %+v blocked on [441]", got, in.RepoRef)
 	}
 
 	// Restart loop (#544 AC): every subsequent Resume is a pure no-op

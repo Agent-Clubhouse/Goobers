@@ -366,15 +366,15 @@ var newEscalationPoster = func(token string) gate.Commenter { return providers.N
 // contract rather than capturing a token once at daemon startup — registers it
 // for scrubbing, then posts through a freshly-authenticated provider.
 type escalationCommenter struct {
-	ref      string
 	resolver credentials.Resolver
 	reg      runner.SecretRegistrar
 }
 
 func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
-	token, err := c.resolver.Resolve(ctx, c.ref)
+	ref := req.Repository.Owner + "/" + req.Repository.Name
+	token, err := c.resolver.Resolve(ctx, ref)
 	if err != nil {
-		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", c.ref, err)
+		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
 	}
 	c.reg.Register([]byte(token))
 	return newEscalationPoster(token).UpdateWorkItem(ctx, req)
@@ -399,7 +399,6 @@ func buildEscalationNotifier(cfg *instance.Config, resolver credentials.Resolver
 	repo := cfg.Repos[0]
 	return &gate.EscalationNotifier{
 		Poster: &escalationCommenter{
-			ref:      repo.Owner + "/" + repo.Name,
 			resolver: resolver,
 			reg:      reg,
 		},
@@ -434,13 +433,10 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
-	repo := cfg.Repos[0]
 	poster := &escalationCommenter{
-		ref:      repo.Owner + "/" + repo.Name,
 		resolver: resolver,
 		reg:      reg,
 	}
-	repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
 
 	return func(ctx context.Context, o runner.BlockedOutcome) error {
 		itemIDs := []string{o.ItemID}
@@ -459,6 +455,14 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 		}
 
 		var errs []error
+		repoRef := providers.RepositoryRef{
+			Provider: providers.ProviderKind(o.RepoRef.Provider),
+			Owner:    o.RepoRef.Owner,
+			Name:     o.RepoRef.Name,
+		}
+		if blockedRepositoryEmpty(repoRef) {
+			return fmt.Errorf("blocked outcome for run %s has no repository", o.RunID)
+		}
 		for _, itemID := range itemIDs {
 			req := providers.UpdateWorkItemRequest{Repository: repoRef, ID: itemID}
 			if len(o.Blockers) > 0 {

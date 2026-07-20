@@ -85,6 +85,8 @@ type TerminalFinalizer func(runID string, phase journal.RunPhase) error
 // "blocked" (#544/#545) — the value Config.Blocked receives.
 type BlockedOutcome struct {
 	RunID string
+	// RepoRef is the target repository containing the driving backlog item.
+	RepoRef apiv1.RepoRef
 	// Stage is the stage that reported blocked.
 	Stage string
 	// ItemID is the driving backlog item's id when the run was started with
@@ -713,7 +715,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				workspaceBranch = b
 			}
 
-			next, res, advance, oerr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.Item, t, result, steps)
+			next, res, advance, oerr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.RepoRef, in.Item, t, result, steps)
 			if oerr != nil {
 				return res, oerr
 			}
@@ -1131,10 +1133,10 @@ func (r *Runner) finishStageFailure(runID string, jr *journal.Run, stage string,
 // the IDENTICAL transition when it finds the checkpointed task's last
 // attempt already finished, not interrupted — the walk must not re-dispatch
 // it (#107), just pick up the same decision a live walk would have made
-// right after runTask returned. ctx/item feed only the blocked arm's
+// right after runTask returned. ctx/repoRef/item feed only the blocked arm's
 // instance-level handler (Config.Blocked); the transition decision itself
 // stays pure.
-func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run, machine *workflow.Machine, item *apiv1.BacklogItem, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
+func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run, machine *workflow.Machine, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
 	switch result.Status {
 	case apiv1.ResultBlocked:
 		// #544 ruling: blocked is a schema-valid producer value, so it maps to
@@ -1149,6 +1151,7 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		// the ordinary terminal path releases everything via FinalizeTerminal.
 		o := BlockedOutcome{
 			RunID:    runID,
+			RepoRef:  repoRef,
 			Stage:    t.Name,
 			Reason:   blockedReason(result),
 			Blockers: parseBlockedBy(result.Outputs),
