@@ -408,11 +408,15 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 	if err != nil {
 		return RunDetail{}, err
 	}
+	escalation, err := escalationCause(summary, run.records)
+	if err != nil {
+		return RunDetail{}, err
+	}
 	return RunDetail{
 		RunSummary:  summary,
 		Graph:       graph,
 		GraphStatus: status,
-		Escalation:  escalationCause(summary, run.records),
+		Escalation:  escalation,
 	}, nil
 }
 
@@ -902,9 +906,9 @@ func canonicalTrigger(trigger journal.TriggerKind) bool {
 	}
 }
 
-func escalationCause(summary RunSummary, records []journal.EventRecord) *EscalationCause {
+func escalationCause(summary RunSummary, records []journal.EventRecord) (*EscalationCause, error) {
 	if summary.Phase != journal.PhaseEscalated {
-		return nil
+		return nil, nil
 	}
 	cause := &EscalationCause{
 		RepassCount: summary.RepassCount,
@@ -919,7 +923,12 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) *Escalat
 			cause.SelectedBranch = event.Verdict
 			cause.TerminalReason = gateEscalationReason(event)
 			cause.CausalEventSeq = event.Seq
-			return cause
+			repasses, err := gateRepassCount(records[:i+1], event.Gate)
+			if err != nil {
+				return nil, err
+			}
+			cause.RepassCount = repasses
+			return cause, nil
 		}
 	}
 	for i := len(records) - 1; i >= 0; i-- {
@@ -930,7 +939,7 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) *Escalat
 		cause.Selector = EscalationSelector{Kind: "stage", Name: event.Stage}
 		cause.TerminalReason = stageEscalationReason(event, records[i+1:])
 		cause.CausalEventSeq = event.Seq
-		return cause
+		return cause, nil
 	}
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
@@ -946,7 +955,7 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) *Escalat
 		cause.CausalEventSeq = event.Seq
 		break
 	}
-	return cause
+	return cause, nil
 }
 
 func gateRepassCount(records []journal.EventRecord, gate string) (int, error) {

@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
+        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -30,6 +30,7 @@ _goobers_completion()
         status) flags+=" --daemon --json --phase --workflow --limit --watch --interval" ;;
         stats) flags+=" --since --json" ;;
         trace) flags+=" --json --transcripts --transcript" ;;
+        escalations) flags+=" --json" ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
                 stats) flags+=" --workflow --gaggle --rebuild" ;;
@@ -73,6 +74,14 @@ _goobers_completion()
             if (( COMP_CWORD == 2 )); then
                 dynamic=1
                 candidates="$(command goobers __complete runs 2>/dev/null)"
+            fi
+            ;;
+        escalations)
+            if (( COMP_CWORD == 2 )); then
+                candidates="show"
+            elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
+                dynamic=1
+                candidates="$(command goobers __complete escalations 2>/dev/null)"
             fi
             ;;
         workflow)

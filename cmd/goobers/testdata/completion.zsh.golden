@@ -24,6 +24,7 @@ _goobers_completion()
             'status:show run status'
             'stats:show the instance lifetime summary'
             'trace:show a run journal'
+            'escalations:inspect escalated runs'
             'telemetry:query telemetry'
             'telemetry-query:emit candidate findings'
             'journal:manage run journals'
@@ -71,6 +72,7 @@ _goobers_completion()
         status) flags+=(--daemon --json --phase --workflow --limit --watch --interval) ;;
         stats) flags+=(--since --json) ;;
         trace) flags+=(--json --transcripts --transcript) ;;
+        escalations) flags+=(--json) ;;
         telemetry)
             case "${words[3]:-}" in
                 stats) flags+=(--workflow --gaggle --rebuild) ;;
@@ -124,6 +126,17 @@ _goobers_completion()
             if (( CURRENT == 3 )); then
                 candidates=("${(@f)$(command goobers __complete runs 2>/dev/null)}")
                 _describe -V 'run id' candidates
+                return
+            fi
+            ;;
+        escalations)
+            if (( CURRENT == 3 )); then
+                candidates=(show)
+                _describe 'command' candidates
+                return
+            elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then
+                candidates=("${(@f)$(command goobers __complete escalations 2>/dev/null)}")
+                _describe -V 'escalated run id' candidates
                 return
             fi
             ;;

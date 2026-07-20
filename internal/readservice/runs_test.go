@@ -341,6 +341,7 @@ func TestRunDetailEventsAttemptsAndPinnedGraph(t *testing.T) {
 	if detail.Escalation == nil ||
 		detail.Escalation.Selector.Name != "review" ||
 		detail.Escalation.SelectedBranch != "fail" ||
+		detail.Escalation.RepassCount != 4 ||
 		detail.Escalation.TerminalReason != "repass budget exhausted" {
 		t.Fatalf("escalation = %+v", detail.Escalation)
 	}

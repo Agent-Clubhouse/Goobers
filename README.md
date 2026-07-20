@@ -63,6 +63,8 @@ bin/goobers validate ./my-instance       # check instance.yaml + config/
 bin/goobers run default-implement ./my-instance   # trigger a run manually
 bin/goobers status ./my-instance         # list runs + their phase
 bin/goobers trace <run-id> ./my-instance # inspect one run's journal
+bin/goobers escalations ./my-instance    # list escalated runs
+bin/goobers escalations show <run-id> ./my-instance # inspect cause + artifact timeline
 ```
 
 `goobers init` scaffolds the instance root described in

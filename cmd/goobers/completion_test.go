@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestCompletionScriptsGolden(t *testing.T) {
@@ -71,8 +72,12 @@ func TestCompletionCandidatesFromNestedInstance(t *testing.T) {
 	started := time.Date(2026, time.July, 16, 10, 0, 0, 0, time.UTC)
 	createListRun(t, instance.NewLayout(root).RunsDir(), "older-run", started)
 	createListRun(t, instance.NewLayout(root).RunsDir(), "newer-run", started.Add(time.Minute))
-	if got, want := completionCandidates("runs", nested), []string{"newer-run", "older-run"}; !reflect.DeepEqual(got, want) {
+	writeStatusRunWithPhase(t, root, "escalated-run", "implementation", "goobers", started.Add(2*time.Minute), journal.PhaseEscalated)
+	if got, want := completionCandidates("runs", nested), []string{"escalated-run", "newer-run", "older-run"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("run candidates = %v, want %v", got, want)
+	}
+	if got, want := completionCandidates("escalations", nested), []string{"escalated-run"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("escalation candidates = %v, want %v", got, want)
 	}
 }
 
