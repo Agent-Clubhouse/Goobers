@@ -308,10 +308,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	}
 	if nativeTranscriptPath != "" {
 		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
-			out.Transcript = native.data
 			out.Metrics = native.metrics
-			out.TranscriptTruncated = native.truncated
-			out.TranscriptDroppedBytes = native.droppedBytes
+			if len(native.data) > 0 {
+				out.Transcript = native.data
+				out.TranscriptTruncated = native.truncated
+				out.TranscriptDroppedBytes = native.droppedBytes
+			}
 		}
 	}
 	if err != nil {
