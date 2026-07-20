@@ -23,17 +23,36 @@ type fakeBranchReconcileProvider struct {
 	listErr       error
 	openPRs       map[string]providers.PullRequestResult
 	lookupErrs    map[string]error
+	current       map[string]providers.BranchSummary
+	getErrs       map[string]error
 	deleteResults map[string]providers.DeleteBranchResult
 	deleteErrs    map[string]error
 
 	listRequests   []providers.ListBranchesRequest
 	lookupBranches []string
+	getBranches    []string
 	deleteBranches []string
 }
 
 func (f *fakeBranchReconcileProvider) ListBranches(_ context.Context, req providers.ListBranchesRequest) ([]providers.BranchSummary, error) {
 	f.listRequests = append(f.listRequests, req)
 	return f.branches, f.listErr
+}
+
+func (f *fakeBranchReconcileProvider) GetBranch(_ context.Context, _ providers.RepositoryRef, name string) (providers.BranchSummary, bool, error) {
+	f.getBranches = append(f.getBranches, name)
+	if err := f.getErrs[name]; err != nil {
+		return providers.BranchSummary{}, false, err
+	}
+	if branch, ok := f.current[name]; ok {
+		return branch, true, nil
+	}
+	for _, branch := range f.branches {
+		if branch.Name == name {
+			return branch, true, nil
+		}
+	}
+	return providers.BranchSummary{}, false, nil
 }
 
 func (f *fakeBranchReconcileProvider) FindPullRequestByBranch(_ context.Context, _ providers.RepositoryRef, head, base string) (providers.PullRequestResult, bool, error) {
@@ -58,10 +77,16 @@ func (f *fakeBranchReconcileProvider) DeleteBranch(_ context.Context, req provid
 
 func createBranchReconcileRun(t *testing.T, runsDir, workflow, runID string, started time.Time, terminal, recordBranch bool) string {
 	t.Helper()
+	return createBranchReconcileRunWithTerminalTime(t, runsDir, workflow, runID, started, started, terminal, recordBranch)
+}
+
+func createBranchReconcileRunWithTerminalTime(t *testing.T, runsDir, workflow, runID string, started, terminalAt time.Time, terminal, recordBranch bool) string {
+	t.Helper()
 	branch := providers.BranchName(workflow, runID)
+	eventTime := started
 	run, err := journal.Create(runsDir, journal.RunIdentity{
 		RunID: runID, Workflow: workflow, StartedAt: started,
-	}, nil)
+	}, nil, journal.WithClock(func() time.Time { return eventTime }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +103,7 @@ func createBranchReconcileRun(t *testing.T, runsDir, workflow, runID string, sta
 		}
 	}
 	if terminal {
+		eventTime = terminalAt
 		if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
 			t.Fatal(err)
 		}
@@ -144,6 +170,49 @@ func TestReconcileRemoteBranchesDryRunNeverDeletes(t *testing.T) {
 	events := branchReconcileEvents(t, logDir)
 	if len(events) != 1 || events[0].Runner["event"] != "decision" ||
 		events[0].Runner["outcome"] != "candidate" || events[0].Runner["reason"] != "dry-run" {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestReconcileRemoteBranchesUsesTerminalTimeForSafetyWindow(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	runsDir := t.TempDir()
+	branch := createBranchReconcileRunWithTerminalTime(
+		t,
+		runsDir,
+		"implementation",
+		"recently-finished",
+		now.Add(-30*24*time.Hour),
+		now.Add(-time.Hour),
+		true,
+		true,
+	)
+	logDir, log := openBranchReconcileLog(t)
+	provider := &fakeBranchReconcileProvider{
+		branches: []providers.BranchSummary{{Name: branch, SHA: "recent-sha"}},
+	}
+
+	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunsDir:    runsDir,
+		Prefix:     branchReconcilePrefix,
+		Limit:      25,
+		MinimumAge: 7 * 24 * time.Hour,
+		Delete:     true,
+		Now:        func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("reconcileRemoteBranches: %v", err)
+	}
+	if report.Scanned != 1 || report.Candidates != 0 || report.Preserved != 1 || report.Deleted != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(provider.lookupBranches) != 0 || len(provider.getBranches) != 0 || len(provider.deleteBranches) != 0 {
+		t.Fatalf("provider calls: PR=%v get=%v delete=%v", provider.lookupBranches, provider.getBranches, provider.deleteBranches)
+	}
+	events := branchReconcileEvents(t, logDir)
+	if len(events) != 1 || events[0].Runner["reason"] != "safety-window" ||
+		events[0].Runner["terminalAt"] != now.Add(-time.Hour).Format(time.RFC3339) {
 		t.Fatalf("events = %+v", events)
 	}
 }
@@ -222,7 +291,7 @@ func TestReconcileRemoteBranchesDeletesOnlySafeOwnedCandidate(t *testing.T) {
 	logDir, log := openBranchReconcileLog(t)
 	provider := &fakeBranchReconcileProvider{
 		branches: []providers.BranchSummary{
-			{Name: eligible}, {Name: withPR}, {Name: young}, {Name: active},
+			{Name: eligible, SHA: "eligible-sha"}, {Name: withPR}, {Name: young}, {Name: active},
 			{Name: unproven}, {Name: missing}, {Name: malformed},
 		},
 		openPRs: map[string]providers.PullRequestResult{
@@ -255,6 +324,9 @@ func TestReconcileRemoteBranchesDeletesOnlySafeOwnedCandidate(t *testing.T) {
 	if len(provider.deleteBranches) != 1 || provider.deleteBranches[0] != eligible {
 		t.Fatalf("delete calls = %v, want [%s]", provider.deleteBranches, eligible)
 	}
+	if len(provider.getBranches) != 1 || provider.getBranches[0] != eligible {
+		t.Fatalf("tip re-reads = %v, want [%s]", provider.getBranches, eligible)
+	}
 
 	events := branchReconcileEvents(t, logDir)
 	if len(events) != 8 {
@@ -279,6 +351,82 @@ func TestReconcileRemoteBranchesDeletesOnlySafeOwnedCandidate(t *testing.T) {
 	}
 	if mutation.Runner["branch"] != eligible || mutation.Runner["outcome"] != "deleted" {
 		t.Fatalf("mutation = %+v", mutation)
+	}
+}
+
+func TestReconcileRemoteBranchesPreservesConcurrentlyUpdatedTip(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	runsDir := t.TempDir()
+	branch := createBranchReconcileRun(t, runsDir, "implementation", "updated-tip", now.Add(-8*24*time.Hour), true, true)
+	logDir, log := openBranchReconcileLog(t)
+	provider := &fakeBranchReconcileProvider{
+		branches: []providers.BranchSummary{{Name: branch, SHA: "listed-sha"}},
+		current: map[string]providers.BranchSummary{
+			branch: {Name: branch, SHA: "pushed-sha"},
+		},
+	}
+
+	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunsDir:    runsDir,
+		Prefix:     branchReconcilePrefix,
+		Limit:      25,
+		MinimumAge: 7 * 24 * time.Hour,
+		Delete:     true,
+		Now:        func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("reconcileRemoteBranches: %v", err)
+	}
+	if report.Candidates != 1 || report.Preserved != 1 || report.Deleted != 0 || report.Failures != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(provider.getBranches) != 1 || provider.getBranches[0] != branch || len(provider.deleteBranches) != 0 {
+		t.Fatalf("get calls = %v, delete calls = %v", provider.getBranches, provider.deleteBranches)
+	}
+	events := branchReconcileEvents(t, logDir)
+	if len(events) != 1 || events[0].Runner["outcome"] != "preserved" ||
+		events[0].Runner["reason"] != "branch-tip-changed" ||
+		events[0].Runner["sha"] != "listed-sha" ||
+		events[0].Runner["observedSHA"] != "pushed-sha" {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestReconcileRemoteBranchesJournalsTipLookupFailure(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	runsDir := t.TempDir()
+	branch := createBranchReconcileRun(t, runsDir, "implementation", "tip-lookup-failure", now.Add(-8*24*time.Hour), true, true)
+	logDir, log := openBranchReconcileLog(t)
+	lookupErr := errors.New("ref lookup unavailable")
+	provider := &fakeBranchReconcileProvider{
+		branches: []providers.BranchSummary{{Name: branch, SHA: "listed-sha"}},
+		getErrs:  map[string]error{branch: lookupErr},
+	}
+
+	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunsDir:    runsDir,
+		Prefix:     branchReconcilePrefix,
+		Limit:      25,
+		MinimumAge: 7 * 24 * time.Hour,
+		Delete:     true,
+		Now:        func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("reconcileRemoteBranches: %v", err)
+	}
+	if report.Candidates != 1 || report.Preserved != 1 || report.Deleted != 0 || report.Failures != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(provider.deleteBranches) != 0 {
+		t.Fatalf("delete calls = %v, want none", provider.deleteBranches)
+	}
+	events := branchReconcileEvents(t, logDir)
+	if len(events) != 1 || events[0].Runner["outcome"] != "preserved" ||
+		events[0].Runner["reason"] != "provider-lookup-failed" ||
+		events[0].Error == nil || events[0].Error.Code != "branch_provider_lookup_failed" {
+		t.Fatalf("events = %+v", events)
 	}
 }
 
@@ -331,7 +479,10 @@ func TestReconcileRemoteBranchesJournalsMutationFailureAndContinues(t *testing.T
 	deleted := createBranchReconcileRun(t, runsDir, "implementation", "delete-success", now.Add(-8*24*time.Hour), true, true)
 	logDir, log := openBranchReconcileLog(t)
 	provider := &fakeBranchReconcileProvider{
-		branches:   []providers.BranchSummary{{Name: failed}, {Name: deleted}},
+		branches: []providers.BranchSummary{
+			{Name: failed, SHA: "failed-sha"},
+			{Name: deleted, SHA: "deleted-sha"},
+		},
 		deleteErrs: map[string]error{failed: errors.New("delete denied")},
 		deleteResults: map[string]providers.DeleteBranchResult{
 			deleted: {Deleted: true},
@@ -373,7 +524,7 @@ func TestReconcileRemoteBranchesPreservesBranchOnDeleteRateLimit(t *testing.T) {
 	logDir, log := openBranchReconcileLog(t)
 	rateLimit := &providers.RateLimitError{Endpoint: "delete-ref", Status: 429}
 	provider := &fakeBranchReconcileProvider{
-		branches:   []providers.BranchSummary{{Name: branch}},
+		branches:   []providers.BranchSummary{{Name: branch, SHA: "branch-sha"}},
 		deleteErrs: map[string]error{branch: rateLimit},
 	}
 

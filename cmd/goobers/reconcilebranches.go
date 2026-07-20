@@ -50,10 +50,11 @@ type branchReconcileReport struct {
 }
 
 type branchReconcileOwner struct {
-	Workflow  string
-	RunID     string
-	StartedAt time.Time
-	Phase     journal.RunPhase
+	Workflow   string
+	RunID      string
+	StartedAt  time.Time
+	TerminalAt time.Time
+	Phase      journal.RunPhase
 }
 
 type branchReconcileProviderError struct {
@@ -84,14 +85,14 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	deleteBranches := fs.Bool("delete", deleteDefault, "delete eligible branches (opt-in; default is dry-run)")
 	limit := fs.Int("max", limitDefault, "maximum candidates inspected in one sweep (1-100)")
-	minimumAge := fs.Duration("min-age", ageDefault, "minimum run age required for deletion")
+	minimumAge := fs.Duration("min-age", ageDefault, "minimum terminal run age required for deletion")
 	after := fs.String("after", providerInput("after", ""), "resume after this branch name in lexical order")
 	fs.Usage = func() {
 		pf(stderr, "Usage: goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH] [path]\n\n"+
 			"Inspect a bounded page of remote goobers/* branches. The default is a\n"+
 			"dry-run: no branch is deleted. --delete opts into deletion only for a\n"+
-			"branch whose local run journal proves ownership, is terminal and at\n"+
-			"least 168h old by default, and has no open pull request. Every candidate\n"+
+			"branch whose local run journal proves ownership, has been terminal for\n"+
+			"at least 168h by default, and has no open pull request. Every candidate\n"+
 			"decision and deletion outcome is appended to scheduler/events.jsonl.\n"+
 			"The default batch is 25 and the hard ceiling is 100 candidates. Task inputs deleteBranches,\n"+
 			"maxBranches, minimumAge, and after provide the same workflow-stage\n"+
@@ -243,7 +244,7 @@ func reconcileRemoteBranches(ctx context.Context, provider providers.BranchRecon
 				return report, err
 			}
 			continue
-		case opts.Now().Sub(owner.StartedAt) < opts.MinimumAge:
+		case opts.Now().Sub(owner.TerminalAt) < opts.MinimumAge:
 			report.Preserved++
 			event.Outcome, event.Reason = "preserved", "safety-window"
 			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
@@ -281,6 +282,59 @@ func reconcileRemoteBranches(ctx context.Context, provider providers.BranchRecon
 		if !opts.Delete {
 			report.Preserved++
 			event.Outcome, event.Reason = "candidate", "dry-run"
+			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
+				return report, err
+			}
+			continue
+		}
+
+		if branch.SHA == "" {
+			report.Preserved++
+			report.Failures++
+			event.Outcome, event.Reason, event.Err = "preserved", "branch-tip-unavailable",
+				fmt.Errorf("listed branch %q has no tip SHA", branch.Name)
+			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
+				return report, err
+			}
+			continue
+		}
+		current, found, lookupErr := provider.GetBranch(ctx, opts.Repository, branch.Name)
+		if lookupErr != nil {
+			report.Preserved++
+			report.Failures++
+			event.Outcome, event.Reason, event.Err = "preserved", "provider-lookup-failed", lookupErr
+			if isProviderRateLimit(lookupErr) {
+				event.Reason = "rate-limited"
+			}
+			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
+				return report, err
+			}
+			if isProviderRateLimit(lookupErr) {
+				return report, &branchReconcileProviderError{err: lookupErr}
+			}
+			continue
+		}
+		if !found {
+			report.Preserved++
+			event.Outcome, event.Reason = "preserved", "branch-not-found"
+			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
+				return report, err
+			}
+			continue
+		}
+		if current.SHA == "" {
+			report.Preserved++
+			report.Failures++
+			event.Outcome, event.Reason, event.Err = "preserved", "branch-tip-unavailable",
+				fmt.Errorf("re-read branch %q has no tip SHA", branch.Name)
+			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
+				return report, err
+			}
+			continue
+		}
+		if current.SHA != branch.SHA {
+			report.Preserved++
+			event.Outcome, event.Reason, event.ObservedSHA = "preserved", "branch-tip-changed", current.SHA
 			if err := appendBranchReconcileEvent(log, branch, event); err != nil {
 				return report, err
 			}
@@ -345,12 +399,15 @@ func inspectBranchOwner(runsDir, prefix, branch string) (branchReconcileOwner, s
 		return branchReconcileOwner{}, "run-journal-unreadable", fmt.Errorf("read owning run %s events: %w", runID, err)
 	}
 	owned := false
+	var terminalAt time.Time
 	for _, event := range events {
 		if event.Type == journal.EventRefTouched && event.ExternalRef != nil &&
 			event.ExternalRef.Provider == string(providers.ProviderGitHub) &&
 			event.ExternalRef.Kind == "branch" && event.ExternalRef.ID == branch {
 			owned = true
-			break
+		}
+		if event.Type == journal.EventRunFinished {
+			terminalAt = event.Time
 		}
 	}
 	if !owned {
@@ -360,7 +417,12 @@ func inspectBranchOwner(runsDir, prefix, branch string) (branchReconcileOwner, s
 	if err != nil {
 		return branchReconcileOwner{}, "run-journal-unreadable", fmt.Errorf("read owning run %s phase: %w", runID, err)
 	}
-	return branchReconcileOwner{Workflow: workflow, RunID: runID, StartedAt: id.StartedAt, Phase: phase}, "", nil
+	if terminalBranchRunPhase(phase) && terminalAt.IsZero() {
+		return branchReconcileOwner{}, "run-journal-unreadable", fmt.Errorf("owning run %s has no timestamped terminal event", runID)
+	}
+	return branchReconcileOwner{
+		Workflow: workflow, RunID: runID, StartedAt: id.StartedAt, TerminalAt: terminalAt, Phase: phase,
+	}, "", nil
 }
 
 func terminalBranchRunPhase(phase journal.RunPhase) bool {
@@ -379,6 +441,7 @@ type branchReconcileEvent struct {
 	Owner       *branchReconcileOwner
 	MinimumAge  time.Duration
 	PullRequest string
+	ObservedSHA string
 	Err         error
 }
 
@@ -402,12 +465,18 @@ func appendBranchReconcileEvent(log *journal.InstanceLog, branch providers.Branc
 		fields["runID"] = detail.Owner.RunID
 		fields["runPhase"] = string(detail.Owner.Phase)
 		fields["startedAt"] = detail.Owner.StartedAt.UTC().Format(time.RFC3339)
+		if !detail.Owner.TerminalAt.IsZero() {
+			fields["terminalAt"] = detail.Owner.TerminalAt.UTC().Format(time.RFC3339)
+		}
 	}
 	if detail.MinimumAge > 0 {
 		fields["minimumAge"] = detail.MinimumAge.String()
 	}
 	if detail.PullRequest != "" {
 		fields["pullRequest"] = detail.PullRequest
+	}
+	if detail.ObservedSHA != "" {
+		fields["observedSHA"] = detail.ObservedSHA
 	}
 	event := journal.Event{Type: journal.EventRunnerAnnotation, Runner: fields}
 	if detail.Err != nil {
@@ -422,6 +491,8 @@ func appendBranchReconcileEvent(log *journal.InstanceLog, branch providers.Branc
 				code = "branch_run_journal_unreadable"
 			case "provider-lookup-failed":
 				code = "branch_provider_lookup_failed"
+			case "branch-tip-unavailable":
+				code = "branch_tip_unavailable"
 			case "delete-failed":
 				code = "branch_delete_failed"
 			}

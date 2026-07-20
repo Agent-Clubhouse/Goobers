@@ -248,6 +248,59 @@ func TestGitHubProviderListBranchesValidatesBound(t *testing.T) {
 	}
 }
 
+func TestGitHubProviderGetBranch(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		wantFound bool
+		wantErr   bool
+	}{
+		{name: "found", status: http.StatusOK, wantFound: true},
+		{name: "absent", status: http.StatusNotFound},
+		{name: "provider failure", status: http.StatusForbidden, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("method = %s, want GET", r.Method)
+				}
+				if r.URL.Path != "/repos/acme/app/git/ref/heads/goobers/implementation/run-1" {
+					t.Fatalf("path = %q", r.URL.Path)
+				}
+				w.WriteHeader(tc.status)
+				if tc.status == http.StatusOK {
+					writeJSON(t, w, map[string]interface{}{
+						"ref":    "refs/heads/goobers/implementation/run-1",
+						"url":    "ref-url",
+						"object": map[string]string{"sha": "tip-sha"},
+					})
+				}
+			}))
+			defer server.Close()
+
+			provider := NewGitHubProvider("token", func(p *GitHubProvider) {
+				p.BaseURL = server.URL
+				p.maxRetries = 0
+			})
+			branch, found, err := provider.GetBranch(
+				context.Background(),
+				RepositoryRef{Owner: "acme", Name: "app"},
+				"goobers/implementation/run-1",
+			)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("GetBranch error = %v, wantErr %t", err, tc.wantErr)
+			}
+			if found != tc.wantFound {
+				t.Fatalf("found = %t, want %t", found, tc.wantFound)
+			}
+			if found && (branch.Name != "goobers/implementation/run-1" || branch.SHA != "tip-sha" || branch.URL != "ref-url") {
+				t.Fatalf("branch = %+v", branch)
+			}
+		})
+	}
+}
+
 func TestGitHubProviderRepoAndBacklogOperations(t *testing.T) {
 	// issueLabels is the live label set for issue 7; the label sub-API handlers
 	// below mutate it so the re-GET in UpdateWorkItemStatus observes the swap

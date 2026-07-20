@@ -218,6 +218,42 @@ func (p *GitHubProvider) ListBranches(ctx context.Context, req ListBranchesReque
 	return branches, nil
 }
 
+// GetBranch reads one exact branch ref for reconciliation's pre-delete
+// staleness check. A missing ref is reported separately from provider failure.
+func (p *GitHubProvider) GetBranch(ctx context.Context, repo RepositoryRef, name string) (BranchSummary, bool, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return BranchSummary{}, false, err
+	}
+	if name == "" {
+		return BranchSummary{}, false, fmt.Errorf("branch name is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "git", "ref", "heads", name)
+	if err != nil {
+		return BranchSummary{}, false, err
+	}
+	resp, err := p.send(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return BranchSummary{}, false, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNotFound {
+		return BranchSummary{}, false, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return BranchSummary{}, false, fmt.Errorf("GET %s failed: status %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var ref githubRef
+	if err := json.NewDecoder(resp.Body).Decode(&ref); err != nil {
+		return BranchSummary{}, false, fmt.Errorf("decode branch ref: %w", err)
+	}
+	const headPrefix = "refs/heads/"
+	if ref.Ref != headPrefix+name {
+		return BranchSummary{}, false, fmt.Errorf("provider returned branch ref %q for %q", ref.Ref, name)
+	}
+	return BranchSummary{Name: name, SHA: ref.Object.SHA, URL: ref.URL}, true, nil
+}
+
 // DeleteBranch removes a GitHub branch ref. A missing ref is an idempotent
 // no-op, reported through DeleteBranchResult rather than as an error — both
 // #605's post-merge cleanup and #607's orphaned-branch cleanup call this
