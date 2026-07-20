@@ -83,7 +83,7 @@ func TestExampleConfigPasses(t *testing.T) {
 	}
 }
 
-func TestGooberSchemaAcceptsHarnessConfigAndRejectsUnknownModel(t *testing.T) {
+func TestGooberSchemaPreservesAdapterOwnedHarnessConfig(t *testing.T) {
 	v := newV(t)
 	goober := `{
 		"apiVersion": "goobers.dev/v1alpha1",
@@ -94,20 +94,16 @@ func TestGooberSchemaAcceptsHarnessConfigAndRejectsUnknownModel(t *testing.T) {
 			"role": "coder",
 			"instructions": "instructions.md",
 			"harness": "copilot",
-			"model": MODEL,
+			"model": "adapter-specific-model",
 			"harnessOptions": {
-				"context": "long_context",
-				"reasoningEffort": "high"
+				"enabled": true,
+				"budget": 3,
+				"nested": {"strategy": "adaptive"}
 			}
 		}
 	}`
-	valid := strings.Replace(goober, "MODEL", `"claude-sonnet-4.5"`, 1)
-	if err := v.ValidateJSON("goober.schema.json", []byte(valid)); err != nil {
-		t.Fatalf("valid harness config failed schema validation: %v", err)
-	}
-	invalid := strings.Replace(goober, "MODEL", `"unknown-model"`, 1)
-	if err := v.ValidateJSON("goober.schema.json", []byte(invalid)); err == nil {
-		t.Fatal("unknown model passed schema validation")
+	if err := v.ValidateJSON("goober.schema.json", []byte(goober)); err != nil {
+		t.Fatalf("adapter-owned harness config failed schema validation: %v", err)
 	}
 }
 

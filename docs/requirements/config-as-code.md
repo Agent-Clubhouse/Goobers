@@ -34,12 +34,12 @@ is delivered to a running instance at each deployment tier.
   factor yields more replicas; adding a goober definition makes a new team member
   appear — whether the reconciler is the watching daemon or the operator.
 - A Goober may select an optional, harness-scoped `spec.model` and provide
-  string-valued `spec.harnessOptions`. The platform preserves the options as an
-  opaque map; the selected harness adapter validates the model and every option
-  before the definition can run. Unknown values fail closed during validation.
-  The Copilot adapter accepts `auto` or one of the model identifiers listed in
-  the Goober schema, plus `context` (`default`/`long_context`) and
-  `reasoningEffort` (`none` through `max`) harness options.
+  arbitrary JSON-compatible `spec.harnessOptions`. The platform preserves the
+  model string and options as adapter-owned values; the selected harness adapter
+  validates their vocabulary, types, and combinations before the definition can
+  run. The Copilot adapter accepts its supported model identifiers and string
+  `context` (`default`/`long_context`) and `reasoningEffort` (`none` through
+  `max`) options only where the selected model supports them.
 - **Setup and configuration are declarative and code-only.** No imperative/portal
   configuration. (Runtime *operations* — gate approvals, retries — are a separate,
   minimal portal surface; see Portal spec.)

@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // ErrDeclaredArtifactMissing is returned when a stage declares
@@ -79,7 +80,7 @@ type Executor struct {
 	validator       *validate.Validator
 	instructions    string
 	model           string
-	harnessOptions  map[string]string
+	harnessOptions  map[string]apiextensionsv1.JSON
 	resultPath      string
 	verdictPath     string
 	timeout         time.Duration
@@ -107,13 +108,13 @@ func WithTranscriptLimit(n int64) Option { return func(e *Executor) { e.transcri
 
 // WithHarnessConfig supplies the goober's adapter-validated model and opaque
 // harness options to every session driven by this Executor.
-func WithHarnessConfig(model string, options map[string]string) Option {
+func WithHarnessConfig(model string, options map[string]apiextensionsv1.JSON) Option {
 	return func(e *Executor) {
 		e.model = model
 		if options != nil {
-			e.harnessOptions = make(map[string]string, len(options))
+			e.harnessOptions = make(map[string]apiextensionsv1.JSON, len(options))
 			for name, value := range options {
-				e.harnessOptions[name] = value
+				e.harnessOptions[name] = apiextensionsv1.JSON{Raw: append([]byte(nil), value.Raw...)}
 			}
 		}
 	}

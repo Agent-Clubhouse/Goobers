@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // Mode selects which completion contract a harness session is driven toward:
@@ -70,7 +71,7 @@ type RunRequest struct {
 	// Model is the optional harness-scoped model selected by the goober.
 	Model string
 	// HarnessOptions are the goober's opaque, adapter-validated settings.
-	HarnessOptions map[string]string
+	HarnessOptions map[string]apiextensionsv1.JSON
 	// Workspace is the working directory the harness runs in — normally
 	// Envelope.Workspace, threaded explicitly so tests can point it
 	// elsewhere.
@@ -140,12 +141,12 @@ type Adapter interface {
 // configuration. Validation runs while definitions are admitted, before a
 // harness process or run attempt starts.
 type ConfigValidator interface {
-	ValidateConfig(model string, options map[string]string) error
+	ValidateConfig(model string, options map[string]apiextensionsv1.JSON) error
 }
 
 // ValidateConfig delegates model and option validation to adapter. An adapter
 // without a validator may only be used with an empty harness configuration.
-func ValidateConfig(adapter Adapter, model string, options map[string]string) error {
+func ValidateConfig(adapter Adapter, model string, options map[string]apiextensionsv1.JSON) error {
 	validator, ok := adapter.(ConfigValidator)
 	if !ok {
 		if model != "" || len(options) > 0 {

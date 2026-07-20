@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // fakeProcessRunner is a scripted ProcessRunner double: it lets tests inspect
@@ -27,6 +27,19 @@ type fakeProcessRunner struct {
 	act     func(req ProcessRequest) error
 	result  ProcessResult
 	err     error
+}
+
+func testHarnessOptions(t *testing.T, values map[string]interface{}) map[string]apiextensionsv1.JSON {
+	t.Helper()
+	options := make(map[string]apiextensionsv1.JSON, len(values))
+	for name, value := range values {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("marshal harness option %q: %v", name, err)
+		}
+		options[name] = apiextensionsv1.JSON{Raw: raw}
+	}
+	return options
 }
 
 func (f *fakeProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
@@ -284,13 +297,18 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		model   string
-		options map[string]string
+		options map[string]apiextensionsv1.JSON
 		wantErr string
 	}{
-		{name: "valid", model: "claude-sonnet-4.5", options: map[string]string{"context": "long_context", "reasoningEffort": "high"}},
+		{name: "valid", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"})},
+		{name: "default context supported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"context": "default"})},
 		{name: "unknown model", model: "not-a-model", wantErr: "unknown model"},
-		{name: "unknown option", options: map[string]string{"temperature": "0.2"}, wantErr: "unknown harness option"},
-		{name: "unknown option value", options: map[string]string{"reasoningEffort": "extreme"}, wantErr: "invalid reasoningEffort"},
+		{name: "unknown option", options: testHarnessOptions(t, map[string]interface{}{"temperature": "0.2"}), wantErr: "unknown harness option"},
+		{name: "invalid option type", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": true}), wantErr: "must be a string"},
+		{name: "unknown context value", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": "extended"}), wantErr: "invalid context"},
+		{name: "long context unsupported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context"}), wantErr: "not supported"},
+		{name: "reasoning unsupported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"reasoningEffort": "high"}), wantErr: "not supported"},
+		{name: "reasoning level unsupported", model: "claude-sonnet-4.6", options: testHarnessOptions(t, map[string]interface{}{"reasoningEffort": "xhigh"}), wantErr: "not supported"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := adapter.ValidateConfig(tc.model, tc.options)
@@ -316,8 +334,8 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 	adapter = &CopilotAdapter{Command: []string{"copilot"}, ExtraArgs: []string{}, Runner: runner}
 	req := RunRequest{
 		Envelope:       testEnvelope(workspace),
-		Model:          "claude-sonnet-4.5",
-		HarnessOptions: map[string]string{"context": "long_context", "reasoningEffort": "high"},
+		Model:          "claude-sonnet-5",
+		HarnessOptions: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"}),
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,
 	}
@@ -326,38 +344,12 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 	}
 	command := strings.Join(runner.lastReq.Command, " ")
 	for _, want := range []string{
-		"--model claude-sonnet-4.5",
+		"--model claude-sonnet-5",
 		"--context long_context",
-		"--reasoning-effort high",
+		"--reasoning-effort xhigh",
 	} {
 		if !strings.Contains(command, want) {
 			t.Errorf("command = %q, want %q", command, want)
-		}
-	}
-}
-
-func TestCopilotModelVocabularyMatchesSchema(t *testing.T) {
-	data, err := schemas.FS.ReadFile("goober.schema.json")
-	if err != nil {
-		t.Fatalf("read schema: %v", err)
-	}
-	var schema struct {
-		Properties map[string]struct {
-			Properties map[string]struct {
-				Enum []string `json:"enum"`
-			} `json:"properties"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(data, &schema); err != nil {
-		t.Fatalf("decode schema: %v", err)
-	}
-	models := schema.Properties["spec"].Properties["model"].Enum
-	if len(models) != len(copilotModels) {
-		t.Fatalf("schema models = %v, adapter models = %v", models, copilotModels)
-	}
-	for _, model := range models {
-		if _, ok := copilotModels[model]; !ok {
-			t.Errorf("schema model %q is not accepted by the Copilot adapter", model)
 		}
 	}
 }

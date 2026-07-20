@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 )
@@ -75,10 +76,10 @@ func TestGooberRoundTrip(t *testing.T) {
 			DisplayName:  "Coder",
 			Instructions: "instructions.md",
 			Harness:      HarnessCopilot,
-			Model:        "claude-sonnet-4.5",
-			HarnessOptions: map[string]string{
-				"context":         "long_context",
-				"reasoningEffort": "high",
+			Model:        "claude-sonnet-5",
+			HarnessOptions: map[string]apiextensionsv1.JSON{
+				"context": {Raw: []byte(`"long_context"`)},
+				"custom":  {Raw: []byte(`{"enabled":true,"limit":3}`)},
 			},
 			Capabilities: []string{"repo:push", "github:pr:write"},
 			Skills:       []string{"implement", "run-tests"},

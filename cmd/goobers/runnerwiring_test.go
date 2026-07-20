@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/providers"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // resolveGrants materializes each grant's ref through the resolver, returning a
@@ -103,10 +104,23 @@ func TestCompiledMachinesRejectsInvalidHarnessConfig(t *testing.T) {
 		{
 			name: "unknown option",
 			spec: apiv1.GooberSpec{
-				Harness:        apiv1.HarnessCopilot,
-				HarnessOptions: map[string]string{"temperature": "0.2"},
+				Harness: apiv1.HarnessCopilot,
+				HarnessOptions: map[string]apiextensionsv1.JSON{
+					"temperature": {Raw: []byte(`"0.2"`)},
+				},
 			},
 			want: `unknown harness option "temperature"`,
+		},
+		{
+			name: "unsupported model option",
+			spec: apiv1.GooberSpec{
+				Harness: apiv1.HarnessCopilot,
+				Model:   "claude-sonnet-4.5",
+				HarnessOptions: map[string]apiextensionsv1.JSON{
+					"reasoningEffort": {Raw: []byte(`"high"`)},
+				},
+			},
+			want: `reasoningEffort value "high" is not supported by model "claude-sonnet-4.5"`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
