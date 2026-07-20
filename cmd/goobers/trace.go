@@ -26,7 +26,9 @@ const (
 )
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
-	return runTraceWithFollowContext(nil, args, stdout, stderr)
+	ctx, stop := signals.SetupSignalContext()
+	defer stop()
+	return runTraceWithFollowContext(ctx, args, stdout, stderr)
 }
 
 func runTraceWithFollowContext(followCtx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -131,11 +133,6 @@ func runTraceWithFollowContextAndFactory(
 	}
 	if *follow && !detail.Terminal {
 		if !traceEventsTerminal(ledger.Events) {
-			if followCtx == nil {
-				var stop func()
-				followCtx, stop = signals.SetupSignalContext()
-				defer stop()
-			}
 			if err := followTrace(followCtx, reads, runID, ledger.Events, *jsonOutput, stdout); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return traceInterruptedExitCode
