@@ -31,6 +31,7 @@ type Run struct {
 	phase        RunPhase
 	machineState string
 	reason       string
+	appendErr    error
 	closed       bool
 }
 
@@ -240,8 +241,45 @@ func (r *Run) Append(ev Event) error {
 
 // append is the lock-held core: assign seq, scrub the serialized line, write, fsync.
 func (r *Run) append(ev Event) error {
+	if r.appendErr != nil {
+		return fmt.Errorf("journal: append blocked after prior write failure: %w", r.appendErr)
+	}
 	_, err := appendEvent(r.events, &r.seq, r.scrubber, r.now, ev)
+	if err != nil {
+		r.appendErr = err
+	}
 	return err
+}
+
+// RepairAppendBoundary restores events.jsonl after an Append failure. A torn
+// final record is discarded and recorded with a repaired event; a complete
+// final record is retained. The sequence is reconstructed from the surviving
+// log before appends are allowed again.
+func (r *Run) RepairAppendBoundary() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return ErrClosed
+	}
+
+	path := filepath.Join(r.dir, fileEvents)
+	events, tornBytes, err := readEvents(path)
+	if err != nil {
+		return err
+	}
+	if err := truncateTornTail(path, tornBytes); err != nil {
+		return err
+	}
+
+	r.seq = highestEventSeq(events)
+	r.appendErr = nil
+	if tornBytes == 0 {
+		return nil
+	}
+	return r.append(Event{
+		Type:   EventRepaired,
+		Runner: map[string]any{"discardedBytes": tornBytes},
+	})
 }
 
 // SetMachineState records the current state-machine node used in the next

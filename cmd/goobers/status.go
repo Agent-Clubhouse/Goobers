@@ -53,11 +53,12 @@ func parkedDependencyStatusText(parked []parkedDependency) string {
 }
 
 type statusJSONSummary struct {
-	RunID     string    `json:"runId"`
-	Workflow  string    `json:"workflow"`
-	Gaggle    string    `json:"gaggle"`
-	Phase     string    `json:"phase"`
-	StartedAt time.Time `json:"startedAt"`
+	RunID          string    `json:"runId"`
+	Workflow       string    `json:"workflow"`
+	Gaggle         string    `json:"gaggle"`
+	Phase          string    `json:"phase"`
+	StartedAt      time.Time `json:"startedAt"`
+	LastActivityAt time.Time `json:"lastActivityAt"`
 }
 
 type statusJSONOutput struct {
@@ -69,11 +70,12 @@ func statusJSONSummaries(runs []runSummary) []statusJSONSummary {
 	summaries := make([]statusJSONSummary, len(runs))
 	for i, r := range runs {
 		summaries[i] = statusJSONSummary{
-			RunID:     r.RunID,
-			Workflow:  r.Workflow,
-			Gaggle:    r.Gaggle,
-			Phase:     string(r.Phase),
-			StartedAt: r.StartedAt,
+			RunID:          r.RunID,
+			Workflow:       r.Workflow,
+			Gaggle:         r.Gaggle,
+			Phase:          string(r.Phase),
+			StartedAt:      r.StartedAt,
+			LastActivityAt: r.LastActivityAt,
 		}
 	}
 	return summaries
@@ -93,11 +95,12 @@ func listStatusRuns(ctx context.Context, reads readservice.StatusReader) ([]runS
 	runs := make([]runSummary, len(summaries))
 	for i, run := range summaries {
 		runs[i] = runSummary{
-			RunID:     run.ID,
-			Workflow:  run.Workflow,
-			Gaggle:    run.Gaggle,
-			Phase:     run.Phase,
-			StartedAt: run.StartedAt,
+			RunID:          run.ID,
+			Workflow:       run.Workflow,
+			Gaggle:         run.Gaggle,
+			Phase:          run.Phase,
+			StartedAt:      run.StartedAt,
+			LastActivityAt: run.LastActivityAt,
 		}
 	}
 	return runs, nil
@@ -300,7 +303,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 2
 	}
 	pf(stdout, "%s", statusText)
-	renderStatus(stdout, runs)
+	renderStatus(stdout, runs, time.Now())
 	return 0
 }
 
@@ -329,17 +332,29 @@ func selectStatusRuns(runs []runSummary, options statusOptions) []runSummary {
 	return filtered
 }
 
-func renderStatus(stdout io.Writer, runs []runSummary) {
+func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 	if len(runs) == 0 {
 		pln(stdout, "no runs found — trigger one with 'goobers run <workflow>'")
 		return
 	}
 
-	pf(stdout, "%-34s  %-24s  %-10s  %-10s  %s\n", "RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED")
+	pf(stdout, "%-34s  %-24s  %-10s  %-10s  %-20s  %s\n", "RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED", "LAST ACTIVITY")
 	for _, r := range runs {
-		pf(stdout, "%-34s  %-24s  %-10s  %-10s  %s\n",
-			r.RunID, r.Workflow, r.Gaggle, r.Phase, r.StartedAt.Format(time.RFC3339))
+		pf(stdout, "%-34s  %-24s  %-10s  %-10s  %-20s  %s\n",
+			r.RunID, r.Workflow, r.Gaggle, r.Phase, r.StartedAt.Format(time.RFC3339),
+			formatLastActivity(now, r.LastActivityAt))
 	}
+}
+
+func formatLastActivity(now, activity time.Time) string {
+	if activity.IsZero() {
+		return "-"
+	}
+	age := now.Sub(activity)
+	if age < 0 {
+		age = 0
+	}
+	return age.Truncate(time.Second).String() + " ago"
 }
 
 func watchStatus(
@@ -370,7 +385,7 @@ func watchStatus(
 		if err != nil {
 			return err
 		}
-		renderStatusWatchFrame(stdout, statusText, selectStatusRuns(allRuns, options), changedStatusRuns(previous, current))
+		renderStatusWatchFrame(stdout, statusText, selectStatusRuns(allRuns, options), changedStatusRuns(previous, current), time.Now())
 		previous = current
 
 		select {
@@ -399,7 +414,7 @@ func changedStatusRuns(previous, current map[string]journal.RunPhase) map[string
 	return changed
 }
 
-func renderStatusWatchFrame(stdout io.Writer, statusText string, runs []runSummary, changed map[string]struct{}) {
+func renderStatusWatchFrame(stdout io.Writer, statusText string, runs []runSummary, changed map[string]struct{}, now time.Time) {
 	pf(stdout, statusClearScreen)
 	if statusText != "" {
 		pf(stdout, "%s", statusText)
@@ -409,7 +424,7 @@ func renderStatusWatchFrame(stdout io.Writer, statusText string, runs []runSumma
 		return
 	}
 
-	pf(stdout, statusWatchRowFormat+"\n", "RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED")
+	pf(stdout, statusWatchRowFormat+"\n", "RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "LAST ACTIVITY")
 	for _, run := range runs {
 		row := fmt.Sprintf(
 			statusWatchRowFormat,
@@ -417,7 +432,7 @@ func renderStatusWatchFrame(stdout io.Writer, statusText string, runs []runSumma
 			run.Workflow,
 			run.Gaggle,
 			run.Phase,
-			run.StartedAt.Format(time.RFC3339),
+			formatLastActivity(now, run.LastActivityAt),
 		)
 		if _, ok := changed[run.RunID]; ok {
 			pf(stdout, "%s%s%s\n", statusHighlight, row, statusReset)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -28,6 +29,36 @@ const DefaultMaxSteps = 10000
 // DefaultMaxInfrastructureAttempts bounds transient infrastructure failures
 // independently of a task's policy retry allowance.
 const DefaultMaxInfrastructureAttempts int32 = 2
+
+// StageHeartbeatInterval bounds active-attempt journal growth to one compact
+// liveness event per minute.
+const StageHeartbeatInterval = time.Minute
+
+type heartbeatTicker interface {
+	Ticks() <-chan time.Time
+	Stop()
+}
+
+type wallHeartbeatTicker struct {
+	ticker *time.Ticker
+}
+
+func (t wallHeartbeatTicker) Ticks() <-chan time.Time { return t.ticker.C }
+func (t wallHeartbeatTicker) Stop()                   { t.ticker.Stop() }
+
+type journalAppender interface {
+	Append(journal.Event) error
+}
+
+type stageHeartbeat struct {
+	stop chan struct{}
+	done <-chan error
+}
+
+func (h stageHeartbeat) Stop() error {
+	close(h.stop)
+	return <-h.done
+}
 
 // SpanStarter is the slice of the telemetry client the runner needs to open
 // run/task/gate spans (issue #126). *telemetry.Client satisfies it
@@ -199,8 +230,10 @@ type Config struct {
 // through the pre-existing internal/invoke seam. It is the substrate-neutral
 // local runner core (ARCHITECTURE.md §3.1).
 type Runner struct {
-	cfg      Config
-	maxSteps int
+	cfg                Config
+	maxSteps           int
+	heartbeatInterval  time.Duration
+	newHeartbeatTicker func(time.Duration) heartbeatTicker
 }
 
 // New validates cfg and returns a ready Runner.
@@ -218,7 +251,14 @@ func New(cfg Config) (*Runner, error) {
 	if cfg.RepoCloneURL == nil {
 		cfg.RepoCloneURL = defaultRepoCloneURL
 	}
-	return &Runner{cfg: cfg, maxSteps: maxSteps}, nil
+	return &Runner{
+		cfg:               cfg,
+		maxSteps:          maxSteps,
+		heartbeatInterval: StageHeartbeatInterval,
+		newHeartbeatTicker: func(interval time.Duration) heartbeatTicker {
+			return wallHeartbeatTicker{ticker: time.NewTicker(interval)}
+		},
+	}, nil
 }
 
 // StartInput is what triggers one run.
@@ -1293,6 +1333,83 @@ func (r *Runner) FinalizeTerminal(runID string, phase journal.RunPhase) error {
 // zero value for the run's first task) — dispatchTask threads its Outputs
 // into this task's Inputs per t.InputsFrom (#132), the task-to-task analog
 // of evaluateGate's unconditional Outputs flatten.
+func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt int, class journal.AttemptClass) stageHeartbeat {
+	interval := r.heartbeatInterval
+	if interval <= 0 {
+		interval = StageHeartbeatInterval
+	}
+	newTicker := r.newHeartbeatTicker
+	if newTicker == nil {
+		newTicker = func(interval time.Duration) heartbeatTicker {
+			return wallHeartbeatTicker{ticker: time.NewTicker(interval)}
+		}
+	}
+	ticker := newTicker(interval)
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		var heartbeatErr error
+		defer func() {
+			ticker.Stop()
+			done <- heartbeatErr
+		}()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.Ticks():
+				if err := jr.Append(journal.Event{
+					Type:         journal.EventStageHeartbeat,
+					Stage:        stage,
+					Attempt:      attempt,
+					AttemptClass: class,
+				}); err != nil {
+					heartbeatErr = fmt.Errorf("runner: journal stage.heartbeat for %q: %w", stage, err)
+					return
+				}
+			}
+		}
+	}()
+	return stageHeartbeat{stop: stop, done: done}
+}
+
+func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact, removeErr error) error {
+	heartbeatErr := heartbeat.Stop()
+	if heartbeatErr != nil {
+		if err := jr.RepairAppendBoundary(); err != nil {
+			return fmt.Errorf("runner: repair journal after heartbeat failure for %q: %w", stage, errors.Join(heartbeatErr, err))
+		}
+	}
+	for _, m := range mutations {
+		// Best-effort, like ClaimLedger's own journal() (issue #228): a
+		// provider mutation already happened for real regardless of
+		// whether this projection succeeds, so a failed Append here must
+		// not fail the stage or mask the mutation's own outcome.
+		_ = jr.Append(journal.Event{
+			Type: journal.EventRefTouched, Stage: stage, Attempt: attempt, AttemptClass: class,
+			ExternalRef: &journal.ExternalRef{Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL},
+			Runner:      map[string]any{"operation": m.Operation},
+		})
+	}
+	if removeErr != nil {
+		// Non-fatal (issue #136): a failed worktree teardown doesn't
+		// change this attempt's own outcome, and worktree.Create's own
+		// adopt-and-reset means it no longer blocks the next attempt
+		// either — but the append recording it must not itself be
+		// silently discarded (#243): a journal that cannot be written
+		// is fatal (§2.6), consistent with the executor_error and
+		// stage.finished appends just below treating their own write
+		// failures the same way.
+		if err := jr.Append(journal.Event{
+			Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
+			Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
+		}); err != nil {
+			return fmt.Errorf("runner: journal worktree removal error for %q: %w", stage, err)
+		}
+	}
+	return heartbeatErr
+}
+
 func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, workspaceBranch string) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
@@ -1345,35 +1462,11 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
+		heartbeat := r.startStageHeartbeat(jr, t.Name, int(attempt), class)
 		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, span, workspaceBranch)
-		for _, m := range mutations {
-			// Best-effort, like ClaimLedger's own journal() (issue #228): a
-			// provider mutation already happened for real regardless of
-			// whether this projection succeeds, so a failed Append here must
-			// not fail the stage or mask the mutation's own outcome.
-			_ = jr.Append(journal.Event{
-				Type: journal.EventRefTouched, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-				ExternalRef: &journal.ExternalRef{Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL},
-				Runner:      map[string]any{"operation": m.Operation},
-			})
-		}
-		if removeErr != nil {
-			// Non-fatal (issue #136): a failed worktree teardown doesn't
-			// change this attempt's own outcome, and worktree.Create's own
-			// adopt-and-reset means it no longer blocks the next attempt
-			// either — but the append recording it must not itself be
-			// silently discarded (#243): a journal that cannot be written
-			// is fatal (§2.6), consistent with the executor_error and
-			// stage.finished appends just below treating their own write
-			// failures the same way.
-			if aerr := jr.Append(journal.Event{
-				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-				Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
-			}); aerr != nil {
-				err := fmt.Errorf("runner: journal worktree removal error for %q: %w", t.Name, aerr)
-				span.Fail(err)
-				return apiv1.ResultEnvelope{}, nil, err
-			}
+		if err := finishTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, removeErr); err != nil {
+			span.Fail(err)
+			return apiv1.ResultEnvelope{}, nil, err
 		}
 		if dispatchErr != nil {
 			lastErr = dispatchErr

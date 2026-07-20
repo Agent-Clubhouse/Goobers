@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
@@ -166,6 +167,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	pf(stdout, "started:  %s\n", detail.StartedAt.Format("2006-01-02T15:04:05Z07:00"))
 	if state != nil {
 		pf(stdout, "phase:    %s (machineState=%q, lastSeq=%d)\n", state.Phase, state.MachineState, state.LastSeq)
+		pf(stdout, "last activity: %s (%s)\n", formatLastActivity(time.Now(), state.UpdatedAt), state.UpdatedAt.Format(time.RFC3339))
 	}
 	pf(stdout, "repasses: %d\n", repasses)
 	pln(stdout, "\nevents:")
@@ -283,7 +285,7 @@ func printEscalationSummary(stdout io.Writer, summary escalationSummary) {
 func formatEvent(ev journal.Event) string {
 	prefix := fmt.Sprintf("[%d] %s", ev.Seq, ev.Type)
 	switch ev.Type {
-	case journal.EventStageStarted, journal.EventStageFinished:
+	case journal.EventStageStarted, journal.EventStageHeartbeat, journal.EventStageFinished:
 		s := fmt.Sprintf("%s stage=%s attempt=%d", prefix, ev.Stage, ev.Attempt)
 		if ev.AttemptClass != "" {
 			s += fmt.Sprintf(" class=%s", ev.AttemptClass)

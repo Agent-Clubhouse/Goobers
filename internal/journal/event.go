@@ -15,6 +15,9 @@ const (
 	EventRunFinished EventType = "run.finished"
 	// EventStageStarted marks a stage attempt beginning.
 	EventStageStarted EventType = "stage.started"
+	// EventStageHeartbeat records that a stage attempt remains active. It is
+	// lightweight operational telemetry and excluded from conformance.
+	EventStageHeartbeat EventType = "stage.heartbeat"
 	// EventStageFinished marks a stage attempt ending with a result.
 	EventStageFinished EventType = "stage.finished"
 	// EventGateStarted marks a gate evaluation beginning. It is recovery
@@ -107,12 +110,13 @@ type Event struct {
 	// --- orchestration payload (normative unless noted) ---
 
 	// Stage is the stage name for stage.* events and stage-scoped artifacts.
-	// Normative.
+	// Normative except on stage.heartbeat, which is excluded as a whole.
 	Stage string `json:"stage,omitempty"`
 	// Attempt is the 1-based attempt number for stage.* events and
-	// stage-scoped artifacts. Normative.
+	// stage-scoped artifacts. Normative except on stage.heartbeat.
 	Attempt int `json:"attempt,omitempty"`
-	// AttemptClass tags a retry attempt. Normative iff not "infra".
+	// AttemptClass tags a retry attempt. Normative iff the event is not a
+	// heartbeat and the class is not "infra".
 	AttemptClass AttemptClass `json:"attemptClass,omitempty"`
 	// Gate is the gate name for gate.* events. Normative on gate.evaluated;
 	// gate.started is excluded as recovery bookkeeping.
@@ -197,16 +201,18 @@ type RedactionInfo struct {
 }
 
 // IsConformanceNormative reports whether this event participates in the
-// cross-runner conformance set (§3.3). Excluded: infra-retry attempts, and the
-// recovery/repair bookkeeping events that are local-runner mechanics.
+// cross-runner conformance set (§3.3). Excluded: heartbeats, infra-retry
+// attempts, and recovery/repair bookkeeping events that are local-runner
+// mechanics.
 func (e Event) IsConformanceNormative() bool {
 	if e.AttemptClass == AttemptInfra {
 		return false
 	}
 	switch e.Type {
-	case EventGateStarted, EventRepaired:
+	case EventStageHeartbeat, EventGateStarted, EventRepaired:
 		// Pre-dispatch gate markers and torn-write repair are durability
-		// mechanics, not orchestration outcomes.
+		// mechanics; heartbeats are operational liveness, not orchestration
+		// outcomes.
 		return false
 	case EventRunnerAnnotation:
 		// Local-runner lifecycle bookkeeping lives under runner.* only.

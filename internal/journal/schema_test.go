@@ -36,6 +36,7 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 	// Exercise a representative spread of event shapes.
 	for _, ev := range []Event{
 		{Type: EventStageStarted, Stage: "impl", Attempt: 1},
+		{Type: EventStageHeartbeat, Stage: "impl", Attempt: 1},
 		{Type: EventStageFinished, Stage: "impl", Attempt: 2, AttemptClass: AttemptPolicy, Status: "success"},
 		// Outputs/Artifacts populated (#107/#108's resume reconstruction) —
 		// proves the schema's declared "outputs"/"artifacts" properties stay

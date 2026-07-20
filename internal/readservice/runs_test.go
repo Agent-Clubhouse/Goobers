@@ -439,6 +439,9 @@ func TestLiveRunDurationUsesObservationTime(t *testing.T) {
 	if detail.Terminal || detail.DurationMillis != 30_000 {
 		t.Fatalf("live run summary = %+v", detail.RunSummary)
 	}
+	if want := started.Add(2 * time.Second); !detail.LastActivityAt.Equal(want) {
+		t.Fatalf("last activity = %s, want %s", detail.LastActivityAt, want)
+	}
 }
 
 func TestUnknownSchemasAndTornTailRemainInspectable(t *testing.T) {
