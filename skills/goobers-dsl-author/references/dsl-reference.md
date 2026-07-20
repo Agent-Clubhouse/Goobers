@@ -129,7 +129,7 @@ Trigger-specific fields:
 |---|---|
 | `manual` | No schedule, signal, or selector; it must be the only trigger. |
 | `schedule` | `schedule`, quoted as a cron expression or supported descriptor. |
-| `backlog-item` | **V1 only.** `selector`, with string values. V0 accepts this shape but never fires it. |
+| `backlog-item` | `selector`, with string values. `goobers up` treats selector keys as required backlog labels and dispatches eligible runs subject to readiness limits; selector values are not used for GitHub label matching. |
 | `signal` | `signal`, naming the external signal. |
 
 For autonomous V0 backlog consumption, use a schedule and make the first task
@@ -158,9 +158,11 @@ tasks:
 
 When another state processes the claimed item, add `next` naming that reachable
 task or gate. On public repos, `trustLabel` must name a maintainer-applied trust
-label. Do not substitute a `backlog-item` trigger plus `selector`: those fields
-are reserved for V1 and have no V0 runtime consumer, so `goobers up` will not
-start that workflow.
+label. The architecture-recommended V0 pattern is the schedule above. The
+current local daemon also polls and dispatches workflows with a `backlog-item`
+trigger, but its poll only counts eligible items; it does not claim one. Such a
+workflow should therefore also start with a deterministic `goobers
+backlog-query --claim` task.
 
 A deterministic task requires `name`, `type: deterministic`, `goal`, and
 `run.command`; it must not set `goober`. An agentic task requires `name`,
@@ -215,8 +217,8 @@ referenced goober's capability list.
 - Every task and gate is reachable from `start`.
 - Trigger fields match the trigger type; schedules parse.
 - A V0 autonomous backlog workflow has a schedule trigger and starts with a
-  deterministic `goobers backlog-query --claim` task; it does not use the
-  V1-only `backlog-item` trigger or `selector`.
+  deterministic `goobers backlog-query --claim` task. If it instead uses the
+  local daemon's `backlog-item` trigger, its first task still claims one item.
 - Task type matches `run` versus `goober`.
 - Gate evaluator block and outcome vocabulary match the evaluator.
 - Capabilities are canonical and agentic task grants are a subset of goober

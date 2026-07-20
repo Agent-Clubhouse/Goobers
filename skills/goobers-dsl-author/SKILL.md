@@ -118,8 +118,9 @@ Apply the complete checklist in `references/dsl-reference.md`. In particular:
   trigger must be the only trigger.
 - For V0 autonomous backlog consumption, use a `schedule` trigger and make the
   first deterministic task run `["goobers", "backlog-query", "--claim"]`.
-  Direct `backlog-item` triggers and their selectors are reserved for V1 and
-  have no V0 runtime consumer.
+  The current local daemon also dispatches `backlog-item` triggers by polling
+  the labels named by the selector keys, but that poll only counts eligible
+  items; the workflow still needs a first task that claims one.
 - An agentic task has `goober` and no `run`; a deterministic task has `run`
   and no `goober`.
 - Put only canonical capabilities on tasks. Every capability on an agentic
