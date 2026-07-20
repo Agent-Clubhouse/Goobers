@@ -395,10 +395,16 @@ func TestCopilotAdapterSkipsNativeTranscriptForSelectedSession(t *testing.T) {
 }
 
 func TestCopilotAdapterBoundsNativeSessionTranscript(t *testing.T) {
-	const limit = int64(80)
+	const limit = int64(512)
+	const prompt = "Implement the parser."
+	const finalOutput = "The parser is implemented."
 	workspace := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
-	native := readTestData(t, "copilot-session-events.jsonl")
+	native := []byte(
+		`{"type":"user.message","data":{"content":"` + prompt + `"}}` + "\n" +
+			`{"type":"session.error","data":{"message":"` + strings.Repeat("x", int(limit)) + `"}}` + "\n" +
+			`{"type":"assistant.message","data":{"messageId":"message-final","model":"gpt-5.4","content":"` + finalOutput + `"}}` + "\n",
+	)
 	runner := &fakeProcessRunner{
 		result: ProcessResult{Transcript: []byte("floor"), ExitCode: 0},
 		act: func(req ProcessRequest) error {
@@ -424,6 +430,15 @@ func TestCopilotAdapterBoundsNativeSessionTranscript(t *testing.T) {
 		t.Fatalf("native truncation = %v, dropped = %d; want a positive truncation", out.TranscriptTruncated, out.TranscriptDroppedBytes)
 	}
 	events := decodeTranscriptEvents(t, out.Transcript)
+	if len(events) != 3 {
+		t.Fatalf("native transcript events = %#v, want prompt, final output, and marker", events)
+	}
+	if events[0].Role != "user" || events[0].Content != prompt {
+		t.Fatalf("prompt event = %#v, want retained native prompt", events[0])
+	}
+	if events[1].Role != "assistant" || events[1].Content != finalOutput || !events[1].Truncated {
+		t.Fatalf("final output event = %#v, want retained truncated native final output", events[1])
+	}
 	marker := events[len(events)-1]
 	if marker.Role != "system" || !marker.Truncated || !strings.Contains(marker.Content, "[transcript truncated:") {
 		t.Fatalf("truncation marker = %#v", marker)

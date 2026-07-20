@@ -138,6 +138,7 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 	buf := newTranscriptBuffer(limit)
 	converted := false
 	var metrics map[string]float64
+	var prompt, finalOutput *transcriptEvent
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -161,6 +162,14 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 			}
 		}
 		for _, event := range events {
+			if native.Type == "user.message" && prompt == nil {
+				captured := event
+				prompt = &captured
+			}
+			if native.Type == "assistant.message" {
+				captured := event
+				finalOutput = &captured
+			}
 			encoded, err := marshalTranscriptEvents(event)
 			if err != nil {
 				return transcriptCapture{}, false
@@ -175,7 +184,14 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 	if !converted {
 		return transcriptCapture{}, false
 	}
-	data, dropped, err := finalizeCanonicalTranscript(buf, 0)
+	floor := make([]transcriptEvent, 0, 2)
+	if prompt != nil {
+		floor = append(floor, *prompt)
+	}
+	if finalOutput != nil {
+		floor = append(floor, *finalOutput)
+	}
+	data, dropped, err := finalizeCanonicalTranscript(buf, floor, 0)
 	if err != nil {
 		return transcriptCapture{}, false
 	}

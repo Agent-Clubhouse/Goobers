@@ -146,14 +146,25 @@ func truncateTranscriptContents(events []transcriptEvent, limit int64) ([]byte, 
 	return encode(bestRunes, false)
 }
 
-func finalizeCanonicalTranscript(buf *syncBuffer, alreadyDropped int64) ([]byte, int64, error) {
+func finalizeCanonicalTranscript(buf *syncBuffer, floor []transcriptEvent, alreadyDropped int64) ([]byte, int64, error) {
 	retained := buf.retainedBytes()
 	if !buf.Truncated() {
 		return retained, alreadyDropped, nil
 	}
 
 	end := bytes.LastIndexByte(retained, '\n') + 1
-	dropped := alreadyDropped + buf.Dropped() + int64(len(retained)-end)
+	bounded := retained[:end]
+	for start := 0; start < len(floor); start++ {
+		candidate, err := truncateTranscriptContents(floor[start:], buf.limit)
+		if err != nil {
+			return nil, 0, err
+		}
+		if candidate != nil {
+			bounded = candidate
+			break
+		}
+	}
+	dropped := alreadyDropped + int64(len(retained)) + buf.Dropped() - int64(len(bounded))
 	marker, err := marshalTranscriptEvents(transcriptEvent{
 		Role:      "system",
 		Content:   fmt.Sprintf("[transcript truncated: %d bytes dropped]", dropped),
@@ -162,5 +173,5 @@ func finalizeCanonicalTranscript(buf *syncBuffer, alreadyDropped int64) ([]byte,
 	if err != nil {
 		return nil, 0, err
 	}
-	return append(retained[:end], marker...), dropped, nil
+	return append(bounded, marker...), dropped, nil
 }
