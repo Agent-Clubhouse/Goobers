@@ -495,7 +495,7 @@ func TestRunAbortMarksRunTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, stdout, stderr := runArgs(t, "run", "abort", "stuck-3", root)
+	code, stdout, stderr := runArgs(t, "run", "abort", "stuck", root)
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
@@ -513,6 +513,42 @@ func TestRunAbortMarksRunTerminal(t *testing.T) {
 	}
 	if st.Phase != journal.PhaseAborted {
 		t.Fatalf("phase = %q, want %q", st.Phase, journal.PhaseAborted)
+	}
+}
+
+func TestRunAbortRejectsAmbiguousRunIDPrefix(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const (
+		first  = "dd57a3c2aaaaaaaaaaaaaaaaaaaaaaaa"
+		second = "dd57a3c2f0d27ea99ca7fa84db6ecab4"
+	)
+	for _, runID := range []string{first, second} {
+		run, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+			RunID:           runID,
+			Workflow:        "no-such-workflow",
+			WorkflowVersion: 1,
+			Gaggle:          "example",
+			Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+		}, nil)
+		if err != nil {
+			t.Fatalf("create run %q: %v", runID, err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatalf("close run %q: %v", runID, err)
+		}
+	}
+
+	code, stdout, stderr := runArgs(t, "run", "abort", "dd57a3c2", root)
+	if code != 2 {
+		t.Fatalf("code = %d, want 2", code)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	want := `error: ambiguous prefix "dd57a3c2" matches 2 runs: ` + first + ", " + second + "\n"
+	if stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
 }
 

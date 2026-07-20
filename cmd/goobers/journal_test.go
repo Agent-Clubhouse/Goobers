@@ -85,10 +85,14 @@ func TestJournalRedactRemovesLeakedSecret(t *testing.T) {
 	}
 
 	code, stdout, stderr := runArgs(t, "journal", "redact",
-		"--run", runID, "--path", blobPath, "--reason", "token pasted into the issue body",
+		"--run", "redact-fixture", "--path", blobPath, "--reason", "token pasted into the issue body",
 		"--secret-file", secretFile, root)
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	confirmation := "run:      " + runID + "\nworkflow: default-implement\n"
+	if !strings.HasPrefix(stdout, confirmation) {
+		t.Fatalf("stdout = %q, want confirmation prefix %q", stdout, confirmation)
 	}
 	if !strings.Contains(stdout, "redacted "+blobPath) || !strings.Contains(stdout, "new digest:") {
 		t.Fatalf("unexpected stdout: %q", stdout)
@@ -114,6 +118,43 @@ func TestJournalRedactRemovesLeakedSecret(t *testing.T) {
 	}
 	if last.Redaction.Target != blobPath || last.Redaction.Reason != "token pasted into the issue body" {
 		t.Fatalf("redaction event details wrong: %+v", last.Redaction)
+	}
+}
+
+func TestJournalRedactRejectsAmbiguousRunIDPrefix(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	const (
+		first  = "dd57a3c2aaaaaaaaaaaaaaaaaaaaaaaa"
+		second = "dd57a3c2f0d27ea99ca7fa84db6ecab4"
+	)
+	for _, runID := range []string{first, second} {
+		run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+			RunID:           runID,
+			Workflow:        "default-implement",
+			WorkflowVersion: 1,
+			Gaggle:          "example",
+			Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+		}, nil)
+		if err != nil {
+			t.Fatalf("create run %q: %v", runID, err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatalf("close run %q: %v", runID, err)
+		}
+	}
+
+	code, stdout, stderr := runArgs(t, "journal", "redact",
+		"--run", "dd57a3c2", "--path", "inputs/secret", "--reason", "x", root)
+	if code != 2 {
+		t.Fatalf("code = %d, want 2", code)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	want := `error: ambiguous prefix "dd57a3c2" matches 2 runs: ` + first + ", " + second + "\n"
+	if stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
 }
 
