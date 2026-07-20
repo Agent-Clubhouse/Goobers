@@ -415,7 +415,8 @@ func buildEscalationNotifier(cfg *instance.Config, resolver credentials.Resolver
 //   - Known blockers: record the learned block in scheduler/blocked.json so
 //     backlog-query skips the item until every blocker closes (#552's
 //     self-healing skip — a dependency block needs time, not a human), and
-//     comment the same on the driving issue.
+//     comment the same on the driving issue. If the new record closes a cycle,
+//     park every issue in that cycle for human resolution instead (#569).
 //   - No parseable blockers: park the issue goobers:needs-human (swap off
 //     goobers:ready) per the #544 ruling / #539 convention — an agent saying
 //     "I can't proceed" with nothing selection can key off IS a
@@ -460,6 +461,7 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 		for _, itemID := range itemIDs {
 			req := providers.UpdateWorkItemRequest{Repository: repoRef, ID: itemID}
 			if len(o.Blockers) > 0 {
+				var cycle []string
 				if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
 					recs[itemID] = blockedRecord{
 						Blockers:   o.Blockers,
@@ -468,9 +470,29 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 						Reason:     o.Reason,
 						RecordedAt: time.Now().UTC(),
 					}
+					cycle = findBlockedCycle(recs, itemID)
 					return true
 				}); err != nil {
 					errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
+					continue
+				}
+				if len(cycle) > 0 {
+					comment := fmt.Sprintf(
+						"Goobers detected a circular issue dependency: %s. Every issue in this cycle has been marked `%s` and removed from `%s` for human resolution.",
+						issueCyclePath(cycle), providers.LabelNeedsHuman, providers.LabelReady,
+					)
+					for _, cycleItemID := range cycle[:len(cycle)-1] {
+						cycleReq := providers.UpdateWorkItemRequest{
+							Repository:   repoRef,
+							ID:           cycleItemID,
+							Comment:      comment,
+							AddLabels:    []string{providers.LabelNeedsHuman},
+							RemoveLabels: []string{providers.LabelReady},
+						}
+						if _, err := poster.UpdateWorkItem(ctx, cycleReq); err != nil {
+							errs = append(errs, fmt.Errorf("escalate circular dependency on %s#%s: %w", repoRef.Name, cycleItemID, err))
+						}
+					}
 					continue
 				}
 				req.Comment = fmt.Sprintf(
@@ -537,6 +559,18 @@ func issueRefList(numbers []string) string {
 	for i, n := range numbers {
 		if i > 0 {
 			out = append(out, ", "...)
+		}
+		out = append(out, '#')
+		out = append(out, n...)
+	}
+	return string(out)
+}
+
+func issueCyclePath(numbers []string) string {
+	out := make([]byte, 0, len(numbers)*9)
+	for i, n := range numbers {
+		if i > 0 {
+			out = append(out, " -> "...)
 		}
 		out = append(out, '#')
 		out = append(out, n...)

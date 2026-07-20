@@ -39,6 +39,43 @@ type parkedDependency struct {
 	Blockers []string
 }
 
+// findBlockedCycle returns one ordered cycle containing itemID, including
+// itemID again at the end to make the closing edge explicit. Looking only for
+// a cycle through the newly recorded item avoids changing acyclic additions
+// because of an unrelated malformed cycle already present in blocked.json.
+func findBlockedCycle(recs map[string]blockedRecord, itemID string) []string {
+	record, ok := recs[itemID]
+	if !ok {
+		return nil
+	}
+
+	for _, blocker := range record.Blockers {
+		seen := map[string]bool{itemID: true}
+		var pathToItem func(string, []string) []string
+		pathToItem = func(id string, path []string) []string {
+			if id == itemID {
+				return append(path, id)
+			}
+			if seen[id] {
+				return nil
+			}
+			seen[id] = true
+			path = append(path, id)
+
+			for _, next := range recs[id].Blockers {
+				if cycle := pathToItem(next, path); cycle != nil {
+					return cycle
+				}
+			}
+			return nil
+		}
+		if cycle := pathToItem(blocker, []string{itemID}); cycle != nil {
+			return cycle
+		}
+	}
+	return nil
+}
+
 func blockedRecordsPath(l instance.Layout) string {
 	return filepath.Join(l.SchedulerDir(), blockedRecordsFileName)
 }
