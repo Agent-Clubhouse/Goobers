@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -1369,8 +1370,13 @@ func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt i
 	return stageHeartbeat{stop: stop, done: done}
 }
 
-func finishTaskDispatch(jr journalAppender, heartbeat stageHeartbeat, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact, removeErr error) error {
+func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact, removeErr error) error {
 	heartbeatErr := heartbeat.Stop()
+	if heartbeatErr != nil {
+		if err := jr.RepairAppendBoundary(); err != nil {
+			return fmt.Errorf("runner: repair journal after heartbeat failure for %q: %w", stage, errors.Join(heartbeatErr, err))
+		}
+	}
 	for _, m := range mutations {
 		// Best-effort, like ClaimLedger's own journal() (issue #228): a
 		// provider mutation already happened for real regardless of
