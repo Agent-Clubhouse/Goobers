@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -525,6 +527,63 @@ func TestEnvProviderResolverBuildsConfiguredProviders(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte("goobers:ado-token"))
 	if got := string(reg.Scrub([]byte(encoded))); got != journal.Redacted {
 		t.Fatalf("encoded ADO credential was not registered: %q", got)
+	}
+}
+
+type runtimeRateLimitObserver struct {
+	events []providers.RateLimitEvent
+}
+
+func (o *runtimeRateLimitObserver) ObserveRateLimit(_ context.Context, ev providers.RateLimitEvent) {
+	o.events = append(o.events, ev)
+}
+
+type runtimeCancelingRateLimitClient struct {
+	cancel context.CancelFunc
+}
+
+func (c runtimeCancelingRateLimitClient) Do(*http.Request) (*http.Response, error) {
+	c.cancel()
+	return &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": []string{"60"}},
+		Body:       io.NopCloser(strings.NewReader("rate limited")),
+	}, nil
+}
+
+func TestEnvProviderResolverWiresRateLimitObserver(t *testing.T) {
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "github-token")
+	t.Setenv("GOOBERS_ADO_TOKEN", "ado-token")
+	t.Setenv("GOOBERS_ADO_ORG", "ado-org")
+	t.Setenv("GOOBERS_ADO_PROJECT", "ado-project")
+	observer := &runtimeRateLimitObserver{}
+	resolver := EnvProviderResolver{
+		SecretRegistrar:   journal.NewRegistryScrubber(),
+		RateLimitObserver: observer,
+	}
+
+	githubProvider, err := resolver.RepoProvider(apiv1.ProviderGitHub, apiv1.RepoRef{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	github := githubProvider.(*providers.GitHubProvider)
+	github.Client = runtimeCancelingRateLimitClient{cancel: cancel}
+	_, _ = github.GetWorkItem(ctx, providers.RepositoryRef{Owner: "acme", Name: "web"}, "42")
+
+	adoProvider, err := resolver.RepoProvider(apiv1.ProviderADO, apiv1.RepoRef{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel = context.WithCancel(context.Background())
+	ado := adoProvider.(*providers.ADOProvider)
+	ado.Client = runtimeCancelingRateLimitClient{cancel: cancel}
+	_, _ = ado.GetWorkItem(ctx, providers.RepositoryRef{Project: "ado-project"}, "42")
+
+	if len(observer.events) != 2 ||
+		observer.events[0].Provider != providers.ProviderGitHub ||
+		observer.events[1].Provider != providers.ProviderADO {
+		t.Fatalf("rate-limit events = %#v, want GitHub and ADO events", observer.events)
 	}
 }
 

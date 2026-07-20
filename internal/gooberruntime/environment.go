@@ -43,7 +43,8 @@ func (r StaticProviderResolver) RepoProvider(provider apiv1.Provider, _ apiv1.Re
 
 // EnvProviderResolver constructs providers from process environment variables.
 type EnvProviderResolver struct {
-	SecretRegistrar providers.SecretRegistrar
+	SecretRegistrar   providers.SecretRegistrar
+	RateLimitObserver providers.RateLimitObserver
 }
 
 // RepoProvider returns a GitHub or ADO provider configured from env vars.
@@ -54,7 +55,7 @@ func (r EnvProviderResolver) RepoProvider(provider apiv1.Provider, repo apiv1.Re
 		if token == "" {
 			return nil, fmt.Errorf("github repo provider requires GOOBERS_GITHUB_TOKEN or GITHUB_TOKEN")
 		}
-		return providers.NewGitHubProvider(token), nil
+		return providers.NewGitHubProvider(token, providers.WithRateLimitObserver(r.RateLimitObserver)), nil
 	case apiv1.ProviderADO:
 		token := firstEnv("GOOBERS_ADO_TOKEN", "AZURE_DEVOPS_TOKEN", "ADO_TOKEN")
 		if token == "" {
@@ -68,7 +69,13 @@ func (r EnvProviderResolver) RepoProvider(provider apiv1.Provider, repo apiv1.Re
 		if r.SecretRegistrar == nil {
 			return nil, fmt.Errorf("ado repo provider requires a secret registrar")
 		}
-		return providers.NewADOProvider(org, project, token, providers.WithADOSecretRegistrar(r.SecretRegistrar)), nil
+		return providers.NewADOProvider(
+			org,
+			project,
+			token,
+			providers.WithADOSecretRegistrar(r.SecretRegistrar),
+			providers.WithADORateLimitObserver(r.RateLimitObserver),
+		), nil
 	default:
 		return nil, fmt.Errorf("unsupported repo provider %q", provider)
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -29,11 +30,19 @@ import (
 // the runner injects (internal/executor/env.go's buildStageEnv), falling
 // back to an explicit [path] argument for standalone/manual invocation.
 
-// newGitHubProvider constructs the GitHub provider these subcommands talk
-// to. A package var (not a plain call to providers.NewGitHubProvider) so a
+// newGitHubProvider constructs the GitHub provider these subcommands talk to
+// and projects rate-limit decisions into the stage telemetry sidecar. A package
+// var (not a plain call to providers.NewGitHubProvider) so a
 // CLI-level test can point it at an httptest.Server instead of the real
 // api.github.com, mirroring runnerwiring.go's newPRPoller/repoCloneURL seams.
-var newGitHubProvider = providers.NewGitHubProvider
+var newGitHubProvider = newTelemetryGitHubProvider
+
+func newTelemetryGitHubProvider(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+	telemetryOpt := providers.WithRateLimitObserver(
+		telemetry.NewStageRateLimitObserver(os.Getenv(telemetry.StageTelemetryEnv)),
+	)
+	return providers.NewGitHubProvider(token, append([]func(*providers.GitHubProvider){telemetryOpt}, opts...)...)
+}
 
 // claimLedgerFileName/claimLockFileName are the well-known files under an
 // instance's scheduler dir the claim ledger and its cross-process lock

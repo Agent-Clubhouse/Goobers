@@ -101,7 +101,7 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 
 	var wg sync.WaitGroup
 	for _, g := range loaded.Gaggles {
-		provider, repo, perr := bootstrap.BacklogProviderFor(g.Spec.Backlog, cfg.backlogToken, secretReg)
+		provider, repo, perr := bootstrap.BacklogProviderFor(g.Spec.Backlog, cfg.backlogToken, secretReg, tel)
 		if perr != nil {
 			log.Warn("skipping gaggle: backlog provider", "gaggle", g.Name, "err", perr)
 			continue

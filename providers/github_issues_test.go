@@ -520,6 +520,12 @@ func TestGitHubRateLimitBackoffAndTelemetry(t *testing.T) {
 	if !obs.events[0].Secondary || obs.events[0].RetryAfter != time.Second {
 		t.Fatalf("expected secondary rate-limit event honoring Retry-After, got %#v", obs.events[0])
 	}
+	if obs.events[0].Provider != ProviderGitHub ||
+		obs.events[0].Scope == "" ||
+		obs.events[0].Delay != waits[0] ||
+		obs.events[0].Outcome != RateLimitOutcomeRetry {
+		t.Fatalf("incomplete rate-limit telemetry event: %#v", obs.events[0])
+	}
 }
 
 func TestGitHubRateLimitGivesUpAfterMaxRetries(t *testing.T) {
@@ -528,7 +534,12 @@ func TestGitHubRateLimitGivesUpAfterMaxRetries(t *testing.T) {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
-	p := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = srv.URL }, WithMaxRateLimitRetries(2))
+	obs := &recordingObserver{}
+	p := NewGitHubProvider("token",
+		func(p *GitHubProvider) { p.BaseURL = srv.URL },
+		WithMaxRateLimitRetries(2),
+		WithRateLimitObserver(obs),
+	)
 	p.sleep = func(context.Context, time.Duration) error { return nil }
 	_, err := p.GetWorkItem(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "7")
 	if err == nil {
@@ -541,6 +552,9 @@ func TestGitHubRateLimitGivesUpAfterMaxRetries(t *testing.T) {
 	}
 	if !rl.Secondary {
 		t.Fatalf("Retry-After-driven limit should mark Secondary, got %+v", rl)
+	}
+	if obs.count() != 3 || obs.events[2].Outcome != RateLimitOutcomeExhausted {
+		t.Fatalf("rate-limit outcomes = %#v, want two retries and exhausted", obs.events)
 	}
 }
 

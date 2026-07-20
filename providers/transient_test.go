@@ -30,6 +30,7 @@ func TestIsTransientError(t *testing.T) {
 		{"wrapped dns error", fmt.Errorf("send request: %w", &net.DNSError{Err: "temporary failure", IsTemporary: true}), true},
 		{"typed rate-limit give-up", &RateLimitError{Endpoint: "/repos/acme/app/issues", Status: 403}, true},
 		{"wrapped typed rate-limit give-up", fmt.Errorf("list work items: %w", &RateLimitError{Endpoint: "/x", Status: 429}), true},
+		{"serialized typed rate-limit give-up", errors.New((&RateLimitError{Endpoint: "/x", Status: 403, Secondary: true}).Error()), true},
 		{"url client timeout", &url.Error{Op: "Get", URL: "https://api.github.com", Err: context.DeadlineExceeded}, true},
 		{"url transport eof", &url.Error{Op: "Get", URL: "https://api.github.com", Err: io.EOF}, true},
 		{"subprocess connection reset", errors.New("error: list work items: send request: read tcp: connection reset by peer"), true},
