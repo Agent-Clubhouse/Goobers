@@ -139,6 +139,36 @@ type RateLimitedOutcome struct {
 // reference implementation).
 type RateLimitedHandler func(ctx context.Context, o RateLimitedOutcome) error
 
+// FailedOutcome describes a run terminating at PhaseFailed (#1054) — the value
+// Config.Failed receives. Distinct from the escalated/blocked terminals (which
+// park the driving issue goobers:needs-human): a `failed` terminal must leave a
+// human-visible trace WITHOUT that label, so repeated failures on the same item
+// — a recurring copilot-cli harness session timeout is the motivating case —
+// accumulate a countable signal instead of the item silently returning to
+// goobers:ready with no record.
+type FailedOutcome struct {
+	RunID string
+	// RepoRef is the target repository containing the driving backlog item —
+	// the handler resolves its per-repo credential and posts the trace comment
+	// to this repo, mirroring BlockedOutcome.
+	RepoRef apiv1.RepoRef
+	// Stage is the failing stage/gate name when the failure is attributable to
+	// one (a stage-reported business failure, a gate-eval error). Empty for a
+	// state-less walk-level failure (max-steps, an unknown state) — the
+	// harness-timeout case (a dispatch-level runTask error) carries the stage
+	// that was executing.
+	Stage string
+	// Cause is the run's terminal error message — the same text journaled as the
+	// run_failed cause event, which the handler surfaces on the driving item.
+	Cause string
+}
+
+// FailedHandler is Config.Failed's shape. Implementations are instance-level
+// (composition-root) policy: leave a human-visible trace on the driving item
+// when a run ends PhaseFailed (#1054). Must tolerate a run with no driving
+// item.
+type FailedHandler func(ctx context.Context, o FailedOutcome) error
+
 // Config wires a Runner's dependencies: the daemon-wide singletons (worktree
 // provisioning, gate evaluation) and the per-run executor factories
 // (executor.go) — the substrate the local runner drives directly (worktrees
@@ -194,6 +224,22 @@ type Config struct {
 	// fatal to reaching whatever terminal/repass state the failure would
 	// have reached anyway.
 	RateLimited RateLimitedHandler
+	// Failed handles the instance-level consequence of a run reaching terminal
+	// PhaseFailed (#1054): leaving a human-visible trace (a comment carrying the
+	// terminal cause + run id) on the driving item, so a systematic infra fault
+	// — a recurring copilot-cli session timeout ends a run `failed`, not
+	// `escalated` — accumulates a countable signal instead of the item silently
+	// returning to goobers:ready with no record. Deliberately distinct from
+	// Escalation/Blocked's needs-human park: that label stays reserved for the
+	// escalated/park path, so a `failed` terminal reads as separate. Called
+	// after the run's failure cause is journaled and before the run's terminal
+	// run.finished event, so a claim-ledger lookup inside the handler still sees
+	// the run's claims (FinalizeTerminal releases them only after) — the same
+	// ordering notifyBlocked relies on. Fires ONLY on genuine terminal `failed`,
+	// never on completed/escalated/aborted. Optional — nil is a no-op; a handler
+	// error is journaled (failed_handling_failed), never fatal to reaching the
+	// terminal phase.
+	Failed FailedHandler
 	// GateGooberCapabilities resolves an agentic gate's reviewer goober name to
 	// the capabilities its definition declares. An agentic GATE has no
 	// stage-level capabilities of its own (apiv1.AgenticGate is just a Goober
@@ -676,7 +722,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	for {
 		steps++
 		if steps > r.maxSteps {
-			return r.failTerminal(in.RunID, jr, state, steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps))
+			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps))
 		}
 		jr.SetMachineState(state)
 
@@ -715,7 +761,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}
 			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, workspaceBranch)
 			if err != nil {
-				return r.failTerminal(in.RunID, jr, t.Name, steps, err)
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, t.Name, steps, err)
 			}
 			pointers = append(pointers, produced...)
 			lastStage, lastResult = t.Name, result
@@ -772,15 +818,15 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					Type: journal.EventError, Gate: g.Name,
 					Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
 				}); aerr != nil {
-					return r.failTerminal(in.RunID, jr, g.Name, steps, fmt.Errorf("runner: journal worktree removal error for gate %q: %w", g.Name, aerr))
+					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, fmt.Errorf("runner: journal worktree removal error for gate %q: %w", g.Name, aerr))
 				}
 			}
 			if err != nil {
-				return r.failTerminal(in.RunID, jr, g.Name, steps, err)
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, err)
 			}
 			if reason, ok := terminalGateNotificationReason(gr); ok {
 				if err := r.notifyTerminalGate(context.WithoutCancel(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason); err != nil {
-					return r.failTerminal(in.RunID, jr, g.Name, steps, err)
+					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, err)
 				}
 			}
 			switch gr.Target {
@@ -809,7 +855,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				// status output) is a ResultSuccess and never trips this.
 				subject, _ := in.Machine.Task(lastStage)
 				if lastResult.Status == apiv1.ResultFailure && !subject.ContinueOnError && gr.Outcome != gate.OutcomePass {
-					return r.finishStageFailure(in.RunID, jr, lastStage, steps, lastResult.Error)
+					return r.finishStageFailure(ctx, in.RunID, jr, in.RepoRef, lastStage, steps, lastResult.Error)
 				}
 				return r.finish(in.RunID, jr, journal.PhaseCompleted, g.Name, steps)
 			}
@@ -829,7 +875,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			continue
 		}
 
-		return r.failTerminal(in.RunID, jr, state, steps, fmt.Errorf("runner: unknown state %q", state))
+		return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: unknown state %q", state))
 	}
 }
 
@@ -1003,6 +1049,29 @@ func (r *Runner) notifyRateLimited(ctx context.Context, jr *journal.Run, o RateL
 	return nil
 }
 
+// notifyFailed invokes the configured Failed handler (#1054) at a terminal
+// PhaseFailed transition — after the run_failed cause is journaled and before
+// the run's terminal run.finished, mirroring notifyBlocked's ordering so the
+// claim ledger still holds this run's claims (FinalizeTerminal releases them
+// only after). A handler error is journaled (failed_handling_failed) and
+// swallowed — the run must still reach its terminal phase; leaving the trace is
+// best-effort. Only a journal-write failure is returned (a journal that cannot
+// be written is fatal, §2.6).
+func (r *Runner) notifyFailed(ctx context.Context, jr *journal.Run, o FailedOutcome) error {
+	if r.cfg.Failed == nil {
+		return nil
+	}
+	if err := r.cfg.Failed(ctx, o); err != nil {
+		if aerr := jr.Append(journal.Event{
+			Type: journal.EventError, Stage: o.Stage,
+			Error: &journal.ErrorDetail{Code: "failed_handling_failed", Message: err.Error()},
+		}); aerr != nil {
+			return fmt.Errorf("runner: journal failed-handling failure for run %q: %w", o.RunID, aerr)
+		}
+	}
+	return nil
+}
+
 // outputRateLimitReset parses the rateLimitReset RFC3339 timestamp a stage
 // writes into its declared result file on a github_rate_limited failure
 // (failProviderStage, cmd/goobers/providercmd.go, #614). Returns zero/false
@@ -1121,7 +1190,7 @@ const OutputBlockedBy = "blockedBy"
 // the journal must record the failure, not pretend the run is still live
 // (ruling #110). If the terminal append itself fails, both errors are
 // reported rather than one silently swallowing the other.
-func (r *Runner) failTerminal(runID string, jr *journal.Run, finalState string, steps int, origErr error) (Result, error) {
+func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run, repoRef apiv1.RepoRef, finalState string, steps int, origErr error) (Result, error) {
 	// Record the actual cause as an error event before the bare terminal marker
 	// (#305). finish() below journals only run.finished{PhaseFailed}; origErr was
 	// otherwise merely returned up the Go call stack — which `goobers run` never
@@ -1139,6 +1208,14 @@ func (r *Runner) failTerminal(runID string, jr *journal.Run, finalState string, 
 		Type:  journal.EventError,
 		Error: &journal.ErrorDetail{Code: "run_failed", Message: origErr.Error()},
 	})
+	// #1054: leave a human-visible trace on the driving item before finish()'s
+	// FinalizeTerminal releases the run's claims — this walk-level path is the
+	// harness-timeout terminal (a dispatch-level runTask error routed here from
+	// walk), the exact case that was silently returning the issue to ready.
+	// context.WithoutCancel matches notifyBlocked: a SIGTERM drain already in
+	// progress must not skip the trace. The full origErr (not the bounded copy)
+	// is the cause the item's comment records.
+	nerr := r.notifyFailed(context.WithoutCancel(ctx), jr, FailedOutcome{RunID: runID, RepoRef: repoRef, Stage: finalState, Cause: origErr.Error()})
 	res, ferr := r.finish(runID, jr, journal.PhaseFailed, finalState, steps)
 	// FailureStage/Code/Message (issue #710) are populated on the RETURNED
 	// Result regardless of the append's own outcome — even a best-effort
@@ -1153,6 +1230,9 @@ func (r *Runner) failTerminal(runID string, jr *journal.Run, finalState string, 
 	if appendErr != nil {
 		return res, fmt.Errorf("%w (additionally failed to journal the failure cause: %w)", origErr, appendErr)
 	}
+	if nerr != nil {
+		return res, fmt.Errorf("%w (additionally failed to journal the failed-trace failure: %w)", origErr, nerr)
+	}
 	return res, origErr
 }
 
@@ -1164,7 +1244,7 @@ func (r *Runner) failTerminal(runID string, jr *journal.Run, finalState string, 
 // bare "failed". Shared by the two places a failed stage ends a run: its own
 // Next terminating the run (taskOutcome), and a gate absorbing it into a
 // terminal-complete branch (walk's gate handling, #849).
-func (r *Runner) finishStageFailure(runID string, jr *journal.Run, stage string, steps int, cause *apiv1.ErrorInfo) (Result, error) {
+func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journal.Run, repoRef apiv1.RepoRef, stage string, steps int, cause *apiv1.ErrorInfo) (Result, error) {
 	code, message := failureCauseFrom(cause)
 	journaledMessage := message
 	if code != "" {
@@ -1179,10 +1259,20 @@ func (r *Runner) finishStageFailure(runID string, jr *journal.Run, stage string,
 		Type: journal.EventError, Stage: stage,
 		Error: &journal.ErrorDetail{Code: "run_failed", Message: journaledMessage},
 	}); aerr != nil {
-		return r.failTerminal(runID, jr, stage, steps, fmt.Errorf("runner: journal failure cause for %q: %w", stage, aerr))
+		// This degenerate journal-write failure routes through failTerminal,
+		// which fires notifyFailed itself — so the trace is left exactly once,
+		// never doubly.
+		return r.failTerminal(ctx, runID, jr, repoRef, stage, steps, fmt.Errorf("runner: journal failure cause for %q: %w", stage, aerr))
 	}
+	// #1054: leave a human-visible trace on the driving item for a stage-reported
+	// terminal failure too, before finish()'s FinalizeTerminal releases claims.
+	// The code-prefixed journaledMessage is the run's terminal cause.
+	nerr := r.notifyFailed(context.WithoutCancel(ctx), jr, FailedOutcome{RunID: runID, RepoRef: repoRef, Stage: stage, Cause: journaledMessage})
 	res, err := r.finish(runID, jr, journal.PhaseFailed, stage, steps)
 	res.FailureStage, res.FailureCode, res.FailureMessage = stage, code, boundFailureMessage(message)
+	if err == nil && nerr != nil {
+		err = nerr
+	}
 	return res, err
 }
 
@@ -1227,17 +1317,17 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 			Type: journal.EventError, Stage: t.Name,
 			Error: &journal.ErrorDetail{Code: "blocked_by_agent", Message: o.Reason},
 		}); aerr != nil {
-			res, err = r.failTerminal(runID, jr, t.Name, steps, fmt.Errorf("runner: journal blocked cause for %q: %w", t.Name, aerr))
+			res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal blocked cause for %q: %w", t.Name, aerr))
 			return "", res, false, err
 		}
 		if nerr := r.notifyBlockedEscalation(context.WithoutCancel(ctx), jr, runID, item, o); nerr != nil {
-			res, err = r.failTerminal(runID, jr, t.Name, steps, nerr)
+			res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, nerr)
 			return "", res, false, err
 		}
 		// Same drain contract as notifyTerminalGate's call site: a SIGTERM
 		// already in progress must not skip the block recording/parking.
 		if nerr := r.notifyBlocked(context.WithoutCancel(ctx), jr, o); nerr != nil {
-			res, err = r.failTerminal(runID, jr, t.Name, steps, nerr)
+			res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, nerr)
 			return "", res, false, err
 		}
 		res, err = r.finish(runID, jr, journal.PhaseEscalated, t.Name, steps)
@@ -1254,14 +1344,14 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 			if resetAt, ok := outputRateLimitReset(result.Outputs); ok {
 				o := RateLimitedOutcome{RunID: runID, Stage: t.Name, ResetAt: resetAt}
 				if nerr := r.notifyRateLimited(context.WithoutCancel(ctx), jr, o); nerr != nil {
-					res, err = r.failTerminal(runID, jr, t.Name, steps, nerr)
+					res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, nerr)
 					return "", res, false, err
 				}
 			}
 		}
 		if t.ContinueOnError {
 			if aerr := journalToleratedFailure(jr, t.Name); aerr != nil {
-				res, err = r.failTerminal(runID, jr, t.Name, steps, fmt.Errorf("runner: journal tolerated failure for %q: %w", t.Name, aerr))
+				res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal tolerated failure for %q: %w", t.Name, aerr))
 				return "", res, false, err
 			}
 			break
@@ -1306,7 +1396,7 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		// message onto the returned Result so the scheduler/daemon echo sites
 		// can surface "failed (pr-select: github_rate_limited)" instead of a
 		// bare "failed".
-		res, err = r.finishStageFailure(runID, jr, t.Name, steps, result.Error)
+		res, err = r.finishStageFailure(ctx, runID, jr, repoRef, t.Name, steps, result.Error)
 		return "", res, false, err
 	case apiv1.ResultNoWork:
 		// Short-circuits straight to PhaseCompleted, unconditionally — never
