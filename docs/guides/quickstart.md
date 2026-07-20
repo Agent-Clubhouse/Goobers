@@ -142,3 +142,7 @@ Every subcommand follows the same convention: `0` = OK, `1` = validation/
 business error (invalid config, unknown workflow), `2` = usage/IO error (bad
 flags, not an instance root, missing run).
 See also: [V0-ACCEPTANCE.md](../V0-ACCEPTANCE.md) — the end-to-end acceptance runbook that assembles these commands into a full live run.
+
+For the production-oriented path from a foreign GitHub repository through
+curation and an implementation PR, including multi-gaggle configuration, see
+[Onboard an arbitrary repository](arbitrary-repo-onboarding.md).
