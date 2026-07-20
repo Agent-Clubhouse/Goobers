@@ -85,6 +85,8 @@ type TerminalFinalizer func(runID string, phase journal.RunPhase) error
 // "blocked" (#544/#545) — the value Config.Blocked receives.
 type BlockedOutcome struct {
 	RunID string
+	// RepoRef is the target repository containing the driving backlog item.
+	RepoRef apiv1.RepoRef
 	// Stage is the stage that reported blocked.
 	Stage string
 	// ItemID is the driving backlog item's id when the run was started with
@@ -714,7 +716,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				workspaceBranch = b
 			}
 
-			next, res, advance, oerr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.Item, t, result, steps)
+			next, res, advance, oerr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.RepoRef, in.Item, t, result, steps)
 			if oerr != nil {
 				return res, oerr
 			}
@@ -761,7 +763,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return r.failTerminal(in.RunID, jr, g.Name, steps, err)
 			}
 			if reason, ok := terminalGateNotificationReason(gr); ok {
-				if err := r.notifyTerminalGate(context.WithoutCancel(ctx), jr, in.RunID, in.Item, gr, reason); err != nil {
+				if err := r.notifyTerminalGate(context.WithoutCancel(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason); err != nil {
 					return r.failTerminal(in.RunID, jr, g.Name, steps, err)
 				}
 			}
@@ -843,7 +845,7 @@ func terminalGateNotificationReason(gr gate.Result) (string, bool) {
 	return reason, true
 }
 
-func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID string, item *apiv1.BacklogItem, gr gate.Result, reason string) error {
+func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID string, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, gr gate.Result, reason string) error {
 	if r.cfg.Escalation == nil {
 		return nil
 	}
@@ -865,7 +867,7 @@ func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID 
 		return nil
 	}
 	for _, itemID := range itemIDs {
-		if err := r.cfg.Escalation.NotifyEscalated(ctx, itemID, gr, reason); err != nil {
+		if err := r.cfg.Escalation.NotifyEscalated(ctx, providerRepositoryRef(repoRef), itemID, gr, reason); err != nil {
 			if aerr := jr.Append(journal.Event{
 				Type: journal.EventError,
 				Gate: gr.Gate,
@@ -879,6 +881,14 @@ func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID 
 		}
 	}
 	return nil
+}
+
+func providerRepositoryRef(repo apiv1.RepoRef) providers.RepositoryRef {
+	return providers.RepositoryRef{
+		Provider: providers.ProviderKind(repo.Provider),
+		Owner:    repo.Owner,
+		Name:     repo.Name,
+	}
 }
 
 // terminalGateItemIDs resolves the driving backlog item(s) an escalation
@@ -941,7 +951,7 @@ func (r *Runner) notifyBlockedEscalation(ctx context.Context, jr *journal.Run, r
 		return nil
 	}
 	for _, itemID := range itemIDs {
-		if err := r.cfg.Escalation.NotifyStageEscalated(ctx, itemID, o.Stage, o.Reason); err != nil {
+		if err := r.cfg.Escalation.NotifyStageEscalated(ctx, providerRepositoryRef(o.RepoRef), itemID, o.Stage, o.Reason); err != nil {
 			if aerr := jr.Append(journal.Event{
 				Type:  journal.EventError,
 				Stage: o.Stage,
@@ -1173,7 +1183,7 @@ func (r *Runner) finishStageFailure(runID string, jr *journal.Run, stage string,
 // right after runTask returned. ctx/item feed only the blocked arm's
 // instance-level handler (Config.Blocked); the transition decision itself
 // stays pure.
-func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run, machine *workflow.Machine, item *apiv1.BacklogItem, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
+func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run, machine *workflow.Machine, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
 	switch result.Status {
 	case apiv1.ResultBlocked:
 		// #544 ruling: blocked is a schema-valid producer value, so it maps to
@@ -1188,6 +1198,7 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		// via FinalizeTerminal.
 		o := BlockedOutcome{
 			RunID:    runID,
+			RepoRef:  repoRef,
 			Stage:    t.Name,
 			Reason:   blockedReason(result),
 			Blockers: parseBlockedBy(result.Outputs),

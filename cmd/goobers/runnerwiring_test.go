@@ -613,7 +613,7 @@ func TestBuildEscalationNotifier(t *testing.T) {
 			t.Fatalf("expected a nil notifier for no repos, got %+v", n)
 		}
 	})
-	t.Run("wired with the target repo", func(t *testing.T) {
+	t.Run("wired for a repo-backed instance", func(t *testing.T) {
 		cfg := &instance.Config{Repos: []instance.RepoRef{
 			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "ESC_TOK"}},
 		}}
@@ -625,19 +625,24 @@ func TestBuildEscalationNotifier(t *testing.T) {
 		if n == nil {
 			t.Fatal("expected a non-nil notifier for a repo-backed instance")
 		}
-		if n.Repository.Provider != providers.ProviderGitHub || n.Repository.Owner != "acme" || n.Repository.Name != "web" {
-			t.Fatalf("unexpected Repository: %+v", n.Repository)
+		if n.Poster == nil {
+			t.Fatal("expected a non-nil escalation poster")
 		}
 	})
 }
 
 // TestEscalationCommenterResolvesTokenPerCall is #312's rotation-safety +
-// scrubbing property: the commenter resolves the org-repo token on each call
-// (not captured at startup), registers it for scrubbing, and posts through a
-// freshly-authenticated provider.
+// scrubbing property plus #544's multi-repo regression: the commenter resolves
+// the request repository's token on each call (not captured at startup),
+// registers it for scrubbing, and posts through a freshly-authenticated
+// provider.
 func TestEscalationCommenterResolvesTokenPerCall(t *testing.T) {
-	t.Setenv("ESC_TOK", "escalation-token-value")
-	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "ESC_TOK"}})
+	t.Setenv("ESC_PRIMARY_TOK", "primary-token-value")
+	t.Setenv("ESC_SECONDARY_TOK", "secondary-token-value")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{
+		{Name: "acme/web", Env: "ESC_PRIMARY_TOK"},
+		{Name: "acme/api", Env: "ESC_SECONDARY_TOK"},
+	})
 	if err != nil {
 		t.Fatalf("NewResolver: %v", err)
 	}
@@ -649,19 +654,24 @@ func TestEscalationCommenterResolvesTokenPerCall(t *testing.T) {
 	newEscalationPoster = func(token string) gate.Commenter { gotToken = token; return fake }
 	t.Cleanup(func() { newEscalationPoster = prev })
 
-	c := &escalationCommenter{ref: "acme/web", resolver: resolver, reg: reg}
-	if _, err := c.UpdateWorkItem(context.Background(), providers.UpdateWorkItemRequest{ID: "281", Comment: "escalated"}); err != nil {
+	c := &escalationCommenter{resolver: resolver, reg: reg}
+	repository := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "api"}
+	if _, err := c.UpdateWorkItem(context.Background(), providers.UpdateWorkItemRequest{
+		Repository: repository,
+		ID:         "281",
+		Comment:    "escalated",
+	}); err != nil {
 		t.Fatalf("UpdateWorkItem: %v", err)
 	}
-	if gotToken != "escalation-token-value" {
-		t.Fatalf("poster built with token %q, want the resolved token", gotToken)
+	if gotToken != "secondary-token-value" {
+		t.Fatalf("poster built with token %q, want the secondary repository token", gotToken)
 	}
-	if fake.gotReq.ID != "281" || fake.gotReq.Comment != "escalated" {
+	if fake.gotReq.Repository != repository || fake.gotReq.ID != "281" || fake.gotReq.Comment != "escalated" {
 		t.Fatalf("posted request = %+v", fake.gotReq)
 	}
 	var registered bool
 	for _, s := range reg.registered {
-		if string(s) == "escalation-token-value" {
+		if string(s) == "secondary-token-value" {
 			registered = true
 		}
 	}
@@ -795,24 +805,40 @@ func TestBuildBlockedHandlerNilForRepoLessInstance(t *testing.T) {
 // dependency guard while applying #544's needs-human parking disposition.
 func TestBuildBlockedHandlerKnownBlockersRecordsAndParks(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
+	var gotToken string
 	prev := newEscalationPoster
-	newEscalationPoster = func(string) gate.Commenter { return fake }
+	newEscalationPoster = func(token string) gate.Commenter {
+		gotToken = token
+		return fake
+	}
 	t.Cleanup(func() { newEscalationPoster = prev })
 
 	l := instance.NewLayout(t.TempDir())
 	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
 		t.Fatalf("mkdir scheduler dir: %v", err)
 	}
+	t.Setenv("BLOCKED_SECONDARY_TOK", "blocked-secondary-token")
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+		{Provider: "github", Owner: "acme", Name: "api", Token: instance.TokenRef{Env: "BLOCKED_SECONDARY_TOK"}},
 	}}
-	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	t.Setenv("BLOCKED_TOK", "blocked-primary-token")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{
+		{Name: "acme/web", Env: "BLOCKED_TOK"},
+		{Name: "acme/api", Env: "BLOCKED_SECONDARY_TOK"},
+	})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	h := buildBlockedHandler(l, cfg, resolver, &escTestRegistrar{})
 	if h == nil {
 		t.Fatal("expected a non-nil handler for a repo-backed instance")
 	}
 
-	err := h(context.Background(), runner.BlockedOutcome{
-		RunID: "run-1", Stage: "implement", ItemID: "510",
+	err = h(context.Background(), runner.BlockedOutcome{
+		RunID:   "run-1",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "api", Branch: "main"},
+		Stage:   "implement", ItemID: "510",
 		Reason: "DEPENDENCY_NOT_MET: unmet prerequisite", Blockers: []string{"441", "442"},
 	})
 	if err != nil {
@@ -825,6 +851,13 @@ func TestBuildBlockedHandlerKnownBlockersRecordsAndParks(t *testing.T) {
 	got := fake.calls[0]
 	if got.ID != "510" {
 		t.Fatalf("request ID = %q, want 510", got.ID)
+	}
+	wantRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "api"}
+	if got.Repository != wantRepo {
+		t.Fatalf("request repository = %+v, want secondary repository %+v", got.Repository, wantRepo)
+	}
+	if gotToken != "blocked-secondary-token" {
+		t.Fatalf("parking token = %q, want secondary repository token", gotToken)
 	}
 	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman {
 		t.Fatalf("AddLabels = %v, want [%s]", got.AddLabels, providers.LabelNeedsHuman)
@@ -866,7 +899,8 @@ func TestBuildBlockedHandlerRecordFailureStillParks(t *testing.T) {
 	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
 
 	err := h(context.Background(), runner.BlockedOutcome{
-		RunID: "run-1", Stage: "implement", ItemID: "510",
+		RunID: "run-1", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", ItemID: "510",
 		Reason: "DEPENDENCY_NOT_MET: unmet prerequisite", Blockers: []string{"441"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "record block for 510") {
@@ -898,7 +932,8 @@ func TestBuildBlockedHandlerNoBlockersParksNeedsHuman(t *testing.T) {
 	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
 
 	err := h(context.Background(), runner.BlockedOutcome{
-		RunID: "run-1", Stage: "implement", ItemID: "520",
+		RunID: "run-1", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", ItemID: "520",
 		Reason: "waiting on an external dependency",
 	})
 	if err != nil {
@@ -961,7 +996,8 @@ func TestBuildBlockedHandlerResolvesItemFromClaimLedgerWhenEmpty(t *testing.T) {
 	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
 
 	err = h(context.Background(), runner.BlockedOutcome{
-		RunID: "run-fanout", Stage: "implement", Reason: "blocked", Blockers: []string{"441"},
+		RunID: "run-fanout", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", Reason: "blocked", Blockers: []string{"441"},
 	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)

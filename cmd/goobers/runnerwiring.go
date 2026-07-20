@@ -361,15 +361,15 @@ var newEscalationPoster = func(token string) gate.Commenter { return providers.N
 // contract rather than capturing a token once at daemon startup — registers it
 // for scrubbing, then posts through a freshly-authenticated provider.
 type escalationCommenter struct {
-	ref      string
 	resolver credentials.Resolver
 	reg      runner.SecretRegistrar
 }
 
 func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
-	token, err := c.resolver.Resolve(ctx, c.ref)
+	ref := req.Repository.Owner + "/" + req.Repository.Name
+	token, err := c.resolver.Resolve(ctx, ref)
 	if err != nil {
-		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", c.ref, err)
+		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
 	}
 	c.reg.Register([]byte(token))
 	return newEscalationPoster(token).UpdateWorkItem(ctx, req)
@@ -380,8 +380,8 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 // constructed, so runner.Config.Escalation stayed nil and a repass-budget
 // escalation posted nothing to the driving issue (#312, the same "real seam,
 // zero production callers" shape as epic #130). Returns nil when no repo is
-// configured — a schedule-only producer instance has no driving issue to
-// comment on, and NotifyEscalated only fires when in.Item is non-nil anyway.
+// configured. The run supplies its repository to each notification so a
+// multi-repo instance resolves and posts through the matching connection.
 // Comment-only by deliberate design: the Commenter/UpdateWorkItem seam was
 // chosen specifically so escalation never touches the item's status label
 // (#63); #20's escalation surfacing is a provider comment on the driving issue,
@@ -391,14 +391,11 @@ func buildEscalationNotifier(cfg *instance.Config, resolver credentials.Resolver
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
-	repo := cfg.Repos[0]
 	return &gate.EscalationNotifier{
 		Poster: &escalationCommenter{
-			ref:      repo.Owner + "/" + repo.Name,
 			resolver: resolver,
 			reg:      reg,
 		},
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name},
 	}
 }
 
@@ -426,13 +423,10 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
-	repo := cfg.Repos[0]
 	poster := &escalationCommenter{
-		ref:      repo.Owner + "/" + repo.Name,
 		resolver: resolver,
 		reg:      reg,
 	}
-	repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
 
 	return func(ctx context.Context, o runner.BlockedOutcome) error {
 		itemIDs := []string{o.ItemID}
@@ -451,6 +445,11 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 		}
 
 		var errs []error
+		repoRef := providers.RepositoryRef{
+			Provider: providers.ProviderKind(o.RepoRef.Provider),
+			Owner:    o.RepoRef.Owner,
+			Name:     o.RepoRef.Name,
+		}
 		for _, itemID := range itemIDs {
 			req := providers.UpdateWorkItemRequest{
 				Repository:   repoRef,
