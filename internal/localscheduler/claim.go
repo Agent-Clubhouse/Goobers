@@ -334,6 +334,26 @@ func (l *ClaimLedger) release(storageKey, runID string) error {
 	return nil
 }
 
+// ForceRelease releases itemID without requiring the holding run ID. It is
+// reserved for operator recovery of stuck claims and journals a distinct event
+// so the override cannot be mistaken for normal run cleanup.
+func (l *ClaimLedger) ForceRelease(itemID string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	entry, held := l.entries[itemID]
+	if !held {
+		return nil
+	}
+	delete(l.entries, itemID)
+	if err := l.persist(); err != nil {
+		l.entries[itemID] = entry
+		return err
+	}
+	l.journal(journal.EventClaimForceReleased, entry)
+	return nil
+}
+
 // RecoverExpired releases every lease whose expiry has passed as of now and
 // returns the released entries — the crash-recovery pass (SCH-021): a lease
 // survives its owning run's crash only until it expires, at which point the
@@ -417,6 +437,21 @@ func (l *ClaimLedger) lookup(storageKey string) (ClaimEntry, bool) {
 	defer l.mu.Unlock()
 	e, ok := l.entries[storageKey]
 	return e, ok
+}
+
+// Snapshot returns every ledger entry ordered by item ID.
+func (l *ClaimLedger) Snapshot() []ClaimEntry {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	entries := make([]ClaimEntry, 0, len(l.entries))
+	for _, entry := range l.entries {
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].ItemID < entries[j].ItemID
+	})
+	return entries
 }
 
 // ForRun returns the entry runID currently holds, if any (for inspection;

@@ -61,6 +61,8 @@ const (
 	// EventClaimReleased records a lease release (run finished, expired, or
 	// crash-recovered).
 	EventClaimReleased EventType = "claim.released"
+	// EventClaimForceReleased records an operator overriding a claim lease.
+	EventClaimForceReleased EventType = "claim.force_released"
 	// EventClaimLockSlow records claims-lock contention above the local runner's
 	// diagnostic threshold. Timing, operation, and process details live under
 	// Runner because they are runner-specific and excluded from conformance.

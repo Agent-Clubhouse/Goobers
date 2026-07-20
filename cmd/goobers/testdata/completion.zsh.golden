@@ -28,6 +28,7 @@ _goobers_completion()
             'telemetry:query telemetry'
             'telemetry-query:emit candidate findings'
             'journal:manage run journals'
+            'claims:inspect or force-release claims'
             'backlog-query:query or claim backlog work'
             'push-branch:push the current run branch'
             'open-pr:open or update the current run pull request'
@@ -81,6 +82,9 @@ _goobers_completion()
             ;;
         journal)
             [[ "${words[3]:-}" == "redact" ]] && flags+=(--run --path --reason --secret-file)
+            ;;
+        claims)
+            [[ "${words[3]:-}" == "list" ]] && flags+=(--json --stale)
             ;;
         backlog-query) flags+=(--claim --release) ;;
         apply-verdict) flags+=(--gate) ;;
@@ -168,6 +172,13 @@ _goobers_completion()
         journal)
             if (( CURRENT == 3 )); then
                 candidates=(redact)
+                _describe 'command' candidates
+                return
+            fi
+            ;;
+        claims)
+            if (( CURRENT == 3 )); then
+                candidates=(list release)
                 _describe 'command' candidates
                 return
             fi

@@ -319,6 +319,52 @@ func TestReleaseIsIdempotentAndOwnerScoped(t *testing.T) {
 	}
 }
 
+func TestForceReleaseIgnoresOwnerAndPreservesOtherClaims(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	l, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, itemID := range []string{"issue-9", "issue-8"} {
+		if ok, _, err := l.Claim(itemID, "run-a", "curate", time.Minute); err != nil || !ok {
+			t.Fatalf("Claim(%s): ok=%v err=%v", itemID, ok, err)
+		}
+	}
+
+	if err := l.ForceRelease("issue-8"); err != nil {
+		t.Fatalf("ForceRelease: %v", err)
+	}
+	if _, held := l.Lookup("issue-8"); held {
+		t.Fatal("force-released item is still held")
+	}
+	if ok, holder, err := l.Claim("issue-8", "run-b", "implement", time.Minute); err != nil || !ok || holder != "run-b" {
+		t.Fatalf("force-released item is not claimable again: ok=%v holder=%q err=%v", ok, holder, err)
+	}
+	if entry, held := l.Lookup("issue-9"); !held || entry.RunID != "run-a" {
+		t.Fatalf("unrelated claim changed: %+v held=%v", entry, held)
+	}
+	if err := l.ForceRelease("issue-8"); err != nil {
+		t.Fatalf("idempotent ForceRelease: %v", err)
+	}
+}
+
+func TestSnapshotReturnsAllClaimsInItemOrder(t *testing.T) {
+	l, err := OpenClaimLedger(filepath.Join(t.TempDir(), "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, itemID := range []string{"issue-9", "issue-8"} {
+		if ok, _, err := l.Claim(itemID, "run-a", "curate", time.Minute); err != nil || !ok {
+			t.Fatalf("Claim(%s): ok=%v err=%v", itemID, ok, err)
+		}
+	}
+
+	entries := l.Snapshot()
+	if len(entries) != 2 || entries[0].ItemID != "issue-8" || entries[1].ItemID != "issue-9" {
+		t.Fatalf("Snapshot() = %+v, want issue-8 then issue-9", entries)
+	}
+}
+
 // TestCrashRecoveryReleasesExpiredLeaseExactlyOnce is the headline acceptance
 // criterion: a run claims an item, "crashes" (never releases), and after the
 // lease expires, recovery releases it and the item is claimable again exactly
@@ -513,6 +559,26 @@ func TestReleasePersistFailureLeavesClaimHeld(t *testing.T) {
 	ok, holder, err := l.Claim("issue-51", "run-b", "curate", time.Minute)
 	if err != nil || ok || holder != "run-a" {
 		t.Fatalf("prior owner should still hold the claim: ok=%v holder=%s err=%v", ok, holder, err)
+	}
+}
+
+func TestForceReleasePersistFailureLeavesClaimHeld(t *testing.T) {
+	dir := t.TempDir()
+	goodPath := filepath.Join(dir, "claims.json")
+	l, err := OpenClaimLedger(goodPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := l.Claim("issue-51", "run-a", "curate", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	l.path = filepath.Join(dir, "missing-subdir", "claims.json")
+	if err := l.ForceRelease("issue-51"); err == nil {
+		t.Fatal("expected a persist error on the failed force release")
+	}
+	if entry, held := l.Lookup("issue-51"); !held || entry.RunID != "run-a" {
+		t.Fatalf("failed force release must preserve the claim: %+v held=%v", entry, held)
 	}
 }
 
