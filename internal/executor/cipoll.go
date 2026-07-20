@@ -372,7 +372,7 @@ func boundFailedCheckNames(names []string) string {
 		}
 	}
 
-	marker := fmt.Sprintf("…(+%d more)", len(names)-1)
+	marker := fmt.Sprintf("…(+%d more)", len(names))
 	budget := maxCIFailedChecksOutputRunes - utf8.RuneCountInString(marker)
 	if budget <= 0 {
 		return marker

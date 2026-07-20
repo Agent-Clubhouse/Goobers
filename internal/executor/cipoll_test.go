@@ -265,6 +265,17 @@ func TestBoundFailedCheckNamesReportsOmittedCount(t *testing.T) {
 	}
 }
 
+func TestBoundFailedCheckNamesCountsPartiallyRetainedNameAsOmitted(t *testing.T) {
+	wantMarker := "…(+1 more)"
+	got := boundFailedCheckNames([]string{strings.Repeat("a", maxCIFailedChecksOutputRunes+1)})
+	if utf8.RuneCountInString(got) != maxCIFailedChecksOutputRunes {
+		t.Fatalf("boundFailedCheckNames rune count = %d, want %d", utf8.RuneCountInString(got), maxCIFailedChecksOutputRunes)
+	}
+	if !strings.HasSuffix(got, wantMarker) {
+		t.Fatalf("boundFailedCheckNames = %q, want suffix %q", got, wantMarker)
+	}
+}
+
 func TestCIPollExecutor_CapsArtifactByDroppingSummariesBeforeChecks(t *testing.T) {
 	checks := make([]providers.CheckDetail, maxCIChecks)
 	for i := range checks {
