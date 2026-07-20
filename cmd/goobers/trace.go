@@ -26,9 +26,7 @@ const (
 )
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
-	ctx, stop := signals.SetupSignalContext()
-	defer stop()
-	return runTraceWithFollowContext(ctx, args, stdout, stderr)
+	return runTraceWithFactories(args, stdout, stderr, readservice.NewOfflineRuns, signals.SetupSignalContext)
 }
 
 func runTraceWithFollowContext(followCtx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -40,6 +38,23 @@ func runTraceWithFollowContextAndFactory(
 	args []string,
 	stdout, stderr io.Writer,
 	newOfflineRuns func(instance.Layout) (readservice.OfflineRuns, error),
+) int {
+	return runTraceWithFactories(
+		args,
+		stdout,
+		stderr,
+		newOfflineRuns,
+		func() (context.Context, func()) {
+			return followCtx, func() {}
+		},
+	)
+}
+
+func runTraceWithFactories(
+	args []string,
+	stdout, stderr io.Writer,
+	newOfflineRuns func(instance.Layout) (readservice.OfflineRuns, error),
+	newFollowContext func() (context.Context, func()),
 ) int {
 	fs := flag.NewFlagSet("trace", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -133,6 +148,8 @@ func runTraceWithFollowContextAndFactory(
 	}
 	if *follow && !detail.Terminal {
 		if !traceEventsTerminal(ledger.Events) {
+			followCtx, stop := newFollowContext()
+			defer stop()
 			if err := followTrace(followCtx, reads, runID, ledger.Events, *jsonOutput, stdout); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return traceInterruptedExitCode

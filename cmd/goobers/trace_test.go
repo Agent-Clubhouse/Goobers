@@ -390,6 +390,76 @@ func newTraceTestRun(t *testing.T, root, runID string) *journal.Run {
 	return run
 }
 
+func TestTraceInstallsSignalContextOnlyForActiveFollow(t *testing.T) {
+	root := t.TempDir()
+	const runID = "signal-context-scope"
+	run := newTraceTestRun(t, root, runID)
+	if _, err := run.RecordSpan("implement", "copilot-cli.transcript", []byte("done")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "ordinary trace", args: []string{runID, root}},
+		{name: "transcript", args: []string{"--transcripts", runID, root}},
+		{name: "terminal follow", args: []string{"--follow", runID, root}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupCalls := 0
+			var stdout, stderr bytes.Buffer
+			code := runTraceWithFactories(
+				tc.args,
+				&stdout,
+				&stderr,
+				readservice.NewOfflineRuns,
+				func() (context.Context, func()) {
+					setupCalls++
+					return context.Background(), func() {}
+				},
+			)
+			if code != 0 {
+				t.Fatalf("trace: code = %d, stderr = %q", code, stderr.String())
+			}
+			if setupCalls != 0 {
+				t.Fatalf("signal context setups = %d, want 0", setupCalls)
+			}
+		})
+	}
+
+	activeRoot := t.TempDir()
+	activeRun := newTraceTestRun(t, activeRoot, "active-follow")
+	t.Cleanup(func() { _ = activeRun.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	setupCalls := 0
+	stopped := false
+	var stdout, stderr bytes.Buffer
+	code := runTraceWithFactories(
+		[]string{"--follow", "active-follow", activeRoot},
+		&stdout,
+		&stderr,
+		readservice.NewOfflineRuns,
+		func() (context.Context, func()) {
+			setupCalls++
+			return ctx, func() { stopped = true }
+		},
+	)
+	if code != traceInterruptedExitCode {
+		t.Fatalf("active trace --follow: code = %d, want %d; stderr = %q", code, traceInterruptedExitCode, stderr.String())
+	}
+	if setupCalls != 1 || !stopped {
+		t.Fatalf("signal context setups = %d, stopped = %t; want 1, true", setupCalls, stopped)
+	}
+}
+
 func TestTraceFollowStreamsLiveEventsOnceInOrder(t *testing.T) {
 	root := t.TempDir()
 	const runID = "follow-live-events-run"
