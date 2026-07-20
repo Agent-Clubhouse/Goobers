@@ -39,7 +39,7 @@ func TestScaffoldTemplatesGolden(t *testing.T) {
 	}
 }
 
-func TestScaffoldGooberAndWorkflowValidateClean(t *testing.T) {
+func TestScaffoldGooberAndWorkflowValidate(t *testing.T) {
 	root := initDemo(t)
 	gaggleDir := filepath.Join(root, "config", "gaggles", "example")
 
@@ -87,15 +87,16 @@ func TestScaffoldGooberAndWorkflowValidateClean(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if strings.Contains(stdout, "WARNING") {
-		t.Fatalf("validate emitted a warning: %q", stdout)
+	wantWarning := "WARNING Workflow/my-flow: workflow \"my-flow\" has no schedule trigger; it will not fire autonomously — run it with `goobers run my-flow`"
+	if warnings := warningLines(stdout); len(warnings) != 1 || warnings[0] != wantWarning {
+		t.Fatalf("validate warnings = %#v, want %#v", warnings, []string{wantWarning})
 	}
 	if !strings.Contains(stdout, "2 goober(s), 2 workflow(s)") {
 		t.Fatalf("validate did not load both scaffolds: %q", stdout)
 	}
 }
 
-func TestScaffoldScalarNamesValidateClean(t *testing.T) {
+func TestScaffoldScalarNamesValidate(t *testing.T) {
 	root := initDemo(t)
 
 	if code, _, stderr := runArgs(t, "scaffold", "goober", "123", root); code != 0 {
@@ -109,8 +110,9 @@ func TestScaffoldScalarNamesValidateClean(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if strings.Contains(stdout, "WARNING") {
-		t.Fatalf("validate emitted a warning: %q", stdout)
+	wantWarning := "WARNING Workflow/true: workflow \"true\" has no schedule trigger; it will not fire autonomously — run it with `goobers run true`"
+	if warnings := warningLines(stdout); len(warnings) != 1 || warnings[0] != wantWarning {
+		t.Fatalf("validate warnings = %#v, want %#v", warnings, []string{wantWarning})
 	}
 }
 

@@ -21,6 +21,20 @@ var backlogClaimPattern = regexp.MustCompile(`(?s)backlog-query.*--claim`)
 // CheckWarnings reports non-fatal workflow diagnostics.
 func CheckWarnings(def Definition) []string {
 	var warnings []string
+	hasSchedule := false
+	for _, trigger := range def.Spec.Triggers {
+		if trigger.Type == apiv1.TriggerSchedule {
+			hasSchedule = true
+			break
+		}
+	}
+	if !hasSchedule {
+		warnings = append(warnings, fmt.Sprintf(
+			"workflow %q has no schedule trigger; it will not fire autonomously — run it with `goobers run %s`",
+			def.Name,
+			def.Name,
+		))
+	}
 	for _, task := range def.Spec.Tasks {
 		// expectedOutputs is inert only when the stage has no channel to
 		// emit through. With a resultFile declared it is a real contract

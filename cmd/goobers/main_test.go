@@ -109,6 +109,9 @@ func TestInitThenValidate(t *testing.T) {
 	if !strings.Contains(stdout, "OK:") {
 		t.Fatalf("validate stdout = %q", stdout)
 	}
+	if strings.Contains(stdout, "has no schedule trigger") {
+		t.Fatalf("validate stdout = %q, want no schedule warning for starter workflow", stdout)
+	}
 
 	// Re-running init is a no-op, not an error.
 	code, stdout, _ = runArgs(t, "init", root)
@@ -117,6 +120,37 @@ func TestInitThenValidate(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "nothing to do") {
 		t.Fatalf("second init stdout = %q", stdout)
+	}
+}
+
+func TestValidateWarnsOnceForWorkflowWithoutSchedule(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo")
+	if code, _, stderr := runArgs(t, "init", root); code != 0 {
+		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
+	}
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	raw, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schedule := "    - type: schedule\n      schedule: \"@every 15m\""
+	manual := "    - type: manual"
+	updated := strings.Replace(string(raw), schedule, manual, 1)
+	if updated == string(raw) {
+		t.Fatalf("starter workflow did not contain expected schedule trigger:\n%s", raw)
+	}
+	if err := os.WriteFile(workflowPath, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	const warning = "workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`"
+	if count := strings.Count(stdout, warning); count != 1 {
+		t.Fatalf("validate stdout = %q, warning count = %d, want exactly one", stdout, count)
 	}
 }
 

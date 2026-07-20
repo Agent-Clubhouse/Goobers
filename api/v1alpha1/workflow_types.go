@@ -11,7 +11,8 @@ const (
 	// TriggerManual declares a workflow that only runs through an explicit
 	// `goobers run` invocation.
 	TriggerManual TriggerType = "manual"
-	// TriggerBacklogItem fires when a matching backlog item becomes available.
+	// TriggerBacklogItem is reserved for V1 backlog routing. V0 accepts the
+	// declaration but has no runtime consumer for it.
 	TriggerBacklogItem TriggerType = "backlog-item"
 	// TriggerSchedule fires on a schedule / time-since-last-run.
 	TriggerSchedule TriggerType = "schedule"
@@ -26,8 +27,8 @@ type Trigger struct {
 	// +kubebuilder:validation:Enum=manual;backlog-item;schedule;signal
 	// +kubebuilder:validation:Required
 	Type TriggerType `json:"type" yaml:"type"`
-	// Selector routes backlog items to this workflow via k8s-style label matching
-	// (WF-040, SCH-010). Used with type=backlog-item.
+	// Selector is reserved for V1 backlog-item routing via k8s-style label
+	// matching (WF-040, SCH-010). V0 accepts but does not consume it.
 	// +optional
 	Selector map[string]string `json:"selector,omitempty" yaml:"selector,omitempty"`
 	// Schedule is a cron expression or interval (e.g. "@every 1h") for

@@ -5,7 +5,8 @@ metadata:
 spec:
   gaggle: web
   triggers:
-    - type: manual
+    - type: schedule
+      schedule: "@hourly"
   start: build
   tasks:
     - name: build

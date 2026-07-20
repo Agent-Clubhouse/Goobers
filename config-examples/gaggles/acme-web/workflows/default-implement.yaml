@@ -5,17 +5,32 @@ metadata:
 spec:
   gaggle: acme-web
   displayName: Default (implement-only)
-  # The default starter is an ordinary length-1, implement-only workflow shipped
-  # so a gaggle works immediately (WF-004). Author richer workflows (research,
-  # tests, reviewer gates) by adding tasks and gates.
+  # The default starter is a minimal implement-only workflow shipped so a gaggle
+  # works immediately (WF-004). The schedule wakes it every 15 minutes;
+  # query-backlog claims one maintainer-approved item before the coder runs.
+  # Author richer workflows (research, tests, reviewer gates) by adding tasks
+  # and gates.
   triggers:
-    - type: backlog-item
-      selector:
-        goobers: "true"
+    - type: schedule
+      schedule: "@every 15m"
   readiness:
     maxConcurrentRuns: 1
-  start: implement
+  start: query-backlog
   tasks:
+    - name: query-backlog
+      type: deterministic
+      goal: Claim one approved backlog item to implement.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers"
+        maxItems: "1"
+        resultFile: "claimed-item.json"
+      capabilities:
+        - github:issues:write
+      expectedOutputs:
+        - claimed-item
+      next: implement
     - name: implement
       type: agentic
       goober: coder

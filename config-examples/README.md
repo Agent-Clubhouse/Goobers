@@ -3,8 +3,8 @@
 This directory is a **reference example** of a Goobers `config` repo: the workforce
 as code that a deploy/reconcile drives into a running instance (config-as-code,
 `docs/requirements/config-as-code.md`). It is intentionally minimal — one gaggle,
-one coder goober, and the default length-1 workflow — so it reads as a starting
-point, not a kitchen sink.
+one coder goober, and a scheduled claim-then-implement workflow — so it reads as
+a starting point, not a kitchen sink.
 
 ## Folder layout
 

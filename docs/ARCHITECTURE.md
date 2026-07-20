@@ -221,13 +221,13 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
 
 - **V0:** cron-expression triggers only (`goobers up` evaluates them), plus run
   conditions: max parallel runs per workflow/instance, per-workflow run budgets.
-- Backlog-item and external-signal triggers (`WF-010`) remain in the model and layer
-  onto the same scheduler; at V0 backlog consumption is expressed as a cron-triggered
-  workflow whose first stage — a built-in deterministic **`backlog-query`** stage
-  kind — queries the provider for eligible items and **claims** them (label/assignee
-  marker + claim ledger) so concurrent runs never double-process (`WF-031`). On
-  public repos, eligibility requires a maintainer-applied trust label: backlog
-  content is untrusted input (`SEC-047`).
+- Backlog-item triggers and their selectors remain in the schema but are **reserved
+  for V1**; V0 has no runtime consumer for either. At V0 backlog consumption is
+  expressed as a cron-triggered workflow whose first stage — a built-in deterministic
+  **`backlog-query`** stage kind — queries the provider for eligible items and
+  **claims** them (label/assignee marker + claim ledger) so concurrent runs never
+  double-process (`WF-031`). On public repos, eligibility requires a
+  maintainer-applied trust label: backlog content is untrusted input (`SEC-047`).
 - At tier 3, cron triggers become Temporal Schedules and claiming coordinates across
   distributed workers — same declared semantics, different substrate.
 
