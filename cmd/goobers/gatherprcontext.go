@@ -125,10 +125,12 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "pr-context.json")
 	}
-	if claimedNumber, ok, err := claimedPullRequestNumber(root); err != nil {
+	claimedNumber, hasExistingClaim, err := claimedPullRequestNumber(root)
+	if err != nil {
 		pf(stderr, "error: resolve this run's existing PR claim: %v\n", err)
 		return 1
-	} else if ok {
+	}
+	if hasExistingClaim {
 		var claimed []providers.PullRequestSummary
 		for _, pr := range prs {
 			if pr.Number == claimedNumber {
@@ -169,23 +171,29 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "filter remediation candidates", err, "pr-context.json")
 	}
 
-	fetchedBases := make(map[string]bool)
-	candidates, _, err := selectRemediationCandidates(nonBlocked, func(pr providers.PullRequestSummary) (bool, error) {
-		if !fetchedBases[pr.Base] {
-			if _, err := fetchExistingBranch(".", pr.Base, pushToken); err != nil {
-				return false, fmt.Errorf("fetch base branch %q: %w", pr.Base, err)
+	// update-behind-pr already selected and claimed a full-remediation
+	// candidate. Re-running fallback eligibility here against the PR summary's
+	// pinned BaseSHA can drop a PR that was behind the live base tip.
+	candidates := nonBlocked
+	if !hasExistingClaim {
+		fetchedBases := make(map[string]bool)
+		candidates, _, err = selectRemediationCandidates(nonBlocked, func(pr providers.PullRequestSummary) (bool, error) {
+			if !fetchedBases[pr.Base] {
+				if _, err := fetchExistingBranch(".", pr.Base, pushToken); err != nil {
+					return false, fmt.Errorf("fetch base branch %q: %w", pr.Base, err)
+				}
+				fetchedBases[pr.Base] = true
 			}
-			fetchedBases[pr.Base] = true
-		}
-		headSHA, err := fetchExistingBranch(".", pr.Head, pushToken)
+			headSHA, err := fetchExistingBranch(".", pr.Head, pushToken)
+			if err != nil {
+				return false, fmt.Errorf("fetch PR #%d branch %q: %w", pr.Number, pr.Head, err)
+			}
+			return isCommitBehindBase(".", pr.BaseSHA, headSHA)
+		})
 		if err != nil {
-			return false, fmt.Errorf("fetch PR #%d branch %q: %w", pr.Number, pr.Head, err)
+			pf(stderr, "error: determine remediation eligibility: %v\n", err)
+			return 1
 		}
-		return isCommitBehindBase(".", pr.BaseSHA, headSHA)
-	})
-	if err != nil {
-		pf(stderr, "error: determine remediation eligibility: %v\n", err)
-		return 1
 	}
 	if len(candidates) == 0 {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")

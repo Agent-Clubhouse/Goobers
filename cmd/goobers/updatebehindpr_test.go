@@ -18,11 +18,13 @@ const (
 )
 
 type updateBehindServer struct {
-	mergeable    *bool
-	labels       []string
-	comments     []map[string]interface{}
-	updateCalls  int
-	updateStatus int
+	mergeable       *bool
+	labels          []string
+	comments        []map[string]interface{}
+	updateCalls     int
+	updateStatus    int
+	current         bool
+	failLabelDelete bool
 }
 
 func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
@@ -58,8 +60,12 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 		writeFakeJSON(w, map[string]interface{}{"object": map[string]string{"sha": baseSHA}})
 	})
 	mux.HandleFunc(prefix+"/compare/"+baseSHA+"..."+headSHA, func(w http.ResponseWriter, _ *http.Request) {
+		mergeBaseSHA := "opening-base-sha"
+		if s.current {
+			mergeBaseSHA = baseSHA
+		}
 		writeFakeJSON(w, map[string]interface{}{
-			"merge_base_commit": map[string]string{"sha": "opening-base-sha"},
+			"merge_base_commit": map[string]string{"sha": mergeBaseSHA},
 			"files":             []interface{}{},
 		})
 	})
@@ -82,6 +88,7 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 		}
 		w.WriteHeader(status)
 		if status == http.StatusAccepted {
+			s.current = true
 			_, _ = w.Write([]byte(`{"message":"Updating pull request branch.","url":"https://github.test/pulls/55"}`))
 			return
 		}
@@ -100,6 +107,10 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc(prefix+"/issues/55/labels/"+needsRemediationLabel, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			http.Error(w, "want DELETE", http.StatusMethodNotAllowed)
+			return
+		}
+		if s.failLabelDelete {
+			http.Error(w, "temporary label failure", http.StatusServiceUnavailable)
 			return
 		}
 		next := s.labels[:0]
@@ -138,24 +149,29 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 	return server
 }
 
-func runUpdateBehindPRTest(t *testing.T, state *updateBehindServer) (stdout, stderr string, result map[string]string) {
+func setupUpdateBehindPRTest(t *testing.T, state *updateBehindServer) (root, workspace string) {
 	t.Helper()
 	server := state.start(t)
 	previous := newGitHubProvider
 	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
 	t.Cleanup(func() { newGitHubProvider = previous })
 
-	root := initDemo(t)
+	root = initDemo(t)
 	t.Setenv("GOOBERS_RUN_ID", "run-720")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", updateBehindPRToken)
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", updateBehindIssuesToken)
-	workspace := t.TempDir()
+	workspace = t.TempDir()
 	t.Chdir(workspace)
+	return root, workspace
+}
 
-	code, stdout, stderr := runArgs(t, "update-behind-pr", root)
+func invokeUpdateBehindPRTest(t *testing.T, root, workspace string) (code int, stdout, stderr string, result map[string]string) {
+	t.Helper()
+	t.Chdir(workspace)
+	code, stdout, stderr = runArgs(t, "update-behind-pr", root)
 	if code != 0 {
-		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		return code, stdout, stderr, nil
 	}
 	data, err := os.ReadFile(filepath.Join(workspace, "update-behind-result.json"))
 	if err != nil {
@@ -163,6 +179,16 @@ func runUpdateBehindPRTest(t *testing.T, state *updateBehindServer) (stdout, std
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
+	}
+	return code, stdout, stderr, result
+}
+
+func runUpdateBehindPRTest(t *testing.T, state *updateBehindServer) (stdout, stderr string, result map[string]string) {
+	t.Helper()
+	root, workspace := setupUpdateBehindPRTest(t, state)
+	code, stdout, stderr, result := invokeUpdateBehindPRTest(t, root, workspace)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	return stdout, stderr, result
 }
@@ -260,5 +286,44 @@ func TestUpdateBehindPRRoutesLeaseRejectionToFullRemediation(t *testing.T) {
 	}
 	if strings.Join(state.labels, ",") != needsRemediationLabel {
 		t.Fatalf("labels = %v, want unchanged", state.labels)
+	}
+}
+
+func TestUpdateBehindPRRetryAfterLabelFailureOnlyClearsLabel(t *testing.T) {
+	mergeable := true
+	state := &updateBehindServer{
+		mergeable:       &mergeable,
+		labels:          []string{needsRemediationLabel},
+		failLabelDelete: true,
+	}
+	root, workspace := setupUpdateBehindPRTest(t, state)
+
+	code, _, _, _ := invokeUpdateBehindPRTest(t, root, workspace)
+	if code != 1 {
+		t.Fatalf("first attempt code = %d, want 1 after label removal failure", code)
+	}
+	if state.updateCalls != 1 || !state.current {
+		t.Fatalf("first attempt update calls = %d, current = %v, want one accepted update", state.updateCalls, state.current)
+	}
+	if strings.Join(state.labels, ",") != needsRemediationLabel {
+		t.Fatalf("first attempt labels = %v, want retained after failed removal", state.labels)
+	}
+
+	state.failLabelDelete = false
+	code, stdout, stderr, result := invokeUpdateBehindPRTest(t, root, workspace)
+	if code != 0 {
+		t.Fatalf("retry code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if result["needsFullRemediation"] != "false" {
+		t.Fatalf("retry result = %v, want label-cleanup completion", result)
+	}
+	if state.updateCalls != 1 {
+		t.Fatalf("retry update-branch calls = %d, want no duplicate update", state.updateCalls)
+	}
+	if len(state.labels) != 0 {
+		t.Fatalf("retry labels = %v, want needs-remediation cleared", state.labels)
+	}
+	if !strings.Contains(stdout, "branch is current") || stderr != "" {
+		t.Fatalf("retry stdout = %q, stderr = %q", stdout, stderr)
 	}
 }

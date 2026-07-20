@@ -14,6 +14,14 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+type updateBehindAction uint8
+
+const (
+	updateBehindRouteFull updateBehindAction = iota
+	updateBehindViaAPI
+	updateBehindClearLabel
+)
+
 // runUpdateBehindPR is pr-remediation's API-only preflight. It terminates the
 // workflow after updating a mechanically stale PR, or routes every non-trivial
 // candidate into the existing worktree-backed gather/rebase/agentic path.
@@ -99,24 +107,26 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 	candidate := *claimed
-	fast, err := canUpdateBehindPR(ctx, provider, repo, candidate, baseTips, behindByPR)
+	action, err := updateBehindActionForPR(ctx, provider, repo, candidate, baseTips, behindByPR)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("check PR #%d for API branch update", candidate.Number), err, "update-behind-result.json")
 	}
-	if !fast {
+	if action == updateBehindRouteFull {
 		return writeUpdateBehindResult(stdout, stderr, candidate.Number, true, false)
 	}
 
-	if _, err := provider.UpdateBranch(ctx, providers.UpdateBranchRequest{
-		Repository:      repo,
-		PullID:          strconv.Itoa(candidate.Number),
-		ExpectedHeadSHA: candidate.HeadSHA,
-	}); err != nil {
-		var updateErr *providers.UpdateBranchError
-		if errors.As(err, &updateErr) && updateErr.StatusCode == 422 {
-			return writeUpdateBehindResult(stdout, stderr, candidate.Number, true, false)
+	if action == updateBehindViaAPI {
+		if _, err := provider.UpdateBranch(ctx, providers.UpdateBranchRequest{
+			Repository:      repo,
+			PullID:          strconv.Itoa(candidate.Number),
+			ExpectedHeadSHA: candidate.HeadSHA,
+		}); err != nil {
+			var updateErr *providers.UpdateBranchError
+			if errors.As(err, &updateErr) && updateErr.StatusCode == 422 {
+				return writeUpdateBehindResult(stdout, stderr, candidate.Number, true, false)
+			}
+			return failProviderStage(stderr, fmt.Sprintf("update PR #%d branch", candidate.Number), err, "update-behind-result.json")
 		}
-		return failProviderStage(stderr, fmt.Sprintf("update PR #%d branch", candidate.Number), err, "update-behind-result.json")
 	}
 	if hasAnyLabel(candidate.Labels, []string{needsRemediationLabel}) {
 		if _, err := issuesProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
@@ -129,40 +139,46 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 			return failProviderStage(stderr, fmt.Sprintf("clear %s from PR #%d", needsRemediationLabel, candidate.Number), err, "update-behind-result.json")
 		}
 	}
-	return writeUpdateBehindResult(stdout, stderr, candidate.Number, false, true)
+	return writeUpdateBehindResult(stdout, stderr, candidate.Number, false, action == updateBehindViaAPI)
 }
 
-func canUpdateBehindPR(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool) (bool, error) {
+func updateBehindActionForPR(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool) (updateBehindAction, error) {
 	if pr.CheckState == providers.CheckStateFailing {
-		return false, nil
+		return updateBehindRouteFull, nil
 	}
 	behind, known := behindByPR[pr.Number]
 	if !known {
 		var err error
 		behind, err = pullRequestBehindLiveBase(ctx, provider, repo, pr, baseTips)
 		if err != nil {
-			return false, err
+			return updateBehindRouteFull, err
 		}
 	}
-	if !behind {
-		return false, nil
+	if !behind && !hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) {
+		return updateBehindRouteFull, nil
 	}
 	mergeable, err := provider.PullRequestMergeable(ctx, repo, strconv.Itoa(pr.Number))
 	if err != nil {
-		return false, err
+		return updateBehindRouteFull, err
 	}
 	if mergeable != nil && !*mergeable {
-		return false, nil
+		return updateBehindRouteFull, nil
 	}
 	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
 	if err != nil {
-		return false, err
+		return updateBehindRouteFull, err
 	}
 	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
 	if err != nil {
-		return false, err
+		return updateBehindRouteFull, err
 	}
-	return !verdictHasSubstantiveFindingForPR(gatherPRVerdict(comments, verdictAuthor), pr.Number), nil
+	if verdictHasSubstantiveFindingForPR(gatherPRVerdict(comments, verdictAuthor), pr.Number) {
+		return updateBehindRouteFull, nil
+	}
+	if behind {
+		return updateBehindViaAPI, nil
+	}
+	return updateBehindClearLabel, nil
 }
 
 func pullRequestBehindLiveBase(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string) (bool, error) {
@@ -199,10 +215,12 @@ func writeUpdateBehindResult(stdout, stderr io.Writer, selectedNumber int, needs
 		pf(stderr, "error: write %s: %v\n", resultFile, err)
 		return 1
 	}
-	if updated {
+	if needsFullRemediation {
+		pf(stdout, "PR #%d requires full remediation\n", selectedNumber)
+	} else if updated {
 		pf(stdout, "PR #%d: updated behind branch through GitHub API and cleared %s when present\n", selectedNumber, needsRemediationLabel)
 	} else {
-		pf(stdout, "PR #%d requires full remediation\n", selectedNumber)
+		pf(stdout, "PR #%d: branch is current; cleared retained %s\n", selectedNumber, needsRemediationLabel)
 	}
 	return 0
 }
