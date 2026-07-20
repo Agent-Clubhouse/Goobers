@@ -82,6 +82,8 @@ Usage:
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
+  goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
+                                report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
@@ -104,7 +106,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-query/telemetry-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
+backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
 pr-select/gather-sibling-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
 rebase-pr/remediation-checkpoint/push-remediated are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/

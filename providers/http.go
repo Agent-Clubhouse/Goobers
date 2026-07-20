@@ -148,10 +148,20 @@ type CommandRunner interface {
 	Run(context.Context, string, ...string) ([]byte, error)
 }
 
+type environmentCommandRunner interface {
+	RunWithEnv(context.Context, []string, string, ...string) ([]byte, error)
+}
+
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	return cmd.CombinedOutput()
+}
+
+func (execRunner) RunWithEnv(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = env
 	return cmd.CombinedOutput()
 }
 
