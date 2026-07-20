@@ -245,6 +245,9 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 		phase:    reconstructPhase(events),
 		reason:   reconstructReason(events),
 	}
+	if len(events) > 0 {
+		r.lastActivity = events[len(events)-1].Time
+	}
 	diskSt, diskErr := rd.State()
 	if diskErr == nil {
 		r.machineState = diskSt.MachineState

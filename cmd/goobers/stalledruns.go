@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -10,13 +11,18 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/worktree"
 )
+
+type stalledTerminalPreparer func(instance.Layout) (runner.TerminalPreparer, error)
 
 func sweepStalledRuns(
 	l instance.Layout,
 	runners map[string]*runner.Runner,
 	fallback *runner.Runner,
 	log *journal.InstanceLog,
+	prepare stalledTerminalPreparer,
+	notify runner.TerminalNotifier,
 	release func(runID, workflow string),
 	now time.Time,
 	timeout time.Duration,
@@ -27,6 +33,7 @@ func sweepStalledRuns(
 	}
 
 	var sweepErr error
+	terminalizers := make(map[string]*runner.Runner)
 	for _, runsDir := range runDirs {
 		entries, err := os.ReadDir(runsDir)
 		if err != nil {
@@ -40,6 +47,9 @@ func sweepStalledRuns(
 			runDir := filepath.Join(runsDir, entry.Name())
 			reader, err := journal.OpenRead(runDir)
 			if err != nil {
+				if !errors.Is(err, fs.ErrNotExist) {
+					sweepErr = errors.Join(sweepErr, fmt.Errorf("inspect run directory %q: %w", entry.Name(), err))
+				}
 				continue
 			}
 			identity, err := reader.Identity()
@@ -69,12 +79,43 @@ func sweepStalledRuns(
 			}
 
 			runRunner := fallback
+			runLayout := l
 			if filepath.Clean(runsDir) != filepath.Clean(l.RunsDir()) {
-				runRunner = runners[identity.Gaggle]
+				rootGaggle := filepath.Base(filepath.Dir(runsDir))
+				runLayout = l.ForGaggle(rootGaggle)
+				runRunner = runners[rootGaggle]
 			}
 			if runRunner == nil {
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("run %q has no runner for gaggle %q", identity.RunID, identity.Gaggle))
-				continue
+				runRunner = terminalizers[runsDir]
+				if runRunner == nil {
+					var terminalPreparer runner.TerminalPreparer
+					if prepare != nil {
+						terminalPreparer, err = prepare(runLayout)
+						if err != nil {
+							sweepErr = errors.Join(sweepErr, fmt.Errorf("construct stalled-run terminal preparer for %s: %w", runsDir, err))
+							continue
+						}
+					}
+					manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir())
+					if managerErr != nil {
+						sweepErr = errors.Join(sweepErr, fmt.Errorf("construct stalled-run worktree manager for %s: %w", runsDir, managerErr))
+						continue
+					}
+					runRunner, err = runner.New(runner.Config{
+						Worktrees:       manager,
+						RunsDir:         runsDir,
+						PrepareTerminal: terminalPreparer,
+						FinalizeTerminal: func(runID string, _ journal.RunPhase) error {
+							return finalizeTerminalRun(runLayout, log, manager, runID)
+						},
+						NotifyTerminal: notify,
+					})
+					if err != nil {
+						sweepErr = errors.Join(sweepErr, fmt.Errorf("construct stalled-run terminalizer for %s: %w", runsDir, err))
+						continue
+					}
+					terminalizers[runsDir] = runRunner
+				}
 			}
 			result, escalated, err := runRunner.EscalateStalled(identity.RunID, now, timeout)
 			if escalated {

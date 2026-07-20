@@ -429,7 +429,11 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 			setup.Runners,
 			setup.LegacyRunner,
 			setup.InstanceLog,
-			sched.ReleaseReconciled,
+			func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
+				return buildTerminalBranchPreparer(runLayout, setup.Config, setup.SharedRegistry)
+			},
+			setup.TerminalNotifier,
+			sched.ReleaseRun,
 			now,
 			stalledRunTimeout,
 		)

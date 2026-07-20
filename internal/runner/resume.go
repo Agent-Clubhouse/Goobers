@@ -89,6 +89,12 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	}
 	defer func() { _ = jr.Close() }()
 
+	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+		return r.resumeOwned(ctx, in, jr, registrar, dir)
+	})
+}
+
+func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Run, registrar SecretRegistrar, dir string) (Result, error) {
 	rd, err := journal.OpenRead(dir)
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: open run %q for resume: %w", in.RunID, err)
@@ -179,6 +185,9 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 			startState = in.Machine.Def.Spec.Start
 		}
 	}
+	if request, ok := stalledRequestFromContext(ctx); ok {
+		return r.finishStalled(in.RunID, jr, startState, 0, request)
+	}
 	// The item snapshot is reconstructed before the finished-task replay below,
 	// not after: taskOutcome's blocked arm (#544) hands it to the instance-level
 	// Blocked handler, so a resumed run replaying a blocked finish must carry
@@ -221,6 +230,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	}
 	ctx, span := r.startRunSpan(ctx, startIn)
 	defer span.End()
+	setStalledAttemptContext(ctx)
 
 	result, err := r.walk(ctx, jr, startIn, startState, resume, gateRepassSeed(events), gateDiffSeed(events), registrar, seed)
 	if err != nil {
