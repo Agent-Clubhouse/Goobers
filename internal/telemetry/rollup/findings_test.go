@@ -304,8 +304,8 @@ func TestDetectCoverageGaps(t *testing.T) {
 		switch {
 		case f.Kind == FindingWorkflowUntriggered && f.Subject == "nominate":
 			sawUntriggered = true
-			if f.FlaggedRuns != nil {
-				t.Errorf("untriggered finding carries FlaggedRuns, want nil: %+v", f)
+			if len(f.FlaggedRuns) != 0 {
+				t.Errorf("untriggered finding carries FlaggedRuns, want empty: %+v", f)
 			}
 		case f.Kind == FindingStageUnreached && f.Subject == "implement/deploy":
 			sawUnreached = true

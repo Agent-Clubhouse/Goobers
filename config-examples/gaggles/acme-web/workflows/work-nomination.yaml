@@ -22,28 +22,27 @@ spec:
     maxRunsPerHour: 1
   start: gather-signals
   tasks:
-    # Deterministic: materializes telemetry stats/error-signature aggregates
-    # (#24's rollup.Stats/TopErrorSignatures) as an artifact the nominator
-    # reads, rather than granting the agentic stage live rollup access —
-    # narrows what the LLM-driven stage can reach to exactly the evidence it
-    # needs (ARCHITECTURE.md §2.4 pointer-passing).
+    # Deterministic: applies typed thresholds to the telemetry rollup and
+    # materializes the versioned candidate-findings connector artifact. The
+    # agent receives only the bounded findings and their journal pointers,
+    # rather than live rollup access (ARCHITECTURE.md §5).
     - name: gather-signals
       type: deterministic
-      goal: Materialize telemetry stats and recent-error signals as an artifact for the nominator to analyze.
+      goal: Materialize threshold-crossing telemetry findings with journal evidence for the nominator.
       run:
-        command: ["goobers", "telemetry", "stats"]
+        command: ["goobers", "telemetry-query", "--window", "24h", "--aggregate", "stage-failure-rate", "--aggregate", "error-signature", "--aggregate", "gate-noise", "--format", "candidate-findings"]
       inputs:
         # Without this the expectedOutputs below emit nothing: a shell stage's
         # outputs are harvested only from its declared result file, so
-        # nominate would find no telemetry-signals artifact to analyze at all
+        # nominate would find no candidate-findings artifact to analyze at all
         # (#900 — the same defect that stalled merge-review's elect-lander).
-        resultFile: "telemetry-signals.json"
+        resultFile: "candidate-findings.json"
       capabilities:
         - telemetry:read
       expectedOutputs:
-        - telemetry-signals
+        - candidate-findings
       next: nominate
-    # Agentic: reads the telemetry-signals artifact plus a read-only checkout,
+    # Agentic: reads the candidate-findings artifact plus a read-only checkout,
     # dedupes against already-open goobers:nominated issues (query first —
     # issue #26 scope), and files well-formed issues up to the configured
     # per-run cap. Issues-only — no push/PR capability granted: this workflow
@@ -53,9 +52,9 @@ spec:
       type: agentic
       goober: nominator
       goal: >-
-        Analyze the telemetry-signals artifact and a read-only checkout for
-        genuine coverage gaps, performance smells, and recurring error
-        patterns. Query existing goobers:nominated issues first and skip
+        Analyze the candidate-findings artifact and a read-only checkout for
+        genuine coverage gaps and recurring failure or gate-noise patterns.
+        Query existing goobers:nominated issues first and skip
         anything already covered within the dedupe window. File a
         well-formed issue for each remaining gap: evidence pointers or a
         repro, a proposed scope, and an acceptance sketch. Stop at the

@@ -18,9 +18,8 @@ You touch **issues only**. You have `github:issues:write` and
 
 ## What you do
 
-1. Read the gathered signals (test coverage gaps, recurring run errors,
-   perf regressions in the local telemetry rollup, anything else the
-   `gather-signals` stage attached).
+1. Read the gathered candidate findings and their journal evidence pointers,
+   plus any repo signals the `gather-signals` stage attached.
 2. For each genuine gap or problem you find, **check the existing backlog
    first** — query open issues before filing anything. If an equivalent
    issue already exists (open or recently closed), do not file a

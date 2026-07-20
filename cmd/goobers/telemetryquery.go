@@ -3,85 +3,197 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
+	"math"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-// telemetryQuerySchema versions the connector's output. It is deliberately
-// minimal: the typed, versioned candidate-findings contract is V1 scope
-// (#148 / TEL-045, built around rollup.Detect). This is only the V0 floor that
-// unblocks the work-nomination and tutor `gather-signals` stages (#232) — a
-// bare signals digest (per-workflow / per-stage aggregates + top error
-// signatures over the window) the nominator/analyst can reason over.
-const telemetryQuerySchema = "goobers.dev/telemetry-query/v0"
+const candidateFindingsSchemaVersion = "goobers.dev/candidate-findings/v1"
 
-type telemetryQueryResult struct {
-	Schema          string                 `json:"schema"`
-	Window          string                 `json:"window"`
-	Since           time.Time              `json:"since"`
-	Workflows       []workflowSignal       `json:"workflows"`
-	Stages          []stageSignal          `json:"stages"`
-	ErrorSignatures []errorSignatureSignal `json:"errorSignatures"`
-	NoWork          bool                   `json:"noWork,omitempty"`
-	Note            string                 `json:"note,omitempty"`
+type candidateFindingsArtifact struct {
+	Schema   string           `json:"schema"`
+	Window   string           `json:"window"`
+	Since    time.Time        `json:"since"`
+	Findings []rollup.Finding `json:"findings"`
+	NoWork   bool             `json:"noWork,omitempty"`
+	Note     string           `json:"note,omitempty"`
 }
 
-// The two benign-empty causes carry distinct notes: the note is the only
-// signal that survives into the trace, since the executor overwrites Summary
-// with a generic no-work line.
 const (
 	telemetryQueryNoRollupNote    = "no telemetry rollup yet"
-	telemetryQueryEmptyWindowNote = "telemetry rollup has no runs in the requested window"
+	telemetryQueryNoFindingsNote  = "telemetry rollup has no candidate findings in the requested window"
+	telemetryQueryCandidateFormat = "candidate-findings"
 )
 
-type workflowSignal struct {
-	Workflow      string  `json:"workflow"`
-	TotalRuns     int     `json:"totalRuns"`
-	CompletedRuns int     `json:"completedRuns"`
-	FailedRuns    int     `json:"failedRuns"`
-	SuccessRate   float64 `json:"successRate"`
-	AvgDurationMs float64 `json:"avgDurationMs"`
+type telemetryAggregate string
+
+const (
+	telemetryAggregateAll              telemetryAggregate = "all"
+	telemetryAggregateStageFailureRate telemetryAggregate = "stage-failure-rate"
+	telemetryAggregateErrorSignature   telemetryAggregate = "error-signature"
+	telemetryAggregateGateNoise        telemetryAggregate = "gate-noise"
+)
+
+type telemetryAggregateValues []telemetryAggregate
+
+func (v *telemetryAggregateValues) String() string {
+	values := make([]string, len(*v))
+	for i, aggregate := range *v {
+		values[i] = string(aggregate)
+	}
+	return strings.Join(values, ",")
 }
 
-type stageSignal struct {
-	Stage             string  `json:"stage"`
-	TotalAttempts     int     `json:"totalAttempts"`
-	SucceededAttempts int     `json:"succeededAttempts"`
-	FailedAttempts    int     `json:"failedAttempts"`
-	SuccessRate       float64 `json:"successRate"`
+func (v *telemetryAggregateValues) Set(raw string) error {
+	var aggregate telemetryAggregate
+	switch raw {
+	case string(telemetryAggregateAll):
+		aggregate = telemetryAggregateAll
+	case string(telemetryAggregateStageFailureRate), "failure-rate":
+		aggregate = telemetryAggregateStageFailureRate
+	case string(telemetryAggregateErrorSignature), "error-signatures":
+		aggregate = telemetryAggregateErrorSignature
+	case string(telemetryAggregateGateNoise):
+		aggregate = telemetryAggregateGateNoise
+	default:
+		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, gate-noise)", raw)
+	}
+	for _, existing := range *v {
+		if existing == aggregate {
+			return nil
+		}
+	}
+	*v = append(*v, aggregate)
+	return nil
 }
 
-type errorSignatureSignal struct {
-	Code       string    `json:"code"`
-	ErrorClass string    `json:"errorClass,omitempty"`
-	Count      int       `json:"count"`
-	LastSeen   time.Time `json:"lastSeen"`
+func (v telemetryAggregateValues) includes(kind rollup.FindingKind) bool {
+	if len(v) == 0 {
+		return true
+	}
+	for _, aggregate := range v {
+		switch aggregate {
+		case telemetryAggregateAll:
+			return true
+		case telemetryAggregateStageFailureRate:
+			if kind == rollup.FindingStageFailureRate {
+				return true
+			}
+		case telemetryAggregateErrorSignature:
+			if kind == rollup.FindingErrorSignature {
+				return true
+			}
+		case telemetryAggregateGateNoise:
+			if kind == rollup.FindingGateNeverFails || kind == rollup.FindingGateRepassChurn {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-// runTelemetryQuery implements `goobers telemetry-query` — the deterministic
-// gather-signals stage for work-nomination and tutor (#232). It reads the
-// instance's telemetry rollup and emits a small, stable signals JSON to a
-// declared resultFile (GOOBERS_INPUT_resultFile) or stdout. Like the other
-// stage subcommands (#131/#132) it locates the instance via
-// GOOBERS_INSTANCE_ROOT (its cwd is the stage worktree, not the instance root).
+type telemetryThresholdValue struct {
+	thresholds *rollup.Thresholds
+}
+
+func (v *telemetryThresholdValue) String() string {
+	return ""
+}
+
+func (v *telemetryThresholdValue) Set(raw string) error {
+	key, value, ok := strings.Cut(raw, "=")
+	if !ok || strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+		return fmt.Errorf("threshold must be k=v, got %q", raw)
+	}
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+
+	parsePositiveInt := func() (int, error) {
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 {
+			return 0, fmt.Errorf("%s must be a positive integer", key)
+		}
+		return n, nil
+	}
+	parseRate := func() (float64, error) {
+		rate, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) || rate < 0 || rate > 1 {
+			return 0, fmt.Errorf("%s must be a number between 0 and 1", key)
+		}
+		return rate, nil
+	}
+
+	switch key {
+	case "min-samples", "minSamples":
+		n, err := parsePositiveInt()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MinSamples = n
+	case "max-failure-rate", "maxFailureRate":
+		rate, err := parseRate()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MaxFailureRate = rate
+	case "min-error-signature-count", "minErrorSignatureCount":
+		n, err := parsePositiveInt()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MinErrorSignatureCount = n
+	case "min-gate-evaluations", "minGateEvaluations":
+		n, err := parsePositiveInt()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MinGateEvaluations = n
+	case "max-gate-escalation-rate", "maxGateEscalationRate":
+		rate, err := parseRate()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MaxGateEscalationRate = rate
+	case "max-flagged-runs", "maxFlaggedRuns":
+		n, err := parsePositiveInt()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MaxFlaggedRuns = n
+	default:
+		return fmt.Errorf("unknown threshold %q", key)
+	}
+	return nil
+}
+
+// runTelemetryQuery implements the deterministic telemetry connector stage.
+// It locates the instance through GOOBERS_INSTANCE_ROOT because the stage's
+// working directory is its isolated worktree, not the instance root.
 func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("telemetry-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	window := fs.Duration("window", 24*time.Hour, "lookback window for signals (e.g. 24h, 168h)")
+	window := fs.Duration("window", 24*time.Hour, "lookback window (for example 24h or 168h)")
+	format := fs.String("format", telemetryQueryCandidateFormat, "artifact format (candidate-findings)")
+	var aggregates telemetryAggregateValues
+	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, gate-noise)")
+	thresholds := rollup.DefaultThresholds()
+	fs.Var(&telemetryThresholdValue{thresholds: &thresholds}, "threshold",
+		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs)")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers telemetry-query [--window <duration>] [path]\n\n"+
-			"Query the instance's telemetry rollup for signals worth acting on over the\n"+
-			"lookback window — per-workflow and per-stage success/failure aggregates and\n"+
-			"the top recurring error signatures — and emit them as a small, stable JSON\n"+
-			"document to a declared resultFile (GOOBERS_INPUT_resultFile) or stdout. This\n"+
-			"is the V0 floor for the work-nomination/tutor gather-signals stage (#232);\n"+
-			"the typed, versioned candidate-findings connector is V1 (#148).\n\n"+
-			"Exit codes: 0 = OK (a missing or empty rollup is a clean no-work result),\n"+
-			"1 = business error (unreadable/corrupt rollup, query error),\n"+
+		pf(stderr, "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings] [path]\n\n"+
+			"Query the instance telemetry rollup for threshold-crossing failure and gate\n"+
+			"patterns. The built-in connector stage writes a versioned candidate-findings\n"+
+			"artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.\n"+
+			"With no --aggregate, all supported aggregates are evaluated. Threshold rates\n"+
+			"are fractions from 0 through 1; count thresholds are positive integers.\n\n"+
+			"Exit codes: 0 = OK (including a clean no-work result), 1 = business error,\n"+
 			"2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
@@ -95,11 +207,16 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: --window must be a positive duration, got %s\n", *window)
 		return 2
 	}
+	if *format != telemetryQueryCandidateFormat {
+		pf(stderr, "error: --format must be %q, got %q\n", telemetryQueryCandidateFormat, *format)
+		return 2
+	}
 	pathArg := ""
 	if fs.NArg() == 1 {
 		pathArg = fs.Arg(0)
 	}
 
+	since := time.Now().UTC().Add(-*window)
 	l := layoutFor(providerStageRoot(pathArg))
 	dbPath := l.TelemetryDB()
 	if _, err := os.Stat(dbPath); err != nil {
@@ -107,78 +224,80 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: inspect telemetry rollup %s: %v\n", dbPath, err)
 			return 1
 		}
-		// A fresh instance legitimately has no rollup, so this is no-work rather
-		// than an error. It is also what a permanently-misconfigured instance
-		// looks like, and those are indistinguishable from the result alone —
-		// keep the actionable guidance on stderr, where it lands in the stage's
-		// stderr artifact without affecting the exit code or the result.
 		pf(stderr, "note: no telemetry rollup at %s — if this persists, enable telemetry "+
 			"(instance.yaml telemetry.enabled) and run at least one workflow under `goobers up`: %v\n", dbPath, err)
-		since := time.Now().Add(-*window)
-		result := telemetryQueryResult{Schema: telemetryQuerySchema, Window: window.String(), Since: since}
-		result.NoWork = true
-		result.Note = telemetryQueryNoRollupNote
-		return writeTelemetryQueryResult(result, stdout, stderr)
+		result := newCandidateFindingsArtifact(*window, since, nil, telemetryQueryNoRollupNote)
+		return writeCandidateFindingsArtifact(result, stdout, stderr)
 	}
-	db, err := rollup.Open(dbPath)
+	db, err := openRollup(l, false)
 	if err != nil {
 		pf(stderr, "error: open telemetry rollup %s: %v\n", dbPath, err)
 		return 1
 	}
 	defer func() { _ = db.Close() }()
 
-	since := time.Now().Add(-*window)
-	req := rollup.StatsRequest{Since: since}
-
-	stats, err := db.Stats(req)
+	result, err := detectCandidateFindings(db, *window, since, aggregates, thresholds)
 	if err != nil {
-		pf(stderr, "error: query stats: %v\n", err)
+		pf(stderr, "error: query candidate findings: %v\n", err)
 		return 1
 	}
-	sigs, err := db.TopErrorSignatures(req, 20)
-	if err != nil {
-		pf(stderr, "error: query error signatures: %v\n", err)
-		return 1
-	}
-
-	result := telemetryQueryResult{Schema: telemetryQuerySchema, Window: window.String(), Since: since}
-	for _, r := range stats.Runs {
-		result.Workflows = append(result.Workflows, workflowSignal{
-			Workflow: r.Workflow, TotalRuns: r.TotalRuns, CompletedRuns: r.CompletedRuns,
-			FailedRuns: r.FailedRuns, SuccessRate: r.SuccessRate, AvgDurationMs: r.AvgDurationMs,
-		})
-	}
-	for _, s := range stats.Stages {
-		result.Stages = append(result.Stages, stageSignal{
-			Stage: s.Stage, TotalAttempts: s.TotalAttempts, SucceededAttempts: s.SucceededAttempts,
-			FailedAttempts: s.FailedAttempts, SuccessRate: s.SuccessRate,
-		})
-	}
-	for _, sig := range sigs {
-		result.ErrorSignatures = append(result.ErrorSignatures, errorSignatureSignal{
-			Code: sig.Code, ErrorClass: sig.ErrorClass, Count: sig.Count, LastSeen: sig.LastSeen,
-		})
-	}
-	if len(result.Workflows) == 0 && len(result.Stages) == 0 && len(result.ErrorSignatures) == 0 {
-		result.NoWork = true
-		result.Note = telemetryQueryEmptyWindowNote
-	}
-
-	return writeTelemetryQueryResult(result, stdout, stderr)
+	return writeCandidateFindingsArtifact(result, stdout, stderr)
 }
 
-func writeTelemetryQueryResult(result telemetryQueryResult, stdout, stderr io.Writer) int {
+func detectCandidateFindings(
+	db *rollup.DB,
+	window time.Duration,
+	since time.Time,
+	aggregates telemetryAggregateValues,
+	thresholds rollup.Thresholds,
+) (candidateFindingsArtifact, error) {
+	findings, err := db.Detect(rollup.DetectRequest{
+		StatsRequest: rollup.StatsRequest{Since: since},
+		Thresholds:   thresholds,
+	})
+	if err != nil {
+		return candidateFindingsArtifact{}, err
+	}
+
+	filtered := make([]rollup.Finding, 0, len(findings))
+	for _, finding := range findings {
+		if !aggregates.includes(finding.Kind) {
+			continue
+		}
+		if finding.FlaggedRuns == nil {
+			finding.FlaggedRuns = []rollup.JournalPointer{}
+		}
+		filtered = append(filtered, finding)
+	}
+	note := ""
+	if len(filtered) == 0 {
+		note = telemetryQueryNoFindingsNote
+	}
+	return newCandidateFindingsArtifact(window, since, filtered, note), nil
+}
+
+func newCandidateFindingsArtifact(window time.Duration, since time.Time, findings []rollup.Finding, note string) candidateFindingsArtifact {
+	if findings == nil {
+		findings = []rollup.Finding{}
+	}
+	return candidateFindingsArtifact{
+		Schema:   candidateFindingsSchemaVersion,
+		Window:   window.String(),
+		Since:    since,
+		Findings: findings,
+		NoWork:   len(findings) == 0,
+		Note:     note,
+	}
+}
+
+func writeCandidateFindingsArtifact(result candidateFindingsArtifact, stdout, stderr io.Writer) int {
 	out, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
-		pf(stderr, "error: encode signals: %v\n", err)
+		pf(stderr, "error: encode candidate findings: %v\n", err)
 		return 1
 	}
 	out = append(out, '\n')
 
-	// A declared resultFile is written relative to the stage's cwd (its
-	// worktree), exactly where the shell executor lifts it into an artifact for
-	// the downstream nominate/analyze stage; otherwise emit to stdout (captured
-	// as the stage's stdout.log artifact).
 	if rf := providerInput(executor.InputResultFile, ""); rf != "" {
 		if err := os.WriteFile(rf, out, 0o644); err != nil {
 			pf(stderr, "error: write result file %q: %v\n", rf, err)

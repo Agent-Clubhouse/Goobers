@@ -9,11 +9,7 @@ import (
 )
 
 // FindingKind classifies a candidate finding's detection family (TUT-010).
-// These names anchor the shape issue #148 will formalize as a versioned
-// JSON schema under api/schemas/ — T2 owns the detection logic and this
-// Go-level shape, giving #148 a stable interface to build the
-// `telemetry-query`/candidate-findings connector around, rather than each
-// landing in lockstep.
+// The wire values are part of candidate-findings-v1.schema.json.
 type FindingKind string
 
 const (
@@ -65,7 +61,7 @@ type Finding struct {
 	Subject     string             `json:"subject"`
 	Metrics     map[string]float64 `json:"metrics"`
 	Threshold   float64            `json:"threshold"`
-	FlaggedRuns []JournalPointer   `json:"flaggedRuns"`
+	FlaggedRuns []JournalPointer   `json:"flagged_runs"`
 }
 
 // Thresholds are the config-tunable detection knobs a Tutor goober
@@ -109,8 +105,7 @@ func DefaultThresholds() Thresholds {
 // CoverageRequest names the workflow/stage universe a coverage-gap
 // detection pass checks telemetry against — data the rollup cannot derive
 // on its own (it has no view into workflow definitions, only what ran), so
-// the caller (the tutor connector stage, once #148 wires the CLI around
-// this) supplies it, typically from the compiled workflow registry.
+// the caller supplies it, typically from the compiled workflow registry.
 // Workflows maps a workflow name to its expected stage names; a workflow
 // with no stages listed is checked for triggering only, not stage reach.
 type CoverageRequest struct {
@@ -458,7 +453,7 @@ func (db *DB) detectCoverageGaps(req CoverageRequest) ([]Finding, error) {
 				Subject:     workflow,
 				Metrics:     map[string]float64{"runCount": 0},
 				Threshold:   0,
-				FlaggedRuns: nil,
+				FlaggedRuns: []JournalPointer{},
 			})
 			continue // no runs at all means no stage could have been reached either
 		}
@@ -473,7 +468,7 @@ func (db *DB) detectCoverageGaps(req CoverageRequest) ([]Finding, error) {
 					Subject:     workflow + "/" + stage,
 					Metrics:     map[string]float64{"attemptCount": 0},
 					Threshold:   0,
-					FlaggedRuns: nil,
+					FlaggedRuns: []JournalPointer{},
 				})
 			}
 		}

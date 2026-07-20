@@ -61,6 +61,10 @@ func TestSelfhostTelemetryQueriesDeclareResultFile(t *testing.T) {
 	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows")
 	for _, file := range []string{"work-nomination.yaml", "tutor.yaml"} {
 		t.Run(file, func(t *testing.T) {
+			wantResultFile := "telemetry-signals.json"
+			if file == "work-nomination.yaml" {
+				wantResultFile = "candidate-findings.json"
+			}
 			raw, err := os.ReadFile(filepath.Join(root, file))
 			if err != nil {
 				t.Fatalf("read %s: %v", file, err)
@@ -71,8 +75,8 @@ func TestSelfhostTelemetryQueriesDeclareResultFile(t *testing.T) {
 			}
 			for _, task := range w.Spec.Tasks {
 				if task.Name == "gather-signals" {
-					if got := task.Inputs["resultFile"]; got != "telemetry-signals.json" {
-						t.Fatalf("gather-signals resultFile = %q, want telemetry-signals.json", got)
+					if got := task.Inputs["resultFile"]; got != wantResultFile {
+						t.Fatalf("gather-signals resultFile = %q, want %s", got, wantResultFile)
 					}
 					return
 				}

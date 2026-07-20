@@ -41,7 +41,7 @@ _goobers_completion()
             ;;
         backlog-query) flags+=" --claim --release" ;;
         apply-verdict) flags+=" --gate" ;;
-        telemetry-query) flags+=" --window" ;;
+        telemetry-query) flags+=" --window --aggregate --threshold --format" ;;
         remediation-checkpoint) flags+=" --budget" ;;
         scaffold)
             [[ "${COMP_WORDS[2]:-}" == "goober" || "${COMP_WORDS[2]:-}" == "workflow" ]] && flags+=" --force"

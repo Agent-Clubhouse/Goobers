@@ -25,7 +25,7 @@ _goobers_completion()
             'stats:show the instance lifetime summary'
             'trace:show a run journal'
             'telemetry:query telemetry'
-            'telemetry-query:emit telemetry signals'
+            'telemetry-query:emit candidate findings'
             'journal:manage run journals'
             'backlog-query:query or claim backlog work'
             'push-branch:push the current run branch'
@@ -82,7 +82,7 @@ _goobers_completion()
             ;;
         backlog-query) flags+=(--claim --release) ;;
         apply-verdict) flags+=(--gate) ;;
-        telemetry-query) flags+=(--window) ;;
+        telemetry-query) flags+=(--window --aggregate --threshold --format) ;;
         remediation-checkpoint) flags+=(--budget) ;;
         scaffold)
             [[ "${words[3]:-}" == "goober" || "${words[3]:-}" == "workflow" ]] && flags+=(--force)
