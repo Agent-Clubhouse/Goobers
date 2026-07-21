@@ -205,15 +205,37 @@ describe("portal foundation", () => {
     );
   });
 
-  it("gives run filters observable behavior", async () => {
+  it("filters live run history through server-side phase requests", async () => {
     window.location.hash = "#/runs";
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const listRuns = vi.spyOn(client, "listRuns");
     const user = userEvent.setup();
-    render(<App />);
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("link", { name: "Open run 01JZ441DAEMONAPI" }),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "attention" }));
 
-    expect(screen.getByRole("button", { name: /Open run Live visual dashboard/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Open run Daemon read API/i })).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("link", { name: "Open run 01JZ402DASHBOARD" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open run 01JZ400FAILED" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Open run 01JZ441DAEMONAPI" }),
+    ).not.toBeInTheDocument();
+
+    // The attention chip fans out to server-side failed + escalated phase
+    // filters rather than fetching the whole journal and filtering in the client.
+    expect(listRuns).toHaveBeenCalledWith(
+      expect.objectContaining({ phase: "escalated" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(listRuns).toHaveBeenCalledWith(
+      expect.objectContaining({ phase: "failed" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   function renderLiveApp() {

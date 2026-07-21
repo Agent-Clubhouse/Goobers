@@ -741,6 +741,19 @@ summary:focus-visible {
   border-top: 0;
 }
 
+.data-overflow {
+  border-top: 1px solid var(--line);
+  color: var(--muted-strong);
+  font-size: 11px;
+  margin: 0;
+  padding: 11px 13px;
+}
+
+.data-overflow a {
+  color: inherit;
+  font-weight: 640;
+}
+
 .data-row:hover {
   background: var(--panel);
 }
@@ -1067,6 +1080,17 @@ summary:focus-visible {
   border-color: var(--accent);
   color: var(--ink);
   font-weight: 680;
+}
+
+.load-more {
+  display: flex;
+  justify-content: center;
+  padding: 16px 13px;
+}
+
+.load-more button:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .breadcrumbs {

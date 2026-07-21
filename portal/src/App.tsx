@@ -105,7 +105,7 @@ function Portal({
         />
       )}
       {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
-      {route.page === "runs" && <RunsPage navigate={navigate} />}
+      {route.page === "runs" && <RunsPage client={client} standalone={standalone} />}
       {route.page === "workflow" && route.gaggle && (
         <WorkflowPage
           client={client}

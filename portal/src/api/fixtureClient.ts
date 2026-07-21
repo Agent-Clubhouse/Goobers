@@ -20,6 +20,7 @@ import type {
   RunDetail,
   RunList,
   RunListOptions,
+  RunSummary,
   TelemetryErrorsOptions,
   TelemetryErrorsPage,
   TelemetryStatsOptions,
@@ -42,6 +43,13 @@ export interface DaemonFixtures {
   artifacts?: Record<string, ArtifactContent>;
   telemetryStats: TelemetryStatsResult;
   telemetryErrors: TelemetryErrorsPage;
+}
+
+const DEFAULT_RUN_LIMIT = 50;
+
+interface FixtureRunCursor {
+  startedAt: string;
+  id: string;
 }
 
 export class FixtureDaemonClient implements DaemonClient {
@@ -97,8 +105,32 @@ export class FixtureDaemonClient implements DaemonClient {
     );
   }
 
-  listRuns(_request?: RunListOptions, options?: RequestOptions): Promise<RunList> {
-    return fixture(this.fixtures.runs, options);
+  // Emulates the daemon's deterministic run listing so filtered and paginated
+  // reads exercise the same server-side contract in tests as in production:
+  // newest StartedAt first with RunID ascending as the tie-break, gaggle /
+  // workflow / phase / trigger filtered server-side, and keyset pagination on
+  // (StartedAt, RunID). See internal/readservice/runs.go ListRuns.
+  async listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {
+    throwIfCancelled(options);
+    const limit = request?.limit ?? DEFAULT_RUN_LIMIT;
+    let runs = this.fixtures.runs.runs.filter(
+      (run) =>
+        (!request?.gaggle || run.gaggle === request.gaggle) &&
+        (!request?.workflow || run.workflow === request.workflow) &&
+        (!request?.phase || run.phase === request.phase) &&
+        (!request?.trigger || run.trigger.kind === request.trigger),
+    );
+    runs = [...runs].sort(compareRunsNewestFirst);
+    if (request?.cursor) {
+      const cursor = decodeFixtureCursor(request.cursor);
+      runs = runs.filter((run) => runAfterCursor(run, cursor));
+    }
+    let nextCursor: string | undefined;
+    if (runs.length > limit) {
+      runs = runs.slice(0, limit);
+      nextCursor = encodeFixtureCursor(runs[runs.length - 1]);
+    }
+    return structuredClone(nextCursor ? { runs, nextCursor } : { runs });
   }
 
   async getRun(runId: string, options?: RequestOptions): Promise<RunDetail> {
@@ -170,6 +202,27 @@ function throwIfCancelled(options?: RequestOptions): void {
   if (options?.signal?.aborted) {
     throw new RequestCancelledError();
   }
+}
+
+function compareRunsNewestFirst(left: RunSummary, right: RunSummary): number {
+  return (
+    Date.parse(right.startedAt) - Date.parse(left.startedAt) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function runAfterCursor(run: RunSummary, cursor: FixtureRunCursor): boolean {
+  const runStarted = Date.parse(run.startedAt);
+  const cursorStarted = Date.parse(cursor.startedAt);
+  return runStarted < cursorStarted || (runStarted === cursorStarted && run.id > cursor.id);
+}
+
+function encodeFixtureCursor(run: RunSummary): string {
+  return JSON.stringify({ startedAt: run.startedAt, id: run.id } satisfies FixtureRunCursor);
+}
+
+function decodeFixtureCursor(value: string): FixtureRunCursor {
+  return JSON.parse(value) as FixtureRunCursor;
 }
 
 function fixtureEventStream(

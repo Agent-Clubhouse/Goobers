@@ -1,11 +1,11 @@
-import type { DaemonClient, RunSummary, WorkflowSummary } from "../api/types";
+import type { DaemonClient, RunSummary } from "../api/types";
 import type { ConfigurationWarningsProps } from "../components/ConfigurationWarnings";
 import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import {
-  groupOperationalRuns,
-  type OperationalSnapshot,
-  useOperationalSnapshot,
+  type OperationalOverview,
+  useOperationalOverview,
+  workflowDisplayName,
 } from "../operationalData";
 import { routeHash } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
@@ -21,7 +21,7 @@ export function OverviewPage({
   configurationWarnings: Omit<ConfigurationWarningsProps, "context">;
   standalone: boolean;
 }) {
-  const query = useOperationalSnapshot(client);
+  const query = useOperationalOverview(client);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -36,7 +36,7 @@ export function OverviewPage({
   return (
     <Overview
       configurationWarnings={configurationWarnings}
-      snapshot={query.state.data}
+      overview={query.state.data}
       standalone={standalone}
     />
   );
@@ -44,27 +44,27 @@ export function OverviewPage({
 
 function Overview({
   configurationWarnings,
-  snapshot,
+  overview,
   standalone,
 }: {
   configurationWarnings: Omit<ConfigurationWarningsProps, "context">;
-  snapshot: OperationalSnapshot;
+  overview: OperationalOverview;
   standalone: boolean;
 }) {
-  const groups = groupOperationalRuns(snapshot.runs);
-  const emptyInstance = snapshot.inventories.length === 0;
+  const groups = overview.groups;
+  const emptyInstance = overview.gaggleCount === 0;
 
   return (
     <>
       <header className="page-heading">
-        <p className="page-kicker">{snapshot.instance.name}</p>
+        <p className="page-kicker">{overview.instance.name}</p>
         <h1>
           {emptyInstance
             ? standalone
-              ? snapshot.health.ready
+              ? overview.health.ready
                 ? "Instance is ready."
                 : "Instance data is loading."
-              : snapshot.health.ready
+              : overview.health.ready
                 ? "Daemon is ready."
                 : "Daemon is starting."
             : attentionHeading(groups.attention.length)}
@@ -109,7 +109,7 @@ function Overview({
                   </span>
                 </span>
                 <span className="attention-meta">
-                  <span>{workflowLabel(snapshot, run)}</span>
+                  <span>{workflowDisplayName(overview, run)}</span>
                   <time dateTime={run.finishedAt ?? run.startedAt}>
                     {formatTimestamp(run.finishedAt ?? run.startedAt)}
                   </time>
@@ -121,7 +121,7 @@ function Overview({
         </section>
       )}
 
-      <InstanceStrip snapshot={snapshot} standalone={standalone} />
+      <InstanceStrip overview={overview} standalone={standalone} />
 
       {emptyInstance ? (
         <section className="empty-state">
@@ -129,7 +129,7 @@ function Overview({
           <div>
             <h2>No gaggles configured</h2>
             <p>
-              {snapshot.health.ready
+              {overview.health.ready
                 ? standalone
                   ? "The instance is ready for provisioned gaggle, goober, and workflow definitions."
                   : "The daemon is ready and waiting for provisioned gaggle, goober, and workflow definitions."
@@ -144,15 +144,15 @@ function Overview({
           <RunSection
             ariaLabel="Active runs"
             kicker="Live"
+            overview={overview}
             runs={groups.active}
-            snapshot={snapshot}
             title="Active runs"
           />
           <RunSection
             ariaLabel="Recent outcomes"
             kicker="History"
+            overview={overview}
             runs={groups.recent}
-            snapshot={snapshot}
             title="Recent outcomes"
           />
         </>
@@ -164,10 +164,10 @@ function Overview({
 }
 
 function InstanceStrip({
-  snapshot,
+  overview,
   standalone,
 }: {
-  snapshot: OperationalSnapshot;
+  overview: OperationalOverview;
   standalone: boolean;
 }) {
   return (
@@ -176,35 +176,35 @@ function InstanceStrip({
       className="instance-strip"
     >
       <div>
-        <span aria-hidden="true" className={snapshot.health.ready ? "live-mark" : "live-mark pending"} />
+        <span aria-hidden="true" className={overview.health.ready ? "live-mark" : "live-mark pending"} />
         <strong>
           {standalone
-            ? snapshot.health.ready
+            ? overview.health.ready
               ? "Local instance loaded"
               : "Local instance not ready"
-            : snapshot.health.ready
+            : overview.health.ready
               ? "Daemon ready"
               : "Daemon starting"}
         </strong>
         <span>
           observed{" "}
-          <time dateTime={snapshot.health.freshness.observedAt}>
-            {formatTimestamp(snapshot.health.freshness.observedAt)}
+          <time dateTime={overview.health.freshness.observedAt}>
+            {formatTimestamp(overview.health.freshness.observedAt)}
           </time>
         </span>
       </div>
       <dl>
         <div>
           <dt>Workflows</dt>
-          <dd>{snapshot.instance.counts.workflows}</dd>
+          <dd>{overview.instance.counts.workflows}</dd>
         </div>
         <div>
           <dt>Active runs</dt>
-          <dd>{snapshot.instance.counts.activeRuns}</dd>
+          <dd>{overview.instance.counts.activeRuns}</dd>
         </div>
         <div>
           <dt>Gaggles</dt>
-          <dd>{snapshot.instance.counts.gaggles}</dd>
+          <dd>{overview.instance.counts.gaggles}</dd>
         </div>
       </dl>
     </section>
@@ -214,14 +214,14 @@ function InstanceStrip({
 function RunSection({
   ariaLabel,
   kicker,
+  overview,
   runs,
-  snapshot,
   title,
 }: {
   ariaLabel: string;
   kicker: string;
+  overview: OperationalOverview;
   runs: RunSummary[];
-  snapshot: OperationalSnapshot;
   title: string;
 }) {
   const active = title === "Active runs";
@@ -261,7 +261,7 @@ function RunSection({
               </span>
               {active ? (
                 <>
-                  <span>{workflowLabel(snapshot, run)}</span>
+                  <span>{workflowDisplayName(overview, run)}</span>
                   <span className="stage-progress">
                     <span aria-hidden="true" className="stage-progress-mark" />
                     {run.currentStage ?? "Awaiting stage"}
@@ -270,7 +270,7 @@ function RunSection({
               ) : (
                 <>
                   <StatusBadge status={run.phase} />
-                  <span>{workflowLabel(snapshot, run)}</span>
+                  <span>{workflowDisplayName(overview, run)}</span>
                 </>
               )}
               <span className="mono">{formatDuration(run.durationMillis)}</span>
@@ -280,20 +280,6 @@ function RunSection({
       )}
     </section>
   );
-}
-
-function workflowLabel(snapshot: OperationalSnapshot, run: RunSummary): string {
-  let workflow: WorkflowSummary | undefined;
-  for (const inventory of snapshot.inventories) {
-    workflow = inventory.workflows.find(
-      (candidate) =>
-        candidate.identity.gaggle === run.gaggle && candidate.identity.name === run.workflow,
-    );
-    if (workflow) {
-      break;
-    }
-  }
-  return workflow?.displayName ?? `${run.gaggle} / ${run.workflow}`;
 }
 
 function runLabel(run: RunSummary): string {
