@@ -78,6 +78,12 @@ type Worktree struct {
 	Path string
 	// Branch is the branch checked out in the worktree, or empty if detached.
 	Branch string
+	// Warnings are non-fatal conditions detected while provisioning this
+	// worktree that the caller should surface (never a reason to fail the run).
+	// Today this is symlink flattening on a platform without symlink support
+	// (see Manager.checkSymlinkSupport, #643); empty on darwin/linux. The
+	// runner journals any entries as a runner.annotation event.
+	Warnings []string
 
 	manager  *Manager
 	key      string
@@ -207,6 +213,16 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		}
 	}
 
+	// Detect symlinks the platform could not materialize (Windows without
+	// symlink support checks them out as plain files) so the degradation
+	// surfaces as a warning rather than corrupting the run silently (#643). A
+	// no-op on darwin/linux, where symlinks check out natively.
+	warnings, err := m.checkSymlinkSupport(ctx, path)
+	if err != nil {
+		_ = runGit(ctx, repoDir, "worktree", "remove", "--force", path)
+		return nil, fmt.Errorf("worktree: inspect symlinks for run %s: %w", opts.RunID, err)
+	}
+
 	mk := marker{
 		RunID:      opts.RunID,
 		OwnerRunID: opts.OwnerRunID,
@@ -224,7 +240,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	}
 
 	return &Worktree{
-		RunID: opts.RunID, Path: path, Branch: opts.Branch,
+		RunID: opts.RunID, Path: path, Branch: opts.Branch, Warnings: warnings,
 		manager: m, key: key, startRef: startRef,
 	}, nil
 }

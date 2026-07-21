@@ -1,0 +1,23 @@
+# Line-ending & content policy for the Goobers repo (#643).
+#
+# Goal: byte-identical, LF-normalized checkouts on Windows, macOS, and Linux, so
+# a fresh clone never shows phantom whole-file CRLF diffs and never renormalizes
+# a file whose bytes a test asserts verbatim.
+#
+# Scope: this governs the Goobers repo itself. Managed checkouts of *target*
+# repos are pinned to core.autocrlf=false by the worktree layer
+# (internal/worktree, see managedGitConfig); target repos are recommended to
+# carry their own .gitattributes for the same guarantee.
+
+# Default: let git detect text vs binary by content, and store + check out every
+# text file with LF regardless of the host platform or the user's core.autocrlf.
+* text=auto eol=lf
+
+# Byte-asserted generated artifacts — golden fixtures and generated man pages are
+# compared verbatim by CI (TestCLIDocsUpToDate and the *.golden guards). Mark
+# them so git applies no conversion and the raw bytes are what round-trips.
+*.golden -text
+*.1 -text
+
+# Binary assets: never treat as text.
+*.png binary
