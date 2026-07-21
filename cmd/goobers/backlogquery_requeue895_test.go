@@ -148,3 +148,44 @@ func TestClosedPRReconciliationIsMergeSafeAndIdempotent(t *testing.T) {
 		})
 	}
 }
+
+func TestClosedPRReconciliationProtectsMergedReplacementAfterMetadataChanges(t *testing.T) {
+	server := newFakeGitHubServer(t, "acme", "app")
+	server.addIssue(7, "Implement safely",
+		"goobers:approved", "goobers:ready", inReviewStatusLabel)
+
+	server.addOpenPR(101, "goobers/implementation/run-1", "main", "head", "base", false, nil, nil)
+	server.setPRBody(101, "## Summary\n\n---\nFixes #7\n\n---\ngoobers run-id: run-1")
+	server.setPRClosed(101)
+	server.addComment(7, implementationInReviewComment("https://github.com/acme/app/pull/101"))
+
+	server.addOpenPR(102, "legacy/implementation/run-2", "main", "head", "base", false, nil, nil)
+	server.setPRBody(102, "Implementation metadata was edited after opening.")
+	server.setPRMerged(102)
+	server.addComment(7, implementationInReviewComment("https://github.com/acme/app/pull/102"))
+
+	recorder := &requeueMutationRecorder{}
+	issueProvider := server.newGitHubProvider("issues-token", providers.WithMutationRecorder(recorder))
+	prProvider := server.newGitHubProvider("pr-token")
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "app",
+	}
+
+	if err := reconcileClosedUnmergedInReview(
+		context.Background(), issueProvider, prProvider, repo,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	server.mu.Lock()
+	labels := append([]string(nil), server.issues[7].labels...)
+	server.mu.Unlock()
+	if !hasAllLabels(labels, []string{inReviewStatusLabel}) {
+		t.Fatalf("issue labels = %v, want merged replacement to preserve %q", labels, inReviewStatusLabel)
+	}
+	if got := recorder.count(); got != 0 {
+		t.Fatalf("mutation count = %d, want no requeue after an associated PR merged", got)
+	}
+}
