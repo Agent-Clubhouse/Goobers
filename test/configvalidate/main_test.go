@@ -13,9 +13,21 @@ import (
 
 func TestValidateCheckedInTreesRunsEveryTree(t *testing.T) {
 	t.Setenv("GO_WANT_CONFIGVALIDATE_HELPER", "1")
+	root := t.TempDir()
+	for _, tree := range checkedInTrees {
+		source := filepath.Join(root, filepath.FromSlash(tree.path))
+		if err := os.MkdirAll(source, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if !tree.sourceTree {
+			if err := os.WriteFile(filepath.Join(source, "manifest.yaml"), []byte("fixture"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	var stdout, stderr bytes.Buffer
 	code := validateCheckedInTrees(
-		moduleRoot(t),
+		root,
 		validatorCommand{
 			path:       os.Args[0],
 			prefixArgs: []string{"-test.run=TestValidatorHelperProcess", "--"},
@@ -31,24 +43,41 @@ func TestValidateCheckedInTreesRunsEveryTree(t *testing.T) {
 	}
 }
 
-func TestValidateCheckedInTreesFailsOnValidationError(t *testing.T) {
-	root := moduleRoot(t)
+func TestValidateCheckedInTreesFailsOnMissingDocsRoot(t *testing.T) {
+	module := moduleRoot(t)
+	root := t.TempDir()
+	source := filepath.Join(root, "config-under-test")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join(module, "test", "configvalidate", "testdata", "invalid")
+	if err := os.CopyFS(source, os.DirFS(fixture)); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "init", "-q", root)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("initialize fixture repository: %v\n%s", err, output)
+	}
+
 	var stdout, stderr bytes.Buffer
 	code := validateTrees(
 		root,
-		[]checkedInTree{{path: "test/configvalidate/testdata/invalid"}},
-		validatorCommand{path: buildValidator(t, root)},
+		[]checkedInTree{{path: "config-under-test"}},
+		validatorCommand{path: buildValidator(t, module)},
 		&stdout,
 		&stderr,
 	)
 	if code != 1 {
 		t.Fatalf("validateCheckedInTrees code=%d, want 1; stdout=%q stderr=%q", code, &stdout, &stderr)
 	}
-	want := `gaggles/example/workflows/default-implement.yaml Workflow/default-implement: spec.gaggle names "ghost", but no Gaggle/ghost definition was found`
+	want := `DOCSROOTS Workflow/default-implement: declared docs root "missing-docs-root" does not exist`
 	if !strings.Contains(stdout.String(), want) {
 		t.Fatalf("validator diagnostic was not preserved:\n%s", &stdout)
 	}
-	if !strings.Contains(stderr.String(), "test/configvalidate/testdata/invalid") {
+	if strings.Contains(stdout.String(), "skipped existence check") {
+		t.Fatalf("repository-backed docs-root check was skipped:\n%s", &stdout)
+	}
+	if !strings.Contains(stderr.String(), "config-under-test") {
 		t.Fatalf("failure did not identify the offending config tree:\n%s", &stderr)
 	}
 }

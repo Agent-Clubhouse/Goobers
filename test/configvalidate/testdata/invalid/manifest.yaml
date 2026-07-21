@@ -5,7 +5,7 @@ metadata:
 spec:
   instance:
     name: invalid-fixture
-    environment: test
+    environment: dev
   connections:
     - name: repo-token
       type: repo

@@ -3,13 +3,16 @@ kind: Workflow
 metadata:
   name: default-implement
 spec:
-  gaggle: ghost
+  gaggle: example
   displayName: Known invalid workflow
+  docsRoots:
+    - missing-docs-root
   triggers:
     - type: manual
   start: check
   tasks:
     - name: check
       type: deterministic
+      goal: Exercise repository-relative config validation.
       run:
         command: ["true"]
