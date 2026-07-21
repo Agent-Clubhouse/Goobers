@@ -64,19 +64,19 @@ func (r *daemonRunnerRegistry) Track(runID string, owner *runner.Runner) func() 
 	}
 }
 
-func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Runner) *runner.Runner {
+func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Runner) (*runner.Runner, bool) {
 	if r == nil {
-		return fallback
+		return fallback, false
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if owner := r.owners[runID]; owner != nil {
-		return owner
+		return owner, true
 	}
 	if gaggle != "" {
-		return r.current[gaggle]
+		return r.current[gaggle], false
 	}
-	return fallback
+	return fallback, false
 }
 
 func sweepStalledRuns(
@@ -144,7 +144,7 @@ func sweepStalledRuns(
 				rootGaggle := filepath.Base(filepath.Dir(runsDir))
 				runLayout = l.ForGaggle(rootGaggle)
 			}
-			runRunner := runners.Resolve(identity.RunID, runLayout.Gaggle(), fallback)
+			runRunner, liveOwner := runners.Resolve(identity.RunID, runLayout.Gaggle(), fallback)
 			if runRunner == nil {
 				runRunner = terminalizers[runsDir]
 				if runRunner == nil {
@@ -182,7 +182,7 @@ func sweepStalledRuns(
 				if release != nil {
 					release(identity.RunID, identity.Workflow)
 				}
-				if log != nil {
+				if log != nil && !liveOwner {
 					appendErr := log.Append(journal.Event{
 						Type:     journal.EventRunFinished,
 						Gaggle:   identity.Gaggle,

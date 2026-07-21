@@ -169,6 +169,19 @@ func TestSweepStalledRunsEscalatesLiveAdmittedRunAcrossReload(t *testing.T) {
 	if len(notified) != 1 || notified[0] != runID+":"+string(journal.PhaseEscalated) {
 		t.Fatalf("notifications = %v", notified)
 	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finished int
+	for _, event := range events {
+		if event.Type == journal.EventRunFinished && event.RunID == runID {
+			finished++
+		}
+	}
+	if finished != 1 {
+		t.Fatalf("instance run.finished events for %s = %d, want 1", runID, finished)
+	}
 }
 
 func TestSweepStalledRunsEscalatesSilentRunAndPreservesHeartbeat(t *testing.T) {
