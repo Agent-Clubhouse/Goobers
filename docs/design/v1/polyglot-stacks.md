@@ -84,73 +84,101 @@ allowlist **instance/gaggle-extendable** (still default-deny — an explicit lis
 `os.Environ()` passthrough). This is the cheapest single unblock for a .NET gaggle that has the
 SDK installed but a non-default cache. **Additive, fail-closed preserved.**
 
-### P-3 — Declarative runtime provisioning (#735), .NET path concretized
-A stage/gaggle declares a `requires.runtime` (e.g. `{dotnet: "8.0"}`) resolved **before** the
-command runs, fail-closed if unprovisionable. Two backing modes, deliberately a spectrum:
-- **Host-resolved (near-term):** verify the declared SDK/version is present on the host PATH,
-  fail-closed with a clear diagnostic if not (turns today's silent "command not found" into a
-  declared, actionable requirement — and is the local sibling of the #1087 runner-requirement
-  contract). No installation.
-- **Container-provisioned (later):** select the toolchain via an image (#734) — the durable
-  escape hatch #735 recommends, gated on #737's kind registry. Deferred behind the host mode.
+### P-3 — Declared runtime requirement, matched at *schedule* against a runner capability claim
+**PO-confirmed model (unifies .NET, Apple, Windows — 2026-07-20):** assume the toolchain is
+preinstalled; a **runner advertises the capabilities it claims** (`dotnet@8`, `xcode`,
+`os=windows`); a gaggle/stage **declares its required capabilities** (#735); the **scheduler
+refuses to place the workload on a runner that does not claim them — failing at *schedule* time
+with a clear diagnostic**, not scheduling-then-failing-at-run. A runner that *lies* (claims
+`dotnet` but lacks it) yields a **runtime error** — an accepted degradation, not something the
+scheduler prevents. No installation is performed. This is the **near-term, statically-configured
+slice of the #1087 runner-requirement contract**: **RRQ-1 (new issue)** owns the
+runner-capability-claim + schedule-time match; #735 owns the requirement declaration.
+Container-provisioned toolchains (revive `Image` #734 + kind-registry #737) are the durable
+follow-on but are **out of scope this sprint** — captured as a forward exploration issue on
+prepopulated container stages (§8).
 
-### P-4 — Reference .NET/C# gaggle + green Windows CI (NEW capstone)
+### P-4 — Reference .NET/C# gaggle, validated on a provisioned host (NEW capstone)
 Nothing owns this today. Ship a real `config-examples/gaggles/<dotnet-service>/` with a .NET
 `implementation.yaml` (CI command `dotnet build && dotnet test`, `requires.runtime: {dotnet}`),
-a shipped-workflow contract test through the real runner + fake harness, and a **Windows CI leg**
-that builds/tests it so .NET-on-Windows can't silently rot (mirrors #1091's discipline for the
-daemon itself). AC includes the Go-only diagnostics caveat: `GOTRACEBACK`/SIGQUIT goroutine-dump
-handling (`env.go:83`, `shell.go:342`) is inert for `dotnet test` — documented, not a blocker.
+proven green through the **real runner + fake harness on a host that has the SDK** (the sprint
+runs on a machine with .NET installed). Schedule-time fail-closed comes from RRQ-1/P-3: no
+`dotnet`-claiming runner ⇒ the workload does not schedule. **Cloud CI pinning is soft/stretch
+(PO):** an evergreen Windows and/or macOS CI leg keeping the reference gaggle green is desirable
+for regression protection but **not required this sprint** — the daemon's own Windows support
+keeps its own gate (#1091/#633); this is about pinning the *gaggle*. AC note: Go-only diagnostics
+(`GOTRACEBACK`/SIGQUIT, `env.go:83`/`shell.go:342`) are inert for `dotnet test` — documented, not
+a blocker.
 
-### P-5 — Apple + Android ladder (designed, one target each)
-- **Apple:** #740 (iOS Simulator/XCUITest) + one validated Swift/Obj-C build target on a macOS
-  host. Xcode is not containerizable → **macOS-host-bound**; scheduling correctness depends on
-  the runner-requirement contract (§5). Design + one green e2e; full matrix deferred.
-- **Android:** #742 emulator flavor, one validated target; KVM-containerizable exploration noted.
+### P-5 — Apple + Android ladder (same capability model, one target each)
+**Apple is handled exactly like .NET (PO):** assume Xcode present, declare the `xcode` capability
+requirement, fail-closed at schedule if no runner claims it (RRQ-1/§5), runtime error if a claim
+is false. Xcode is not containerizable, so the only valid runner is a macOS host with Xcode — but
+that is now just a capability claim, not special-casing.
+- **Apple:** #740 (iOS Simulator/XCUITest + one Swift/Obj-C build). **This sprint validates the
+  target on the local macOS+Xcode machine → a real green e2e; no cloud macOS runner required**
+  (cloud macOS CI for pinned support is the same soft/stretch goal as .NET). Full matrix deferred.
+- **Android:** #742 emulator flavor, one validated target, same model; KVM-containerizable noted.
 
-## 5. Runner requirements — reference, do not duplicate
-Requirement "declare runner requirements, fail to schedule when unmet, same tests / different
-per-platform outcomes" is **already owned**: #1087 (durable stage-level capability declaration
-`requires`/`runsOn`, generalizing the routing key) and #659 (platform routing + fail-fast-vs-
-queue semantics). Per the cross-platform planning, #1087 warrants **its own design pass** and is
-not lumped into this doc. This design only *consumes* it: P-3's host-resolved mode is the
-degenerate local case (verify-here-or-fail), and P-5's Apple targets are its first hard
-constraint (Xcode-only-on-macOS). Near-term platform-varying test expectations ride the CI matrix
-(#633) with build/platform tags, not the router.
+## 5. Runner requirements — the near-term slice this sprint builds (RRQ-1)
+The PO-confirmed provisioning model (§4 P-3) **is** a runner-requirement contract in its
+near-term form, so this sprint builds the minimal slice: **RRQ-1 (new)** — a runner advertises a
+static capability set, a gaggle/stage declares required capabilities, the scheduler
+**fails-to-schedule** on an unmet requirement with a clear diagnostic, and a **false claim
+degrades to a runtime error**. The **full** dynamic routing / capability-matched pools remain
+**#1087's own design pass** (not lumped in here); #659 owns platform-pool routing. RRQ-1 is their
+degenerate, statically-configured ancestor and the **shared substrate for PLY-3/PLY-4 (.NET) and
+PLY-7 (Apple)** — one mechanism serves `dotnet`, `xcode`, and `os=windows`. Platform-varying
+*test expectations* still ride the CI matrix (#633) with build/platform tags, not the router.
 
 ## 6. Decomposition — dispatchable work items
 
 | ID | Issue | Item | Risk | Status |
 |---|---|---|---|---|
-| PLY-1 | #1009 | Per-gaggle CI command (foundation) | Low | **approved/ready** |
-| PLY-2 | #736 | Toolchain env allowlist (.NET first) + gaggle-configurable | Low-Med | promote → approve |
-| PLY-3 | #735 | Declarative runtime provisioning; host-resolved .NET path | Med | promote → approve |
-| PLY-4 | *(new)* | Reference .NET/C# gaggle + shipped-workflow test + Windows CI leg | Med | **new — the first-class proof** |
-| PLY-5 | #734 | Containerized stage execution (revive `Image`) | Med-High | after PLY-2/3; escape hatch |
-| PLY-6 | #737 | Registrable stage-kind seam (refactor-only) | Low | substrate for PLY-5 |
-| PLY-7 | #740 | Apple: iOS simulator flavor + 1 Swift/Obj-C target (macOS-host-bound) | Med | laddered, designed |
+| RRQ-1 | *(new)* | Runner capability claim + schedule-time requirement match (near-term slice of #1087) | Med | **new — shared substrate for .NET + Apple** |
+| PLY-1 | #1009 | Per-gaggle CI command (foundation) | Low | ready |
+| PLY-2 | #736 | Toolchain env allowlist (.NET first) + gaggle-configurable | Low-Med | in sprint |
+| PLY-3 | #735 | Declared runtime requirement (consumed by RRQ-1's schedule match) | Med | in sprint |
+| PLY-4 | *(new)* | Reference .NET/C# gaggle validated on a provisioned host; cloud CI pinning soft | Med | **new — the first-class proof** |
+| PLY-5 | #734 | Containerized stage execution (revive `Image`) | Med-High | **deferred** (see §8 forward issue) |
+| PLY-6 | #737 | Registrable stage-kind seam (refactor-only) | Low | substrate for PLY-5 (deferred) |
+| PLY-7 | #740 | Apple: iOS simulator + 1 Swift/Obj-C target, validated on local Xcode host | Med | laddered, real e2e this sprint |
 | PLY-8 | #742 | Android: emulator flavor, 1 target | Med | laddered (stretch) |
 
-## 7. Recommended sequencing
-1. **Foundation:** PLY-1 (#1009) — already ready.
-2. **First-class .NET core:** PLY-2 (#736 env) → PLY-3 (#735 host-resolved provisioning) →
-   PLY-4 (reference gaggle + Windows CI leg). At the end of this leg a .NET gaggle builds and
-   ships green on Linux/macOS/Windows — the sprint's first-class outcome.
-3. **Durable substrate (opportunistic):** PLY-6 (#737 kind registry) → PLY-5 (#734 containers)
-   — promotes provisioning from host-resolved to image-selected; not required for first-class .NET.
-4. **Ladder (designed, one target each):** PLY-7 (#740 Apple) and PLY-8 (#742 Android), each
-   gated on the runner-requirement contract (§5) for correct host scheduling.
+> `sprint:v1-breadth` is the work queue; `goobers:approved` is a *daemon*-pickup flag and does
+> not gate this human/agent-worker sprint. Items above run off the label regardless of approval.
 
-## 8. Open questions (PO)
-- **OQ-1 — provisioning bar for "first-class":** is host-resolved-fail-closed (P-3 near-term)
-  sufficient to call .NET first-class this sprint, with container-provisioned (#734) deferred?
-  *(Recommend: yes — host-resolved + a shipped Windows CI leg is a real, testable bar; containers
-  are the durability follow-on.)*
-- **OQ-2 — reference .NET gaggle target:** a minimal ASP.NET/service, or a console/library? *(Recommend:
-  a small service with unit tests — exercises `dotnet build && dotnet test` and NuGet restore.)*
-- **OQ-3 — Apple host availability:** confirm a macOS host with Xcode is available for the PLY-7
-  validated target (nothing else can build/sign Apple code); if not, PLY-7 is design-only this sprint.
-- **OQ-4 — promote #735/#736 now?** both are unapproved backlog sketches; first-class .NET
-  requires them. *(Recommend: promote both to approved with the .NET-first scope above.)*
+## 7. Recommended sequencing
+1. **Foundation:** PLY-1 (#1009, ready) + **RRQ-1** (runner capability claim + schedule match) —
+   RRQ-1 is the substrate the rest depends on for fail-at-schedule.
+2. **First-class .NET core:** PLY-2 (#736 env) → PLY-3 (#735 requirement declaration) →
+   PLY-4 (reference gaggle, validated on a .NET-provisioned host). At the end of this leg a .NET
+   gaggle builds and ships green with schedule-time fail-closed — the sprint's first-class outcome.
+3. **Ladder (one target each, same capability model):** PLY-7 (#740 Apple, validated on the local
+   Xcode host) and PLY-8 (#742 Android) — both consume RRQ-1 for correct host scheduling.
+4. **Deferred (forward issue, §8):** PLY-6 (#737 kind registry) → PLY-5 (#734 containers) —
+   prepopulated container stages are a later investment, not this sprint.
+
+## 8. Resolved decisions (PO, 2026-07-20)
+- **Provisioning bar — RESOLVED:** assume the toolchain is **preinstalled**; declare the runtime
+  requirement; **fail at schedule** against a runner's capability claim (RRQ-1), not
+  schedule-then-fail-at-run; a false claim degrades to a runtime error. Container-provisioned
+  toolchains are **deferred** (forward issue below). This is the bar for "first-class" this sprint.
+- **Cloud CI pinning — RESOLVED soft/stretch:** an evergreen Windows/macOS CI leg pinning the
+  reference .NET / Apple gaggles is desirable but **not required this sprint**.
+- **Apple = same model as .NET — RESOLVED:** assume Xcode present; capability-claim + fail-closed
+  at schedule. **Validated on the local macOS+Xcode machine this sprint** (real green e2e); **no
+  cloud macOS runner required.**
+- **Mixed-mode as a canonical pattern — RESOLVED: not now** (Goobers is already *incidentally*
+  mixed-mode; that is awareness, not a green light). #804/#369 stay deferred; addable later.
+- **Approval labels are moot** for this sprint — it runs off `sprint:v1-breadth`, not
+  `goobers:approved` (a daemon-pickup flag). No approval changes needed.
+
+### Forward exploration (later, not this sprint)
+- **Prepopulated container stages** — container stages seeded with the right branch/code/runtime
+  (composes #734 image execution + #737 kind registry + #735 declarations). Filed as a Future
+  exploration issue; the durable answer to hermetic, version-pinned toolchains beyond preinstall.
+- **OQ (still open) — reference .NET target:** minimal ASP.NET service vs console/library?
+  *(Recommend a small service with unit tests — exercises `dotnet build && dotnet test` + NuGet restore.)*
 </content>
 </invoke>
