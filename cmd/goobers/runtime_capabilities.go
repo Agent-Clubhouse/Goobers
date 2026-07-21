@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/executor"
 )
 
 type cliCommandHandler func([]string, io.Writer, io.Writer) int
@@ -16,6 +17,8 @@ type cliCommand struct {
 	actionRegistered bool
 	subcommands      []cliCommand
 	run              cliCommandHandler
+	providerStage    bool
+	resultFile       string
 
 	// Help metadata — the single source of truth for every rendered help
 	// surface (#1095, CLI-1). Both the top-level usage() and each command's own
@@ -387,7 +390,12 @@ func command(
 	class apicontract.ActionClass,
 	handler cliCommandHandler,
 ) cliCommand {
-	return aliasCommand(name, []string{name}, class, handler)
+	registration := aliasCommand(name, []string{name}, class, handler)
+	if resultFile, ok := executor.ProviderStageResultFile(name); ok {
+		registration.providerStage = true
+		registration.resultFile = resultFile
+	}
+	return registration
 }
 
 func commandWithSubcommands(
@@ -526,6 +534,9 @@ func (command cliCommand) dispatch(args []string, stdout, stderr io.Writer) int 
 		if subcommand, ok := findCLICommandIn(command.subcommands, args[0]); ok {
 			return subcommand.dispatch(args[1:], stdout, stderr)
 		}
+	}
+	if command.providerStage {
+		return runProviderStageCommand(command.names[0], command.resultFile, command.run, args, stdout, stderr)
 	}
 	return command.run(args, stdout, stderr)
 }
