@@ -14,6 +14,12 @@
 // It also records the exact validated environment (OS/arch, kernel, distro, Go
 // and git versions) so "supported on Linux" has a concrete, per-run referent.
 //
+// The demo run and the daemon lifecycle use SEPARATE instance roots on purpose:
+// `goobers run` takes the same `scheduler/up.lock` single-instance lock that
+// `goobers up` does (cmd/goobers/run.go), so sharing one root lets the
+// subsequent `up` race the just-finished run's lock release under CI load. Two
+// roots remove that shared lock entirely.
+//
 // Everything is offline and deterministic, so it is safe to run as a required
 // CI job on ubuntu (see .github/workflows/ci.yml) and locally on macOS. It is a
 // portable Go program with no shell dependency, matching the repository's
@@ -83,43 +89,22 @@ func run(bin, outDir string) error {
 	}
 	fmt.Fprintf(&summary, "## Validated environment\n\n```\n%s```\n\n", env)
 
-	instance := filepath.Join(outDir, "instance")
-	_ = os.RemoveAll(instance)
-
-	// 2. Scaffold the credential-free deterministic demo instance.
-	if out, err := runGoobers(absBin, 30*time.Second, "init", "--demo", instance); err != nil {
-		return fmt.Errorf("init --demo failed: %w\n%s", err, out)
-	}
-
-	// 3. Drive the offline demo run to completion against the real binary.
-	runOut, err := runGoobers(absBin, 2*time.Minute, "run", "demo", instance)
-	if writeErr := os.WriteFile(filepath.Join(outDir, "demo-run.txt"), []byte(runOut), 0o644); writeErr != nil {
-		return fmt.Errorf("write demo-run.txt: %w", writeErr)
-	}
+	// 2 + 3. Offline demo run to completion (its own instance root).
+	runInstance := filepath.Join(outDir, "instance-run")
+	_ = os.RemoveAll(runInstance)
+	demoSummary, err := validateDemoRun(absBin, runInstance, outDir)
+	summary.WriteString(demoSummary)
 	if err != nil {
-		return fmt.Errorf("`goobers run demo` did not complete cleanly (exit non-zero): %w\n%s", err, runOut)
-	}
-	if !strings.Contains(runOut, "finished: phase=completed") {
-		return fmt.Errorf("`goobers run demo` did not reach phase=completed:\n%s", runOut)
-	}
-	m := runIDPattern.FindStringSubmatch(runOut)
-	if m == nil {
-		return fmt.Errorf("could not parse run id from `goobers run demo` output:\n%s", runOut)
-	}
-	runID := m[1]
-	fmt.Fprintf(&summary, "## Offline demo run (real binary)\n\nRun `%s` reached `phase=completed`.\n\n", runID)
-
-	// Capture the run journal as the execution record evidence.
-	traceOut, traceErr := runGoobers(absBin, 30*time.Second, "trace", runID, instance)
-	if traceErr != nil {
-		return fmt.Errorf("`goobers trace %s` failed: %w\n%s", runID, traceErr, traceOut)
-	}
-	if err := os.WriteFile(filepath.Join(outDir, "demo-run-trace.txt"), []byte(traceOut), 0o644); err != nil {
-		return fmt.Errorf("write demo-run-trace.txt: %w", err)
+		return err
 	}
 
-	// 4. Daemon lifecycle: start → status --daemon → SIGTERM → clean shutdown.
-	lifecycle, err := validateDaemonLifecycle(absBin, instance, outDir)
+	// 4. Daemon lifecycle on a SEPARATE instance root (no shared up.lock).
+	daemonInstance := filepath.Join(outDir, "instance-daemon")
+	_ = os.RemoveAll(daemonInstance)
+	if out, err := runGoobers(absBin, 30*time.Second, "init", "--demo", daemonInstance); err != nil {
+		return fmt.Errorf("init --demo (daemon instance) failed: %w\n%s", err, out)
+	}
+	lifecycle, err := validateDaemonLifecycle(absBin, daemonInstance, outDir)
 	summary.WriteString(lifecycle)
 	if err != nil {
 		return err
@@ -130,6 +115,41 @@ func run(bin, outDir string) error {
 		return fmt.Errorf("write summary.md: %w", err)
 	}
 	return nil
+}
+
+// validateDemoRun scaffolds the offline demo instance, drives `goobers run demo`
+// to phase=completed against the real binary, and captures the run journal.
+func validateDemoRun(bin, instance, outDir string) (string, error) {
+	var b strings.Builder
+	if out, err := runGoobers(bin, 30*time.Second, "init", "--demo", instance); err != nil {
+		return b.String(), fmt.Errorf("init --demo (run instance) failed: %w\n%s", err, out)
+	}
+
+	runOut, err := runGoobers(bin, 2*time.Minute, "run", "demo", instance)
+	if writeErr := os.WriteFile(filepath.Join(outDir, "demo-run.txt"), []byte(runOut), 0o644); writeErr != nil {
+		return b.String(), fmt.Errorf("write demo-run.txt: %w", writeErr)
+	}
+	if err != nil {
+		return b.String(), fmt.Errorf("`goobers run demo` did not complete cleanly (exit non-zero): %w\n%s", err, runOut)
+	}
+	if !strings.Contains(runOut, "finished: phase=completed") {
+		return b.String(), fmt.Errorf("`goobers run demo` did not reach phase=completed:\n%s", runOut)
+	}
+	m := runIDPattern.FindStringSubmatch(runOut)
+	if m == nil {
+		return b.String(), fmt.Errorf("could not parse run id from `goobers run demo` output:\n%s", runOut)
+	}
+	runID := m[1]
+	fmt.Fprintf(&b, "## Offline demo run (real binary)\n\nRun `%s` reached `phase=completed`.\n\n", runID)
+
+	traceOut, traceErr := runGoobers(bin, 30*time.Second, "trace", runID, instance)
+	if traceErr != nil {
+		return b.String(), fmt.Errorf("`goobers trace %s` failed: %w\n%s", runID, traceErr, traceOut)
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "demo-run-trace.txt"), []byte(traceOut), 0o644); err != nil {
+		return b.String(), fmt.Errorf("write demo-run-trace.txt: %w", err)
+	}
+	return b.String(), nil
 }
 
 // captureEnvironment records the concrete platform "supported" refers to.
@@ -158,8 +178,10 @@ func osRelease() string {
 }
 
 // validateDaemonLifecycle starts the daemon, confirms status, stops it with
-// SIGTERM, and confirms a clean shutdown that releases the lock. It returns a
-// markdown fragment for the summary regardless of outcome.
+// SIGTERM, and confirms a clean shutdown that releases the lock. It fails fast
+// (with the daemon log) if `up` exits before ever reporting running, rather than
+// waiting out the full poll deadline. It returns a markdown fragment for the
+// summary regardless of outcome.
 func validateDaemonLifecycle(bin, instance, outDir string) (string, error) {
 	var b strings.Builder
 	b.WriteString("## Daemon lifecycle (real binary + real SIGTERM)\n\n")
@@ -173,20 +195,29 @@ func validateDaemonLifecycle(bin, instance, outDir string) (string, error) {
 	if err := cmd.Start(); err != nil {
 		return b.String(), fmt.Errorf("start `goobers up`: %w", err)
 	}
-	// Guarantee the child never leaks if we return early.
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- cmd.Wait() }()
+	exited := false
 	defer func() {
-		if cmd.ProcessState == nil {
+		if !exited {
 			_ = cmd.Process.Signal(syscall.SIGKILL)
-			_, _ = cmd.Process.Wait()
+			<-waitErr
 		}
 		_ = os.WriteFile(filepath.Join(outDir, "daemon.log"), daemonOut.Bytes(), 0o644)
 	}()
 
-	// Poll status --daemon until the daemon reports running (or time out).
+	// Poll status --daemon until the daemon reports running, failing fast if the
+	// daemon process exits first (e.g. failed to acquire the lock).
 	var lastStatus string
 	running := false
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
+		select {
+		case err := <-waitErr:
+			exited = true
+			return b.String(), fmt.Errorf("`goobers up` exited before reporting running: %w\ndaemon log:\n%s", err, daemonOut.String())
+		default:
+		}
 		out, err := runGoobers(bin, 10*time.Second, "status", "--daemon", instance)
 		lastStatus = out
 		if err == nil && strings.Contains(out, "daemon running") {
@@ -205,9 +236,17 @@ func validateDaemonLifecycle(bin, instance, outDir string) (string, error) {
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		return b.String(), fmt.Errorf("send SIGTERM to daemon: %w", err)
 	}
-	exitErr := waitWithTimeout(cmd, 50*time.Second)
-	if exitErr != nil {
-		return b.String(), fmt.Errorf("daemon did not exit cleanly after SIGTERM: %w\ndaemon log:\n%s", exitErr, daemonOut.String())
+	select {
+	case err := <-waitErr:
+		exited = true
+		if err != nil {
+			return b.String(), fmt.Errorf("daemon did not exit cleanly after SIGTERM: %w\ndaemon log:\n%s", err, daemonOut.String())
+		}
+	case <-time.After(50 * time.Second):
+		_ = cmd.Process.Signal(syscall.SIGKILL)
+		<-waitErr
+		exited = true
+		return b.String(), fmt.Errorf("daemon did not exit within 50s after SIGTERM\ndaemon log:\n%s", daemonOut.String())
 	}
 	b.WriteString("- SIGTERM ⇒ graceful shutdown, exit code 0.\n")
 
@@ -218,24 +257,6 @@ func validateDaemonLifecycle(bin, instance, outDir string) (string, error) {
 	}
 	b.WriteString("- Post-stop `status --daemon` reports not running (lock released).\n")
 	return b.String(), nil
-}
-
-// waitWithTimeout waits for cmd to exit, requiring exit code 0, or returns an
-// error if it exits non-zero or does not exit within d.
-func waitWithTimeout(cmd *exec.Cmd, d time.Duration) error {
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			return fmt.Errorf("non-zero exit: %w", err)
-		}
-		return nil
-	case <-time.After(d):
-		_ = cmd.Process.Signal(syscall.SIGKILL)
-		<-done
-		return fmt.Errorf("timed out after %s waiting for graceful shutdown", d)
-	}
 }
 
 // runGoobers runs the binary with args under a timeout, returning combined
