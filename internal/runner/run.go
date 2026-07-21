@@ -803,7 +803,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: steps}, nil
 			}
 
-			gr, err, removeErr := r.evaluateGate(ctx, gateEval, ex, in, g, lastStage, lastResult, pointers, workspaceBranch)
+			gr, err, removeErr := r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, lastResult, pointers, workspaceBranch)
 			if removeErr != nil {
 				// Non-fatal (issue #136), same rationale as runTask's own
 				// worktree_remove_failed journaling — the teardown failure
@@ -1586,6 +1586,35 @@ func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt i
 	return stageHeartbeat{stop: stop, done: done}
 }
 
+type gateHeartbeatGoober struct {
+	goober  invoke.Goober
+	runner  *Runner
+	journal gateHeartbeatJournal
+	stage   string
+	attempt int
+}
+
+type gateHeartbeatJournal interface {
+	journalAppender
+	RepairAppendBoundary() error
+}
+
+func (g gateHeartbeatGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return g.goober.Invoke(ctx, env)
+}
+
+func (g gateHeartbeatGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	heartbeat := g.runner.startStageHeartbeat(g.journal, g.stage, g.attempt, journal.AttemptPolicy)
+	verdict, reviewErr := g.goober.Review(ctx, env)
+	heartbeatErr := heartbeat.Stop()
+	if heartbeatErr != nil {
+		if repairErr := g.journal.RepairAppendBoundary(); repairErr != nil {
+			heartbeatErr = fmt.Errorf("runner: repair journal after gate heartbeat failure for %q: %w", g.stage, errors.Join(heartbeatErr, repairErr))
+		}
+	}
+	return verdict, errors.Join(reviewErr, heartbeatErr)
+}
+
 func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact, removeErr error) error {
 	heartbeatErr := heartbeat.Stop()
 	if heartbeatErr != nil {
@@ -2104,7 +2133,7 @@ func taskEscalationTarget(machine *workflow.Machine, task apiv1.Task) string {
 // Provisioning one anyway wasted a git clone/checkout on every automated-gate
 // evaluation and turned a worktree-provisioning failure (disk, git) into a
 // failure of a gate that touches no filesystem whatsoever.
-func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string) (result gate.Result, err error, removeErr error) {
+func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string) (result gate.Result, err error, removeErr error) {
 	// Same drain contract as runTask: a gate attempt already underway when
 	// SIGTERM cancels the run-level ctx finishes and journals cleanly.
 	ctx = context.WithoutCancel(ctx)
@@ -2252,7 +2281,13 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 				Goober:                 ag,
 				activateAssetPathGuard: workspace.ActivateAssetPathGuard,
 			}
-			gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: agentInvocation}
+			gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: gateHeartbeatGoober{
+				goober:  agentInvocation,
+				runner:  r,
+				journal: jr,
+				stage:   g.Name,
+				attempt: gateEval.Attempts[g.Name] + 1,
+			}}
 		}
 	}
 
