@@ -449,6 +449,12 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 }
 
 func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord, seen map[stageKey]struct{}) error {
+	// Agentic gates use the same harness as tasks, so they also carry usage
+	// attributes. Gates have no stage-attempt identity and are intentionally
+	// outside the per-stage aggregates.
+	if span.Kind == telemetry.SpanKindGate {
+		return nil
+	}
 	input, hasInput, err := usageInt64(span, telemetry.AttrGenAIUsageInputTokens)
 	if err != nil {
 		return err

@@ -220,6 +220,86 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	}
 }
 
+func TestIngestSkipsAgenticGateUsage(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	dir := seedUsageRun(t, runsDir, fixtureRunID, "implement", "agent", fixtureStart,
+		usageAttemptFixture{duration: time.Millisecond, status: "success", metrics: map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens:  10,
+			telemetry.AttrGenAIUsageOutputTokens: 20,
+			telemetry.AttrUsageCostUSD:           0.25,
+		}})
+
+	eventsPath := filepath.Join(dir, fileEvents)
+	eventData, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventLines := strings.Split(strings.TrimSpace(string(eventData)), "\n")
+	eventLines[len(eventLines)-1] = eventLine(4, fixtureStart.Add(3*time.Millisecond),
+		`"type":"gate.evaluated","gate":"review","verdict":"approve","target":"agent"`)
+	eventLines = append(eventLines, eventLine(5, fixtureStart.Add(4*time.Millisecond),
+		`"type":"run.finished","status":"completed"`))
+	mustWriteFile(t, eventsPath, strings.Join(eventLines, "\n")+"\n")
+
+	gateSpan := telemetry.SpanRecord{
+		Schema:    telemetry.SpanSchema,
+		TraceID:   fixtureRunID,
+		SpanID:    "00000000000000ff",
+		Name:      "gate/review",
+		Kind:      telemetry.SpanKindGate,
+		StartTime: fixtureStart.Add(2 * time.Millisecond),
+		EndTime:   fixtureStart.Add(3 * time.Millisecond),
+		Status:    "ok",
+		Attributes: map[string]string{
+			telemetry.AttrStage:                  "review",
+			telemetry.AttrStageType:              telemetry.StageTypeGate,
+			telemetry.AttrGateRepassNumber:       "1",
+			telemetry.AttrGoober:                 "reviewer",
+			telemetry.AttrGenAIUsageInputTokens:  "100",
+			telemetry.AttrGenAIUsageOutputTokens: "200",
+			telemetry.AttrUsageCostUSD:           "1.5",
+		},
+	}
+	gateData, err := json.Marshal(gateSpan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spansPath := filepath.Join(dir, dirSpans, fileSpans)
+	spanData, err := os.ReadFile(spansPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, spansPath, string(spanData)+string(gateData)+"\n")
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(dir); err != nil {
+		t.Fatalf("IngestRun with agentic gate usage: %v", err)
+	}
+
+	attempts, err := db.StageAttempts(fixtureRunID)
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("StageAttempts: %v, %#v", err, attempts)
+	}
+	got := attempts[0]
+	if got.InputTokens == nil || *got.InputTokens != 10 ||
+		got.OutputTokens == nil || *got.OutputTokens != 20 ||
+		got.CostUSD == nil || *got.CostUSD != 0.25 {
+		t.Fatalf("task usage = %#v, want task metrics without gate usage", got)
+	}
+
+	var spanCount, usageCount int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM spans WHERE run_id = ?`, fixtureRunID).Scan(&spanCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM stage_usage WHERE run_id = ?`, fixtureRunID).Scan(&usageCount); err != nil {
+		t.Fatal(err)
+	}
+	if spanCount != 2 || usageCount != 1 {
+		t.Fatalf("ingested spans/usage = %d/%d, want 2/1", spanCount, usageCount)
+	}
+}
+
 func TestIngestRejectsInvalidUsageSpans(t *testing.T) {
 	tests := []struct {
 		name       string
