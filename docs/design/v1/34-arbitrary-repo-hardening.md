@@ -101,6 +101,12 @@ is **#38**.
 - Under a bigger backlog and a token budget shared across gaggles: fair scheduling so one
   hot gaggle can't starve others; harden backoff on secondary (abuse) limits; surface
   `RateLimitEvent`s to telemetry for observability.
+- Local fan-out uses work-conserving hierarchical round-robin: ready gaggles take one
+  dispatch turn per pass, while the existing starvation-aged workflow order applies
+  within each gaggle. With `G` continuously ready gaggles, a gaggle waits behind at most
+  `G-1` successful dispatches by other gaggles once shared capacity becomes available.
+  Gaggles without ready work are omitted rather than reserving a share, and `G=1`
+  preserves the existing single-gaggle order.
 - **Seams:** `providers/seams.go`, `providers/github_issues.go`, scheduler dispatch.
 - **Test plan:** simulated 429/Retry-After + secondary-limit responses → correct backoff;
   fairness test (two gaggles, constrained budget → neither starves beyond a bound);
