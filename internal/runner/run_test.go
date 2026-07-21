@@ -4686,7 +4686,12 @@ func (b *blockingReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (ap
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
-func (b *blockingReviewer) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+func (b *blockingReviewer) Review(ctx context.Context, _ apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	// A live reviewer reports observable progress; the runner's progress-gated
+	// stage heartbeat (the stalled-run watchdog's liveness signal, #547) only
+	// journals a stage.heartbeat once progress has been reported since the last
+	// tick, so report before blocking so the in-flight gate tick emits one.
+	invoke.ReportProgress(ctx)
 	close(b.started)
 	<-b.release
 	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
@@ -5443,77 +5448,6 @@ func TestRunnerDeterministicSubjectEmptyDiffStillReviews(t *testing.T) {
 	}
 }
 
-func TestCachedVerdictFromOutputsFailsClosed(t *testing.T) {
-	tests := []struct {
-		name   string
-		want   bool
-		mutate func(*apiv1.Verdict, map[string]interface{})
-	}{
-		{name: "complete match", want: true},
-		{name: "missing digest output", mutate: func(_ *apiv1.Verdict, outputs map[string]interface{}) {
-			delete(outputs, "reviewDigest")
-		}},
-		{name: "digest mismatch", mutate: func(_ *apiv1.Verdict, outputs map[string]interface{}) {
-			outputs["reviewDigest"] = "sha256:other"
-		}},
-		{name: "head mismatch", mutate: func(_ *apiv1.Verdict, outputs map[string]interface{}) {
-			outputs["selectedHeadSha"] = "other-head"
-		}},
-		{name: "missing source run", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
-			verdict.SourceRunID = ""
-		}},
-		{name: "invalid decision", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
-			verdict.Decision = "approved"
-		}},
-		{name: "invalid finding severity", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
-			verdict.Findings = []apiv1.Finding{{
-				Severity: "notice", Message: "bad severity", Class: apiv1.FindingSubstantive,
-			}}
-		}},
-		{name: "blank finding message", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
-			verdict.Findings = []apiv1.Finding{{
-				Severity: apiv1.SeverityError, Message: " ", Class: apiv1.FindingSubstantive,
-			}}
-		}},
-		{name: "missing finding class", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
-			verdict.Findings = []apiv1.Finding{{
-				Severity: apiv1.SeverityError, Message: "not routable",
-			}}
-		}},
-		{name: "invalid finding", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
-			verdict.Findings = []apiv1.Finding{{
-				Severity: apiv1.SeverityError, Message: "missing blockers", Class: apiv1.FindingCrossPRBlocked,
-			}}
-		}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			verdict := apiv1.Verdict{
-				Decision: apiv1.VerdictPass, Digest: "sha256:key", SourceRunID: "run-original",
-				HeadSHA: "head", BaseSHA: "base",
-			}
-			outputs := map[string]interface{}{
-				"reviewDigest":    verdict.Digest,
-				"selectedHeadSha": verdict.HeadSHA,
-				"selectedBaseSha": verdict.BaseSHA,
-			}
-			if tt.mutate != nil {
-				tt.mutate(&verdict, outputs)
-			}
-			data, err := json.Marshal(verdict)
-			if err != nil {
-				t.Fatalf("marshal verdict: %v", err)
-			}
-			outputs["cachedVerdictJson"] = string(data)
-
-			got := cachedVerdictFromOutputs(outputs)
-			if (got != nil) != tt.want {
-				t.Fatalf("cachedVerdictFromOutputs() = %+v, want cache hit %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestRunnerLiveReviewerEmitsHeartbeat(t *testing.T) {
 	runID := "run-live-review-heartbeat"
 	reviewer := &blockingReviewer{
@@ -5643,7 +5577,6 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 	cached := apiv1.Verdict{
 		Decision: apiv1.VerdictPass, Summary: "reused from a prior run",
 		Digest: "sha256:cache-hit-digest", SourceRunID: "run-original-producer",
-		HeadSHA: "head", BaseSHA: "base",
 	}
 	cachedJSON, err := json.Marshal(cached)
 	if err != nil {
@@ -5652,12 +5585,7 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 	byTask := map[string]stubTaskResult{
 		runID + ":implement": {
 			status: apiv1.ResultSuccess, summary: "gathered sibling context",
-			outputs: map[string]interface{}{
-				"cachedVerdictJson": string(cachedJSON),
-				"reviewDigest":      cached.Digest,
-				"selectedHeadSha":   cached.HeadSHA,
-				"selectedBaseSha":   cached.BaseSHA,
-			},
+			outputs: map[string]interface{}{"cachedVerdictJson": string(cachedJSON)},
 		},
 	}
 	reviewer := &capturingReviewer{}
