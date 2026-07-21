@@ -100,6 +100,22 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Docs write-boundary (#1016). The docs-updater analog of the config
+	// boundary above: opt-in (confineToDocsRoots=true) and no-op by default, so
+	// every other workflow is unaffected. When set, every file this run's branch
+	// changes must be within at least one declared in-repo docs root (the
+	// ordered WorkflowSpec.docsRoots list, passed through as a comma/newline
+	// `docsRoots` input) — else the cycle aborts CLOSED before the PR opens, so a
+	// docs run can never open a PR touching code. An empty docsRoots list with
+	// the boundary enabled fails closed (configboundary.ErrNoDocsRoots), never
+	// silently allowing the whole tree.
+	if providerInput("confineToDocsRoots", "") == "true" {
+		if err := confineDiffToDocsRoots(base, parseDocsRoots(providerInput("docsRoots", ""))); err != nil {
+			pf(stderr, "error: docs write-boundary: %v\n", err)
+			return 1
+		}
+	}
+
 	prReq := providers.PullRequestRequest{Repository: repo, Title: title, Body: body, Head: head, Base: base}
 	if providerInput("runIdFooter", "true") == "true" {
 		prReq.RunID = runID

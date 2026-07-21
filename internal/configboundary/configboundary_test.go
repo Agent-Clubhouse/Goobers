@@ -107,3 +107,86 @@ func TestNormalizeConfigRootRefusesBogusRoots(t *testing.T) {
 		t.Errorf("normalizeConfigRoot(%q) = %q; want %q", "selfhost/", got, "selfhost")
 	}
 }
+
+// TestConfineToAnyAcceptsPathsInAnyRoot: a change under any one of several
+// declared docs roots is allowed — files can land in docs/, docs/design/, or a
+// root-level doc file, and all pass.
+func TestConfineToAnyAcceptsPathsInAnyRoot(t *testing.T) {
+	roots := []string{"docs", "docs/design", "README.md", "ARCHITECTURE.md"}
+	inside := []string{
+		"docs/overview.md",
+		"docs/design/architecture.md",
+		"README.md",
+		"ARCHITECTURE.md",
+	}
+	if err := ConfineToAny(roots, inside); err != nil {
+		t.Fatalf("ConfineToAny(%v, %v) = %v; want nil", roots, inside, err)
+	}
+}
+
+// TestConfineToAnyRejectsPathOutsideEveryRoot: a code path is refused exactly as
+// the single-root Confine refuses an out-of-config-root path — one out-of-roots
+// file rejects the whole set.
+func TestConfineToAnyRejectsPathOutsideEveryRoot(t *testing.T) {
+	roots := []string{"docs", "README.md"}
+	for _, p := range []string{
+		"internal/runner/run.go",
+		".github/workflows/ci.yml",
+		"docs-evil/secrets.md", // prefix-only collision must not pass
+		"../outside.md",
+		"/etc/passwd",
+	} {
+		if err := ConfineToAny(roots, []string{p}); !errors.Is(err, ErrOutsideConfigRoot) {
+			t.Errorf("ConfineToAny(%v, %q) = %v; want ErrOutsideConfigRoot", roots, p, err)
+		}
+	}
+	// A mixed set with one escaping path is rejected as a whole.
+	if err := ConfineToAny(roots, []string{"docs/ok.md", "internal/x.go"}); !errors.Is(err, ErrOutsideConfigRoot) {
+		t.Errorf("mixed set = %v; want ErrOutsideConfigRoot", err)
+	}
+}
+
+// TestConfineToAnyEmptyRootsFailsClosed: unlike Confine's empty configRoot
+// (whole-repo), no docs roots at all is a misconfiguration and refuses every
+// change, and a set of only bogus roots collapses to the same fail-closed state
+// rather than silently widening to whole-repo.
+func TestConfineToAnyEmptyRootsFailsClosed(t *testing.T) {
+	if err := ConfineToAny(nil, []string{"docs/x.md"}); !errors.Is(err, ErrNoDocsRoots) {
+		t.Errorf("ConfineToAny(nil, ...) = %v; want ErrNoDocsRoots", err)
+	}
+	if err := ConfineToAny([]string{"", "  ", "/", ".."}, []string{"docs/x.md"}); !errors.Is(err, ErrNoDocsRoots) {
+		t.Errorf("ConfineToAny(all-bogus, ...) = %v; want ErrNoDocsRoots", err)
+	}
+	// A bogus root alongside a real one does not widen the boundary: the real
+	// root still confines, and a path outside it is still refused.
+	if err := ConfineToAny([]string{"", "docs"}, []string{"docs/x.md"}); err != nil {
+		t.Errorf("ConfineToAny([\"\",\"docs\"], in-root) = %v; want nil", err)
+	}
+	if err := ConfineToAny([]string{"", "docs"}, []string{"internal/x.go"}); !errors.Is(err, ErrOutsideConfigRoot) {
+		t.Errorf("ConfineToAny([\"\",\"docs\"], out-of-root) = %v; want ErrOutsideConfigRoot", err)
+	}
+}
+
+// TestConfineToAnyEmptyChangeSetIsAllowed: no changes, nothing to confine — even
+// with roots declared.
+func TestConfineToAnyEmptyChangeSetIsAllowed(t *testing.T) {
+	if err := ConfineToAny([]string{"docs"}, nil); err != nil {
+		t.Fatalf("ConfineToAny(docs, nil) = %v; want nil", err)
+	}
+}
+
+// TestValidateDocsRoot: the config-load lexical check accepts a real
+// repo-relative subtree/file and rejects empty, absolute, whole-repo, and
+// escaping roots — each with an ErrInvalidDocsRoot the caller surfaces verbatim.
+func TestValidateDocsRoot(t *testing.T) {
+	for _, ok := range []string{"docs", "docs/design", "README.md", "path/to/ARCHITECTURE.md", "docs/"} {
+		if err := ValidateDocsRoot(ok); err != nil {
+			t.Errorf("ValidateDocsRoot(%q) = %v; want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "   ", "/abs/docs", ".", "..", "../up", "docs/../.."} {
+		if err := ValidateDocsRoot(bad); !errors.Is(err, ErrInvalidDocsRoot) {
+			t.Errorf("ValidateDocsRoot(%q) = %v; want ErrInvalidDocsRoot", bad, err)
+		}
+	}
+}

@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/configboundary"
 	"github.com/goobers/goobers/internal/gooberassets"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -629,6 +630,18 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
 
 	if w.Spec.Start != "" && !states[w.Spec.Start] {
 		r.add(Error, file, "Workflow", w.Name, "start state %q is not a defined task or gate", w.Spec.Start)
+	}
+
+	// Docs-location surface (#1016): a declared docs root must be a usable
+	// repo-relative containment root. This is the config-load lexical half —
+	// empty / absolute / escaping / whole-repo roots are rejected here, with the
+	// same clear message the runtime boundary would carry. A root's existence in
+	// the repository is a separate filesystem check the `goobers validate` CLI
+	// layers on top (validate.go), since api-level validation has no repo tree.
+	for i, dr := range w.Spec.DocsRoots {
+		if err := configboundary.ValidateDocsRoot(dr); err != nil {
+			r.add(Error, file, "Workflow", w.Name, "spec.docsRoots[%d]: %v", i, err)
+		}
 	}
 
 	for _, t := range w.Spec.Tasks {

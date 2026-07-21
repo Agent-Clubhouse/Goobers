@@ -123,6 +123,17 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// Docs-location existence (#1016). The config-load pass (api/validate) has
+	// already rejected empty/absolute/escaping docs roots lexically; this adds
+	// the filesystem half — a declared root that does not exist in the
+	// repository — which api-level validation cannot do because it has no repo
+	// tree. Resolved against the git working tree containing the config; skipped
+	// (not failed) when the config is not inside a git repository, since there is
+	// then no tree to check against.
+	if !checkDocsRootsExist(root, set.Workflows, stdout) {
+		return 1
+	}
+
 	if *checkHarness {
 		if !checkHarnesses(set.Goobers, stdout, stderr) {
 			return 1
@@ -134,6 +145,51 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
 		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
 	return 0
+}
+
+// checkDocsRootsExist verifies every workflow-declared docs root exists in the
+// repository (#1016). base is the user-supplied validate path (a config source
+// tree or an instance root); the repository is its containing git working tree.
+// It returns false (failing validation) when a declared root is missing, and
+// true — skipping the check with a note — when base is not inside a git
+// repository, since the lexical config-load checks already ran and there is no
+// tree here to resolve roots against.
+func checkDocsRootsExist(base string, workflows []apiv1.Workflow, stdout io.Writer) bool {
+	type declaredRoot struct{ workflow, root string }
+	var declared []declaredRoot
+	for _, w := range workflows {
+		for _, dr := range w.Spec.DocsRoots {
+			declared = append(declared, declaredRoot{workflow: w.Name, root: dr})
+		}
+	}
+	if len(declared) == 0 {
+		return true
+	}
+	repoRoot, err := gitToplevel(base)
+	if err != nil {
+		pf(stdout, "DOCSROOTS: skipped existence check (%s is not inside a git repository)\n", base)
+		return true
+	}
+	ok := true
+	for _, d := range declared {
+		clean := filepath.Clean(strings.TrimSpace(d.root))
+		full := filepath.Join(repoRoot, clean)
+		if _, statErr := os.Stat(full); statErr != nil {
+			pf(stdout, "DOCSROOTS Workflow/%s: declared docs root %q does not exist in the repository (%s)\n",
+				d.workflow, d.root, repoRoot)
+			ok = false
+		}
+	}
+	return ok
+}
+
+func gitToplevel(dir string) (string, error) {
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 const (

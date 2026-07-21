@@ -258,6 +258,122 @@ func TestWorkflowSchemaValidatesContinueOnError(t *testing.T) {
 	}
 }
 
+func TestWorkflowSchemaAcceptsDocsRoots(t *testing.T) {
+	v := newV(t)
+	workflow := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"metadata": {"name": "docs-flow"},
+		"spec": {
+			"gaggle": "example",
+			"triggers": [{"type": "manual"}],
+			"start": "act",
+			"docsRoots": ROOTS,
+			"tasks": [{
+				"name": "act",
+				"type": "deterministic",
+				"goal": "Act.",
+				"run": {"command": ["true"]}
+			}]
+		}
+	}`
+	for _, tc := range []struct {
+		name    string
+		roots   string
+		wantErr bool
+	}{
+		{name: "valid roots", roots: `["docs", "docs/design", "README.md"]`},
+		{name: "empty-string item rejected", roots: `["docs", ""]`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := v.ValidateJSON("workflow.schema.json", []byte(strings.Replace(workflow, "ROOTS", tc.roots, 1)))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected schema validation to pass, got %v", err)
+			}
+		})
+	}
+}
+
+// TestWorkflowDocsRootsSemanticValidation covers the config-load lexical check
+// (#1016): roots that pass the schema (non-empty strings) but are not usable
+// containment roots — absolute, escaping, whole-repo — are rejected with a
+// docsRoots error, while genuine repo-relative roots pass.
+func TestWorkflowDocsRootsSemanticValidation(t *testing.T) {
+	gaggleYAML := `apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: web
+    branch: main
+    connectionRef: c
+  backlog:
+    provider: github
+    project: acme/web
+    labels: [goobers]
+    connectionRef: c
+  isolation:
+    namespace: gaggle-example
+`
+	workflowTmpl := `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: docs-updater
+spec:
+  gaggle: example
+  triggers:
+    - type: manual
+  start: act
+  docsRoots: ROOTS
+  tasks:
+    - name: act
+      type: deterministic
+      goal: Act.
+      run:
+        command: ["true"]
+`
+	for _, tc := range []struct {
+		name        string
+		roots       string
+		wantDocsErr bool
+	}{
+		{name: "valid", roots: `["docs", "docs/design", "README.md"]`},
+		{name: "absolute", roots: `["/etc/docs"]`, wantDocsErr: true},
+		{name: "escaping", roots: `[".."]`, wantDocsErr: true},
+		{name: "whole-repo", roots: `["."]`, wantDocsErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "gaggle.yaml"), []byte(gaggleYAML), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			wf := strings.Replace(workflowTmpl, "ROOTS", tc.roots, 1)
+			if err := os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(wf), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			var docsErr bool
+			for _, issue := range report.Issues {
+				if issue.Severity == Error && strings.Contains(issue.Message, "docsRoots") {
+					docsErr = true
+				}
+			}
+			if docsErr != tc.wantDocsErr {
+				t.Fatalf("docsRoots error = %v, want %v; issues = %v", docsErr, tc.wantDocsErr, report.Issues)
+			}
+		})
+	}
+}
+
 func TestConfigBadReportsCrossRefErrors(t *testing.T) {
 	v := newV(t)
 	report, err := v.ValidateDir("testdata/config-bad")

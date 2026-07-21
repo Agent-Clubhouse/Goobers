@@ -27,6 +27,20 @@ func confineDiffToConfigRoot(base, configRoot string) error {
 	return configboundary.Confine(configRoot, changed)
 }
 
+// confineDiffToDocsRoots enforces the docs-updater write-boundary (#1016) on the
+// open-pr path: it lists every file this run's branch changes relative to base
+// and refuses the cycle unless each is within one of the declared in-repo docs
+// roots. Like confineDiffToConfigRoot it runs in the stage's worktree CWD and
+// fails CLOSED — an inability to compute the diff refuses the PR, and an empty
+// roots set is itself a refusal (configboundary.ErrNoDocsRoots).
+func confineDiffToDocsRoots(base string, docsRoots []string) error {
+	changed, err := changedFilesVsBase(base)
+	if err != nil {
+		return fmt.Errorf("compute changed files vs %q: %w", base, err)
+	}
+	return configboundary.ConfineToAny(docsRoots, changed)
+}
+
 // changedFilesVsBase returns the repo-relative paths this branch changes vs base
 // (three-dot: the diff since the merge-base, i.e. the PR's file set).
 // --no-renames so a file moved out of the config root surfaces as its new,

@@ -46,6 +46,11 @@
           }
         },
         "start": { "type": "string", "minLength": 1 },
+        "docsRoots": {
+          "type": "array",
+          "description": "In-repo documentation roots this workflow keeps current (docs-updater, #472/#1016). Ordered repo-relative paths (files or directories); the run's writes are confined to these roots. Each must be non-empty and must not escape the repository.",
+          "items": { "type": "string", "minLength": 1 }
+        },
         "tasks": { "type": "array", "items": { "$ref": "#/$defs/task" } },
         "gates": { "type": "array", "items": { "$ref": "#/$defs/gate" } }
       }

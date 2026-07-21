@@ -857,6 +857,11 @@ func (in *WorkflowSpec) DeepCopyInto(out *WorkflowSpec) {
 		}
 	}
 	out.Readiness = in.Readiness
+	if in.DocsRoots != nil {
+		in, out := &in.DocsRoots, &out.DocsRoots
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Tasks != nil {
 		in, out := &in.Tasks, &out.Tasks
 		*out = make([]Task, len(*in))
