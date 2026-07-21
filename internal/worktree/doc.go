@@ -20,4 +20,13 @@
 // (goobers/<workflow>/<run-id>) is supported via CreateOptions.Branch, but
 // pushing that branch through the credential seam (#14) is the caller's
 // responsibility once that seam exists.
+//
+// Cross-platform note (#643): every managed mirror is pinned to a deterministic
+// git config (core.autocrlf=false, core.longpaths=true — see managedGitConfig),
+// chosen to be behavior-identical on darwin/linux and to make a Windows checkout
+// deterministic rather than dependent on the host's ambient git config. Symlinks
+// a symlink-less platform (Windows without Developer Mode) flattens to plain
+// files are detected and surfaced as Worktree.Warnings rather than failing the
+// run or passing silently. The full audit, path-length budget, and Windows
+// prerequisites are in docs/guides/windows-worktree-notes.md.
 package worktree

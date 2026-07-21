@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -36,6 +37,20 @@ type Manager struct {
 
 	mu        sync.Mutex // guards repoLocks
 	repoLocks map[string]*sync.Mutex
+
+	// symlinkFallback is true on platforms where git checks a repo's symlinks
+	// out as plain text files holding the link target rather than as real
+	// symlinks — the Windows default (core.symlinks=false), where symlink
+	// creation needs Developer Mode or elevation. When set, Create scans a
+	// freshly provisioned worktree for symlinks that were flattened this way
+	// and records a per-run warning (see checkSymlinkSupport) so the condition
+	// surfaces rather than corrupting a run silently. Defaults to
+	// runtime.GOOS == "windows"; darwin/linux materialize symlinks natively, so
+	// the scan never runs there and behavior is unchanged. Overridable in tests.
+	symlinkFallback bool
+	// lstat abstracts os.Lstat so the symlink-flattening scan is testable off
+	// Windows. Defaults to os.Lstat.
+	lstat func(string) (os.FileInfo, error)
 }
 
 // defaultRunBranchNamespace mirrors providers.DefaultBranchNamespace. It is
@@ -112,6 +127,8 @@ func NewManager(root string, opts ...ManagerOption) (*Manager, error) {
 		Root:                abs,
 		runBranchNamespaces: []string{defaultRunBranchNamespace},
 		repoLocks:           make(map[string]*sync.Mutex),
+		symlinkFallback:     runtime.GOOS == "windows",
+		lstat:               os.Lstat,
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -196,6 +213,9 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 			_ = os.RemoveAll(dir) // don't leave a partial clone masquerading as a valid one
 			return "", fmt.Errorf("worktree: clone %s: %w", repoURL, err)
 		}
+		if err := ensureManagedGitConfig(ctx, dir); err != nil {
+			return "", err
+		}
 		if err := ensureScratchExcluded(ctx, dir); err != nil {
 			return "", err
 		}
@@ -219,10 +239,49 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 	}
 	// A pre-existing mirror (cloned before #240) also needs the scratch exclude;
 	// it is idempotent, so refreshing it on every WorkingCopy is safe.
+	if err := ensureManagedGitConfig(ctx, dir); err != nil {
+		return "", err
+	}
 	if err := ensureScratchExcluded(ctx, dir); err != nil {
 		return "", err
 	}
 	return dir, nil
+}
+
+// managedGitConfig is the explicit per-mirror git config the worktree layer sets
+// so a run's checkout behaves deterministically regardless of the host's ambient
+// or installer-provided git configuration (#643). A linked worktree inherits the
+// mirror's shared config, so setting these on the bare mirror covers every
+// worktree branched from it — including the tree materialization that
+// `git worktree add` performs.
+//
+// Both values are chosen to be behavior-identical on darwin/linux (where git's
+// own defaults already match) and to matter only on Windows:
+//   - core.autocrlf=false: never rewrite line endings on checkin/checkout. The
+//     unix default is already false; the Git-for-Windows installer commonly sets
+//     it to true globally, which would give a managed working copy phantom
+//     whole-file CRLF diffs. Pinning it false makes the checkout deterministic
+//     and defers all line-ending policy to the target repo's own .gitattributes.
+//   - core.longpaths=true: let git operate on paths longer than the Win32
+//     MAX_PATH (260) limit, which the nested workcopies/<key>/runs/<runId>-<stage>
+//     scheme plus a target repo's own deep paths can exceed. A no-op off Windows.
+var managedGitConfig = []struct{ key, value string }{
+	{"core.autocrlf", "false"},
+	{"core.longpaths", "true"},
+}
+
+// ensureManagedGitConfig sets managedGitConfig on the mirror at dir. `git config`
+// with a plain key/value is idempotent and cheap, so applying it on every
+// WorkingCopy (both the first clone and every later fetch) is safe and lets a
+// mirror created before this policy existed self-heal on its next use — the same
+// rationale ensureScratchExcluded relies on.
+func ensureManagedGitConfig(ctx context.Context, dir string) error {
+	for _, c := range managedGitConfig {
+		if err := runGit(ctx, dir, "config", c.key, c.value); err != nil {
+			return fmt.Errorf("worktree: set %s in %s: %w", c.key, dir, err)
+		}
+	}
+	return nil
 }
 
 // scratchExcludePattern is the harness scratch dir (internal/harness writes
@@ -284,6 +343,85 @@ func ensureScratchExcluded(ctx context.Context, dir string) error {
 		return fmt.Errorf("worktree: write info/exclude: %w", err)
 	}
 	return nil
+}
+
+// symlinkGitMode is git's index mode for a symbolic link (as opposed to
+// 100644/100755 for regular files and 160000 for a gitlink/submodule).
+const symlinkGitMode = "120000"
+
+// checkSymlinkSupport reports per-run warnings for symlinks in the worktree at
+// path that this platform could not materialize as real symlinks. On platforms
+// that check symlinks out natively (darwin/linux — symlinkFallback false) it
+// returns nil without touching git, so it is free and behavior-neutral there.
+//
+// On a symlink-fallback platform (Windows default: core.symlinks=false) git
+// writes each symlink out as an ordinary text file containing the link target,
+// which looks like real content to an agent and to `git status` — a corruption
+// that would otherwise pass silently. Surfacing it as a warning is the decided
+// policy (#643): Goobers does not fail the run (a repo's symlinks are often
+// incidental to the change at hand), but it must not hide the degradation.
+func (m *Manager) checkSymlinkSupport(ctx context.Context, path string) ([]string, error) {
+	if !m.symlinkFallback {
+		return nil, nil
+	}
+	entries, err := symlinkIndexEntries(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	flattened := flattenedSymlinks(path, entries, m.lstat)
+	if len(flattened) == 0 {
+		return nil, nil
+	}
+	return []string{fmt.Sprintf(
+		"%d symlink(s) in this repo were checked out as plain files because this "+
+			"platform lacks symlink support (git core.symlinks=false, the Windows "+
+			"default without Developer Mode): %s. Their working-tree contents are the "+
+			"link target text, not the linked file — edits and diffs involving them "+
+			"may be wrong.",
+		len(flattened), strings.Join(flattened, ", "),
+	)}, nil
+}
+
+// symlinkIndexEntries returns the repo-relative paths of every entry checked
+// into the worktree at path as a symlink (git index mode 120000). `git ls-files
+// -s` prints "<mode> <sha> <stage>\t<path>" per entry.
+func symlinkIndexEntries(ctx context.Context, path string) ([]string, error) {
+	out, err := gitOutput(ctx, path, "ls-files", "-s")
+	if err != nil {
+		return nil, fmt.Errorf("worktree: list index entries in %s: %w", path, err)
+	}
+	var links []string
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, symlinkGitMode+" ") {
+			continue
+		}
+		tab := strings.IndexByte(line, '\t')
+		if tab < 0 {
+			continue
+		}
+		links = append(links, line[tab+1:])
+	}
+	return links, nil
+}
+
+// flattenedSymlinks returns the subset of symlinkPaths (repo-relative, from the
+// index) that did NOT materialize on disk as real symlinks — i.e. git wrote them
+// as plain files because the platform lacks symlink support. lstat abstracts
+// os.Lstat so the classification is testable off Windows. A path that cannot be
+// lstat'd is skipped rather than reported: absence is a different condition (an
+// excluded or not-yet-written path), not a flattened symlink.
+func flattenedSymlinks(root string, symlinkPaths []string, lstat func(string) (os.FileInfo, error)) []string {
+	var flattened []string
+	for _, rel := range symlinkPaths {
+		fi, err := lstat(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			flattened = append(flattened, rel)
+		}
+	}
+	return flattened
 }
 
 // bareRepoSafeArgs prepends `-c safe.bareRepository=all` to args (#247): under

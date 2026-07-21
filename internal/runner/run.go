@@ -1989,6 +1989,16 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		removeErr = workspace.Remove(ctx)
 	}()
 
+	// Surface any non-fatal worktree-provisioning warnings (today: symlinks a
+	// symlink-less platform flattened to plain files, #643) into the run journal
+	// as a runner.annotation — non-normative, excluded from conformance, but
+	// operator-visible — rather than letting the degradation pass silently.
+	if ev, ok := worktreeWarningEvent(t.Name, workspace.worktree); ok {
+		if err := jr.Append(ev); err != nil {
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: journal worktree warnings: %w", t.Name, err), nil
+		}
+	}
+
 	for inputKey, outputKey := range t.InputsFrom {
 		v, ok := upstreamResult.Outputs[outputKey]
 		if !ok {
@@ -2589,6 +2599,24 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 	default:
 		return nil, fmt.Errorf("unknown workspace mode %q", mode)
 	}
+}
+
+// worktreeWarningEvent builds the runner.annotation journal event that surfaces
+// a provisioned worktree's non-fatal warnings (#643 symlink flattening today),
+// returning ok=false when there is nothing to report. The payload lives under
+// Runner, which is excluded from conformance, so recording it never perturbs a
+// run's normative event stream — it is purely an operator-visible note. Split
+// out from dispatchTask so the event shape is unit-testable without a live
+// worktree provision.
+func worktreeWarningEvent(stage string, wt *worktree.Worktree) (journal.Event, bool) {
+	if wt == nil || len(wt.Warnings) == 0 {
+		return journal.Event{}, false
+	}
+	return journal.Event{
+		Type:   journal.EventRunnerAnnotation,
+		Stage:  stage,
+		Runner: map[string]any{"kind": "worktree.warnings", "warnings": wt.Warnings},
+	}, true
 }
 
 func machineUsesRepo(machine *workflow.Machine) bool {
