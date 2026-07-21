@@ -325,6 +325,10 @@ func init() {
 			withSynopsis(synopsisByID["merge-queue-poll"]).
 			withHelp("watch an enqueued PR until merged or evicted (a workflow stage)", mergeQueuePollHelp).
 			withExamples("goobers merge-queue-poll"),
+		command("reconcile-post-merge", apicontract.ActionWorkflowExecution, runReconcilePostMerge).
+			withSynopsis(synopsisByID["reconcile-post-merge"]).
+			withHelp("reconcile late merge-queue merges (a workflow stage)", reconcilePostMergeHelp).
+			withExamples("goobers reconcile-post-merge"),
 		command("post-merge", apicontract.ActionWorkflowExecution, runPostMerge).
 			withSynopsis(synopsisByID["post-merge"]).
 			withHelp("post-merge fan-out + close the referenced issue (a workflow stage)", postMergeHelp).

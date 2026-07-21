@@ -57,6 +57,8 @@ Usage:
   goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
   goobers record-merge-refusal           record a merge refusal and demote a persistently-stuck lander (a workflow stage)
   goobers merge-queue-poll               watch an enqueued pull request until the merge queue merges or evicts it, labeling an eviction for remediation (a workflow stage)
+  goobers reconcile-post-merge [--max N] [--lookback D]
+                                reconcile bounded late merge-queue merges through post-merge bookkeeping (a workflow stage)
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
   goobers telemetry-query [--window <d>] [--aggregate <name>] [--threshold <k=v>] [--format candidate-findings]
                                 emit versioned candidate findings (a connector stage)
@@ -148,6 +150,8 @@ Usage:
   goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
   goobers record-merge-refusal           record a merge refusal and demote a persistently-stuck lander (a workflow stage)
   goobers merge-queue-poll               watch an enqueued pull request until the merge queue merges or evicts it, labeling an eviction for remediation (a workflow stage)
+  goobers reconcile-post-merge [--max N] [--lookback D]
+                                reconcile bounded late merge-queue merges through post-merge bookkeeping (a workflow stage)
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
   goobers telemetry-query [--window <d>] [--aggregate <name>] [--threshold <k=v>] [--format candidate-findings]
                                 emit versioned candidate findings (a connector stage)
@@ -600,6 +604,17 @@ The default batch is 25 and the hard ceiling is 100 candidates. Task inputs dele
 maxBranches, minimumAge, and after provide the same workflow-stage
 configuration surface. Exit codes: 0 = sweep completed, 1 = business or
 provider error, 2 = usage/IO error.
+
+### reconcile-post-merge
+Usage: goobers reconcile-post-merge [--max N] [--lookback D] [path]
+
+Inspect a bounded batch of merge-queue entries whose queue-watch stage
+timed out. A pull request that has since merged receives branch cleanup,
+issue close-out, and sibling fan-out through the normal post-merge path;
+an open or unmerged pull request remains pending. Completed entries are
+durably skipped on later runs. Task inputs maxPullRequests and lookback
+set the same bounds (defaults: 10 and 168h; hard maximum: 100).
+Exit codes: 0 = sweep completed, 1 = business/provider error, 2 = usage error.
 
 ### record-merge-refusal
 Usage: goobers record-merge-refusal [path]

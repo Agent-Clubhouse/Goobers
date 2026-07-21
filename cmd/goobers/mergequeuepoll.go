@@ -180,6 +180,10 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		if time.Now().After(deadline) {
+			if err := recordPostMergeTimeout(root, repo, pullNumber, time.Now()); err != nil {
+				pf(stderr, "error: record timed-out merge queue entry for reconciliation: %v\n", err)
+				return 1
+			}
 			if err := writeQueueResult(resultFile, pullNumber, "timeout", "", nil, ""); err != nil {
 				pf(stderr, "error: %v\n", err)
 				return 1

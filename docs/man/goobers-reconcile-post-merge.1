@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RECONCILE POST MERGE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers reconcile-post-merge \- reconcile late merge-queue merges (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers reconcile-post-merge\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers reconcile-post-merge [--max N] [--lookback D] [path]
+
+Inspect a bounded batch of merge-queue entries whose queue-watch stage
+timed out. A pull request that has since merged receives branch cleanup,
+issue close-out, and sibling fan-out through the normal post-merge path;
+an open or unmerged pull request remains pending. Completed entries are
+durably skipped on later runs. Task inputs maxPullRequests and lookback
+set the same bounds (defaults: 10 and 168h; hard maximum: 100).
+Exit codes: 0 = sweep completed, 1 = business/provider error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers reconcile-post-merge
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

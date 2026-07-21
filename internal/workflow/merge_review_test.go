@@ -64,6 +64,29 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if err != nil {
 				t.Fatalf("compile workflow: %v", err)
 			}
+			if w.Spec.Start != "reconcile-post-merge" {
+				t.Fatalf("workflow start = %q, want reconcile-post-merge", w.Spec.Start)
+			}
+			reconcile, ok := m.Task("reconcile-post-merge")
+			if !ok {
+				t.Fatal("reconcile-post-merge task not found")
+			}
+			if reconcile.Run == nil || !reflect.DeepEqual(reconcile.Run.Command, []string{"goobers", "reconcile-post-merge"}) {
+				t.Errorf("reconcile-post-merge command = %+v, want [goobers reconcile-post-merge]", reconcile.Run)
+			}
+			if reconcile.Inputs["resultFile"] != "reconcile-post-merge-result.json" {
+				t.Errorf("reconcile-post-merge resultFile = %q, want reconcile-post-merge-result.json", reconcile.Inputs["resultFile"])
+			}
+			if reconcile.Next != "pr-select" {
+				t.Errorf("reconcile-post-merge.next = %q, want pr-select", reconcile.Next)
+			}
+			if !reconcile.ContinueOnError {
+				t.Error("reconcile-post-merge must not block the primary review path when its bounded sweep fails")
+			}
+			wantReconcileCapabilities := []string{"github:pr:write", "github:issues:write", "github:branch:delete"}
+			if !reflect.DeepEqual(reconcile.Capabilities, wantReconcileCapabilities) {
+				t.Errorf("reconcile-post-merge capabilities = %v, want %v", reconcile.Capabilities, wantReconcileCapabilities)
+			}
 
 			prSelect, ok := m.Task("pr-select")
 			if !ok {
@@ -270,6 +293,9 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			}
 			if postMerge.Run == nil || !reflect.DeepEqual(postMerge.Run.Command, []string{"goobers", "post-merge"}) {
 				t.Errorf("post-merge command = %+v, want [goobers post-merge]", postMerge.Run)
+			}
+			if postMerge.Inputs["resultFile"] != "post-merge-result.json" {
+				t.Errorf("post-merge resultFile = %q, want post-merge-result.json", postMerge.Inputs["resultFile"])
 			}
 			wantPostMergeCapabilities := []string{"github:pr:write", "github:issues:write"}
 			if !reflect.DeepEqual(postMerge.Capabilities, wantPostMergeCapabilities) {

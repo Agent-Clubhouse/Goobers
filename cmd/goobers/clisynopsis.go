@@ -46,6 +46,7 @@ var synopsisByID = map[string]string{
 	"issue-close-out":        "  goobers issue-close-out                comment + close out the claimed issue (a workflow stage)\n",
 	"merge-pr":               "  goobers merge-pr                       conjunctive auto-merge \u2014 verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)\n",
 	"merge-queue-poll":       "  goobers merge-queue-poll               watch an enqueued pull request until the merge queue merges or evicts it, labeling an eviction for remediation (a workflow stage)\n",
+	"reconcile-post-merge":   "  goobers reconcile-post-merge [--max N] [--lookback D]\n                                reconcile bounded late merge-queue merges through post-merge bookkeeping (a workflow stage)\n",
 	"record-merge-refusal":   "  goobers record-merge-refusal           record a merge refusal and demote a persistently-stuck lander (a workflow stage)\n",
 	"post-merge":             "  goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)\n",
 	"telemetry-query":        "  goobers telemetry-query [--window <d>] [--aggregate <name>] [--threshold <k=v>] [--format candidate-findings]\n                                emit versioned candidate findings (a connector stage)\n",

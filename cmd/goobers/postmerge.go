@@ -7,6 +7,7 @@ import (
 	"io"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
@@ -145,39 +146,80 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
-	if err != nil {
-		return failProviderStage(stderr, "poll merged pull request", err, "")
-	}
 
+	var poll providers.PullRequestPollResult
+	var pollErr error
+	var postMergeErrs []error
+	alreadyCompleted := false
+	err = withPostMergeReconcileLock(root, func(ledgerPath string) error {
+		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+		if err != nil {
+			return err
+		}
+		if postMergeReconciliationCompleted(ledger, repo, pullNumber) {
+			alreadyCompleted = true
+			return nil
+		}
+		poll, pollErr = provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
+		if pollErr != nil {
+			return nil
+		}
+		postMergeErrs = performPostMerge(ctx, provider, repo, root, pullNumber, poll, stdout, stderr)
+		if len(postMergeErrs) > 0 {
+			return nil
+		}
+		if completePostMergeReconciliation(&ledger, repo, pullNumber) {
+			return writePostMergeReconcileLedger(ledgerPath, ledger)
+		}
+		return nil
+	})
+	if err != nil {
+		pf(stderr, "error: record post-merge completion: %v\n", err)
+		return 1
+	}
+	if pollErr != nil {
+		return failProviderStage(stderr, "poll merged pull request", pollErr, "")
+	}
+	if alreadyCompleted {
+		pf(stdout, "post-merge: pr #%s was already reconciled\n", pullNumber)
+	}
+	return 0
+}
+
+func performPostMerge(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, root, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
+	var errs []error
 	labeled, skipped, labelErrs := fanOutNeedsRemediation(ctx, provider, repo, root, poll.Number, poll.BaseBranch, stderr)
 	for _, lerr := range labelErrs {
 		pf(stderr, "warning: %v\n", lerr)
 	}
+	errs = append(errs, labelErrs...)
 
 	unparked, unparkErrs := unparkResolvedSiblings(ctx, provider, repo, poll.Number, poll.BaseBranch, stderr)
 	for _, uerr := range unparkErrs {
 		pf(stderr, "warning: %v\n", uerr)
 	}
+	errs = append(errs, unparkErrs...)
 
 	unescalated, unescalateErrs := unparkSelfHealedEscalations(ctx, provider, repo, poll.Number, poll.BaseBranch, stderr)
 	for _, eerr := range unescalateErrs {
 		pf(stderr, "warning: %v\n", eerr)
 	}
+	errs = append(errs, unescalateErrs...)
 
 	undemoted, undemoteErrs := unparkSelfHealedDemotions(ctx, provider, repo, poll.Number, poll.BaseBranch, stderr)
 	for _, derr := range undemoteErrs {
 		pf(stderr, "warning: %v\n", derr)
 	}
+	errs = append(errs, undemoteErrs...)
 
 	closed, closeErrs := closeReferencedIssues(ctx, provider, repo, poll.Body, pullNumber)
 	for _, cerr := range closeErrs {
 		pf(stderr, "warning: %v\n", cerr)
 	}
-
+	errs = append(errs, closeErrs...)
 	pf(stdout, "post-merge: labeled %d pr(s) %s (%d clean siblings left untouched), unparked %d blocked-on-sibling pr(s), un-escalated %d self-healed pr(s), un-demoted %d self-healed pr(s), closed %d issue(s)\n",
 		len(labeled), needsRemediationLabel, len(skipped), len(unparked), len(unescalated), len(undemoted), len(closed))
-	return 0
+	return errs
 }
 
 // unparkSelfHealedEscalations removes goobers:merge-escalated from any open PR
@@ -381,6 +423,9 @@ func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvi
 		if pr.Number == mergedNumber {
 			continue
 		}
+		if hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) {
+			continue
+		}
 		reason, shouldLabel := triageSibling(ctx, provider, repo, pr, mergedPaths, cached, stderr)
 		if !shouldLabel {
 			skipped = append(skipped, pr.Number)
@@ -465,14 +510,45 @@ func siblingFilesForTriage(ctx context.Context, provider *providers.GitHubProvid
 // item), not an error.
 func closeReferencedIssues(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, body, pullNumber string) (closed []string, errs []error) {
 	for _, issueID := range closingIssueNumbers(body) {
-		if _, err := provider.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
-			Repository: repo, ID: issueID, Status: providers.WorkItemStatusDone,
-			Comment: fmt.Sprintf("Merged in pull request #%s.", pullNumber),
-		}); err != nil {
+		if err := closeReferencedIssue(ctx, provider, repo, issueID, pullNumber); err != nil {
 			errs = append(errs, fmt.Errorf("close issue #%s: %w", issueID, err))
 			continue
 		}
 		closed = append(closed, issueID)
 	}
 	return closed, errs
+}
+
+func closeReferencedIssue(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, issueID, pullNumber string) error {
+	item, err := provider.GetWorkItem(ctx, repo, issueID)
+	if err != nil {
+		return err
+	}
+	statusLabel := "goobers/status:" + string(providers.WorkItemStatusDone)
+	if !strings.EqualFold(item.State, "closed") || !hasAnyLabel(item.Labels, []string{statusLabel}) {
+		if _, err := provider.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
+			Repository: repo,
+			ID:         issueID,
+			Status:     providers.WorkItemStatusDone,
+		}); err != nil {
+			return err
+		}
+	}
+
+	comment := fmt.Sprintf("Merged in pull request #%s.", pullNumber)
+	comments, err := provider.ListComments(ctx, repo, issueID)
+	if err != nil {
+		return err
+	}
+	for _, existing := range comments {
+		if existing.Body == comment {
+			return nil
+		}
+	}
+	_, err = provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository: repo,
+		ID:         issueID,
+		Comment:    comment,
+	})
+	return err
 }

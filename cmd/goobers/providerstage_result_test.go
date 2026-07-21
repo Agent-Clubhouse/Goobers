@@ -31,6 +31,7 @@ func TestProviderChainCommandsWriteEarlyFailureResult(t *testing.T) {
 		{command: "post-merge", errorReason: "instance.yaml"},
 		{command: "pr-select", errorReason: "instance.yaml"},
 		{command: "rebase-pr", errorReason: "selectedNumber and head are required"},
+		{command: "reconcile-post-merge", errorReason: "instance.yaml"},
 		{command: "remediation-checkpoint", errorReason: "GOOBERS_RUN_ID is not set"},
 		{command: "update-behind-pr", errorReason: "instance.yaml"},
 	}
@@ -83,6 +84,7 @@ func TestProviderChainCommandsUseDefaultResultFile(t *testing.T) {
 	}{
 		{command: "issue-close-out", resultFile: "issue-close-out-result.json", errorReason: "instance.yaml"},
 		{command: "post-merge", resultFile: "post-merge-result.json", errorReason: "instance.yaml"},
+		{command: "reconcile-post-merge", resultFile: "reconcile-post-merge-result.json", errorReason: "instance.yaml"},
 		{command: "remediation-checkpoint", resultFile: "checkpoint-result.json", errorReason: "GOOBERS_RUN_ID is not set"},
 		{command: "update-behind-pr", resultFile: "update-behind-result.json", errorReason: "instance.yaml"},
 	}

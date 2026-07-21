@@ -45,6 +45,7 @@
 | [`goobers push-remediated`](#goobers-push-remediated) | force-push the remediated branch and clear needs-remediation (a workflow stage) |
 | [`goobers rebase-pr`](#goobers-rebase-pr) | rebase-first, finding-driven remediation routing (a workflow stage) |
 | [`goobers reconcile-branches`](#goobers-reconcile-branches) | report bounded stale goobers/* branch candidates (a workflow stage) |
+| [`goobers reconcile-post-merge`](#goobers-reconcile-post-merge) | reconcile late merge-queue merges (a workflow stage) |
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-PR repass budget + same-diff escalation (a workflow stage) |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
@@ -878,6 +879,28 @@ provider error, 2 = usage/IO error.
 ~~~console
 $ goobers reconcile-branches
 $ goobers reconcile-branches --delete --max 5
+~~~
+
+## `goobers reconcile-post-merge`
+
+reconcile late merge-queue merges (a workflow stage)
+
+~~~text
+Usage: goobers reconcile-post-merge [--max N] [--lookback D] [path]
+
+Inspect a bounded batch of merge-queue entries whose queue-watch stage
+timed out. A pull request that has since merged receives branch cleanup,
+issue close-out, and sibling fan-out through the normal post-merge path;
+an open or unmerged pull request remains pending. Completed entries are
+durably skipped on later runs. Task inputs maxPullRequests and lookback
+set the same bounds (defaults: 10 and 168h; hard maximum: 100).
+Exit codes: 0 = sweep completed, 1 = business/provider error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers reconcile-post-merge
 ~~~
 
 ## `goobers record-merge-refusal`
