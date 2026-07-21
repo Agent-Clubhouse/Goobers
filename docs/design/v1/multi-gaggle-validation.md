@@ -59,6 +59,18 @@ backwards-compatible:
 - A repo capability (`repo:push`, `github:issues:write`, `github:pr:write`, …) resolves to
   the token for **that run's gaggle and the repo the operation targets** — defaulting to that
   repo's own configured token, with an optional explicit grant override.
+- **Per-repo capabilities differentiate read-only reference repos from the read-write
+  sink.** A gaggle routinely spans repos it only *reads* (reference material, cross-repo
+  context) and one (or few) it *writes*. The scope key carries the capability, so a repo
+  entry can be granted a read-only token (Contents:read) while another carries a write token
+  (Contents/PR/Issues:write). Two concrete cases the design must serve (§4.5):
+  - **Site gaggle:** the site repo is read-write (curated content); the Goobers and Clubhouse
+    repos are read-only reference sources.
+  - **`docs-updater` (#472):** N read-only reference/source repos feed a docs-drift signal,
+    and the output *sink* is a single per-repo choice — in-repo, a **separate docs repo**
+    (#1019), a **GitHub wiki** (#1020), or an **ADO wiki** (#1021) — each a write target
+    distinct from the reference reads. Phase 2 of docs-updater is a direct **consumer** of
+    MGV-5 and gates on it.
 - A one-gaggle, one-repo instance with no qualifiers behaves **exactly as today**.
 
 ## 3. What already exists vs. what this needs
@@ -117,6 +129,44 @@ the repo's own contribution contract. This is **epic #804 + #369**, unapproved a
 PO review — **out of scope for an unsupervised run**; a mixed-mode gaggle must not be enabled
 until it lands. A purely goober-authored gaggle does **not** need G4.
 
+### G5 — Provable cross-gaggle isolation: conformance test + outstanding OS enforcement
+
+The credential requirement is not just *route the right token* but **prove a gaggle's stages
+can only ever hold their own gaggle/repo credentials, and cannot reach another gaggle's repos
+or secrets.** V1's posture is **isolation by construction, proven by an automated conformance
+test** — not yet OS-enforced. Both halves matter and must ship together.
+
+**What V1 delivers (this sprint):**
+- *Scoping by construction* — MGV-5 (#1012) `(gaggle,repo,cap)` routing, layered on
+  per-goober credential injection (#35/S1) and stage-worktree filesystem confinement
+  (#165/#35-S2). A stage is only ever *handed* its own gaggle's tokens.
+- *A new isolation-conformance test* (**MGV-9**, below): a fixture instance with two gaggles
+  (A, B) under different owners asserts, mechanically, that a stage in gaggle A: (a) has **no
+  gaggle-B token** anywhere in its subprocess env; (b) cannot resolve a capability scoped to
+  B (fail-closed `ErrNoCredentialForCapability`); (c) its worktree/git remotes reference
+  **only** A's repos — no credentialed path to B's repos. This is the artifact that
+  *provably shows* the isolation claim, runnable in CI on every change.
+
+**Outstanding — explicitly tracked as security/sandboxing debt, NOT delivered here:**
+V1 scoping means a stage is never *given* another gaggle's secret, but it does **not** yet
+OS-enforce that a compromised or buggy stage cannot *reach* one (a shared HOME, an ambient
+credential on disk, an unsandboxed egress). The hard-enforcement rungs remain future work and
+must be surfaced as known posture, not silently assumed closed:
+- **OS-native agentic sandbox** (Seatbelt/bubblewrap) confining the subprocess FS + the
+  sandboxed-execution fail-closed path — designed in #35 (S2 #165 / S3 #166 / S4 #167), **not
+  yet built**. Until it lands, filesystem confinement is by convention, not by the OS.
+- **Per-gaggle workload identity + store-side secret ACLs** (#685, **V2**) — the only rung
+  that denies cross-gaggle secret *resolution* by construction (gaggle A's identity has no
+  read on B's refs). V1 file/env refs have no such store-side denial.
+- **Egress / network-policy enforcement** (#167, SEC-Q5 → tier-3/V2) — a stage's outbound
+  network is documented, not enforced, in V1.
+
+`docs/design/v1/35-sandboxing-per-goober-creds.md` and `docs/requirements/security.md` own
+the enforcement rungs; this section records that a multi-gaggle instance **operates on
+scoping + conformance-test proof today, with OS/identity enforcement as required, tracked
+future security work.** The conformance test (MGV-9) must assert the *scoping* invariant so a
+regression is caught even before the OS rungs land.
+
 ## 5. Decomposition — dispatchable work items
 
 | ID | Issue | Item | Risk | Status |
@@ -129,11 +179,15 @@ until it lands. A purely goober-authored gaggle does **not** need G4.
 | MGV-6 | #159 | #34-H2 per-gaggle runtime scoping | **High** (core runtime) | approved, **pulled from `ready`** |
 | MGV-7 | #775/#161 | #34-H3/H4 multi-gaggle daemon loop / fairness | Med | #775 ready; rest supervised |
 | MGV-8 | #804/#369 | G4 — actor-aware mixed-mode | High + PO | **hold — mixed-mode gaggle off until it lands** |
+| MGV-9 | *(new)* | G5 — 2-gaggle isolation-conformance test (no cross-gaggle env creds / resolution / git reach) | Low (test-only) | **approvable — proves the isolation claim** |
+
+> **Isolation debt (not work items in this sprint, tracked as outstanding security posture, §4.5 G5):** OS-native sandbox rungs #165/#166/#167 (#35), and per-gaggle workload identity + store secret ACLs #685 (V2). MGV-9 proves *scoping*; these enforce it.
 
 ## 6. Recommended sequencing
 
 1. **Now (approvable, low-risk):** MGV-1/2/3/4 — make a **foreign goober-authored gaggle**
-   runnable; individually safe.
+   runnable; individually safe. MGV-9 (isolation-conformance test) can land in parallel — it
+   asserts the scoping invariant and hardens the sprint against regressions before MGV-5.
 2. **Supervised, next:** MGV-5 (per-repo credentials) + MGV-6 (#159 runtime scoping) — the
    two load-bearing core changes. Land these and a goober-authored gaggle can run fully
    isolated with its own scoped PAT (including a repo under a different owner).
