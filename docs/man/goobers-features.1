@@ -1,0 +1,27 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS FEATURES" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers features \- list the workflow-DSL features this build supports
+.SH SYNOPSIS
+\fBgoobers features\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers features [--used] [path]
+
+List the workflow-DSL features this build understands, with each
+feature's support level (preview/ga/deprecated/removed) and the version
+it entered that level. This reads the same registry the committed
+docs/feature-matrix.md is generated from, so the two never disagree.
+
+With --used, list only the features the instance at path (default ".")
+actually references across its workflows and goobers — the subset that
+instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance
+config, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers features
+goobers features --used
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

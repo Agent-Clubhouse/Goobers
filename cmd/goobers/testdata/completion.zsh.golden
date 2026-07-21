@@ -25,6 +25,7 @@ _goobers_completion()
             'runs:list runs and report per-run disk usage'
             'status:validate config, show warnings, list runs, or report daemon health'
             'stats:show the instance lifetime summary card'
+            'features:list the workflow-DSL features this build supports'
             'reset-rate-limit:clear the hourly run-rate budget without deleting runs/'
             'blocked:inspect and clear the learned blocked-item ledger'
             'claims:inspect and force-release claim leases'
