@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"strings"
+
+	"github.com/goobers/goobers/internal/platform/secfile"
 )
 
 // ErrTokenRefNotFound is returned when no TokenRef is registered under the
@@ -54,10 +55,12 @@ func (r TokenRef) resolve() (string, error) {
 			return "", fmt.Errorf("credentials: token ref %q: env var %q is not set", r.Name, r.Env)
 		}
 	case r.File != "":
-		if fi, statErr := os.Stat(r.File); statErr == nil {
-			if err := insecureTokenFileError(r.Name, r.File, fi.Mode()); err != nil {
-				return "", err
-			}
+		// Verify the token file is private before reading it, failing closed
+		// (secfile rejects on any indeterminate state). Portable across Unix
+		// (0600 mode check) and Windows (DACL check) — raw mode bits are
+		// meaningless on NTFS. See internal/platform/secfile.
+		if err := secfile.VerifyPrivate(r.File); err != nil {
+			return "", fmt.Errorf("credentials: token ref %q: %w", r.Name, err)
 		}
 		b, err := os.ReadFile(r.File)
 		if err != nil {
@@ -70,14 +73,6 @@ func (r TokenRef) resolve() (string, error) {
 		return "", fmt.Errorf("%w: ref %q", ErrTokenRefEmpty, r.Name)
 	}
 	return val, nil
-}
-
-func insecureTokenFileError(name, path string, mode fs.FileMode) error {
-	if mode.Perm()&0o077 == 0 {
-		return nil
-	}
-	return fmt.Errorf("credentials: token ref %q: token file %q is accessible to group/other "+
-		"(mode %#o); tighten it to 0600", name, path, mode.Perm())
 }
 
 // Resolver resolves a named secret reference. Implementations must honor
