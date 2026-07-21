@@ -15,7 +15,7 @@ type fakeOpenPRCounter struct {
 	known  bool
 }
 
-func (f fakeOpenPRCounter) OpenPRCount(workflow string) (int, bool) {
+func (f fakeOpenPRCounter) OpenPRCount(_, workflow string) (int, bool) {
 	return f.counts[workflow], f.known
 }
 
@@ -108,9 +108,9 @@ func TestOpenPRRefresherCountsRunBranchHeads(t *testing.T) {
 		"goobers/implementation-helper/run-4",
 		"feature/human-authored",
 	}}
-	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil)
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil, nil)
 
-	if _, known := r.OpenPRCount("implementation"); known {
+	if _, known := r.OpenPRCount("", "implementation"); known {
 		t.Fatal("expected unknown before the first poll (Admit fails open until then)")
 	}
 
@@ -122,10 +122,37 @@ func TestOpenPRRefresherCountsRunBranchHeads(t *testing.T) {
 		{workflow: "implementation", want: 2},
 		{workflow: "tutor", want: 1},
 	} {
-		n, known := r.OpenPRCount(tc.workflow)
+		n, known := r.OpenPRCount("", tc.workflow)
 		if !known || n != tc.want {
 			t.Errorf("%s: count=%d known=%v, want %d/true", tc.workflow, n, known, tc.want)
 		}
+	}
+}
+
+// TestOpenPRRefresherCountsPerGaggleNamespace is #1115: a gaggle that retuned
+// its BranchNamespace (#1109) opens PRs under its own prefix, and the cap must
+// count those — not the default "goobers/" heads (which belong to a different
+// gaggle). Before the fix the counter matched only "goobers/…", so the acme
+// gaggle's PRs were invisible and its cap silently ineffective.
+func TestOpenPRRefresherCountsPerGaggleNamespace(t *testing.T) {
+	lister := &fakeOpenPRLister{heads: []string{
+		"goobers/implementation/run-1", // default-namespace gaggle
+		"acme/implementation/run-2",    // acme-namespace gaggle
+		"acme/implementation/run-3",
+	}}
+	// The map value need not be pre-normalized; BranchNameIn adds the trailing "/".
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil,
+		map[string]string{"acme": "acme"})
+	r.pollOnce(context.Background())
+
+	// A gaggle absent from the map falls back to the default namespace and counts
+	// only "goobers/…" heads — unchanged from pre-#1115 behavior.
+	if n, known := r.OpenPRCount("default", "implementation"); !known || n != 1 {
+		t.Errorf("default namespace: count=%d known=%v, want 1/true", n, known)
+	}
+	// The acme gaggle counts only its own "acme/…" heads (2), not the default one.
+	if n, known := r.OpenPRCount("acme", "implementation"); !known || n != 2 {
+		t.Errorf("acme namespace: count=%d known=%v, want 2/true", n, known)
 	}
 }
 
@@ -146,10 +173,10 @@ func TestOpenPRRefresherExcludesHumanParkedPRs(t *testing.T) {
 			"goobers/implementation/run-3": {"goobers:needs-remediation"},
 		},
 	}
-	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, []string{escalated})
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, []string{escalated}, nil)
 
 	r.pollOnce(context.Background())
-	if n, known := r.OpenPRCount("implementation"); !known || n != 2 {
+	if n, known := r.OpenPRCount("", "implementation"); !known || n != 2 {
 		t.Fatalf("count=%d known=%v, want 2 (run-1 + run-3; run-2 excluded as human-parked)", n, known)
 	}
 }
@@ -158,10 +185,10 @@ func TestOpenPRRefresherExcludesHumanParkedPRs(t *testing.T) {
 // leaves the count "unknown" so Admit doesn't block on a transient GitHub hiccup.
 func TestOpenPRRefresherFailsOpenOnError(t *testing.T) {
 	lister := &fakeOpenPRLister{err: errors.New("github unavailable")}
-	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil)
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil, nil)
 
 	r.pollOnce(context.Background())
-	if _, known := r.OpenPRCount("implementation"); known {
+	if _, known := r.OpenPRCount("", "implementation"); known {
 		t.Fatal("expected unknown (fail-open) after a poll error")
 	}
 
@@ -169,7 +196,7 @@ func TestOpenPRRefresherFailsOpenOnError(t *testing.T) {
 	lister.err = nil
 	lister.heads = []string{"goobers/implementation/run-9"}
 	r.pollOnce(context.Background())
-	if n, known := r.OpenPRCount("implementation"); !known || n != 1 {
+	if n, known := r.OpenPRCount("", "implementation"); !known || n != 1 {
 		t.Fatalf("after recovery: n=%d known=%v, want 1/true", n, known)
 	}
 }
@@ -178,7 +205,7 @@ func TestOpenPRRefresherFailsOpenOnError(t *testing.T) {
 // returns on context cancellation (its lifecycle under the daemon WaitGroup).
 func TestOpenPRRefresherRunPollsAndStops(t *testing.T) {
 	lister := &fakeOpenPRLister{heads: []string{"goobers/implementation/run-1"}}
-	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil)
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
@@ -187,7 +214,7 @@ func TestOpenPRRefresherRunPollsAndStops(t *testing.T) {
 	// The eager first poll makes the count known without waiting a full interval.
 	deadline := time.After(2 * time.Second)
 	for {
-		if _, known := r.OpenPRCount("implementation"); known {
+		if _, known := r.OpenPRCount("", "implementation"); known {
 			break
 		}
 		select {

@@ -966,7 +966,7 @@ func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo p
 // starts/wires the returned refresher; a single `goobers run` has no accretion
 // to throttle. resolver is a fresh credential resolver over cfg (buildCredentials
 // is read-only and idempotent), used only to authenticate the poll.
-func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar) (*localscheduler.OpenPRRefresher, error) {
+func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar, branchNamespaces map[string]string) (*localscheduler.OpenPRRefresher, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
@@ -993,7 +993,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 	// implementation work. needs-remediation / blocked-on-sibling are
 	// deliberately NOT excluded: the daemon can still drain those (remediation,
 	// sibling sequencing), and the cap must keep applying backpressure to them.
-	return localscheduler.NewOpenPRRefresher(lister, repoRef, localscheduler.DefaultOpenPRRefreshInterval, []string{remediationEscalatedLabel}), nil
+	return localscheduler.NewOpenPRRefresher(lister, repoRef, localscheduler.DefaultOpenPRRefreshInterval, []string{remediationEscalatedLabel}, branchNamespaces), nil
 }
 
 // backlogCounter adapts a provider + repo + label selector into a
