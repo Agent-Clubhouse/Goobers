@@ -19,6 +19,16 @@
 /operator
 /scheduler
 /validate
+# The same stray also lands next to the source when `go build .` (or a subagent's
+# `go build ./cmd/<name>`) runs from inside the package dir — /goobers above is
+# repo-root only and does not match cmd/goobers/goobers (a 37MB binary reached a
+# PR this way, #1114). One entry per cmd/ package.
+/cmd/config-sync/config-sync
+/cmd/goober-runtime/goober-runtime
+/cmd/goobers/goobers
+/cmd/operator/operator
+/cmd/scheduler/scheduler
+/cmd/validate/validate
 coverage.out
 coverage.html
 *.test
