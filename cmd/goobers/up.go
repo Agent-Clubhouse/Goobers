@@ -184,7 +184,7 @@ func handleSpansOnlyRunCleanup(l instance.Layout, remove bool, stdout io.Writer)
 	return nil
 }
 
-const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--cleanup-spans-only-runs] [path]\n\n" +
+const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--skip-preflight] [--cleanup-spans-only-runs] [path]\n\n" +
 	"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n" +
 	"plus the local runner, loopback HTTP API, and configured GitHub webhook\n" +
 	"listener (default path \".\"). Blocks\n" +
@@ -194,6 +194,8 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"Legacy spans-only run directories are reported as cleanup candidates\n" +
 	"and preserved by default. --cleanup-spans-only-runs deletes them at\n" +
 	"startup after reporting each candidate.\n\n" +
+	"Startup validates the resolved instance config and refuses to run on\n" +
+	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n\n" +
 	"--diagnostics turns on deep, opt-in capture for hard hangs: any\n" +
 	"deterministic stage still running past a couple of minutes gets a\n" +
 	"periodic native process sample + process tree + open-fd (lsof)\n" +
@@ -237,6 +239,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	watchConfig := fs.Bool("watch-config", false, "experimental: hot-reload config edits without a restart (default off; superseded by the Workflow CD config source, #453)")
 	var notifications notifyFlag
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
+	skipPreflight := fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")
 	cleanupSpansOnlyRuns := fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -255,6 +258,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return 2
+	}
+	if code := runStartupConfigPreflight(root, *skipPreflight, stderr); code != 0 {
+		return code
 	}
 
 	// Single-instance lock (#23 AC3): a second `up` on the same instance root
@@ -276,7 +282,12 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	}
 
 	var wg sync.WaitGroup
-	setup, err := buildSchedulerSetup(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+	var setup *schedulerSetup
+	if *skipPreflight {
+		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+	} else {
+		setup, err = buildSchedulerSetup(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+	}
 	if err != nil {
 		printValidationIssues(stderr, validationReportFromError(err))
 		pf(stderr, "error: %v\n", err)
