@@ -3,20 +3,25 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
 	"os"
+	"path/filepath"
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/goobers/goobers/internal/configdiff"
 	"github.com/goobers/goobers/internal/instance"
 )
 
 const configHelp = "Usage: goobers config <subcommand> [flags] [path]\n\n" +
-	"Inspect the instance's operational configuration (instance.yaml).\n\n" +
+	"Inspect instance configuration and compare workflow definitions.\n\n" +
 	"Subcommands:\n" +
-	"  show   render the effective instance config (secrets redacted)\n\n" +
-	"Run `goobers config show -h` for details. Default path is \".\".\n"
+	"  show   render the effective instance config (secrets redacted)\n" +
+	"  diff   compare active workflows with the shipped canonical workflows\n\n" +
+	"Run `goobers config show -h` or `goobers config diff -h` for details.\n" +
+	"Default path is \".\".\n"
 
 const configShowHelp = "Usage: goobers config show [--json] [path]\n\n" +
 	"Render the effective instance configuration loaded from <path>/instance.yaml\n" +
@@ -29,8 +34,19 @@ const configShowHelp = "Usage: goobers config show [--json] [path]\n\n" +
 	"Exit codes: 0 = OK, 1 = load/render error, 2 = usage error or not an\n" +
 	"instance root.\n"
 
+const configDiffHelp = "Usage: goobers config diff [--against <canonical-root>] [instance-root]\n\n" +
+	"Compare the active workflows under <instance-root>/config with a canonical\n" +
+	"config source tree. The canonical root defaults to ./selfhost; use --against\n" +
+	"when running outside the Goobers source checkout or comparing another set.\n\n" +
+	"Schedule, maxConcurrentRuns, maxRunsPerHour, maxRunsPerDay, maxOpenPRs,\n" +
+	"and trigger presence (enablement) are operational tuning: they are printed\n" +
+	"as INFO and do not fail the command. Every other workflow difference is\n" +
+	"structural drift, printed as ERROR with active and canonical values.\n\n" +
+	"Exit codes: 0 = structurally identical (informational tuning is allowed),\n" +
+	"1 = structural drift or invalid config, 2 = usage/IO error.\n"
+
 // runConfig is the `config` group dispatcher: it only handles the bare/`-h`
-// invocation, since real work lives in subcommands (currently just `show`).
+// invocation, since real work lives in the show and diff subcommands.
 func runConfig(args []string, stdout, stderr io.Writer) int {
 	usage := func(w io.Writer) { pf(w, "%s", configHelp) }
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
@@ -100,4 +116,97 @@ func runConfigShow(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "%s", yamlData)
 	return 0
+}
+
+func runConfigDiff(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("config diff", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	against := fs.String("against", "selfhost", "canonical config source root")
+	fs.Usage = helpUsage(stderr, "config diff")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fs.Usage()
+		return 2
+	}
+	root := "."
+	if fs.NArg() == 1 {
+		root = fs.Arg(0)
+	}
+
+	layout := instance.NewLayout(root)
+	if _, err := os.Stat(layout.ConfigFile()); err != nil {
+		pf(stderr, "error: %s not found (not an instance root)\n", layout.ConfigFile())
+		return 2
+	}
+	canonicalDir := canonicalConfigDir(*against)
+
+	activeSet, activeInvalid, code := loadConfigDiffSet("active", layout.ConfigDir(), stdout, stderr)
+	if code != 0 {
+		return code
+	}
+	canonicalSet, canonicalInvalid, code := loadConfigDiffSet("canonical", canonicalDir, stdout, stderr)
+	if code != 0 {
+		return code
+	}
+
+	differences, err := configdiff.Compare(activeSet.Workflows, canonicalSet.Workflows)
+	if err != nil {
+		pf(stderr, "error: compare workflows: %v\n", err)
+		return 2
+	}
+
+	var informational, structural int
+	for _, difference := range differences {
+		level := "INFO"
+		if difference.Severity == configdiff.Error {
+			level = "ERROR"
+			structural++
+		} else {
+			informational++
+		}
+		pf(stdout, "%s workflow=%q", level, difference.Workflow)
+		if difference.SubjectKind != "" {
+			pf(stdout, " %s=%q", difference.SubjectKind, difference.Subject)
+		}
+		pf(stdout, " field=%q active=%s canonical=%s\n",
+			difference.Field, difference.Active, difference.Canonical)
+	}
+	if structural > 0 {
+		pf(stdout, "DRIFT: %d structural difference(s), %d informational difference(s)\n", structural, informational)
+		return 1
+	}
+	if activeInvalid || canonicalInvalid {
+		pf(stdout, "INVALID: workflow comparison completed with validation errors (%d informational difference(s))\n", informational)
+		return 1
+	}
+	pf(stdout, "OK: workflow structure matches canonical (%d informational difference(s))\n", informational)
+	return 0
+}
+
+func canonicalConfigDir(root string) string {
+	if _, err := os.Stat(filepath.Join(root, instance.ConfigFileName)); err == nil {
+		return instance.NewLayout(root).ConfigDir()
+	}
+	return root
+}
+
+func loadConfigDiffSet(label, dir string, stdout, stderr io.Writer) (*instance.ConfigSet, bool, int) {
+	set, report, err := instance.LoadConfigDirForComparison(dir)
+	if err == nil {
+		return set, false, 0
+	}
+	if errors.Is(err, instance.ErrInvalidConfig) {
+		if report != nil {
+			printValidationIssues(stdout, report)
+		}
+		pf(stdout, "INVALID %s config %s\n", label, dir)
+		if set != nil {
+			return set, true, 0
+		}
+		return nil, true, 1
+	}
+	pf(stderr, "error: load %s config %s: %v\n", label, dir, err)
+	return nil, false, 2
 }

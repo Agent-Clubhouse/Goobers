@@ -1,20 +1,22 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS TELEMETRY" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers telemetry \- success rate/duration or recent-error aggregates
+goobers telemetry \- query aggregates or export journaled OTLP windows
 .SH SYNOPSIS
 \fBgoobers telemetry\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers telemetry <stats|errors> [flags] [path]
+Usage: goobers telemetry <stats|errors|export> [flags] [path]
 
 stats:  success rate / durations per workflow + stage
 errors: recent errors across runs, by class, with run/stage refs
+export: re-emit a span-start-time window from journaled OTLP/JSON
 .fi
 .SH EXAMPLES
 .nf
 goobers telemetry stats
 goobers telemetry errors
+goobers telemetry export --since=2026-07-01T00:00:00Z
 .fi
 .SH SEE ALSO
 \fBgoobers\fR(1)

@@ -117,13 +117,16 @@ func init() {
 		groupCommand(
 			"config",
 			runConfig,
+			subcommand("config diff", "diff", apicontract.ActionConfigTime, runConfigDiff).
+				withHelp("compare active workflows with canonical definitions", configDiffHelp).
+				withExamples("goobers config diff ./instance", "goobers config diff --against ./selfhost ./instance"),
 			subcommand("config show", "show", apicontract.ActionReadOnlyNavigation, runConfigShow).
 				withHelp("render the effective instance config (secrets redacted)", configShowHelp).
 				withExamples("goobers config show", "goobers config show --json"),
 		).
 			withSynopsis(synopsisByID["config"]).
-			withHelp("inspect the instance's operational configuration", configHelp).
-			withExamples("goobers config show"),
+			withHelp("inspect instance configuration and compare workflow definitions", configHelp).
+			withExamples("goobers config show", "goobers config diff ./instance"),
 		command("up", apicontract.ActionDaemonLifecycle, runUp).
 			withSynopsis(synopsisByID["up"]).
 			withHelp("run the daemon (scheduler + runner + loopback HTTP API)", upHelp).
@@ -272,10 +275,13 @@ func init() {
 			subcommand("telemetry errors", "errors", apicontract.ActionReadOnlyNavigation, runTelemetryErrors).
 				withHelp("recent errors across runs, by class, with run/stage refs", telemetryErrorsHelp).
 				withExamples("goobers telemetry errors", "goobers telemetry errors --limit=50"),
+			subcommand("telemetry export", "export", apicontract.ActionReadOnlyNavigation, runTelemetryExport).
+				withHelp("re-emit a span-start-time window from journaled OTLP/JSON", telemetryExportHelp).
+				withExamples("goobers telemetry export --since=2026-07-01T00:00:00Z", "goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z"),
 		).
 			withSynopsis(synopsisByID["telemetry"]).
-			withHelp("success rate/duration or recent-error aggregates", telemetryHelp).
-			withExamples("goobers telemetry stats", "goobers telemetry errors"),
+			withHelp("query aggregates or export journaled OTLP windows", telemetryHelp).
+			withExamples("goobers telemetry stats", "goobers telemetry errors", "goobers telemetry export --since=2026-07-01T00:00:00Z"),
 		groupCommand(
 			"journal",
 			runJournal,

@@ -74,6 +74,10 @@ const (
 	// diagnostic threshold. Timing, operation, and process details live under
 	// Runner because they are runner-specific and excluded from conformance.
 	EventClaimLockSlow EventType = "claim_lock_slow"
+	// EventClaimLockTimeout records a bounded claims-lock acquisition expiring.
+	// Error.Code carries claims_lock_timeout; retry classification and timing
+	// details live under Runner.
+	EventClaimLockTimeout EventType = "claims_lock_timeout"
 	// EventConfigReloaded records an atomically-applied config directory change.
 	EventConfigReloaded EventType = "config.reloaded"
 	// EventConfigReloadRejected records a changed config directory that failed
@@ -134,6 +138,9 @@ type Event struct {
 	Verdict string `json:"verdict,omitempty"`
 	// Target is the branch/state the gate selected. Normative.
 	Target string `json:"target,omitempty"`
+	// Escalated reports that gate evaluation selected its escalation control
+	// branch. Normative.
+	Escalated bool `json:"escalated,omitempty"`
 	// Status is the terminal status for run.finished / stage.finished. Normative.
 	Status string `json:"status,omitempty"`
 	// Outputs mirrors a stage.finished ResultEnvelope's small, scalar-only

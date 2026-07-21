@@ -28,6 +28,7 @@ _goobers_completion()
             ;;
         config)
             case "${COMP_WORDS[2]:-}" in
+                diff) flags+=" --against" ;;
                 show) flags+=" --json" ;;
             esac
             ;;
@@ -124,7 +125,7 @@ _goobers_completion()
             ;;
         config)
             if (( COMP_CWORD == 2 )); then
-                candidates="show"
+                candidates="diff show"
             fi
             ;;
         run)
@@ -180,7 +181,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="stats errors"
+                candidates="stats errors export"
             fi
             ;;
         journal)

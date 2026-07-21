@@ -3,19 +3,23 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const telemetryHelp = "Usage: goobers telemetry <stats|errors> [flags] [path]\n\n" +
+const telemetryHelp = "Usage: goobers telemetry <stats|errors|export> [flags] [path]\n\n" +
 	"stats:  success rate / durations per workflow + stage\n" +
-	"errors: recent errors across runs, by class, with run/stage refs\n"
+	"errors: recent errors across runs, by class, with run/stage refs\n" +
+	"export: re-emit a span-start-time window from journaled OTLP/JSON\n"
 
 func runTelemetry(args []string, stdout, stderr io.Writer) int {
 	usage := func(w io.Writer) { pf(w, "%s", telemetryHelp) }
@@ -32,6 +36,87 @@ func runTelemetry(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
+}
+
+const telemetryExportHelp = "Usage: goobers telemetry export --since=RFC3339 [--until=RFC3339] [path]\n\n" +
+	"Re-emit journaled OTLP/JSON trace requests to stdout. --since is inclusive;\n" +
+	"--until is exclusive when set. Window membership uses each span's start time.\n" +
+	"Every discovered run journal is validated before output; missing, corrupt, or\n" +
+	"unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,\n" +
+	"1 = journal data error, 2 = usage/output error.\n"
+
+func runTelemetryExport(args []string, stdout, stderr io.Writer) int {
+	return runTelemetryExportWithExporter(args, stdout, stderr, telemetry.ExportJournalOTLP)
+}
+
+func runTelemetryExportWithExporter(
+	args []string,
+	stdout, stderr io.Writer,
+	export func([]string, time.Time, time.Time, io.Writer) error,
+) int {
+	fs := flag.NewFlagSet("telemetry export", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	sinceValue := fs.String("since", "", "inclusive RFC3339 span-start lower bound (required)")
+	untilValue := fs.String("until", "", "exclusive RFC3339 span-start upper bound")
+	fs.Usage = helpUsage(stderr, "telemetry export")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fs.Usage()
+		return 2
+	}
+	if *sinceValue == "" {
+		pf(stderr, "error: --since is required\n")
+		return 2
+	}
+	since, until, err := parseTelemetryWindow(*sinceValue, *untilValue)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	root := "."
+	if fs.NArg() == 1 {
+		root = fs.Arg(0)
+	}
+
+	layout := instance.NewLayout(root)
+	if _, err := os.Stat(layout.ConfigFile()); err != nil {
+		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", layout.ConfigFile())
+		return 2
+	}
+	runDirs, err := layout.RunDirs()
+	if err != nil {
+		pf(stderr, "error: discover run journals: %v\n", err)
+		return 2
+	}
+	staged, err := os.CreateTemp("", "goobers-telemetry-export-*")
+	if err != nil {
+		pf(stderr, "error: stage telemetry export: %v\n", err)
+		return 2
+	}
+	defer func() {
+		_ = staged.Close()
+		_ = os.Remove(staged.Name())
+	}()
+
+	if err := export(runDirs, since, until, staged); err != nil {
+		pf(stderr, "error: export journaled OTLP: %v\n", err)
+		var outputErr *telemetry.ExportOutputError
+		if errors.As(err, &outputErr) {
+			return 2
+		}
+		return 1
+	}
+	if _, err := staged.Seek(0, io.SeekStart); err != nil {
+		pf(stderr, "error: read staged telemetry export: %v\n", err)
+		return 2
+	}
+	if _, err := io.Copy(stdout, staged); err != nil {
+		pf(stderr, "error: write telemetry export: %v\n", err)
+		return 2
+	}
+	return 0
 }
 
 // openRollup opens the telemetry rollup, trusting the incremental ingest

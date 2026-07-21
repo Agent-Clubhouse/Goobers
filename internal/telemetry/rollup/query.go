@@ -24,15 +24,20 @@ type RunSummary struct {
 
 // StageAttempt is a queryable row from the stage_attempts table.
 type StageAttempt struct {
-	Stage        string
-	Attempt      int
-	AttemptClass string
-	Status       string
-	StartedAt    time.Time
-	FinishedAt   time.Time
-	DurationMs   int64
-	ErrorCode    string
-	ErrorClass   string
+	Stage                  string
+	Traversal              int
+	Attempt                int
+	AttemptClass           string
+	Status                 string
+	StartedAt              time.Time
+	FinishedAt             time.Time
+	DurationMs             int64
+	ErrorCode              string
+	ErrorClass             string
+	InputTokens            *int64
+	OutputTokens           *int64
+	CopilotPremiumRequests *float64
+	CostUSD                *float64
 }
 
 // GateVerdict is a queryable row from the gate_verdicts table. RunnerJSON is
@@ -133,11 +138,15 @@ func (db *DB) Runs() ([]RunSummary, error) {
 }
 
 // StageAttempts returns every stage attempt for runID, ordered by stage then
-// attempt number.
+// durable traversal number. Attempt numbers can restart at one after a repass.
 func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 	rows, err := db.sql.Query(`
-		SELECT stage, attempt, attempt_class, status, started_at, finished_at, duration_ms, error_code, error_class
-		FROM stage_attempts WHERE run_id = ? ORDER BY stage, attempt`, runID)
+		SELECT sa.stage, sa.traversal, sa.attempt, sa.attempt_class, sa.status, sa.started_at, sa.finished_at, sa.duration_ms,
+		       sa.error_code, sa.error_class, su.input_tokens, su.output_tokens, su.copilot_premium_requests, su.cost_usd
+		FROM stage_attempts sa
+		LEFT JOIN stage_usage su
+			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.traversal = sa.traversal
+		WHERE sa.run_id = ? ORDER BY sa.stage, sa.traversal`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query stage_attempts: %w", err)
 	}
@@ -147,8 +156,12 @@ func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 	for rows.Next() {
 		var s StageAttempt
 		var class, status, startedAt, finishedAt, errCode, errClass sql.NullString
-		var durationMs sql.NullInt64
-		if err := rows.Scan(&s.Stage, &s.Attempt, &class, &status, &startedAt, &finishedAt, &durationMs, &errCode, &errClass); err != nil {
+		var durationMs, inputTokens, outputTokens sql.NullInt64
+		var premiumRequests, costUSD sql.NullFloat64
+		if err := rows.Scan(
+			&s.Stage, &s.Traversal, &s.Attempt, &class, &status, &startedAt, &finishedAt, &durationMs,
+			&errCode, &errClass, &inputTokens, &outputTokens, &premiumRequests, &costUSD,
+		); err != nil {
 			return nil, fmt.Errorf("rollup: scan stage_attempt: %w", err)
 		}
 		s.AttemptClass, s.Status, s.ErrorCode, s.ErrorClass = class.String, status.String, errCode.String, errClass.String
@@ -159,9 +172,27 @@ func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 			return nil, err
 		}
 		s.DurationMs = durationMs.Int64
+		s.InputTokens = optionalInt64(inputTokens)
+		s.OutputTokens = optionalInt64(outputTokens)
+		s.CopilotPremiumRequests = optionalFloat64(premiumRequests)
+		s.CostUSD = optionalFloat64(costUSD)
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+func optionalInt64(value sql.NullInt64) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	return &value.Int64
+}
+
+func optionalFloat64(value sql.NullFloat64) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	return &value.Float64
 }
 
 // GateVerdicts returns every gate evaluation for runID, in seq order.

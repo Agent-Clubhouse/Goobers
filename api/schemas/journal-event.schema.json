@@ -93,6 +93,11 @@
       "type": "string",
       "x-conformance": "normative"
     },
+    "escalated": {
+      "description": "Whether the gate evaluation selected its escalation control branch.",
+      "type": "boolean",
+      "x-conformance": "normative"
+    },
     "status": {
       "description": "Terminal status for run.finished / stage.finished.",
       "type": "string",

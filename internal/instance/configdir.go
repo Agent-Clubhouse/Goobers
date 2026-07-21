@@ -64,6 +64,18 @@ func (s *ConfigSet) WorkflowSource(gaggle, name string) (string, bool) {
 // nil ConfigSet, so a caller with a last-known-good set (e.g. a watching
 // daemon) can leave it in place.
 func LoadConfigDir(dir string) (*ConfigSet, *validate.Report, error) {
+	set, report, err := LoadConfigDirForComparison(dir)
+	if err != nil {
+		return nil, report, err
+	}
+	return set, report, nil
+}
+
+// LoadConfigDirForComparison validates and parses the config directory at dir.
+// Unlike LoadConfigDir, it returns a parseable ConfigSet alongside
+// ErrInvalidConfig so diagnostic tooling can compare invalid definitions.
+// Runtime callers must use LoadConfigDir to preserve fail-closed loading.
+func LoadConfigDirForComparison(dir string) (*ConfigSet, *validate.Report, error) {
 	v, err := validate.New()
 	if err != nil {
 		return nil, nil, fmt.Errorf("init validator: %w", err)
@@ -72,9 +84,6 @@ func LoadConfigDir(dir string) (*ConfigSet, *validate.Report, error) {
 	if err != nil {
 		return nil, report, fmt.Errorf("validate %s: %w", dir, err)
 	}
-	if report.HasErrors() {
-		return nil, report, ErrInvalidConfig
-	}
 
 	docs, err := readDocs(dir)
 	if err != nil {
@@ -82,7 +91,13 @@ func LoadConfigDir(dir string) (*ConfigSet, *validate.Report, error) {
 	}
 	set, err := assemble(docs)
 	if err != nil {
+		if report.HasErrors() {
+			return nil, report, ErrInvalidConfig
+		}
 		return nil, report, err
+	}
+	if report.HasErrors() {
+		return set, report, ErrInvalidConfig
 	}
 	return set, report, nil
 }

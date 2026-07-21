@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -11,7 +12,9 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 func TestReleaseClaimsForRunReleasesAllOwnedClaims(t *testing.T) {
@@ -167,5 +170,165 @@ func TestConfiguredRunnerReleasesClaimsAtTerminal(t *testing.T) {
 	}
 	if entry, ok := reopened.Lookup("498"); ok {
 		t.Fatalf("terminal run's claim leaked: %+v", entry)
+	}
+}
+
+func TestTerminalClaimReleaseTimeoutDefersToRecoverySweep(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.RunConditions.ClaimsLockTimeout = "20ms"
+	if err := instance.WriteConfig(l.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	const runID = "terminal-lock-timeout"
+	newStaleTerminalRun(t, l, runID, "default-implement", journal.PhaseCompleted, "local-ci")
+	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.Claim("498", runID, "default-implement", time.Hour); err != nil || !ok {
+		t.Fatalf("seed terminal claim: ok=%v err=%v", ok, err)
+	}
+	if ok, _, err := ledger.Claim("499", "live-run", "default-implement", time.Hour); err != nil || !ok {
+		t.Fatalf("seed live claim: ok=%v err=%v", ok, err)
+	}
+
+	manager, err := worktree.NewManager(l.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
+	holder, err := lock.Acquire(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	if err := finalizeTerminalRun(l, nil, manager, runID); err != nil {
+		t.Fatalf("terminal timeout should defer cleanup: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("terminal finalization took %s, want bounded near 20ms", elapsed)
+	}
+	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := reopened.Lookup("498"); !held {
+		t.Fatal("timed-out finalizer released a claim without acquiring the lock")
+	}
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != journal.EventClaimLockTimeout || events[0].RunID != runID {
+		t.Fatalf("deferred finalization event = %+v, want timeout attributed to %s", events, runID)
+	}
+
+	if err := holder.Release(); err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	released, err := recoverClaims(l, log, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(released) != 1 || released[0].RunID != runID {
+		t.Fatalf("recovery released %+v, want terminal run claim", released)
+	}
+
+	reopened, err = localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := reopened.Lookup("498"); held {
+		t.Fatalf("terminal claim survived recovery: %+v", entry)
+	}
+	if entry, held := reopened.Lookup("499"); !held || entry.RunID != "live-run" {
+		t.Fatalf("recovery changed live claim: (%+v, %v)", entry, held)
+	}
+}
+
+func TestRecoverClaimsSkipsCorruptHolderJournal(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const (
+		corruptRun  = "corrupt-terminal-holder"
+		terminalRun = "healthy-terminal-holder"
+	)
+	newStaleTerminalRun(t, l, corruptRun, "default-implement", journal.PhaseCompleted, "local-ci")
+	newStaleTerminalRun(t, l, terminalRun, "default-implement", journal.PhaseCompleted, "local-ci")
+	eventsPath := filepath.Join(l.RunsDir(), corruptRun, "events.jsonl")
+	eventsFile, err := os.OpenFile(eventsPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eventsFile.WriteString("{not-json}\n"); err != nil {
+		_ = eventsFile.Close()
+		t.Fatal(err)
+	}
+	if err := eventsFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.Claim("500", corruptRun, "default-implement", time.Hour); err != nil || !ok {
+		t.Fatalf("seed corrupt holder claim: ok=%v err=%v", ok, err)
+	}
+	if ok, _, err := ledger.Claim("501", terminalRun, "default-implement", time.Hour); err != nil || !ok {
+		t.Fatalf("seed terminal holder claim: ok=%v err=%v", ok, err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	released, err := recoverClaims(l, log, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(released) != 1 || released[0].RunID != terminalRun {
+		t.Fatalf("released = %+v, want only healthy terminal holder", released)
+	}
+
+	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := reopened.Lookup("500"); !held {
+		t.Fatal("corrupt holder claim was released without a terminal determination")
+	}
+	if entry, held := reopened.Lookup("501"); held {
+		t.Fatalf("healthy terminal claim survived recovery: %+v", entry)
+	}
+	instanceEvents, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundInspectionError := false
+	for _, event := range instanceEvents {
+		if event.Error != nil && event.Error.Code == "terminal_claim_inspection_failed" && event.RunID == corruptRun {
+			foundInspectionError = true
+		}
+	}
+	if !foundInspectionError {
+		t.Fatalf("instance events lack corrupt-holder inspection error: %+v", instanceEvents)
 	}
 }
