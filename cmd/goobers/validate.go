@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -19,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/proc"
 )
 
 // copilotAuthCheckArgs is the confirmed non-interactive Copilot authentication
@@ -188,23 +188,24 @@ func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token st
 		"ls-remote", url,
 	)
 	cmd.Env = append(gitAuthEnv(token), "GIT_TERMINAL_PROMPT=0")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	if err := cmd.Start(); err != nil {
+	// Spawn in its own session (proc) so the ctx-timeout path below can kill
+	// the whole git subprocess tree, not just the direct child.
+	tree, err := proc.Start(cmd)
+	if err != nil {
 		return err
 	}
 
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 
-	var err error
 	select {
 	case err = <-waitDone:
 	case <-ctx.Done():
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = tree.Kill()
 		select {
 		case <-waitDone:
 		case <-time.After(repositoryKillWaitDelay):

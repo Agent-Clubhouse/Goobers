@@ -8,10 +8,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/signals"
 )
 
@@ -26,7 +26,10 @@ var newDetachedRunCommand = func(name, root string) (*exec.Cmd, error) {
 		return nil, err
 	}
 	cmd := exec.Command(self, detachedRunWorkerCommand, name, root)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Detach into its own session so the worker outlives this CLI process and
+	// isn't stopped by job control. It kills only its direct child (below), so
+	// no Tree handle is needed here.
+	proc.Configure(cmd)
 	return cmd, nil
 }
 
