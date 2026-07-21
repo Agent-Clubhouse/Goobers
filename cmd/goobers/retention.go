@@ -11,7 +11,10 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *schedulerSetup, stdout, stderr io.Writer) error {
@@ -28,6 +31,10 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 	if err != nil {
 		return err
 	}
+	protectedBranches, err := retentionProtectedBranches(runsByRoot, setup)
+	if err != nil {
+		return err
+	}
 	results, warnings, err := worktree.PruneRetained(ctx, managers, worktree.RetentionOptions{
 		Delete:           cfg.Enabled && !cfg.DryRun,
 		MaxRetainedBytes: cfg.MaxRetainedWorktreeBytes,
@@ -39,6 +46,10 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 		IsRunTerminal: func(root, runID string) (bool, error) {
 			phase, found, err := readRunPhase(runsByRoot[root], runID)
 			return found && terminalRunPhase(phase), err
+		},
+		IsBranchProtected: func(root, branch string) (bool, error) {
+			_, protected := protectedBranches[root][branch]
+			return protected, nil
 		},
 	})
 	if err != nil {
@@ -79,6 +90,91 @@ func retentionManagers(l instance.Layout, setup *schedulerSetup) ([]*worktree.Ma
 		return nil, nil, err
 	}
 	return managers, runsByRoot, nil
+}
+
+func retentionProtectedBranches(runsByRoot map[string]string, setup *schedulerSetup) (map[string]map[string]struct{}, error) {
+	namespaces := map[string]string{}
+	if setup.Definitions != nil {
+		namespaces = branchNamespacesByGaggle(setup.Definitions)
+	}
+	protected := make(map[string]map[string]struct{}, len(runsByRoot))
+	roots := make([]string, 0, len(runsByRoot))
+	for root := range runsByRoot {
+		roots = append(roots, root)
+	}
+	sort.Strings(roots)
+
+	for _, root := range roots {
+		protected[root] = make(map[string]struct{})
+		runsDir := runsByRoot[root]
+		entries, err := os.ReadDir(runsDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("read runs directory %s for retention: %w", runsDir, err)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			runDir := filepath.Join(runsDir, entry.Name())
+			reader, err := journal.OpenRead(runDir)
+			if err != nil {
+				continue
+			}
+			phase, err := reader.Phase()
+			if err != nil {
+				return nil, fmt.Errorf("read phase for retention run %s: %w", entry.Name(), err)
+			}
+			if terminalRunPhase(phase) {
+				continue
+			}
+			identity, err := reader.Identity()
+			if err != nil {
+				return nil, fmt.Errorf("read identity for retention run %s: %w", entry.Name(), err)
+			}
+			events, err := reader.Events()
+			if err != nil {
+				return nil, fmt.Errorf("read events for retention run %s: %w", entry.Name(), err)
+			}
+			namespace := providers.NormalizeBranchNamespace(namespaces[identity.Gaggle])
+			protected[root][providers.BranchNameIn(namespace, identity.Workflow, identity.RunID)] = struct{}{}
+			machine := setup.Machines[localscheduler.WorkflowIdentity{
+				Gaggle: identity.Gaggle, Workflow: identity.Workflow,
+			}]
+			if machine != nil && identity.WorkflowDigest != "" && machine.Digest() == identity.WorkflowDigest {
+				if branch := runner.RestoredWorkspaceBranch(events, machine, namespace); branch != "" {
+					protected[root][branch] = struct{}{}
+				}
+				continue
+			}
+			// Without the pinned machine, protect every plausible binding rather
+			// than deleting the one a restored configuration may need to resume.
+			protectJournaledWorkspaceBranches(protected[root], events, namespace)
+		}
+	}
+	return protected, nil
+}
+
+func protectJournaledWorkspaceBranches(protected map[string]struct{}, events []journal.Event, namespace string) {
+	for _, event := range events {
+		if event.Type != journal.EventStageFinished {
+			continue
+		}
+		value, ok := event.Outputs[runner.WorkspaceBranchOutput]
+		if !ok {
+			continue
+		}
+		branch, ok := value.(string)
+		if !ok {
+			continue
+		}
+		branch = strings.TrimSpace(branch)
+		if strings.HasPrefix(branch, namespace) {
+			protected[branch] = struct{}{}
+		}
+	}
 }
 
 func addRetentionManager(managers *[]*worktree.Manager, runsByRoot map[string]string, manager *worktree.Manager, runsDir string) error {

@@ -45,6 +45,9 @@ type RetentionOptions struct {
 	IsTerminalFailure func(managerRoot, worktreeID, ownerRunID string) (bool, error)
 	// IsRunTerminal authorizes a merged local branch for pruning.
 	IsRunTerminal func(managerRoot, runID string) (bool, error)
+	// IsBranchProtected reports whether a branch is still referenced by a
+	// nonterminal run, even when the run encoded in its name is terminal.
+	IsBranchProtected func(managerRoot, branch string) (bool, error)
 }
 
 // RetentionResult reports one candidate. Deleted is true only after successful
@@ -367,6 +370,17 @@ func pruneRepoMergedBranches(ctx context.Context, manager *Manager, repoDir stri
 			}
 		}
 		if !terminal {
+			continue
+		}
+		protected := false
+		if opts.IsBranchProtected != nil {
+			protected, err = opts.IsBranchProtected(manager.Root, branch.name)
+			if err != nil {
+				warnings = append(warnings, RetentionWarning{Path: "refs/heads/" + branch.name, Err: err})
+				continue
+			}
+		}
+		if protected {
 			continue
 		}
 		merged := false
