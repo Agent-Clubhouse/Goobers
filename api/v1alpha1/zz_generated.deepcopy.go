@@ -6,7 +6,7 @@ package v1alpha1
 
 import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -313,6 +313,16 @@ func (in *GaggleSpec) DeepCopyInto(out *GaggleSpec) {
 	if in.AdditionalRepos != nil {
 		in, out := &in.AdditionalRepos, &out.AdditionalRepos
 		*out = make([]RepoRef, len(*in))
+		copy(*out, *in)
+	}
+	if in.CICommand != nil {
+		in, out := &in.CICommand, &out.CICommand
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.RequiredCapabilities != nil {
+		in, out := &in.RequiredCapabilities, &out.RequiredCapabilities
+		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
 }
@@ -697,6 +707,11 @@ func (in *Task) DeepCopyInto(out *Task) {
 	}
 	if in.Capabilities != nil {
 		in, out := &in.Capabilities, &out.Capabilities
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.RequiredCapabilities != nil {
+		in, out := &in.RequiredCapabilities, &out.RequiredCapabilities
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}

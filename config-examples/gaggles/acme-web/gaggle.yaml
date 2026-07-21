@@ -22,3 +22,18 @@ spec:
   isolation:
     namespace: gaggle-acme-web
     identityRef: acme-web-identity
+  # Per-gaggle CI command (MGV-1/#1009): this is a non-Go (web) stack, so the
+  # deterministic `local-ci` stage runs this suite in place of the Go default
+  # `["make", "ci"]` its workflow declares — no need to fork the shared workflow
+  # template. A non-zero exit fails the gate exactly as `make ci` does, and only
+  # ever fails this gaggle's own PRs.
+  ciCommand: ["npm", "run", "ci"]
+  # Runner capabilities every run of this gaggle needs (RRQ-1/#1101). These are
+  # matched at *schedule* time against the runner's advertised set
+  # (instance.yaml `runner.capabilities`, e.g. `runner: {capabilities:
+  # [node@20]}`): a run is refused to schedule — with a diagnostic naming the
+  # missing capability — on a runner that does not claim `node@20`, rather than
+  # scheduling it to fail at run. Toolchains are assumed preinstalled; the
+  # scheduler never installs anything.
+  requiredCapabilities:
+    - node@20

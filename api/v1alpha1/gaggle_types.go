@@ -23,6 +23,32 @@ type GaggleSpec struct {
 	// the backlog and infra/config repos always remain singletons (GAG-007).
 	// +optional
 	AdditionalRepos []RepoRef `json:"additionalRepos,omitempty" yaml:"additionalRepos,omitempty"`
+	// CICommand is the local CI-equivalent command (build + lint + tests) this
+	// gaggle's deterministic `local-ci` stage runs in place of the command that
+	// stage declares (the Go default `["make","ci"]`), so a foreign, non-Go
+	// gaggle can gate its PRs on its own stack's suite (e.g.
+	// `["npm","run","ci"]`, `["dotnet","test"]`) without rewriting the shared
+	// workflow template (MGV-1/#1009, docs/design/v1/multi-gaggle-validation.md
+	// §G2). Empty leaves the `local-ci` stage's declared command untouched, so a
+	// single Go gaggle behaves exactly as before. A non-zero exit fails the gate
+	// exactly as `make ci` does today, and a bad command only ever fails this
+	// gaggle's own PRs — never another gaggle's.
+	// +optional
+	CICommand []string `json:"ciCommand,omitempty" yaml:"ciCommand,omitempty"`
+	// RequiredCapabilities are the runner (toolchain/platform) capabilities every
+	// run of this gaggle needs on the runner it executes on — e.g. `dotnet@8`,
+	// `xcode`, `os=windows` (RRQ-1/#1101,
+	// docs/design/v1/polyglot-stacks.md §5). These are NOT the credential grants
+	// a Task declares (`internal/capability`, `repo:push` &c.): they are
+	// free-form, version-parameterized claims a runner advertises statically
+	// (instance.yaml `runner.capabilities`). The scheduler fails a run to
+	// schedule — with a diagnostic naming the missing capability — when the
+	// runner does not claim every entry here; a runner that falsely claims one it
+	// lacks degrades to a runtime error, which the scheduler does not prevent.
+	// Empty imposes no requirement, so an instance that declares none schedules
+	// exactly as today.
+	// +optional
+	RequiredCapabilities []string `json:"requiredCapabilities,omitempty" yaml:"requiredCapabilities,omitempty"`
 }
 
 // GaggleIsolation captures the isolation boundary for a gaggle: its Kubernetes

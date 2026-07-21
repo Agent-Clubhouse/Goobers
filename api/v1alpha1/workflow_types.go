@@ -146,6 +146,18 @@ type Task struct {
 	// closed on an undeclared capability (ARCHITECTURE.md §5, SEC-042).
 	// +optional
 	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// RequiredCapabilities are the runner (toolchain/platform) capabilities this
+	// stage needs on the runner it executes on — e.g. `dotnet@8`, `xcode`,
+	// `os=windows` (RRQ-1/#1101, docs/design/v1/polyglot-stacks.md §5). Distinct
+	// from Capabilities above: those are credential grants validated against the
+	// canonical internal/capability registry, whereas these are free-form,
+	// version-parameterized runner claims matched at *schedule* time against a
+	// runner's advertised capability set. A run is refused at schedule with a
+	// diagnostic naming the missing capability when the runner does not claim
+	// every entry (across every stage of the workflow plus its gaggle's own
+	// RequiredCapabilities). Empty imposes no requirement.
+	// +optional
+	RequiredCapabilities []string `json:"requiredCapabilities,omitempty" yaml:"requiredCapabilities,omitempty"`
 	// Retry declares how the runner retries this stage on failure. Retries are a
 	// runner concern (WF-021): the policy is data, not behavior, so the compiled
 	// machine stays deterministic. A retried attempt appears in the journal as a

@@ -127,6 +127,11 @@
         "inputs": { "type": "object", "additionalProperties": { "type": "string" } },
         "inputsFrom": { "type": "object", "additionalProperties": { "type": "string" } },
         "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "requiredCapabilities": {
+          "description": "Runner (toolchain/platform) capabilities this stage needs, matched at schedule time against a runner's advertised set (RRQ-1/#1101) — distinct from credential capabilities above.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@=+-]*$" }
+        },
         "retry": {
           "type": "object",
           "additionalProperties": false,
