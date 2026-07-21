@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CONFIG" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers config \- inspect the instance's operational configuration
+.SH SYNOPSIS
+\fBgoobers config\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers config <subcommand> [flags] [path]
+
+Inspect the instance's operational configuration (instance.yaml).
+
+Subcommands:
+  show   render the effective instance config (secrets redacted)
+
+Run `goobers config show -h` for details. Default path is ".".
+.fi
+.SH EXAMPLES
+.nf
+goobers config show
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

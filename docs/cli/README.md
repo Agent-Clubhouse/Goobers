@@ -20,6 +20,8 @@
 | [`goobers completion bash`](#goobers-completion-bash) | generate a bash completion script |
 | [`goobers completion fish`](#goobers-completion-fish) | generate a fish completion script |
 | [`goobers completion zsh`](#goobers-completion-zsh) | generate a zsh completion script |
+| [`goobers config`](#goobers-config) | inspect the instance's operational configuration |
+| [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers dashboard`](#goobers-dashboard) | serve and open the local operations portal |
 | [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
 | [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
@@ -62,7 +64,7 @@
 | [`goobers up`](#goobers-up) | run the daemon (scheduler + runner + loopback HTTP API) |
 | [`goobers update-behind-pr`](#goobers-update-behind-pr) | API-update a clean behind-base PR, else route to remediation (a workflow stage) |
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
-| [`goobers version`](#goobers-version) | print build version, commit, and date |
+| [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
 | [`goobers workflow`](#goobers-workflow) | inspect workflows |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
 
@@ -291,6 +293,54 @@ generate a zsh completion script
 Usage: goobers completion <bash|zsh|fish>
 
 Generate a shell completion script. Source the output in the target shell.
+~~~
+
+## `goobers config`
+
+inspect the instance's operational configuration
+
+~~~text
+Usage: goobers config <subcommand> [flags] [path]
+
+Inspect the instance's operational configuration (instance.yaml).
+
+Subcommands:
+  show   render the effective instance config (secrets redacted)
+
+Run `goobers config show -h` for details. Default path is ".".
+~~~
+
+**Examples**
+
+~~~console
+$ goobers config show
+~~~
+
+## `goobers config show`
+
+render the effective instance config (secrets redacted)
+
+~~~text
+Usage: goobers config show [--json] [path]
+
+Render the effective instance configuration loaded from <path>/instance.yaml
+(repos, API/webhook bind config, run conditions, credential grants, timezone),
+as YAML by default or as JSON with --json.
+
+Secrets are redacted by construction: a token reference is only ever a
+locator — the env var name or file path the secret is read from at runtime
+(CFG-009/SEC-010 forbid inline values) — so `config show` prints where each
+credential comes from and never reads or prints the secret value itself.
+
+Exit codes: 0 = OK, 1 = load/render error, 2 = usage error or not an
+instance root.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers config show
+$ goobers config show --json
 ~~~
 
 ## `goobers dashboard`
@@ -1203,16 +1253,26 @@ $ goobers validate --check-harness --check-repos
 
 ## `goobers version`
 
-print build version, commit, and date
+print build version, commit, and date (--json for structured output)
 
 ~~~text
-print build version, commit, and date
+Usage: goobers version [--json]
+       goobers --version [--json]
+
+Print the build version, commit, build date, Go toolchain, and platform.
+
+Default output is a single human-readable line. --json emits a structured
+object with keys: version, commit, date, goVersion, platform — the same
+fields, machine-readable for scripts and support bundles.
+
+Exit codes: 0 = OK, 2 = usage error.
 ~~~
 
 **Examples**
 
 ~~~console
 $ goobers --version
+$ goobers version --json
 ~~~
 
 ## `goobers workflow`

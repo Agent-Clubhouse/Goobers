@@ -1,0 +1,29 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CONFIG SHOW" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers config show \- render the effective instance config (secrets redacted)
+.SH SYNOPSIS
+\fBgoobers config show\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers config show [--json] [path]
+
+Render the effective instance configuration loaded from <path>/instance.yaml
+(repos, API/webhook bind config, run conditions, credential grants, timezone),
+as YAML by default or as JSON with --json.
+
+Secrets are redacted by construction: a token reference is only ever a
+locator — the env var name or file path the secret is read from at runtime
+(CFG-009/SEC-010 forbid inline values) — so `config show` prints where each
+credential comes from and never reads or prints the secret value itself.
+
+Exit codes: 0 = OK, 1 = load/render error, 2 = usage error or not an
+instance root.
+.fi
+.SH EXAMPLES
+.nf
+goobers config show
+goobers config show --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
