@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +14,11 @@ import (
 	"testing"
 	"time"
 
+	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -48,6 +55,189 @@ func resolveGrants(t *testing.T, r credentials.Resolver, grants []credentials.Gr
 		out[g.Capability] = val
 	}
 	return out
+}
+
+func TestResolveOTLPHeaders(t *testing.T) {
+	t.Setenv("OTLP_AUTHORIZATION", "Bearer collector-secret")
+	registry := journal.NewRegistryScrubber()
+	headers, err := resolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
+		"authorization": {Env: "OTLP_AUTHORIZATION"},
+	}, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := headers["authorization"]; got != "Bearer collector-secret" {
+		t.Fatalf("authorization header = %q, want resolved environment value", got)
+	}
+	if got := string(registry.Scrub([]byte("credential: Bearer collector-secret"))); strings.Contains(got, "collector-secret") {
+		t.Fatalf("resolved collector credential was not registered for redaction: %q", got)
+	}
+}
+
+func TestResolveOTLPHeadersFailsOnMissingCredential(t *testing.T) {
+	_, err := resolveOTLPHeaders(context.Background(), map[string]instance.TokenRef{
+		"authorization": {Env: "UNSET_OTLP_AUTHORIZATION"},
+	}, journal.NewRegistryScrubber())
+	if err == nil || !strings.Contains(err.Error(), `env var "UNSET_OTLP_AUTHORIZATION" is not set`) {
+		t.Fatalf("expected missing collector credential error, got %v", err)
+	}
+}
+
+type runnerWiringOTLPCollector struct {
+	collectortrace.UnimplementedTraceServiceServer
+	requests chan *collectortrace.ExportTraceServiceRequest
+}
+
+func (c *runnerWiringOTLPCollector) Export(
+	_ context.Context,
+	req *collectortrace.ExportTraceServiceRequest,
+) (*collectortrace.ExportTraceServiceResponse, error) {
+	c.requests <- req
+	return &collectortrace.ExportTraceServiceResponse{}, nil
+}
+
+type unavailableRunnerWiringOTLPCollector struct {
+	collectortrace.UnimplementedTraceServiceServer
+}
+
+func (unavailableRunnerWiringOTLPCollector) Export(
+	context.Context,
+	*collectortrace.ExportTraceServiceRequest,
+) (*collectortrace.ExportTraceServiceResponse, error) {
+	return nil, status.Error(codes.Unavailable, "collector unavailable")
+}
+
+func TestBuildTelemetryClientScrubsRegisteredSecretFromOTLP(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	collector := &runnerWiringOTLPCollector{
+		requests: make(chan *collectortrace.ExportTraceServiceRequest, 1),
+	}
+	collectortrace.RegisterTraceServiceServer(server, collector)
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+
+	const secret = "purple umbrella seven"
+	t.Setenv("RUNNERWIRING_OTLP_SECRET", secret)
+	registry := journal.NewRegistryScrubber()
+	scrubber := journal.Chain(registry, journal.NewPatternScrubber())
+	client, err := buildTelemetryClient(
+		context.Background(),
+		instance.NewLayout(t.TempDir()),
+		scrubber,
+		registry,
+		instance.OTLPConfig{
+			Endpoint: "http://" + listener.Addr().String(),
+			Insecure: true,
+			Headers: map[string]instance.TokenRef{
+				"authorization": {Env: "RUNNERWIRING_OTLP_SECRET"},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shutdown := false
+	t.Cleanup(func() {
+		if !shutdown {
+			_ = client.Shutdown(context.Background())
+		}
+	})
+
+	_, span, err := client.StartRun(context.Background(), telemetry.RunAttributes{
+		Gaggle:     "acme-web",
+		WorkflowID: "wf",
+		RunID:      "0af7651916cd43dd8448eb211c80319c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.Fail(errors.New("collector failure: " + secret))
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	shutdown = true
+
+	select {
+	case req := <-collector.requests:
+		raw, err := proto.Marshal(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(raw, []byte(secret)) {
+			t.Fatal("registered collector credential appeared in exported span data")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("collector did not receive an OTLP export")
+	}
+}
+
+func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	collectortrace.RegisterTraceServiceServer(server, unavailableRunnerWiringOTLPCollector{})
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+
+	journalExporter := telemetry.NewMemoryExporter()
+	client, err := telemetry.New(context.Background(), telemetry.Config{
+		ServiceName:  "telemetry-test",
+		SpanExporter: journalExporter,
+		Exporter:     telemetry.ExporterOTLP,
+		OTLPEndpoint: listener.Addr().String(),
+		OTLPInsecure: true,
+		Batch:        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		_ = client.Shutdown(ctx)
+	})
+
+	_, span, err := client.StartRun(context.Background(), telemetry.RunAttributes{
+		Gaggle:     "acme-web",
+		WorkflowID: "wf",
+		RunID:      "0af7651916cd43dd8448eb211c80319c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.End()
+
+	done := make(chan struct{})
+	go func() {
+		ingestRunTelemetry(client, nil, instance.Layout{}, "", nil)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("run telemetry ingest waited for unavailable OTLP collector")
+	}
+	if got := len(journalExporter.Spans()); got != 1 {
+		t.Fatalf("local journal exporter spans = %d, want 1", got)
+	}
 }
 
 // TestBuildEnvCapabilities is #288's wiring: the Copilot adapter's capability→

@@ -31,18 +31,73 @@ import (
 )
 
 // buildTelemetryClient constructs the OTel client that spans the runner walk
-// (run/task/gate) and scheduler decisions. Run spans land under RunsDir;
-// scheduler spans land in the instance scheduler journal. Both are projected
-// into the rollup. Shared by up.go/run.go exactly like buildRunnerConfig; each
-// caller owns calling Shutdown on the returned client once it is done driving
-// runs.
-func buildTelemetryClient(ctx context.Context, l instance.Layout, scrubber journal.Scrubber) (*telemetry.Client, error) {
-	return telemetry.New(ctx, telemetry.Config{
+// (run/task/gate) and scheduler decisions, writing completed spans under
+// RunsDir via JournalSpanExporter (issue #126) — the same run journal
+// layout goobers trace/telemetry read back through the rollup. Shared by
+// up.go/run.go exactly like buildRunnerConfig; each caller owns calling
+// Shutdown on the returned client once it's done driving runs.
+func buildTelemetryClient(
+	ctx context.Context,
+	l instance.Layout,
+	scrubber journal.Scrubber,
+	registry *journal.RegistryScrubber,
+	otlp instance.OTLPConfig,
+) (*telemetry.Client, error) {
+	cfg := telemetry.Config{
 		ServiceName:    "goobers",
 		ServiceVersion: version.Get().Version,
 		SpanExporter:   telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
+		Scrubber:       scrubber,
 		Batch:          true,
-	})
+	}
+	if otlp.Enabled() {
+		headers, err := resolveOTLPHeaders(ctx, otlp.Headers, registry)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Exporter = telemetry.ExporterOTLP
+		cfg.OTLPEndpoint = otlp.Endpoint
+		cfg.OTLPInsecure = otlp.Insecure
+		cfg.OTLPHeaders = headers
+	}
+	return telemetry.New(ctx, cfg)
+}
+
+func resolveOTLPHeaders(
+	ctx context.Context,
+	headerRefs map[string]instance.TokenRef,
+	registry *journal.RegistryScrubber,
+) (map[string]string, error) {
+	names := make([]string, 0, len(headerRefs))
+	for name := range headerRefs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	refs := make([]credentials.TokenRef, 0, len(names))
+	for _, name := range names {
+		ref := headerRefs[name]
+		refs = append(refs, credentials.TokenRef{
+			Name: "telemetry.otlp.headers." + strings.ToLower(name),
+			Env:  ref.Env,
+			File: ref.File,
+		})
+	}
+	resolver, err := credentials.NewResolver(refs)
+	if err != nil {
+		return nil, fmt.Errorf("configure telemetry OTLP headers: %w", err)
+	}
+
+	headers := make(map[string]string, len(names))
+	for i, name := range names {
+		value, err := resolver.Resolve(ctx, refs[i].Name)
+		if err != nil {
+			return nil, fmt.Errorf("resolve telemetry OTLP header %q: %w", name, err)
+		}
+		registry.Register([]byte(value))
+		headers[name] = value
+	}
+	return headers, nil
 }
 
 // teeRegistrar forwards every registered secret to BOTH a run's own
@@ -76,19 +131,12 @@ func (t teeRegistrar) Register(secret []byte) {
 // the source of truth, so an ingest failure here must never fail the run
 // itself.
 //
-// tel.Flush MUST run before IngestRun reads spans.jsonl: buildTelemetryClient
-// sets Batch: true, so completed spans sit in the OTel SDK's in-memory batch
-// processor and are only written to disk on the processor's own interval or
-// an explicit flush/shutdown — not synchronously when a span ends. Without
-// this, IngestRun would race that flush and snapshot a run's spans as empty
-// into telemetry.db, with nothing to re-ingest them later even after
-// spans.jsonl itself eventually gets written (issue #129's checklist: this
-// is exactly the gap that made `goobers trace` depend on a prior
-// `goobers telemetry` call, which itself flushed via a DIFFERENT process's
-// tel.Shutdown before this fix existed).
+// FlushLocal MUST run before IngestRun reads spans.jsonl: the local journal
+// exporter batches completed spans, but flushing the whole provider would also
+// wait for a configured remote collector and delay scheduler-slot release.
 func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout, runID string, log *journal.InstanceLog) {
 	if tel != nil {
-		if err := tel.Flush(context.Background()); err != nil {
+		if err := tel.FlushLocal(context.Background()); err != nil {
 			logIngestFailure(log, runID, "telemetry_flush_failed", err)
 		}
 	}

@@ -157,6 +157,9 @@ admin can touch.
    goobers up ~/goobers-instance
    ```
 
+   Collector push is optional. To inspect local traces in Jaeger, follow the
+   [Jaeger quickstart](../docs/guides/jaeger-quickstart.md).
+
    > `goobers up`/`run`/`status`/`trace` land with issue #23 (CLI surface,
    > in progress). Until then, `init`/`validate` are enough to prepare and
    > check this config; `up` is where the daemon actually starts running

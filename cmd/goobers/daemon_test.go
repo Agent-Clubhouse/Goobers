@@ -193,7 +193,7 @@ func TestIdleTickIngestsBatchedSchedulerTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = instanceLog.Close() })
-	tel, err := buildTelemetryClient(ctx, l, nil)
+	tel, err := buildTelemetryClient(ctx, l, nil, journal.NewRegistryScrubber(), instance.OTLPConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,6 +373,22 @@ func TestSchedulerShutdownIngestsRejectedDispatchSpans(t *testing.T) {
 				t.Fatalf("runs = %#v, want none for rejected %s dispatch", runs, tt.name)
 			}
 		})
+	}
+}
+
+func TestBuildSchedulerSetupRejectsInvalidOTLPEnvironment(t *testing.T) {
+	root := initDeterministicDemo(t)
+	t.Setenv(instance.OTLPEndpointEnv, "http://collector.example.com:4317")
+	t.Setenv(instance.OTLPInsecureEnv, "true")
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if setup != nil {
+		setup.Shutdown(context.Background())
+		t.Fatal("buildSchedulerSetup returned a setup for invalid OTLP configuration")
+	}
+	if err == nil || !strings.Contains(err.Error(), "insecure mode is allowed only") {
+		t.Fatalf("expected OTLP security validation error, got %v", err)
 	}
 }
 
