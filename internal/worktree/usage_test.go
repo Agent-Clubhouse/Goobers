@@ -108,6 +108,53 @@ func TestUsageMeasurementsTrackHousekeepingWithoutScanningLiveWorktrees(t *testi
 	}
 }
 
+func TestUsageMeasurementsTrackRetentionDeletionThroughSharedReaper(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	var measurements []UsageMeasurement
+	m, err := NewManager(t.TempDir(), WithUsageObserver("alpha", func(_ context.Context, measurement UsageMeasurement) {
+		measurements = append(measurements, measurement)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "retained-stage", OwnerRunID: "retained", BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{Keep: true}); err != nil {
+		t.Fatal(err)
+	}
+	retained := measurements[len(measurements)-1]
+	measurements = nil
+
+	markerPath := m.markerPath(wt.key, wt.RunID)
+	mk, err := readMarker(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.reapOne(ctx, wt.key, wt.Path, markerPath, &mk); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(measurements) != 1 {
+		t.Fatalf("retention measurements = %d, want 1: %+v", len(measurements), measurements)
+	}
+	got := measurements[0]
+	if got.Operation != UsageOperationHousekeeping || got.OwnerRunID != "retained" ||
+		got.WorktreeID != wt.RunID || !got.WorktreeMeasured || !got.WorkcopyMeasured || got.Err != nil {
+		t.Fatalf("retention measurement = %+v", got)
+	}
+	if got.WorkcopyBytes >= retained.WorkcopyBytes || got.UnmeasuredWorktrees != 0 {
+		t.Fatalf("retention aggregate did not shrink: retained=%+v reaped=%+v", retained, got)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("retained worktree survived shared reaper: %v", err)
+	}
+}
+
 func TestAggregateUsageUsesSnapshotInsteadOfScanningActiveWorktree(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)

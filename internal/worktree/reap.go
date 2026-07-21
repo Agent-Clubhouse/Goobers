@@ -149,12 +149,9 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 		}
 
 		path := filepath.Join(m.runsDirForKey(key), mk.RunID)
-		worktreeBytes, worktreeMeasured, measurementErr := m.measureWorktree(path)
 		if err := m.reapOne(ctx, key, path, markerPath, &mk); err != nil {
-			m.observeUsage(ctx, UsageOperationHousekeeping, mk.OwnerRunID, mk.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 			return results, warnings, fmt.Errorf("worktree: reap run %s: %w", mk.RunID, err)
 		}
-		m.observeUsage(ctx, UsageOperationHousekeeping, mk.OwnerRunID, mk.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 		results = append(results, ReapResult{RunID: mk.RunID, Path: path, Reason: reason})
 	}
 
@@ -206,18 +203,32 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 			}
 		}
 		markerPath := m.markerPath(key, e.Name())
-		worktreeBytes, worktreeMeasured, measurementErr := m.measureWorktree(path)
 		if err := m.reapOne(ctx, key, path, markerPath, nil); err != nil {
-			m.observeUsage(ctx, UsageOperationHousekeeping, "", e.Name(), worktreeBytes, worktreeMeasured, measurementErr)
 			return results, warnings, fmt.Errorf("worktree: reap markerless run %s: %w", e.Name(), err)
 		}
-		m.observeUsage(ctx, UsageOperationHousekeeping, "", e.Name(), worktreeBytes, worktreeMeasured, measurementErr)
 		results = append(results, ReapResult{RunID: e.Name(), Path: path, Reason: ReapReasonMarkerless})
 	}
 	return results, warnings, nil
 }
 
 func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk *marker) error {
+	ownerRunID := ""
+	worktreeID := filepath.Base(path)
+	if mk != nil {
+		ownerRunID = mk.OwnerRunID
+		worktreeID = mk.RunID
+	}
+	worktreeBytes, worktreeMeasured, measurementErr := m.measureWorktree(path)
+	defer m.observeUsage(
+		ctx,
+		UsageOperationHousekeeping,
+		ownerRunID,
+		worktreeID,
+		worktreeBytes,
+		worktreeMeasured,
+		measurementErr,
+	)
+
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
