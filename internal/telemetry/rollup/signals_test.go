@@ -1,12 +1,15 @@
 package rollup
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // TestIngestRunCapturesHarnessTranscripts is issue #128's first defect:
@@ -21,7 +24,8 @@ func TestIngestRunCapturesHarnessTranscripts(t *testing.T) {
 	events := strings.Join([]string{
 		rawEventLine(1, "run.started"),
 		`{"schema":"goobers.dev/journal/event/v1","seq":2,"branch":0,"time":"2026-07-13T00:00:02Z","type":"span.recorded","stage":"implement","name":"copilot-transcript","ref":{"path":"spans/sha256/ab/cdef","digest":"sha256:abcdef","size":4096}}`,
-		rawEventLine(3, "run.finished"),
+		`{"schema":"goobers.dev/journal/event/v1","seq":3,"branch":0,"time":"2026-07-13T00:00:03Z","type":"span.recorded","stage":"review","name":"copilot-transcript","dataSchema":"goobers.dev/telemetry/genai-event/v1","ref":{"path":"spans/sha256/12/3456","digest":"sha256:123456","size":2048}}`,
+		rawEventLine(4, "run.finished"),
 	}, "\n") + "\n"
 	writeRunWithRawEvents(t, runsDir, fixtureRunID, events, "")
 
@@ -34,12 +38,18 @@ func TestIngestRunCapturesHarnessTranscripts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HarnessTranscripts: %v", err)
 	}
-	if len(transcripts) != 1 {
-		t.Fatalf("transcripts = %#v, want exactly 1", transcripts)
+	if len(transcripts) != 2 {
+		t.Fatalf("transcripts = %#v, want exactly 2", transcripts)
 	}
 	tr := transcripts[0]
 	if tr.Stage != "implement" || tr.Name != "copilot-transcript" || tr.RefDigest != "sha256:abcdef" || tr.RefSize != 4096 {
 		t.Fatalf("unexpected transcript row: %#v", tr)
+	}
+	if tr.Schema != "" {
+		t.Fatalf("legacy transcript schema = %q, want empty", tr.Schema)
+	}
+	if got := transcripts[1].Schema; got != "goobers.dev/telemetry/genai-event/v1" {
+		t.Fatalf("canonical transcript schema = %q", got)
 	}
 }
 
@@ -97,7 +107,8 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 		instanceEventLine(5, "run.finished", `"workflow":"nominate","runId":"`+fixtureRunID+`","status":"completed"`),
 		instanceEventLine(6, "claim.released", `"runId":"`+fixtureRunID+`"`),
 		instanceEventLine(7, "claim.force_released", `"runId":"admin-released-run"`),
-		instanceEventLine(8, "error", `"error":{"code":"claim_recovery_failed","message":"corrupt claims ledger"}`),
+		instanceEventLine(8, "workflow.starved", `"workflow":"nominate","reason":"consecutive instance pool skips: 3"`),
+		instanceEventLine(9, "error", `"error":{"code":"claim_recovery_failed","message":"corrupt claims ledger"}`),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +122,8 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchedulerEvents: %v", err)
 	}
-	if len(events) != 8 {
-		t.Fatalf("scheduler events = %d, want 8: %#v", len(events), events)
+	if len(events) != 9 {
+		t.Fatalf("scheduler events = %d, want 9: %#v", len(events), events)
 	}
 	if events[1].Type != "tick.skipped" || events[1].Reason != "conditions: max-parallel" {
 		t.Fatalf("tick.skipped row = %#v", events[1])
@@ -123,8 +134,11 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	if events[6].Type != "claim.force_released" || events[6].RunID != "admin-released-run" {
 		t.Fatalf("claim.force_released row = %#v", events[6])
 	}
-	if events[7].Type != "error" || events[7].ErrorCode != "claim_recovery_failed" || events[7].ErrorClass != "unknown" {
-		t.Fatalf("error row = %#v", events[7])
+	if events[7].Type != "workflow.starved" || events[7].Reason != "consecutive instance pool skips: 3" {
+		t.Fatalf("workflow.starved row = %#v", events[7])
+	}
+	if events[8].Type != "error" || events[8].ErrorCode != "claim_recovery_failed" || events[8].ErrorClass != "unknown" {
+		t.Fatalf("error row = %#v", events[8])
 	}
 	signatures, err := db.TopErrorSignatures(StatsRequest{}, 10)
 	if err != nil {
@@ -141,8 +155,42 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchedulerEvents filtered: %v", err)
 	}
-	if len(filtered) != 4 {
-		t.Fatalf("filtered scheduler events = %d, want 4 (trigger.fired/tick.skipped/run.started/run.finished): %#v", len(filtered), filtered)
+	if len(filtered) != 5 {
+		t.Fatalf("filtered scheduler events = %d, want 5 including workflow.starved: %#v", len(filtered), filtered)
+	}
+}
+
+func TestIngestSchedulerLogCapturesRollingSpans(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEvents(t, schedulerDir, []string{
+		instanceEventLine(1, "tick.skipped", `"workflow":"nominate","reason":"conditions: max-parallel"`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record := telemetry.SpanRecord{
+		Schema: telemetry.SpanSchema, TraceID: fixtureRunID, SpanID: "0123456789abcdef",
+		Name: "scheduler/dispatch", Kind: telemetry.SpanKindScheduler, Status: "ok",
+		StartTime: fixtureStart, EndTime: fixtureStart.Add(time.Millisecond),
+		Attributes: map[string]string{telemetry.AttrOutcome: string(telemetry.OutcomeBlocked)},
+	}
+	if err := writeSchedulerSpan(t, schedulerDir, record); err != nil {
+		t.Fatal(err)
+	}
+
+	db := openTestDB(t, tmp)
+	for i := 0; i < 2; i++ {
+		if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+			t.Fatalf("IngestSchedulerLog pass %d: %v", i+1, err)
+		}
+	}
+	spans, err := db.Spans(fixtureRunID)
+	if err != nil {
+		t.Fatalf("Spans: %v", err)
+	}
+	if len(spans) != 1 || spans[0].Kind != telemetry.SpanKindScheduler ||
+		spans[0].Name != "scheduler/dispatch" || spans[0].BusinessStatus != string(telemetry.OutcomeBlocked) {
+		t.Fatalf("scheduler spans = %#v", spans)
 	}
 }
 
@@ -276,4 +324,17 @@ func writeInstanceEvents(t *testing.T, schedulerDir string, lines []string) erro
 	}
 	body := strings.Join(lines, "\n") + "\n"
 	return os.WriteFile(filepath.Join(schedulerDir, fileEvents), []byte(body), 0o644)
+}
+
+func writeSchedulerSpan(t *testing.T, schedulerDir string, record telemetry.SpanRecord) error {
+	t.Helper()
+	dir := filepath.Join(schedulerDir, dirSpans)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	body, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, fileSpans), append(body, '\n'), 0o644)
 }

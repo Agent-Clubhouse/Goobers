@@ -154,7 +154,7 @@ _goobers_completion()
     flags="-h --help"
     case "${command}" in
         validate) flags+=" --check-harness --source-tree" ;;
-        up) flags+=" --quiet" ;;
+        up) flags+=" --quiet --cleanup-spans-only-runs" ;;
         dashboard) flags+=" --port --no-open --dev-assets" ;;
         run) flags+=" --no-wait" ;;
         workflow)
@@ -324,7 +324,7 @@ _goobers_completion()
     flags=(-h --help)
     case "${command}" in
         validate) flags+=(--check-harness --source-tree) ;;
-        up) flags+=(--quiet) ;;
+        up) flags+=(--quiet --cleanup-spans-only-runs) ;;
         dashboard) flags+=(--port --no-open --dev-assets) ;;
         run) flags+=(--no-wait) ;;
         workflow)
@@ -495,6 +495,7 @@ complete -c goobers -n '__fish_seen_subcommand_from scaffold' -l force -d 'Repla
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-harness -d 'Check agent harnesses'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l source-tree -d 'Validate a checked-in config source tree'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress liveness heartbeats'
+complete -c goobers -n '__fish_seen_subcommand_from up' -l cleanup-spans-only-runs -d 'Delete reported legacy spans-only run directories at startup'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l port -r -d 'Dashboard port or auto'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l no-open -d 'Print the URL without opening a browser'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l dev-assets -r -d 'Serve a local portal build'

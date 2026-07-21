@@ -225,7 +225,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// Dependency-aware skip (#552): snapshot blocked.json under its local
 	// lock, then resolve every provider-backed issue state after releasing it.
 	// A stalled provider must never prevent terminal claim finalization.
-	observedRecords, err := snapshotBlockedRecords(l)
+	observedRecords, err := snapshotBlockedRecordsForRepository(l, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -266,7 +266,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	if !*claim {
 		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
 			var rerr error
-			eligible, rerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords, unresolvedRecords)
+			eligible, rerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), repo, eligible, resolvedRecords, unresolvedRecords)
 			return rerr
 		})
 		if err != nil {
@@ -285,7 +285,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 
 	if len(eligible) == 0 {
 		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
-			_, rerr := reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords, unresolvedRecords)
+			_, rerr := reconcileBlockedEligibilityLocked(blockedRecordsPath(l), repo, eligible, resolvedRecords, unresolvedRecords)
 			return rerr
 		})
 		if err != nil {
@@ -336,7 +336,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
 		}
-		eligible, lerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords, unresolvedRecords)
+		eligible, lerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), repo, eligible, resolvedRecords, unresolvedRecords)
 		if lerr != nil {
 			return lerr
 		}

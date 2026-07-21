@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,11 +11,15 @@ import (
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -48,6 +53,7 @@ type fakeRecorder struct {
 
 type recordedSpan struct {
 	stage, name string
+	schema      string
 	data        []byte
 }
 
@@ -56,11 +62,22 @@ type recordedArtifact struct {
 	data []byte
 }
 
-func (f *fakeRecorder) RecordSpan(stage, name string, data []byte) (journal.Ref, error) {
+type metricsFakeAdapter struct {
+	FakeAdapter
+	metrics map[string]float64
+}
+
+func (f *metricsFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	out, err := f.FakeAdapter.Run(ctx, req)
+	out.Metrics = f.metrics
+	return out, err
+}
+
+func (f *fakeRecorder) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error) {
 	if f.err != nil {
 		return journal.Ref{}, f.err
 	}
-	f.spans = append(f.spans, recordedSpan{stage: stage, name: name, data: append([]byte(nil), data...)})
+	f.spans = append(f.spans, recordedSpan{stage: stage, name: name, schema: dataSchema, data: append([]byte(nil), data...)})
 	return journal.Ref{Digest: journal.Digest(data)}, nil
 }
 
@@ -146,8 +163,166 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 	if rec.spans[0].stage != "implement" {
 		t.Fatalf("span stage = %q, want %q", rec.spans[0].stage, "implement")
 	}
-	if string(rec.spans[0].data) != "implementing... done" {
-		t.Fatalf("span data = %q", rec.spans[0].data)
+	if rec.spans[0].schema != telemetry.GenAIEventSchema {
+		t.Fatalf("span schema = %q, want %q", rec.spans[0].schema, telemetry.GenAIEventSchema)
+	}
+	events := decodeTranscriptEvents(t, rec.spans[0].data)
+	if len(events) != 2 {
+		t.Fatalf("transcript events = %#v, want prompt and final output", events)
+	}
+	if events[0].Role != "user" || !strings.Contains(events[0].Content, "implement the thing") || !strings.Contains(events[0].Content, "be a good coder") {
+		t.Fatalf("prompt event = %#v", events[0])
+	}
+	if events[1].Role != "assistant" || events[1].Content != "implementing... done" {
+		t.Fatalf("final output event = %#v", events[1])
+	}
+}
+
+func TestExecutorMaterializesAssetsBeforeInvocation(t *testing.T) {
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, "templates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "templates", "review.md"), []byte("review carefully"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := gooberassets.Load(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &metricsFakeAdapter{
+		FakeAdapter: FakeAdapter{
+			Transcript: []byte("asset-aware completion"),
+			Act: func(_ context.Context, req RunRequest) error {
+				data, err := os.ReadFile(filepath.Join(req.Workspace, gooberassets.WorkspaceDir, "templates", "review.md"))
+				if err != nil {
+					return err
+				}
+				if string(data) != "review carefully" {
+					return fmt.Errorf("asset content = %q", data)
+				}
+				return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+			},
+		},
+		metrics: map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens:  120,
+			telemetry.AttrCopilotPremiumRequests: 1,
+		},
+	}
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+		WithAssetBundle(bundle),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exporter := telemetry.NewMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	ctx, span := provider.Tracer("asset-integration-test").Start(context.Background(), "attempt")
+	result, err := exec.Invoke(ctx, testEnvelope(t.TempDir()))
+	span.End()
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result.Metrics[telemetry.AttrGenAIUsageInputTokens] != 120 ||
+		result.Metrics[telemetry.AttrCopilotPremiumRequests] != 1 {
+		t.Fatalf("result metrics = %v", result.Metrics)
+	}
+	if len(rec.spans) != 1 || rec.spans[0].schema != telemetry.GenAIEventSchema {
+		t.Fatalf("recorded spans = %#v, want one canonical transcript", rec.spans)
+	}
+	events := decodeTranscriptEvents(t, rec.spans[0].data)
+	if len(events) != 2 || events[1].Role != "assistant" || events[1].Content != "asset-aware completion" {
+		t.Fatalf("transcript events = %#v", events)
+	}
+	spans := exporter.Spans()
+	if len(spans) != 1 {
+		t.Fatalf("telemetry spans = %d, want 1", len(spans))
+	}
+	var inputTokens int64
+	var premiumRequests float64
+	for _, attr := range spans[0].Attributes() {
+		switch string(attr.Key) {
+		case telemetry.AttrGenAIUsageInputTokens:
+			inputTokens = attr.Value.AsInt64()
+		case telemetry.AttrCopilotPremiumRequests:
+			premiumRequests = attr.Value.AsFloat64()
+		}
+	}
+	if inputTokens != 120 || premiumRequests != 1 {
+		t.Fatalf("usage span attributes = input %d, premium %v", inputTokens, premiumRequests)
+	}
+}
+
+func TestExecutorMaterializationFailureEmitsNoAgentTelemetry(t *testing.T) {
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "reference.md"), []byte("reference"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := gooberassets.Load(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, gooberassets.WorkspaceDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	adapter := &metricsFakeAdapter{
+		FakeAdapter: FakeAdapter{
+			Transcript: []byte("must not be recorded"),
+			Act: func(context.Context, RunRequest) error {
+				called = true
+				return nil
+			},
+		},
+		metrics: map[string]float64{telemetry.AttrGenAIUsageInputTokens: 120},
+	}
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+		WithAssetBundle(bundle),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exporter := telemetry.NewMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	ctx, span := provider.Tracer("asset-error-test").Start(context.Background(), "attempt")
+	result, err := exec.Invoke(ctx, testEnvelope(workspace))
+	span.End()
+	if !errors.Is(err, gooberassets.ErrWorkspaceCollision) {
+		t.Fatalf("Invoke error = %v, want ErrWorkspaceCollision", err)
+	}
+	if called {
+		t.Fatal("adapter ran after asset materialization failed")
+	}
+	if len(result.Metrics) != 0 || len(rec.spans) != 0 {
+		t.Fatalf("failure emitted agent telemetry: metrics=%v spans=%#v", result.Metrics, rec.spans)
+	}
+	spans := exporter.Spans()
+	if len(spans) != 1 {
+		t.Fatalf("telemetry spans = %d, want 1", len(spans))
+	}
+	for _, attr := range spans[0].Attributes() {
+		if string(attr.Key) == telemetry.AttrGenAIUsageInputTokens {
+			t.Fatalf("materialization failure recorded usage attribute %v", attr)
+		}
 	}
 }
 
@@ -451,6 +626,113 @@ func TestExecutorInvokeSurfacesTranscriptTruncation(t *testing.T) {
 	}
 	if dropped, _ := result.Outputs["transcriptDroppedBytes"].(float64); dropped != 999 {
 		t.Fatalf("Outputs[transcriptDroppedBytes] = %v, want 999", result.Outputs["transcriptDroppedBytes"])
+	}
+	events := decodeTranscriptEvents(t, rec.spans[0].data)
+	if len(events) != 2 || !events[1].Truncated {
+		t.Fatalf("truncated transcript events = %#v", events)
+	}
+}
+
+func TestExecutorBoundsComposedCanonicalTranscript(t *testing.T) {
+	const limit = int64(1024)
+	adapter := &FakeAdapter{
+		Transcript:             bytes.Repeat([]byte("x"), int(limit)),
+		TranscriptTruncated:    true,
+		TranscriptDroppedBytes: 77,
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	injector := testInjector(t, "REPO_TOKEN_ENV", "unused", noopRegistrar{})
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(
+		adapter,
+		injector,
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+		WithTranscriptLimit(limit),
+	)
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir(), "repo:read"))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if truncated, _ := result.Outputs["transcriptTruncated"].(bool); !truncated {
+		t.Fatalf("Outputs[transcriptTruncated] = %v, want true", result.Outputs["transcriptTruncated"])
+	}
+	dropped, _ := result.Outputs["transcriptDroppedBytes"].(float64)
+	if dropped <= float64(adapter.TranscriptDroppedBytes) {
+		t.Fatalf("Outputs[transcriptDroppedBytes] = %v, want > %d", result.Outputs["transcriptDroppedBytes"], adapter.TranscriptDroppedBytes)
+	}
+	events := decodeTranscriptEvents(t, rec.spans[0].data)
+	if len(events) != 3 {
+		t.Fatalf("transcript events = %#v, want prompt, truncated final output, and marker", events)
+	}
+	if events[0].Role != "user" || events[0].Content == "" {
+		t.Fatalf("prompt event = %#v, want retained prompt content", events[0])
+	}
+	if events[1].Role != "assistant" || events[1].Content == "" || !events[1].Truncated {
+		t.Fatalf("final output event = %#v, want retained truncated assistant content", events[1])
+	}
+	marker := events[len(events)-1]
+	if marker.Role != "system" || !marker.Truncated || !strings.Contains(marker.Content, fmt.Sprintf("%.0f bytes dropped", dropped)) {
+		t.Fatalf("truncation marker = %#v", marker)
+	}
+	encodedMarker, err := marshalTranscriptEvents(marker)
+	if err != nil {
+		t.Fatalf("marshal truncation marker: %v", err)
+	}
+	if retained := len(rec.spans[0].data) - len(encodedMarker); retained > int(limit) {
+		t.Fatalf("retained transcript bytes = %d, want at most %d", retained, limit)
+	}
+}
+
+func TestExecutorPreservesFinalOutputWhenPromptExceedsTranscriptLimit(t *testing.T) {
+	const limit = int64(512)
+	const finalOutput = "captured final output"
+	adapter := &FakeAdapter{
+		Transcript: []byte(finalOutput),
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		strings.Repeat("long instructions ", int(limit)),
+		WithTranscriptLimit(limit),
+	)
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if truncated, _ := result.Outputs["transcriptTruncated"].(bool); !truncated {
+		t.Fatalf("Outputs[transcriptTruncated] = %v, want true", result.Outputs["transcriptTruncated"])
+	}
+	events := decodeTranscriptEvents(t, rec.spans[0].data)
+	if len(events) != 3 {
+		t.Fatalf("transcript events = %#v, want prompt, final output, and marker", events)
+	}
+	if events[0].Role != "user" || events[0].Content == "" || !events[0].Truncated {
+		t.Fatalf("prompt event = %#v, want retained truncated prompt content", events[0])
+	}
+	if events[1].Role != "assistant" || events[1].Content != finalOutput || !events[1].Truncated {
+		t.Fatalf("final output event = %#v, want preserved assistant content marked truncated", events[1])
 	}
 }
 

@@ -1287,7 +1287,7 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 // the IDENTICAL transition when it finds the checkpointed task's last
 // attempt already finished, not interrupted — the walk must not re-dispatch
 // it (#107), just pick up the same decision a live walk would have made
-// right after runTask returned. ctx/item feed only the blocked arm's
+// right after runTask returned. ctx/repoRef/item feed only the blocked arm's
 // instance-level handler (Config.Blocked); the transition decision itself
 // stays pure.
 func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run, machine *workflow.Machine, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
@@ -1846,9 +1846,15 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		return apiv1.ResultEnvelope{}, nil, prepErr, nil
 	}
 	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
+	var agentInvocation *gooberInvocation
 	defer func() {
 		telemetry.IngestStageEmissions(telemetryDir, &result, span)
 		telemetry.CleanupStageTelemetryDir(telemetryDir)
+		if agentInvocation != nil && agentInvocation.materializedAssets() {
+			if validationErr := workspace.ValidateReservedPaths(context.WithoutCancel(ctx)); validationErr != nil {
+				err = errors.Join(err, fmt.Errorf("stage %q: %w", t.Name, validationErr))
+			}
+		}
 		removeErr = workspace.Remove(ctx)
 	}()
 
@@ -1882,10 +1888,14 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		if err != nil {
 			return apiv1.ResultEnvelope{}, nil, err, nil
 		}
+		agentInvocation = &gooberInvocation{
+			Goober:                 ag,
+			activateAssetPathGuard: workspace.ActivateAssetPathGuard,
+		}
 		if err := recordContextManifest(jr, env, t.Name, attempt, class); err != nil {
 			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err), nil
 		}
-		result, err = ag.Invoke(ctx, env)
+		result, err = agentInvocation.Invoke(ctx, env)
 		// #724: a stage that opts into OnTimeout=salvage completes with its
 		// already-committed diff instead of discarding a timed-out attempt whose
 		// only remaining work was verification. Only a session timeout
@@ -2129,6 +2139,8 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	var emptyDiff bool
 	var env apiv1.InvocationEnvelope
 	var gateTelemetryDir string
+	var agentInvocation *gooberInvocation
+	var workspace *stageWorkspace
 	if g.Evaluator == apiv1.EvaluatorAutomated {
 		env = apiv1.InvocationEnvelope{
 			TaskID:     in.RunID + ":" + g.Name,
@@ -2151,7 +2163,6 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		if g.Evaluator == apiv1.EvaluatorAgentic {
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
-		var workspace *stageWorkspace
 		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, workflow.GateLimits(g), upstream, apiv1.WorkspaceRepo, workspaceBranch)
 		if err != nil {
 			err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
@@ -2163,6 +2174,11 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		}
 		defer func() {
 			telemetry.CleanupStageTelemetryDir(gateTelemetryDir)
+			if agentInvocation != nil && agentInvocation.materializedAssets() {
+				if validationErr := workspace.ValidateReservedPaths(context.WithoutCancel(ctx)); validationErr != nil {
+					err = errors.Join(err, fmt.Errorf("gate %q: %w", g.Name, validationErr))
+				}
+			}
 			removeErr = workspace.Remove(ctx)
 		}()
 		wt = workspace.worktree
@@ -2246,7 +2262,11 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 			// different agentic gates in the same run may target different
 			// reviewer goobers. gate.Evaluator reads this field fresh on every
 			// Evaluate call, so mutating it here between calls is safe.
-			gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: ag}
+			agentInvocation = &gooberInvocation{
+				Goober:                 ag,
+				activateAssetPathGuard: workspace.ActivateAssetPathGuard,
+			}
+			gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: agentInvocation}
 		}
 	}
 
@@ -2325,6 +2345,20 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 type stageWorkspace struct {
 	path     string
 	worktree *worktree.Worktree
+}
+
+func (w *stageWorkspace) ActivateAssetPathGuard() error {
+	if w.worktree == nil {
+		return nil
+	}
+	return w.worktree.ActivateAssetPathGuard()
+}
+
+func (w *stageWorkspace) ValidateReservedPaths(ctx context.Context) error {
+	if w.worktree == nil {
+		return nil
+	}
+	return w.worktree.ValidateReservedPaths(ctx)
 }
 
 func (w *stageWorkspace) Remove(ctx context.Context) error {

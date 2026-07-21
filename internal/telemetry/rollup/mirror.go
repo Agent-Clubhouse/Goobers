@@ -41,6 +41,7 @@ type journalEvent struct {
 	Status       string              `json:"status,omitempty"`
 	Ref          *journalRef         `json:"ref,omitempty"`
 	Name         string              `json:"name,omitempty"`
+	DataSchema   string              `json:"dataSchema,omitempty"`
 	ExternalRef  *journalExternalRef `json:"externalRef,omitempty"`
 	Error        *journalErrorDetail `json:"error,omitempty"`
 	Redaction    *journalRedaction   `json:"redaction,omitempty"`
@@ -50,7 +51,7 @@ type journalEvent struct {
 	Reason       string              `json:"reason,omitempty"`
 }
 
-// Event type values, mirroring internal/journal's EventType constants.
+// Event type values accepted from run and instance journals.
 const (
 	eventStageStarted       = "stage.started"
 	eventStageFinished      = "stage.finished"

@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
@@ -30,11 +31,11 @@ import (
 )
 
 // buildTelemetryClient constructs the OTel client that spans the runner walk
-// (run/task/gate) and scheduler decisions, writing completed spans under
-// RunsDir via JournalSpanExporter (issue #126) — the same run journal
-// layout goobers trace/telemetry read back through the rollup. Shared by
-// up.go/run.go exactly like buildRunnerConfig; each caller owns calling
-// Shutdown on the returned client once it's done driving runs.
+// (run/task/gate) and scheduler decisions. Run spans land under RunsDir;
+// scheduler spans land in the instance scheduler journal. Both are projected
+// into the rollup. Shared by up.go/run.go exactly like buildRunnerConfig; each
+// caller owns calling Shutdown on the returned client once it is done driving
+// runs.
 func buildTelemetryClient(ctx context.Context, l instance.Layout, scrubber journal.Scrubber) (*telemetry.Client, error) {
 	return telemetry.New(ctx, telemetry.Config{
 		ServiceName:    "goobers",
@@ -60,7 +61,7 @@ func (t teeRegistrar) Register(secret []byte) {
 }
 
 // ingestRunTelemetry incrementally ingests one finished run, plus a refresh
-// of the scheduler decision log, into the local telemetry rollup (issues
+// of the scheduler decision log and spans, into the local telemetry rollup (issues
 // #127/#128) — internal/telemetry/rollup/ingest.go's own doc comment already
 // claimed IngestRun is meant to hook a run's completion ("call it once a run
 // finishes"), but nothing in cmd/goobers ever called it; every `goobers
@@ -87,7 +88,9 @@ func (t teeRegistrar) Register(secret []byte) {
 // tel.Shutdown before this fix existed).
 func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout, runID string, log *journal.InstanceLog) {
 	if tel != nil {
-		_ = tel.Flush(context.Background())
+		if err := tel.Flush(context.Background()); err != nil {
+			logIngestFailure(log, runID, "telemetry_flush_failed", err)
+		}
 	}
 	if db == nil {
 		return
@@ -103,7 +106,23 @@ func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout,
 	if err := db.IngestRun(filepath.Join(l.RunsDir(), runID)); err != nil {
 		logIngestFailure(log, runID, "telemetry_ingest_run_failed", err)
 	}
-	if err := db.IngestSchedulerLog(l.SchedulerDir()); err != nil {
+	ingestSchedulerLog(db, l.SchedulerDir(), log, runID)
+}
+
+func ingestSchedulerTelemetry(ctx context.Context, tel *telemetry.Client, db *rollup.DB, schedulerDir string, log *journal.InstanceLog) {
+	if tel != nil {
+		if err := tel.Flush(ctx); err != nil {
+			logIngestFailure(log, "", "telemetry_flush_failed", err)
+		}
+	}
+	if db == nil {
+		return
+	}
+	ingestSchedulerLog(db, schedulerDir, log, "")
+}
+
+func ingestSchedulerLog(db *rollup.DB, schedulerDir string, log *journal.InstanceLog, runID string) {
+	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
 		logIngestFailure(log, runID, "telemetry_ingest_scheduler_log_failed", err)
 	}
 }
@@ -146,8 +165,8 @@ var newAgenticAdapter func(gooberName string, envCaps map[string]string) harness
 // providers.GitHubProvider over the resolved repo token.
 var newPRPoller func(token string) executor.PRPoller
 
-// credentialGrantEnv is the environment variable the Copilot CLI reads a
-// credentialed capability's token from (internal/harness.CopilotAdapter's
+// credentialGrantEnv is the environment variable the Copilot CLI reads most
+// credentialed capabilities' tokens from (internal/harness.CopilotAdapter's
 // EnvCapabilities convention — matches internal/harness/copilot_test.go's
 // {"repo:push": "GH_TOKEN"} fixture).
 const credentialGrantEnv = "GH_TOKEN"
@@ -157,29 +176,29 @@ const credentialGrantEnv = "GH_TOKEN"
 // for model auth (§3.3), so mapping agent:model to a DISTINCT env var from
 // credentialGrantEnv lets one agentic subprocess carry a personal "Copilot
 // Requests" PAT for the model (agent:model → COPILOT_GITHUB_TOKEN) AND the
-// org-repo token for the github tool (credentialedCapabilities → GH_TOKEN) at
-// once — credentialEnv appends both, and because the vars differ neither
+// org-repo token for the github tool (ordinary repo capabilities → GH_TOKEN)
+// at once — credentialEnv appends both, and because the vars differ neither
 // clobbers the other (#288, multi-token credentials 2/3).
 const copilotModelEnv = "COPILOT_GITHUB_TOKEN"
 
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
-	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubIssuesApprove, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
 }
 
 // buildEnvCapabilities maps each capability the Copilot adapter injects to the
-// environment variable the CLI reads its token from: the org-repo capabilities
-// to GH_TOKEN (the github tool's var) and agent:model to COPILOT_GITHUB_TOKEN
-// (the model backend's var, #288, §3.3). The two vars are distinct on purpose —
-// credentialEnv appends one entry per declared capability, so a stage declaring
-// both agent:model and an org-repo capability carries both tokens in a single
-// subprocess with neither clobbering the other.
+// environment variable that consumes its token. General org-repo capabilities
+// use GH_TOKEN (the github tool's var), github:issues:approve uses its dedicated
+// GOOBERS_CRED_* variable so the nominator can detect and exercise that opt-in
+// separately, and agent:model uses COPILOT_GITHUB_TOKEN (the model backend's
+// var, #288, §3.3).
 func buildEnvCapabilities() map[string]string {
 	envCaps := make(map[string]string, len(credentialedCapabilities)+1)
 	for _, c := range credentialedCapabilities {
 		envCaps[string(c)] = credentialGrantEnv
 	}
+	envCaps[string(capability.GitHubIssuesApprove)] = executor.CredentialEnvVar(string(capability.GitHubIssuesApprove))
 	envCaps[string(capability.AgentModel)] = copilotModelEnv
 	return envCaps
 }
@@ -417,9 +436,10 @@ func buildEscalationNotifier(cfg *instance.Config, resolver credentials.Resolver
 //
 // When the stage also references blockers through outputs.blockedBy, record
 // them in scheduler/blocked.json so #552's selection guard still protects the
-// issue if a human re-promotes it before every dependency closes. The runner's
-// shared EscalationNotifier owns the explanatory provider comment; this handler
-// owns only parking and dependency-record state.
+// issue if a human re-promotes it before every dependency closes. If a new
+// record closes a cycle, every issue in that cycle is parked and receives a
+// cycle-specific comment for human resolution. The runner's shared
+// EscalationNotifier owns the normal explanatory provider comment.
 //
 // The handler runs before FinalizeTerminal releases the run's claims, so a
 // run with no StartInput.Item (scheduled/fan-out implementation runs claim
@@ -458,6 +478,9 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 			Owner:    o.RepoRef.Owner,
 			Name:     o.RepoRef.Name,
 		}
+		if blockedRepositoryEmpty(repoRef) {
+			return fmt.Errorf("blocked outcome for run %s has no repository", o.RunID)
+		}
 		for _, itemID := range itemIDs {
 			req := providers.UpdateWorkItemRequest{
 				Repository:   repoRef,
@@ -466,17 +489,40 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
 			}
 			if len(o.Blockers) > 0 {
+				var cycle blockedCycleResult
 				if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
-					recs[itemID] = blockedRecord{
+					recordKey := blockedRecordKey(repoRef, itemID)
+					recs[recordKey] = blockedRecord{
+						Repository: repoRef,
+						ItemID:     itemID,
 						Blockers:   o.Blockers,
 						RunID:      o.RunID,
 						Stage:      o.Stage,
 						Reason:     o.Reason,
 						RecordedAt: time.Now().UTC(),
 					}
+					cycle = findBlockedCycle(recs, recordKey)
 					return true
 				}); err != nil {
 					errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
+				}
+				if len(cycle.Affected) > 0 {
+					comments := blockedCycleComments(cycle)
+					for _, cycleItem := range cycle.Affected {
+						for _, comment := range comments {
+							cycleReq := providers.UpdateWorkItemRequest{
+								Repository:   cycleItem.Repository,
+								ID:           cycleItem.ItemID,
+								Comment:      comment,
+								AddLabels:    []string{providers.LabelNeedsHuman},
+								RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
+							}
+							if _, err := poster.UpdateWorkItem(ctx, cycleReq); err != nil {
+								errs = append(errs, fmt.Errorf("escalate circular dependency on %s#%s: %w", cycleItem.Repository.Name, cycleItem.ItemID, err))
+							}
+						}
+					}
+					continue
 				}
 			}
 			if _, err := poster.UpdateWorkItem(ctx, req); err != nil {
@@ -593,6 +639,256 @@ func claimedItemIDsForRun(l instance.Layout, runID string) ([]string, error) {
 		return nil
 	})
 	return ids, err
+}
+
+// issueRefList renders issue numbers as "#441, #442" for provider comments.
+func issueRefList(numbers []string) string {
+	out := make([]byte, 0, len(numbers)*6)
+	for i, n := range numbers {
+		if i > 0 {
+			out = append(out, ", "...)
+		}
+		out = append(out, '#')
+		out = append(out, n...)
+	}
+	return string(out)
+}
+
+const cyclePathSeparator = " -> "
+
+func issueCyclePath(numbers []string) string {
+	var out strings.Builder
+	for i, n := range numbers {
+		if i > 0 {
+			out.WriteString(cyclePathSeparator)
+		}
+		out.WriteByte('#')
+		out.WriteString(n)
+	}
+	return out.String()
+}
+
+func issueCyclePathLength(numbers []string, maxLength int) (int, bool) {
+	length := 0
+	for i, number := range numbers {
+		addition := 1 + len(number)
+		if i > 0 {
+			addition += len(cyclePathSeparator)
+		}
+		if addition > maxLength-length {
+			return 0, false
+		}
+		length += addition
+	}
+	return length, true
+}
+
+func boundedIssueCyclePath(numbers []string, maxLength int) (string, bool) {
+	if _, fits := issueCyclePathLength(numbers, maxLength); fits {
+		return issueCyclePath(numbers), false
+	}
+	return truncatedIssueCyclePath(numbers, maxLength), true
+}
+
+func truncatedIssueCyclePath(numbers []string, maxLength int) string {
+	if len(numbers) == 0 || maxLength <= 0 {
+		return ""
+	}
+
+	bestHead, bestIdentified := 0, -1
+	bestTail := false
+	prefixLength := 0
+	for head := 0; head < len(numbers); head++ {
+		consider := func(includeTail bool) {
+			omitted := len(numbers) - head
+			identified := head
+			if includeTail {
+				omitted--
+				identified++
+			}
+			if omitted <= 0 {
+				return
+			}
+
+			length := prefixLength
+			if head > 0 {
+				length += len(cyclePathSeparator)
+			}
+			length += len(cycleMembersOmitted(omitted))
+			if includeTail {
+				length += len(cyclePathSeparator) + 1 + len(numbers[len(numbers)-1])
+			}
+			if length <= maxLength &&
+				(identified > bestIdentified || identified == bestIdentified && head > bestHead) {
+				bestHead = head
+				bestTail = includeTail
+				bestIdentified = identified
+			}
+		}
+
+		consider(false)
+		consider(head < len(numbers)-1)
+
+		addition := 1 + len(numbers[head])
+		if head > 0 {
+			addition += len(cyclePathSeparator)
+		}
+		prefixLength += addition
+		if prefixLength > maxLength {
+			break
+		}
+	}
+	if bestIdentified < 0 {
+		return ""
+	}
+
+	omitted := len(numbers) - bestHead
+	if bestTail {
+		omitted--
+	}
+	parts := make([]string, 0, bestHead+2)
+	for _, number := range numbers[:bestHead] {
+		parts = append(parts, "#"+number)
+	}
+	parts = append(parts, cycleMembersOmitted(omitted))
+	if bestTail {
+		parts = append(parts, "#"+numbers[len(numbers)-1])
+	}
+	return strings.Join(parts, cyclePathSeparator)
+}
+
+func cycleMembersOmitted(count int) string {
+	return fmt.Sprintf("[%d cycle members omitted]", count)
+}
+
+const maxBlockedCycleCommentLength = 2000
+
+func blockedCycleComment(paths [][]string, morePaths bool) string {
+	const prefix = "Goobers detected circular issue dependencies. Representative cycles: "
+	const additionalPathsOmitted = "additional cycle paths omitted"
+	suffix := fmt.Sprintf(
+		". Every issue in the cycle has been marked `%s` and removed from `%s` for human resolution.",
+		providers.LabelNeedsHuman, providers.LabelReady,
+	)
+	available := maxBlockedCycleCommentLength - len(prefix) - len(suffix)
+	if summaries, ok := completeCycleSummaries(paths, morePaths, available, additionalPathsOmitted); ok {
+		return prefix + summaries + suffix
+	}
+
+	var summaries strings.Builder
+	included := 0
+	for i, path := range paths {
+		separatorLength := 0
+		if summaries.Len() > 0 {
+			separatorLength = 2
+		}
+
+		reservedNoticeLength := 0
+		if morePaths || i < len(paths)-1 {
+			reservedNoticeLength = 2 + len(additionalPathsOmitted)
+		}
+		pathBudget := available - summaries.Len() - separatorLength - reservedNoticeLength
+		summary, truncated := boundedIssueCyclePath(path, pathBudget)
+		if summary == "" {
+			break
+		}
+		if separatorLength > 0 {
+			summaries.WriteString("; ")
+		}
+		summaries.WriteString(summary)
+		included++
+		if truncated {
+			break
+		}
+	}
+
+	if morePaths || included < len(paths) {
+		if summaries.Len() > 0 {
+			summaries.WriteString("; ")
+		}
+		summaries.WriteString(additionalPathsOmitted)
+	}
+	return prefix + summaries.String() + suffix
+}
+
+func blockedCycleComments(cycle blockedCycleResult) []string {
+	report := blockedCycleComment(cycle.Paths, cycle.MorePaths)
+	itemIDs := make([]string, len(cycle.Affected))
+	for i, item := range cycle.Affected {
+		itemIDs[i] = item.ItemID
+	}
+
+	memberList := " Affected issues: " + issueRefList(itemIDs) + "."
+	if len(report)+len(memberList) <= maxBlockedCycleCommentLength {
+		return []string{report + memberList}
+	}
+
+	comments := []string{report}
+	const prefix = "Affected issues in this dependency cycle: "
+	var current strings.Builder
+	current.WriteString(prefix)
+	for _, itemID := range itemIDs {
+		separator := ""
+		if current.Len() > len(prefix) {
+			separator = ", "
+		}
+		reference := "#" + itemID
+		if current.Len()+len(separator)+len(reference)+1 > maxBlockedCycleCommentLength {
+			current.WriteByte('.')
+			comments = append(comments, current.String())
+			current.Reset()
+			current.WriteString(prefix)
+			separator = ""
+		}
+		current.WriteString(separator)
+		current.WriteString(reference)
+	}
+	if current.Len() > len(prefix) {
+		current.WriteByte('.')
+		comments = append(comments, current.String())
+	}
+	return comments
+}
+
+func completeCycleSummaries(paths [][]string, morePaths bool, maxLength int, additionalPathsOmitted string) (string, bool) {
+	total := 0
+	for i, path := range paths {
+		separatorLength := 0
+		if i > 0 {
+			separatorLength = 2
+		}
+		pathLength, fits := issueCyclePathLength(path, maxLength-total-separatorLength)
+		if !fits {
+			return "", false
+		}
+		total += separatorLength + pathLength
+	}
+	if morePaths {
+		separatorLength := 0
+		if len(paths) > 0 {
+			separatorLength = 2
+		}
+		if len(additionalPathsOmitted) > maxLength-total-separatorLength {
+			return "", false
+		}
+		total += separatorLength + len(additionalPathsOmitted)
+	}
+
+	var summaries strings.Builder
+	summaries.Grow(total)
+	for i, path := range paths {
+		if i > 0 {
+			summaries.WriteString("; ")
+		}
+		summaries.WriteString(issueCyclePath(path))
+	}
+	if morePaths {
+		if summaries.Len() > 0 {
+			summaries.WriteString("; ")
+		}
+		summaries.WriteString(additionalPathsOmitted)
+	}
+	return summaries.String(), true
 }
 
 // newOpenPRProvider builds the GitHub client the open-PR lister polls; a package
@@ -735,8 +1031,12 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 // config-examples/, selfhost/) lays goobers out at the same fixed path, so
 // that layout convention is reproduced here rather than widening ConfigSet's
 // shape for this one field.
+func gooberDefinitionDir(configDir string, spec apiv1.GooberSpec, gooberName string) string {
+	return filepath.Join(configDir, "gaggles", spec.Gaggle, "goobers", gooberName)
+}
+
 func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string) string {
-	return filepath.Join(configDir, "gaggles", spec.Gaggle, "goobers", gooberName, spec.Instructions)
+	return filepath.Join(gooberDefinitionDir(configDir, spec, gooberName), spec.Instructions)
 }
 
 // buildRunnerConfig assembles the runner.Config the daemon (`goobers up`) and
@@ -789,12 +1089,18 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		return runner.Config{}, nil, err
 	}
 	instructionsByGoober := make(map[string]string, len(goobers))
+	assetsByGoober := make(map[string]*gooberassets.Bundle, len(goobers))
 	for name, spec := range goobers {
 		instructions, err := os.ReadFile(instructionsPath(l.ConfigDir(), spec, name))
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("read goober %q instructions: %w", name, err)
 		}
 		instructionsByGoober[name] = string(instructions)
+		assets, err := gooberassets.Load(filepath.Join(gooberDefinitionDir(l.ConfigDir(), spec, name), gooberassets.SourceDir))
+		if err != nil {
+			return runner.Config{}, nil, fmt.Errorf("load goober %q assets: %w", name, err)
+		}
+		assetsByGoober[name] = assets
 	}
 
 	// An agentic gate's reviewer has no stage-level capabilities of its own, so
@@ -896,7 +1202,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				return nil, fmt.Errorf("runner secret registrar does not implement journal.Scrubber")
 			}
 			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
-			opts := []harness.Option{harness.WithHarnessConfig(spec.Model, spec.HarnessOptions)}
+			opts := []harness.Option{
+				harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
+				harness.WithAssetBundle(assetsByGoober[gooberName]),
+			}
 			// Goober-level default timeout (#1070): raises this goober's built-in
 			// 30m harness bound so its bigger tasks aren't cut off, without
 			// annotating every stage. A stage's own Task.TimeoutSeconds still

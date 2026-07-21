@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -39,11 +40,12 @@ var ErrDeclaredArtifactPathEscape = errors.New("harness: declared artifact file 
 // here, not at the runner's wiring site.
 var _ invoke.Goober = (*Executor)(nil)
 
-// SpanRecorder captures a within-stage trace span (GBO-020) — satisfied by
-// (*internal/journal.Run).RecordSpan without this package taking on journal's
-// full durability/event-log machinery, only its small, stable Ref value type.
+// SpanRecorder captures a schema-aware within-stage trace span (GBO-020) —
+// satisfied by (*internal/journal.Run).RecordSpanWithSchema without this
+// package taking on journal's full durability/event-log machinery, only its
+// small, stable Ref value type.
 type SpanRecorder interface {
-	RecordSpan(stage, name string, data []byte) (journal.Ref, error)
+	RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error)
 }
 
 // ArtifactRecorder persists stage output bytes into the run journal by content
@@ -80,6 +82,7 @@ type Executor struct {
 	scrubber        journal.Scrubber
 	validator       *validate.Validator
 	instructions    string
+	assets          *gooberassets.Bundle
 	model           string
 	harnessOptions  map[string]apiextensionsv1.JSON
 	resultPath      string
@@ -119,6 +122,17 @@ func WithHarnessConfig(model string, options map[string]apiextensionsv1.JSON) Op
 			}
 		}
 	}
+}
+
+// WithAssetBundle supplies the goober's optional static assets.
+func WithAssetBundle(bundle *gooberassets.Bundle) Option {
+	return func(e *Executor) { e.assets = bundle }
+}
+
+// HasAssetBundle reports whether each invocation materializes the reserved
+// goober-assets workspace path.
+func (e *Executor) HasAssetBundle() bool {
+	return e.assets != nil
 }
 
 // NewExecutor builds an Executor for one goober: adapter is the harness to
@@ -191,6 +205,14 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	var result apiv1.ResultEnvelope
 	if err := json.Unmarshal(out.Payload, &result); err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("%w: decode result envelope: %w", ErrInvalidCompletion, err)
+	}
+	if len(out.Metrics) > 0 {
+		if result.Metrics == nil {
+			result.Metrics = make(map[string]float64, len(out.Metrics))
+		}
+		for name, value := range out.Metrics {
+			result.Metrics[name] = value
+		}
 	}
 	if out.TranscriptTruncated {
 		// Mirrors internal/executor.ShellExecutor's stdoutTruncated/
@@ -270,6 +292,9 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 // journaled diagnostics (via the returned error plus the recorded span) beyond
 // a bare error string.
 func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (Outcome, error) {
+	if err := e.assets.Materialize(env.Workspace); err != nil {
+		return Outcome{}, fmt.Errorf("harness: materialize goober assets: %w", err)
+	}
 	creds, err := e.injector.Materialize(ctx, env.Capabilities)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: materialize credentials: %w", err)
@@ -294,10 +319,29 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 
 	out, runErr := e.adapter.Run(ctx, req)
+	telemetry.RecordAgentUsage(ctx, out.Metrics)
+	if out.TranscriptSchema == "" {
+		prompt := e.scrubber.Scrub([]byte(renderPrompt(req)))
+		output := e.scrubber.Scrub(out.Transcript)
+		out.Transcript, err = composedTranscript(string(prompt), output, req.Model, out.TranscriptTruncated)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: encode transcript floor: %w", err)
+		}
+		var dropped int64
+		out.Transcript, dropped, err = boundCanonicalTranscript(out.Transcript, req.MaxTranscriptBytes, out.TranscriptDroppedBytes)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: bound transcript floor: %w", err)
+		}
+		if dropped > out.TranscriptDroppedBytes {
+			out.TranscriptTruncated = true
+		}
+		out.TranscriptDroppedBytes = dropped
+		out.TranscriptSchema = telemetry.GenAIEventSchema
+	}
 	if len(out.Transcript) > 0 {
 		scrubbed := e.scrubber.Scrub(out.Transcript)
 		name := fmt.Sprintf("%s.transcript", e.adapter.Name())
-		if _, spanErr := e.recorder.RecordSpan(env.TaskID, name, scrubbed); spanErr != nil && runErr == nil {
+		if _, spanErr := e.recorder.RecordSpanWithSchema(env.TaskID, name, out.TranscriptSchema, scrubbed); spanErr != nil && runErr == nil {
 			runErr = fmt.Errorf("harness: record span: %w", spanErr)
 		}
 	}

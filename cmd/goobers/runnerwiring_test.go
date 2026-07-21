@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -50,21 +51,28 @@ func resolveGrants(t *testing.T, r credentials.Resolver, grants []credentials.Gr
 }
 
 // TestBuildEnvCapabilities is #288's wiring: the Copilot adapter's capability→
-// env-var map routes agent:model to COPILOT_GITHUB_TOKEN and every org-repo
-// capability to GH_TOKEN — two DISTINCT vars, so one subprocess can hold both
-// tokens (§3.3). A collision (agent:model sharing GH_TOKEN) would clobber one.
+// env-var map routes agent:model to COPILOT_GITHUB_TOKEN, the nomination
+// approval authority to its dedicated GOOBERS_CRED_* variable, and other
+// org-repo capabilities to GH_TOKEN.
 func TestBuildEnvCapabilities(t *testing.T) {
 	envCaps := buildEnvCapabilities()
 	if got := envCaps["agent:model"]; got != "COPILOT_GITHUB_TOKEN" {
 		t.Fatalf("agent:model env = %q, want COPILOT_GITHUB_TOKEN", got)
 	}
 	for _, c := range credentialedCapabilities {
-		if got := envCaps[string(c)]; got != credentialGrantEnv {
-			t.Fatalf("capability %s env = %q, want %q", c, got, credentialGrantEnv)
+		want := credentialGrantEnv
+		if c == capability.GitHubIssuesApprove {
+			want = executor.CredentialEnvVar(string(c))
+		}
+		if got := envCaps[string(c)]; got != want {
+			t.Fatalf("capability %s env = %q, want %q", c, got, want)
 		}
 	}
 	if envCaps["agent:model"] == credentialGrantEnv {
 		t.Fatalf("agent:model must map to a var distinct from the github-tool var %q, else the two tokens collide", credentialGrantEnv)
+	}
+	if got := envCaps["github:issues:approve"]; got != "GOOBERS_CRED_GITHUB_ISSUES_APPROVE" {
+		t.Fatalf("github:issues:approve env = %q, want dedicated approval variable", got)
 	}
 }
 
@@ -415,6 +423,30 @@ func TestBuildCredentialsOverride(t *testing.T) {
 	// The other repo-backed capabilities are untouched by the override.
 	if got["github:issues:write"] != "tokenA" || got["github:pr:write"] != "tokenA" {
 		t.Fatalf("non-overridden capabilities changed: %+v", got)
+	}
+}
+
+func TestBuildCredentialsApprovalOverride(t *testing.T) {
+	t.Setenv("GH_TOKEN_A", "tokenA")
+	t.Setenv("APPROVAL_TOKEN_B", "tokenB")
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
+		},
+		Credentials: []instance.CredentialGrant{
+			{Capability: "github:issues:approve", Token: instance.TokenRef{Env: "APPROVAL_TOKEN_B"}},
+		},
+	}
+	resolver, grants, err := buildCredentials(cfg)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	got := resolveGrants(t, resolver, grants)
+	if got["github:issues:approve"] != "tokenB" {
+		t.Fatalf("github:issues:approve = %q, want tokenB", got["github:issues:approve"])
+	}
+	if got["github:issues:write"] != "tokenA" {
+		t.Fatalf("github:issues:write = %q, want repo token tokenA", got["github:issues:write"])
 	}
 }
 
@@ -881,11 +913,11 @@ func TestBuildBlockedHandlerKnownBlockersRecordsAndParks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadBlockedRecords: %v", err)
 	}
-	rec, ok := recs["510"]
+	rec, ok := recs[blockedRecordKey(wantRepo, "510")]
 	if !ok {
 		t.Fatal("expected a blocked.json record for item 510")
 	}
-	if len(rec.Blockers) != 2 || rec.RunID != "run-1" {
+	if rec.Repository != wantRepo || rec.ItemID != "510" || len(rec.Blockers) != 2 || rec.RunID != "run-1" {
 		t.Fatalf("record = %+v, want blockers [441 442] from run-1", rec)
 	}
 }
@@ -921,6 +953,320 @@ func TestBuildBlockedHandlerRecordFailureStillParks(t *testing.T) {
 	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman ||
 		!slices.Equal(got.RemoveLabels, wantRemoved) {
 		t.Fatalf("parking request = %+v, want needs-human added and ready/claimed removed", got)
+	}
+}
+
+func TestBuildBlockedHandlerEscalatesCircularDependency(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
+		blockedRecordKey(repo, "441"): {Repository: repo, ItemID: "441", Blockers: []string{"510"}, RunID: "prior-1"},
+		blockedRecordKey(repo, "442"): {Repository: repo, ItemID: "442", Blockers: []string{"510"}, RunID: "prior-2"},
+	}); err != nil {
+		t.Fatalf("seed blocked records: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID:   "run-cycle",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage:   "implement", ItemID: "510",
+		Reason: "DEPENDENCY_NOT_MET: unmet prerequisite", Blockers: []string{"441", "442"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	wantIDs := []string{"510", "441", "442"}
+	if len(fake.calls) != len(wantIDs) {
+		t.Fatalf("update calls = %d, want %d: %+v", len(fake.calls), len(wantIDs), fake.calls)
+	}
+	for i, got := range fake.calls {
+		if got.ID != wantIDs[i] {
+			t.Errorf("call %d ID = %q, want %q", i, got.ID, wantIDs[i])
+		}
+		if !slices.Equal(got.AddLabels, []string{providers.LabelNeedsHuman}) {
+			t.Errorf("call %d AddLabels = %v, want [%s]", i, got.AddLabels, providers.LabelNeedsHuman)
+		}
+		wantRemoved := []string{providers.LabelReady, providers.LabelClaimed}
+		if !slices.Equal(got.RemoveLabels, wantRemoved) {
+			t.Errorf("call %d RemoveLabels = %v, want %v", i, got.RemoveLabels, wantRemoved)
+		}
+		for _, path := range []string{"#510 -> #441 -> #510", "#510 -> #442 -> #510"} {
+			if !strings.Contains(got.Comment, path) {
+				t.Errorf("call %d comment = %q, want ordered cycle %q", i, got.Comment, path)
+			}
+		}
+		for _, itemID := range wantIDs {
+			if !strings.Contains(got.Comment, "#"+itemID) {
+				t.Errorf("call %d comment = %q, want affected issue #%s", i, got.Comment, itemID)
+			}
+		}
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	if got := recs[blockedRecordKey(repo, "510")].Blockers; !slices.Equal(got, []string{"441", "442"}) {
+		t.Fatalf("recorded blockers = %v, want [441 442]", got)
+	}
+}
+
+func TestBuildBlockedHandlerScopesCyclesByRepository(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	var tokens []string
+	prev := newEscalationPoster
+	newEscalationPoster = func(token string) gate.Commenter {
+		tokens = append(tokens, token)
+		return fake
+	}
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	webRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	apiRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "api"}
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
+		blockedRecordKey(webRepo, "441"): {
+			Repository: webRepo, ItemID: "441", Blockers: []string{"999"}, RunID: "web-prior",
+		},
+		blockedRecordKey(apiRepo, "441"): {
+			Repository: apiRepo, ItemID: "441", Blockers: []string{"510"}, RunID: "api-prior",
+		},
+	}); err != nil {
+		t.Fatalf("seed blocked records: %v", err)
+	}
+	t.Setenv("BLOCKED_TOK", "web-token")
+	t.Setenv("BLOCKED_API_TOK", "api-token")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{
+		{Name: "acme/web", Env: "BLOCKED_TOK"},
+		{Name: "acme/api", Env: "BLOCKED_API_TOK"},
+	})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+		{Provider: "github", Owner: "acme", Name: "api", Token: instance.TokenRef{Env: "BLOCKED_API_TOK"}},
+	}}
+	handler := buildBlockedHandler(l, cfg, resolver, &escTestRegistrar{})
+
+	if err := handler(context.Background(), runner.BlockedOutcome{
+		RunID: "web-current", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", ItemID: "510", Blockers: []string{"441"},
+	}); err != nil {
+		t.Fatalf("web handler: %v", err)
+	}
+	if len(fake.calls) != 1 || fake.calls[0].Repository != webRepo || fake.calls[0].ID != "510" ||
+		fake.calls[0].Comment != "" ||
+		!slices.Equal(fake.calls[0].AddLabels, []string{providers.LabelNeedsHuman}) ||
+		!slices.Equal(fake.calls[0].RemoveLabels, []string{providers.LabelReady, providers.LabelClaimed}) {
+		t.Fatalf("web calls = %+v, want one non-cycle parking update for web#510", fake.calls)
+	}
+
+	if err := handler(context.Background(), runner.BlockedOutcome{
+		RunID: "api-current", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "api"},
+		Stage: "implement", ItemID: "510", Blockers: []string{"441"},
+	}); err != nil {
+		t.Fatalf("api handler: %v", err)
+	}
+	if len(fake.calls) != 3 {
+		t.Fatalf("calls = %+v, want web blocked comment plus two API cycle updates", fake.calls)
+	}
+	for i, wantID := range []string{"510", "441"} {
+		got := fake.calls[i+1]
+		if got.Repository != apiRepo || got.ID != wantID || got.Comment == "" {
+			t.Errorf("API cycle call %d = %+v, want api#%s with a cycle comment", i, got, wantID)
+		}
+	}
+	if want := []string{"web-token", "api-token", "api-token"}; !slices.Equal(tokens, want) {
+		t.Fatalf("poster tokens = %v, want %v", tokens, want)
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	for _, key := range []string{
+		blockedRecordKey(webRepo, "441"),
+		blockedRecordKey(webRepo, "510"),
+		blockedRecordKey(apiRepo, "441"),
+		blockedRecordKey(apiRepo, "510"),
+	} {
+		if _, ok := recs[key]; !ok {
+			t.Errorf("blocked records missing %q: %+v", key, recs)
+		}
+	}
+}
+
+func TestBlockedCycleCommentIsBounded(t *testing.T) {
+	paths := make([][]string, 20)
+	for i := range paths {
+		for j := 0; j < 100; j++ {
+			paths[i] = append(paths[i], strings.Repeat("9", 100))
+		}
+	}
+	comment := blockedCycleComment(paths, true)
+	if len(comment) > maxBlockedCycleCommentLength {
+		t.Fatalf("comment length = %d, want at most %d", len(comment), maxBlockedCycleCommentLength)
+	}
+	if !strings.Contains(comment, "additional cycle paths omitted") {
+		t.Fatalf("comment = %q, want omitted-path notice", comment)
+	}
+	if !strings.Contains(comment, "cycle members omitted") {
+		t.Fatalf("comment = %q, want explicit omitted-member notice", comment)
+	}
+
+	singleCycleComment := blockedCycleComment(paths[:1], false)
+	if len(singleCycleComment) > maxBlockedCycleCommentLength {
+		t.Fatalf("single-cycle comment length = %d, want at most %d", len(singleCycleComment), maxBlockedCycleCommentLength)
+	}
+	if !strings.Contains(singleCycleComment, "cycle members omitted") {
+		t.Fatalf("single-cycle comment = %q, want explicit omitted-member notice", singleCycleComment)
+	}
+	if strings.Contains(singleCycleComment, "additional cycle paths omitted") {
+		t.Fatalf("single-cycle comment = %q, did not want omitted-path notice", singleCycleComment)
+	}
+}
+
+func TestBlockedCycleCommentPreservesLongSingleCycle(t *testing.T) {
+	path := []string{
+		"1001", "1002", "1003", "1004", "1005", "1006", "1007",
+		"1008", "1009", "1010", "1011", "1012", "1013", "1014",
+		"1015", "1016", "1017", "1018", "1019", "1020",
+	}
+	path = append(path, path[0])
+
+	wantMembers := make([]string, len(path))
+	for i, number := range path {
+		wantMembers[i] = "#" + number
+	}
+	wantPath := strings.Join(wantMembers, cyclePathSeparator)
+	comment := blockedCycleComment([][]string{path}, false)
+	if !strings.Contains(comment, wantPath) {
+		t.Fatalf("comment = %q, want complete ordered cycle %q", comment, wantPath)
+	}
+	if strings.Contains(comment, "cycle members omitted") {
+		t.Fatalf("comment = %q, did not want member truncation", comment)
+	}
+}
+
+func TestBlockedCycleCommentsNameEveryAffectedIssue(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	dependencies := make(map[string][]string)
+	const nodes = 12
+	for i := 0; i < nodes; i++ {
+		itemID := fmt.Sprintf("%d", 500+i)
+		for j := 0; j < nodes; j++ {
+			dependencies[itemID] = append(dependencies[itemID], fmt.Sprintf("%d", 500+j))
+		}
+	}
+
+	cycle := findBlockedCycle(blockedCycleTestRecords(repo, dependencies), blockedRecordKey(repo, "500"))
+	if len(cycle.Paths) != maxBlockedCyclePaths || !cycle.MorePaths {
+		t.Fatalf("cycle paths = %v, more = %v; want capped dense report", cycle.Paths, cycle.MorePaths)
+	}
+	comments := blockedCycleComments(cycle)
+	if len(comments) != 1 {
+		t.Fatalf("comments = %d, want dense 12-member cycle to fit in one report", len(comments))
+	}
+	for _, item := range cycle.Affected {
+		if !strings.Contains(comments[0], "#"+item.ItemID) {
+			t.Errorf("comment = %q, want affected issue #%s", comments[0], item.ItemID)
+		}
+	}
+}
+
+func TestBlockedCycleCommentsSplitCompleteMemberList(t *testing.T) {
+	cycle := blockedCycleResult{
+		Paths:     [][]string{{"10000", "10001", "10000"}},
+		MorePaths: true,
+	}
+	for i := 0; i < 500; i++ {
+		cycle.Affected = append(cycle.Affected, blockedCycleNode{ItemID: fmt.Sprintf("%d", 10000+i)})
+	}
+
+	comments := blockedCycleComments(cycle)
+	if len(comments) < 3 {
+		t.Fatalf("comments = %d, want primary report plus member follow-ups", len(comments))
+	}
+	combined := strings.Join(comments, "\n")
+	for _, comment := range comments {
+		if len(comment) > maxBlockedCycleCommentLength {
+			t.Errorf("comment length = %d, want at most %d", len(comment), maxBlockedCycleCommentLength)
+		}
+	}
+	for _, item := range cycle.Affected {
+		if !strings.Contains(combined, "#"+item.ItemID) {
+			t.Errorf("comments omitted affected issue #%s", item.ItemID)
+		}
+	}
+}
+
+func TestBuildBlockedHandlerEscalatesCircularDependencyForPRClaim(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
+		blockedRecordKey(repo, "956"): {Repository: repo, ItemID: "956", Blockers: []string{"955"}, RunID: "prior"},
+	}); err != nil {
+		t.Fatalf("seed blocked records: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID:   "run-cycle",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage:   "implement", ItemID: "pr/955",
+		Reason: "DEPENDENCY_NOT_MET: unmet prerequisite", Blockers: []string{"956"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	wantIDs := []string{"955", "956"}
+	if len(fake.calls) != len(wantIDs) {
+		t.Fatalf("update calls = %d, want %d: %+v", len(fake.calls), len(wantIDs), fake.calls)
+	}
+	for i, got := range fake.calls {
+		if got.ID != wantIDs[i] {
+			t.Errorf("call %d ID = %q, want %q", i, got.ID, wantIDs[i])
+		}
+		if !strings.Contains(got.Comment, "#955 -> #956 -> #955") {
+			t.Errorf("call %d comment = %q, want normalized ordered cycle", i, got.Comment)
+		}
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	if _, ok := recs[blockedRecordKey(repo, "pr/955")]; !ok {
+		t.Fatal("blocked record did not retain PR claim key pr/955")
 	}
 }
 
@@ -1075,10 +1421,10 @@ func TestPRClaimBlockedFlowNormalizesProviderID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadBlockedRecords: %v", err)
 	}
-	if _, ok := recs["pr/955"]; !ok {
-		t.Fatalf("blocked records = %+v, want namespaced key pr/955", recs)
+	if _, ok := recs[blockedRecordKey(repository, "pr/955")]; !ok {
+		t.Fatalf("blocked records = %+v, want repository-scoped PR claim key", recs)
 	}
-	if _, ok := recs["955"]; ok {
+	if _, ok := recs[blockedRecordKey(repository, "955")]; ok {
 		t.Fatalf("blocked records = %+v, bare provider ID must not replace the claim key", recs)
 	}
 }
@@ -1102,7 +1448,10 @@ func TestBuildBlockedHandlerNoClaimIsANoop(t *testing.T) {
 	}}
 	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
 
-	err := h(context.Background(), runner.BlockedOutcome{RunID: "run-producer", Stage: "curate", Reason: "blocked"})
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-producer", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "curate", Reason: "blocked",
+	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}

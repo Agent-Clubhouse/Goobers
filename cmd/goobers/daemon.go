@@ -476,7 +476,8 @@ func configuredGaggleNames(set *instance.ConfigSet) []string {
 }
 
 // SchedulerOptions returns the localscheduler.Option slice reflecting this
-// setup's telemetry state — empty when telemetry is disabled (issue #129).
+// setup's telemetry state — no telemetry options when it is disabled (issue
+// #129).
 // See buildSchedulerSetup's doc comment for why a nil Telemetry must never
 // reach localscheduler.WithTelemetry directly.
 func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
@@ -487,6 +488,11 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	opts := []localscheduler.Option{localscheduler.WithProviderQuota(s.ProviderQuota)}
 	if s.Telemetry != nil {
 		opts = append(opts, localscheduler.WithTelemetry(s.Telemetry))
+		if s.RollupDB != nil && s.InstanceLog != nil {
+			opts = append(opts, localscheduler.WithAfterTick(func(ctx context.Context) {
+				ingestSchedulerTelemetry(ctx, s.Telemetry, s.RollupDB, s.InstanceLog.Dir(), s.InstanceLog)
+			}))
+		}
 	}
 	return opts
 }

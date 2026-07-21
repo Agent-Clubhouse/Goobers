@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/providers"
 )
 
 func TestStatusReportsIssuesParkedOnLearnedDependencies(t *testing.T) {
@@ -82,8 +83,13 @@ func TestStatusDropsResolvedRecordOnBacklogEligibilityRefresh(t *testing.T) {
 	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
-		"510": {Blockers: []string{"441"}},
+		blockedRecordKey(repo, "510"): {
+			Repository: repo,
+			ItemID:     "510",
+			Blockers:   []string{"441"},
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -114,8 +120,13 @@ func TestStatusPrunesResolvedBlockerOnBacklogEligibilityRefresh(t *testing.T) {
 	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
-		"510": {Blockers: []string{"441", "442"}},
+		blockedRecordKey(repo, "510"): {
+			Repository: repo,
+			ItemID:     "510",
+			Blockers:   []string{"441", "442"},
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}

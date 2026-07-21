@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/goobers/goobers/internal/gooberassets"
 )
 
 // Manager owns managed working copies under Root — one mirror clone per
@@ -158,14 +160,12 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 // <workspace>/.goobers/{prompt.md,result.json,verdict.json,context/}) that must
 // never be committed into a run's PR (#240).
 const scratchExcludePattern = ".goobers/"
+const assetExcludePattern = "/" + gooberassets.WorkspaceDir + "/"
 
-// ensureScratchExcluded makes the harness scratch dir invisible to git in every
-// worktree branched from this managed mirror, so the common `git add -A` agent
-// commit pattern never captures harness debris into the run's PR (#240). It
-// appends the pattern to the mirror's shared info/exclude — a common-dir file
-// (verified: it applies to every linked worktree, not just the mirror) — so the
-// exclusion is per-mirror and local, never a repo-visible change, and works for
-// any target repo regardless of its own .gitignore. Idempotent.
+// ensureScratchExcluded makes harness-owned workspace paths invisible to git in
+// every worktree branched from this managed mirror, so the common `git add -A`
+// agent commit pattern never captures scratch files or goober assets. It appends
+// patterns to the mirror's shared info/exclude, keeping the exclusion local.
 func ensureScratchExcluded(ctx context.Context, dir string) error {
 	// `git rev-parse --git-path info/exclude` resolves the exclude file for both
 	// the bare mirror used here and any future non-bare layout; the path is
@@ -182,10 +182,24 @@ func ensureScratchExcluded(ctx context.Context, dir string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("worktree: read info/exclude: %w", err)
 	}
+	present := map[string]bool{}
 	for _, line := range strings.Split(string(existing), "\n") {
-		if t := strings.TrimSpace(line); t == scratchExcludePattern || t == ".goobers" {
-			return nil // already excluded
+		switch strings.TrimSpace(line) {
+		case scratchExcludePattern, ".goobers":
+			present[scratchExcludePattern] = true
+		case assetExcludePattern:
+			present[assetExcludePattern] = true
 		}
+	}
+	patterns := []string{scratchExcludePattern, assetExcludePattern}
+	missing := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		if !present[pattern] {
+			missing = append(missing, pattern)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
 		return fmt.Errorf("worktree: create info dir: %w", err)
@@ -194,7 +208,9 @@ func ensureScratchExcluded(ctx context.Context, dir string) error {
 	if len(buf) > 0 && buf[len(buf)-1] != '\n' {
 		buf = append(buf, '\n')
 	}
-	buf = append(buf, []byte(scratchExcludePattern+"\n")...)
+	for _, pattern := range missing {
+		buf = append(buf, []byte(pattern+"\n")...)
+	}
 	if err := os.WriteFile(excludePath, buf, 0o644); err != nil {
 		return fmt.Errorf("worktree: write info/exclude: %w", err)
 	}

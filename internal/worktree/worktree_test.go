@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/gooberassets"
 )
 
 // newSourceRepo creates a throwaway git repo with one commit on "main" and
@@ -30,10 +33,8 @@ func newSourceRepo(t *testing.T) string {
 }
 
 // TestManager_Create_ExcludesHarnessScratch is #240's regression guard: the
-// harness scratch dir (.goobers/) written into a provisioned run worktree must
-// be invisible to git — a `git add -A && commit` (the common agent pattern)
-// captures none of it — even though the target repo has no .goobers entry in
-// its own .gitignore.
+// harness-owned paths written into a provisioned run worktree must be invisible
+// to git, even though the target repo has no matching .gitignore entries.
 func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t) // foreign repo: no .goobers in its .gitignore (it has none)
@@ -51,11 +52,12 @@ func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
 	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "prompt.md"), "the full prompt")
 	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "result.json"), "{}")
 	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "context", "blob"), "materialized context")
+	mustWriteFile(t, filepath.Join(wt.Path, ".goober-assets", "reference.md"), "goober reference")
 	mustWriteFile(t, filepath.Join(wt.Path, "src.txt"), "real implementation change")
 
 	// (a) status shows the real change but not the scratch dir.
 	status := runTestGit(t, wt.Path, "status", "--porcelain")
-	if strings.Contains(status, ".goobers") {
+	if strings.Contains(status, ".goobers") || strings.Contains(status, ".goober-assets") {
 		t.Fatalf("git status leaks harness scratch:\n%s", status)
 	}
 	if !strings.Contains(status, "src.txt") {
@@ -66,11 +68,169 @@ func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
 	runTestGit(t, wt.Path, "add", "-A")
 	runTestGit(t, wt.Path, "-c", "user.email=t@e.test", "-c", "user.name=t", "commit", "-m", "impl")
 	committed := runTestGit(t, wt.Path, "show", "--name-only", "--pretty=format:", "HEAD")
-	if strings.Contains(committed, ".goobers") {
+	if strings.Contains(committed, ".goobers") || strings.Contains(committed, ".goober-assets") {
 		t.Fatalf("committed tree contains harness scratch:\n%s", committed)
 	}
 	if !strings.Contains(committed, "src.txt") {
 		t.Fatalf("committed tree should contain the real change:\n%s", committed)
+	}
+}
+
+func TestManager_Create_AssetExcludeIsRootAnchored(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1", BaseRef: "main", Branch: "goobers/impl/run-1",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "goober reference")
+	nestedAsset := filepath.Join("sub", gooberassets.WorkspaceDir, "fixture.txt")
+	mustWriteFile(t, filepath.Join(wt.Path, nestedAsset), "repository fixture")
+
+	status := runTestGit(t, wt.Path, "status", "--porcelain", "--untracked-files=all")
+	if strings.Contains(status, "?? "+gooberassets.WorkspaceDir+"/") {
+		t.Fatalf("git status exposes root goober assets:\n%s", status)
+	}
+	if !strings.Contains(status, "?? "+filepath.ToSlash(nestedAsset)) {
+		t.Fatalf("git status hides nested repository path:\n%s", status)
+	}
+}
+
+func TestManager_CreateRejectsAssetsCommittedByPriorStage(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/run-1"
+
+	first, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1-first", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(first.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, first.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, first.Path, "commit", "-m", "force-add assets")
+	if err := first.ValidateReservedPaths(ctx); !errors.Is(err, gooberassets.ErrWorkspaceCollision) {
+		t.Fatalf("ValidateReservedPaths error = %v, want ErrWorkspaceCollision", err)
+	}
+	if err := first.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("remove first worktree: %v", err)
+	}
+
+	second, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1-no-assets", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("subsequent no-assets stage Create: %v", err)
+	}
+	var noAssets *gooberassets.Bundle
+	if err := noAssets.Materialize(second.Path); err != nil {
+		t.Fatalf("subsequent no-assets invocation: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(second.Path, gooberassets.WorkspaceDir)); !os.IsNotExist(err) {
+		t.Fatalf("foreign assets leaked into subsequent stage: %v", err)
+	}
+}
+
+func TestWorktree_ValidateReservedPathsRejectsAssetsInMergeParent(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/run-1"
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	runTestGit(t, wt.Path, "switch", "-c", "asset-side")
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, wt.Path, "commit", "-m", "force-add assets")
+	assetCommit := strings.TrimSpace(runTestGit(t, wt.Path, "rev-parse", "HEAD"))
+
+	runTestGit(t, wt.Path, "switch", branch)
+	runTestGit(t, wt.Path, "branch", "-D", "asset-side")
+	mustWriteFile(t, filepath.Join(wt.Path, "implementation.txt"), "safe change")
+	runTestGit(t, wt.Path, "add", "implementation.txt")
+	runTestGit(t, wt.Path, "commit", "-m", "implement change")
+	runTestGit(t, wt.Path, "merge", "--no-ff", "-s", "ours", assetCommit, "-m", "merge side work")
+
+	if indexed := runTestGit(t, wt.Path, "ls-files", "--cached", "--", gooberassets.WorkspaceDir); indexed != "" {
+		t.Fatalf("merge result unexpectedly tracks assets:\n%s", indexed)
+	}
+	if err := wt.ValidateReservedPaths(ctx); !errors.Is(err, gooberassets.ErrWorkspaceCollision) {
+		t.Fatalf("ValidateReservedPaths error = %v, want ErrWorkspaceCollision", err)
+	}
+	if head := strings.TrimSpace(runTestGit(t, wt.Path, "rev-parse", "HEAD")); head != wt.startRef {
+		t.Fatalf("run branch HEAD = %s, want rollback to %s", head, wt.startRef)
+	}
+}
+
+func TestWorktree_ValidateReservedPathsUsesRunBranchWhenHEADDetached(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/run-detached"
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-detached", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, wt.Path, "commit", "-m", "force-add assets")
+	assetCommit := strings.TrimSpace(runTestGit(t, wt.Path, "rev-parse", "HEAD"))
+	runTestGit(t, wt.Path, "switch", "--detach", wt.startRef)
+
+	if err := wt.ValidateReservedPaths(ctx); !errors.Is(err, gooberassets.ErrWorkspaceCollision) {
+		t.Fatalf("ValidateReservedPaths error = %v, want ErrWorkspaceCollision", err)
+	}
+	branchRef := strings.TrimSpace(runTestGit(t, m.repoDirForKey(wt.key), "-c", "safe.bareRepository=all", "rev-parse", "refs/heads/"+branch))
+	if branchRef != wt.startRef {
+		t.Fatalf("run branch = %s, want rollback to %s (asset commit %s)", branchRef, wt.startRef, assetCommit)
+	}
+}
+
+func TestWorktree_ValidateReservedPathsRestoresBranchWithCorruptMetadata(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/run-corrupt-metadata"
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-corrupt-metadata", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := wt.ActivateAssetPathGuard(); err != nil {
+		t.Fatalf("ActivateAssetPathGuard: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, wt.Path, "commit", "-m", "force-add assets")
+	if err := os.WriteFile(filepath.Join(wt.Path, ".git"), []byte("corrupt worktree metadata\n"), 0o644); err != nil {
+		t.Fatalf("corrupt worktree metadata: %v", err)
+	}
+
+	if err := wt.ValidateReservedPaths(ctx); !errors.Is(err, gooberassets.ErrWorkspaceCollision) {
+		t.Fatalf("ValidateReservedPaths error = %v, want ErrWorkspaceCollision", err)
+	}
+	branchRef := strings.TrimSpace(runTestGit(t, m.repoDirForKey(wt.key), "-c", "safe.bareRepository=all", "rev-parse", "refs/heads/"+branch))
+	if branchRef != wt.startRef {
+		t.Fatalf("run branch = %s, want restored ref %s", branchRef, wt.startRef)
 	}
 }
 
@@ -86,7 +246,7 @@ func mustWriteFile(t *testing.T, path, content string) {
 
 func runTestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", bareRepoSafeArgs(args)...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -244,6 +404,41 @@ func TestManager_Create_AdoptsAndResetsExistingKey(t *testing.T) {
 	}
 }
 
+func TestManager_CreateRetryRestoresGuardedBranchWithCorruptMetadata(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	opts := CreateOptions{
+		RepoURL: repo, RunID: "run-retry", BaseRef: "main", Branch: "goobers/impl/run-retry",
+	}
+
+	first, err := m.Create(ctx, opts)
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	if err := first.ActivateAssetPathGuard(); err != nil {
+		t.Fatalf("ActivateAssetPathGuard: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(first.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, first.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, first.Path, "commit", "-m", "force-add assets")
+	if err := os.WriteFile(filepath.Join(first.Path, ".git"), []byte("corrupt worktree metadata\n"), 0o644); err != nil {
+		t.Fatalf("corrupt worktree metadata: %v", err)
+	}
+
+	retry, err := m.Create(ctx, opts)
+	if err != nil {
+		t.Fatalf("retry Create: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(retry.Path, gooberassets.WorkspaceDir)); !os.IsNotExist(err) {
+		t.Fatalf("guarded assets leaked into retry: %v", err)
+	}
+	branchRef := strings.TrimSpace(runTestGit(t, m.repoDirForKey(retry.key), "-c", "safe.bareRepository=all", "rev-parse", "refs/heads/"+opts.Branch))
+	if branchRef != retry.startRef {
+		t.Fatalf("retry branch = %s, want clean start ref %s", branchRef, retry.startRef)
+	}
+}
+
 func TestManager_Remove_TearsDown(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
@@ -266,6 +461,40 @@ func TestManager_Remove_TearsDown(t *testing.T) {
 	list := runTestGit(t, m.repoDirForKey(repoKey(repo)), "worktree", "list", "--porcelain")
 	if strings.Contains(list, wt.Path) {
 		t.Fatalf("git worktree list still shows removed worktree: %s", list)
+	}
+}
+
+func TestWorktree_RemoveRestoresGuardedBranchWithCorruptMetadata(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/remove-corrupt-metadata"
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "remove-corrupt-metadata", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := wt.ActivateAssetPathGuard(); err != nil {
+		t.Fatalf("ActivateAssetPathGuard: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, wt.Path, "commit", "-m", "force-add assets")
+	if err := os.WriteFile(filepath.Join(wt.Path, ".git"), []byte("corrupt worktree metadata\n"), 0o644); err != nil {
+		t.Fatalf("corrupt worktree metadata: %v", err)
+	}
+
+	removeErr := wt.Remove(ctx, RemoveOptions{})
+	branchRef := strings.TrimSpace(runTestGit(t, m.repoDirForKey(wt.key), "-c", "safe.bareRepository=all", "rev-parse", "refs/heads/"+branch))
+	if branchRef != wt.startRef {
+		t.Fatalf("run branch = %s, want restored ref %s", branchRef, wt.startRef)
+	}
+	if removeErr != nil {
+		if _, err := os.Stat(m.markerPath(wt.key, wt.RunID)); err != nil {
+			t.Fatalf("guard marker lost after failed removal: %v (remove error: %v)", err, removeErr)
+		}
 	}
 }
 
@@ -407,6 +636,122 @@ func TestManager_Reap_RemovesDeadProcessOrphan(t *testing.T) {
 	}
 	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
 		t.Fatalf("expected orphaned worktree removed, stat err = %v", err)
+	}
+}
+
+func TestManager_Reap_RestoresReservedPathBranchAfterCrash(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/crashed-assets"
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "crashed-assets", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := wt.ActivateAssetPathGuard(); err != nil {
+		t.Fatalf("ActivateAssetPathGuard: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "private bundle")
+	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, wt.Path, "commit", "-m", "force-add assets")
+
+	const fakeDeadPID = 999999
+	prev := processAlive
+	processAlive = func(pid int) bool { return pid != fakeDeadPID }
+	t.Cleanup(func() { processAlive = prev })
+	mk, err := readMarker(m.markerPath(wt.key, wt.RunID))
+	if err != nil {
+		t.Fatalf("readMarker: %v", err)
+	}
+	mk.PID = fakeDeadPID
+	if err := writeMarker(m.markerPath(wt.key, wt.RunID), mk); err != nil {
+		t.Fatalf("writeMarker: %v", err)
+	}
+
+	restarted, err := NewManager(m.Root)
+	if err != nil {
+		t.Fatalf("restart manager: %v", err)
+	}
+	results, warnings, err := restarted.Reap(ctx, ReapOptions{})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected Reap warnings: %+v", warnings)
+	}
+	if len(results) != 1 || results[0].RunID != wt.RunID || results[0].Reason != ReapReasonOrphaned {
+		t.Fatalf("unexpected Reap results: %+v", results)
+	}
+	branchRef := strings.TrimSpace(runTestGit(t, restarted.repoDirForKey(wt.key), "-c", "safe.bareRepository=all", "rev-parse", "refs/heads/"+branch))
+	if branchRef != wt.startRef {
+		t.Fatalf("run branch = %s, want restored ref %s", branchRef, wt.startRef)
+	}
+
+	next, err := restarted.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "next-stage", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create next stage: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(next.Path, gooberassets.WorkspaceDir)); !os.IsNotExist(err) {
+		t.Fatalf("crashed stage assets leaked into next stage: %v", err)
+	}
+}
+
+func TestManager_Reap_PreservesRepositoryAssetPathWithoutGuard(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	repositoryAsset := filepath.Join(repo, gooberassets.WorkspaceDir, "reference.md")
+	mustWriteFile(t, repositoryAsset, "original repository content\n")
+	runTestGit(t, repo, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, repo, "commit", "-m", "add repository asset path")
+
+	m := newTestManager(t)
+	const branch = "goobers/impl/crashed-no-assets"
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "crashed-no-assets", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(wt.Path, gooberassets.WorkspaceDir, "reference.md"), "legitimate stage change\n")
+	runTestGit(t, wt.Path, "add", "-f", gooberassets.WorkspaceDir)
+	runTestGit(t, wt.Path, "commit", "-m", "update repository asset path")
+	wantRef := strings.TrimSpace(runTestGit(t, wt.Path, "rev-parse", "HEAD"))
+
+	const fakeDeadPID = 999999
+	prev := processAlive
+	processAlive = func(pid int) bool { return pid != fakeDeadPID }
+	t.Cleanup(func() { processAlive = prev })
+	mk, err := readMarker(m.markerPath(wt.key, wt.RunID))
+	if err != nil {
+		t.Fatalf("readMarker: %v", err)
+	}
+	mk.PID = fakeDeadPID
+	if err := writeMarker(m.markerPath(wt.key, wt.RunID), mk); err != nil {
+		t.Fatalf("writeMarker: %v", err)
+	}
+
+	restarted, err := NewManager(m.Root)
+	if err != nil {
+		t.Fatalf("restart manager: %v", err)
+	}
+	results, warnings, err := restarted.Reap(ctx, ReapOptions{})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected Reap warnings: %+v", warnings)
+	}
+	if len(results) != 1 || results[0].RunID != wt.RunID || results[0].Reason != ReapReasonOrphaned {
+		t.Fatalf("unexpected Reap results: %+v", results)
+	}
+	branchRef := strings.TrimSpace(runTestGit(t, restarted.repoDirForKey(wt.key), "-c", "safe.bareRepository=all", "rev-parse", "refs/heads/"+branch))
+	if branchRef != wantRef {
+		t.Fatalf("run branch = %s, want legitimate no-assets commit %s", branchRef, wantRef)
 	}
 }
 

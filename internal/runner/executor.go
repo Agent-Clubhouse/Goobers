@@ -15,6 +15,10 @@
 package runner
 
 import (
+	"context"
+	"fmt"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -61,3 +65,48 @@ type NewDeterministicFunc func(rec ArtifactRecorder, reg SecretRegistrar) (invok
 // invoke.Goober serves both a Task.Goober's Invoke and a paired AgenticGate's
 // Review — one instance, two methods.
 type NewAgenticFunc func(gooberName string, rec ArtifactRecorder, reg SecretRegistrar) (invoke.Goober, error)
+
+type assetBundleGoober interface {
+	HasAssetBundle() bool
+}
+
+// gooberInvocation records whether an executor was actually invoked. The
+// runner uses this with assetBundleGoober to reserve .goober-assets only for a
+// call that materializes a real bundle.
+type gooberInvocation struct {
+	invoke.Goober
+	activateAssetPathGuard func() error
+	invoked                bool
+}
+
+func (g *gooberInvocation) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	if err := g.prepare(); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	g.invoked = true
+	return g.Goober.Invoke(ctx, env)
+}
+
+func (g *gooberInvocation) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	if err := g.prepare(); err != nil {
+		return apiv1.Verdict{}, err
+	}
+	g.invoked = true
+	return g.Goober.Review(ctx, env)
+}
+
+func (g *gooberInvocation) prepare() error {
+	assets, ok := g.Goober.(assetBundleGoober)
+	if !ok || !assets.HasAssetBundle() || g.activateAssetPathGuard == nil {
+		return nil
+	}
+	if err := g.activateAssetPathGuard(); err != nil {
+		return fmt.Errorf("activate goober asset path guard: %w", err)
+	}
+	return nil
+}
+
+func (g *gooberInvocation) materializedAssets() bool {
+	assets, ok := g.Goober.(assetBundleGoober)
+	return g.invoked && ok && assets.HasAssetBundle()
+}

@@ -358,6 +358,17 @@ func (r *Run) recordArtifact(ev Event, data []byte) (Ref, error) {
 // excluded from conformance (§3.3) since harness/LLM output is not
 // content-comparable across runners.
 func (r *Run) RecordSpan(stage, name string, data []byte) (Ref, error) {
+	return r.recordSpan(stage, name, "", data)
+}
+
+// RecordSpanWithSchema records a span and identifies the schema of its
+// content. RecordSpan remains the compatibility path for legacy unversioned
+// transcript rows.
+func (r *Run) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (Ref, error) {
+	return r.recordSpan(stage, name, dataSchema, data)
+}
+
+func (r *Run) recordSpan(stage, name, dataSchema string, data []byte) (Ref, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -373,7 +384,7 @@ func (r *Run) RecordSpan(stage, name string, data []byte) (Ref, error) {
 	if err != nil {
 		return Ref{}, fmt.Errorf("journal: record span %q: %w", name, err)
 	}
-	if err := r.append(Event{Type: EventSpanRecorded, Stage: stage, Name: name, Ref: &ref}); err != nil {
+	if err := r.append(Event{Type: EventSpanRecorded, Stage: stage, Name: name, DataSchema: dataSchema, Ref: &ref}); err != nil {
 		return Ref{}, err
 	}
 	if err := r.checkpoint(); err != nil {

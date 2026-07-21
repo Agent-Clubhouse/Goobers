@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -98,6 +99,32 @@ func (s *stubDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope,
 		}}
 	}
 	return result, nil
+}
+
+type committingAssetlessGoober struct {
+	t *testing.T
+}
+
+func (g *committingAssetlessGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.t.Helper()
+	repositoryAsset := filepath.Join(env.Workspace, gooberassets.WorkspaceDir, "reference.md")
+	data, err := os.ReadFile(repositoryAsset)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("read repository-owned asset path: %w", err)
+	}
+	if string(data) != "repository content\n" {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("repository-owned asset = %q", data)
+	}
+	if err := os.WriteFile(filepath.Join(env.Workspace, "implementation.txt"), []byte("implemented\n"), 0o644); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	runGit(g.t, env.Workspace, "add", "implementation.txt")
+	runGit(g.t, env.Workspace, "commit", "-m", "implement")
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (g *committingAssetlessGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
 }
 
 // committingStubDeterministic is stubDeterministic that first commits a real
@@ -461,16 +488,26 @@ func (c *envelopeCapturingAutomated) Evaluate(_ context.Context, _ apiv1.Automat
 // --- fixture repo: a local bare repo, so the test needs no network access ---
 
 func newFixtureRepo(t *testing.T) string {
+	return newFixtureRepoWithFiles(t, map[string]string{"README.md": "fixture\n"})
+}
+
+func newFixtureRepoWithFiles(t *testing.T, files map[string]string) string {
 	t.Helper()
 	work := t.TempDir()
 	bare := filepath.Join(t.TempDir(), "fixture.git")
 	runGit(t, work, "init", "--initial-branch=main")
 	runGit(t, work, "config", "user.email", "test@example.com")
 	runGit(t, work, "config", "user.name", "test")
-	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("fixture\n"), 0o644); err != nil {
-		t.Fatal(err)
+	for name, content := range files {
+		path := filepath.Join(work, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	runGit(t, work, "add", "README.md")
+	runGit(t, work, "add", ".")
 	runGit(t, work, "commit", "-m", "initial")
 	runGit(t, "", "clone", "--bare", work, bare)
 	return bare
@@ -852,6 +889,87 @@ func taskReservedNextFixtureMachine(t *testing.T, next string) *workflow.Machine
 		t.Fatalf("compile task-reserved-next fixture machine (next=%q): %v", next, err)
 	}
 	return m
+}
+
+func agenticReservedNextFixtureMachine(t *testing.T, next string) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a diff", Next: next,
+		}},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "agentic-reserved-next-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile agentic reserved-next fixture machine (next=%q): %v", next, err)
+	}
+	return m
+}
+
+func TestRunnerAssetlessStagesAllowRepositoryOwnedAssetPath(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		machine func(*testing.T, string) *workflow.Machine
+		config  func(*testing.T, string) Config
+	}{
+		{
+			name:    "deterministic",
+			machine: taskReservedNextFixtureMachine,
+			config: func(_ *testing.T, runID string) Config {
+				return Config{NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+					return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
+						runID + ":implement": {status: apiv1.ResultSuccess},
+					}}, nil
+				}}
+			},
+		},
+		{
+			name:    "goober_without_assets",
+			machine: agenticReservedNextFixtureMachine,
+			config: func(t *testing.T, _ string) Config {
+				return Config{NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+					return &committingAssetlessGoober{t: t}, nil
+				}}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instanceRoot := t.TempDir()
+			wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo := newFixtureRepoWithFiles(t, map[string]string{
+				"README.md": "fixture\n",
+				filepath.Join(gooberassets.WorkspaceDir, "reference.md"): "repository content\n",
+			})
+			runID := "run-" + strings.ReplaceAll(tc.name, "_", "-")
+			cfg := tc.config(t, runID)
+			cfg.Worktrees = wtMgr
+			cfg.RunsDir = filepath.Join(instanceRoot, "runs")
+			cfg.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return repo, nil }
+			r, err := New(cfg)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			result, err := r.Start(context.Background(), StartInput{
+				RunID:   runID,
+				Machine: tc.machine(t, workflow.TerminalComplete),
+				Gaggle:  "acme-web",
+				Trigger: journal.Trigger{Kind: journal.TriggerManual},
+				RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+			})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if result.Phase != journal.PhaseCompleted {
+				t.Fatalf("phase = %q, want completed", result.Phase)
+			}
+		})
+	}
 }
 
 // noWorkFixtureMachine is a two-task query-backlog -> curate chain — the

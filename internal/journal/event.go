@@ -153,6 +153,9 @@ type Event struct {
 	Ref *Ref `json:"ref,omitempty"`
 	// Name labels the Ref (artifact/input name). Normative.
 	Name string `json:"name,omitempty"`
+	// DataSchema identifies the record shape of schema-aware span content.
+	// EXCLUDED from conformance because span.recorded is excluded as a whole.
+	DataSchema string `json:"dataSchema,omitempty"`
 	// ExternalRef identifies an external reference touched. Normative — by
 	// (Provider, Kind, ID), not by URL.
 	ExternalRef *ExternalRef `json:"externalRef,omitempty"`

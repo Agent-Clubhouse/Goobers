@@ -128,6 +128,42 @@ func runUp(args []string, stdout, stderr io.Writer) int {
 	return runUpContext(ctx, args, stdout, stderr)
 }
 
+func handleSpansOnlyRunCleanup(l instance.Layout, remove bool, stdout io.Writer) error {
+	runDirs, err := l.RunDirs()
+	if err != nil {
+		return err
+	}
+	candidates, err := journal.SpansOnlyRunCandidates(runDirs)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		pf(stdout, "spans-only run cleanup candidate: %s\n", candidate)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	directoryNoun := "directories"
+	if len(candidates) == 1 {
+		directoryNoun = "directory"
+	}
+	if !remove {
+		pf(stdout, "dry run: %d spans-only run %s preserved; restart with --cleanup-spans-only-runs to delete\n",
+			len(candidates), directoryNoun)
+		return nil
+	}
+	removed, err := journal.RemoveSpansOnlyRuns(candidates)
+	if err != nil {
+		return err
+	}
+	directoryNoun = "directories"
+	if removed == 1 {
+		directoryNoun = "directory"
+	}
+	pf(stdout, "removed %d spans-only run %s\n", removed, directoryNoun)
+	return nil
+}
+
 // runUpContext is runUp's testable core: the OS signal wiring lives only in
 // runUp, so tests can drive shutdown deterministically via ctx cancellation
 // instead of sending real signals.
@@ -160,13 +196,16 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [path]\n\n"+
+		pf(stderr, "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--cleanup-spans-only-runs] [path]\n\n"+
 			"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n"+
 			"plus the local runner, loopback HTTP API, and configured GitHub webhook\n"+
 			"listener (default path \".\"). Blocks\n"+
 			"until interrupted (SIGINT/SIGTERM), then drains in-flight runs before\n"+
 			"exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,\n"+
 			"2 = usage/IO error.\n\n"+
+			"Legacy spans-only run directories are reported as cleanup candidates\n"+
+			"and preserved by default. --cleanup-spans-only-runs deletes them at\n"+
+			"startup after reporting each candidate.\n\n"+
 			"--diagnostics turns on deep, opt-in capture for hard hangs: any\n"+
 			"deterministic stage still running past a couple of minutes gets a\n"+
 			"periodic native process sample + process tree + open-fd (lsof)\n"+
@@ -178,6 +217,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	watchConfig := fs.Bool("watch-config", false, "experimental: hot-reload config edits without a restart (default off; superseded by the Workflow CD config source, #453)")
 	var notifications notifyFlag
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
+	cleanupSpansOnlyRuns := fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -226,6 +266,10 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	printValidationWarnings(stdout, setup.Validation.CLIWarnings())
 	if warning := webhookConfigurationWarning(setup.Definitions, setup.Config); warning != "" {
 		pln(stdout, warning)
+	}
+	if err := handleSpansOnlyRunCleanup(l, *cleanupSpansOnlyRuns, stdout); err != nil {
+		pf(stderr, "error: clean up spans-only run directories: %v\n", err)
+		return 1
 	}
 
 	reads, err := readservice.NewLocal(readservice.LocalSources{

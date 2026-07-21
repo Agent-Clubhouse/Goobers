@@ -7,23 +7,27 @@ type Attribute string
 
 // The canonical span attribute registry. Add new Goobers attributes here first.
 const (
-	AttrRunID            = "goobers.run.id"
-	AttrGaggle           = "goobers.gaggle"
-	AttrWorkflow         = "goobers.workflow"
-	AttrWorkflowVersion  = "goobers.workflow.version"
-	AttrWorkflowDigest   = "goobers.workflow.digest"
-	AttrGoober           = "goobers.goober"
-	AttrStage            = "goobers.stage"
-	AttrStageType        = "goobers.stage.type"
-	AttrAttemptNumber    = "goobers.attempt.n"
-	AttrAttemptKind      = "goobers.attempt.kind"
-	AttrItemID           = "goobers.item.id"
-	AttrItemURL          = "goobers.item.url"
-	AttrOutcome          = "goobers.outcome"
-	AttrErrorCode        = "goobers.error.code"
-	AttrGateDecision     = "goobers.gate.decision"
-	AttrGateRepassNumber = "goobers.gate.repass.n"
-	AttrErrorType        = string(semconv.ErrorTypeKey)
+	AttrRunID                  = "goobers.run.id"
+	AttrGaggle                 = "goobers.gaggle"
+	AttrWorkflow               = "goobers.workflow"
+	AttrWorkflowVersion        = "goobers.workflow.version"
+	AttrWorkflowDigest         = "goobers.workflow.digest"
+	AttrGoober                 = "goobers.goober"
+	AttrStage                  = "goobers.stage"
+	AttrStageType              = "goobers.stage.type"
+	AttrAttemptNumber          = "goobers.attempt.n"
+	AttrAttemptKind            = "goobers.attempt.kind"
+	AttrItemID                 = "goobers.item.id"
+	AttrItemURL                = "goobers.item.url"
+	AttrOutcome                = "goobers.outcome"
+	AttrErrorCode              = "goobers.error.code"
+	AttrGateDecision           = "goobers.gate.decision"
+	AttrGateRepassNumber       = "goobers.gate.repass.n"
+	AttrErrorType              = string(semconv.ErrorTypeKey)
+	AttrGenAIUsageInputTokens  = string(semconv.GenAIUsageInputTokensKey)
+	AttrGenAIUsageOutputTokens = string(semconv.GenAIUsageOutputTokensKey)
+	AttrCopilotPremiumRequests = "goobers.usage.copilot_premium_requests"
+	AttrUsageCostUSD           = "goobers.usage.cost_usd"
 )
 
 // AllAttributes returns every canonical attribute in declaration order.
@@ -46,6 +50,10 @@ func AllAttributes() []Attribute {
 		AttrGateDecision,
 		AttrGateRepassNumber,
 		Attribute(AttrErrorType),
+		Attribute(AttrGenAIUsageInputTokens),
+		Attribute(AttrGenAIUsageOutputTokens),
+		AttrCopilotPremiumRequests,
+		AttrUsageCostUSD,
 	}
 }
 

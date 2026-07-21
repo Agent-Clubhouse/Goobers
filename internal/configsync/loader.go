@@ -26,6 +26,7 @@ import (
 
 	"github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/gooberassets"
 )
 
 // DefaultNamespace is the control-plane namespace rendered CRs are placed in;
@@ -192,6 +193,9 @@ func readDocs(root string) ([]rawDoc, error) {
 			return err
 		}
 		if d.IsDir() {
+			if gooberassets.IsSourceDir(path) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))

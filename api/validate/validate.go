@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/gooberassets"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -306,6 +307,16 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if gooberassets.IsSourceDir(path) {
+			if assetErr := gooberassets.Validate(path); assetErr != nil {
+				rel, _ := filepath.Rel(root, path)
+				r.add(Error, filepath.ToSlash(rel), "", "", "invalid goober assets: %v", assetErr)
+			}
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() {
 			return nil

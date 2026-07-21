@@ -94,6 +94,36 @@ func TestLoad_InvalidConfigRejected(t *testing.T) {
 	}
 }
 
+func TestLoad_IgnoresAssetDefinitions(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(validConfigRepo)); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "goober.yaml")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := filepath.Join(filepath.Dir(source), "assets", "duplicate.yaml")
+	if err := os.MkdirAll(filepath.Dir(asset), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(asset, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loader, err := NewLoader("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, report, err := loader.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v (report: %+v)", err, report)
+	}
+	if got := len(objectsByKind(set.Objects)["Goober"]); got != 5 {
+		t.Fatalf("asset definition leaked into render set: got %d goobers", got)
+	}
+}
+
 func TestLoadRejectsCrossGaggleWorkflowNameCollision(t *testing.T) {
 	l, err := NewLoader("")
 	if err != nil {
