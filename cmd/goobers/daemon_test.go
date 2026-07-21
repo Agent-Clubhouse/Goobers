@@ -256,6 +256,126 @@ func TestIdleTickIngestsBatchedSchedulerTelemetry(t *testing.T) {
 	}
 }
 
+func TestSchedulerOptionsIngestsBlockedTickSpan(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(context.Background())
+
+	tickAt := time.Now().Add(25 * time.Hour)
+	setup.ProviderQuota.RecordExhausted(tickAt.Add(time.Hour))
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog, setup.SchedulerOptions()...)
+	sched.Tick(context.Background(), tickAt)
+
+	body, err := os.ReadFile(filepath.Join(l.SchedulerDir(), "spans", "spans.jsonl"))
+	if err != nil {
+		t.Fatalf("read scheduler spans: %v", err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(body), []byte{'\n'})
+	var record telemetry.SpanRecord
+	if err := json.Unmarshal(lines[len(lines)-1], &record); err != nil {
+		t.Fatalf("decode scheduler span: %v", err)
+	}
+	spans, err := setup.RollupDB.Spans(record.TraceID)
+	if err != nil {
+		t.Fatalf("query scheduler spans: %v", err)
+	}
+	if len(spans) != 1 || spans[0].Name != "scheduler/dispatch" ||
+		spans[0].Kind != telemetry.SpanKindScheduler ||
+		spans[0].BusinessStatus != string(telemetry.OutcomeBlocked) {
+		t.Fatalf("scheduler spans = %#v", spans)
+	}
+	runs, err := setup.RollupDB.Runs()
+	if err != nil {
+		t.Fatalf("query runs: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("runs = %#v, want none for blocked tick", runs)
+	}
+}
+
+func TestSchedulerShutdownIngestsRejectedDispatchSpans(t *testing.T) {
+	tests := []struct {
+		name     string
+		dispatch func(*testing.T, *localscheduler.Scheduler, string, time.Time)
+	}{
+		{
+			name: "manual",
+			dispatch: func(t *testing.T, sched *localscheduler.Scheduler, workflow string, now time.Time) {
+				t.Helper()
+				if _, err := sched.Trigger(context.Background(), workflow, now); err == nil {
+					t.Fatal("Trigger admitted, want provider quota rejection")
+				}
+			},
+		},
+		{
+			name: "signal",
+			dispatch: func(t *testing.T, sched *localscheduler.Scheduler, _ string, now time.Time) {
+				t.Helper()
+				if runIDs := sched.Signal(context.Background(), "release", now); len(runIDs) != 0 {
+					t.Fatalf("Signal run IDs = %v, want provider quota rejection", runIDs)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := initDeterministicDemo(t)
+			l := instance.NewLayout(root)
+			var wg sync.WaitGroup
+			setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			entries := append([]localscheduler.WorkflowEntry(nil), setup.Entries...)
+			entries[0].Signals = []string{"release"}
+			now := time.Now()
+			setup.ProviderQuota.RecordExhausted(now.Add(time.Hour))
+			sched := localscheduler.New(entries, setup.InstanceLog, setup.SchedulerOptions()...)
+			tt.dispatch(t, sched, entries[0].Workflow, now)
+			setup.Shutdown(context.Background())
+
+			body, err := os.ReadFile(filepath.Join(l.SchedulerDir(), "spans", "spans.jsonl"))
+			if err != nil {
+				t.Fatalf("read scheduler spans: %v", err)
+			}
+			lines := bytes.Split(bytes.TrimSpace(body), []byte{'\n'})
+			var record telemetry.SpanRecord
+			if err := json.Unmarshal(lines[len(lines)-1], &record); err != nil {
+				t.Fatalf("decode scheduler span: %v", err)
+			}
+
+			db, err := rollup.Open(l.TelemetryDB())
+			if err != nil {
+				t.Fatalf("reopen telemetry rollup: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+			spans, err := db.Spans(record.TraceID)
+			if err != nil {
+				t.Fatalf("query scheduler spans: %v", err)
+			}
+			if len(spans) != 1 || spans[0].Name != "scheduler/dispatch" ||
+				spans[0].Kind != telemetry.SpanKindScheduler ||
+				spans[0].BusinessStatus != string(telemetry.OutcomeBlocked) {
+				t.Fatalf("scheduler spans = %#v", spans)
+			}
+			runs, err := db.Runs()
+			if err != nil {
+				t.Fatalf("query runs: %v", err)
+			}
+			if len(runs) != 0 {
+				t.Fatalf("runs = %#v, want none for rejected %s dispatch", runs, tt.name)
+			}
+		})
+	}
+}
+
 // TestUpIdlesThenDrainsOnCancel is issue #23's core daemon-loop acceptance:
 // `goobers up` starts the scheduler+runner daemon, and a cancelled context
 // (standing in for SIGINT/SIGTERM — runUp itself wires the real signal via

@@ -494,17 +494,36 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 			}))
 		}
 	}
+	if s.Telemetry != nil && s.RollupDB != nil {
+		opts = append(opts, localscheduler.WithAfterTick(func(ctx context.Context) {
+			if err := s.Telemetry.Flush(ctx); err != nil {
+				logIngestFailure(s.InstanceLog, "", "telemetry_flush_scheduler_failed", err)
+			}
+			s.ingestSchedulerLog()
+		}))
+	}
 	return opts
 }
 
-// Shutdown flushes/closes the telemetry client and rollup db, nil-safe so a
-// caller can defer it unconditionally regardless of whether instance.yaml
-// enabled telemetry (issue #129).
+func (s *schedulerSetup) ingestSchedulerLog() {
+	if s.RollupDB == nil || s.InstanceLog == nil {
+		return
+	}
+	if err := s.RollupDB.IngestSchedulerLog(s.InstanceLog.Dir()); err != nil {
+		logIngestFailure(s.InstanceLog, "", "telemetry_ingest_scheduler_log_failed", err)
+	}
+}
+
+// Shutdown flushes/closes the telemetry client, ingests any final scheduler
+// spans, and closes the rollup db. It is nil-safe so a caller can defer it
+// unconditionally regardless of whether instance.yaml enabled telemetry
+// (issue #129).
 func (s *schedulerSetup) Shutdown(ctx context.Context) {
 	if s.Telemetry != nil {
 		_ = s.Telemetry.Shutdown(ctx)
 	}
 	if s.RollupDB != nil {
+		s.ingestSchedulerLog()
 		_ = s.RollupDB.Close()
 	}
 }
