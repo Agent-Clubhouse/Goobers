@@ -136,3 +136,43 @@ jobs:
         env:
           GOOBERS_REQUIRE_SANDBOX_TEST: "1"
         run: go test -race ./internal/sandbox
+
+  # Linux node validation (#636): prove the shipped binary end to end on Linux —
+  # an offline demo run to completion plus the full daemon start/status/stop
+  # lifecycle under a real SIGTERM — and cross-compile the Windows supervision
+  # handler (#639). Deterministic and offline, so it is a reliable required gate.
+  linux-validation:
+    name: linux node validation (#636/#639)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build goobers
+        run: go build -o bin/goobers ./cmd/goobers
+
+      - name: Validate daemon lifecycle + offline demo run on Linux
+        run: go run ./test/linuxvalidate -bin bin/goobers -out linux-validation-evidence
+
+      # Lock the #639 supervision handler's compile guarantee: the Windows
+      # Service wrapper must build/vet under GOOS=windows even though the full
+      # tree cannot cross-compile until the POSIX abstractions (#620-627) land.
+      # internal/winsvc is self-contained precisely so this stays green today.
+      - name: Cross-compile Windows supervision handler
+        run: |
+          GOOS=windows go build ./internal/winsvc/...
+          GOOS=windows go vet ./internal/winsvc/...
+
+      - name: Upload Linux validation evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: linux-validation-evidence
+          path: linux-validation-evidence/
+          if-no-files-found: warn

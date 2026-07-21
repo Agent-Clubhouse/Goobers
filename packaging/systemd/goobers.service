@@ -1,0 +1,58 @@
+# Goobers daemon — systemd unit template (Linux).
+#
+# This is a *user* service by default: the daemon runs as your login user so it
+# inherits per-user credentials (the provider token env/file referenced by
+# instance.yaml) rather than needing them installed system-wide. See
+# docs/guides/supervision.md for install/start/stop/status/logs/upgrade.
+#
+# Before installing, replace the two placeholders below:
+#   %INSTANCE_ROOT%  absolute path to the instance root created by `goobers init`
+#   %GOOBERS_BIN%    absolute path to the goobers binary (e.g. /usr/local/bin/goobers)
+#
+# Install (user service):
+#   mkdir -p ~/.config/systemd/user
+#   cp packaging/systemd/goobers.service ~/.config/systemd/user/goobers.service
+#   $EDITOR ~/.config/systemd/user/goobers.service   # fill in the placeholders
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now goobers
+#   loginctl enable-linger "$USER"   # keep the daemon running after logout / across boots
+
+[Unit]
+Description=Goobers agent-workforce daemon (scheduler + local runner)
+Documentation=https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/supervision.md
+# Only meaningful for a system-scoped install; harmless for a user service.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# `goobers up` runs the daemon in the foreground and blocks until stopped — the
+# shape systemd's Type=simple expects. The trailing path is the instance root.
+ExecStart=%GOOBERS_BIN% up %INSTANCE_ROOT%
+WorkingDirectory=%INSTANCE_ROOT%
+
+# Graceful shutdown: `goobers up` drains in-flight runs on SIGTERM (the daemon's
+# single shutdown path). SIGTERM is systemd's default KillSignal; it is stated
+# here for clarity. TimeoutStopSec must exceed the daemon's own drain budget
+# (drainGrace 30s + HTTP shutdown grace 5s in cmd/goobers/up.go) so a legitimate
+# drain completes before systemd escalates to SIGKILL. A second SIGTERM would
+# force-exit the daemon immediately (internal/signals), so KillMode=mixed +
+# SendSIGKILL is left at defaults as the final backstop.
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+Restart=on-failure
+RestartSec=5
+
+# Provider credentials: uncomment and point at the env-file that defines the
+# token env var(s) your instance.yaml references (e.g. GOOBERS_GITHUB_TOKEN).
+# Keep it 0600 and owned by this user — never inline secrets in this unit.
+#EnvironmentFile=%h/.config/goobers/goobers.env
+
+# The daemon's `local-ci` stage runs `make ci`/golangci-lint as a subprocess and
+# inherits this unit's PATH, not your interactive shell's. Ensure golangci-lint
+# and the Go toolchain are reachable here (see docs/guides/quickstart-linux.md).
+#Environment=PATH=%h/go/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
