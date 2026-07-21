@@ -25,3 +25,7 @@ spec:
   # object under gaggles/<name>/.
   gaggles:
     - acme-web
+    # Polyglot reference (PLY-4 / #1093): a C#/.NET gaggle sharing the same
+    # connections + workflow machinery, differing only in its declared .NET CI
+    # command and `dotnet@9` runtime requirement.
+    - dotnet-service

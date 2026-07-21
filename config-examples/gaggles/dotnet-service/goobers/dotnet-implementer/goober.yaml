@@ -1,0 +1,24 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: dotnet-implementer
+spec:
+  gaggle: dotnet-service
+  role: implementer
+  displayName: Implementer
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  # Implement-only: repo:push is the whole grant (the PR/issue stages are the
+  # stack-agnostic deterministic stages, unchanged from the Go/web gaggles).
+  capabilities:
+    - repo:push
+  skills:
+    - implement
+    - run-tests
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - dotnet-implementation

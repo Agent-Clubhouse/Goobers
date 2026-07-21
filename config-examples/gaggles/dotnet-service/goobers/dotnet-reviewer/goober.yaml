@@ -1,0 +1,22 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: dotnet-reviewer
+spec:
+  gaggle: dotnet-service
+  role: reviewer
+  displayName: Reviewer
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  # Pure evaluation: reviews evidence pointers and returns a Verdict. No write
+  # capability of any kind.
+  capabilities: []
+  skills:
+    - review
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - dotnet-implementation

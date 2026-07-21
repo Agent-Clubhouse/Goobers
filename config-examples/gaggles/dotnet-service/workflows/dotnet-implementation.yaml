@@ -1,0 +1,93 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: dotnet-implementation
+spec:
+  gaggle: dotnet-service
+  displayName: Implementation (.NET reference — implement → review → local-ci)
+  # A deliberately self-contained reference of the polyglot CI gate (PLY-4 /
+  # #1093): implement (agentic) → review (agentic gate) → local-ci
+  # (deterministic build/test) → done. It omits the stack-AGNOSTIC PR-lifecycle
+  # stages (query-backlog / push-branch / open-pr / ci-poll) that the flagship
+  # config-examples/gaggles/acme-web/workflows/implementation.yaml already
+  # demonstrates — nothing about them differs for .NET. The point this file
+  # makes is the one thing that IS stack-specific: the `local-ci` stage runs
+  # this gaggle's declared .NET `ciCommand` (gaggle.yaml, MGV-1/#1009) instead
+  # of the Go default it declares below, and the whole run is gated at SCHEDULE
+  # time on the `dotnet@9` runner capability (RRQ-1/#1101).
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 8
+  start: implement
+  tasks:
+    # Agentic implementation in a fresh, isolated worktree. Scoped to repo:push
+    # only — this stage never talks to the issues or PR API.
+    - name: implement
+      type: agentic
+      goober: dotnet-implementer
+      goal: >-
+        Implement the claimed issue in the .NET service: read the acceptance
+        criteria, plan, implement, add or update xUnit tests for what you
+        changed, and commit to the run branch. Do NOT run the full
+        `dotnet build && dotnet test` suite in-session — the deterministic
+        local-ci stage below owns that authoritatively.
+      capabilities:
+        - repo:push
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 15
+      onTimeout: salvage
+      expectedOutputs:
+        - changed-files
+      next: review
+
+    # The .NET build/test gate. It declares the generic Go default here; at
+    # runtime this gaggle's `ciCommand: ["dotnet","test"]` (gaggle.yaml)
+    # overrides it via #1009, so the stage actually runs `dotnet test` — which
+    # builds then tests — in the run's worktree. A non-zero exit fails the gate.
+    #
+    # Note (AC5, #1093): the runner's Go-only failure diagnostics —
+    # GOTRACEBACK/SIGQUIT goroutine dumps (internal/executor/env.go,
+    # shell.go) — are inert for a `dotnet test` subprocess. That is expected and
+    # harmless: the .NET test runner reports its own failures on stdout/stderr,
+    # which local-ci captures as the gate's evidence; nothing depends on the Go
+    # goroutine-dump path here.
+    - name: local-ci
+      type: deterministic
+      goal: Run the project's local CI-equivalent (build + tests) in the worktree.
+      run:
+        command: ["make", "ci"]
+        # Pull in build/test behavior fixes that landed after this run branched.
+        syncBase: true
+      retry:
+        maxAttempts: 1
+      next: local-gate
+  gates:
+    # Agentic review of the implementer's committed diff. `pass` proceeds to the
+    # build/test gate; `needs-changes` repasses implementation; a hard `fail` or
+    # `escalate` terminates (a real deployment would park the issue for a human,
+    # as acme-web does — omitted here for a self-contained reference).
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: dotnet-reviewer
+      branches:
+        pass: local-ci
+        needs-changes: implement
+        fail: "@abort"
+        escalate: "@abort"
+
+    # local-ci's ResultEnvelope.Status is flattened into this gate's
+    # Inputs[status] by the runner; "success" is status-equals' default
+    # expected value, so no params are needed. `pass` (empty target) completes
+    # the run; a build/test failure repasses implementation.
+    - name: local-gate
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: ""
+        fail: implement
+        escalate: "@abort"
