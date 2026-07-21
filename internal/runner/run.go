@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/toolchain"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -26,6 +27,12 @@ import (
 // DefaultMaxSteps bounds the state walk against a runaway machine (carried over
 // from the Temporal engine core, ARCHITECTURE §3.1).
 const DefaultMaxSteps = 10000
+
+// toolchainPreflightState is the synthetic failing-state name recorded when a
+// run fails the #735 toolchain preflight before any real stage executes, so a
+// `failed` run's FailureStage reads as the preflight rather than mis-attributing
+// the missing toolchain to the workflow's first stage.
+const toolchainPreflightState = "runtime-preflight"
 
 // DefaultMaxInfrastructureAttempts bounds transient infrastructure failures
 // independently of a task's policy retry allowance.
@@ -234,6 +241,12 @@ type Config struct {
 	// fatal to reaching whatever terminal/repass state the failure would
 	// have reached anyway.
 	RateLimited RateLimitedHandler
+	// ToolchainVerifier preflights a run's declared runner-capability toolchains
+	// on the host before any stage executes (#735). Optional — nil defaults to
+	// toolchain.DefaultVerifier() (real host probing). A run declaring no
+	// RequiredCapabilities never invokes it, so the default is inert until a
+	// gaggle/stage opts in.
+	ToolchainVerifier ToolchainVerifier
 	// Failed handles the instance-level consequence of a run reaching terminal
 	// PhaseFailed (#1054): leaving a human-visible trace (a comment carrying the
 	// terminal cause + run id) on the driving item, so a systematic infra fault
@@ -317,6 +330,7 @@ type Runner struct {
 	stalledCancelGrace   time.Duration
 	stalledTerminalGrace time.Duration
 	active               activeRunSet
+	toolchains           ToolchainVerifier
 }
 
 // New validates cfg and returns a ready Runner.
@@ -334,9 +348,14 @@ func New(cfg Config) (*Runner, error) {
 	if cfg.RepoCloneURL == nil {
 		cfg.RepoCloneURL = defaultRepoCloneURL
 	}
+	toolchains := cfg.ToolchainVerifier
+	if toolchains == nil {
+		toolchains = toolchain.DefaultVerifier()
+	}
 	return &Runner{
 		cfg:               cfg,
 		maxSteps:          maxSteps,
+		toolchains:        toolchains,
 		heartbeatInterval: StageHeartbeatInterval,
 		newHeartbeatTicker: func(interval time.Duration) heartbeatTicker {
 			return wallHeartbeatTicker{ticker: time.NewTicker(interval)}
@@ -366,6 +385,24 @@ type StartInput struct {
 	// Item is the originating backlog item, snapshotted immutably into the
 	// journal at run start. Nil for a schedule/signal-triggered producer run.
 	Item *apiv1.BacklogItem
+	// RequiredCapabilities are the runner (toolchain/platform) capabilities this
+	// run declares (its gaggle's + its stages', RRQ-1/#1101). They are
+	// preflight-verified on the host before any stage executes (#735): a token
+	// naming a probeable toolchain (`dotnet@8`, `go@1.26`, `os=linux`) that the
+	// host does not actually satisfy fails the run closed with a clear
+	// diagnostic, converting a runner's false capability claim from an opaque
+	// mid-run error into an actionable one. Empty imposes no preflight, so a run
+	// that declares no requirement behaves exactly as before. A resumed run
+	// leaves this nil — it already passed preflight at its original Start.
+	RequiredCapabilities []string
+}
+
+// ToolchainVerifier verifies, on the executing host, that a run's declared
+// runner-capability tokens are satisfied by an installed toolchain (#735). It
+// is the Config seam the runner preflights through; internal/toolchain provides
+// the production implementation and tests inject a fake.
+type ToolchainVerifier interface {
+	Verify(ctx context.Context, required []string) error
 }
 
 // Result is a run's outcome as of the moment Start/Resume returns. A human
@@ -470,6 +507,21 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		ctx, span := r.startRunSpan(ctx, in)
 		defer span.End()
 		setStalledAttemptContext(ctx)
+
+		// #735: verify the run's declared runtime toolchains are actually present
+		// on this host before executing any stage. #1101 refuses to schedule a
+		// run onto a runner that does not *claim* a required capability, but
+		// accepts that a runner which *falsely* claims one degrades to an opaque
+		// mid-run error; this turns that into a fail-closed preflight naming the
+		// unsatisfied toolchain. A run with no declared requirement skips the
+		// preflight entirely (no behavior change), and a resumed run passes nil
+		// (it already cleared preflight at its original Start).
+		if len(in.RequiredCapabilities) > 0 {
+			if err := r.toolchains.Verify(ctx, in.RequiredCapabilities); err != nil {
+				span.Fail(err)
+				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, toolchainPreflightState, 0, err)
+			}
+		}
 
 		// A scratch-only workflow has no repository branch. Repo-backed workflows
 		// retain the run branch as their primary external ref (#133).

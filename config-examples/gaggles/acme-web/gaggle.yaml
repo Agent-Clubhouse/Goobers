@@ -35,5 +35,15 @@ spec:
   # missing capability — on a runner that does not claim `node@20`, rather than
   # scheduling it to fail at run. Toolchains are assumed preinstalled; the
   # scheduler never installs anything.
+  #
+  # #735 adds a second, host-side check: before any stage of a run executes, the
+  # runner preflights the probeable toolchains among these tokens (`node@N`,
+  # `dotnet@N`, `python@N`, `go@N`, `os=<goos>`) against the actual host — using
+  # the same base environment the stage will run under — and fails the run closed
+  # with a clear diagnostic (e.g. `node@20: host has version 18.19.0 but the run
+  # requires 20`) if a claim is not truly satisfied. This turns a runner that
+  # *falsely* advertised a capability from an opaque mid-run error into an
+  # actionable preflight failure. Tokens whose family has no probe (`xcode`,
+  # `netfx@4.8`) are matched at schedule time but not host-probed.
   requiredCapabilities:
     - node@20

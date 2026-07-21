@@ -227,6 +227,10 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		Trigger: id.Trigger,
 		RepoRef: in.RepoRef,
 		Item:    item,
+		// RequiredCapabilities is intentionally nil on resume: a run only reaches
+		// here after it already started (and therefore already cleared the #735
+		// toolchain preflight in Start); re-verifying would probe the host again
+		// for a decision the original dispatch already made.
 	}
 	ctx, span := r.startRunSpan(ctx, startIn)
 	defer span.End()
