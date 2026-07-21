@@ -17,41 +17,47 @@ type DB struct {
 	sql *sql.DB
 }
 
+// dsnParams configures the rollup connection at the DSN level so the modernc
+// driver applies every setting to EACH physical connection the pool opens,
+// before that connection runs its first statement (#1128). This is the crucial
+// difference from setting them with a post-open `PRAGMA` Exec: an Exec only
+// configures whichever single connection happened to run it, and — worse —
+// leaves the busy handler unarmed for the WAL-mode switch and hot-journal
+// recovery that a concurrent first-open must survive, so several processes
+// racing to open the SAME brand-new telemetry.db (e.g. `goobers up` starting at
+// the same instant as a `goobers telemetry` query) stampede the WAL init and
+// surface SQLITE_BUSY immediately with no wait. The three params:
+//   - busy_timeout(5000): wait out ordinary lock contention for up to 5s
+//     (retrying internally) instead of failing immediately — armed from the
+//     connection's very first statement, including the WAL switch itself.
+//   - journal_mode(WAL): let a reader (a `goobers telemetry`/`goobers trace`
+//     query) proceed concurrently with a writer (the daemon's incremental
+//     ingest on run finish, #127) instead of blocking behind SQLITE_BUSY.
+//   - _txlock=immediate: our only explicit transactions are writers (migration
+//     here, ingest in ingest.go), so taking the write lock at BEGIN turns a
+//     fragile read→write lock upgrade — which SQLite can fail with a
+//     non-waitable SQLITE_BUSY to avoid deadlock, defeating busy_timeout — into
+//     an ordinary lock wait the busy handler serializes cleanly. Autocommit
+//     reads (the query paths) don't use explicit transactions, so WAL reader
+//     concurrency is unaffected.
+//
+// The literal path is kept left of the "?" (not a file: URI) so it is used
+// verbatim as an OS path, avoiding URI-encoding pitfalls with Windows
+// backslashes and drive letters.
+const dsnParams = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate"
+
 // Open opens (creating if needed) the SQLite rollup at path and applies any
-// pending forward migrations (seeds the V1 upgrade story, #33). WAL mode lets
-// a reader (a `goobers telemetry`/`goobers trace` query) proceed concurrently
-// with a writer (the daemon's incremental ingest on run finish, #127)
-// instead of blocking behind SQLITE_BUSY; busy_timeout covers the remaining
-// writer-vs-writer window (two CLI invocations racing an explicit --rebuild)
-// by retrying instead of failing immediately.
+// pending forward migrations (seeds the V1 upgrade story, #33). Connection
+// behaviour under concurrent access (WAL mode, busy_timeout, immediate write
+// locks) is configured via dsnParams so it applies to every pooled connection.
 func Open(path string) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite", path)
+	sqlDB, err := sql.Open("sqlite", path+dsnParams)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: open %s: %w", path, err)
 	}
 	// A single connection avoids SQLite "database is locked" errors from our
 	// own concurrent writers; the rollup is a local, single-process store.
 	sqlDB.SetMaxOpenConns(1)
-	// busy_timeout MUST be set before anything else touches the file: a
-	// concurrent process creating the schema (or holding the WAL init lock)
-	// can make even the "PRAGMA journal_mode=WAL" statement itself return
-	// SQLITE_BUSY immediately, with no retry, if the connection's own
-	// busy-wait isn't already configured.
-	if err := execWithBusyRetry(sqlDB, `PRAGMA busy_timeout=5000`); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("rollup: set busy_timeout on %s: %w", path, err)
-	}
-	// Retried like applyMigration below: switching journal_mode is itself a
-	// lock-acquiring operation, so several processes racing to open the SAME
-	// brand-new telemetry.db (e.g. `goobers up` starting at the same instant
-	// as a `goobers telemetry` query) can hit SQLITE_BUSY here even with
-	// busy_timeout already set on this connection — busy_timeout retries
-	// ordinary lock waits, but not every immediate-fail contention this
-	// specific pragma can hit during a WAL-mode switch.
-	if err := execWithBusyRetry(sqlDB, `PRAGMA journal_mode=WAL`); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("rollup: set WAL mode on %s: %w", path, err)
-	}
 	db := &DB{sql: sqlDB}
 	if err := db.migrate(); err != nil {
 		_ = sqlDB.Close()
@@ -76,44 +82,47 @@ func checkpointWAL(sqlDB *sql.DB) {
 	_ = execWithBusyRetry(sqlDB, `PRAGMA wal_checkpoint(TRUNCATE)`)
 }
 
+// migrate runs the entire first-open setup — creating schema_meta, reading the
+// current version, and applying every pending migration — inside ONE
+// immediate-mode write transaction (migrateOnce). _txlock=immediate (see
+// dsnParams) makes Begin() take the write lock at BEGIN, and busy_timeout waits
+// on that cleanly.
+//
+// Doing this same work as separate autocommit statements — a bare
+// CREATE TABLE, then per-migration transactions — was the #1128 flake: each
+// autocommit statement does an internal read→write lock upgrade, and SQLite
+// fails that upgrade with a *non-waitable* SQLITE_BUSY (deadlock avoidance,
+// which busy_timeout's handler deliberately does NOT wait out) when N
+// connections open the same fresh telemetry.db at once (e.g. `goobers up`
+// racing a `goobers telemetry` query at instance startup). Serializing every
+// first-opener on one up-front write lock removes the upgrade race entirely.
+//
+// The retry loop is now only a thin backstop for SQLITE_BUSY_SNAPSHOT — the
+// one case busy_timeout's C-level handler still cannot wait out (a stale read
+// snapshot can only be abandoned and retaken, not blocked on) — and should
+// rarely, if ever, be reached now that the write lock is acquired at BEGIN.
 func (db *DB) migrate() error {
-	if err := execWithBusyRetry(db.sql, `CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
-		return fmt.Errorf("rollup: create schema_meta: %w", err)
-	}
-	version, err := db.schemaVersion()
-	if err != nil {
-		return err
-	}
-	for i := version; i < len(migrations); i++ {
-		if err := db.applyMigration(i); err != nil {
+	var err error
+	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
+		if err = db.migrateOnce(); err == nil || !isSQLiteBusy(err) {
 			return err
 		}
+		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
 	}
-	return nil
+	return err
 }
 
-// busyRetryMaxAttempts bounds the retry loop execWithBusyRetry/applyMigration
-// use for SQLITE_BUSY/SQLITE_LOCKED during Open() — the only place this
-// package does schema-shaped work multiple processes can race on
-// simultaneously (ordinary queries elsewhere rely on PRAGMA busy_timeout
-// alone). SQLITE_BUSY_SNAPSHOT (the case this retry actually exists for,
-// since busy_timeout's own C-level busy-handler does NOT retry it — a stale
-// read snapshot can't be waited out, only abandoned and retaken) can persist
-// for multiple retry rounds under N-way concurrent first-Opens of the same
-// fresh file; 5 attempts at up to 100ms backoff (300ms total) still flaked
-// ~1/30 under an 8-goroutine stress test wrapping a whole migration
-// transaction, so this is sized with real headroom rather than the tightest
-// value that happened to pass a few runs.
+// busyRetryMaxAttempts bounds migrate's SQLITE_BUSY_SNAPSHOT backstop and
+// checkpointWAL's best-effort retry — the only schema-shaped/maintenance work
+// this package does that multiple processes can race on simultaneously
+// (ordinary queries elsewhere rely on busy_timeout alone). Sized with real
+// headroom rather than the tightest value that happened to pass a few runs.
 const busyRetryMaxAttempts = 12
 
-// execWithBusyRetry runs a single statement, retrying on SQLITE_BUSY/LOCKED
-// with a short linear backoff. busy_timeout alone doesn't cover every
-// contention shape Open() can hit: a fresh telemetry.db with two
-// near-simultaneous first Opens (e.g. `goobers up` racing a `goobers
-// telemetry` query at instance startup) can make even a single statement —
-// the WAL-mode pragma, or one migration statement — return SQLITE_BUSY
-// immediately rather than blocking, if the busy handler doesn't cover that
-// specific lock-upgrade shape.
+// execWithBusyRetry runs a single autocommit statement, retrying on
+// SBUSY/LOCKED with a short linear backoff. Used by checkpointWAL, whose
+// PRAGMA wal_checkpoint can lose the write lock to a concurrent process's
+// reader/writer and must not fail the caller over it.
 func execWithBusyRetry(sqlDB *sql.DB, query string, args ...any) error {
 	var err error
 	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
@@ -125,50 +134,40 @@ func execWithBusyRetry(sqlDB *sql.DB, query string, args ...any) error {
 	return err
 }
 
-// applyMigration runs migrations[i] and records the resulting schema version
-// in ONE transaction, so a crash between the two can never leave them out of
-// sync. Every migration so far is CREATE TABLE/INDEX IF NOT EXISTS (safe to
-// blindly re-run), but that won't always be true — a future migration that
-// needs ALTER TABLE is not idempotent, and without this transactional
-// pairing, a crash after applying it but before recording the version bump
-// would re-apply (and fail on) the same ALTER TABLE on the next restart
-// (issue #129). SQLite supports transactional DDL, so this is safe here
-// specifically — this package only ever targets SQLite (modernc.org/sqlite).
-//
-// Retried on SQLITE_BUSY (same rationale as execWithBusyRetry above): a
-// fresh telemetry.db with two near-simultaneous first Opens (e.g. `goobers
-// up` racing a `goobers telemetry` query at instance startup) can hit WAL's
-// write-lock-upgrade contention here even with busy_timeout set — that
-// PRAGMA covers ordinary lock waits, but a transaction that started as a
-// read and tries to upgrade to a writer while another connection already
-// holds the write lock can still surface SQLITE_BUSY immediately rather
-// than blocking.
-func (db *DB) applyMigration(i int) error {
-	var err error
-	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
-		if err = db.applyMigrationOnce(i); err == nil || !isSQLiteBusy(err) {
-			return err
-		}
-		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
-	}
-	return err
-}
-
-func (db *DB) applyMigrationOnce(i int) error {
-	tx, err := db.sql.Begin()
+// migrateOnce performs the whole schema setup in a single transaction. Pairing
+// each migration with its schema_meta version bump keeps them atomic, so a
+// crash can never leave the recorded version out of sync with the applied DDL:
+// every migration so far is CREATE TABLE/INDEX IF NOT EXISTS (safe to re-run),
+// but that won't always hold — a future ALTER TABLE is not idempotent, and
+// re-applying it after a crash that recorded no version bump would fail (issue
+// #129). Folding the full batch into one transaction extends that same
+// all-or-nothing guarantee across every pending migration. SQLite supports
+// transactional DDL, so this is safe here specifically — this package only ever
+// targets SQLite (modernc.org/sqlite).
+func (db *DB) migrateOnce() error {
+	tx, err := db.sql.Begin() // BEGIN IMMEDIATE via _txlock=immediate (see dsnParams)
 	if err != nil {
-		return fmt.Errorf("rollup: begin migration %d: %w", i+1, err)
+		return fmt.Errorf("rollup: begin migration: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
-	if _, err := tx.Exec(migrations[i]); err != nil {
-		return fmt.Errorf("rollup: apply migration %d: %w", i+1, err)
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
+		return fmt.Errorf("rollup: create schema_meta: %w", err)
 	}
-	if _, err := tx.Exec(`DELETE FROM schema_meta`); err != nil {
-		return fmt.Errorf("rollup: reset schema_meta after migration %d: %w", i+1, err)
+	version, err := schemaVersionTx(tx)
+	if err != nil {
+		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO schema_meta (version) VALUES (?)`, i+1); err != nil {
-		return fmt.Errorf("rollup: record schema version %d: %w", i+1, err)
+	for i := version; i < len(migrations); i++ {
+		if _, err := tx.Exec(migrations[i]); err != nil {
+			return fmt.Errorf("rollup: apply migration %d: %w", i+1, err)
+		}
+		if _, err := tx.Exec(`DELETE FROM schema_meta`); err != nil {
+			return fmt.Errorf("rollup: reset schema_meta after migration %d: %w", i+1, err)
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_meta (version) VALUES (?)`, i+1); err != nil {
+			return fmt.Errorf("rollup: record schema version %d: %w", i+1, err)
+		}
 	}
 	return tx.Commit()
 }
@@ -188,9 +187,12 @@ func isSQLiteBusy(err error) bool {
 	return code == 5 || code == 6 // SQLITE_BUSY, SQLITE_LOCKED
 }
 
-func (db *DB) schemaVersion() (int, error) {
+// schemaVersionTx reads the recorded schema version within the migration
+// transaction (so the read shares the write lock migrateOnce already holds — no
+// separate autocommit read that could race a concurrent first-opener).
+func schemaVersionTx(tx *sql.Tx) (int, error) {
 	var version int
-	err := db.sql.QueryRow(`SELECT version FROM schema_meta LIMIT 1`).Scan(&version)
+	err := tx.QueryRow(`SELECT version FROM schema_meta LIMIT 1`).Scan(&version)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
