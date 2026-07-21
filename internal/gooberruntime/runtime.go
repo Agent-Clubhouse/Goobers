@@ -217,6 +217,20 @@ func validateVerdict(verdict apiv1.Verdict) error {
 	return nil
 }
 
+// ValidateMergeReviewVerdict applies the ordinary verdict rules and requires
+// every finding to carry a routing class.
+func ValidateMergeReviewVerdict(verdict apiv1.Verdict) error {
+	if err := validateVerdict(verdict); err != nil {
+		return err
+	}
+	for i, finding := range verdict.Findings {
+		if !finding.Class.IsValid() {
+			return fmt.Errorf("finding[%d].class %q is invalid", i, finding.Class)
+		}
+	}
+	return nil
+}
+
 func validSeverity(severity apiv1.Severity) bool {
 	switch severity {
 	case apiv1.SeverityInfo, apiv1.SeverityWarning, apiv1.SeverityError, apiv1.SeverityCritical:

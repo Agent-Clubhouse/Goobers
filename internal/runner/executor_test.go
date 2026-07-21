@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 type guardedAssetGoober struct {
@@ -67,5 +69,49 @@ func TestGooberInvocationActivatesAssetPathGuardBeforeCall(t *testing.T) {
 				t.Fatalf("%s did not record materialized assets", tc.name)
 			}
 		})
+	}
+}
+
+type gateHeartbeatJournalStub struct{}
+
+func (gateHeartbeatJournalStub) Append(journal.Event) error  { return nil }
+func (gateHeartbeatJournalStub) RepairAppendBoundary() error { return nil }
+
+func TestGateHeartbeatGooberComposesWithAssetGuard(t *testing.T) {
+	guardActive := false
+	invocation := &gooberInvocation{
+		Goober: &guardedAssetGoober{guardActive: &guardActive},
+		activateAssetPathGuard: func() error {
+			guardActive = true
+			return nil
+		},
+	}
+	ticker := &fakeHeartbeatTicker{
+		ticks:   make(chan time.Time),
+		stopped: make(chan struct{}),
+	}
+	r := &Runner{
+		heartbeatInterval:  StageHeartbeatInterval,
+		newHeartbeatTicker: func(time.Duration) heartbeatTicker { return ticker },
+	}
+	goober := gateHeartbeatGoober{
+		goober: invocation, runner: r, journal: gateHeartbeatJournalStub{},
+		stage: "review", attempt: 1,
+	}
+
+	verdict, err := goober.Review(context.Background(), apiv1.InvocationEnvelope{})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if verdict.Decision != apiv1.VerdictPass {
+		t.Fatalf("decision = %q, want pass", verdict.Decision)
+	}
+	if !invocation.materializedAssets() {
+		t.Fatal("asset wrapper was not invoked through the heartbeat wrapper")
+	}
+	select {
+	case <-ticker.stopped:
+	default:
+		t.Fatal("heartbeat ticker was not stopped after review")
 	}
 }

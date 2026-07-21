@@ -4660,6 +4660,21 @@ func (c *capturingReviewer) Review(_ context.Context, env apiv1.InvocationEnvelo
 	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
 }
 
+type blockingReviewer struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (b *blockingReviewer) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	close(b.started)
+	<-b.release
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
 // committingDeterministic is a deterministic stub that commits a real change on
 // the run branch in its worktree — so a downstream agentic gate's runner-produced
 // diff evidence (#301) is non-empty.
@@ -5411,6 +5426,190 @@ func TestRunnerDeterministicSubjectEmptyDiffStillReviews(t *testing.T) {
 	}
 }
 
+func TestCachedVerdictFromOutputsFailsClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		want   bool
+		mutate func(*apiv1.Verdict, map[string]interface{})
+	}{
+		{name: "complete match", want: true},
+		{name: "missing digest output", mutate: func(_ *apiv1.Verdict, outputs map[string]interface{}) {
+			delete(outputs, "reviewDigest")
+		}},
+		{name: "digest mismatch", mutate: func(_ *apiv1.Verdict, outputs map[string]interface{}) {
+			outputs["reviewDigest"] = "sha256:other"
+		}},
+		{name: "head mismatch", mutate: func(_ *apiv1.Verdict, outputs map[string]interface{}) {
+			outputs["selectedHeadSha"] = "other-head"
+		}},
+		{name: "missing source run", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.SourceRunID = ""
+		}},
+		{name: "invalid decision", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Decision = "approved"
+		}},
+		{name: "invalid finding severity", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Findings = []apiv1.Finding{{
+				Severity: "notice", Message: "bad severity", Class: apiv1.FindingSubstantive,
+			}}
+		}},
+		{name: "blank finding message", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Findings = []apiv1.Finding{{
+				Severity: apiv1.SeverityError, Message: " ", Class: apiv1.FindingSubstantive,
+			}}
+		}},
+		{name: "missing finding class", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Findings = []apiv1.Finding{{
+				Severity: apiv1.SeverityError, Message: "not routable",
+			}}
+		}},
+		{name: "invalid finding", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Findings = []apiv1.Finding{{
+				Severity: apiv1.SeverityError, Message: "missing blockers", Class: apiv1.FindingCrossPRBlocked,
+			}}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verdict := apiv1.Verdict{
+				Decision: apiv1.VerdictPass, Digest: "sha256:key", SourceRunID: "run-original",
+				HeadSHA: "head", BaseSHA: "base",
+			}
+			outputs := map[string]interface{}{
+				"reviewDigest":    verdict.Digest,
+				"selectedHeadSha": verdict.HeadSHA,
+				"selectedBaseSha": verdict.BaseSHA,
+			}
+			if tt.mutate != nil {
+				tt.mutate(&verdict, outputs)
+			}
+			data, err := json.Marshal(verdict)
+			if err != nil {
+				t.Fatalf("marshal verdict: %v", err)
+			}
+			outputs["cachedVerdictJson"] = string(data)
+
+			got := cachedVerdictFromOutputs(outputs)
+			if (got != nil) != tt.want {
+				t.Fatalf("cachedVerdictFromOutputs() = %+v, want cache hit %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunnerLiveReviewerEmitsHeartbeat(t *testing.T) {
+	runID := "run-live-review-heartbeat"
+	reviewer := &blockingReviewer{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{
+				rec: rec,
+				byTask: map[string]stubTaskResult{
+					runID + ":implement": {status: apiv1.ResultSuccess},
+				},
+			}, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return reviewer, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	taskTicker := &fakeHeartbeatTicker{ticks: make(chan time.Time, 1), stopped: make(chan struct{})}
+	gateTicker := &fakeHeartbeatTicker{ticks: make(chan time.Time, 1), stopped: make(chan struct{})}
+	var tickerCalls atomic.Int32
+	r.newHeartbeatTicker = func(time.Duration) heartbeatTicker {
+		switch tickerCalls.Add(1) {
+		case 1:
+			return taskTicker
+		case 2:
+			return gateTicker
+		default:
+			t.Errorf("unexpected heartbeat ticker construction")
+			return &fakeHeartbeatTicker{ticks: make(chan time.Time), stopped: make(chan struct{})}
+		}
+	}
+
+	type startResult struct {
+		result Result
+		err    error
+	}
+	resultCh := make(chan startResult, 1)
+	go func() {
+		result, startErr := r.Start(context.Background(), StartInput{
+			RunID:   runID,
+			Machine: agenticGateMachine(t),
+			Gaggle:  "acme-web",
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		resultCh <- startResult{result: result, err: startErr}
+	}()
+
+	select {
+	case <-reviewer.started:
+	case <-time.After(time.Second):
+		t.Fatal("reviewer did not start")
+	}
+	gateTicker.ticks <- time.Now()
+
+	runDir := filepath.Join(instanceRoot, "runs", runID)
+	deadline := time.Now().Add(time.Second)
+	for {
+		rd, openErr := journal.OpenRead(runDir)
+		if openErr == nil {
+			events, eventsErr := rd.Events()
+			if eventsErr == nil {
+				for _, event := range events {
+					if event.Type == journal.EventStageHeartbeat && event.Stage == "review" && event.Attempt == 1 {
+						goto heartbeatObserved
+					}
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("reviewer heartbeat was not journaled while the gate was in flight")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+heartbeatObserved:
+	close(reviewer.release)
+	var got startResult
+	select {
+	case got = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("run did not finish after reviewer release")
+	}
+	if got.err != nil {
+		t.Fatalf("Start: %v", got.err)
+	}
+	if got.result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", got.result.Phase)
+	}
+	if tickerCalls.Load() != 2 {
+		t.Fatalf("heartbeat ticker constructions = %d, want task and live reviewer", tickerCalls.Load())
+	}
+	select {
+	case <-gateTicker.stopped:
+	default:
+		t.Fatal("reviewer heartbeat ticker was not stopped")
+	}
+}
+
 // TestRunnerSkipsReviewerOnCachedVerdictOutput is issue #523's end-to-end
 // wiring proof: when the subject stage feeding an agentic review gate
 // emits a "cachedVerdictJson" output (merge-review's gather-sibling-context,
@@ -5427,6 +5626,7 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 	cached := apiv1.Verdict{
 		Decision: apiv1.VerdictPass, Summary: "reused from a prior run",
 		Digest: "sha256:cache-hit-digest", SourceRunID: "run-original-producer",
+		HeadSHA: "head", BaseSHA: "base",
 	}
 	cachedJSON, err := json.Marshal(cached)
 	if err != nil {
@@ -5435,10 +5635,16 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 	byTask := map[string]stubTaskResult{
 		runID + ":implement": {
 			status: apiv1.ResultSuccess, summary: "gathered sibling context",
-			outputs: map[string]interface{}{"cachedVerdictJson": string(cachedJSON)},
+			outputs: map[string]interface{}{
+				"cachedVerdictJson": string(cachedJSON),
+				"reviewDigest":      cached.Digest,
+				"selectedHeadSha":   cached.HeadSHA,
+				"selectedBaseSha":   cached.BaseSHA,
+			},
 		},
 	}
 	reviewer := &capturingReviewer{}
+	var reviewerConstructions atomic.Int32
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
 	if err != nil {
@@ -5450,6 +5656,7 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 			return &stubDeterministic{rec: rec, byTask: byTask}, nil
 		},
 		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			reviewerConstructions.Add(1)
 			return reviewer, nil
 		},
 		Worktrees:    wtMgr,
@@ -5458,6 +5665,11 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
+	}
+	var tickerConstructions atomic.Int32
+	r.newHeartbeatTicker = func(time.Duration) heartbeatTicker {
+		tickerConstructions.Add(1)
+		return &fakeHeartbeatTicker{ticks: make(chan time.Time), stopped: make(chan struct{})}
 	}
 
 	res, err := r.Start(context.Background(), StartInput{
@@ -5474,6 +5686,12 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 	}
 	if reviewer.called {
 		t.Fatal("reviewer WAS invoked — a cachedVerdictJson output must short-circuit the reviewer call entirely (#523)")
+	}
+	if reviewerConstructions.Load() != 0 {
+		t.Fatalf("reviewer constructions = %d, want none on cache hit", reviewerConstructions.Load())
+	}
+	if tickerConstructions.Load() != 1 {
+		t.Fatalf("heartbeat ticker constructions = %d, want only the subject task on cache hit", tickerConstructions.Load())
 	}
 
 	rd, err := journal.OpenRead(filepath.Join(instanceRoot, "runs", runID))

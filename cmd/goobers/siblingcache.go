@@ -12,9 +12,9 @@ import (
 
 // Sibling-context cache (issue #523): gather-sibling-context's durable
 // per-sibling memo, so consecutive merge-review runs stop re-fetching every
-// other open PR's files + check state from scratch (the per-PR cost — one
-// files request plus two check-state requests — dominated the instance's
-// GitHub API budget as the open-PR set grew, #614's rate-limit exhaustion).
+// other open PR's files from scratch. Check state remains in the entry as the
+// latest observation but is refreshed every run because CI can be rerun on an
+// unchanged SHA.
 // Lives under the instance's scheduler dir next to claims.json, guarded by
 // the same cross-process flock pattern (withFileLock): concurrent
 // merge-review runs' gather stages each run as their own OS process against
@@ -26,13 +26,9 @@ const (
 
 // siblingCacheEntry is one sibling PR's memoized gather output, keyed by the
 // PR number and pinned to the head SHA it was gathered at. Files can only
-// change when the head SHA does, so a SHA match makes them reusable as-is;
-// CheckState can advance on an unchanged SHA (CI finishing later), so only a
-// terminal state (passing/failing) is reusable — a pending one is re-polled
-// each run until it settles. A terminal state overwritten by a re-run on the
-// same SHA goes stale here: an accepted tradeoff for sibling *evidence*
-// (nothing gates a merge on it — pr-select and the auto-merge re-poll still
-// resolve fresh state for the PR actually being acted on).
+// change when the head SHA does, so a SHA match makes them reusable as-is.
+// CheckState records the latest observation for compatibility with existing
+// cache files, but gather-sibling-context refreshes it before use.
 type siblingCacheEntry struct {
 	HeadSHA    string               `json:"headSha"`
 	CheckState providers.CheckState `json:"checkState"`
@@ -44,12 +40,6 @@ type siblingCacheEntry struct {
 // currently-open sibling set so closed/merged PRs don't accumulate.
 type siblingCacheFile struct {
 	Entries map[string]siblingCacheEntry `json:"entries"`
-}
-
-// checkStateTerminal reports whether s is settled enough to reuse across
-// runs without re-polling.
-func checkStateTerminal(s providers.CheckState) bool {
-	return s == providers.CheckStatePassing || s == providers.CheckStateFailing
 }
 
 // loadSiblingCache reads the cache under the cross-process lock. It never

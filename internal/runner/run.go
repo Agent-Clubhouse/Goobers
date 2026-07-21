@@ -14,6 +14,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/gooberruntime"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -802,7 +803,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: steps}, nil
 			}
 
-			gr, err, removeErr := r.evaluateGate(ctx, gateEval, ex, in, g, lastStage, lastResult, pointers, workspaceBranch)
+			gr, err, removeErr := r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, lastResult, pointers, workspaceBranch)
 			if removeErr != nil {
 				// Non-fatal (issue #136), same rationale as runTask's own
 				// worktree_remove_failed journaling — the teardown failure
@@ -1585,6 +1586,35 @@ func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt i
 	return stageHeartbeat{stop: stop, done: done}
 }
 
+type gateHeartbeatGoober struct {
+	goober  invoke.Goober
+	runner  *Runner
+	journal gateHeartbeatJournal
+	stage   string
+	attempt int
+}
+
+type gateHeartbeatJournal interface {
+	journalAppender
+	RepairAppendBoundary() error
+}
+
+func (g gateHeartbeatGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return g.goober.Invoke(ctx, env)
+}
+
+func (g gateHeartbeatGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	heartbeat := g.runner.startStageHeartbeat(g.journal, g.stage, g.attempt, journal.AttemptPolicy)
+	verdict, reviewErr := g.goober.Review(ctx, env)
+	heartbeatErr := heartbeat.Stop()
+	if heartbeatErr != nil {
+		if repairErr := g.journal.RepairAppendBoundary(); repairErr != nil {
+			heartbeatErr = fmt.Errorf("runner: repair journal after gate heartbeat failure for %q: %w", g.stage, errors.Join(heartbeatErr, repairErr))
+		}
+	}
+	return verdict, errors.Join(reviewErr, heartbeatErr)
+}
+
 func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact, removeErr error) error {
 	heartbeatErr := heartbeat.Stop()
 	if heartbeatErr != nil {
@@ -2104,7 +2134,7 @@ func taskEscalationTarget(machine *workflow.Machine, task apiv1.Task) string {
 // Provisioning one anyway wasted a git clone/checkout on every automated-gate
 // evaluation and turned a worktree-provisioning failure (disk, git) into a
 // failure of a gate that touches no filesystem whatsoever.
-func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string) (result gate.Result, err error, removeErr error) {
+func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string) (result gate.Result, err error, removeErr error) {
 	// Same drain contract as runTask: a gate attempt already underway when
 	// SIGTERM cancels the run-level ctx finishes and journals cleanly.
 	ctx = context.WithoutCancel(ctx)
@@ -2218,26 +2248,11 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 		}
 	}
 
-	// cachedVerdict (issue #523): a deterministic subject stage (merge-
-	// review's gather-sibling-context) may have already found a digest-
-	// matched prior verdict for this exact evaluation and handed it back as
-	// a scalar JSON string output — subjectResult.Outputs is a generic
-	// map[string]interface{} no gate-package code should need to know the
-	// shape of, so the decode (and the "is this even a merge-review-style
-	// cache hit" question) lives entirely here, at the one call site that
-	// already owns subjectResult. A decode failure is silently ignored, not
-	// fatal: an absent or malformed cachedVerdictJson is exactly the normal
-	// "no cache hit" case for every gate that never produces this key at
-	// all (every gate but merge-review's review gate). Rebound on every
-	// call — possibly to nil — mirroring Reviewer's own rebind contract
-	// just below, so a hit for one gate can never leak into the next.
-	var cachedVerdict *apiv1.Verdict
-	if raw, ok := subjectResult.Outputs["cachedVerdictJson"].(string); ok && raw != "" {
-		var v apiv1.Verdict
-		if jerr := json.Unmarshal([]byte(raw), &v); jerr == nil {
-			cachedVerdict = &v
-		}
-	}
+	// A deterministic subject may offer a prior merge-review verdict. Treat
+	// it as a cache hit only when its decision, provenance, SHA pins, and
+	// digest all agree with this subject's complete cache-key outputs.
+	// Anything missing or malformed falls through to live evaluation.
+	cachedVerdict := cachedVerdictFromOutputs(subjectResult.Outputs)
 	gateEval.CachedVerdict = cachedVerdict
 
 	switch g.Evaluator {
@@ -2267,7 +2282,13 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 				Goober:                 ag,
 				activateAssetPathGuard: workspace.ActivateAssetPathGuard,
 			}
-			gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: agentInvocation}
+			gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: gateHeartbeatGoober{
+				goober:  agentInvocation,
+				runner:  r,
+				journal: jr,
+				stage:   g.Name,
+				attempt: gateEval.Attempts[g.Name] + 1,
+			}}
 		}
 	}
 
@@ -2281,6 +2302,28 @@ func (r *Runner) evaluateGate(ctx context.Context, gateEval *gate.Evaluator, ex 
 	span.SetGateResult(result.Outcome, result.Attempt)
 	span.Complete(telemetry.OutcomeSuccess, false)
 	return result, nil, nil
+}
+
+func cachedVerdictFromOutputs(outputs map[string]interface{}) *apiv1.Verdict {
+	raw, rawOK := outputs["cachedVerdictJson"].(string)
+	digest, digestOK := outputs["reviewDigest"].(string)
+	headSHA, headOK := outputs["selectedHeadSha"].(string)
+	baseSHA, baseOK := outputs["selectedBaseSha"].(string)
+	if !rawOK || !digestOK || !headOK || !baseOK ||
+		raw == "" || digest == "" || headSHA == "" || baseSHA == "" {
+		return nil
+	}
+
+	var verdict apiv1.Verdict
+	if err := json.Unmarshal([]byte(raw), &verdict); err != nil ||
+		gooberruntime.ValidateMergeReviewVerdict(verdict) != nil ||
+		verdict.Digest != digest ||
+		strings.TrimSpace(verdict.SourceRunID) == "" ||
+		verdict.HeadSHA != headSHA ||
+		verdict.BaseSHA != baseSHA {
+		return nil
+	}
+	return &verdict
 }
 
 // recordReviewerDiff produces an agentic reviewer gate's evidence (#301): the

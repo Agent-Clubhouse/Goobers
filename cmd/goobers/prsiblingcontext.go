@@ -71,8 +71,8 @@ type siblingPR struct {
 // siblingcache.go): the open-PR list itself is always queried fresh — it is
 // the freshness probe, one request regardless of PR count, and the source
 // of every volatile field (draft/labels/head SHA) — but a sibling whose
-// head SHA is unchanged since the last gather reuses its cached files and
-// terminal check state instead of costing three more requests per run.
+// head SHA is unchanged since the last gather reuses its cached files.
+// Check state is always refreshed because CI can be rerun on the same SHA.
 func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("gather-sibling-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -81,10 +81,11 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			"Load the other open goober-authored PRs' touched files + state as\n"+
 			"evidence for the holistic review (a workflow stage, follows\n"+
 			"pr-select). Requires selectedNumber/selectedHead/selectedBase inputs\n"+
-			"(Task.InputsFrom pr-select's own outputs). Sibling files/check state\n"+
-			"are memoized per head SHA under the instance scheduler dir; --no-cache\n"+
-			"bypasses that memo entirely (neither read nor written) to force a fully\n"+
-			"fresh gather. Separately, this stage also computes the selected PR's\n"+
+			"(Task.InputsFrom pr-select's own outputs). Sibling files are memoized\n"+
+			"per head SHA under the instance scheduler dir, while check state is\n"+
+			"always refreshed; --no-cache bypasses the file memo entirely (neither\n"+
+			"read nor written) to force a fully fresh gather. Separately, this stage\n"+
+			"also computes the selected PR's\n"+
 			"reviewDigest and checks the PR's own most recent verdict comment for a\n"+
 			"matching one (issue #523's verdict-level cache) — a match is emitted as\n"+
 			"cachedVerdictJson, letting the runner skip the reviewer gate's LLM call\n"+
@@ -135,8 +136,9 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	// SkipCheckState: the list is the always-fresh probe (one request), but
-	// per-candidate check-state resolution is two more requests per PR —
-	// resolved below only for siblings whose cached state isn't reusable.
+	// per-candidate check-state resolution is two more requests per PR. It is
+	// resolved below after file-list memoization so same-head CI reruns are
+	// reflected in the verdict-cache key.
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
 	})
@@ -152,11 +154,13 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	next := make(map[string]siblingCacheEntry, len(prs))
 
 	var selectedHeadSHA, selectedBaseSHA string
+	selectedFound := false
 	var selectedFiles []string
 	reused := 0
 	siblings := make([]siblingPR, 0, len(prs))
 	for _, pr := range prs {
 		if pr.Number == selectedNumber {
+			selectedFound = true
 			// Capture the selected PR's OWN current SHAs from this same
 			// fresh query — this is what the review gate's Verdict should
 			// pin against (design doc §6 D6), not whatever pr-select saw
@@ -208,12 +212,9 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		} else {
 			reused++
 		}
-		checkState := prior.CheckState
-		if !hit || !checkStateTerminal(checkState) {
-			checkState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
-			if err != nil {
-				return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", pr.Number), err, "sibling-context.json")
-			}
+		checkState, err := provider.RefCheckState(ctx, repo, pr.HeadSHA)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", pr.Number), err, "sibling-context.json")
 		}
 		next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: checkState, Files: paths}
 		siblings = append(siblings, siblingPR{
@@ -230,55 +231,10 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if selectedHeadSHA == "" {
+	if !selectedFound {
 		// The selected PR vanished from the eligible list between pr-select
 		// and here (merged/closed/retargeted mid-cycle) — nothing to review.
 		return writeNoWorkResult(stdout, stderr, "selected PR is no longer open")
-	}
-
-	// #523/#718 verdict-level cache: compute this evaluation's digest from
-	// the exact CONTENT the review depends on (not raw SHAs — issue #718:
-	// the selected PR's own patch identity, invariant to a clean rebase,
-	// and only the slice of base's movement that actually intersects this
-	// PR's files), then check the selected PR's own most recent verdict
-	// comment for a match. A match lets the runner skip the reviewer gate's
-	// LLM call entirely (internal/gate.Evaluator.CachedVerdict) — the
-	// expensive part the maintainer ruling targets (90-280s per call),
-	// distinct from --no-cache's fetch-level saving above.
-	var cachedVerdictJSON, reviewDigest string
-	if !*noVerdictCache {
-		patchID, baseIntersectionDigest, perr := computeSelectedPatchContext(ctx, provider, repo, selectedBaseSHA, selectedHeadSHA)
-		if perr != nil {
-			// The digest itself is unobtainable this cycle — same posture
-			// as findCachedVerdict's own error handling just below:
-			// degrade to no cache lookup (a real review still runs, this
-			// gather does not fail) rather than aborting. reviewDigest
-			// stays empty — nothing to look up or emit.
-			pf(stderr, "warning: compute selected PR's patch context for verdict cache: %v\n", perr)
-		} else {
-			reviewDigest = computeReviewDigest(patchID, baseIntersectionDigest, siblings)
-			cached, cerr := findCachedVerdict(ctx, provider, repo, selectedNumber, reviewDigest)
-			if cerr != nil {
-				// A failed lookup is an optimization loss, not a stage
-				// failure — same posture as loadSiblingCache's
-				// degrade-on-error: fall through to a real review rather
-				// than aborting the gather.
-				pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
-			} else if cached != nil {
-				// A digest match proves the prior review still applies to this
-				// evaluation even when an equivalent rebase or disjoint base
-				// advance changed the raw SHAs. Rebind the cached verdict to
-				// this gather's authoritative pin before the runner journals it.
-				cached.HeadSHA = selectedHeadSHA
-				cached.BaseSHA = selectedBaseSHA
-				data, merr := json.Marshal(cached)
-				if merr != nil {
-					pf(stderr, "warning: marshal cached verdict: %v\n", merr)
-				} else {
-					cachedVerdictJSON = string(data)
-				}
-			}
-		}
 	}
 
 	// Deterministic file-overlap (#989): the ground-truth set of files each
@@ -293,6 +249,28 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		if len(siblings[i].Overlap) > 0 {
 			overlappingSiblings = append(overlappingSiblings, siblings[i].Number)
 			overlappingCsv = append(overlappingCsv, strconv.Itoa(siblings[i].Number))
+		}
+	}
+
+	// Verdict-level cache: hash the complete stable key (selected head/base
+	// SHAs and all reviewer-visible sibling state), then check the selected
+	// PR's trusted status comment for a matching usable verdict. Any missing
+	// key component or lookup problem degrades to a fresh review.
+	reviewDigest := computeReviewDigest(selectedHeadSHA, selectedBaseSHA, siblings)
+	var cachedVerdictJSON string
+	if reviewDigest == "" {
+		pf(stderr, "warning: verdict cache key is incomplete; forcing a fresh review\n")
+	} else if !*noVerdictCache {
+		cached, cerr := findCachedVerdict(ctx, provider, repo, selectedNumber, reviewDigest, selectedHeadSHA, selectedBaseSHA)
+		if cerr != nil {
+			pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
+		} else if cached != nil {
+			data, merr := json.Marshal(cached)
+			if merr != nil {
+				pf(stderr, "warning: marshal cached verdict: %v\n", merr)
+			} else {
+				cachedVerdictJSON = string(data)
+			}
 		}
 	}
 
