@@ -1903,6 +1903,7 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		// (and a pre-commit timeout) falls through to the normal retry/fail path.
 		if err != nil && t.OnTimeout == apiv1.TaskOnTimeoutSalvage && invoke.IsTimeout(err) {
 			if salvaged, ok := r.salvageTimeout(ctx, jr, in, t, workspace, attempt, class, err); ok {
+				salvaged.Transcript = result.Transcript
 				return salvaged, nil, nil, nil
 			}
 		}

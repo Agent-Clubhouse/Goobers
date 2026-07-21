@@ -19,6 +19,10 @@
       "type": "array",
       "items": { "$ref": "artifact-pointer.schema.json" }
     },
+    "transcript": {
+      "description": "Runner-captured transcript for this agentic attempt. Diagnostic only; unlike artifacts, it is not passed to downstream stages.",
+      "$ref": "artifact-pointer.schema.json"
+    },
     "summary": { "type": "string" },
     "metrics": {
       "type": "object",

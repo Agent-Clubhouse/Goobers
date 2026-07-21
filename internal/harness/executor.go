@@ -195,16 +195,16 @@ func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanR
 // configured adapter and returns its result envelope, or an error if the
 // stage never produced a valid one (fail closed, GBO-013/GBO-014).
 func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
-	out, err := e.run(ctx, ModeInvoke, env, e.resultPath)
+	out, transcript, err := e.run(ctx, ModeInvoke, env, e.resultPath)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, err
+		return apiv1.ResultEnvelope{Transcript: transcript}, err
 	}
 	if err := e.validator.ValidateEnvelope("result", out.Payload); err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
+		return apiv1.ResultEnvelope{Transcript: transcript}, fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
 	}
 	var result apiv1.ResultEnvelope
 	if err := json.Unmarshal(out.Payload, &result); err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("%w: decode result envelope: %w", ErrInvalidCompletion, err)
+		return apiv1.ResultEnvelope{Transcript: transcript}, fmt.Errorf("%w: decode result envelope: %w", ErrInvalidCompletion, err)
 	}
 	if len(out.Metrics) > 0 {
 		if result.Metrics == nil {
@@ -214,6 +214,9 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 			result.Metrics[name] = value
 		}
 	}
+	// The transcript pointer is runner-authored. Never trust a harness to
+	// self-report a path or digest for the diagnostic bytes the runner captured.
+	result.Transcript = transcript
 	if out.TranscriptTruncated {
 		// Mirrors internal/executor.ShellExecutor's stdoutTruncated/
 		// stderrTruncated outputs (#245): the recorded span already carries
@@ -233,7 +236,7 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 			result.Summary = summary
 			return result, nil
 		}
-		return apiv1.ResultEnvelope{}, err
+		return result, err
 	}
 	if ptr != nil {
 		result.Artifacts = append(result.Artifacts, *ptr)
@@ -245,7 +248,7 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 // configured adapter and returns its verdict, or an error if the gate never
 // produced a valid one.
 func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	out, err := e.run(ctx, ModeReview, env, e.verdictPath)
+	out, _, err := e.run(ctx, ModeReview, env, e.verdictPath)
 	if err != nil {
 		return apiv1.Verdict{}, err
 	}
@@ -291,17 +294,17 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 // records whatever transcript was captured — even on failure, so a runner has
 // journaled diagnostics (via the returned error plus the recorded span) beyond
 // a bare error string.
-func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (Outcome, error) {
+func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (Outcome, *apiv1.ArtifactPointer, error) {
 	if err := e.assets.Materialize(env.Workspace); err != nil {
-		return Outcome{}, fmt.Errorf("harness: materialize goober assets: %w", err)
+		return Outcome{}, nil, fmt.Errorf("harness: materialize goober assets: %w", err)
 	}
 	creds, err := e.injector.Materialize(ctx, env.Capabilities)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("harness: materialize credentials: %w", err)
+		return Outcome{}, nil, fmt.Errorf("harness: materialize credentials: %w", err)
 	}
 	contextPaths, err := e.materializeContext(env)
 	if err != nil {
-		return Outcome{}, err
+		return Outcome{}, nil, err
 	}
 	req := RunRequest{
 		Mode:               mode,
@@ -325,12 +328,12 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		output := e.scrubber.Scrub(out.Transcript)
 		out.Transcript, err = composedTranscript(string(prompt), output, req.Model, out.TranscriptTruncated)
 		if err != nil {
-			return Outcome{}, fmt.Errorf("harness: encode transcript floor: %w", err)
+			return Outcome{}, nil, fmt.Errorf("harness: encode transcript floor: %w", err)
 		}
 		var dropped int64
 		out.Transcript, dropped, err = boundCanonicalTranscript(out.Transcript, req.MaxTranscriptBytes, out.TranscriptDroppedBytes)
 		if err != nil {
-			return Outcome{}, fmt.Errorf("harness: bound transcript floor: %w", err)
+			return Outcome{}, nil, fmt.Errorf("harness: bound transcript floor: %w", err)
 		}
 		if dropped > out.TranscriptDroppedBytes {
 			out.TranscriptTruncated = true
@@ -338,11 +341,18 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		out.TranscriptDroppedBytes = dropped
 		out.TranscriptSchema = telemetry.GenAIEventSchema
 	}
+	var transcript *apiv1.ArtifactPointer
 	if len(out.Transcript) > 0 {
 		scrubbed := e.scrubber.Scrub(out.Transcript)
 		name := fmt.Sprintf("%s.transcript", e.adapter.Name())
-		if _, spanErr := e.recorder.RecordSpanWithSchema(env.TaskID, name, out.TranscriptSchema, scrubbed); spanErr != nil && runErr == nil {
-			runErr = fmt.Errorf("harness: record span: %w", spanErr)
+		ref, spanErr := e.recorder.RecordSpanWithSchema(env.TaskID, name, out.TranscriptSchema, scrubbed)
+		if spanErr != nil {
+			if runErr == nil {
+				runErr = fmt.Errorf("harness: record span: %w", spanErr)
+			}
+		} else {
+			ptr := refToPointer(ref, "")
+			transcript = &ptr
 		}
 	}
 	if runErr != nil {
@@ -352,17 +362,17 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		// importing this package or matching on error strings — mirroring how
 		// worktree-provision transients are marked invoke.InfrastructureFailure.
 		if errors.Is(runErr, ErrTimeout) {
-			return Outcome{}, invoke.Timeout(wrapped)
+			return Outcome{}, transcript, invoke.Timeout(wrapped)
 		}
-		return Outcome{}, wrapped
+		return Outcome{}, transcript, wrapped
 	}
 	if len(out.Payload) == 0 {
 		// Defense in depth: an Adapter contract violation (nil error, empty
 		// payload) still fails closed rather than surfacing a zero-value
 		// result/verdict as a false success.
-		return Outcome{}, fmt.Errorf("%w: %s", ErrNoCompletion, completionPath)
+		return Outcome{}, transcript, fmt.Errorf("%w: %s", ErrNoCompletion, completionPath)
 	}
-	return out, nil
+	return out, transcript, nil
 }
 
 func invocationTimeout(env apiv1.InvocationEnvelope, fallback time.Duration) time.Duration {

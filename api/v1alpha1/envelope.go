@@ -153,6 +153,10 @@ type ResultEnvelope struct {
 	// Artifacts are the stage's produced outputs, each a journal-relative pointer
 	// (path + sha256 digest). Downstream stages receive these as ContextPointers.
 	Artifacts []ArtifactPointer `json:"artifacts,omitempty"`
+	// Transcript points at the runner-captured, scrubbed transcript for this
+	// agentic attempt. It is separate from produced Artifacts because it is
+	// diagnostic evidence, not a stage output handed to downstream stages.
+	Transcript *ArtifactPointer `json:"transcript,omitempty"`
 	// Summary is a human-readable summary of what happened.
 	Summary string `json:"summary,omitempty"`
 	// Metrics are numeric measures (duration, tokens, cost, custom).

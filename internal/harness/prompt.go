@@ -50,18 +50,19 @@ func renderPrompt(req RunRequest) string {
 	return b.String()
 }
 
-// resultShapeHint deliberately omits both "error" and "artifacts" from the base
+// resultShapeHint deliberately omits "error", "artifacts", and "transcript" from the base
 // shape. "error" is required only on a "failure"/"blocked" status, and an empty
 // error object on a successful result fails the schema's errorInfo minLength:1
 // check (#297). "artifacts" must be digested ArtifactPointer objects — a model
 // cannot reliably self-report a content digest, and no harness step resolves a
 // model-declared path into one, so a model that fills the field produces an
-// invalid completion (#301); stage evidence (e.g. a reviewer's diff) is recorded
-// and digested by the runner, never self-reported here. Both fields are
-// described conditionally/out-of-band instead of shown inline.
+// invalid completion (#301); stage evidence (e.g. a reviewer's diff) and the
+// captured transcript are recorded and digested by the runner, never
+// self-reported here. These fields are described conditionally/out-of-band
+// instead of shown inline.
 const resultShapeHint = `{"status": "success"|"failure"|"blocked", "outputs": {...}, "summary": "...", "metrics": {...}}
 
-On a "failure" or "blocked" status, also include an "error" object: {"code": "...", "message": "..."} (both non-empty). Omit "error" entirely on success. Do not populate "artifacts" — the runner records and digests any stage artifacts.
+On a "failure" or "blocked" status, also include an "error" object: {"code": "...", "message": "..."} (both non-empty). Omit "error" entirely on success. Do not populate "artifacts" or "transcript" — the runner records and digests them.
 
 On a "blocked" status, if you can name specific blocking issue numbers, set outputs.blockedBy to a single comma-separated string (e.g. "441,442") — never an array or object; outputs accepts scalars only and a structured value is schema-rejected.`
 
