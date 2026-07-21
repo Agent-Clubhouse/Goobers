@@ -181,8 +181,8 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !reflect.DeepEqual(mergePR.InputsFrom, wantMergeInputs) {
 				t.Errorf("merge-pr inputsFrom = %v, want %v", mergePR.InputsFrom, wantMergeInputs)
 			}
-			if !reflect.DeepEqual(mergePR.Capabilities, []string{"github:pr:merge"}) {
-				t.Errorf("merge-pr capabilities = %v, want [github:pr:merge]", mergePR.Capabilities)
+			if !reflect.DeepEqual(mergePR.Capabilities, []string{"github:pr:merge", "github:branch:delete"}) {
+				t.Errorf("merge-pr capabilities = %v, want [github:pr:merge github:branch:delete]", mergePR.Capabilities)
 			}
 			if mergePR.Run == nil || !reflect.DeepEqual(mergePR.Run.Command, []string{"goobers", "merge-pr"}) {
 				t.Errorf("merge-pr command = %+v, want [goobers merge-pr]", mergePR.Run)
@@ -223,7 +223,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if queueWatch.Run == nil || !reflect.DeepEqual(queueWatch.Run.Command, []string{"goobers", "merge-queue-poll"}) {
 				t.Errorf("queue-watch command = %+v, want [goobers merge-queue-poll]", queueWatch.Run)
 			}
-			wantQueueWatchCapabilities := []string{"github:pr:merge", "github:issues:write"}
+			wantQueueWatchCapabilities := []string{"github:pr:merge", "github:issues:write", "github:branch:delete"}
 			if !reflect.DeepEqual(queueWatch.Capabilities, wantQueueWatchCapabilities) {
 				t.Errorf("queue-watch capabilities = %v, want %v", queueWatch.Capabilities, wantQueueWatchCapabilities)
 			}

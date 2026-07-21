@@ -144,6 +144,9 @@ spec:
         # it, remove this three-stage chain and route review:pass directly to
         # apply-verdict; merge-pr never acquires merge authority implicitly.
         - github:pr:merge
+        # github:branch:delete lets post-merge cleanupMergedBranch delete the
+        # merged head branch instead of failing closed and leaking it (#1075).
+        - github:branch:delete
       expectedOutputs:
         - selectedNumber
         - merged
@@ -175,6 +178,9 @@ spec:
       capabilities:
         - github:pr:merge
         - github:issues:write
+        # github:branch:delete: queue-watch runs the same post-merge
+        # cleanupMergedBranch as merge-pr when the queue reports merged (#1075).
+        - github:branch:delete
       expectedOutputs:
         - selectedNumber
         - queueOutcome
