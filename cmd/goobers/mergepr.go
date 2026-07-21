@@ -245,7 +245,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "poll pull request", pollErr, "merge-result.json")
 	}
 	if len(reasons) > 0 {
-		if err := writeMergeResult(resultFile, pullNumber, mergepolicy.Result{}, reasons, nil); err != nil {
+		if err := writeMergeResult(resultFile, pullNumber, expectedHeadSHA, mergepolicy.Result{}, reasons, nil); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
@@ -280,7 +280,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			pf(stdout, "branch cleanup %s (%s)\n", outcome.Status, outcome.HeadBranch)
 		}
 	}
-	if err := writeMergeResult(resultFile, pullNumber, landResult, nil, cleanup); err != nil {
+	if err := writeMergeResult(resultFile, pullNumber, expectedHeadSHA, landResult, nil, cleanup); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -427,17 +427,23 @@ func baseMovementIntersectsPR(ctx context.Context, provider providers.RepoProvid
 // can receive it through InputsFrom; merged is kept (unchanged meaning) so
 // existing callers/tests reading only that boolean still see correct
 // behavior for both the direct-merge and refusal cases.
-func writeMergeResult(path, selectedNumber string, land mergepolicy.Result, reasons []string, cleanup *mergeBranchCleanup) error {
+func writeMergeResult(path, selectedNumber, selectedHeadSha string, land mergepolicy.Result, reasons []string, cleanup *mergeBranchCleanup) error {
 	out := map[string]interface{}{"selectedNumber": selectedNumber, "merged": land.Outcome == mergepolicy.OutcomeMerged}
+	// Echo the SHA-pin so record-merge-refusal (#950) can key a demotion by the
+	// head the refusal happened at (threaded via inputsFrom on the fail branch);
+	// a refusal at a new head is a fresh attempt, not a continuation.
+	out["selectedHeadSha"] = selectedHeadSha
 	if land.Outcome != "" {
 		out["landOutcome"] = string(land.Outcome)
 	}
 	if land.MergeSHA != "" {
 		out["mergeSha"] = land.MergeSHA
 	}
-	if len(reasons) > 0 {
-		out["reason"] = strings.Join(reasons, "; ")
-	}
+	// Always emit reason (empty on a successful merge/enqueue) so it is a
+	// declarable output record-merge-refusal (#950) can thread via inputsFrom
+	// on merge-gate's fail branch — the demotion recorder needs the refusal
+	// text to exclude advisory-mode "refusals" and to explain the demotion.
+	out["reason"] = strings.Join(reasons, "; ")
 	if cleanup != nil {
 		out["branchCleanup"] = cleanup.Status
 		out["headBranch"] = cleanup.HeadBranch

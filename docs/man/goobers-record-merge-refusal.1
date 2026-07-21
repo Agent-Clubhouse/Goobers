@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RECORD MERGE REFUSAL" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers record-merge-refusal \- record a merge refusal and demote a persistently-stuck lander (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers record-merge-refusal\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers record-merge-refusal [path]
+
+Record a merge-pr refusal against the selected PR's durable demotion
+counter (#950). After a bounded number of refusals at an unchanged
+head, apply goobers:merge-demoted so the election crowns a sibling
+instead and the cluster drains around the stuck PR. Runs on
+merge-gate's fail branch. Exit codes: 0 = recorded (or nothing to
+do), 1 = business error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers record-merge-refusal
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

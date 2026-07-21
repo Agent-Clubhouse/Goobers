@@ -205,12 +205,28 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if mergeGate.Automated == nil || mergeGate.Automated.Check != "land-outcome" {
 				t.Errorf("merge-gate check = %+v, want land-outcome", mergeGate.Automated)
 			}
-			wantMergeBranches := map[string]string{"merged": "post-merge", "enqueued": "queue-watch", "fail": TerminalComplete}
+			// #950: a merge refusal now routes to record-merge-refusal (which
+			// counts consecutive refusals at an unchanged head and eventually
+			// demotes a stuck lander) rather than straight to a terminal.
+			wantMergeBranches := map[string]string{"merged": "post-merge", "enqueued": "queue-watch", "fail": "record-merge-refusal"}
 			if !reflect.DeepEqual(mergeGate.Branches, wantMergeBranches) {
 				t.Errorf("merge-gate branches = %v, want %v", mergeGate.Branches, wantMergeBranches)
 			}
 			if mergeGate.Branches["fail"] == "apply-verdict" {
 				t.Error("merge refusal must not apply the pass verdict label; the PR must remain retryable")
+			}
+			// record-merge-refusal is terminal (its own demotion side effects are
+			// the durable output) and must not itself apply the pass verdict.
+			recordRefusal, ok := m.Task("record-merge-refusal")
+			if !ok {
+				t.Fatal("record-merge-refusal task not found")
+			}
+			if recordRefusal.Next != TerminalComplete {
+				t.Errorf("record-merge-refusal.next = %q, want terminal", recordRefusal.Next)
+			}
+			wantRefusalCaps := []string{"github:pr:write", "github:issues:write"}
+			if !reflect.DeepEqual(recordRefusal.Capabilities, wantRefusalCaps) {
+				t.Errorf("record-merge-refusal capabilities = %v, want %v", recordRefusal.Capabilities, wantRefusalCaps)
 			}
 
 			queueWatch, ok := m.Task("queue-watch")

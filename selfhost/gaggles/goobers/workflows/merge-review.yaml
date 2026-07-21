@@ -240,6 +240,12 @@ spec:
         # reads it straight from this stage's own Outputs regardless.
         - selectedNumber
         - merged
+        # reason is always emitted (empty on a merge/enqueue) so
+        # record-merge-refusal (#950) can thread it on merge-gate's fail branch;
+        # selectedHeadSha (the echoed SHA-pin) keys the demotion by the head the
+        # refusal happened at.
+        - reason
+        - selectedHeadSha
       next: merge-gate
 
     - name: queue-watch
@@ -301,6 +307,31 @@ spec:
         - github:pr:write
         - github:issues:write
       # Terminal after a successful merge.
+
+    # #950: merge-gate's fail branch (merge-pr refused to land) records a
+    # durable per-PR counter of consecutive refusals at an unchanged head.
+    # Once it crosses the threshold it applies goobers:merge-demoted so the
+    # election stops re-crowning a lander that cannot merge and its blocked
+    # cluster can drain around it. A no-op for a transient/first refusal, and
+    # terminal either way — the PR stays retryable and self-heals the moment
+    # its head advances.
+    - name: record-merge-refusal
+      type: deterministic
+      goal: Record a merge refusal and demote a persistently-stuck lander (#950).
+      run:
+        command: ["goobers", "record-merge-refusal"]
+      inputsFrom:
+        selectedNumber: selectedNumber
+        # merge-pr always emits reason (empty on a merge/enqueue); it is used to
+        # skip advisory-mode "refusals" and to explain the demotion to a human.
+        reason: reason
+        # The head the refusal happened at — the demotion is keyed by it, so a
+        # refusal at a new head is a fresh attempt rather than a continuation.
+        selectedHeadSha: selectedHeadSha
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+      # Terminal — the demotion label + sticky comment are the durable output.
 
   gates:
     # Holistic review: reuses the shared `reviewer` goober (design doc §2's
@@ -404,8 +435,11 @@ spec:
         # A conjunct that changed after review, or (now) a landOutcome the
         # merge queue itself hasn't resolved into "merged" yet, leaves the
         # PR unlabeled. Once CI/draft state recovers, pr-select can review
-        # and retry it.
-        fail: ""
+        # and retry it. #950: route through record-merge-refusal so a lander
+        # that repeatedly cannot merge at an unchanged head is counted and
+        # eventually demoted, letting its cluster drain around it — the stage
+        # is a no-op for a transient/first refusal and terminal either way.
+        fail: record-merge-refusal
 
     - name: queue-gate
       # Issue #758: the merge queue's own eventual verdict on an already-

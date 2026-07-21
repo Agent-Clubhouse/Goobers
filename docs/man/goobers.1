@@ -121,6 +121,9 @@ rebase-first, finding-driven remediation routing (a workflow stage)
 \fBgoobers reconcile-branches\fR
 report bounded stale goobers/* branch candidates (a workflow stage)
 .TP
+\fBgoobers record-merge-refusal\fR
+record a merge refusal and demote a persistently-stuck lander (a workflow stage)
+.TP
 \fBgoobers remediation-checkpoint\fR
 durable per-PR repass budget + same-diff escalation (a workflow stage)
 .TP
@@ -225,6 +228,7 @@ show a workflow as a text DAG
 \fBgoobers-push-remediated\fR(1),
 \fBgoobers-rebase-pr\fR(1),
 \fBgoobers-reconcile-branches\fR(1),
+\fBgoobers-record-merge-refusal\fR(1),
 \fBgoobers-remediation-checkpoint\fR(1),
 \fBgoobers-reset-rate-limit\fR(1),
 \fBgoobers-run\fR(1),

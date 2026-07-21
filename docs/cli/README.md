@@ -40,6 +40,7 @@
 | [`goobers push-remediated`](#goobers-push-remediated) | force-push the remediated branch and clear needs-remediation (a workflow stage) |
 | [`goobers rebase-pr`](#goobers-rebase-pr) | rebase-first, finding-driven remediation routing (a workflow stage) |
 | [`goobers reconcile-branches`](#goobers-reconcile-branches) | report bounded stale goobers/* branch candidates (a workflow stage) |
+| [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-PR repass budget + same-diff escalation (a workflow stage) |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
@@ -740,6 +741,27 @@ provider error, 2 = usage/IO error.
 ~~~console
 $ goobers reconcile-branches
 $ goobers reconcile-branches --delete --max 5
+~~~
+
+## `goobers record-merge-refusal`
+
+record a merge refusal and demote a persistently-stuck lander (a workflow stage)
+
+~~~text
+Usage: goobers record-merge-refusal [path]
+
+Record a merge-pr refusal against the selected PR's durable demotion
+counter (#950). After a bounded number of refusals at an unchanged
+head, apply goobers:merge-demoted so the election crowns a sibling
+instead and the cluster drains around the stuck PR. Runs on
+merge-gate's fail branch. Exit codes: 0 = recorded (or nothing to
+do), 1 = business error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers record-merge-refusal
 ~~~
 
 ## `goobers remediation-checkpoint`

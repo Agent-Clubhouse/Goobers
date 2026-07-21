@@ -64,7 +64,11 @@ func liveBlockedOnSiblingBlockers(ctx context.Context, provider *providers.GitHu
 		if err != nil {
 			return nil, err
 		}
-		if strings.EqualFold(item.State, "open") {
+		// #950: a demoted blocker (one the election dropped because it could not
+		// merge at an unchanged head) no longer holds its successors back — they
+		// must be free to drain around it. Treat it as resolved even though it is
+		// still open. Label-based off the already-fetched item, so no extra call.
+		if strings.EqualFold(item.State, "open") && !item.HasLabel(mergeDemotedLabel) {
 			open = append(open, blocker)
 		}
 	}
@@ -83,7 +87,8 @@ func blockedOnSiblingStillBlocks(ctx context.Context, provider *providers.GitHub
 		if err != nil {
 			return false, err
 		}
-		if strings.EqualFold(item.State, "open") {
+		// #950: a demoted blocker no longer blocks — see liveBlockedOnSiblingBlockers.
+		if strings.EqualFold(item.State, "open") && !item.HasLabel(mergeDemotedLabel) {
 			return true, nil
 		}
 	}

@@ -94,7 +94,7 @@ func TestOverlapBackstopDrivesElection(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			eff := withOverlapBackstop(c.findings, c.overlap)
-			got := electionDecision(eff, c.selected, electedLander)
+			got := electionDecision(eff, c.selected, electedLander, nil)
 			if got != c.wantElected {
 				t.Fatalf("electionDecision(selected=#%d, overlap=%v) = %v, want %v", c.selected, c.overlap, got, c.wantElected)
 			}
