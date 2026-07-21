@@ -1,11 +1,15 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { DaemonUnavailableError } from "../api/errors";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import type { Health, RequestOptions } from "../api/types";
-import { emptyDaemonFixtures, populatedDaemonFixtures } from "../test/daemonFixtures";
+import {
+  emptyDaemonFixtures,
+  largeJournalFixtures,
+  populatedDaemonFixtures,
+} from "../test/daemonFixtures";
 
 beforeEach(() => {
   window.location.hash = "#/overview";
@@ -60,6 +64,24 @@ describe("operational overview", () => {
     expect(within(recent).queryByText("Failed")).not.toBeInTheDocument();
     expect(within(counts).getAllByText("2", { selector: "dd" })).toHaveLength(2);
     expect(within(counts).getByText("1", { selector: "dd" })).toBeInTheDocument();
+  });
+
+  it("bounds recent outcomes and sources active runs server-side on a large journal", async () => {
+    const client = new FixtureDaemonClient(largeJournalFixtures({ completed: 60 }));
+    const listRuns = vi.spyOn(client, "listRuns");
+    render(<App client={client} />);
+
+    const recent = await screen.findByRole("region", { name: "Recent outcomes" });
+    // "Recent outcomes" is capped regardless of the 60+ terminal runs in the journal.
+    expect(within(recent).getAllByRole("link").length).toBeLessThanOrEqual(20);
+
+    // Active runs come from the server-side phase=running filter, not a client sweep.
+    expect(listRuns).toHaveBeenCalledWith(
+      expect.objectContaining({ phase: "running" }),
+      expect.anything(),
+    );
+    // The Overview never paginates the full history: no request carries a cursor.
+    expect(listRuns.mock.calls.every(([request]) => request?.cursor === undefined)).toBe(true);
   });
 
   it("shows loading and recovers explicitly when the daemon reconnects", async () => {

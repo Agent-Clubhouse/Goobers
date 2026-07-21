@@ -366,6 +366,33 @@ describe("live page integration", () => {
     expect(await screen.findByText("VER002")).toBeInTheDocument();
   });
 
+  it("does not re-page gaggle/workflow inventory during a burst of run invalidations", async () => {
+    vi.useRealTimers();
+    const client = new MutableFixtureClient();
+    const listGaggles = vi.spyOn(client, "listGaggles");
+    const listWorkflows = vi.spyOn(client, "listWorkflows");
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "2 runs need attention." }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
+    );
+    const inventoryGaggleReads = listGaggles.mock.calls.length;
+    const inventoryWorkflowReads = listWorkflows.mock.calls.length;
+
+    for (let sequence = 1; sequence <= 8; sequence += 1) {
+      client.stream.push(update(`fixture:${sequence}`, ["run"]));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // Run-only invalidations rebuild the bounded run groups but never re-page
+    // the gaggle/workflow inventory.
+    expect(listGaggles.mock.calls.length).toBe(inventoryGaggleReads);
+    expect(listWorkflows.mock.calls.length).toBe(inventoryWorkflowReads);
+  });
+
   it("meets the local p95 update target and stays stale on disconnect", async () => {
     vi.useRealTimers();
     const client = new MutableFixtureClient();

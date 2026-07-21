@@ -432,6 +432,45 @@ export function populatedDaemonFixtures(): DaemonFixtures {
   };
 }
 
+// Builds a journal far larger than any Overview page, for asserting that the
+// Overview and Runs page bound what they fetch and render (DASH-12/14/15). Runs
+// are core/implementation with distinct StartedAt values so the server-order
+// (newest first, id tie-break) is deterministic.
+export function largeJournalFixtures(
+  counts: Partial<Record<RunPhase, number>> = {},
+): DaemonFixtures {
+  const base = populatedDaemonFixtures();
+  const distribution: Record<RunPhase, number> = {
+    completed: counts.completed ?? 60,
+    running: counts.running ?? 3,
+    failed: counts.failed ?? 2,
+    escalated: counts.escalated ?? 2,
+    aborted: counts.aborted ?? 1,
+  };
+  const start = Date.parse("2026-07-18T00:00:00Z");
+  const runs: RunSummary[] = [];
+  let index = 0;
+  for (const phase of Object.keys(distribution) as RunPhase[]) {
+    for (let n = 0; n < distribution[phase]; n += 1) {
+      const startedAt = new Date(start + index * 60_000).toISOString();
+      const finishedAt =
+        phase === "running" ? undefined : new Date(start + index * 60_000 + 30_000).toISOString();
+      runs.push(
+        run(
+          `01JZTEST${String(index).padStart(9, "0")}`,
+          "core",
+          phase,
+          startedAt,
+          5,
+          finishedAt,
+        ),
+      );
+      index += 1;
+    }
+  }
+  return { ...base, runs: { runs } };
+}
+
 export function emptyDaemonFixtures(): DaemonFixtures {
   const fixtures = populatedDaemonFixtures();
   return {
