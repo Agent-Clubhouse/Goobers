@@ -92,6 +92,10 @@ spec:
       next: review
 
     # `make ci`-equivalent, run on the implementation branch after syncing base.
+    # This gaggle declares `ciCommand: ["npm", "run", "ci"]` (gaggle.yaml), so at
+    # runtime the deterministic local-ci stage runs that suite instead of the
+    # command declared here (MGV-1/#1009) — this declaration is the fallback for
+    # a gaggle that declares no ciCommand.
     - name: local-ci
       type: deterministic
       goal: Run the project's local CI-equivalent (build, lint, tests) in the worktree.

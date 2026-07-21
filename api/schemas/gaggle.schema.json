@@ -33,6 +33,17 @@
         "additionalRepos": {
           "type": "array",
           "items": { "$ref": "#/$defs/repoRef" }
+        },
+        "ciCommand": {
+          "description": "Per-gaggle local CI-equivalent command run by the deterministic local-ci stage instead of its declared default (MGV-1/#1009).",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requiredCapabilities": {
+          "description": "Runner (toolchain/platform) capabilities every run of this gaggle needs, matched at schedule time against a runner's advertised set (RRQ-1/#1101).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/runnerCapability" }
         }
       }
     }
@@ -62,6 +73,11 @@
         "branch": { "type": "string" },
         "connectionRef": { "type": "string" }
       }
+    },
+    "runnerCapability": {
+      "description": "A free-form, version-parameterized runner capability token (e.g. dotnet@8, xcode, os=windows) — distinct from a credential capability. An alphanumeric start then letters, digits, and any of . _ - + @ =, no whitespace.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._@=+-]*$"
     },
     "backlogRef": {
       "type": "object",

@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/runnercap"
 )
 
 // APIVersion and Kind for instance.yaml. Mirrors the config-as-code
@@ -58,6 +59,24 @@ type Config struct {
 	// reproducible default independent of the host process's own local zone,
 	// which would otherwise vary by deployment and isn't itself DST-free.
 	Timezone string `json:"timezone,omitempty" yaml:"timezone,omitempty"`
+	// Runner declares this local runner's static capability claims (RRQ-1,
+	// #1101): the toolchains and host properties it advertises as preinstalled
+	// (e.g. dotnet@8, xcode, os=windows). A gaggle/stage that requires a
+	// capability this runner does not claim fails to schedule with a diagnostic
+	// naming it (docs/design/v1/polyglot-stacks.md §5). Empty claims nothing, so
+	// a Go-only instance that declares no requirements is unaffected.
+	Runner RunnerConfig `json:"runner,omitempty" yaml:"runner,omitempty"`
+}
+
+// RunnerConfig declares the local runner's static, advertised capability set
+// (RRQ-1, #1101). Capabilities are free-form toolchain/platform tokens
+// (`dotnet@8`, `xcode`, `os=windows`) — see internal/runnercap for the
+// vocabulary and why they are distinct from credential capabilities.
+type RunnerConfig struct {
+	// Capabilities are the toolchain/platform capabilities this runner claims
+	// are preinstalled. The scheduler admits a run only when the runner claims
+	// every capability the run's gaggle and stages require.
+	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 }
 
 // APIConfig configures the daemon's read-only HTTP API.
@@ -348,6 +367,16 @@ func (c *Config) Validate() error {
 		if hasEnv == hasFile {
 			return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env or file — "+
 				"inline secret values are never permitted (CFG-009, SEC-010)", i, cg.Capability)
+		}
+	}
+	// Fail closed at load on a malformed runner capability claim (RRQ-1): a
+	// claim that can never string-match a requirement is a typo the scheduler
+	// would otherwise turn into an every-run schedule refusal at 3am, not a
+	// startup error. Duplicates collapse harmlessly (set membership), so only
+	// the token shape is enforced here.
+	for i, c := range c.Runner.Capabilities {
+		if err := runnercap.ValidateToken(c); err != nil {
+			return fmt.Errorf("runner.capabilities[%d]: %w", i, err)
 		}
 	}
 	return nil

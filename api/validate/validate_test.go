@@ -645,3 +645,84 @@ func joinIssues(r *Report) string {
 	}
 	return b.String()
 }
+
+func TestGaggleSchemaAcceptsCICommandAndRequiredCapabilities(t *testing.T) {
+	v := newV(t)
+	gaggle := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Gaggle",
+		"metadata": {"name": "web"},
+		"spec": {
+			"project": {"provider": "github", "owner": "acme", "name": "web"},
+			"backlog": {"provider": "github", "project": "acme/web"},
+			"isolation": {"namespace": "gaggle-web"},
+			CIFIELD
+			REQFIELD
+			"displayName": "Web"
+		}
+	}`
+	for _, tc := range []struct {
+		name    string
+		ci      string
+		req     string
+		wantErr bool
+	}{
+		{name: "both fields valid", ci: `"ciCommand": ["npm", "run", "ci"],`, req: `"requiredCapabilities": ["dotnet@8", "os=windows"],`},
+		{name: "omitted fields (regression)", ci: "", req: ""},
+		{name: "empty ciCommand rejected", ci: `"ciCommand": [],`, req: "", wantErr: true},
+		{name: "malformed capability rejected", ci: "", req: `"requiredCapabilities": ["dot net"],`, wantErr: true},
+		{name: "empty capability string rejected", ci: "", req: `"requiredCapabilities": [""],`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := strings.Replace(gaggle, "CIFIELD", tc.ci, 1)
+			doc = strings.Replace(doc, "REQFIELD", tc.req, 1)
+			err := v.ValidateJSON("gaggle.schema.json", []byte(doc))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected schema validation to pass, got %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkflowSchemaValidatesTaskRequiredCapabilities(t *testing.T) {
+	v := newV(t)
+	workflow := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"metadata": {"name": "build"},
+		"spec": {
+			"gaggle": "example",
+			"triggers": [{"type": "manual"}],
+			"start": "act",
+			"tasks": [{
+				"name": "act",
+				"type": "deterministic",
+				"goal": "Build.",
+				"run": {"command": ["dotnet", "build"]},
+				"requiredCapabilities": CAPS
+			}]
+		}
+	}`
+	for _, tc := range []struct {
+		name    string
+		caps    string
+		wantErr bool
+	}{
+		{name: "valid tokens", caps: `["dotnet@8", "xcode"]`},
+		{name: "empty array", caps: `[]`},
+		{name: "malformed token", caps: `["os windows"]`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := v.ValidateJSON("workflow.schema.json", []byte(strings.Replace(workflow, "CAPS", tc.caps, 1)))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected schema validation to pass, got %v", err)
+			}
+		})
+	}
+}

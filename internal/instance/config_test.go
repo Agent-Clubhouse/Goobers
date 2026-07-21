@@ -488,6 +488,20 @@ func TestConfigValidate(t *testing.T) {
 			}},
 		},
 		{
+			name: "runner capabilities valid free-form tokens",
+			cfg:  Config{Runner: RunnerConfig{Capabilities: []string{"dotnet@8", "xcode", "os=windows"}}},
+		},
+		{
+			name:    "runner capability malformed rejected",
+			cfg:     Config{Runner: RunnerConfig{Capabilities: []string{"dotnet 8"}}},
+			wantErr: "runner.capabilities[0]",
+		},
+		{
+			name:    "runner capability empty rejected",
+			cfg:     Config{Runner: RunnerConfig{Capabilities: []string{"dotnet@8", ""}}},
+			wantErr: "runner.capabilities[1]",
+		},
+		{
 			name: "OTLP secure endpoint",
 			cfg: Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{
 				Endpoint: "https://collector.example.com:4317",

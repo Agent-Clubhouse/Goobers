@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -43,6 +44,11 @@ type WorkflowEntry struct {
 	BacklogCounter BacklogCounter
 	Starter        Starter
 	RepoRef        apiv1.RepoRef
+	// RequiredCapabilities is the union of runner (toolchain/platform)
+	// capabilities this workflow's gaggle and stages require (RRQ-1/#1101).
+	// dispatch refuses the run before admission when the runner does not claim
+	// every entry. Nil/empty imposes no requirement.
+	RequiredCapabilities []string
 }
 
 func entryIdentity(entry WorkflowEntry) WorkflowIdentity {
@@ -125,6 +131,13 @@ type Scheduler struct {
 	// state from a legacy single-gaggle entry whose gaggle name is empty.
 	lastDispatchedGaggle string
 	hasDispatchedGaggle  bool
+	// runnerCapabilities is the local runner's static advertised capability set
+	// (RRQ-1/#1101). Set once at construction, read-only thereafter, so it needs
+	// no lock. A dispatch is refused before admission when the entry requires a
+	// capability the runner does not claim. Empty (the default) claims nothing,
+	// which only matters for entries that declare RequiredCapabilities — an
+	// entry that declares none is never refused on this axis.
+	runnerCapabilities runnercap.Claimed
 }
 
 // Option configures a Scheduler.
@@ -187,6 +200,17 @@ func WithProviderQuota(gate ProviderQuotaGate) Option {
 		if gate != nil {
 			s.conditions.SetProviderQuota(gate)
 		}
+	}
+}
+
+// WithRunnerCapabilities declares the local runner's static advertised
+// capability set (RRQ-1/#1101). A dispatch whose entry requires a capability
+// not in this set is refused before admission, journaling a tick.skipped with a
+// ReasonMissingCapability diagnostic naming the gap. Optional — unset claims
+// nothing, so only entries that declare RequiredCapabilities are ever affected.
+func WithRunnerCapabilities(caps []string) Option {
+	return func(s *Scheduler) {
+		s.runnerCapabilities = runnercap.NewClaimed(caps)
 	}
 }
 
@@ -868,6 +892,24 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	}
 
 	identity := entryIdentity(entry)
+	// Schedule-time runner-capability match (RRQ-1/#1101): refuse the run
+	// before it can consume an admission slot when the runner does not claim a
+	// capability the workflow's gaggle/stages require. This is the runtime,
+	// per-run enforcement of the same invariant the config-load cross-check
+	// (instance.CheckCapabilityRequirements) guards statically — the load-bearing
+	// seam a future dynamic/multi-runner router grows from — so a missing claim
+	// fails a run to schedule rather than scheduling it to fail at run.
+	if missing := s.runnerCapabilities.Missing(entry.RequiredCapabilities); len(missing) > 0 {
+		reason := ReasonMissingCapability + ": " + strings.Join(missing, ", ")
+		s.journalEvent(journal.Event{
+			Type:     journal.EventTickSkipped,
+			Workflow: entry.Workflow,
+			Gaggle:   entry.Gaggle,
+			Reason:   reason,
+		})
+		span.Complete(telemetry.OutcomeBlocked, false)
+		return "", false, reason
+	}
 	ok, reason := s.conditions.AdmitWorkflow(identity, entry.Readiness, now)
 	if !ok {
 		s.journalEvent(journal.Event{

@@ -15,6 +15,15 @@ const (
 	ReasonBudget              = "conditions: budget"
 	ReasonDailyBudget         = "conditions: daily-budget"
 	ReasonOpenPRCap           = "conditions: open-pr-cap"
+	// ReasonMissingCapability prefixes a schedule-time capability-match skip's
+	// Reason (RRQ-1/#1101). Like ReasonProviderQuota it is a stable, grep-able
+	// prefix, not a fixed string: dispatch appends the missing capability names
+	// after it so the diagnostic — in the journal and in a caller-facing
+	// TriggerRejectedError — names exactly what the runner failed to claim.
+	// Unlike the capacity reasons this refusal is permanent for the running
+	// config (a runner's claimed set is static), so it must not be treated as
+	// transient.
+	ReasonMissingCapability = "conditions: missing-capability"
 	// ReasonProviderQuota prefixes a provider-quota skip's Reason (#712).
 	// Unlike the other Reason consts above (fixed strings), Admit appends the
 	// resume time after this prefix — the acceptance criteria's own phrasing

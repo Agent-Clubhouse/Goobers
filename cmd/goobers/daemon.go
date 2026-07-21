@@ -115,6 +115,16 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 			err = &configReportError{report: report, err: err}
 		}
 	}()
+	// MGV-1/#1009: resolve each gaggle's declared CI command into its local-ci
+	// stage before the workflows are compiled, so the runner executes the
+	// gaggle's own suite in place of the stage's declared `make ci` default.
+	instance.ApplyGaggleCICommand(set)
+	// RRQ-1/#1101: fail closed at startup when a gaggle/stage requires a runner
+	// capability the runner (instance.yaml runner.capabilities) does not claim,
+	// rather than letting every schedule tick refuse the run at runtime.
+	if err := instance.CheckCapabilityRequirements(cfg.Runner.Capabilities, set); err != nil {
+		return nil, err
+	}
 	gaggles := configuredGaggleNames(set)
 	if err := l.MigrateLegacyRuntime(gaggles); err != nil {
 		return nil, err
@@ -340,6 +350,11 @@ func buildSchedulerDefinitions(
 		return nil, err
 	}
 
+	gagglesByName := make(map[string]apiv1.Gaggle, len(set.Gaggles))
+	for i := range set.Gaggles {
+		gagglesByName[set.Gaggles[i].Name] = set.Gaggles[i]
+	}
+
 	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
@@ -382,6 +397,10 @@ func buildSchedulerDefinitions(
 			BacklogCounter:  buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg),
 			Starter:         &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog},
 			RepoRef:         repoRefs[identity],
+			// RRQ-1/#1101: the runner capabilities a single run of this workflow
+			// needs (its gaggle's + its stages'), matched at dispatch against the
+			// runner's advertised set.
+			RequiredCapabilities: instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf),
 		})
 	}
 
@@ -490,6 +509,12 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	// here uniformly for every caller (both `up` and `run`), not gated behind
 	// an up.go-only branch.
 	opts := []localscheduler.Option{localscheduler.WithProviderQuota(s.ProviderQuota)}
+	// RRQ-1/#1101: the local runner's static advertised capability set, so
+	// dispatch can refuse a run whose gaggle/stages require a capability this
+	// runner does not claim. Wired uniformly for both `up` and `run`.
+	if s.Config != nil {
+		opts = append(opts, localscheduler.WithRunnerCapabilities(s.Config.Runner.Capabilities))
+	}
 	if s.Telemetry != nil {
 		opts = append(opts, localscheduler.WithTelemetry(s.Telemetry))
 		if s.RollupDB != nil && s.InstanceLog != nil {
