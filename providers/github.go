@@ -1164,6 +1164,14 @@ func (p *GitHubProvider) ListPullRequests(ctx context.Context, req ListPullReque
 	return p.listPullRequests(ctx, req, "open", time.Time{})
 }
 
+// ListClosedPullRequests lists all closed or merged pull requests matching req.
+// Callers should use this only after narrowing to work that needs terminal-state
+// reconciliation; mature repositories can have a large closed history.
+func (p *GitHubProvider) ListClosedPullRequests(ctx context.Context, req ListPullRequestsRequest) ([]PullRequestSummary, error) {
+	req.SkipCheckState = true
+	return p.listPullRequests(ctx, req, "closed", time.Time{})
+}
+
 // ListRecentlyClosedPullRequests lists pull requests closed or merged since
 // updatedSince. It is the bounded terminal-PR complement to ListPullRequests
 // used when a workflow needs current state for recently relevant siblings.

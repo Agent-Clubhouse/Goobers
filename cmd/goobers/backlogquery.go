@@ -49,6 +49,8 @@ const backlogScanCeiling = 250
 
 const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
 
+const inReviewStatusLabel = "goobers/status:in-review"
+
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
@@ -171,6 +173,20 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+
+	var openIssues map[string]bool
+	if _, err := providerToken(capability.GitHubPRWrite); err == nil {
+		openIssues, err = openPRIssueNumbers(ctx, provider, repo)
+		if err != nil {
+			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")
+		}
+		if *claim {
+			if err := reconcileClosedUnmergedInReview(ctx, provider, repo, openIssues); err != nil {
+				return failProviderStage(stderr, "reconcile closed pull requests", err, "claimed-item.json")
+			}
+		}
+	}
+
 	labels := make([]string, 0, 1+len(requireLabels))
 	if trustLabel != "" {
 		labels = append(labels, trustLabel)
@@ -233,11 +249,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// and backlog-curation.yaml both do); a stage that hasn't opted in gets
 	// exactly the pre-#414 label-only behavior, not a hard failure — this is
 	// a backstop on top of the label check above, not a replacement for it.
-	if _, err := providerToken(capability.GitHubPRWrite); err == nil {
-		openIssues, err := openPRIssueNumbers(ctx, provider, repo)
-		if err != nil {
-			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")
-		}
+	if openIssues != nil {
 		backstopped := eligible[:0]
 		for _, item := range eligible {
 			if openIssues[item.ID] {
@@ -558,6 +570,86 @@ func openPRIssueNumbers(ctx context.Context, provider *providers.GitHubProvider,
 		}
 	}
 	return out, nil
+}
+
+// reconcileClosedUnmergedInReview restores backlog eligibility for issues whose
+// implementation PRs all closed without merging. Open and merged associations
+// win over unmerged closures, so replacements and landed work stay parked.
+func reconcileClosedUnmergedInReview(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	openIssues map[string]bool,
+) error {
+	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+		Repository: repo,
+		Labels:     []string{inReviewStatusLabel},
+		State:      "open",
+	})
+	if err != nil {
+		return fmt.Errorf("list in-review work items: %w", err)
+	}
+
+	unresolved := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if !item.HasLabel(inReviewStatusLabel) ||
+			(item.State != "" && !strings.EqualFold(item.State, "open")) ||
+			openIssues[item.ID] {
+			continue
+		}
+		unresolved[item.ID] = struct{}{}
+	}
+	if len(unresolved) == 0 {
+		return nil
+	}
+
+	prs, err := provider.ListClosedPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo,
+		HeadPrefix: providerBranchNamespace(),
+	})
+	if err != nil {
+		return fmt.Errorf("list closed pull requests: %w", err)
+	}
+
+	type terminalState struct {
+		closedUnmerged bool
+		merged         bool
+	}
+	states := make(map[string]terminalState, len(unresolved))
+	for _, pr := range prs {
+		for _, issueID := range referencedIssueNumbers(pr.Body) {
+			if _, ok := unresolved[issueID]; !ok {
+				continue
+			}
+			state := states[issueID]
+			if pr.Merged {
+				state.merged = true
+			} else if strings.EqualFold(pr.State, "closed") {
+				state.closedUnmerged = true
+			}
+			states[issueID] = state
+		}
+	}
+
+	issueIDs := make([]string, 0, len(states))
+	for issueID := range states {
+		issueIDs = append(issueIDs, issueID)
+	}
+	sort.Strings(issueIDs)
+	for _, issueID := range issueIDs {
+		state := states[issueID]
+		if !state.closedUnmerged || state.merged {
+			continue
+		}
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository:   repo,
+			ID:           issueID,
+			RemoveLabels: []string{inReviewStatusLabel},
+		}); err != nil {
+			return fmt.Errorf("requeue issue #%s: %w", issueID, err)
+		}
+	}
+	return nil
 }
 
 // sortEligibleFIFO orders items ascending by numeric ID in place — both
