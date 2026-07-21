@@ -69,7 +69,7 @@ func validateCheckedInTrees(root string, validator validatorCommand, stdout, std
 }
 
 func validateTrees(root string, trees []checkedInTree, validator validatorCommand, stdout, stderr io.Writer) int {
-	tempDir, err := os.MkdirTemp(root, ".validate-configs-")
+	tempDir, err := os.MkdirTemp("", "goobers-validate-configs-")
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "validate-configs: create temporary instance roots: %v\n", err)
 		return 2
