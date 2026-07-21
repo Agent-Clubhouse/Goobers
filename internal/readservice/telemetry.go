@@ -56,14 +56,27 @@ type TelemetryRunStats struct {
 
 // TelemetryStageStats is the attempt aggregate for one stage.
 type TelemetryStageStats struct {
-	Stage             string   `json:"stage"`
-	TotalAttempts     int      `json:"totalAttempts"`
-	SucceededAttempts int      `json:"succeededAttempts"`
-	FailedAttempts    int      `json:"failedAttempts"`
-	SuccessRate       *float64 `json:"successRate,omitempty"`
-	AvgDurationMs     *float64 `json:"avgDurationMs,omitempty"`
-	MinDurationMs     *int64   `json:"minDurationMs,omitempty"`
-	MaxDurationMs     *int64   `json:"maxDurationMs,omitempty"`
+	Stage                string   `json:"stage"`
+	TotalAttempts        int      `json:"totalAttempts"`
+	SucceededAttempts    int      `json:"succeededAttempts"`
+	FailedAttempts       int      `json:"failedAttempts"`
+	SuccessRate          *float64 `json:"successRate,omitempty"`
+	AvgDurationMs        *float64 `json:"avgDurationMs,omitempty"`
+	MinDurationMs        *int64   `json:"minDurationMs,omitempty"`
+	MaxDurationMs        *int64   `json:"maxDurationMs,omitempty"`
+	DurationSamples      int      `json:"durationSamples"`
+	P50DurationMs        *int64   `json:"p50DurationMs,omitempty"`
+	P95DurationMs        *int64   `json:"p95DurationMs,omitempty"`
+	TokenSamples         int      `json:"tokenSamples"`
+	P50Tokens            *int64   `json:"p50Tokens,omitempty"`
+	P95Tokens            *int64   `json:"p95Tokens,omitempty"`
+	CostSamples          int      `json:"costSamples"`
+	P50CostUSD           *float64 `json:"p50CostUSD,omitempty"`
+	P95CostUSD           *float64 `json:"p95CostUSD,omitempty"`
+	RetryWasteAttempts   int      `json:"retryWasteAttempts"`
+	RetryWasteDurationMs *int64   `json:"retryWasteDurationMs,omitempty"`
+	RetryWasteTokens     *int64   `json:"retryWasteTokens,omitempty"`
+	RetryWasteCostUSD    *float64 `json:"retryWasteCostUSD,omitempty"`
 }
 
 // TelemetryErrorsRequest filters and paginates recent errors.
@@ -158,10 +171,14 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 	for _, stat := range stats.Stages {
 		item := TelemetryStageStats{
-			Stage:             stat.Stage,
-			TotalAttempts:     stat.TotalAttempts,
-			SucceededAttempts: stat.SucceededAttempts,
-			FailedAttempts:    stat.FailedAttempts,
+			Stage:              stat.Stage,
+			TotalAttempts:      stat.TotalAttempts,
+			SucceededAttempts:  stat.SucceededAttempts,
+			FailedAttempts:     stat.FailedAttempts,
+			DurationSamples:    stat.DurationSamples,
+			TokenSamples:       stat.TokenSamples,
+			CostSamples:        stat.CostSamples,
+			RetryWasteAttempts: stat.RetryWasteAttempts,
 		}
 		if stat.SucceededAttempts+stat.FailedAttempts > 0 {
 			item.SuccessRate = float64Pointer(stat.SuccessRate)
@@ -170,6 +187,25 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.AvgDurationMs = float64Pointer(stat.AvgDurationMs)
 			item.MinDurationMs = int64Pointer(stat.MinDurationMs)
 			item.MaxDurationMs = int64Pointer(stat.MaxDurationMs)
+			item.P50DurationMs = int64Pointer(stat.P50DurationMs)
+			item.P95DurationMs = int64Pointer(stat.P95DurationMs)
+		}
+		if stat.HasTokens {
+			item.P50Tokens = int64Pointer(stat.P50Tokens)
+			item.P95Tokens = int64Pointer(stat.P95Tokens)
+		}
+		if stat.HasCost {
+			item.P50CostUSD = float64Pointer(stat.P50CostUSD)
+			item.P95CostUSD = float64Pointer(stat.P95CostUSD)
+		}
+		if stat.HasRetryWasteDuration {
+			item.RetryWasteDurationMs = int64Pointer(stat.RetryWasteDurationMs)
+		}
+		if stat.HasRetryWasteTokens {
+			item.RetryWasteTokens = int64Pointer(stat.RetryWasteTokens)
+		}
+		if stat.HasRetryWasteCost {
+			item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
 		}
 		result.Stages = append(result.Stages, item)
 	}

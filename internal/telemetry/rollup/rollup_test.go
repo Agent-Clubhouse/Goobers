@@ -2,6 +2,7 @@ package rollup
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -539,6 +540,59 @@ func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 	}
 	if version != len(migrations) {
 		t.Fatalf("schema_meta.version = %d, want %d", version, len(migrations))
+	}
+}
+
+func TestTraversalMigrationOrdersLegacyAttemptsByStartTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.db")
+	legacy, err := sql.Open("sqlite", path+dsnParams)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE schema_meta (version INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("create legacy schema metadata: %v", err)
+	}
+	for i := 0; i < 6; i++ {
+		if _, err := legacy.Exec(migrations[i]); err != nil {
+			t.Fatalf("apply legacy migration %d: %v", i+1, err)
+		}
+	}
+	if _, err := legacy.Exec(`INSERT INTO schema_meta (version) VALUES (6)`); err != nil {
+		t.Fatalf("set legacy schema version: %v", err)
+	}
+	if _, err := legacy.Exec(`
+		INSERT INTO stage_attempts (run_id, stage, attempt, status, started_at)
+		VALUES
+			('legacy-run', 'agent', 2, 'failure', '2026-07-13T00:00:01Z'),
+			('legacy-run', 'agent', 1, 'success', '2026-07-13T00:00:02Z')`); err != nil {
+		t.Fatalf("insert legacy attempts: %v", err)
+	}
+	if _, err := legacy.Exec(`
+		INSERT INTO stage_usage (run_id, stage, attempt, input_tokens, output_tokens)
+		VALUES ('legacy-run', 'agent', 1, 10, 20)`); err != nil {
+		t.Fatalf("insert legacy usage: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	upgraded, err := Open(path)
+	if err != nil {
+		t.Fatalf("upgrade Open: %v", err)
+	}
+	defer func() { _ = upgraded.Close() }()
+	attempts, err := upgraded.StageAttempts("legacy-run")
+	if err != nil {
+		t.Fatalf("StageAttempts: %v", err)
+	}
+	if len(attempts) != 2 ||
+		attempts[0].Traversal != 1 || attempts[0].Attempt != 2 ||
+		attempts[1].Traversal != 2 || attempts[1].Attempt != 1 {
+		t.Fatalf("upgraded attempts = %#v, want chronological traversals", attempts)
+	}
+	if attempts[0].InputTokens != nil ||
+		attempts[1].InputTokens == nil || *attempts[1].InputTokens != 10 {
+		t.Fatalf("upgraded usage = %#v, want usage on matching traversal", attempts)
 	}
 }
 
