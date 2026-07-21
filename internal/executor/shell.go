@@ -158,6 +158,12 @@ type ShellExecutor struct {
 	// syscall), but an OS-level sample shows the blocked threads regardless.
 	// Off by default: zero cost and no extra files unless explicitly enabled.
 	Diagnostics bool
+	// ExtraEnvAllowlist names additional ambient env vars carried into every
+	// stage subprocess on top of the built-in procenv default-deny allowlist —
+	// the instance's RunnerConfig.EnvPassthrough (#736), for a custom toolchain
+	// whose env var the built-in list does not cover. Empty by default: an
+	// unset caller gets the built-in allowlist unchanged.
+	ExtraEnvAllowlist []string
 }
 
 // NewShellExecutor builds a ShellExecutor. injector and journal must not be
@@ -253,7 +259,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
 	injectRunContext := stageInvokesGoobersCLI(run.Command)
-	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, e.InstanceRoot, injectRunContext, env.Inputs, run.Env)
+	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, e.InstanceRoot, injectRunContext, env.Inputs, run.Env, e.ExtraEnvAllowlist)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}

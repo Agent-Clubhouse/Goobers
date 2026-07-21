@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
@@ -78,6 +79,16 @@ type RunnerConfig struct {
 	// are preinstalled. The scheduler admits a run only when the runner claims
 	// every capability the run's gaggle and stages require.
 	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// EnvPassthrough names additional ambient env vars carried from the daemon
+	// process into every deterministic stage and harness subprocess, on top of
+	// the built-in default-deny allowlist (internal/procenv, #736). It is the
+	// escape hatch for a custom toolchain whose env var the built-in list does
+	// not cover — e.g. a private `NUGET_CONFIG_FILE` or a bespoke `FOO_HOME` —
+	// so a team does not need a Goobers code change to pass its own var through.
+	// Each entry must be a well-formed env var name (procenv.ValidName); this
+	// stays default-deny — an explicit opt-in list of names, never os.Environ()
+	// passthrough — and declaring a name whose var is unset is a harmless no-op.
+	EnvPassthrough []string `json:"envPassthrough,omitempty" yaml:"envPassthrough,omitempty"`
 }
 
 // APIConfig configures the daemon's read-only HTTP API.
@@ -399,6 +410,15 @@ func (c *Config) Validate() error {
 	for i, c := range c.Runner.Capabilities {
 		if err := runnercap.ValidateToken(c); err != nil {
 			return fmt.Errorf("runner.capabilities[%d]: %w", i, err)
+		}
+	}
+	// Fail closed at load on a malformed env-passthrough name (#736): a name
+	// carrying '=', NUL, or shell metacharacters could never be a real env var
+	// and, unchecked, would silently mis-split at stage launch. Default-deny is
+	// unaffected — this only validates the shape of an explicit opt-in name.
+	for i, name := range c.Runner.EnvPassthrough {
+		if !procenv.ValidName(name) {
+			return fmt.Errorf("runner.envPassthrough[%d]: %q is not a valid environment variable name", i, name)
 		}
 	}
 	return nil

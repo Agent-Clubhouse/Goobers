@@ -268,7 +268,7 @@ func TestBuildEnvCapabilities(t *testing.T) {
 
 func TestBuildHarnessRegistryMapsGooberHarnessToCopilotAdapter(t *testing.T) {
 	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps)
+	registry, err := buildHarnessRegistry(envCaps, nil)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}

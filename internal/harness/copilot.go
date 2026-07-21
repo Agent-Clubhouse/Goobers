@@ -115,6 +115,13 @@ type CopilotAdapter struct {
 	// wired at the composition root once confirmed, so a wrong guess can't
 	// falsely refuse to start every agentic run.
 	AuthCheckArgs []string
+	// ExtraEnvAllowlist names additional ambient env vars carried into the
+	// harness subprocess (and its preflight probes) on top of the built-in
+	// procenv default-deny allowlist — the instance's RunnerConfig.EnvPassthrough
+	// (#736), kept in lockstep with the executor's identical extension so a
+	// toolchain env var a `dotnet`/`cargo` agentic stage needs is visible to the
+	// harness too. Empty by default: the built-in allowlist, unchanged.
+	ExtraEnvAllowlist []string
 }
 
 // Name returns the adapter's registry name.
@@ -196,7 +203,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) error {
 	// ExecProcessRunner treats a nil Env as NO environment (SEC-045
 	// default-deny), so the version-check subprocess needs this passed
 	// explicitly the same way Run's credentialEnv does.
-	res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, args...), Env: baseEnv()})
+	res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, args...), Env: baseEnv(c.ExtraEnvAllowlist)})
 	if err != nil {
 		return fmt.Errorf("harness: copilot-cli: %q did not respond to %v: %w — check it is installed and signed in", bin, args, err)
 	}
@@ -207,7 +214,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) error {
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
 	if len(c.AuthCheckArgs) > 0 {
-		res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, c.AuthCheckArgs...), Env: baseEnv()})
+		res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, c.AuthCheckArgs...), Env: baseEnv(c.ExtraEnvAllowlist)})
 		if err != nil {
 			return fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) failed: %w — run the Copilot CLI and sign in", bin, c.AuthCheckArgs, err)
 		}
@@ -330,11 +337,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 }
 
 // baseEnv returns the minimal, explicit env every harness process starts
-// with — internal/procenv.BaseEnv(), the allowlist internal/executor's
+// with — internal/procenv.BaseEnvWith, the allowlist internal/executor's
 // baseEnv() shares (#248, closing the #98/#122 drift for good: one
-// definition instead of two hand-kept-in-sync copies).
-func baseEnv() []string {
-	return procenv.BaseEnv()
+// definition instead of two hand-kept-in-sync copies). extra carries the
+// instance-config-declared passthrough names (RunnerConfig.EnvPassthrough,
+// #736), additively and still default-deny.
+func baseEnv(extra []string) []string {
+	return procenv.BaseEnvWith(extra)
 }
 
 // credentialEnv builds the subprocess environment: baseEnv() (PATH/HOME/
@@ -344,7 +353,7 @@ func baseEnv() []string {
 // A configured capability that fails to resolve is a hard stop — the harness
 // never runs half-credentialed.
 func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]string, error) {
-	env := baseEnv()
+	env := baseEnv(c.ExtraEnvAllowlist)
 	telemetryDir := req.TelemetryDir
 	if telemetryDir == "" {
 		telemetryDir = telemetry.PrepareStageTelemetryDir(req.Workspace)

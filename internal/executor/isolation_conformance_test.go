@@ -139,13 +139,13 @@ func TestIsolationConformance_NoCrossGaggleTokenInEnv(t *testing.T) {
 	// that dimension, not only the credential vars.
 	aEnv, err := buildStageEnv(context.Background(), aInj,
 		[]string{capPushA, capAgentBoth}, reg,
-		"run-a", gaggleAName, "implementation", nsA, "/inst", true, nil, nil)
+		"run-a", gaggleAName, "implementation", nsA, "/inst", true, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("assemble gaggle A env: %v", err)
 	}
 	bEnv, err := buildStageEnv(context.Background(), bInj,
 		[]string{capPushB, capAgentBoth}, reg,
-		"run-b", gaggleBName, "implementation", nsB, "/inst", true, nil, nil)
+		"run-b", gaggleBName, "implementation", nsB, "/inst", true, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("assemble gaggle B env: %v", err)
 	}
