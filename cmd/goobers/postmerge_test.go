@@ -49,6 +49,8 @@ type postMergeServerState struct {
 	pollRequests      int
 	deleteCalls       int
 	deleteStatus      int
+	labelStatus       int
+	commentStatus     int
 }
 
 // newPostMergeServerState returns a state with every map initialized and
@@ -168,8 +170,9 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 		for _, n := range st.otherOpenPRs {
 			out = append(out, map[string]interface{}{
 				"number": n, "html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, n),
-				"head": map[string]interface{}{"ref": fmt.Sprintf("goobers/impl/run-%d", n), "sha": st.headSHA[n]},
-				"base": map[string]interface{}{"ref": st.baseBranch},
+				"head":   map[string]interface{}{"ref": fmt.Sprintf("goobers/impl/run-%d", n), "sha": st.headSHA[n]},
+				"base":   map[string]interface{}{"ref": st.baseBranch},
+				"labels": labelsJSON(st.issueLabels[n]),
 			})
 		}
 		writeFakeJSON(w, out)
@@ -216,7 +219,14 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 			}
 			decodeFakeJSON(r, &body)
 			st.mu.Lock()
+			status := st.labelStatus
+			if status != 0 {
+				st.mu.Unlock()
+				http.Error(w, "label failed", status)
+				return
+			}
 			st.labeledPRs = append(st.labeledPRs, n)
+			st.issueLabels[n] = append(st.issueLabels[n], body.Labels...)
 			st.mu.Unlock()
 			writeFakeJSON(w, []map[string]string{})
 		})
@@ -259,12 +269,24 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 			st.issueLabels[num] = append(st.issueLabels[num], body.Labels...)
 			writeFakeJSON(w, []map[string]string{})
 		case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodPost:
+			if st.commentStatus != 0 {
+				http.Error(w, "comment failed", st.commentStatus)
+				return
+			}
 			var body struct {
 				Body string `json:"body"`
 			}
 			decodeFakeJSON(r, &body)
 			st.issueComments[num] = append(st.issueComments[num], body.Body)
 			writeFakeJSON(w, map[string]interface{}{"id": len(st.issueComments[num])})
+		case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
+			comments := make([]map[string]interface{}, 0, len(st.issueComments[num]))
+			for i, comment := range st.issueComments[num] {
+				comments = append(comments, map[string]interface{}{
+					"id": i + 1, "body": comment, "user": map[string]string{"login": "goobers"},
+				})
+			}
+			writeFakeJSON(w, comments)
 		default:
 			http.Error(w, fmt.Sprintf("unhandled %s %s", r.Method, r.URL.Path), http.StatusNotImplemented)
 		}

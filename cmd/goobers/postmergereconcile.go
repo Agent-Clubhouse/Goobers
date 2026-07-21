@@ -37,12 +37,22 @@ type postMergeReconcileLedger struct {
 }
 
 type postMergeReconcileEntry struct {
-	Repository    providers.RepositoryRef `json:"repository"`
-	PullNumber    string                  `json:"pullNumber"`
-	State         string                  `json:"state"`
-	TimedOutAt    time.Time               `json:"timedOutAt"`
-	LastCheckedAt *time.Time              `json:"lastCheckedAt,omitempty"`
-	CompletedAt   *time.Time              `json:"completedAt,omitempty"`
+	Repository    providers.RepositoryRef   `json:"repository"`
+	PullNumber    string                    `json:"pullNumber"`
+	State         string                    `json:"state"`
+	TimedOutAt    time.Time                 `json:"timedOutAt"`
+	LastCheckedAt *time.Time                `json:"lastCheckedAt,omitempty"`
+	CompletedAt   *time.Time                `json:"completedAt,omitempty"`
+	Actions       postMergeReconcileActions `json:"actions"`
+}
+
+type postMergeReconcileActions struct {
+	BranchCleanup      bool            `json:"branchCleanup,omitempty"`
+	SiblingFanOut      bool            `json:"siblingFanOut,omitempty"`
+	ResolvedUnpark     bool            `json:"resolvedUnpark,omitempty"`
+	EscalationUnpark   bool            `json:"escalationUnpark,omitempty"`
+	DemotionUnpark     bool            `json:"demotionUnpark,omitempty"`
+	ClosedIssueNumbers map[string]bool `json:"closedIssueNumbers,omitempty"`
 }
 
 type postMergeReconcileReport struct {
@@ -183,6 +193,7 @@ func reconcilePostMerges(
 		if len(keys) > limit {
 			keys = keys[:limit]
 		}
+		var reconcileErrs []error
 		for _, key := range keys {
 			entry := ledger.Entries[key]
 			report.Scanned++
@@ -205,13 +216,24 @@ func reconcilePostMerges(
 				continue
 			}
 
-			cleanup := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)
-			if cleanup.Error != "" {
-				pf(stderr, "warning: late-merged pr #%s branch cleanup failed: %s\n", entry.PullNumber, cleanup.Error)
-			} else {
-				pf(stdout, "branch cleanup %s (%s)\n", cleanup.Status, cleanup.HeadBranch)
+			ledger.Entries[key] = entry
+			changed = true
+			if err := writePostMergeReconcileLedger(ledgerPath, ledger); err != nil {
+				return err
 			}
-			performPostMerge(ctx, provider, entry.Repository, root, entry.PullNumber, poll, stdout, stderr)
+			actionErrs, err := reconcilePostMergeActions(ctx, provider, root, poll, key, &ledger, ledgerPath, stdout, stderr)
+			if err != nil {
+				return err
+			}
+			entry = ledger.Entries[key]
+			if len(actionErrs) > 0 {
+				report.Pending++
+				reconcileErrs = append(reconcileErrs, fmt.Errorf("pr #%s: %w", entry.PullNumber, errors.Join(actionErrs...)))
+				continue
+			}
+			if !postMergeReconcileActionsCompleted(entry, poll.Body) {
+				return fmt.Errorf("post-merge actions for pr #%s stopped without an error or completion", entry.PullNumber)
+			}
 			completedAt := now().UTC()
 			entry.State = postMergeReconcileCompleted
 			entry.CompletedAt = &completedAt
@@ -225,9 +247,117 @@ func reconcilePostMerges(
 		if changed && len(keys) == 0 {
 			return writePostMergeReconcileLedger(ledgerPath, ledger)
 		}
+		if len(reconcileErrs) > 0 {
+			return &postMergeReconcileProviderError{err: errors.Join(reconcileErrs...)}
+		}
 		return nil
 	})
 	return report, err
+}
+
+func reconcilePostMergeActions(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	root string,
+	poll providers.PullRequestPollResult,
+	key string,
+	ledger *postMergeReconcileLedger,
+	ledgerPath string,
+	stdout, stderr io.Writer,
+) ([]error, error) {
+	entry := ledger.Entries[key]
+	if entry.Actions.ClosedIssueNumbers == nil {
+		entry.Actions.ClosedIssueNumbers = map[string]bool{}
+	}
+	var actionErrs []error
+	persist := func() error {
+		ledger.Entries[key] = entry
+		return writePostMergeReconcileLedger(ledgerPath, *ledger)
+	}
+	run := func(name string, done *bool, action func() []error) error {
+		if *done {
+			return nil
+		}
+		errs := action()
+		if len(errs) > 0 {
+			for _, err := range errs {
+				wrapped := fmt.Errorf("%s: %w", name, err)
+				actionErrs = append(actionErrs, wrapped)
+				pf(stderr, "warning: late-merged pr #%s %v\n", entry.PullNumber, wrapped)
+			}
+			return nil
+		}
+		*done = true
+		return persist()
+	}
+
+	if err := run("branch cleanup", &entry.Actions.BranchCleanup, func() []error {
+		cleanup := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)
+		if cleanup.Error != "" {
+			return []error{errors.New(cleanup.Error)}
+		}
+		pf(stdout, "branch cleanup %s (%s)\n", cleanup.Status, cleanup.HeadBranch)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if err := run("sibling fan-out", &entry.Actions.SiblingFanOut, func() []error {
+		_, _, errs := fanOutNeedsRemediation(ctx, provider, entry.Repository, root, poll.Number, poll.BaseBranch, stderr)
+		return errs
+	}); err != nil {
+		return nil, err
+	}
+	if err := run("resolved-sibling unpark", &entry.Actions.ResolvedUnpark, func() []error {
+		_, errs := unparkResolvedSiblings(ctx, provider, entry.Repository, poll.Number, poll.BaseBranch, stderr)
+		return errs
+	}); err != nil {
+		return nil, err
+	}
+	if err := run("self-healed escalation unpark", &entry.Actions.EscalationUnpark, func() []error {
+		_, errs := unparkSelfHealedEscalations(ctx, provider, entry.Repository, poll.Number, poll.BaseBranch, stderr)
+		return errs
+	}); err != nil {
+		return nil, err
+	}
+	if err := run("self-healed demotion unpark", &entry.Actions.DemotionUnpark, func() []error {
+		_, errs := unparkSelfHealedDemotions(ctx, provider, entry.Repository, poll.Number, poll.BaseBranch, stderr)
+		return errs
+	}); err != nil {
+		return nil, err
+	}
+	for _, issueID := range closingIssueNumbers(poll.Body) {
+		if entry.Actions.ClosedIssueNumbers[issueID] {
+			continue
+		}
+		if err := closeReferencedIssue(ctx, provider, entry.Repository, issueID, entry.PullNumber); err != nil {
+			wrapped := fmt.Errorf("close issue #%s: %w", issueID, err)
+			actionErrs = append(actionErrs, wrapped)
+			pf(stderr, "warning: late-merged pr #%s %v\n", entry.PullNumber, wrapped)
+			continue
+		}
+		entry.Actions.ClosedIssueNumbers[issueID] = true
+		if err := persist(); err != nil {
+			return nil, err
+		}
+	}
+	ledger.Entries[key] = entry
+	return actionErrs, nil
+}
+
+func postMergeReconcileActionsCompleted(entry postMergeReconcileEntry, body string) bool {
+	if !entry.Actions.BranchCleanup ||
+		!entry.Actions.SiblingFanOut ||
+		!entry.Actions.ResolvedUnpark ||
+		!entry.Actions.EscalationUnpark ||
+		!entry.Actions.DemotionUnpark {
+		return false
+	}
+	for _, issueID := range closingIssueNumbers(body) {
+		if !entry.Actions.ClosedIssueNumbers[issueID] {
+			return false
+		}
+	}
+	return true
 }
 
 func recordPostMergeTimeout(root string, repo providers.RepositoryRef, pullNumber string, at time.Time) error {
