@@ -458,6 +458,7 @@ export const goWireFixtures = {
         "gate": "review",
         "verdict": "needs-changes",
         "target": "implement",
+        "escalated": true,
         "status": "success",
         "outputs": {
           "approved": true,

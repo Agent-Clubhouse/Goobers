@@ -832,15 +832,24 @@ func TestTraceShowsEscalationSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := jr.Append(journal.Event{
-		Type:    journal.EventGateEvaluated,
-		Gate:    "review",
-		Verdict: string(apiv1.VerdictNeedsChanges),
-		Target:  workflow.TargetEscalate,
-		Name:    "verdict/review-4.json",
-		Ref:     &ref,
-		Runner:  map[string]any{"repassAttempt": 4, "escalated": true},
+		Type:      journal.EventGateEvaluated,
+		Gate:      "review",
+		Verdict:   string(apiv1.VerdictNeedsChanges),
+		Target:    "park-escalated",
+		Escalated: true,
+		Name:      "verdict/review-4.json",
+		Ref:       &ref,
+		Runner:    map[string]any{"repassAttempt": 4},
 	}); err != nil {
 		t.Fatal(err)
+	}
+	for _, ev := range []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "park-escalated", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "park-escalated", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+	} {
+		if err := jr.Append(ev); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
 		t.Fatal(err)
