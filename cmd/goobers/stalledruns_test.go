@@ -52,7 +52,7 @@ func TestSweepStalledRunsEscalatesLiveAdmittedRunAcrossReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	t.Cleanup(func() { _ = log.Close() })
 
 	manager, err := worktree.NewManager(layout.WorkcopiesDir())
 	if err != nil {
@@ -179,7 +179,7 @@ func TestSweepStalledRunsEscalatesSilentRunAndPreservesHeartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	t.Cleanup(func() { _ = log.Close() })
 
 	manager, err := worktree.NewManager(layout.WorkcopiesDir())
 	if err != nil {
@@ -298,7 +298,7 @@ func TestStalledRunSweepErrorsReachInstanceJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	t.Cleanup(func() { _ = log.Close() })
 
 	eventTime := now.Add(-time.Hour)
 	createWatchdogRun(t, layout.RunsDir(), "broken-run", "implementation", &eventTime, time.Time{})
@@ -337,7 +337,7 @@ func TestStalledRunSweepReportsMissingRunIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	t.Cleanup(func() { _ = log.Close() })
 
 	if err := os.MkdirAll(filepath.Join(layout.RunsDir(), "missing-identity"), 0o755); err != nil {
 		t.Fatal(err)
@@ -385,7 +385,7 @@ func TestSweepStalledRunsTerminalizesRemovedGaggleRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	t.Cleanup(func() { _ = log.Close() })
 
 	runID := "removed-gaggle-run"
 	eventTime := now.Add(-2 * time.Hour)

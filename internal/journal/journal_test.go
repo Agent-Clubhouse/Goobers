@@ -45,7 +45,7 @@ func newRun(t *testing.T) (*Run, string) {
 func TestObserveActivityRefreshesWatchdogClockWithoutJournalAppend(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	run, root := newRunWithClock(t, func() time.Time { return now })
-	defer run.Close()
+	t.Cleanup(func() { _ = run.Close() })
 
 	now = now.Add(2 * time.Minute)
 	run.ObserveActivity()
