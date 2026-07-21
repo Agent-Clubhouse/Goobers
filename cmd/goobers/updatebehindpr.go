@@ -71,7 +71,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo,
 		Base:       providerInput("base", "main"),
-		HeadPrefix: providerInput("headPrefix", "goobers/"),
+		HeadPrefix: providerInput("headPrefix", providerBranchNamespace()),
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "update-behind-result.json")

@@ -144,6 +144,18 @@ func providerInput(key, def string) string {
 	return def
 }
 
+// providerBranchNamespace resolves the run-branch namespace root the runner
+// injects for this stage's gaggle (GOOBERS_BRANCH_NAMESPACE, set from
+// GaggleSpec.BranchNamespace), falling back to providers.DefaultBranchNamespace
+// when unset — standalone invocation, or a gaggle that keeps the default. It is
+// the seam a PR-selector's headPrefix default and a run-branch head derivation
+// both build on, so a gaggle that retunes its namespace selects, opens, and
+// remediates PRs under the same prefix its branches use and the mirror-fetch
+// exclusion preserves (#965/#1010). Always returns a value ending in "/".
+func providerBranchNamespace() string {
+	return providers.NormalizeBranchNamespace(os.Getenv(executor.BranchNamespaceEnvVar))
+}
+
 const providerCommandMargin = time.Second
 
 // stageTimeout reports the wall-clock budget the shell executor is enforcing

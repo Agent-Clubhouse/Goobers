@@ -70,7 +70,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	provider := newGitHubProvider(token)
 
 	base := providerInput("base", "main")
-	headPrefix := providerInput("headPrefix", "goobers/implementation/")
+	headPrefix := providerInput("headPrefix", providerBranchNamespace()+"implementation/")
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
 
 	ctx, cancel := providerCommandContext()

@@ -73,6 +73,13 @@ func (r *OpenPRRefresher) OpenPRCount(workflow string) (int, bool) {
 		return 0, false
 	}
 
+	// This counts run-branch PRs under the DEFAULT namespace only
+	// (providers.BranchName's "goobers/"). A gaggle that retunes its
+	// BranchNamespace (#965/#1010) opens PRs under a different prefix that this
+	// instance-wide cap would not count — its open-PR backpressure would be
+	// ineffective for that gaggle. Not yet biting (no non-default gaggle is
+	// enabled); making this per-gaggle needs the scheduler to thread each
+	// workflow's gaggle namespace in, tracked as #1115.
 	prefix := providers.BranchName(workflow, "")
 	count := 0
 	for _, pr := range r.prs {

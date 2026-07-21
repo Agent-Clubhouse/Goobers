@@ -142,7 +142,7 @@ func partitionByContention(eligible []providers.WorkItem, touches []openPRTouch,
 // returned to the caller, which treats it as best-effort (falls back to FIFO).
 func openPRTouches(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef) ([]openPRTouch, error) {
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, HeadPrefix: "goobers/", SkipCheckState: true,
+		Repository: repo, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
 	})
 	if err != nil {
 		return nil, err

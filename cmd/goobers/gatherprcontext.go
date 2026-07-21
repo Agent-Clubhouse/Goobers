@@ -115,7 +115,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	provider := newGitHubProvider(prToken)
 
 	base := providerInput("base", "main")
-	headPrefix := providerInput("headPrefix", "goobers/")
+	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()

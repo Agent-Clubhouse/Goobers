@@ -49,6 +49,17 @@ type GaggleSpec struct {
 	// exactly as today.
 	// +optional
 	RequiredCapabilities []string `json:"requiredCapabilities,omitempty" yaml:"requiredCapabilities,omitempty"`
+	// BranchNamespace is the refs/heads/ root this gaggle's run branches live
+	// under — providers.BranchName produces "<branchNamespace><workflow>/<run>".
+	// Empty defaults to providers.DefaultBranchNamespace ("goobers/"). It is the
+	// single value three consumers derive from so they cannot drift (#965/#1010):
+	// the run branch the worktree pushes, the mirror-fetch exclusion that
+	// preserves that branch across a run's stages, and the PR-selector headPrefix
+	// defaults. Retuning it lets one instance host gaggles that keep their run
+	// branches in distinct namespaces; a value with no trailing "/" is treated as
+	// if it had one. Most gaggles omit it and share the default.
+	// +optional
+	BranchNamespace string `json:"branchNamespace,omitempty" yaml:"branchNamespace,omitempty"`
 }
 
 // GaggleIsolation captures the isolation boundary for a gaggle: its Kubernetes

@@ -265,6 +265,95 @@ func newTestManager(t *testing.T) *Manager {
 	return m
 }
 
+// mirrorRefExists reports whether refs/heads/<branch> exists in the managed
+// mirror for repo — used to assert the mirror prune did or did not delete a
+// local-only run branch. Non-fatal (git exits non-zero when the ref is absent),
+// unlike runTestGit.
+func mirrorRefExists(t *testing.T, m *Manager, repo, branch string) bool {
+	t.Helper()
+	cmd := exec.Command("git", bareRepoSafeArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
+	cmd.Dir = m.repoDirForKey(repoKey(repo))
+	return cmd.Run() == nil
+}
+
+// TestManager_WorkingCopy_PreservesConfiguredRunBranchNamespace is the #965
+// regression: a gaggle that retunes its run-branch namespace away from the
+// default "goobers/" must have THAT namespace excluded from the mirror prune,
+// or the next stage's WorkingCopy fetch silently force-resets its unpushed
+// rebase (the #133 silent-revert class, reachable through configuration). It
+// also proves the exclusion is no longer the hardcoded "goobers/" literal: a
+// goobers/-prefixed local-only branch is now pruned when the Manager is
+// configured for a different namespace.
+func TestManager_WorkingCopy_PreservesConfiguredRunBranchNamespace(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m, err := NewManager(t.TempDir(), WithRunBranchNamespaces("acme/"))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	mirror, err := m.WorkingCopy(ctx, repo)
+	if err != nil {
+		t.Fatalf("WorkingCopy (clone): %v", err)
+	}
+	head := strings.TrimSpace(runTestGit(t, mirror, "rev-parse", "refs/heads/main"))
+
+	// Two local-only run branches, as rebase-pr would leave (never on origin):
+	// one under the gaggle's configured "acme/" namespace, one under the old
+	// default "goobers/". Only the configured namespace must survive the prune.
+	runTestGit(t, mirror, "update-ref", "refs/heads/acme/remediation/run1", head)
+	runTestGit(t, mirror, "update-ref", "refs/heads/goobers/remediation/run1", head)
+
+	// Advance origin so the next WorkingCopy actually fetches --prune.
+	if err := os.WriteFile(filepath.Join(repo, "next.txt"), []byte("next\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, repo, "add", ".")
+	runTestGit(t, repo, "commit", "-m", "advance origin")
+
+	if _, err := m.WorkingCopy(ctx, repo); err != nil {
+		t.Fatalf("WorkingCopy (fetch): %v", err)
+	}
+
+	if !mirrorRefExists(t, m, repo, "acme/remediation/run1") {
+		t.Error("configured-namespace run branch acme/remediation/run1 was pruned — the unpushed rebase would be silently discarded (#965)")
+	} else if got := strings.TrimSpace(runTestGit(t, mirror, "rev-parse", "refs/heads/acme/remediation/run1")); got != head {
+		t.Errorf("acme/remediation/run1 = %q, want it untouched at %q", got, head)
+	}
+	if mirrorRefExists(t, m, repo, "goobers/remediation/run1") {
+		t.Error("goobers/-prefixed branch survived under an acme/-configured Manager — the exclusion is still hardcoded to \"goobers/\" instead of the configured namespace")
+	}
+}
+
+// TestManager_WorkingCopy_DefaultNamespaceUnchanged pins criterion 4: an
+// unconfigured Manager preserves the historical "goobers/" run branches exactly
+// as before, so default-prefix gaggles are unaffected by the #965/#1010 change.
+func TestManager_WorkingCopy_DefaultNamespaceUnchanged(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t) // no WithRunBranchNamespaces → default "goobers/"
+
+	mirror, err := m.WorkingCopy(ctx, repo)
+	if err != nil {
+		t.Fatalf("WorkingCopy (clone): %v", err)
+	}
+	head := strings.TrimSpace(runTestGit(t, mirror, "rev-parse", "refs/heads/main"))
+	runTestGit(t, mirror, "update-ref", "refs/heads/goobers/implementation/run1", head)
+
+	if err := os.WriteFile(filepath.Join(repo, "next.txt"), []byte("next\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, repo, "add", ".")
+	runTestGit(t, repo, "commit", "-m", "advance origin")
+
+	if _, err := m.WorkingCopy(ctx, repo); err != nil {
+		t.Fatalf("WorkingCopy (fetch): %v", err)
+	}
+	if !mirrorRefExists(t, m, repo, "goobers/implementation/run1") {
+		t.Error("default-namespace run branch goobers/implementation/run1 was pruned — default-prefix behavior regressed")
+	}
+}
+
 func TestManager_Create_ChecksOutBaseRef(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)

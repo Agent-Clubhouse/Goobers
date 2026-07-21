@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -757,4 +758,29 @@ func writeFakeJSON(w http.ResponseWriter, v interface{}) {
 
 func decodeFakeJSON(r *http.Request, out interface{}) {
 	_ = json.NewDecoder(r.Body).Decode(out)
+}
+
+// TestProviderBranchNamespace covers the cmd/goobers seam of the #965/#1010
+// change: the run-branch namespace the runner injects (GOOBERS_BRANCH_NAMESPACE)
+// becomes the default a PR-selector's headPrefix and a run-branch head derive
+// from, defaulting to providers.DefaultBranchNamespace when unset (standalone
+// use or a default-prefix gaggle).
+func TestProviderBranchNamespace(t *testing.T) {
+	t.Run("defaults when unset", func(t *testing.T) {
+		t.Setenv(executor.BranchNamespaceEnvVar, "")
+		if got := providerBranchNamespace(); got != providers.DefaultBranchNamespace {
+			t.Errorf("providerBranchNamespace() = %q, want default %q", got, providers.DefaultBranchNamespace)
+		}
+	})
+	t.Run("reads and normalizes the injected namespace", func(t *testing.T) {
+		t.Setenv(executor.BranchNamespaceEnvVar, "acme") // no trailing slash
+		if got, want := providerBranchNamespace(), "acme/"; got != want {
+			t.Errorf("providerBranchNamespace() = %q, want %q", got, want)
+		}
+		// pr-select's implementation sub-namespace composes on top of it, so a
+		// non-default gaggle selects goobers-analogous "acme/implementation/" PRs.
+		if got, want := providerBranchNamespace()+"implementation/", "acme/implementation/"; got != want {
+			t.Errorf("composed headPrefix = %q, want %q", got, want)
+		}
+	})
 }

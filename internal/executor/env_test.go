@@ -106,7 +106,7 @@ func TestBaseEnvStillBlocksSecretShapedVars(t *testing.T) {
 func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 	inputs := map[string]interface{}{"trustLabel": "goobers:approved"}
 
-	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "/instances/demo", true, inputs, map[string]string{"FEATURE_FLAG": "enabled"})
+	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "/instances/demo", true, inputs, map[string]string{"FEATURE_FLAG": "enabled"})
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=true): %v", err)
 	}
@@ -114,6 +114,7 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 		"GOOBERS_RUN_ID=run-123",
 		"GOOBERS_GAGGLE=alpha",
 		"GOOBERS_WORKFLOW=implementation",
+		"GOOBERS_BRANCH_NAMESPACE=goobers/",
 		"GOOBERS_INSTANCE_ROOT=/instances/demo",
 		"GOOBERS_INPUT_TRUSTLABEL=goobers:approved",
 		"FEATURE_FLAG=enabled",
@@ -123,11 +124,11 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 		}
 	}
 
-	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "/instances/demo", false, inputs, nil)
+	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "/instances/demo", false, inputs, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=false): %v", err)
 	}
-	for _, prefix := range []string{"GOOBERS_RUN_ID", "GOOBERS_GAGGLE", "GOOBERS_WORKFLOW", "GOOBERS_INSTANCE_ROOT"} {
+	for _, prefix := range []string{"GOOBERS_RUN_ID", "GOOBERS_GAGGLE", "GOOBERS_WORKFLOW", "GOOBERS_BRANCH_NAMESPACE", "GOOBERS_INSTANCE_ROOT"} {
 		if hasEnvPrefix(noCtx, prefix) {
 			t.Errorf("injectRunContext=false: %s leaked into %v", prefix, noCtx)
 		}
@@ -139,13 +140,19 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 
 	// Even when requested, GOOBERS_INSTANCE_ROOT is omitted if unset (empty
 	// instanceRoot — see ShellExecutor.InstanceRoot), preserving prior behavior.
-	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "", true, nil, nil)
+	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "", "", true, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(empty instanceRoot): %v", err)
 	}
 
 	if hasEnvPrefix(emptyRoot, "GOOBERS_INSTANCE_ROOT") {
 		t.Errorf("empty instanceRoot should omit GOOBERS_INSTANCE_ROOT, got %v", emptyRoot)
+	}
+	// An empty branchNamespace is likewise omitted rather than injected as a
+	// bare GOOBERS_BRANCH_NAMESPACE= — the goobers-CLI stage's default resolver
+	// (providers.DefaultBranchNamespace) then applies.
+	if hasEnvPrefix(emptyRoot, "GOOBERS_BRANCH_NAMESPACE") {
+		t.Errorf("empty branchNamespace should omit GOOBERS_BRANCH_NAMESPACE, got %v", emptyRoot)
 	}
 }
 
@@ -155,6 +162,7 @@ func TestBuildStageEnvIncludesDeclaredEnvironment(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		"",
 		"",
 		"",
 		"",

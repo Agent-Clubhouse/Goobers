@@ -1803,3 +1803,32 @@ func TestBuildFailedHandlerNoClaimIsANoop(t *testing.T) {
 		t.Fatalf("calls = %+v, want none (no driving item anywhere)", fake.calls)
 	}
 }
+
+// TestBranchNamespacesByGaggle covers #1010: two gaggles with different
+// configured branch namespaces (and one that omits it) each resolve to the
+// correct run-branch namespace root, normalized to a trailing slash, so a
+// multi-gaggle instance no longer assumes a single "goobers/" across all
+// gaggles.
+func TestBranchNamespacesByGaggle(t *testing.T) {
+	set := &instance.ConfigSet{
+		Gaggles: []apiv1.Gaggle{
+			{ObjectMeta: metav1.ObjectMeta{Name: "default-gaggle"}, Spec: apiv1.GaggleSpec{}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "acme"}, Spec: apiv1.GaggleSpec{BranchNamespace: "acme/"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "no-slash"}, Spec: apiv1.GaggleSpec{BranchNamespace: "widgets"}},
+		},
+	}
+	got := branchNamespacesByGaggle(set)
+	want := map[string]string{
+		"default-gaggle": "goobers/", // omitted → providers.DefaultBranchNamespace
+		"acme":           "acme/",
+		"no-slash":       "widgets/", // normalized to a trailing slash
+	}
+	if len(got) != len(want) {
+		t.Fatalf("branchNamespacesByGaggle = %+v, want %+v", got, want)
+	}
+	for gaggle, wantNS := range want {
+		if got[gaggle] != wantNS {
+			t.Errorf("gaggle %q namespace = %q, want %q", gaggle, got[gaggle], wantNS)
+		}
+	}
+}

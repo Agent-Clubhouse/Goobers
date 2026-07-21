@@ -47,6 +47,14 @@ type InvocationEnvelope struct {
 	RunID string `json:"runId"`
 	// Gaggle is the gaggle this run belongs to.
 	Gaggle string `json:"gaggle"`
+	// BranchNamespace is the gaggle's configured run-branch namespace root
+	// (GaggleSpec.BranchNamespace, providers.DefaultBranchNamespace when
+	// unset). The runner sets it from the same value it names the run branch
+	// with, and the executor injects it as GOOBERS_BRANCH_NAMESPACE so a
+	// goobers-CLI stage's PR-selector defaults and run-branch head derivation
+	// stay aligned with the branch namespace the mirror-fetch exclusion
+	// preserves (#965/#1010). Empty means the default namespace.
+	BranchNamespace string `json:"branchNamespace,omitempty"`
 	// Goal is the intended outcome of this stage (from the stage definition).
 	Goal string `json:"goal"`
 	// Workspace is the absolute path to the fresh, isolated, disposable working

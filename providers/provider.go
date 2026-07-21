@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // Provider combines repo, backlog, and trigger operations for a backend.
@@ -92,10 +93,46 @@ type PullRequestBranchUpdater interface {
 	UpdateBranch(context.Context, UpdateBranchRequest) (UpdateBranchResult, error)
 }
 
+// DefaultBranchNamespace is the refs/heads/ root every run branch lives under
+// by default: BranchName produces "<namespace><workflow>/<run-id>". It is the
+// single seam of truth three otherwise-independent consumers must agree on
+// (#965): the producer (BranchName here), the mirror-fetch exclusion that
+// preserves a run's unpushed branch across stages (internal/worktree), and the
+// PR-selector headPrefix defaults (cmd/goobers). If any one of them restates
+// the literal and the others move, a run's rebased-but-unpushed branch is
+// silently force-reset back to origin — the #965 / #133 silent-revert class.
+// A gaggle may retune the namespace (GaggleSpec.BranchNamespace), but the value
+// then flows to all three together rather than being hardcoded in each.
+const DefaultBranchNamespace = "goobers/"
+
+// NormalizeBranchNamespace returns ns as a usable refs/heads/ prefix: the
+// DefaultBranchNamespace when ns is empty, and otherwise ns with a single
+// trailing "/" guaranteed so callers can concatenate "<namespace><workflow>/…"
+// uniformly regardless of whether the configured value included it.
+func NormalizeBranchNamespace(ns string) string {
+	if ns == "" {
+		return DefaultBranchNamespace
+	}
+	if !strings.HasSuffix(ns, "/") {
+		return ns + "/"
+	}
+	return ns
+}
+
 // BranchName returns the run-scoped branch-name convention the repo provider
-// owns (BL-010/#13): the worktree manager pushes to it, the provider never does.
+// owns (BL-010/#13) under the DefaultBranchNamespace: the worktree manager
+// pushes to it, the provider never does. Use BranchNameIn when a gaggle has
+// retuned its branch namespace.
 func BranchName(workflow, runID string) string {
-	return fmt.Sprintf("goobers/%s/%s", workflow, runID)
+	return BranchNameIn(DefaultBranchNamespace, workflow, runID)
+}
+
+// BranchNameIn is BranchName under an explicit branch namespace (a gaggle's
+// configured GaggleSpec.BranchNamespace). An empty namespace falls back to the
+// DefaultBranchNamespace, so callers with no configured value get identical
+// output to BranchName.
+func BranchNameIn(namespace, workflow, runID string) string {
+	return fmt.Sprintf("%s%s/%s", NormalizeBranchNamespace(namespace), workflow, runID)
 }
 
 // BacklogProvider abstracts backlog work item operations: query/read, create,

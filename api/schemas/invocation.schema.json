@@ -11,6 +11,10 @@
     "workflowId": { "type": "string", "minLength": 1 },
     "runId": { "type": "string", "minLength": 1 },
     "gaggle": { "type": "string", "minLength": 1 },
+    "branchNamespace": {
+      "type": "string",
+      "description": "The gaggle's run-branch namespace root (GaggleSpec.BranchNamespace); empty means the default 'goobers/'. Injected as GOOBERS_BRANCH_NAMESPACE (#965/#1010)."
+    },
     "goal": { "type": "string", "minLength": 1 },
     "workspace": {
       "type": "string",

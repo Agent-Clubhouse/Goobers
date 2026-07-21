@@ -292,6 +292,17 @@ type Config struct {
 	// so call sites below need no nil checks beyond the one guard in each
 	// start*Span helper.
 	Telemetry SpanStarter
+	// BranchNamespaces maps a gaggle name to its configured run-branch
+	// namespace root (GaggleSpec.BranchNamespace). A run's branch name
+	// (providers.BranchNameIn), its stage env's GOOBERS_BRANCH_NAMESPACE, and
+	// the workspace-rebind guard all resolve through it keyed by
+	// StartInput.Gaggle, so a gaggle that retunes its namespace stays
+	// consistent with the mirror-fetch exclusion the worktree Manager is built
+	// with (#965/#1010). A gaggle absent from the map — or an empty value —
+	// falls back to providers.DefaultBranchNamespace, so an instance running
+	// only default-prefix gaggles needs no entries and behaves exactly as
+	// before. See Runner.branchNamespaceFor.
+	BranchNamespaces map[string]string
 }
 
 // Runner advances a compiled workflow.Machine stage-by-stage, durably
@@ -468,7 +479,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 				ExternalRef: &journal.ExternalRef{
 					Provider: string(in.RepoRef.Provider),
 					Kind:     "branch",
-					ID:       providers.BranchName(in.Machine.Def.Name, in.RunID),
+					ID:       providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID),
 				},
 			}); err != nil {
 				span.Fail(err)
@@ -658,26 +669,32 @@ type walkSeed struct {
 // only from stages whose output the runner itself produced.
 const WorkspaceBranchOutput = "workspaceBranch"
 
-// runBranchNamespacePrefix is the "goobers/" prefix providers.BranchName
-// produces, derived from it rather than restated so the two cannot drift
-// (internal/localscheduler/openprcount.go derives it the same way).
-var runBranchNamespacePrefix = strings.SplitN(providers.BranchName("x", "x"), "/", 2)[0] + "/"
+// branchNamespaceFor resolves the run-branch namespace root for gaggle, from
+// Config.BranchNamespaces, falling back to providers.DefaultBranchNamespace so
+// a gaggle with no configured override (the common case) gets the historical
+// "goobers/" prefix. The result is normalized to a single trailing "/", so
+// callers can concatenate or prefix-match against it uniformly.
+func (r *Runner) branchNamespaceFor(gaggle string) string {
+	return providers.NormalizeBranchNamespace(r.cfg.BranchNamespaces[gaggle])
+}
 
 // rebindWorkspaceBranch reports the branch a finished task's result rebinds the
 // run's workspace to, or "" if it rebinds nothing. Fails closed on every
 // doubtful case: a non-deterministic producer, a non-string value, or a branch
-// outside the run-branch namespace are all ignored rather than honored.
-func rebindWorkspaceBranch(t apiv1.Task, result apiv1.ResultEnvelope) string {
+// outside the run-branch namespace (nsPrefix, the run's gaggle-resolved branch
+// namespace root) are all ignored rather than honored.
+func rebindWorkspaceBranch(t apiv1.Task, result apiv1.ResultEnvelope, nsPrefix string) string {
 	if t.Type != apiv1.TaskDeterministic {
 		return ""
 	}
-	return workspaceBranchFrom(result.Outputs)
+	return workspaceBranchFrom(result.Outputs, nsPrefix)
 }
 
 // workspaceBranchFrom reads WorkspaceBranchOutput out of a stage's scalar
 // Outputs. Shared with resume.go, whose journaled outputs are the same values
 // under map[string]any rather than map[string]interface{} (identical types,
-// different spelling).
+// different spelling). nsPrefix is the run's gaggle-resolved run-branch
+// namespace root (Runner.branchNamespaceFor); a value outside it is rejected.
 //
 // Deliberately does NOT stringify non-strings the way internal/gate's
 // stringField does: a branch name is not a value to coerce, and
@@ -685,7 +702,7 @@ func rebindWorkspaceBranch(t apiv1.Task, result apiv1.ResultEnvelope) string {
 // worse outcome than ignoring a malformed emission. Values outside the
 // run-branch namespace are ignored for the same reason — "main" is the
 // dangerous case, and nothing legitimate needs it.
-func workspaceBranchFrom(outputs map[string]interface{}) string {
+func workspaceBranchFrom(outputs map[string]interface{}, nsPrefix string) string {
 	v, ok := outputs[WorkspaceBranchOutput]
 	if !ok {
 		return ""
@@ -695,7 +712,7 @@ func workspaceBranchFrom(outputs map[string]interface{}) string {
 		return ""
 	}
 	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, runBranchNamespacePrefix) {
+	if !strings.HasPrefix(s, nsPrefix) {
 		return ""
 	}
 	return s
@@ -797,7 +814,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			// the run's own branch and checks the PR's branch out for itself;
 			// every stage after it is provisioned on the PR's branch directly).
 			if result.Status != apiv1.ResultFailure || !t.ContinueOnError {
-				if b := rebindWorkspaceBranch(t, result); b != "" {
+				if b := rebindWorkspaceBranch(t, result, r.branchNamespaceFor(in.Gaggle)); b != "" {
 					workspaceBranch = b
 				}
 			}
@@ -2258,14 +2275,15 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 	var workspace *stageWorkspace
 	if g.Evaluator == apiv1.EvaluatorAutomated {
 		env = apiv1.InvocationEnvelope{
-			TaskID:     in.RunID + ":" + g.Name,
-			WorkflowID: in.Machine.Def.Name,
-			RunID:      in.RunID,
-			Gaggle:     in.Gaggle,
-			Goal:       "gate: " + g.Name,
-			RepoRef:    in.RepoRef,
-			Item:       in.Item,
-			Limits:     workflow.GateLimits(g),
+			TaskID:          in.RunID + ":" + g.Name,
+			WorkflowID:      in.Machine.Def.Name,
+			RunID:           in.RunID,
+			Gaggle:          in.Gaggle,
+			BranchNamespace: r.branchNamespaceFor(in.Gaggle),
+			Goal:            "gate: " + g.Name,
+			RepoRef:         in.RepoRef,
+			Item:            in.Item,
+			Limits:          workflow.GateLimits(g),
 		}
 	} else {
 		var wt *worktree.Worktree
@@ -2506,6 +2524,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		WorkflowID:      in.Machine.Def.Name,
 		RunID:           in.RunID,
 		Gaggle:          in.Gaggle,
+		BranchNamespace: r.branchNamespaceFor(in.Gaggle),
 		Goal:            goal,
 		Workspace:       workspace.path,
 		RepoRef:         in.RepoRef,
@@ -2547,7 +2566,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if baseRef == "" {
 			baseRef = "main"
 		}
-		branch := providers.BranchName(in.Machine.Def.Name, in.RunID)
+		branch := providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
 		if workspaceBranch != "" {
 			branch = workspaceBranch
 		}

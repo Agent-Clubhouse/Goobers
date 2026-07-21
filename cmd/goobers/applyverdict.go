@@ -350,7 +350,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	provider := newGitHubProvider(token)
 
 	base := providerInput("base", "main")
-	headPrefix := providerInput("headPrefix", "goobers/")
+	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
@@ -775,7 +775,7 @@ func duplicateOfEarlierPR(ctx context.Context, provider *providers.GitHubProvide
 		mineSet[id] = true
 	}
 	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, HeadPrefix: "goobers/", SkipCheckState: true,
+		Repository: repo, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
 	})
 	if err != nil {
 		return "", false

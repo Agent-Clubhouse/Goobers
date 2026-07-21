@@ -342,7 +342,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	provider := newGitHubProvider(token)
 
 	base := providerInput("base", "main")
-	headPrefix := providerInput("headPrefix", "goobers/")
+	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{

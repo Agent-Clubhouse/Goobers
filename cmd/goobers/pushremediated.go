@@ -118,7 +118,7 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	base := providerInput("base", "main")
-	headPrefix := providerInput("headPrefix", "goobers/")
+	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})
