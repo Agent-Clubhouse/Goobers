@@ -61,6 +61,12 @@ generate a fish completion script
 \fBgoobers completion zsh\fR
 generate a zsh completion script
 .TP
+\fBgoobers config\fR
+inspect the instance's operational configuration
+.TP
+\fBgoobers config show\fR
+render the effective instance config (secrets redacted)
+.TP
 \fBgoobers dashboard\fR
 serve and open the local operations portal
 .TP
@@ -188,7 +194,7 @@ API-update a clean behind-base PR, else route to remediation (a workflow stage)
 validate an instance or checked-in config source tree
 .TP
 \fBgoobers version\fR
-print build version, commit, and date
+print build version, commit, and date (--json for structured output)
 .TP
 \fBgoobers workflow\fR
 inspect workflows
@@ -208,6 +214,8 @@ show a workflow as a text DAG
 \fBgoobers-completion-bash\fR(1),
 \fBgoobers-completion-fish\fR(1),
 \fBgoobers-completion-zsh\fR(1),
+\fBgoobers-config\fR(1),
+\fBgoobers-config-show\fR(1),
 \fBgoobers-dashboard\fR(1),
 \fBgoobers-docs-churn\fR(1),
 \fBgoobers-elect-lander\fR(1),

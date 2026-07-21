@@ -2,11 +2,13 @@
 goobers — tier 1-2 local instance CLI
 
 Usage:
-  goobers --version             print build version, commit, and date
+  goobers version [--json]      print build version, commit, and date (--json for structured output)
   goobers init [--demo] [path]  scaffold an instance root
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
   goobers validate [flags] [path]  validate an instance or checked-in config source tree
+  goobers config show [--json] [path]
+                                render the effective instance config (secrets redacted)
   goobers up [--quiet] [--notify[=all]] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers dashboard [--port=<port|auto>] [--no-open] [path]
@@ -48,6 +50,7 @@ Usage:
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
   goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
+  goobers record-merge-refusal           record a merge refusal and demote a persistently-stuck lander (a workflow stage)
   goobers merge-queue-poll               watch an enqueued pull request until the merge queue merges or evicts it, labeling an eviction for remediation (a workflow stage)
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
   goobers telemetry-query [--window <d>] [--aggregate <name>] [--threshold <k=v>] [--format candidate-findings]
@@ -57,6 +60,7 @@ Usage:
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
   goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)
+  goobers elect-lander                   elect the landing PR among a merge-review cohort (a workflow stage)
   goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
@@ -84,11 +88,13 @@ standalone/manual invocation.
 goobers — tier 1-2 local instance CLI
 
 Usage:
-  goobers --version             print build version, commit, and date
+  goobers version [--json]      print build version, commit, and date (--json for structured output)
   goobers init [--demo] [path]  scaffold an instance root
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
   goobers validate [flags] [path]  validate an instance or checked-in config source tree
+  goobers config show [--json] [path]
+                                render the effective instance config (secrets redacted)
   goobers up [--quiet] [--notify[=all]] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers dashboard [--port=<port|auto>] [--no-open] [path]
@@ -130,6 +136,7 @@ Usage:
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
   goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
+  goobers record-merge-refusal           record a merge refusal and demote a persistently-stuck lander (a workflow stage)
   goobers merge-queue-poll               watch an enqueued pull request until the merge queue merges or evicts it, labeling an eviction for remediation (a workflow stage)
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
   goobers telemetry-query [--window <d>] [--aggregate <name>] [--threshold <k=v>] [--format candidate-findings]
@@ -139,6 +146,7 @@ Usage:
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
   goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)
+  goobers elect-lander                   elect the landing PR among a merge-review cohort (a workflow stage)
   goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
@@ -281,6 +289,31 @@ Generate a shell completion script. Source the output in the target shell.
 Usage: goobers completion <bash|zsh|fish>
 
 Generate a shell completion script. Source the output in the target shell.
+
+### config
+Usage: goobers config <subcommand> [flags] [path]
+
+Inspect the instance's operational configuration (instance.yaml).
+
+Subcommands:
+  show   render the effective instance config (secrets redacted)
+
+Run `goobers config show -h` for details. Default path is ".".
+
+### config show
+Usage: goobers config show [--json] [path]
+
+Render the effective instance configuration loaded from <path>/instance.yaml
+(repos, API/webhook bind config, run conditions, credential grants, timezone),
+as YAML by default or as JSON with --json.
+
+Secrets are redacted by construction: a token reference is only ever a
+locator — the env var name or file path the secret is read from at runtime
+(CFG-009/SEC-010 forbid inline values) — so `config show` prints where each
+credential comes from and never reads or prints the secret value itself.
+
+Exit codes: 0 = OK, 1 = load/render error, 2 = usage error or not an
+instance root.
 
 ### dashboard
 Usage: goobers dashboard [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [path]

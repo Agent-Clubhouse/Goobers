@@ -1,16 +1,26 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS VERSION" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers version \- print build version, commit, and date
+goobers version \- print build version, commit, and date (--json for structured output)
 .SH SYNOPSIS
 \fBgoobers version\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-print build version, commit, and date
+Usage: goobers version [--json]
+       goobers --version [--json]
+
+Print the build version, commit, build date, Go toolchain, and platform.
+
+Default output is a single human-readable line. --json emits a structured
+object with keys: version, commit, date, goVersion, platform — the same
+fields, machine-readable for scripts and support bundles.
+
+Exit codes: 0 = OK, 2 = usage error.
 .fi
 .SH EXAMPLES
 .nf
 goobers --version
+goobers version --json
 .fi
 .SH SEE ALSO
 \fBgoobers\fR(1)

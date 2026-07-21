@@ -61,6 +61,7 @@ go build -o bin/goobers ./cmd/goobers    # or: make build
 
 bin/goobers init ./my-instance           # scaffold an instance root
 bin/goobers validate ./my-instance       # check instance.yaml + config/
+bin/goobers config show ./my-instance    # render the effective config (secrets redacted)
 bin/goobers run default-implement ./my-instance   # trigger a run manually
 bin/goobers status ./my-instance         # list runs + their phase
 bin/goobers claims list ./my-instance    # inspect current claim leases
