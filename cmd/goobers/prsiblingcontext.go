@@ -156,6 +156,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	var selectedHeadSHA, selectedBaseSHA string
 	selectedFound := false
 	var selectedFiles []string
+	var selectedLabels []string
 	reused := 0
 	siblings := make([]siblingPR, 0, len(prs))
 	for _, pr := range prs {
@@ -166,6 +167,8 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			// pin against (design doc §6 D6), not whatever pr-select saw
 			// several stages ago.
 			selectedHeadSHA, selectedBaseSHA = pr.HeadSHA, pr.BaseSHA
+			// Its current labels, for the #1111 scope-drift flag's idempotency.
+			selectedLabels = pr.Labels
 			// Capture its own changed files too (#989), so overlap against
 			// each sibling can be computed deterministically below. Reuse the
 			// memo on a SHA match, same as siblings, else fetch once.
@@ -237,6 +240,25 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "selected PR is no longer open")
 	}
 
+	// Scope-drift flag (#1111): this stage already fetched the selected PR's
+	// changed files and holds github:pr:write, so it is the natural (zero extra
+	// list) place to flag a mega-merge-sized diff for a human before it lands.
+	// Best-effort — a flag must never block review, so any error is a warning.
+	changedFiles := len(selectedFiles)
+	scopeDriftThreshold := defaultScopeDriftThreshold
+	if v := providerInput("scopeDriftThreshold", ""); v != "" {
+		if n, cerr := strconv.Atoi(v); cerr == nil {
+			scopeDriftThreshold = n
+		}
+	}
+	if flipped, ferr := flagScopeDrift(ctx, provider, repo, selectedNumber, selectedLabels, changedFiles, scopeDriftThreshold); ferr != nil {
+		pf(stderr, "warning: scope-drift flag: %v\n", ferr)
+	} else if flipped {
+		pf(stdout, "scope-drift: PR #%d changes %d files (threshold %d) — %s goobers:scope-drift\n",
+			selectedNumber, changedFiles, scopeDriftThreshold,
+			map[bool]string{true: "applied", false: "cleared"}[changedFiles > scopeDriftThreshold])
+	}
+
 	// Deterministic file-overlap (#989): the ground-truth set of files each
 	// sibling shares with the selected PR, computed here so the sequencing
 	// classification/backstop (#990/#991) never depends on the LLM reviewer
@@ -299,6 +321,11 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		// for inputsFrom threading to elect-lander/apply-verdict (a []int array
 		// is not lifted). Empty string when nothing overlaps.
 		"overlappingSiblingsCsv": strings.Join(overlappingCsv, ","),
+		// selectedChangedFiles: the selected PR's changed-file count (#1111),
+		// emitted as a string for the runner's flat-scalar Outputs harvest — the
+		// magnitude the scope-drift flag above acts on, surfaced for observability
+		// and for any future gate that wants to branch on it.
+		"selectedChangedFiles": strconv.Itoa(changedFiles),
 	}
 	if cachedVerdictJSON != "" {
 		// A scalar string (not a nested object) so executor.
