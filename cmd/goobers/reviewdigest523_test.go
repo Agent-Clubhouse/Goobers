@@ -21,21 +21,31 @@ import (
 // TestEvaluatorReusesCachedVerdictWithoutReviewerCall in internal/gate).
 
 // TestComputeReviewDigestIsSensitiveToEveryPinnedInput is issue #786's
-// stable-key contract: head, base, and the sorted sibling PR/head set each
+// stable-key contract: head, base, and every reviewer-visible sibling field
 // independently invalidate the cache.
 func TestComputeReviewDigestIsSensitiveToEveryPinnedInput(t *testing.T) {
 	siblings := []siblingPR{
-		{Number: 11, HeadSHA: "sha11"},
-		{Number: 12, HeadSHA: "sha12"},
+		{
+			Number: 11, URL: "https://example/pull/11", Head: "goobers/run-11", HeadSHA: "sha11",
+			Labels: []string{"priority", "goobers"}, CheckState: "pending",
+			Files:   []string{"internal/runner/run.go", "internal/runner/run_test.go"},
+			Overlap: []string{"internal/runner/run.go"},
+		},
+		{Number: 12, HeadSHA: "sha12", CheckState: "passing"},
 	}
 	reordered := []siblingPR{
-		{Number: 12, HeadSHA: "sha12"},
-		{Number: 11, HeadSHA: "sha11"},
+		{Number: 12, HeadSHA: "sha12", CheckState: "passing"},
+		{
+			Number: 11, URL: "https://example/pull/11", Head: "goobers/run-11", HeadSHA: "sha11",
+			Labels: []string{"goobers", "priority"}, CheckState: "pending",
+			Files:   []string{"internal/runner/run_test.go", "internal/runner/run.go"},
+			Overlap: []string{"internal/runner/run.go"},
+		},
 	}
 	base := computeReviewDigest("sha10", "base10", siblings)
 
 	if got := computeReviewDigest("sha10", "base10", reordered); got != base {
-		t.Fatalf("digest changed with sibling order = %q, want stable digest %q (siblings must be sorted before hashing)", got, base)
+		t.Fatalf("digest changed with sibling or set-value order = %q, want stable digest %q", got, base)
 	}
 	if got := computeReviewDigest("sha10-changed", "base10", siblings); got == base {
 		t.Fatalf("digest unchanged after selected head SHA changed, want it to differ from %q", base)
@@ -43,11 +53,32 @@ func TestComputeReviewDigestIsSensitiveToEveryPinnedInput(t *testing.T) {
 	if got := computeReviewDigest("sha10", "base10-changed", siblings); got == base {
 		t.Fatalf("digest unchanged after selected base SHA changed, want it to differ from %q", base)
 	}
-	changedSibling := []siblingPR{{Number: 11, HeadSHA: "sha11-changed"}, {Number: 12, HeadSHA: "sha12"}}
-	if got := computeReviewDigest("sha10", "base10", changedSibling); got == base {
-		t.Fatalf("digest unchanged after a sibling head changed, want it to differ from %q", base)
+	mutations := []struct {
+		name   string
+		mutate func([]siblingPR)
+	}{
+		{name: "head SHA", mutate: func(s []siblingPR) { s[0].HeadSHA = "sha11-changed" }},
+		{name: "draft state", mutate: func(s []siblingPR) { s[0].Draft = true }},
+		{name: "labels", mutate: func(s []siblingPR) { s[0].Labels = append(s[0].Labels, "blocked") }},
+		{name: "check state", mutate: func(s []siblingPR) { s[0].CheckState = "passing" }},
+		{name: "URL", mutate: func(s []siblingPR) { s[0].URL = "https://example/pull/changed" }},
+		{name: "head ref", mutate: func(s []siblingPR) { s[0].Head = "goobers/run-11-renamed" }},
+		{name: "files", mutate: func(s []siblingPR) { s[0].Files = append(s[0].Files, "internal/runner/new.go") }},
+		{name: "overlap", mutate: func(s []siblingPR) { s[0].Overlap = nil }},
 	}
-	fewerSiblings := []siblingPR{{Number: 11, HeadSHA: "sha11"}}
+	for _, tt := range mutations {
+		t.Run("sibling "+tt.name, func(t *testing.T) {
+			changed := append([]siblingPR(nil), siblings...)
+			changed[0].Labels = append([]string(nil), siblings[0].Labels...)
+			changed[0].Files = append([]string(nil), siblings[0].Files...)
+			changed[0].Overlap = append([]string(nil), siblings[0].Overlap...)
+			tt.mutate(changed)
+			if got := computeReviewDigest("sha10", "base10", changed); got == base {
+				t.Fatalf("digest unchanged after sibling %s changed, want it to differ from %q", tt.name, base)
+			}
+		})
+	}
+	fewerSiblings := siblings[:1]
 	if got := computeReviewDigest("sha10", "base10", fewerSiblings); got == base {
 		t.Fatalf("digest unchanged after the sibling set shrank, want it to differ from %q", base)
 	}
@@ -129,7 +160,10 @@ func seedVerdictCacheFixture(t *testing.T) (root string, server *fakeGitHubServe
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-2")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
 
-	wantDigest = computeReviewDigest("sha10head", "shamainbase", []siblingPR{{Number: 11, HeadSHA: "sha11head"}})
+	wantDigest = computeReviewDigest("sha10head", "shamainbase", []siblingPR{{
+		Number: 11, URL: "https://example/pull/11", Head: "goobers/implementation/run-11", HeadSHA: "sha11head",
+		CheckState: "passing", Files: []string{"internal/runner/run.go"},
+	}})
 	return root, server, wantDigest
 }
 
@@ -238,6 +272,50 @@ func TestGatherSiblingContextSiblingSetChangeMissesCache(t *testing.T) {
 	}
 	if result.ReviewDigest == reviewedDigest {
 		t.Fatalf("reviewDigest = %q, want a new key after sibling set changed", result.ReviewDigest)
+	}
+}
+
+func TestGatherSiblingContextSameHeadStateChangeMissesCache(t *testing.T) {
+	tests := []struct {
+		name   string
+		before func(*fakeGitHubServer)
+		change func(*fakeGitHubServer)
+	}{
+		{
+			name:   "draft",
+			before: func(*fakeGitHubServer) {},
+			change: func(server *fakeGitHubServer) { server.setPRDraft(11, true) },
+		},
+		{
+			name:   "labels",
+			before: func(*fakeGitHubServer) {},
+			change: func(server *fakeGitHubServer) { server.setPRLabels(11, []string{"blocked"}) },
+		},
+		{
+			name:   "check state",
+			before: func(server *fakeGitHubServer) { server.setPRCheckState(11, "pending") },
+			change: func(server *fakeGitHubServer) { server.setPRCheckState(11, "success") },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root, server, _ := seedVerdictCacheFixture(t)
+			tt.before(server)
+			reviewed := readSiblingContextResultAfterGather(t, root)
+			server.addComment(10, renderVerdictComment(apiv1.Verdict{
+				Decision: apiv1.VerdictPass, Digest: reviewed.ReviewDigest, SourceRunID: "run-review",
+				HeadSHA: "sha10head", BaseSHA: "shamainbase",
+			}))
+
+			tt.change(server)
+			current := readSiblingContextResultAfterGather(t, root)
+			if current.CachedVerdictJSON != "" {
+				t.Fatalf("cachedVerdictJson = %q, want empty after same-head sibling %s changed", current.CachedVerdictJSON, tt.name)
+			}
+			if current.ReviewDigest == reviewed.ReviewDigest {
+				t.Fatalf("reviewDigest = %q, want a new key after same-head sibling %s changed", current.ReviewDigest, tt.name)
+			}
+		})
 	}
 }
 

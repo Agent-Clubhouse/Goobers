@@ -238,8 +238,23 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "selected PR is no longer open")
 	}
 
-	// Verdict-level cache: hash the complete stable key
-	// (head SHA, base SHA, sorted sibling PR/head set), then check the selected
+	// Deterministic file-overlap (#989): the ground-truth set of files each
+	// sibling shares with the selected PR, computed here so the sequencing
+	// classification/backstop (#990/#991) never depends on the LLM reviewer
+	// noticing the collision. overlappingSiblings is the convenience summary
+	// those stages consume.
+	overlappingSiblings := make([]int, 0)
+	overlappingCsv := make([]string, 0)
+	for i := range siblings {
+		siblings[i].Overlap = intersectSorted(selectedFiles, siblings[i].Files)
+		if len(siblings[i].Overlap) > 0 {
+			overlappingSiblings = append(overlappingSiblings, siblings[i].Number)
+			overlappingCsv = append(overlappingCsv, strconv.Itoa(siblings[i].Number))
+		}
+	}
+
+	// Verdict-level cache: hash the complete stable key (selected head/base
+	// SHAs and all reviewer-visible sibling state), then check the selected
 	// PR's trusted status comment for a matching usable verdict. Any missing
 	// key component or lookup problem degrades to a fresh review.
 	reviewDigest := computeReviewDigest(selectedHeadSHA, selectedBaseSHA, siblings)
@@ -257,21 +272,6 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			} else {
 				cachedVerdictJSON = string(data)
 			}
-		}
-	}
-
-	// Deterministic file-overlap (#989): the ground-truth set of files each
-	// sibling shares with the selected PR, computed here so the sequencing
-	// classification/backstop (#990/#991) never depends on the LLM reviewer
-	// noticing the collision. overlappingSiblings is the convenience summary
-	// those stages consume.
-	overlappingSiblings := make([]int, 0)
-	overlappingCsv := make([]string, 0)
-	for i := range siblings {
-		siblings[i].Overlap = intersectSorted(selectedFiles, siblings[i].Files)
-		if len(siblings[i].Overlap) > 0 {
-			overlappingSiblings = append(overlappingSiblings, siblings[i].Number)
-			overlappingCsv = append(overlappingCsv, strconv.Itoa(siblings[i].Number))
 		}
 	}
 

@@ -662,6 +662,18 @@ func (s *fakeGitHubServer) setPRBase(number int, baseSHA string) {
 	s.prs[number].baseSHA = baseSHA
 }
 
+func (s *fakeGitHubServer) setPRDraft(number int, draft bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].draft = draft
+}
+
+func (s *fakeGitHubServer) setPRLabels(number int, labels []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].labels = append([]string(nil), labels...)
+}
+
 // setPRCheckState models CI advancing on an unchanged head (pending →
 // success/failure) between runs (#523's terminal-state reuse tests).
 func (s *fakeGitHubServer) setPRCheckState(number int, state string) {

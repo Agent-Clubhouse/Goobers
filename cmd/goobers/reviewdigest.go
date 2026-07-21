@@ -20,12 +20,12 @@ import (
 // verdict-schema version bump" is one of the four things that must force a
 // fresh review). Folded into reviewDigest so a bump invalidates every
 // standing cache entry without touching any PR's state.
-const verdictSchemaVersion = 3
+const verdictSchemaVersion = 4
 
 // computeSiblingSetHash returns an order-independent identity for every
-// sibling the holistic reviewer sees. A sibling is identified by PR number
-// and head SHA, so adding, removing, or updating one independently invalidates
-// the verdict cache. An incomplete or duplicate entry makes the key unusable.
+// reviewer-visible field of every sibling. Siblings and their set-valued
+// fields are sorted so provider response ordering cannot perturb the key. An
+// incomplete or duplicate entry makes the key unusable.
 func computeSiblingSetHash(siblings []siblingPR) string {
 	sorted := append([]siblingPR(nil), siblings...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Number < sorted[j].Number })
@@ -37,7 +37,25 @@ func computeSiblingSetHash(siblings []siblingPR) string {
 		if i > 0 && sorted[i-1].Number == sibling.Number {
 			return ""
 		}
-		_, _ = fmt.Fprintf(h, "%d:%s\n", sibling.Number, sibling.HeadSHA)
+		_, _ = fmt.Fprintf(h, "number:%d\ndraft:%t\n", sibling.Number, sibling.Draft)
+		hashString := func(name, value string) {
+			_, _ = fmt.Fprintf(h, "%s:%d:%s\n", name, len(value), value)
+		}
+		hashStrings := func(name string, values []string) {
+			values = append([]string(nil), values...)
+			sort.Strings(values)
+			_, _ = fmt.Fprintf(h, "%s-count:%d\n", name, len(values))
+			for _, value := range values {
+				hashString(name, value)
+			}
+		}
+		hashString("url", sibling.URL)
+		hashString("head", sibling.Head)
+		hashString("head-sha", sibling.HeadSHA)
+		hashString("check-state", sibling.CheckState)
+		hashStrings("label", sibling.Labels)
+		hashStrings("file", sibling.Files)
+		hashStrings("overlap", sibling.Overlap)
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
