@@ -939,7 +939,7 @@ func TestManager_Reap_KeptWorktreeSurvivesUntilStale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readMarker: %v", err)
 	}
-	mk.CreatedAt = time.Now().Add(-time.Hour)
+	mk.RetainedAt = time.Now().Add(-time.Hour)
 	if err := writeMarker(m.markerPath(wt.key, wt.RunID), mk); err != nil {
 		t.Fatalf("writeMarker: %v", err)
 	}

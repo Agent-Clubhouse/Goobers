@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -82,13 +81,6 @@ const diagnosticsMaxOutputBytes int64 = 64 << 20 // 64 MiB
 // Production leaves it at this identity default, so the configured address is
 // used verbatim; see testmain_test.go for the test-suite redirect.
 var apiListenAddress = func(c *instance.Config) string { return c.APIListenAddress() }
-
-// reapStaleAfter bounds how long a Keep-on-failure worktree survives before
-// Manager.Reap sweeps it up too, on top of genuine crash orphans (issue
-// #136) — nothing in the runner sets RemoveOptions.Keep yet, so this only
-// matters once something does; a day gives an operator time to look at one
-// before it's reclaimed.
-const reapStaleAfter = 24 * time.Hour
 
 type sweepErrorReporter struct {
 	log         *journal.InstanceLog
@@ -378,7 +370,6 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	// the disk space and the git worktree-list registration).
 	for gaggle, manager := range setup.WorktreesByGaggle {
 		if _, warnings, err := manager.Reap(ctx, worktree.ReapOptions{
-			StaleAfter:    reapStaleAfter,
 			IsRunTerminal: worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
 		}); err != nil {
 			pf(stderr, "error: reap worktrees for gaggle %s: %v\n", gaggle, err)
@@ -391,7 +382,6 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	}
 	if setup.LegacyWorktrees != nil {
 		if _, warnings, err := setup.LegacyWorktrees.Reap(ctx, worktree.ReapOptions{
-			StaleAfter:    reapStaleAfter,
 			IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
 		}); err != nil {
 			pf(stderr, "error: reap legacy worktrees: %v\n", err)
@@ -401,6 +391,10 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 				pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
 			}
 		}
+	}
+	if err := pruneConfiguredRetention(ctx, l, setup, stdout, stderr); err != nil {
+		pf(stderr, "error: prune retained worktrees and branches: %v\n", err)
+		return 1
 	}
 
 	// Reconcile BEFORE the resume scan (issue #135): it seeds Conditions'
@@ -813,45 +807,8 @@ func removeDaemonAPIAddress(path string) error {
 
 func worktreeRunTerminal(runsDir string) func(string) (bool, error) {
 	return func(worktreeID string) (bool, error) {
-		entries, err := os.ReadDir(runsDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return false, nil
-			}
-			return false, fmt.Errorf("read runs directory: %w", err)
-		}
-
-		var owner string
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			runID := entry.Name()
-			if worktreeID != runID && !strings.HasPrefix(worktreeID, runID+"-") {
-				continue
-			}
-			if len(runID) > len(owner) {
-				owner = runID
-			}
-		}
-		if owner == "" {
-			return false, nil
-		}
-
-		rd, err := journal.OpenRead(filepath.Join(runsDir, owner))
-		if err != nil {
-			return false, err
-		}
-		phase, err := rd.Phase()
-		if err != nil {
-			return false, err
-		}
-		switch phase {
-		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-			return true, nil
-		default:
-			return false, nil
-		}
+		phase, found, err := retainedWorktreePhase(runsDir, worktreeID, "")
+		return found && terminalRunPhase(phase), err
 	}
 }
 

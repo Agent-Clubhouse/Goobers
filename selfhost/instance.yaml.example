@@ -52,6 +52,17 @@ telemetry:
 runConditions:
   maxParallelRuns: 2
   claimsLockTimeout: 30s
+# Retention pruning is opt-in. `dryRun: true` reports deterministic candidates
+# without deleting anything. With `enabled: true` and dryRun omitted/false,
+# retained terminal-failure worktrees exceeding either configured limit are
+# removed oldest-first, and merged local run branches are cleaned up. Active
+# runs are never candidates. A zero/omitted byte cap or empty age disables that
+# worktree rule.
+# retention:
+#   dryRun: true
+#   enabled: false
+#   maxRetainedWorktreeBytes: 10737418240
+#   retainedWorktreeMaxAge: 168h
 # Optional runner block. `capabilities` are the toolchains/platform properties
 # this runner advertises as preinstalled (RRQ-1); a gaggle/stage requiring one
 # the runner does not claim fails to schedule. `envPassthrough` names extra

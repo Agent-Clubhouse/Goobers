@@ -46,6 +46,7 @@ type Config struct {
 	Webhook       WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
 	Telemetry     TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	RunConditions RunConditions   `json:"runConditions,omitempty" yaml:"runConditions,omitempty"`
+	Retention     RetentionConfig `json:"retention,omitempty" yaml:"retention,omitempty"`
 	// Notifications opts `goobers up` into native desktop notifications for
 	// escalated and failed runs. It defaults to false.
 	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
@@ -176,6 +177,31 @@ type RunConditions struct {
 	// ClaimsLockTimeout bounds cross-process claim-ledger lock acquisition.
 	// Empty defaults to 30 seconds.
 	ClaimsLockTimeout string `json:"claimsLockTimeout,omitempty" yaml:"claimsLockTimeout,omitempty"`
+}
+
+// RetentionConfig controls opt-in pruning of retained failure worktrees and
+// merged local run branches. Both Enabled and DryRun default to false.
+type RetentionConfig struct {
+	Enabled                  bool   `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	DryRun                   bool   `json:"dryRun,omitempty" yaml:"dryRun,omitempty"`
+	MaxRetainedWorktreeBytes int64  `json:"maxRetainedWorktreeBytes,omitempty" yaml:"maxRetainedWorktreeBytes,omitempty"`
+	RetainedWorktreeMaxAge   string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
+}
+
+// RetainedWorktreeMaxAgeDuration resolves the optional retention window.
+// Zero disables age-based pruning.
+func (c RetentionConfig) RetainedWorktreeMaxAgeDuration() (time.Duration, error) {
+	if c.RetainedWorktreeMaxAge == "" {
+		return 0, nil
+	}
+	window, err := time.ParseDuration(c.RetainedWorktreeMaxAge)
+	if err != nil {
+		return 0, fmt.Errorf("retention.retainedWorktreeMaxAge %q: %w", c.RetainedWorktreeMaxAge, err)
+	}
+	if window <= 0 {
+		return 0, fmt.Errorf("retention.retainedWorktreeMaxAge must be positive, got %s", window)
+	}
+	return window, nil
 }
 
 // StalledRunTimeoutDuration resolves the configured stalled-run deadline.
@@ -388,6 +414,12 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if _, err := c.RunConditions.ClaimsLockTimeoutDuration(); err != nil {
+		return err
+	}
+	if c.Retention.MaxRetainedWorktreeBytes < 0 {
+		return fmt.Errorf("retention.maxRetainedWorktreeBytes must not be negative")
+	}
+	if _, err := c.Retention.RetainedWorktreeMaxAgeDuration(); err != nil {
 		return err
 	}
 	for i, r := range c.Repos {

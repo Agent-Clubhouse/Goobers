@@ -37,6 +37,7 @@ type Manager struct {
 
 	mu        sync.Mutex // guards repoLocks
 	repoLocks map[string]*sync.Mutex
+	pruneMu   sync.Mutex
 
 	// symlinkFallback is true on platforms where git checks a repo's symlinks
 	// out as plain text files holding the link target rather than as real
