@@ -16,6 +16,7 @@ import (
 // RetentionRule identifies the limit that made a resource eligible.
 type RetentionRule string
 
+// Retention rules distinguish age, storage-cap, and merged-branch candidates.
 const (
 	RetentionRuleWindow       RetentionRule = "retention-window"
 	RetentionRuleStorageCap   RetentionRule = "storage-cap"
@@ -25,6 +26,7 @@ const (
 // RetentionKind identifies the resource considered by a retention pass.
 type RetentionKind string
 
+// Retention kinds distinguish worktree and branch candidates.
 const (
 	RetentionKindWorktree RetentionKind = "worktree"
 	RetentionKindBranch   RetentionKind = "branch"
