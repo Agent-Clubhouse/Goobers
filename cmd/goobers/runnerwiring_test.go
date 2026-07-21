@@ -365,7 +365,7 @@ func TestBuildCredentialsDefault(t *testing.T) {
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
 	}}
-	resolver, grants, err := buildCredentials(cfg)
+	resolver, grants, err := buildCredentials(cfg, "", "")
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -578,7 +578,7 @@ func TestBuildCredentialsAgentModel(t *testing.T) {
 			{Capability: "agent:model", Token: instance.TokenRef{Env: "COPILOT_PAT"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg)
+	resolver, grants, err := buildCredentials(cfg, "", "")
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -607,7 +607,7 @@ func TestBuildCredentialsOverride(t *testing.T) {
 			{Capability: "repo:push", Token: instance.TokenRef{Env: "PUSH_TOKEN_B"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg)
+	resolver, grants, err := buildCredentials(cfg, "", "")
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -632,7 +632,7 @@ func TestBuildCredentialsApprovalOverride(t *testing.T) {
 			{Capability: "github:issues:approve", Token: instance.TokenRef{Env: "APPROVAL_TOKEN_B"}},
 		},
 	}
-	resolver, grants, err := buildCredentials(cfg)
+	resolver, grants, err := buildCredentials(cfg, "", "")
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
@@ -754,7 +754,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	t.Setenv("CI_POLL_TOKEN", "ci-poll-token-value")
 	cfg := repoConfig()
 	cfg.Repos[0].Token.Env = "CI_POLL_TOKEN"
-	resolver, grants, err := buildCredentials(cfg)
+	resolver, grants, err := buildCredentials(cfg, "", "")
 	if err != nil {
 		t.Fatalf("buildCredentials: %v", err)
 	}
