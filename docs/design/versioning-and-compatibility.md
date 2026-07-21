@@ -103,6 +103,8 @@ The CLI warning codes are stable within their namespace:
 | `VER003` | Compatibility notice |
 | `MODEL002` | Model fallback |
 
+#### Compatibility registry
+
 The compatibility registry also tracks accepted-but-inert fields. At V0,
 `task.expectedOutputs` is **declared-not-enforced** and
 `task.run.image` is not honored by the local runner; declaring either emits
