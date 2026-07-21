@@ -150,6 +150,11 @@ spec:
       expectedOutputs:
         - selectedNumber
         - merged
+        # reason is always emitted (empty on a merge/enqueue) so
+        # record-merge-refusal (#950) can thread it on merge-gate's fail branch;
+        # selectedHeadSha (the echoed SHA-pin) keys the demotion by head.
+        - reason
+        - selectedHeadSha
       next: merge-gate
 
     - name: queue-watch
@@ -193,6 +198,23 @@ spec:
         command: ["goobers", "post-merge"]
       inputsFrom:
         pullNumber: selectedNumber
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+
+    # #950: merge-gate's fail branch records a durable per-PR counter of merge
+    # refusals at an unchanged head and demotes a persistently-stuck lander
+    # (goobers:merge-demoted) so its cluster drains around it. No-op for a
+    # transient/first refusal; self-heals when the PR's head advances.
+    - name: record-merge-refusal
+      type: deterministic
+      goal: Record a merge refusal and demote a persistently-stuck lander (#950).
+      run:
+        command: ["goobers", "record-merge-refusal"]
+      inputsFrom:
+        selectedNumber: selectedNumber
+        reason: reason
+        selectedHeadSha: selectedHeadSha
       capabilities:
         - github:pr:write
         - github:issues:write
@@ -260,8 +282,10 @@ spec:
         merged: post-merge
         enqueued: queue-watch
         # Keep changed CI/draft state unlabeled so a later run can retry after
-        # the PR becomes eligible again.
-        fail: ""
+        # the PR becomes eligible again. #950: route through record-merge-refusal
+        # so a lander that repeatedly cannot merge at an unchanged head is
+        # counted and eventually demoted, letting its cluster drain around it.
+        fail: record-merge-refusal
 
     - name: queue-gate
       evaluator: automated

@@ -86,11 +86,20 @@ func resolveElectionPolicy(name string) (electionPolicyFunc, string) {
 // the configured policy. Any verdict carrying a real defect (a substantive/
 // conflict/rebase-needed finding) is never electable — it routes to
 // apply-verdict / pr-remediation unchanged.
-func electionDecision(findings []apiv1.Finding, selectedNumber int, policy electionPolicyFunc) bool {
+func electionDecision(findings []apiv1.Finding, selectedNumber int, policy electionPolicyFunc, demoted map[int]bool) bool {
+	// #950: a demoted lander (one that repeatedly could not merge at an
+	// unchanged head) is never crowned — that is exactly the re-election that
+	// deadlocks the cluster. And a demoted PR is dropped from the blocker set so
+	// the next-lowest non-demoted member wins instead, draining the cluster
+	// around the stuck one. demoted is empty in steady state (no PR carries
+	// goobers:merge-demoted), so this is a no-op on the common path.
+	if demoted[selectedNumber] {
+		return false
+	}
 	if !allCrossPRBlocked(findings) {
 		return false
 	}
-	return policy(selectedNumber, unionBlockingPRs(findings))
+	return policy(selectedNumber, withoutDemoted(unionBlockingPRs(findings), demoted))
 }
 
 const electLanderHelp = "Usage: goobers elect-lander [--gate name] [path]\n\n" +
@@ -213,16 +222,12 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	// a verdict carrying a real defect is left unchanged (never electable).
 	effectiveFindings := withOverlapBackstop(verdict.Findings, overlappingSiblings)
 
-	if !electionDecision(effectiveFindings, selectedNumber, policy) {
-		pf(stdout, "PR #%d: not the elected lander under policy %q (or verdict carries a real defect) — routing to apply-verdict\n", selectedNumber, resolvedPolicy)
-		return writeResult(false)
-	}
-
-	// This PR is the elected lander. Re-check the verdict's SHA pin against the
-	// PR's current head/base (mirroring apply-verdict's D6 void check) so a
-	// verdict computed against a state the PR has since moved past is not
-	// crowned and merged — merge-pr re-verifies independently, but not electing
-	// a stale verdict keeps the routing honest.
+	// The election needs the live open-PR set for two things: the elected
+	// verdict's SHA-pin re-check below, and (#950) knowing which cluster members
+	// are demoted so a stuck lander is dropped from candidacy and from every
+	// sibling's blocker set. Set the provider up and list PRs up front so one
+	// list feeds both, and so apply-verdict (which re-derives the same election)
+	// resolves an identical demoted set from the same source.
 	token, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -244,6 +249,25 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, resultFile)
 	}
+
+	// #950: fail-safe — an unresolvable demotion state proceeds as an empty set
+	// (exactly the pre-#950 behavior), and never blocks the election.
+	demoted, derr := demotedSet(ctx, provider, repo, prs)
+	if derr != nil {
+		pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
+		demoted = nil
+	}
+
+	if !electionDecision(effectiveFindings, selectedNumber, policy, demoted) {
+		pf(stdout, "PR #%d: not the elected lander under policy %q (demoted, a real defect, or a lower non-demoted sibling wins) — routing to apply-verdict\n", selectedNumber, resolvedPolicy)
+		return writeResult(false)
+	}
+
+	// This PR is the elected lander. Re-check the verdict's SHA pin against the
+	// PR's current head/base (mirroring apply-verdict's D6 void check) so a
+	// verdict computed against a state the PR has since moved past is not
+	// crowned and merged — merge-pr re-verifies independently, but not electing
+	// a stale verdict keeps the routing honest.
 	var current *providers.PullRequestSummary
 	for i := range prs {
 		if prs[i].Number == selectedNumber {

@@ -115,6 +115,21 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		if blocked {
 			continue
 		}
+		// #950: a demoted PR (repeatedly could not merge at an unchanged head)
+		// is excluded from selection so the election stops re-crowning the stuck
+		// lander; its cluster drains around it via the blocked-on-sibling
+		// liveness change. Self-heals the instant its head advances, same as
+		// escalationStillBlocks above. Fail OPEN — treat a resolution error as
+		// not-demoted (today's behavior) so the demotion signal can never itself
+		// keep an otherwise-eligible PR out of merge-review.
+		demoted, derr := demotionStillHolds(ctx, provider, repo, pr)
+		if derr != nil {
+			pf(stderr, "warning: could not resolve merge-demotion state for PR #%d (%v) — treating as not demoted\n", pr.Number, derr)
+			demoted = false
+		}
+		if demoted {
+			continue
+		}
 		// #748: a PR parked goobers:blocked-on-sibling is skipped while any of
 		// its named blocker PRs is still open — re-reviewing it would just
 		// reproduce the identical cross-PR verdict. Self-heals (selectable

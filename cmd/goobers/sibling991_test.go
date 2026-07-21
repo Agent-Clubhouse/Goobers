@@ -30,7 +30,7 @@ func TestPredecessorBlockers(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := predecessorBlockers(c.thisPR, c.blocks, c.policy)
+			got := predecessorBlockers(c.thisPR, c.blocks, c.policy, nil)
 			if !reflect.DeepEqual(got, c.want) {
 				t.Fatalf("predecessorBlockers(#%d, %v) = %v, want %v", c.thisPR, c.blocks, got, c.want)
 			}
@@ -53,7 +53,7 @@ func TestClusterDrainsMonotonically(t *testing.T) {
 				others = append(others, o)
 			}
 		}
-		predecessors[m] = predecessorBlockers(m, others, electedLander)
+		predecessors[m] = predecessorBlockers(m, others, electedLander, nil)
 	}
 
 	landed := map[int]bool{}

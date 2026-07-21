@@ -57,7 +57,7 @@ func TestElectionDecision(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := electionDecision(tt.findings, tt.thisPR, electedLander); got != tt.want {
+			if got := electionDecision(tt.findings, tt.thisPR, electedLander, nil); got != tt.want {
 				t.Fatalf("electionDecision(%v, %d) = %v, want %v", tt.findings, tt.thisPR, got, tt.want)
 			}
 		})

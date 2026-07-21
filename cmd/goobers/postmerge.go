@@ -165,13 +165,18 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "warning: %v\n", eerr)
 	}
 
+	undemoted, undemoteErrs := unparkSelfHealedDemotions(ctx, provider, repo, poll.Number, poll.BaseBranch, stderr)
+	for _, derr := range undemoteErrs {
+		pf(stderr, "warning: %v\n", derr)
+	}
+
 	closed, closeErrs := closeReferencedIssues(ctx, provider, repo, poll.Body, pullNumber)
 	for _, cerr := range closeErrs {
 		pf(stderr, "warning: %v\n", cerr)
 	}
 
-	pf(stdout, "post-merge: labeled %d pr(s) %s (%d clean siblings left untouched), unparked %d blocked-on-sibling pr(s), un-escalated %d self-healed pr(s), closed %d issue(s)\n",
-		len(labeled), needsRemediationLabel, len(skipped), len(unparked), len(unescalated), len(closed))
+	pf(stdout, "post-merge: labeled %d pr(s) %s (%d clean siblings left untouched), unparked %d blocked-on-sibling pr(s), un-escalated %d self-healed pr(s), un-demoted %d self-healed pr(s), closed %d issue(s)\n",
+		len(labeled), needsRemediationLabel, len(skipped), len(unparked), len(unescalated), len(undemoted), len(closed))
 	return 0
 }
 
@@ -221,6 +226,51 @@ func unparkSelfHealedEscalations(ctx context.Context, provider *providers.GitHub
 		unparked = append(unparked, pr.Number)
 	}
 	return unparked, errs
+}
+
+// unparkSelfHealedDemotions removes goobers:merge-demoted from any open PR whose
+// head has advanced past its demotion snapshot (#950) — demotionStillHolds now
+// returns false, so it is no longer stuck at an unchanged head and should be
+// allowed to win its own election again. A merge advancing the base commonly
+// prompts the remediation pushes that move a demoted PR's head, so post-merge is
+// a natural sweep point, exactly as it is for merge-escalated. A PR still stuck
+// at the same head keeps the label. Mirrors unparkSelfHealedEscalations' shape
+// and best-effort error posture.
+func unparkSelfHealedDemotions(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, base string, stderr io.Writer) (healed []int, errs []error) {
+	if base == "" {
+		return nil, nil
+	}
+	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, HeadPrefix: "goobers/", SkipCheckState: true,
+	})
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for merge-demoted unpark: %w", base, err))
+		return nil, errs
+	}
+	for _, pr := range others {
+		if pr.Number == mergedNumber {
+			continue
+		}
+		if !hasAnyLabel(pr.Labels, []string{mergeDemotedLabel}) {
+			continue
+		}
+		stillDemoted, derr := demotionStillHolds(ctx, provider, repo, pr)
+		if derr != nil {
+			errs = append(errs, fmt.Errorf("check merge-demoted state for pr #%d during unpark: %w", pr.Number, derr))
+			continue
+		}
+		if stillDemoted {
+			continue
+		}
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: repo, ID: strconv.Itoa(pr.Number), RemoveLabels: []string{mergeDemotedLabel},
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("clear %s from pr #%d: %w", mergeDemotedLabel, pr.Number, err))
+			continue
+		}
+		healed = append(healed, pr.Number)
+	}
+	return healed, errs
 }
 
 // unparkResolvedSiblings clears goobers:blocked-on-sibling from every open

@@ -156,9 +156,13 @@ func withOverlapBackstop(findings []apiv1.Finding, overlappingSiblings []int) []
 // the election policy this way keeps predecessor-order and election-order
 // identical for every policy (fifo: lower first; newest: higher first)
 // without re-encoding the ordering per policy.
-func predecessorBlockers(thisPR int, blockers []int, policy electionPolicyFunc) []int {
+func predecessorBlockers(thisPR int, blockers []int, policy electionPolicyFunc, demoted map[int]bool) []int {
 	var out []int
-	for _, b := range blockers {
+	// #950: a demoted predecessor no longer blocks its successors — dropping it
+	// here is what lets a parked sibling unpark and be re-selected while the
+	// stuck lander is worked separately. Empty demoted set in steady state, so
+	// this is identical to the pre-#950 behavior on the common path.
+	for _, b := range withoutDemoted(blockers, demoted) {
 		if b == thisPR {
 			continue
 		}
@@ -371,6 +375,19 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return writeApplyVerdictResult(resultFile, selectedNumber, "", "", "moot", "", stderr)
 	}
 
+	// #950: which open PRs are currently demoted (repeatedly could not merge at
+	// an unchanged head). The election drops these from candidacy and from every
+	// sibling's blocker set so a stuck FIFO-minimum lander cannot deadlock its
+	// cluster. Fail-safe: on any resolution error, proceed with an empty set —
+	// the demotion signal must never itself become a merge outage, and an empty
+	// set is exactly the pre-#950 behavior. Reuses the prs list already fetched
+	// above; only currently-labeled PRs cost an extra ListComments.
+	demoted, derr := demotedSet(ctx, provider, repo, prs)
+	if derr != nil {
+		pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
+		demoted = nil
+	}
+
 	// D6: gather-sibling-context's deterministic pin is authoritative. The
 	// reviewer's optional echo can disprove that it reviewed the gathered diff,
 	// but omitting the echo cannot bypass the current-state check.
@@ -426,7 +443,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 
 	// Election resolves an all-ordering verdict into a real pass (#833/#834,
 	// reframed). See electedLanderPassRationale.
-	if elected, rationale := electedLanderPass(selectedNumber, effective); elected {
+	if elected, rationale := electedLanderPass(selectedNumber, effective, demoted); elected {
 		posted.Decision = apiv1.VerdictPass
 		posted.Rationale = rationale
 	}
@@ -439,7 +456,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// cluster deadlocks (each member lists the others, none ever unparks).
 		policy, _ := resolveElectionPolicy(providerInput("electionPolicy", defaultElectionPolicy))
 		state := blockedOnSiblingState{
-			Blockers:   predecessorBlockers(selectedNumber, unionBlockingPRs(effective.Findings), policy),
+			Blockers:   predecessorBlockers(selectedNumber, unionBlockingPRs(effective.Findings), policy, demoted),
 			Reason:     posted.Rationale,
 			HeadSHA:    posted.HeadSHA,
 			BaseSHA:    posted.BaseSHA,
@@ -626,12 +643,12 @@ func isMergeReviewStatusComment(body string) bool {
 // The findings are deliberately left intact on the published verdict. The
 // ordering asks were real observations and stay visible; only the decision they
 // rolled up to changes, and the rationale states exactly why.
-func electedLanderPass(selectedNumber int, posted apiv1.Verdict) (bool, string) {
+func electedLanderPass(selectedNumber int, posted apiv1.Verdict, demoted map[int]bool) (bool, string) {
 	if posted.Decision != apiv1.VerdictNeedsChanges {
 		return false, ""
 	}
 	policy, policyName := resolveElectionPolicy(providerInput("electionPolicy", defaultElectionPolicy))
-	if !electionDecision(posted.Findings, selectedNumber, policy) {
+	if !electionDecision(posted.Findings, selectedNumber, policy, demoted) {
 		return false, ""
 	}
 	return true, electedLanderPassRationale(selectedNumber, posted, policyName)
