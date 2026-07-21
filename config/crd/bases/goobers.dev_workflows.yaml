@@ -326,6 +326,11 @@ spec:
                           enum:
                           - none
                           type: string
+                        syncBase:
+                          description: |-
+                            SyncBase merges the freshly fetched base ref into an existing run branch
+                            before the command executes. It is valid only with a repository workspace.
+                          type: boolean
                         workspace:
                           description: |-
                             Workspace selects where the command runs. Empty or "repo" provisions the
@@ -338,6 +343,10 @@ spec:
                       required:
                       - command
                       type: object
+                      x-kubernetes-validations:
+                      - message: syncBase requires a repo workspace
+                        rule: '!has(self.syncBase) || !self.syncBase || !has(self.workspace)
+                          || self.workspace != ''scratch'''
                     timeoutSeconds:
                       description: |-
                         TimeoutSeconds bounds one attempt's wall-clock execution. Unset preserves

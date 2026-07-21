@@ -64,6 +64,13 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	if implement.OnTimeout != apiv1.TaskOnTimeoutSalvage {
 		t.Errorf("implement.onTimeout = %q, want %q", implement.OnTimeout, apiv1.TaskOnTimeoutSalvage)
 	}
+	localCI, ok := m.Task("local-ci")
+	if !ok {
+		t.Fatal("local-ci task not found")
+	}
+	if localCI.Run == nil || !localCI.Run.SyncBase {
+		t.Error("local-ci.run.syncBase = false, want true")
+	}
 	review, ok := m.Gate("review")
 	if !ok {
 		t.Fatal("review gate not found")
@@ -144,6 +151,8 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// #724: implement stage gained onTimeout=salvage and its goal was reworded
 	// to hand the full `make ci`/`-race` run to the deterministic local-ci
 	// stage (bounding the session to think-time, not test wall-clock).
+	// #813: local-ci gained run.syncBase so an in-flight implementation branch
+	// incorporates build/test behavior fixes fetched from main before testing.
 	// local-ci previously carried inputs.serializeGroup=local-ci to throttle
 	// concurrent `make ci` runs; that mitigation targeted a disk-I/O contention
 	// theory that the #845 post-mortem falsified — the real cause was terminal
@@ -154,7 +163,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// the issue-side bookkeeping (clear ready, release claimed, apply
 	// needs-human) only runs if that stage does — see
 	// TestImplementationEscalatingBranchesRunIssueBookkeeping.
-	const wantDigest = "sha256:892985d152be241747ab4896487aa974b5c099c3f86eff3f4435b1f4300ae536"
+	const wantDigest = "sha256:f1ed4a53023a69e90afff16c14d849d6a8f108093149c2c9977129c2164c0ddd"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

@@ -221,6 +221,7 @@ type RetryPolicy struct {
 }
 
 // DeterministicRun describes the code a deterministic task runs.
+// +kubebuilder:validation:XValidation:rule="!has(self.syncBase) || !self.syncBase || !has(self.workspace) || self.workspace != 'scratch'",message="syncBase requires a repo workspace"
 type DeterministicRun struct {
 	// Command is the command + args to execute.
 	// +kubebuilder:validation:Required
@@ -245,6 +246,10 @@ type DeterministicRun struct {
 	// +kubebuilder:validation:Enum=repo;scratch
 	// +optional
 	Workspace WorkspaceMode `json:"workspace,omitempty" yaml:"workspace,omitempty"`
+	// SyncBase merges the freshly fetched base ref into an existing run branch
+	// before the command executes. It is valid only with a repository workspace.
+	// +optional
+	SyncBase bool `json:"syncBase,omitempty" yaml:"syncBase,omitempty"`
 }
 
 // NetworkMode selects the network access available to a deterministic command.

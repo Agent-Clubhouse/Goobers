@@ -40,8 +40,8 @@ type CreateOptions struct {
 	// Branch, if set, is the run branch this worktree checks out (e.g.
 	// "goobers/<workflow>/<run-id>", providers.BranchName). It is created off
 	// BaseRef the first time it is requested and checked out as-is (carrying
-	// the prior stages' commits, ignoring BaseRef) every time after — this is
-	// what gives a run's sequential stages continuity while keeping each stage
+	// the prior stages' commits) every time after unless SyncBase is set. This
+	// gives a run's sequential stages continuity while keeping each stage
 	// isolated in a fresh worktree (#133). If empty, the worktree is a detached
 	// checkout of BaseRef.
 	Branch string
@@ -63,6 +63,9 @@ type CreateOptions struct {
 	// stage in this same run fetched it. Anything that clears the mirror
 	// between stages reaches this path.
 	RequireExistingBranch bool
+	// SyncBase merges the freshly fetched BaseRef into an existing Branch
+	// before returning the worktree. New branches already start at BaseRef.
+	SyncBase bool
 }
 
 // Worktree is a disposable, isolated working copy for one run, branched off
@@ -114,6 +117,9 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	if opts.BaseRef == "" {
 		return nil, fmt.Errorf("worktree: BaseRef is required")
 	}
+	if opts.SyncBase && opts.Branch == "" {
+		return nil, fmt.Errorf("worktree: SyncBase requires Branch")
+	}
 
 	repoDir, err := m.WorkingCopy(ctx, opts.RepoURL)
 	if err != nil {
@@ -157,10 +163,11 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	// run's actual diff rather than a pristine BaseRef (#133). A detached
 	// checkout (Branch == "") keeps the pre-#133 behavior.
 	args := []string{"worktree", "add"}
+	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
 	switch {
 	case opts.Branch == "":
 		args = append(args, "--detach", path, opts.BaseRef)
-	case branchExists(ctx, repoDir, opts.Branch):
+	case existingBranch:
 		// Existing run branch: check it out as-is. BaseRef is not the
 		// continuity point — the branch's own tip is. git forbids the same
 		// branch in two live worktrees, which holds here because stages run
@@ -192,6 +199,12 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	}
 	if err := runGit(ctx, path, "config", "user.email", botGitUserEmail); err != nil {
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
+	}
+	if opts.SyncBase && existingBranch {
+		if err := runGit(ctx, path, "merge", "--ff", "--no-edit", opts.BaseRef); err != nil {
+			_ = runGit(ctx, repoDir, "worktree", "remove", "--force", path)
+			return nil, fmt.Errorf("worktree: sync branch %q with base %q for run %s: %w", opts.Branch, opts.BaseRef, opts.RunID, err)
+		}
 	}
 
 	mk := marker{
