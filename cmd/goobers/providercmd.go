@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
@@ -333,6 +335,99 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	return errorCodeProvider, false, nil
 }
 
+// runProviderStageCommand is the command-boundary result contract for provider
+// stages. Handlers still write their domain outputs and typed provider errors;
+// this guard fills only a missing result, preserving the actual stderr reason
+// from early business failures that returned before reaching those writers.
+func runProviderStageCommand(name, resultFileDefault string, handler cliCommandHandler, args []string, stdout, stderr io.Writer) int {
+	resultFile := providerInput("resultFile", resultFileDefault)
+	if resultFile != "" {
+		if err := os.Remove(resultFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			message := fmt.Sprintf("prepare provider-stage result %s: %v", resultFile, err)
+			pf(stderr, "error: %s\n", message)
+			errorCode, retryable, extra := classifyProviderError(errors.New(message))
+			payload := map[string]interface{}{
+				executor.OutputErrorCode:      errorCode,
+				executor.OutputErrorMessage:   message,
+				executor.OutputErrorRetryable: retryable,
+			}
+			for key, value := range extra {
+				payload[key] = value
+			}
+			if writeErr := writeProviderStageResult(resultFile, payload); writeErr != nil {
+				pf(stderr, "warning: write provider-stage result %s: %v\n", resultFile, writeErr)
+			}
+			return 1
+		}
+	}
+
+	var captured bytes.Buffer
+	code := handler(args, stdout, io.MultiWriter(stderr, &captured))
+	if code == 2 {
+		return code
+	}
+
+	if resultFile == "" || validProviderStageResult(resultFile) {
+		return code
+	}
+
+	payload := map[string]interface{}{}
+	if code != 0 {
+		message := providerStageErrorMessage(name, captured.String())
+		errorCode, retryable, extra := classifyProviderError(errors.New(message))
+		payload = map[string]interface{}{
+			executor.OutputErrorCode:      errorCode,
+			executor.OutputErrorMessage:   message,
+			executor.OutputErrorRetryable: retryable,
+		}
+		for key, value := range extra {
+			payload[key] = value
+		}
+	}
+	if err := writeProviderStageResult(resultFile, payload); err != nil {
+		pf(stderr, "warning: write provider-stage result %s: %v\n", resultFile, err)
+		return 1
+	}
+	return code
+}
+
+func validProviderStageResult(path string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && json.Valid(data)
+}
+
+func providerStageErrorMessage(name, stderr string) string {
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	fallback := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = line
+		}
+		if strings.HasPrefix(line, "error:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "error:"))
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return name + " failed without an error message"
+}
+
+func writeProviderStageResult(path string, payload map[string]interface{}) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal typed result: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write typed result: %w", err)
+	}
+	return nil
+}
+
 // failProviderStage reports a stage-fatal provider error: it prints the same
 // "error: <what>: <err>" line the call sites used to (unchanged operator UX)
 // and returns 1. It also classifies err (#711, generalizing #614) and writes
@@ -362,12 +457,7 @@ func failProviderStage(stderr io.Writer, what string, err error, resultFileDefau
 	for k, v := range extra {
 		payload[k] = v
 	}
-	data, merr := json.Marshal(payload)
-	if merr != nil {
-		pf(stderr, "warning: marshal typed error result: %v\n", merr)
-		return 1
-	}
-	if werr := os.WriteFile(resultFile, data, 0o644); werr != nil {
+	if werr := writeProviderStageResult(resultFile, payload); werr != nil {
 		pf(stderr, "warning: write typed error result %s: %v\n", resultFile, werr)
 	}
 	return 1

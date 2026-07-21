@@ -324,6 +324,8 @@ spec:
         # merge-pr deliberately echoes this value because inputsFrom is a
         # single-hop handoff and merge-gate is transparent to it (#479).
         pullNumber: selectedNumber
+      inputs:
+        resultFile: "post-merge-result.json"
       capabilities:
         - github:pr:write
         - github:issues:write

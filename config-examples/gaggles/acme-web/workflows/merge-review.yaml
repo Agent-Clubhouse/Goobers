@@ -213,6 +213,8 @@ spec:
         command: ["goobers", "post-merge"]
       inputsFrom:
         pullNumber: selectedNumber
+      inputs:
+        resultFile: "post-merge-result.json"
       capabilities:
         - github:pr:write
         - github:issues:write

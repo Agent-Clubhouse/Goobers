@@ -646,14 +646,10 @@ func renderSiblingOverlapContext(overlaps []siblingOverlapFinding) string {
 // anything, which is exactly the non-tautological --force-with-lease
 // expectation push-remediated requires.
 //
-// A resultFile is only written when the stage declares one; a caller running
-// this command outside a workflow (or a workflow that does not route on the
-// outcome) is unaffected.
+// The default matches the shipped workflow so standalone invocations preserve
+// the same routing output contract.
 func writeCheckpointResult(stderr io.Writer, continueRemediation bool, selectedNumber int, head, headSHA string) error {
-	resultFile := providerInput("resultFile", "")
-	if resultFile == "" {
-		return nil
-	}
+	resultFile := providerInput("resultFile", "checkpoint-result.json")
 	data, err := json.Marshal(map[string]string{
 		"continueRemediation": strconv.FormatBool(continueRemediation),
 		"selectedNumber":      strconv.Itoa(selectedNumber),

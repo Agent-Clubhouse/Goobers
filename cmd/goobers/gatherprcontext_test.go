@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -962,6 +963,8 @@ func TestGatherPRContextSkipsPRHeldByInFlightWorktree(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
 	t.Chdir(remWT.Path)
+	resultFile := filepath.Join(remWT.Path, "pr-context.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
 
 	// Phase 1: the owning run still holds the branch — expect a clean skip.
 	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
@@ -971,9 +974,7 @@ func TestGatherPRContextSkipsPRHeldByInFlightWorktree(t *testing.T) {
 	if !strings.Contains(stdout, "no work") {
 		t.Fatalf("phase 1 stdout = %q, want a no-work skip while the owning run holds the branch", stdout)
 	}
-	if _, err := os.Stat(filepath.Join(remWT.Path, "pr-context.json")); !os.IsNotExist(err) {
-		t.Fatalf("phase 1 wrote pr-context.json (err=%v) — it must not gather/claim a PR whose branch is held by a live worktree", err)
-	}
+	assertNoWorkProviderStageResult(t, resultFile)
 	if branch := strings.TrimSpace(runGitOutputT(t, remWT.Path, "symbolic-ref", "--short", "HEAD")); branch != "goobers/pr-remediation/run-rem" {
 		t.Fatalf("phase 1 checked out %q — the guard must skip BEFORE any checkout, leaving the stage worktree on its own branch", branch)
 	}
