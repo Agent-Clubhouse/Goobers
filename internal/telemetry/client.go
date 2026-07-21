@@ -226,12 +226,15 @@ func (c *Client) StartSchedulerSpan(ctx context.Context, attrs SchedulerAttribut
 	return ctx, Span{span: span, scrubber: c.scrubber}, nil
 }
 
-// Flush forces pending telemetry through configured providers.
+// Flush forces pending telemetry through configured providers. A transient
+// export failure to an unreachable remote collector is best-effort and does not
+// fail the caller (isCollectorUnreachable, #1124); a local-exporter error still
+// propagates.
 func (c *Client) Flush(ctx context.Context) error {
-	if err := c.tracerProvider.ForceFlush(ctx); err != nil {
+	if err := c.tracerProvider.ForceFlush(ctx); err != nil && !isCollectorUnreachable(err) {
 		return fmt.Errorf("flush telemetry traces: %w", err)
 	}
-	if err := c.meterProvider.ForceFlush(ctx); err != nil {
+	if err := c.meterProvider.ForceFlush(ctx); err != nil && !isCollectorUnreachable(err) {
 		return fmt.Errorf("flush telemetry metrics: %w", err)
 	}
 	return nil
@@ -249,13 +252,17 @@ func (c *Client) FlushLocal(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown flushes and shuts down telemetry providers.
+// Shutdown flushes and shuts down telemetry providers. As with Flush, a
+// transient export failure to an unreachable remote collector is best-effort
+// and does not fail the caller (isCollectorUnreachable, #1124) — the providers
+// are still shut down; only the spurious error is dropped — while a
+// local-exporter error still propagates.
 func (c *Client) Shutdown(ctx context.Context) error {
 	var errs []error
-	if err := c.tracerProvider.Shutdown(ctx); err != nil {
+	if err := c.tracerProvider.Shutdown(ctx); err != nil && !isCollectorUnreachable(err) {
 		errs = append(errs, fmt.Errorf("shutdown telemetry traces: %w", err))
 	}
-	if err := c.meterProvider.Shutdown(ctx); err != nil {
+	if err := c.meterProvider.Shutdown(ctx); err != nil && !isCollectorUnreachable(err) {
 		errs = append(errs, fmt.Errorf("shutdown telemetry metrics: %w", err))
 	}
 	return errors.Join(errs...)
