@@ -18,6 +18,8 @@ semantic model is fixed for v1:
   directories. The OTLP file uses
   `application/x-ndjson` framing; each line is the OTLP/JSON encoding of
   one `opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest`.
+  `goobers telemetry export --since ...` re-emits an inclusive/exclusive
+  span-start-time window from these files.
 
 The workflow engine should call `StartRun` once per workflow run, then use the
 returned context for task-attempt and gate-evaluation spans. Within-stage

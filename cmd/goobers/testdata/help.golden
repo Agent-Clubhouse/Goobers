@@ -44,7 +44,8 @@ Usage:
   goobers escalations show [--json] <run-id> [path]
                                 show escalation cause + per-stage artifact timeline
   goobers completion bash|zsh|fish  generate a shell completion script
-  goobers telemetry stats|errors [flags] [path]  success rate/duration or recent-error aggregates
+  goobers telemetry stats|errors|export [flags] [path]
+                                query aggregates or export journaled OTLP windows
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
@@ -134,7 +135,8 @@ Usage:
   goobers escalations show [--json] <run-id> [path]
                                 show escalation cause + per-stage artifact timeline
   goobers completion bash|zsh|fish  generate a shell completion script
-  goobers telemetry stats|errors [flags] [path]  success rate/duration or recent-error aggregates
+  goobers telemetry stats|errors|export [flags] [path]
+                                query aggregates or export journaled OTLP windows
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
@@ -742,16 +744,26 @@ With --daemon, report daemon health instead.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <stats|errors> [flags] [path]
+Usage: goobers telemetry <stats|errors|export> [flags] [path]
 
 stats:  success rate / durations per workflow + stage
 errors: recent errors across runs, by class, with run/stage refs
+export: re-emit a span-start-time window from journaled OTLP/JSON
 
 ### telemetry errors
 Usage: goobers telemetry errors [--json] [--workflow=name] [--gaggle=name] [--class=name] [--since=RFC3339] [--until=RFC3339] [--limit=N] [--rebuild] [path]
 
 Recent errors across every run, newest first, with run/stage refs
 (default path "."). Exit codes: 0 = OK, 2 = usage/IO error.
+
+### telemetry export
+Usage: goobers telemetry export --since=RFC3339 [--until=RFC3339] [path]
+
+Re-emit journaled OTLP/JSON trace requests to stdout. --since is inclusive;
+--until is exclusive when set. Window membership uses each span's start time.
+Every discovered run journal is validated before output; missing, corrupt, or
+unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
+1 = journal data error, 2 = usage/output error.
 
 ### telemetry stats
 Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]

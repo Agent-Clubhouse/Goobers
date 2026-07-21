@@ -59,8 +59,9 @@
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
 | [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
-| [`goobers telemetry`](#goobers-telemetry) | success rate/duration or recent-error aggregates |
+| [`goobers telemetry`](#goobers-telemetry) | query aggregates or export journaled OTLP windows |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
+| [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
 | [`goobers telemetry-query`](#goobers-telemetry-query) | emit versioned candidate findings (a connector stage) |
 | [`goobers trace`](#goobers-trace) | show a run's journal events, follow a live run, or show transcripts |
@@ -1161,13 +1162,14 @@ $ goobers status --watch
 
 ## `goobers telemetry`
 
-success rate/duration or recent-error aggregates
+query aggregates or export journaled OTLP windows
 
 ~~~text
-Usage: goobers telemetry <stats|errors> [flags] [path]
+Usage: goobers telemetry <stats|errors|export> [flags] [path]
 
 stats:  success rate / durations per workflow + stage
 errors: recent errors across runs, by class, with run/stage refs
+export: re-emit a span-start-time window from journaled OTLP/JSON
 ~~~
 
 **Examples**
@@ -1175,6 +1177,7 @@ errors: recent errors across runs, by class, with run/stage refs
 ~~~console
 $ goobers telemetry stats
 $ goobers telemetry errors
+$ goobers telemetry export --since=2026-07-01T00:00:00Z
 ~~~
 
 ## `goobers telemetry errors`
@@ -1193,6 +1196,27 @@ Recent errors across every run, newest first, with run/stage refs
 ~~~console
 $ goobers telemetry errors
 $ goobers telemetry errors --limit=50
+~~~
+
+## `goobers telemetry export`
+
+re-emit a span-start-time window from journaled OTLP/JSON
+
+~~~text
+Usage: goobers telemetry export --since=RFC3339 [--until=RFC3339] [path]
+
+Re-emit journaled OTLP/JSON trace requests to stdout. --since is inclusive;
+--until is exclusive when set. Window membership uses each span's start time.
+Every discovered run journal is validated before output; missing, corrupt, or
+unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
+1 = journal data error, 2 = usage/output error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry export --since=2026-07-01T00:00:00Z
+$ goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z
 ~~~
 
 ## `goobers telemetry stats`
