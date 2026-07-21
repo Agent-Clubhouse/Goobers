@@ -9,6 +9,12 @@ import (
 	"syscall"
 )
 
+// Tree on unix is fully identified by its session-leader pid, which — because
+// configure made the child a session leader — is also its process-group id.
+type Tree struct {
+	pid int
+}
+
 // configure puts the child in a NEW SESSION (Setsid), not merely a new process
 // group (Setpgid). A bare Setpgid child of a `goobers up` in the foreground of
 // an interactive terminal is a background process group on that controlling

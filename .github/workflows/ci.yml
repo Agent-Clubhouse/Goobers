@@ -4,6 +4,11 @@ name: CI
 # Runs the portable Go CI entrypoint (Go fmt/vet/build/test/lint + portal
 # build/test) on Ubuntu and macOS on every PR to main, push to main, and
 # merge-group build. See test/ci for the authoritative full-gate step list.
+#
+# Windows is gated too, as a required compile smoke (go build + go vet for
+# windows/amd64) — not the full suite yet (#633; full `make ci` on Windows is
+# gated on #630). All three legs must be green for the required `make ci` check
+# to pass; see the windows-smoke and required-ci jobs below.
 
 on:
   push:
@@ -78,27 +83,63 @@ jobs:
           path: coverage.out
           if-no-files-found: ignore
 
-  # NOTE: an advisory `windows-smoke` job lived here. It was `continue-on-error`
-  # and deliberately excluded from `required-ci`, so it never gated merges from
-  # GitHub's point of view — but it still published a red check status on every
-  # PR, and the Goobers merge flow has no notion of an advisory check, so it
-  # read that red as a hard block. Removed until Windows can actually pass
-  # the portable CI entrypoint (#620, #623, #625, #627, #630), at which point it joins the `ci`
-  # matrix as a required leg (#633). Do not reintroduce it as an expected-red
-  # advisory job while the merge flow still treats every check as gating.
+  # Windows joins CI as a REQUIRED, GREEN compile smoke (#633) — deliberately not
+  # the old advisory `continue-on-error` `windows-smoke` job (#928) that #960 had
+  # to remove: that one published a red check the Goobers merge flow (which has no
+  # notion of an advisory check, see #961) read as a hard block. This one is
+  # different in kind — it actually passes. It cross-checks that the whole tree
+  # BUILDS and VETS for Windows (native windows/amd64 on a real runner), which is
+  # green as of #623's proc Job-Object impl + the build-tags on the unix-only
+  # commands/tests. That makes it safe to gate on: it only reds on a real,
+  # fixable Windows compile break — the drift #1091 exists to stop — never as an
+  # expected-red. It is compile-only (build + vet, no tests): upgrading it to the
+  # full `make ci` (running the suite on Windows) is gated on #630 and tracked in
+  # #633's definition of done.
+  windows-smoke:
+    name: windows compile smoke (go build · go vet)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Platform-scoped Go cache (setup-go keys by runner OS/arch), so the
+      # windows leg neither shares nor evicts the ubuntu/macos caches.
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      # Compiles every package for windows/amd64, including the //go:build windows
+      # files (internal/platform/proc, lock, winsvc, safeopen) that no other gate
+      # exercises. `go build ./...` skips _test.go files; `go vet ./...` compiles
+      # them too, so a windows-incompatible test also gets caught.
+      - name: go build (windows/amd64)
+        run: go build ./...
+
+      - name: go vet (windows/amd64)
+        run: go vet ./...
 
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() }}
-    needs: ci
+    needs: [ci, windows-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required platform gates
         env:
           MATRIX_RESULT: ${{ needs.ci.result }}
+          WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
         run: |
           if [ "$MATRIX_RESULT" != "success" ]; then
-            echo "A required platform gate did not pass."
+            echo "A required platform gate (ubuntu/macos make ci) did not pass."
+            exit 1
+          fi
+          if [ "$WINDOWS_RESULT" != "success" ]; then
+            echo "The windows compile smoke (go build + go vet) did not pass."
             exit 1
           fi
 

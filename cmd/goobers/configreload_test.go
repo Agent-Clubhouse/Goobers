@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -290,7 +288,7 @@ func TestConfigDirectoryDigestRejectsUnsafeAssets(t *testing.T) {
 			if err := os.Mkdir(assets, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := unix.Mkfifo(filepath.Join(assets, "stream"), 0o600); err != nil {
+			if err := mkfifoAsset(filepath.Join(assets, "stream")); err != nil {
 				t.Skipf("FIFO unsupported: %v", err)
 			}
 		},
