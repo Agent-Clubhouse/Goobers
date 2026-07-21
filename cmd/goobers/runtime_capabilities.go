@@ -169,6 +169,10 @@ func init() {
 			withSynopsis(synopsisByID["stats"]).
 			withHelp("show the instance lifetime summary card", statsHelp).
 			withExamples("goobers stats", "goobers stats --since 24h --json"),
+		command("features", apicontract.ActionReadOnlyNavigation, runFeatures).
+			withSynopsis(synopsisByID["features"]).
+			withHelp("list the workflow-DSL features this build supports", featuresHelp).
+			withExamples("goobers features", "goobers features --used"),
 		command("reset-rate-limit", apicontract.ActionMaintenance, runResetRateLimit).
 			withSynopsis(synopsisByID["reset-rate-limit"]).
 			withHelp("clear the hourly run-rate budget without deleting runs/", resetRateLimitHelp).

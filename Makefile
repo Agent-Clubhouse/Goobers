@@ -72,11 +72,13 @@ manifests:
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths=./api/v1alpha1/... output:crd:dir=config/crd/bases
 
 ## docs: Regenerate the committed CLI reference (docs/cli) + man pages (docs/man)
-## from the command registry. CI's TestCLIDocsUpToDate fails the build if the
-## committed output drifts from this, so run it after any CLI help change.
+## from the command registry, and the feature matrix (docs/feature-matrix.md)
+## from the workflow feature registry. CI's TestCLIDocsUpToDate and
+## TestFeatureMatrixDocUpToDate fail the build if the committed output drifts
+## from this, so run it after any CLI help or DSL-feature change.
 .PHONY: docs
 docs:
-	UPDATE_GOLDEN=1 $(GO) test ./cmd/goobers -run TestCLIDocsUpToDate
+	UPDATE_GOLDEN=1 $(GO) test ./cmd/goobers -run 'TestCLIDocsUpToDate|TestFeatureMatrixDocUpToDate'
 
 ## test-envtest: Run tests with envtest binaries provisioned (operator integration).
 .PHONY: test-envtest

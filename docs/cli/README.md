@@ -27,6 +27,7 @@
 | [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
+| [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers gather-pr-context`](#goobers-gather-pr-context) | pr-remediation entrypoint: select and load a PR's context (a workflow stage) |
 | [`goobers gather-sibling-context`](#goobers-gather-sibling-context) | load other open PRs as review evidence (a workflow stage) |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
@@ -442,6 +443,31 @@ Show an escalation's structured cause and per-stage artifact timeline.
 
 ~~~console
 $ goobers escalations show <run-id>
+~~~
+
+## `goobers features`
+
+list the workflow-DSL features this build supports
+
+~~~text
+Usage: goobers features [--used] [path]
+
+List the workflow-DSL features this build understands, with each
+feature's support level (preview/ga/deprecated/removed) and the version
+it entered that level. This reads the same registry the committed
+docs/feature-matrix.md is generated from, so the two never disagree.
+
+With --used, list only the features the instance at path (default ".")
+actually references across its workflows and goobers — the subset that
+instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance
+config, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers features
+$ goobers features --used
 ~~~
 
 ## `goobers gather-pr-context`
