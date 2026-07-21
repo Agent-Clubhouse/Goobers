@@ -60,6 +60,24 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	return runValidateAs("validate", args, stdout, stderr)
 }
 
+func runStartupConfigPreflight(root string, skip bool, stderr io.Writer) int {
+	var output bytes.Buffer
+	code := runValidate([]string{root}, &output, &output)
+	if skip {
+		if code == 0 {
+			pf(stderr, "WARNING: --skip-preflight enabled; startup validation enforcement is disabled\n")
+		} else {
+			pf(stderr, "WARNING: --skip-preflight enabled; ignoring the following startup validation errors:\n")
+			_, _ = output.WriteTo(stderr)
+		}
+		return 0
+	}
+	if code != 0 {
+		_, _ = output.WriteTo(stderr)
+	}
+	return code
+}
+
 // runValidateAs is the single authoritative config-validation engine shared by
 // `goobers validate` and its `goobers lint` alias (#439/AUTH-2). name selects
 // which verb's flag-parse label and registered `-h` help surface are used so
@@ -107,7 +125,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	set, report, err := instance.LoadConfigDir(configDir)
+	set, report, err := loadConfigDirectory(configDir)
 	if err != nil && !errors.Is(err, instance.ErrInvalidConfig) {
 		pf(stderr, "error: %v\n", err)
 		return 2

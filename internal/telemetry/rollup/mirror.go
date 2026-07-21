@@ -38,6 +38,7 @@ type journalEvent struct {
 	Gate         string              `json:"gate,omitempty"`
 	Verdict      string              `json:"verdict,omitempty"`
 	Target       string              `json:"target,omitempty"`
+	Escalated    bool                `json:"escalated,omitempty"`
 	Status       string              `json:"status,omitempty"`
 	Ref          *journalRef         `json:"ref,omitempty"`
 	Name         string              `json:"name,omitempty"`

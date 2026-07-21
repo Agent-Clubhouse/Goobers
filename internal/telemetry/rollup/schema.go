@@ -193,4 +193,95 @@ CREATE TABLE IF NOT EXISTS harness_transcript_schemas (
 
 CREATE INDEX IF NOT EXISTS idx_harness_transcript_schemas_run ON harness_transcript_schemas(run_id);
 `,
+	// v6 (issue #778): canonical agent usage is carried by task-span
+	// attributes and belongs to the same run/stage/attempt identity as the
+	// stage_attempts row. A satellite table keeps the migration replay-safe,
+	// while nullable columns preserve TEL-041's absent-versus-zero contract;
+	// existing attempts have no row rather than being backfilled as zero.
+	`
+CREATE TABLE IF NOT EXISTS stage_usage (
+	run_id                   TEXT NOT NULL,
+	stage                    TEXT NOT NULL,
+	attempt                  INTEGER NOT NULL,
+	input_tokens             INTEGER,
+	output_tokens            INTEGER,
+	copilot_premium_requests REAL,
+	cost_usd                 REAL,
+	PRIMARY KEY (run_id, stage, attempt)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stage_usage_run ON stage_usage(run_id);
+`,
+	// v7 (issue #778): task repasses restart their dispatch-local attempt
+	// number at one. Add a monotonic per-stage traversal identity so repeated
+	// (stage, attempt) pairs remain distinct in both the attempt and usage
+	// tables. A legacy rollup may already have collapsed a repeated attempt;
+	// only a journal rebuild can recover that row. Rank the surviving rows by
+	// start time so migration never mistakes a reset local attempt number for
+	// traversal order.
+	`
+ALTER TABLE stage_attempts RENAME TO stage_attempts_v6;
+ALTER TABLE stage_usage RENAME TO stage_usage_v6;
+
+CREATE TABLE stage_attempts (
+	run_id        TEXT NOT NULL,
+	stage         TEXT NOT NULL,
+	traversal     INTEGER NOT NULL,
+	attempt       INTEGER NOT NULL,
+	attempt_class TEXT,
+	status        TEXT,
+	started_at    TEXT,
+	finished_at   TEXT,
+	duration_ms   INTEGER,
+	error_code    TEXT,
+	error_class   TEXT,
+	runner_json   TEXT,
+	PRIMARY KEY (run_id, stage, traversal)
+);
+
+INSERT INTO stage_attempts (
+	run_id, stage, traversal, attempt, attempt_class, status, started_at,
+	finished_at, duration_ms, error_code, error_class, runner_json
+)
+SELECT
+	run_id, stage,
+	ROW_NUMBER() OVER (
+		PARTITION BY run_id, stage
+		ORDER BY started_at IS NULL, started_at, attempt
+	),
+	attempt, attempt_class, status, started_at, finished_at, duration_ms,
+	error_code, error_class, runner_json
+FROM stage_attempts_v6;
+
+CREATE TABLE stage_usage (
+	run_id                   TEXT NOT NULL,
+	stage                    TEXT NOT NULL,
+	traversal                INTEGER NOT NULL,
+	attempt                  INTEGER NOT NULL,
+	input_tokens             INTEGER,
+	output_tokens            INTEGER,
+	copilot_premium_requests REAL,
+	cost_usd                 REAL,
+	PRIMARY KEY (run_id, stage, traversal)
+);
+
+INSERT INTO stage_usage (
+	run_id, stage, traversal, attempt, input_tokens, output_tokens,
+	copilot_premium_requests, cost_usd
+)
+SELECT
+	su.run_id, su.stage, sa.traversal, su.attempt, su.input_tokens,
+	su.output_tokens, su.copilot_premium_requests, su.cost_usd
+FROM stage_usage_v6 su
+JOIN stage_attempts sa
+	ON sa.run_id = su.run_id
+	AND sa.stage = su.stage
+	AND sa.attempt = su.attempt;
+
+DROP TABLE stage_attempts_v6;
+DROP TABLE stage_usage_v6;
+
+CREATE INDEX idx_stage_attempts_run ON stage_attempts(run_id);
+CREATE INDEX idx_stage_usage_run ON stage_usage(run_id);
+`,
 }

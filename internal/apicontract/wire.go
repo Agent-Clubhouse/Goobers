@@ -90,6 +90,13 @@ func newWireFixtures() wireFixtures {
 	averageDuration := 120000.5
 	minDuration := int64(100000)
 	maxDuration := int64(140001)
+	p50Tokens := int64(24000)
+	p95Tokens := int64(48000)
+	p50CostUSD := 1.25
+	p95CostUSD := 2.5
+	retryWasteDuration := int64(100000)
+	retryWasteTokens := int64(12000)
+	retryWasteCostUSD := 0.75
 	warning := validate.CodedWarning{
 		Code:        validate.WarningDeprecatedFeature,
 		Severity:    validate.Warning,
@@ -321,6 +328,7 @@ func newWireFixtures() wireFixtures {
 				Gate:         "review",
 				Verdict:      "needs-changes",
 				Target:       "implement",
+				Escalated:    true,
 				Status:       string(apiv1.ResultSuccess),
 				Outputs:      map[string]any{"approved": true, "score": 0.98},
 				Artifacts:    []readservice.ArtifactMetadata{artifact},
@@ -382,14 +390,27 @@ func newWireFixtures() wireFixtures {
 				MaxDurationMs: &maxDuration,
 			}},
 			Stages: []readservice.TelemetryStageStats{{
-				Stage:             "implement",
-				TotalAttempts:     4,
-				SucceededAttempts: 3,
-				FailedAttempts:    1,
-				SuccessRate:       &successRate,
-				AvgDurationMs:     &averageDuration,
-				MinDurationMs:     &minDuration,
-				MaxDurationMs:     &maxDuration,
+				Stage:                "implement",
+				TotalAttempts:        4,
+				SucceededAttempts:    3,
+				FailedAttempts:       1,
+				SuccessRate:          &successRate,
+				AvgDurationMs:        &averageDuration,
+				MinDurationMs:        &minDuration,
+				MaxDurationMs:        &maxDuration,
+				DurationSamples:      4,
+				P50DurationMs:        &minDuration,
+				P95DurationMs:        &maxDuration,
+				TokenSamples:         4,
+				P50Tokens:            &p50Tokens,
+				P95Tokens:            &p95Tokens,
+				CostSamples:          4,
+				P50CostUSD:           &p50CostUSD,
+				P95CostUSD:           &p95CostUSD,
+				RetryWasteAttempts:   1,
+				RetryWasteDurationMs: &retryWasteDuration,
+				RetryWasteTokens:     &retryWasteTokens,
+				RetryWasteCostUSD:    &retryWasteCostUSD,
 			}},
 		},
 		TelemetryErrors: readservice.TelemetryErrorsPage{
