@@ -3,13 +3,13 @@
 
 # ---- Portability posture (#630) ---------------------------------------------
 # The merge gate (`make ci` -> `go run ./test/ci`) and the coverage gate
-# (`make cover-check` -> `go run ./test/coveragegate`) are pure Go. They shell
-# out only to real toolchain binaries (go, gofmt, git, npm, golangci-lint) and
-# never to bash/sh or a project shell script, so CI reproduces on any OS with a
-# Go toolchain — Windows included: test/ci handles the .exe suffix, the cgo race
-# detector, and wrapping npm through cmd.exe. There are no build/CI shell
-# scripts in the tree, and a guard test enforces that (test/ci: no shell on the
-# toolchain path; the two gates stay Go-delegated).
+# (`make cover-check` -> `go run ./test/coveragegate`) are pure Go. They spawn
+# only real toolchain binaries (go, gofmt, git, npm, golangci-lint) and the
+# freshly built goobers validator, never bash/sh or a project shell script, so
+# CI reproduces on any OS with a Go toolchain — Windows included: test/ci handles
+# the .exe suffix, the cgo race detector, and wrapping npm through cmd.exe.
+# There are no build/CI shell scripts in the tree, and a guard test enforces
+# that (test/ci: no shell on the toolchain path; the gates stay Go-delegated).
 #
 # The convenience recipes below (build, clean, help, cover, test-envtest) use a
 # POSIX shell for `$(shell …)`, `rm`, `grep`/`sed`/`expand`, etc. They are
@@ -123,6 +123,12 @@ build-%:
 
 build-goobers: portal-build
 
+## validate-configs: Build the validator and check every shipped config tree.
+.PHONY: validate-configs
+validate-configs:
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/goobers ./cmd/goobers
+	$(GO) run ./test/configvalidate $(BIN)/goobers
+
 # Disable git fsync for the whole test run (#811). Every git subprocess the
 # suite spawns (throwaway fixtures + the runner's real worktree clones/commits)
 # operates on ephemeral scratch repos with zero durability needs, and fsync is
@@ -192,7 +198,7 @@ cover: test
 cover-check: test
 	COVERAGE_PROFILE=coverage.out $(GO) run ./test/coveragegate $(COVERAGE_THRESHOLD)
 
-## ci: Run the portable full Go and portal gate (matches the pipeline).
+## ci: Run the portable full Go, config, and portal gate (matches the pipeline).
 .PHONY: ci
 ci:
 	$(GO) run ./test/ci

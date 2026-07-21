@@ -23,6 +23,7 @@ Node.js 24 with npm, Git, and
 go run ./test/ci      # portable full Go and portal merge gate
 make ci               # optional Unix compatibility alias
 make help             # list Unix convenience targets
+make validate-configs # build the validator and check every shipped config tree
 make portal-ci        # install, type-check, build, test, and check the portal contract
 make portal-contract  # regenerate and verify the Go/TypeScript wire contract
 ```
@@ -30,13 +31,16 @@ make portal-contract  # regenerate and verify the Go/TypeScript wire contract
 `go run ./test/ci` is the cross-platform entrypoint CI enforces (see
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). It launches each tool
 without Bash or POSIX-shell syntax and runs the existing Go format, vet, build,
-race-test, and lint checks plus the portal build, typecheck, tests, and
-stale-fixture check. On Windows, the runner uses stock `cmd.exe` only to invoke
-Node's standard `npm.cmd` shim. The strategy deliberately keeps the Go
-toolchain as the only task-runner prerequisite: GNU Make is **not** required on
-Windows.
+shipped-config validation, race-test, and lint checks plus the portal build,
+typecheck, tests, and stale-fixture check. On Windows, the runner uses stock
+`cmd.exe` only to invoke Node's standard `npm.cmd` shim. The strategy
+deliberately keeps the Go toolchain as the only task-runner prerequisite: GNU
+Make is **not** required on Windows.
 `make ci` is a thin compatibility shim for existing Darwin and Linux workflows.
 The other Make targets remain optional POSIX-shell conveniences;
+`make validate-configs` builds the validator and checks every config shipped by
+the repository without network or credentials. Run it locally before pushing a
+config change; warnings are printed, while validation errors fail the target.
 `make portal-ci` reproduces the portal portion alone, and
 `make portal-contract` narrows that to the generated Go/TypeScript wire seam.
 

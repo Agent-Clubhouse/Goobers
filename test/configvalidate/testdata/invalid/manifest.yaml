@@ -1,0 +1,16 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: invalid-fixture
+spec:
+  instance:
+    name: invalid-fixture
+    environment: dev
+  connections:
+    - name: repo-token
+      type: repo
+      provider: github
+      secretRef:
+        name: repo-token
+  gaggles:
+    - example
