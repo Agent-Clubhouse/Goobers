@@ -15,8 +15,11 @@ import (
 type UsageOperation string
 
 const (
-	UsageOperationCreate       UsageOperation = "create"
-	UsageOperationTeardown     UsageOperation = "teardown"
+	// UsageOperationCreate identifies a measurement taken after worktree creation.
+	UsageOperationCreate UsageOperation = "create"
+	// UsageOperationTeardown identifies a measurement taken before worktree removal.
+	UsageOperationTeardown UsageOperation = "teardown"
+	// UsageOperationHousekeeping identifies a measurement taken during stale-worktree cleanup.
 	UsageOperationHousekeeping UsageOperation = "housekeeping"
 )
 
