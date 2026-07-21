@@ -94,6 +94,7 @@ func insertRun(tx *sql.Tx, id runIdentity, events []journalEvent) error {
 // stageAttemptAccum consolidates fields spread across a stage attempt's
 // stage.started / stage.finished / (optional) error events into one row.
 type stageAttemptAccum struct {
+	attempt               int
 	attemptClass          string
 	status                string
 	startedAt, finishedAt time.Time
@@ -102,6 +103,11 @@ type stageAttemptAccum struct {
 }
 
 type stageKey struct {
+	stage     string
+	traversal int
+}
+
+type stageAttemptKey struct {
 	stage   string
 	attempt int
 }
@@ -109,15 +115,32 @@ type stageKey struct {
 func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 	stages := map[stageKey]*stageAttemptAccum{}
 	var order []stageKey
-	getAccum := func(stage string, attempt int) *stageAttemptAccum {
-		k := stageKey{stage, attempt}
-		a, ok := stages[k]
-		if !ok {
-			a = &stageAttemptAccum{}
-			stages[k] = a
-			order = append(order, k)
+	current := map[stageAttemptKey]stageKey{}
+	traversals := map[string]int{}
+	eventStageKeys := make([]stageKey, len(events))
+	newAccum := func(stage string, attempt int) stageKey {
+		traversals[stage]++
+		k := stageKey{stage: stage, traversal: traversals[stage]}
+		stages[k] = &stageAttemptAccum{attempt: attempt}
+		order = append(order, k)
+		current[stageAttemptKey{stage: stage, attempt: attempt}] = k
+		return k
+	}
+	for i, ev := range events {
+		if ev.Stage == "" {
+			continue
 		}
-		return a
+		attemptKey := stageAttemptKey{stage: ev.Stage, attempt: ev.Attempt}
+		switch ev.Type {
+		case eventStageStarted:
+			eventStageKeys[i] = newAccum(ev.Stage, ev.Attempt)
+		case eventStageFinished, eventError:
+			k, ok := current[attemptKey]
+			if !ok {
+				k = newAccum(ev.Stage, ev.Attempt)
+			}
+			eventStageKeys[i] = k
+		}
 	}
 
 	// Pre-scan standalone error codes per stage/attempt so the
@@ -128,9 +151,9 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 	// business failure code) and both are wanted, but if the same code ever
 	// shows up both ways for the same attempt, it must count once.
 	standaloneErrorCodes := map[stageKey]map[string]bool{}
-	for _, ev := range events {
+	for i, ev := range events {
 		if ev.Type == eventError && ev.Error != nil && ev.Stage != "" {
-			k := stageKey{ev.Stage, ev.Attempt}
+			k := eventStageKeys[i]
 			if standaloneErrorCodes[k] == nil {
 				standaloneErrorCodes[k] = map[string]bool{}
 			}
@@ -138,10 +161,10 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 		}
 	}
 
-	for _, ev := range events {
+	for i, ev := range events {
 		switch ev.Type {
 		case eventStageStarted:
-			a := getAccum(ev.Stage, ev.Attempt)
+			a := stages[eventStageKeys[i]]
 			if ev.AttemptClass != "" {
 				a.attemptClass = ev.AttemptClass
 			}
@@ -153,7 +176,8 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 			}
 
 		case eventStageFinished:
-			a := getAccum(ev.Stage, ev.Attempt)
+			k := eventStageKeys[i]
+			a := stages[k]
 			a.status = ev.Status
 			a.finishedAt = ev.Time
 			if rj, err := runnerJSON(ev.Runner); err != nil {
@@ -172,7 +196,6 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 				class := string(telemetry.ClassifyError(ev.Error.Code))
 				a.errorCode = ev.Error.Code
 				a.errorClass = class
-				k := stageKey{ev.Stage, ev.Attempt}
 				if !standaloneErrorCodes[k][ev.Error.Code] {
 					if _, err := tx.Exec(`
 						INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
@@ -197,7 +220,7 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 				return fmt.Errorf("rollup: insert run_error seq %d: %w", ev.Seq, err)
 			}
 			if ev.Stage != "" {
-				a := getAccum(ev.Stage, ev.Attempt)
+				a := stages[eventStageKeys[i]]
 				a.errorCode = ev.Error.Code
 				a.errorClass = class
 			}
@@ -268,12 +291,12 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 	for _, k := range order {
 		a := stages[k]
 		if _, err := tx.Exec(`
-			INSERT INTO stage_attempts (run_id, stage, attempt, attempt_class, status, started_at, finished_at, duration_ms, error_code, error_class, runner_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			runID, k.stage, k.attempt, nullIfEmpty(a.attemptClass), nullIfEmpty(a.status),
+			INSERT INTO stage_attempts (run_id, stage, traversal, attempt, attempt_class, status, started_at, finished_at, duration_ms, error_code, error_class, runner_json)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			runID, k.stage, k.traversal, a.attempt, nullIfEmpty(a.attemptClass), nullIfEmpty(a.status),
 			formatTime(a.startedAt), formatTime(a.finishedAt), durationMillis(a.startedAt, a.finishedAt),
 			nullIfEmpty(a.errorCode), nullIfEmpty(a.errorClass), a.runnerJSON); err != nil {
-			return fmt.Errorf("rollup: insert stage_attempt %s/%d: %w", k.stage, k.attempt, err)
+			return fmt.Errorf("rollup: insert stage_attempt %s traversal %d: %w", k.stage, k.traversal, err)
 		}
 	}
 	return nil
@@ -401,7 +424,6 @@ func deleteSpan(tx *sql.Tx, runID, spanID string) error {
 }
 
 func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
-	usageAttempts := make(map[stageKey]struct{})
 	for _, s := range spans {
 		if _, err := tx.Exec(`
 			INSERT INTO spans (run_id, span_id, parent_span_id, name, kind, status, status_message, start_time, end_time, duration_ms)
@@ -429,7 +451,7 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 				return fmt.Errorf("rollup: insert span_business_status %s: %w", s.SpanID, err)
 			}
 		}
-		if err := insertStageUsage(tx, runID, s, usageAttempts); err != nil {
+		if err := insertStageUsage(tx, runID, s); err != nil {
 			return err
 		}
 		for i, ev := range s.Events {
@@ -448,13 +470,16 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 	return nil
 }
 
-func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord, seen map[stageKey]struct{}) error {
+func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord) error {
 	// Agentic gates use the same harness as tasks, so they also carry usage
 	// attributes. Gates have no stage-attempt identity and are intentionally
 	// outside the per-stage aggregates.
 	if span.Kind == telemetry.SpanKindGate {
 		return nil
 	}
+	stage := span.Attributes[telemetry.AttrStage]
+	attemptText := span.Attributes[telemetry.AttrAttemptNumber]
+	attempt, attemptErr := strconv.Atoi(attemptText)
 	input, hasInput, err := usageInt64(span, telemetry.AttrGenAIUsageInputTokens)
 	if err != nil {
 		return err
@@ -477,42 +502,80 @@ func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord, seen 
 	if span.Kind != telemetry.SpanKindTask {
 		return fmt.Errorf("rollup: span %s carries agent usage but has kind %q, want %q", span.SpanID, span.Kind, telemetry.SpanKindTask)
 	}
-	stage := span.Attributes[telemetry.AttrStage]
 	if stage == "" {
 		return fmt.Errorf("rollup: usage span %s has no %s attribute", span.SpanID, telemetry.AttrStage)
 	}
-	attemptText := span.Attributes[telemetry.AttrAttemptNumber]
-	attempt, err := strconv.Atoi(attemptText)
-	if err != nil || attempt < 1 {
+	if attemptErr != nil || attempt < 1 {
 		return fmt.Errorf("rollup: usage span %s has invalid %s attribute %q", span.SpanID, telemetry.AttrAttemptNumber, attemptText)
 	}
-	key := stageKey{stage: stage, attempt: attempt}
-	if _, ok := seen[key]; ok {
-		return fmt.Errorf("rollup: multiple usage spans for stage attempt %s/%d", stage, attempt)
+	traversal, err := traversalForUsageSpan(tx, runID, stage, attempt, span)
+	if err != nil {
+		return err
 	}
-	seen[key] = struct{}{}
 
 	result, err := tx.Exec(`
 		INSERT INTO stage_usage (
-			run_id, stage, attempt, input_tokens, output_tokens, copilot_premium_requests, cost_usd
+			run_id, stage, traversal, attempt, input_tokens, output_tokens, copilot_premium_requests, cost_usd
 		)
-		SELECT run_id, stage, attempt, ?, ?, ?, ?
+		SELECT run_id, stage, traversal, attempt, ?, ?, ?, ?
 		FROM stage_attempts
-		WHERE run_id = ? AND stage = ? AND attempt = ?`,
+		WHERE run_id = ? AND stage = ? AND traversal = ? AND attempt = ?`,
 		nullableInt64(input, hasInput), nullableInt64(output, hasOutput),
 		nullableFloat64(premium, hasPremium), nullableFloat64(cost, hasCost),
-		runID, stage, attempt)
+		runID, stage, traversal, attempt)
 	if err != nil {
-		return fmt.Errorf("rollup: insert usage for stage attempt %s/%d: %w", stage, attempt, err)
+		return fmt.Errorf("rollup: insert usage for stage %s traversal %d: %w", stage, traversal, err)
 	}
 	updated, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("rollup: inspect usage update for stage attempt %s/%d: %w", stage, attempt, err)
+		return fmt.Errorf("rollup: inspect usage update for stage %s traversal %d: %w", stage, traversal, err)
 	}
 	if updated != 1 {
-		return fmt.Errorf("rollup: usage span %s has no matching stage attempt %s/%d", span.SpanID, stage, attempt)
+		return fmt.Errorf("rollup: usage span %s has no matching stage %s traversal %d", span.SpanID, stage, traversal)
 	}
 	return nil
+}
+
+func traversalForUsageSpan(tx *sql.Tx, runID, stage string, attempt int, span telemetry.SpanRecord) (int, error) {
+	if span.StartTime.IsZero() || span.EndTime.IsZero() || span.EndTime.Before(span.StartTime) {
+		return 0, fmt.Errorf("rollup: usage span %s has invalid time window", span.SpanID)
+	}
+	rows, err := tx.Query(`
+		SELECT traversal, started_at
+		FROM stage_attempts
+		WHERE run_id = ? AND stage = ? AND attempt = ?
+		ORDER BY traversal`, runID, stage, attempt)
+	if err != nil {
+		return 0, fmt.Errorf("rollup: query traversal for usage span %s: %w", span.SpanID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	traversal := 0
+	for rows.Next() {
+		var candidate int
+		var startedAtText sql.NullString
+		if err := rows.Scan(&candidate, &startedAtText); err != nil {
+			return 0, fmt.Errorf("rollup: scan traversal for usage span %s: %w", span.SpanID, err)
+		}
+		startedAt, err := parseTime(startedAtText)
+		if err != nil {
+			return 0, err
+		}
+		if startedAt.Before(span.StartTime) || startedAt.After(span.EndTime) {
+			continue
+		}
+		if traversal != 0 {
+			return 0, fmt.Errorf("rollup: usage span %s matches multiple traversals for stage attempt %s/%d", span.SpanID, stage, attempt)
+		}
+		traversal = candidate
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("rollup: iterate traversals for usage span %s: %w", span.SpanID, err)
+	}
+	if traversal == 0 {
+		return 0, fmt.Errorf("rollup: usage span %s has no matching stage attempt %s/%d", span.SpanID, stage, attempt)
+	}
+	return traversal, nil
 }
 
 func usageInt64(span telemetry.SpanRecord, name string) (int64, bool, error) {

@@ -31,7 +31,7 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 	}
 	where, args := statsWhere("r.workflow", "r.gaggle", "r.started_at", req)
 	query := fmt.Sprintf(`
-		SELECT sa.stage, sa.attempt < latest.final_attempt,
+		SELECT sa.stage, sa.traversal < latest.final_traversal,
 		       sa.duration_ms,
 		       su.input_tokens,
 		       su.output_tokens,
@@ -39,14 +39,14 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 		FROM stage_attempts sa
 		JOIN runs r ON r.run_id = sa.run_id
 		LEFT JOIN stage_usage su
-			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.attempt = sa.attempt
+			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.traversal = sa.traversal
 		JOIN (
-			SELECT run_id, stage, MAX(attempt) AS final_attempt
+			SELECT run_id, stage, MAX(traversal) AS final_traversal
 			FROM stage_attempts
 			GROUP BY run_id, stage
 		) latest ON latest.run_id = sa.run_id AND latest.stage = sa.stage
 		%s
-		ORDER BY sa.stage, sa.run_id, sa.attempt`, where)
+		ORDER BY sa.stage, sa.run_id, sa.traversal`, where)
 	rows, err := db.sql.Query(query, args...)
 	if err != nil {
 		return fmt.Errorf("rollup: query stage distributions: %w", err)

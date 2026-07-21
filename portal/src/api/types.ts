@@ -485,6 +485,19 @@ export interface TelemetryStageStats {
   avgDurationMs?: number;
   minDurationMs?: number;
   maxDurationMs?: number;
+  durationSamples: number;
+  p50DurationMs?: number;
+  p95DurationMs?: number;
+  tokenSamples: number;
+  p50Tokens?: number;
+  p95Tokens?: number;
+  costSamples: number;
+  p50CostUSD?: number;
+  p95CostUSD?: number;
+  retryWasteAttempts: number;
+  retryWasteDurationMs?: number;
+  retryWasteTokens?: number;
+  retryWasteCostUSD?: number;
 }
 
 export interface TelemetryErrorsOptions extends TelemetryStatsOptions {

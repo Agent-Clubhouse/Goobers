@@ -15,9 +15,11 @@ import (
 )
 
 type usageAttemptFixture struct {
+	number   int
 	duration time.Duration
 	status   string
 	metrics  map[string]float64
+	skipSpan bool
 }
 
 func seedUsageRun(
@@ -37,7 +39,10 @@ func seedUsageRun(
 	eventLines := []string{eventLine(seq, cursor, `"type":"run.started"`)}
 	var spanLines []string
 	for i, attempt := range attempts {
-		attemptNumber := i + 1
+		attemptNumber := attempt.number
+		if attemptNumber == 0 {
+			attemptNumber = i + 1
+		}
 		seq++
 		cursor = cursor.Add(time.Millisecond)
 		started := cursor
@@ -61,10 +66,13 @@ func seedUsageRun(
 				attrs[name] = strconv.FormatFloat(value, 'f', -1, 64)
 			}
 		}
+		if attempt.skipSpan {
+			continue
+		}
 		record := telemetry.SpanRecord{
 			Schema:     telemetry.SpanSchema,
 			TraceID:    runID,
-			SpanID:     fmt.Sprintf("%016x", attemptNumber),
+			SpanID:     fmt.Sprintf("%016x", i+1),
 			Name:       "task/" + stage,
 			Kind:       telemetry.SpanKindTask,
 			StartTime:  started,
@@ -84,6 +92,92 @@ func seedUsageRun(
 	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(eventLines, "\n")+"\n")
 	mustWriteFile(t, filepath.Join(dir, dirSpans, fileSpans), strings.Join(spanLines, "\n")+"\n")
 	return dir
+}
+
+func TestUsageRollupPreservesTaskRepasses(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	dir := seedUsageRun(t, runsDir, fixtureRunID, "implement", "agent", fixtureStart,
+		usageAttemptFixture{number: 1, duration: 10 * time.Millisecond, status: "failure", metrics: map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens: 5, telemetry.AttrGenAIUsageOutputTokens: 10,
+			telemetry.AttrUsageCostUSD: 0.5,
+		}},
+		usageAttemptFixture{number: 1, duration: 20 * time.Millisecond, status: "success", metrics: map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens: 15, telemetry.AttrGenAIUsageOutputTokens: 20,
+			telemetry.AttrUsageCostUSD: 1.5,
+		}})
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(dir); err != nil {
+		t.Fatalf("IngestRun task repass: %v", err)
+	}
+
+	attempts, err := db.StageAttempts(fixtureRunID)
+	if err != nil {
+		t.Fatalf("StageAttempts: %v", err)
+	}
+	if len(attempts) != 2 ||
+		attempts[0].Traversal != 1 || attempts[0].Attempt != 1 ||
+		attempts[1].Traversal != 2 || attempts[1].Attempt != 1 {
+		t.Fatalf("repass attempts = %#v, want traversals 1/2 with local attempt 1", attempts)
+	}
+	if attempts[0].InputTokens == nil || *attempts[0].InputTokens != 5 ||
+		attempts[1].InputTokens == nil || *attempts[1].InputTokens != 15 {
+		t.Fatalf("repass usage = %#v, want usage attached to each traversal", attempts)
+	}
+
+	stats, err := db.Stats(StatsRequest{Workflow: "implement"})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if len(stats.Stages) != 1 {
+		t.Fatalf("stage stats = %#v, want one stage", stats.Stages)
+	}
+	got := stats.Stages[0]
+	if got.TotalAttempts != 2 || got.RetryWasteAttempts != 1 ||
+		!got.HasRetryWasteDuration || got.RetryWasteDurationMs != 10 ||
+		!got.HasRetryWasteTokens || got.RetryWasteTokens != 15 ||
+		!got.HasRetryWasteCost || got.RetryWasteCostUSD != 0.5 {
+		t.Fatalf("repass retry waste = %#v", got)
+	}
+}
+
+func TestUsageRollupDoesNotShiftAcrossMissingRepassSpan(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	dir := seedUsageRun(t, runsDir, fixtureRunID, "implement", "agent", fixtureStart,
+		usageAttemptFixture{number: 1, duration: 10 * time.Millisecond, status: "failure", skipSpan: true},
+		usageAttemptFixture{number: 1, duration: 20 * time.Millisecond, status: "success", metrics: map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens: 15, telemetry.AttrGenAIUsageOutputTokens: 20,
+			telemetry.AttrUsageCostUSD: 1.5,
+		}})
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(dir); err != nil {
+		t.Fatalf("IngestRun task repass with missing span: %v", err)
+	}
+
+	attempts, err := db.StageAttempts(fixtureRunID)
+	if err != nil || len(attempts) != 2 {
+		t.Fatalf("StageAttempts: %v, %#v", err, attempts)
+	}
+	if attempts[0].InputTokens != nil || attempts[0].OutputTokens != nil || attempts[0].CostUSD != nil {
+		t.Fatalf("missing first span acquired later usage: %#v", attempts[0])
+	}
+	if attempts[1].InputTokens == nil || *attempts[1].InputTokens != 15 ||
+		attempts[1].OutputTokens == nil || *attempts[1].OutputTokens != 20 ||
+		attempts[1].CostUSD == nil || *attempts[1].CostUSD != 1.5 {
+		t.Fatalf("later repass usage = %#v", attempts[1])
+	}
+
+	stats, err := db.Stats(StatsRequest{Workflow: "implement"})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	got := stats.Stages[0]
+	if got.RetryWasteAttempts != 1 || got.HasRetryWasteTokens || got.HasRetryWasteCost {
+		t.Fatalf("missing repass usage became retry-waste zero: %#v", got)
+	}
 }
 
 func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {

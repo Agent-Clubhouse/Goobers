@@ -25,6 +25,7 @@ type RunSummary struct {
 // StageAttempt is a queryable row from the stage_attempts table.
 type StageAttempt struct {
 	Stage                  string
+	Traversal              int
 	Attempt                int
 	AttemptClass           string
 	Status                 string
@@ -137,15 +138,15 @@ func (db *DB) Runs() ([]RunSummary, error) {
 }
 
 // StageAttempts returns every stage attempt for runID, ordered by stage then
-// attempt number.
+// durable traversal number. Attempt numbers can restart at one after a repass.
 func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 	rows, err := db.sql.Query(`
-		SELECT sa.stage, sa.attempt, sa.attempt_class, sa.status, sa.started_at, sa.finished_at, sa.duration_ms,
+		SELECT sa.stage, sa.traversal, sa.attempt, sa.attempt_class, sa.status, sa.started_at, sa.finished_at, sa.duration_ms,
 		       sa.error_code, sa.error_class, su.input_tokens, su.output_tokens, su.copilot_premium_requests, su.cost_usd
 		FROM stage_attempts sa
 		LEFT JOIN stage_usage su
-			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.attempt = sa.attempt
-		WHERE sa.run_id = ? ORDER BY sa.stage, sa.attempt`, runID)
+			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.traversal = sa.traversal
+		WHERE sa.run_id = ? ORDER BY sa.stage, sa.traversal`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query stage_attempts: %w", err)
 	}
@@ -158,7 +159,7 @@ func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 		var durationMs, inputTokens, outputTokens sql.NullInt64
 		var premiumRequests, costUSD sql.NullFloat64
 		if err := rows.Scan(
-			&s.Stage, &s.Attempt, &class, &status, &startedAt, &finishedAt, &durationMs,
+			&s.Stage, &s.Traversal, &s.Attempt, &class, &status, &startedAt, &finishedAt, &durationMs,
 			&errCode, &errClass, &inputTokens, &outputTokens, &premiumRequests, &costUSD,
 		); err != nil {
 			return nil, fmt.Errorf("rollup: scan stage_attempt: %w", err)

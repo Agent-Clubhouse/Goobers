@@ -231,7 +231,7 @@ func (db *DB) InstanceSummaryStats(since time.Time) (InstanceSummary, error) {
 		FROM stage_attempts sa
 		JOIN runs r ON r.run_id = sa.run_id
 		WHERE %s
-		ORDER BY sa.duration_ms DESC, sa.started_at, sa.run_id, sa.attempt
+		ORDER BY sa.duration_ms DESC, sa.started_at, sa.run_id, sa.traversal
 		LIMIT 1`, stageFilter)
 	if err := db.sql.QueryRow(longestQuery, stageArgs...).Scan(
 		&out.LongestAgenticStage,

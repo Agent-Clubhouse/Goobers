@@ -572,7 +572,20 @@ export const goWireFixtures = {
         "successRate": 0.75,
         "avgDurationMs": 120000.5,
         "minDurationMs": 100000,
-        "maxDurationMs": 140001
+        "maxDurationMs": 140001,
+        "durationSamples": 4,
+        "p50DurationMs": 100000,
+        "p95DurationMs": 140001,
+        "tokenSamples": 4,
+        "p50Tokens": 24000,
+        "p95Tokens": 48000,
+        "costSamples": 4,
+        "p50CostUSD": 1.25,
+        "p95CostUSD": 2.5,
+        "retryWasteAttempts": 1,
+        "retryWasteDurationMs": 100000,
+        "retryWasteTokens": 12000,
+        "retryWasteCostUSD": 0.75
       }
     ]
   },
