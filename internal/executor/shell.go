@@ -205,24 +205,8 @@ func stageInvokesProviderBuiltin(command []string) bool {
 	if !stageInvokesGoobersCLI(command) || len(command) < 2 {
 		return false
 	}
-	switch command[1] {
-	case "apply-verdict",
-		"backlog-query",
-		"gather-pr-context",
-		"gather-sibling-context",
-		"issue-close-out",
-		"merge-pr",
-		"merge-queue-poll",
-		"open-pr",
-		"post-merge",
-		"pr-select",
-		"rebase-pr",
-		"remediation-checkpoint",
-		"update-behind-pr":
-		return true
-	default:
-		return false
-	}
+	_, ok := ProviderStageResultFile(command[1])
+	return ok
 }
 
 var providerStageResultFiles = map[string]string{
@@ -240,6 +224,7 @@ var providerStageResultFiles = map[string]string{
 	"rebase-pr":              "rebase-result.json",
 	"reconcile-post-merge":   "reconcile-post-merge-result.json",
 	"remediation-checkpoint": "checkpoint-result.json",
+	"update-behind-pr":       "update-behind-result.json",
 }
 
 // ProviderStageResultFile returns the shared result-file default for a

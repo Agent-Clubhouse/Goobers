@@ -242,6 +242,8 @@ func TestStageInvokesProviderBuiltin(t *testing.T) {
 		// a single transient blip while watching a merge queue failed the
 		// whole merge-review run.
 		{"merge queue poll", []string{"goobers", "merge-queue-poll"}, true},
+		{"elect lander", []string{"goobers", "elect-lander"}, true},
+		{"reconcile post merge", []string{"goobers", "reconcile-post-merge"}, true},
 		{"update behind pr", []string{"goobers", "update-behind-pr"}, true},
 		{"ci poll uses in-process classification", []string{"goobers", "ci-poll"}, false},
 		{"push branch is git-backed", []string{"goobers", "push-branch"}, false},
