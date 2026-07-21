@@ -39,6 +39,9 @@ func TestProviderChainCommandsWriteEarlyFailureResult(t *testing.T) {
 
 			resultFile := filepath.Join(t.TempDir(), "result.json")
 			t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+			if err := os.WriteFile(resultFile, []byte(`{"status":"stale-success"}`), 0o644); err != nil {
+				t.Fatalf("seed stale result file: %v", err)
+			}
 			missingRoot := filepath.Join(t.TempDir(), "missing-instance")
 
 			code, _, stderr := runArgs(t, tt.command, missingRoot)
@@ -54,6 +57,56 @@ func TestProviderChainCommandsWriteEarlyFailureResult(t *testing.T) {
 			if err := json.Unmarshal(data, &result); err != nil {
 				t.Fatalf("decode result file: %v", err)
 			}
+			if result[executor.OutputErrorCode] != errorCodeProvider {
+				t.Fatalf("errorCode = %v, want %s", result[executor.OutputErrorCode], errorCodeProvider)
+			}
+			if _, ok := result["status"]; ok {
+				t.Fatalf("provider-stage result retained stale invocation data: %v", result)
+			}
+			message, _ := result[executor.OutputErrorMessage].(string)
+			if !strings.Contains(message, tt.errorReason) {
+				t.Fatalf("errorMessage = %q, want it to contain %q", message, tt.errorReason)
+			}
+		})
+	}
+}
+
+func TestProviderChainCommandsUseDefaultResultFile(t *testing.T) {
+	tests := []struct {
+		command     string
+		resultFile  string
+		errorReason string
+	}{
+		{command: "issue-close-out", resultFile: "issue-close-out-result.json", errorReason: "instance.yaml"},
+		{command: "post-merge", resultFile: "post-merge-result.json", errorReason: "instance.yaml"},
+		{command: "remediation-checkpoint", resultFile: "checkpoint-result.json", errorReason: "GOOBERS_RUN_ID is not set"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			unsetRunContext(t)
+			resultEnv := executor.InputEnvVar(executor.InputResultFile)
+			original, hadOriginal := os.LookupEnv(resultEnv)
+			if err := os.Unsetenv(resultEnv); err != nil {
+				t.Fatalf("unset %s: %v", resultEnv, err)
+			}
+			t.Cleanup(func() {
+				if hadOriginal {
+					_ = os.Setenv(resultEnv, original)
+				} else {
+					_ = os.Unsetenv(resultEnv)
+				}
+			})
+
+			workDir := t.TempDir()
+			t.Chdir(workDir)
+			missingRoot := filepath.Join(t.TempDir(), "missing-instance")
+
+			code, _, stderr := runArgs(t, tt.command, missingRoot)
+			if code != 1 {
+				t.Fatalf("code = %d, stderr = %q, want 1", code, stderr)
+			}
+			result := readProviderStageResult(t, filepath.Join(workDir, tt.resultFile))
 			if result[executor.OutputErrorCode] != errorCodeProvider {
 				t.Fatalf("errorCode = %v, want %s", result[executor.OutputErrorCode], errorCodeProvider)
 			}
