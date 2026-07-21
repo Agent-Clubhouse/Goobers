@@ -67,6 +67,7 @@
 | [`goobers update-behind-pr`](#goobers-update-behind-pr) | API-update a clean behind-base PR, else route to remediation (a workflow stage) |
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
+| [`goobers versions`](#goobers-versions) | print the supported Go toolchain and OS/arch matrix (--json for structured output) |
 | [`goobers workflow`](#goobers-workflow) | inspect workflows |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
 
@@ -1327,6 +1328,36 @@ Exit codes: 0 = OK, 2 = usage error.
 ~~~console
 $ goobers --version
 $ goobers version --json
+~~~
+
+## `goobers versions`
+
+print the supported Go toolchain and OS/arch matrix (--json for structured output)
+
+~~~text
+Usage: goobers versions [--json]
+
+Print the version-support matrix this build of goobers declares: the
+minimum Go toolchain it compiles against, the OS/arch targets it claims to
+support (with their tier), and where the current host stands in that matrix.
+
+The matrix is host-declared — a build-time constant, not a live probe — so it
+answers "what does this binary claim to support?" for operators and support
+bundles. Distinct from `goobers version`, which reports this build's own
+version/commit/date.
+
+Default output is human-readable. --json emits a structured object with keys:
+minGoVersion, platforms[] (os, arch, tier), host (os, arch, goVersion,
+supported, tier) — machine-readable for scripts and support bundles.
+
+Exit codes: 0 = OK, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers versions
+$ goobers versions --json
 ~~~
 
 ## `goobers workflow`

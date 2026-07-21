@@ -75,6 +75,10 @@ func init() {
 			withSynopsis(synopsisByID["version"]).
 			withHelp("print build version, commit, and date (--json for structured output)", versionHelp).
 			withExamples("goobers --version", "goobers version --json"),
+		command("versions", apicontract.ActionReadOnlyNavigation, runVersions).
+			withSynopsis(synopsisByID["versions"]).
+			withHelp("print the supported Go toolchain and OS/arch matrix (--json for structured output)", versionsHelp).
+			withExamples("goobers versions", "goobers versions --json"),
 		command("init", apicontract.ActionConfigTime, runInit).
 			withSynopsis(synopsisByID["init"]).
 			withHelp("scaffold an instance root", initHelp).

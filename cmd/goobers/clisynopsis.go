@@ -10,6 +10,7 @@ package main
 // registry so the top-level surface cannot drift from per-command help (#1095).
 var synopsisByID = map[string]string{
 	"version":                "  goobers version [--json]      print build version, commit, and date (--json for structured output)\n",
+	"versions":               "  goobers versions [--json]     print the supported Go toolchain and OS/arch matrix\n",
 	"init":                   "  goobers init [--demo] [path]  scaffold an instance root\n",
 	"scaffold":               "  goobers scaffold goober|workflow [--force] <name> [path]\n                                scaffold a goober or workflow in a gaggle\n",
 	"validate":               "  goobers validate [flags] [path]  validate an instance or checked-in config source tree\n",
