@@ -8,6 +8,9 @@
 
 # Go build artifacts
 /bin/
+# Release artifacts: `go run ./release` writes cross-compiled archives +
+# SHA256SUMS here (override with -output). Never commit built binaries.
+/dist/
 # A bare `go build ./cmd/<name>` (no -o) drops the compiled binary in the CWD,
 # so running one from the repo root leaves a stray multi-MB executable named
 # after the package. /bin/ does not cover that path, and `git add -A` will

@@ -111,7 +111,10 @@ translates `SERVICE_CONTROL_STOP`/`SHUTDOWN` into the **same** context
 cancellation `SIGTERM` drives on unix — so the graceful drain is identical. Off
 Windows the handler is a no-op stub, so the unix signal path is untouched.
 
-**Install / enable** (from an elevated PowerShell or Command Prompt):
+**Install / enable** (from an elevated PowerShell or Command Prompt). First put
+`goobers.exe` on disk — download and verify a release per the
+[Windows quickstart](quickstart-windows.md), placing it at
+`C:\Program Files\goobers\goobers.exe` (the path the service below references):
 
 ```powershell
 # Create the service (note the spaces after '=' in sc.exe syntax):
