@@ -54,6 +54,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"build-config-sync",
 		"portal-install",
 		"portal-build",
+		"portal-dist-diff",
 		"build-goobers",
 		"build-scheduler",
 		"test",
@@ -68,7 +69,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		t.Fatalf("check order = %q, want %q", got, want)
 	}
 
-	testCheck := gotChecks[7]
+	testCheck := gotChecks[8]
 	wantEnv := []string{
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=core.fsync",
@@ -79,7 +80,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		t.Fatalf("test environment = %q, want %q", testCheck.env, wantEnv)
 	}
 
-	buildCheck := gotChecks[5]
+	buildCheck := gotChecks[6]
 	if got := strings.Join(buildCheck.args, " "); !strings.Contains(got, "-o bin/goobers ./cmd/goobers") {
 		t.Fatalf("goobers build args = %q", got)
 	}
@@ -96,7 +97,7 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 		buildMetadata{},
 		"windows",
 	)
-	if args := strings.Join(got[4].args, " "); !strings.Contains(args, "-o bin/goobers.exe") {
+	if args := strings.Join(got[5].args, " "); !strings.Contains(args, "-o bin/goobers.exe") {
 		t.Fatalf("Windows build args = %q", args)
 	}
 	for _, current := range got {
@@ -122,8 +123,45 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check vet build-scheduler portal-install portal-build test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test" {
+	if strings.Join(labels, " ") != "fmt-check vet build-scheduler portal-install portal-build portal-dist-diff test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test" {
 		t.Fatalf("check order = %q", labels)
+	}
+}
+
+// TestPortalDistDriftGuardRunsGitDiff locks the #1110 guard: the portal-dist
+// drift check runs immediately after portal-build and is a
+// `git diff --exit-code -- cmd/goobers/portal-dist`, so a rebuilt bundle that
+// differs from the committed //go:embed-ed one fails the gate.
+func TestPortalDistDriftGuardRunsGitDiff(t *testing.T) {
+	t.Parallel()
+	got := checks(
+		[]string{"goobers"},
+		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
+		buildMetadata{},
+		"linux",
+	)
+
+	var diffIdx, buildIdx = -1, -1
+	for i, current := range got {
+		switch current.label {
+		case "portal-dist-diff":
+			diffIdx = i
+		case "portal-build":
+			buildIdx = i
+		}
+	}
+	if diffIdx == -1 {
+		t.Fatal("portal-dist-diff check is missing")
+	}
+	if diffIdx != buildIdx+1 {
+		t.Fatalf("portal-dist-diff at %d, want immediately after portal-build at %d", diffIdx, buildIdx)
+	}
+	guard := got[diffIdx]
+	if guard.command != "git" {
+		t.Errorf("portal-dist-diff command = %q, want git", guard.command)
+	}
+	if want := []string{"diff", "--exit-code", "--", "cmd/goobers/portal-dist"}; !reflect.DeepEqual(guard.args, want) {
+		t.Errorf("portal-dist-diff args = %q, want %q", guard.args, want)
 	}
 }
 
