@@ -16,6 +16,7 @@ func postMergeReconcileEnv(t *testing.T, serverURL string) string {
 	t.Helper()
 	root, _ := postMergeEnv(t, serverURL, false, nil)
 	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubBranchDelete)), "test-token")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), filepath.Join(t.TempDir(), "reconcile-result.json"))
 	return root
 }
 
@@ -286,6 +287,7 @@ func TestReconcilePostMergeRetriesFailedFanOutAndCloseOut(t *testing.T) {
 }
 
 func TestReconcilePostMergeRejectsUnboundedBatch(t *testing.T) {
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), filepath.Join(t.TempDir(), "reconcile-result.json"))
 	code, _, stderr := runArgs(t, "reconcile-post-merge", "--max", "101")
 	if code != 1 || !strings.Contains(stderr, "max must be between 1 and 100") {
 		t.Fatalf("code = %d, stderr = %q, want bounded-batch rejection", code, stderr)
