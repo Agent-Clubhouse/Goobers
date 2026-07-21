@@ -531,7 +531,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 // each PR's body (PullRequestSummary.Body), so no second round-trip per PR
 // is needed either.
 func openPRIssueNumbers(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef) (map[string]bool, error) {
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: repo, HeadPrefix: "goobers/"})
+	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: repo, HeadPrefix: providerBranchNamespace()})
 	if err != nil {
 		return nil, err
 	}

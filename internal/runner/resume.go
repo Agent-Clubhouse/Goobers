@@ -162,7 +162,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	seed := walkSeed{pointers: reconstructPointers(events)}
 	lastStage, lastResult, hasLast := lastFinishedSubject(events)
 	seed.lastStage, seed.lastResult = lastStage, lastResult
-	seed.workspaceBranch = lastWorkspaceBranch(events, in.Machine)
+	seed.workspaceBranch = lastWorkspaceBranch(events, in.Machine, r.branchNamespaceFor(id.Gaggle))
 
 	// state.json's MachineState is a checked hint, not a requirement
 	// (#242): read it when available, but a missing/corrupt checkpoint no
@@ -376,7 +376,10 @@ func reconstructPointers(events []journal.Event) []apiv1.ContextPointer {
 // the first crash. An event naming a stage the machine does not have (a
 // definition edit is refused upstream by the WF-016 digest pin, so this is
 // vestigial) is ignored for the same fail-closed reason.
-func lastWorkspaceBranch(events []journal.Event, machine *workflow.Machine) string {
+// nsPrefix is the run's gaggle-resolved run-branch namespace root, applied by
+// rebindWorkspaceBranch to reject an out-of-namespace emission exactly as the
+// live walk does.
+func lastWorkspaceBranch(events []journal.Event, machine *workflow.Machine, nsPrefix string) string {
 	for i := len(events) - 1; i >= 0; i-- {
 		e := events[i]
 		if e.Type != journal.EventStageFinished || isInterruptedAttemptMarker(e) {
@@ -386,7 +389,7 @@ func lastWorkspaceBranch(events []journal.Event, machine *workflow.Machine) stri
 		if !ok {
 			continue
 		}
-		if b := rebindWorkspaceBranch(t, apiv1.ResultEnvelope{Outputs: e.Outputs}); b != "" {
+		if b := rebindWorkspaceBranch(t, apiv1.ResultEnvelope{Outputs: e.Outputs}, nsPrefix); b != "" {
 			return b
 		}
 	}

@@ -25,8 +25,59 @@ type Manager struct {
 	// see NewManager's doc comment for why.
 	Root string
 
+	// runBranchNamespaces are the refs/heads/ prefixes WorkingCopy's mirror
+	// prune must exclude so a run's local-only branch is never force-reset
+	// mid-run (see WorkingCopy's doc). One instance may host several
+	// gaggles with distinct branch namespaces (GaggleSpec.BranchNamespace),
+	// so this is a set rather than a single value; every entry ends with "/".
+	// Never empty — NewManager seeds the DefaultBranchNamespace when no option
+	// configures it, so the default-prefix case is unchanged.
+	runBranchNamespaces []string
+
 	mu        sync.Mutex // guards repoLocks
 	repoLocks map[string]*sync.Mutex
+}
+
+// defaultRunBranchNamespace mirrors providers.DefaultBranchNamespace. It is
+// restated as a local literal rather than imported so this low-level package
+// keeps no worktree -> providers dependency (the same reasoning the former
+// package-level namespace const carried); the wiring that constructs a Manager
+// passes the authoritative providers value via WithRunBranchNamespaces, so a
+// gaggle that retunes its namespace is honored without this fallback ever
+// diverging in the configured path.
+const defaultRunBranchNamespace = "goobers/"
+
+// ManagerOption configures a Manager at construction.
+type ManagerOption func(*Manager)
+
+// WithRunBranchNamespaces sets the refs/heads/ prefixes WorkingCopy excludes
+// from its mirror prune (see Manager.runBranchNamespaces). Each namespace is
+// normalized to a single trailing "/"; empty entries are dropped. Passing no
+// non-empty namespace leaves the default in place. Supplying the set derived
+// from the instance's gaggles (their configured BranchNamespace values) is
+// what ties the mirror-fetch exclusion to the same value BranchName produces
+// and pr-select filters on, closing #965's silent-revert gap.
+func WithRunBranchNamespaces(namespaces ...string) ManagerOption {
+	return func(m *Manager) {
+		seen := make(map[string]bool, len(namespaces))
+		var out []string
+		for _, ns := range namespaces {
+			if ns == "" {
+				continue
+			}
+			if !strings.HasSuffix(ns, "/") {
+				ns += "/"
+			}
+			if seen[ns] {
+				continue
+			}
+			seen[ns] = true
+			out = append(out, ns)
+		}
+		if len(out) > 0 {
+			m.runBranchNamespaces = out
+		}
+	}
 }
 
 // NewManager returns a Manager rooted at root, creating the directory if it
@@ -42,7 +93,11 @@ type Manager struct {
 // of at its intended flat path. Resolving once, here, makes every path
 // derived from Root unambiguous regardless of which subprocess's cwd it is
 // later used against.
-func NewManager(root string) (*Manager, error) {
+//
+// Options configure the run-branch namespaces the mirror prune preserves; with
+// none, the DefaultBranchNamespace ("goobers/") is used, so an unconfigured
+// Manager behaves exactly as before.
+func NewManager(root string, opts ...ManagerOption) (*Manager, error) {
 	if root == "" {
 		return nil, fmt.Errorf("worktree: root must not be empty")
 	}
@@ -53,7 +108,15 @@ func NewManager(root string) (*Manager, error) {
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, fmt.Errorf("worktree: create root %s: %w", abs, err)
 	}
-	return &Manager{Root: abs, repoLocks: make(map[string]*sync.Mutex)}, nil
+	m := &Manager{
+		Root:                abs,
+		runBranchNamespaces: []string{defaultRunBranchNamespace},
+		repoLocks:           make(map[string]*sync.Mutex),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m, nil
 }
 
 // repoKey derives a stable, filesystem-safe directory name for a repo URL so
@@ -93,15 +156,17 @@ func (m *Manager) lockFor(key string) *sync.Mutex {
 	return l
 }
 
-// runBranchNamespace is the refs/heads/ prefix under which a run's own branch
-// lives — providers.BranchName produces "goobers/<workflow>/<run-id>". These
-// branches exist only in the managed clone (a run commits to them locally;
-// they are never on origin), so WorkingCopy's mirror prune must exclude this
-// namespace or it would delete a run's branch between the run's stages and
-// silently break run-branch continuity (#133). Kept in sync with
-// providers.BranchName's prefix by convention rather than an import, to avoid
-// a worktree -> providers dependency for one string.
-const runBranchNamespace = "goobers/"
+// A run's own branch lives under a run-branch namespace — providers.BranchName
+// produces "<namespace><workflow>/<run-id>", DefaultBranchNamespace being
+// "goobers/". These branches exist only in the managed clone (a run commits to
+// them locally; they are never on origin), so WorkingCopy's mirror prune must
+// exclude the namespace or it would delete a run's branch between the run's
+// stages and silently break run-branch continuity (#133). The set of
+// namespaces to preserve is Manager.runBranchNamespaces, seeded from the
+// instance's gaggles (WithRunBranchNamespaces) so the exclusion tracks the
+// same value BranchName produces and pr-select filters on rather than
+// restating a lone "goobers/" literal that a retuned namespace would leave
+// behind (#965).
 
 // WorkingCopy ensures a managed mirror clone of repoURL exists and is up to
 // date under Root, cloning on first use and fetching thereafter. A mirror
@@ -109,9 +174,9 @@ const runBranchNamespace = "goobers/"
 // only mutable views onto it — and its fetch refspec covers every ref, so a
 // pinned base ref (branch, tag, or sha) reachable on the remote is always
 // available to branch a worktree from after WorkingCopy returns. The one
-// exception is the run-branch namespace (runBranchNamespace), which the fetch
-// deliberately excludes from its prune so a run's local-only branch survives
-// across the run's stages (#133).
+// exception is the run-branch namespaces (Manager.runBranchNamespaces), which
+// the fetch deliberately excludes from its prune so a run's local-only branch
+// survives across the run's stages (#133).
 //
 // Concurrent calls for the same repo URL serialize on the clone/fetch step;
 // calls for different repos proceed independently.
@@ -139,13 +204,17 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 		return "", fmt.Errorf("worktree: stat workcopy for %s: %w", repoURL, err)
 	}
 
-	// Refresh origin and prune refs it deleted, but exclude the run-branch
+	// Refresh origin and prune refs it deleted, but exclude every run-branch
 	// namespace: those branches live only here, never on origin, so a plain
 	// mirror prune (+refs/*:refs/*) would delete a run's branch mid-run and
-	// silently revert its stages to a pristine base (#133). The explicit
-	// refspec restates the mirror's default and appends the exclusion.
-	if err := runGit(ctx, dir, "fetch", "--prune", "origin",
-		"+refs/*:refs/*", "^refs/heads/"+runBranchNamespace+"*"); err != nil {
+	// silently revert its stages to a pristine base (#133/#965). The explicit
+	// refspec restates the mirror's default and appends one negative refspec
+	// per configured namespace.
+	fetchArgs := []string{"fetch", "--prune", "origin", "+refs/*:refs/*"}
+	for _, ns := range m.runBranchNamespaces {
+		fetchArgs = append(fetchArgs, "^refs/heads/"+ns+"*")
+	}
+	if err := runGit(ctx, dir, fetchArgs...); err != nil {
 		return "", fmt.Errorf("worktree: fetch %s: %w", repoURL, err)
 	}
 	// A pre-existing mirror (cloned before #240) also needs the scratch exclude;

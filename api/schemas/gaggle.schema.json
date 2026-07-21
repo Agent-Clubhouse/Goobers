@@ -44,6 +44,11 @@
           "description": "Runner (toolchain/platform) capabilities every run of this gaggle needs, matched at schedule time against a runner's advertised set (RRQ-1/#1101).",
           "type": "array",
           "items": { "$ref": "#/$defs/runnerCapability" }
+        },
+        "branchNamespace": {
+          "description": "refs/heads/ root this gaggle's run branches live under (providers.BranchName). Empty defaults to 'goobers/'. A trailing slash is optional. Must be a valid ref-path segment sequence (#965/#1010).",
+          "type": "string",
+          "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*/?$"
         }
       }
     }

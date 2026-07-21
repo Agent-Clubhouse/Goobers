@@ -191,7 +191,7 @@ func unparkSelfHealedEscalations(ctx context.Context, provider *providers.GitHub
 		return nil, nil
 	}
 	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: "goobers/", SkipCheckState: true,
+		Repository: repo, Base: base, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
 	})
 	if err != nil {
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for merge-escalated unpark: %w", base, err))
@@ -238,7 +238,7 @@ func unparkResolvedSiblings(ctx context.Context, provider *providers.GitHubProvi
 		return nil, nil
 	}
 	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: "goobers/", SkipCheckState: true,
+		Repository: repo, Base: base, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
 	})
 	if err != nil {
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for blocked-on-sibling unpark: %w", base, err))
@@ -311,7 +311,7 @@ func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvi
 	// isn't pr-remediation's to touch. SkipCheckState: triage needs neither
 	// field ListPullRequests would otherwise resolve per candidate.
 	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: "goobers/", SkipCheckState: true,
+		Repository: repo, Base: base, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
 	})
 	if err != nil {
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s: %w", base, err))

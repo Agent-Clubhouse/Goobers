@@ -1106,10 +1106,15 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string) (runner.Config, *worktree.Manager, error) {
 	if wtMgr == nil {
 		var err error
-		wtMgr, err = worktree.NewManager(l.WorkcopiesDir())
+		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
+		// serves only this gaggle's runs, so its mirror-fetch exclusion is
+		// seeded with just this gaggle's run-branch namespace. A missing/empty
+		// entry leaves the default "goobers/" in place (WithRunBranchNamespaces
+		// drops empties), so a single-gaggle default instance is unchanged.
+		wtMgr, err = worktree.NewManager(l.WorkcopiesDir(), worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]))
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
@@ -1273,8 +1278,13 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				opts...,
 			)
 		},
-		Automated:              gate.NewAutomatedEvaluator(),
-		Worktrees:              wtMgr,
+		Automated: gate.NewAutomatedEvaluator(),
+		Worktrees: wtMgr,
+		// Resolve each run's branch namespace from its gaggle (StartInput.Gaggle),
+		// so the run branch, the mirror-fetch exclusion above, and the stage
+		// env's GOOBERS_BRANCH_NAMESPACE all agree (#965/#1010). Absent/empty
+		// entries fall back to providers.DefaultBranchNamespace in the runner.
+		BranchNamespaces:       branchNamespaces,
 		ScratchDir:             filepath.Join(l.WorkcopiesDir(), "scratch"),
 		RunsDir:                l.RunsDir(),
 		RepoCloneURL:           repoCloneURL,
@@ -1391,4 +1401,22 @@ func repoRefsByWorkflow(set *instance.ConfigSet) (map[localscheduler.WorkflowIde
 		refs[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = g.Spec.Project
 	}
 	return refs, nil
+}
+
+// branchNamespacesByGaggle maps each configured gaggle to its run-branch
+// namespace root (GaggleSpec.BranchNamespace), normalized to a single trailing
+// "/" and defaulted to providers.DefaultBranchNamespace when unset. It is the
+// one place the gaggle-configured namespace is read for the runtime: the
+// per-gaggle worktree Manager's mirror-fetch exclusion (WithRunBranchNamespaces)
+// and every run's Runner.Config.BranchNamespaces both derive from it, so the
+// branch a run pushes, the exclusion that preserves it, and the PR-selector
+// headPrefix all move together instead of drifting off independent literals
+// (#965/#1010).
+func branchNamespacesByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = providers.NormalizeBranchNamespace(g.Spec.BranchNamespace)
+	}
+	return out
 }

@@ -131,7 +131,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	base := providerInput("base", "main")
-	headPrefix := providerInput("headPrefix", "goobers/")
+	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()

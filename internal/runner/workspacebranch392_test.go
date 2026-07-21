@@ -390,7 +390,7 @@ func TestLastWorkspaceBranchRecoversTheNewestBinding(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := lastWorkspaceBranch(tt.events, rebindFixtureMachine(t)); got != tt.want {
+			if got := lastWorkspaceBranch(tt.events, rebindFixtureMachine(t), providers.DefaultBranchNamespace); got != tt.want {
 				t.Errorf("lastWorkspaceBranch = %q, want %q", got, tt.want)
 			}
 		})
@@ -516,7 +516,7 @@ func TestWorkspaceBranchRejectsUntrustedRebindings(t *testing.T) {
 			}
 			got := rebindWorkspaceBranch(task, apiv1.ResultEnvelope{
 				Outputs: map[string]interface{}{WorkspaceBranchOutput: tt.value},
-			})
+			}, providers.DefaultBranchNamespace)
 			if got != "" {
 				t.Errorf("rebindWorkspaceBranch = %q, want \"\" — this emission must not be honored", got)
 			}
@@ -527,6 +527,7 @@ func TestWorkspaceBranchRejectsUntrustedRebindings(t *testing.T) {
 	got := rebindWorkspaceBranch(
 		apiv1.Task{Name: "gather-pr-context", Type: apiv1.TaskDeterministic},
 		apiv1.ResultEnvelope{Outputs: map[string]interface{}{WorkspaceBranchOutput: rebindBranch}},
+		providers.DefaultBranchNamespace,
 	)
 	if got != rebindBranch {
 		t.Errorf("rebindWorkspaceBranch = %q, want %q for a deterministic stage naming a run-namespace branch", got, rebindBranch)
@@ -562,7 +563,7 @@ func TestWorkspaceBranchRejectsUntrustedRebindingsOnResume(t *testing.T) {
 		Status:  string(apiv1.ResultSuccess),
 		Outputs: map[string]any{WorkspaceBranchOutput: rebindBranch},
 	}}
-	if got := lastWorkspaceBranch(events, machine); got != "" {
+	if got := lastWorkspaceBranch(events, machine, providers.DefaultBranchNamespace); got != "" {
 		t.Errorf("lastWorkspaceBranch = %q, want \"\" — an agentic stage's rebinding must not be honored on resume either", got)
 	}
 
@@ -571,7 +572,7 @@ func TestWorkspaceBranchRejectsUntrustedRebindingsOnResume(t *testing.T) {
 		Type: journal.EventStageFinished, Stage: "does-not-exist",
 		Outputs: map[string]any{WorkspaceBranchOutput: rebindBranch},
 	}}
-	if got := lastWorkspaceBranch(stray, machine); got != "" {
+	if got := lastWorkspaceBranch(stray, machine, providers.DefaultBranchNamespace); got != "" {
 		t.Errorf("lastWorkspaceBranch = %q, want \"\" for an unknown stage", got)
 	}
 }

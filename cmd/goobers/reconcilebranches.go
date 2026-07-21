@@ -115,8 +115,14 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 		pln(stderr, "error: min-age must be positive")
 		return 1
 	}
-	if *after != "" && !strings.HasPrefix(*after, branchReconcilePrefix) {
-		pf(stderr, "error: after must start with %q\n", branchReconcilePrefix)
+	// Reconcile only THIS gaggle's run-branch namespace (#965/#1010): a gaggle
+	// that retunes its namespace keeps its stale branches under, and its
+	// cursor paging within, "<namespace>*" rather than the default "goobers/".
+	// Falls back to branchReconcilePrefix (the default namespace) when the
+	// runner injects nothing.
+	prefix := providerBranchNamespace()
+	if *after != "" && !strings.HasPrefix(*after, prefix) {
+		pf(stderr, "error: after must start with %q\n", prefix)
 		return 1
 	}
 
@@ -155,7 +161,7 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 	report, err := reconcileRemoteBranches(ctx, provider, log, branchReconcileOptions{
 		Repository: repo,
 		RunsDir:    layoutFor(root).RunsDir(),
-		Prefix:     branchReconcilePrefix,
+		Prefix:     prefix,
 		After:      *after,
 		Limit:      *limit,
 		MinimumAge: *minimumAge,

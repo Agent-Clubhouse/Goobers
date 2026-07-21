@@ -331,10 +331,11 @@ func buildSchedulerDefinitions(
 	if wtManagers == nil {
 		wtManagers = make(map[string]*worktree.Manager)
 	}
+	branchNamespaces := branchNamespacesByGaggle(set)
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
 		scoped := l.ForGaggle(gaggle)
-		rn, manager, err := buildRuntimeRunner(scoped, cfg, goobers, tel, instanceLog, sharedReg, wtManagers[gaggle], providerQuota, terminalNotifier)
+		rn, manager, err := buildRuntimeRunner(scoped, cfg, goobers, tel, instanceLog, sharedReg, wtManagers[gaggle], providerQuota, terminalNotifier, branchNamespaces)
 		if err != nil {
 			return nil, err
 		}
@@ -444,7 +445,7 @@ func buildRetainedLegacyRunner(
 	if err != nil || !retained {
 		return nil, nil, err
 	}
-	return buildRuntimeRunner(l, cfg, goobersByName(set), tel, instanceLog, sharedReg, nil, providerQuota, terminalNotifier)
+	return buildRuntimeRunner(l, cfg, goobersByName(set), tel, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, branchNamespacesByGaggle(set))
 }
 
 func retainedLegacyRuntimeExists(l instance.Layout) (bool, error) {
@@ -473,8 +474,9 @@ func buildRuntimeRunner(
 	manager *worktree.Manager,
 	providerQuota *localscheduler.ProviderQuotaState,
 	terminalNotifier runner.TerminalNotifier,
+	branchNamespaces map[string]string,
 ) (*runner.Runner, *worktree.Manager, error) {
-	runnerCfg, manager, err := buildRunnerConfig(l, cfg, goobers, tel, sharedReg, manager)
+	runnerCfg, manager, err := buildRunnerConfig(l, cfg, goobers, tel, sharedReg, manager, branchNamespaces)
 	if err != nil {
 		return nil, nil, err
 	}
