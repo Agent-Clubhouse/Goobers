@@ -400,6 +400,13 @@ func lastWorkspaceBranch(events []journal.Event, machine *workflow.Machine, nsPr
 	return ""
 }
 
+// RestoredWorkspaceBranch returns the sticky branch binding Resume reconstructs
+// from a run journal. Startup retention uses the same reconstruction so it
+// cannot prune a branch before the interrupted run resumes against it.
+func RestoredWorkspaceBranch(events []journal.Event, machine *workflow.Machine, nsPrefix string) string {
+	return lastWorkspaceBranch(events, machine, nsPrefix)
+}
+
 func isInterruptedAttemptMarker(e journal.Event) bool {
 	return e.Type == journal.EventStageFinished &&
 		e.AttemptClass == journal.AttemptInfra &&
