@@ -8,6 +8,7 @@ Usage:
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
   goobers validate [flags] [path]  validate an instance or checked-in config source tree
+  goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)
   goobers config show [--json] [path]
                                 render the effective instance config (secrets redacted)
   goobers up [--quiet] [--notify[=all]] [path]
@@ -97,6 +98,7 @@ Usage:
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
   goobers validate [flags] [path]  validate an instance or checked-in config source tree
+  goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)
   goobers config show [--json] [path]
                                 render the effective instance config (secrets redacted)
   goobers up [--quiet] [--notify[=all]] [path]
@@ -451,6 +453,20 @@ the leaked bytes exactly (no trailing newline unless the secret has one):
       --path inputs/creds.env --reason 'token pasted into the issue body'
 
 Exit codes: 0 = redacted, 1 = nothing redacted / business error, 2 = usage/IO error.
+
+### lint
+Usage: goobers lint [--check-harness] [--check-repos] [--source-tree] [path]
+
+Lint an instance's instance.yaml and config/ directory (default path
+".") against the single authoritative validation engine. This is an
+alias for `goobers validate`: identical flags, identical checks, and
+identical exit codes, so CI and local development share one validation
+path instead of drifting between ad-hoc checks. --source-tree lints a
+checked-in config source tree using instance.yaml.example and the path
+itself as config/. --check-harness additionally preflights every agent
+harness referenced by a goober (GBO-011). --check-repos resolves each
+target repository's token and verifies authenticated git access. Exit
+codes: 0 = clean, 1 = findings, 2 = usage/IO error.
 
 ### merge-pr
 Usage: goobers merge-pr [path]

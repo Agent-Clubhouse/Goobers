@@ -110,6 +110,10 @@ func init() {
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).
 			withExamples("goobers validate", "goobers validate --check-harness --check-repos"),
+		command("lint", apicontract.ActionConfigTime, runLint).
+			withSynopsis(synopsisByID["lint"]).
+			withHelp("lint config via the single authoritative validation engine (alias for validate)", lintHelp).
+			withExamples("goobers lint", "goobers lint --check-harness --check-repos"),
 		groupCommand(
 			"config",
 			runConfig,

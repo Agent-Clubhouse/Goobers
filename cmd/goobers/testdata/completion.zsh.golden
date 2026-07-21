@@ -17,6 +17,7 @@ _goobers_completion()
             'init:scaffold an instance root'
             'scaffold:scaffold a goober or workflow in a gaggle'
             'validate:validate an instance or checked-in config source tree'
+            'lint:lint config via the single authoritative validation engine (alias for validate)'
             'config:inspect the instance'\''s operational configuration'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'
             'dashboard:serve and open the local operations portal'
