@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -278,6 +283,226 @@ func TestStdoutExporterWritesLocalSpans(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "run/wf") {
 		t.Fatalf("stdout exporter output = %q, want run/wf", out.String())
+	}
+}
+
+type recordingOTLPCollector struct {
+	collectortrace.UnimplementedTraceServiceServer
+	requests chan *collectortrace.ExportTraceServiceRequest
+	headers  chan metadata.MD
+}
+
+func (c *recordingOTLPCollector) Export(
+	ctx context.Context,
+	req *collectortrace.ExportTraceServiceRequest,
+) (*collectortrace.ExportTraceServiceResponse, error) {
+	md, _ := metadata.FromIncomingContext(ctx)
+	c.headers <- md
+	c.requests <- req
+	return &collectortrace.ExportTraceServiceResponse{}, nil
+}
+
+func TestOTLPExporterPushesAlongsideJournalExporter(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	collector := &recordingOTLPCollector{
+		requests: make(chan *collectortrace.ExportTraceServiceRequest, 1),
+		headers:  make(chan metadata.MD, 1),
+	}
+	collectortrace.RegisterTraceServiceServer(server, collector)
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+
+	journalExporter := NewMemoryExporter()
+	client, err := New(context.Background(), Config{
+		ServiceName:  "telemetry-test",
+		SpanExporter: journalExporter,
+		Exporter:     ExporterOTLP,
+		OTLPEndpoint: "http://" + listener.Addr().String(),
+		OTLPInsecure: true,
+		OTLPHeaders:  map[string]string{"authorization": "Bearer collector-token"},
+		Batch:        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shutdown := false
+	t.Cleanup(func() {
+		if !shutdown {
+			_ = client.Shutdown(context.Background())
+		}
+	})
+
+	_, span, err := client.StartRun(context.Background(), RunAttributes{
+		Gaggle:     "acme-web",
+		WorkflowID: "wf",
+		RunID:      "0af7651916cd43dd8448eb211c80319c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.End()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	shutdown = true
+
+	if len(journalExporter.Spans()) != 1 {
+		t.Fatalf("journal exporter spans = %d, want 1", len(journalExporter.Spans()))
+	}
+	select {
+	case req := <-collector.requests:
+		if len(req.ResourceSpans) == 0 {
+			t.Fatal("collector request contained no resource spans")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("collector did not receive an OTLP export")
+	}
+	select {
+	case headers := <-collector.headers:
+		if got := headers.Get("authorization"); len(got) != 1 || got[0] != "Bearer collector-token" {
+			t.Fatalf("authorization metadata = %q, want configured collector credential", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("collector did not receive OTLP metadata")
+	}
+}
+
+func TestOTLPExporterIgnoresStandardEnvironmentOverrides(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://127.0.0.1:1")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://127.0.0.1:2")
+	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "false")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_INSECURE", "false")
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-env-general=unexpected")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "x-env-trace=unexpected")
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	collector := &recordingOTLPCollector{
+		requests: make(chan *collectortrace.ExportTraceServiceRequest, 1),
+		headers:  make(chan metadata.MD, 1),
+	}
+	collectortrace.RegisterTraceServiceServer(server, collector)
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+
+	client, err := New(context.Background(), Config{
+		ServiceName:  "telemetry-test",
+		Exporter:     ExporterOTLP,
+		OTLPEndpoint: listener.Addr().String(),
+		OTLPInsecure: true,
+		Batch:        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shutdown := false
+	t.Cleanup(func() {
+		if !shutdown {
+			_ = client.Shutdown(context.Background())
+		}
+	})
+
+	_, span, err := client.StartRun(context.Background(), RunAttributes{
+		Gaggle:     "acme-web",
+		WorkflowID: "wf",
+		RunID:      "0af7651916cd43dd8448eb211c80319c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.End()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	shutdown = true
+
+	select {
+	case <-collector.requests:
+	case <-time.After(5 * time.Second):
+		t.Fatal("configured collector did not receive an OTLP export")
+	}
+	select {
+	case headers := <-collector.headers:
+		if got := headers.Get("x-env-general"); len(got) != 0 {
+			t.Fatalf("inherited OTLP headers = %q, want none", got)
+		}
+		if got := headers.Get("x-env-trace"); len(got) != 0 {
+			t.Fatalf("inherited trace OTLP headers = %q, want none", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("configured collector did not receive OTLP metadata")
+	}
+}
+
+func TestOTLPExporterSecureModeOverridesInsecureEnvironment(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_INSECURE", "true")
+	t.Setenv("OTEL_EXPORTER_OTLP_TIMEOUT", "100")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", "100")
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	collector := &recordingOTLPCollector{
+		requests: make(chan *collectortrace.ExportTraceServiceRequest, 1),
+		headers:  make(chan metadata.MD, 1),
+	}
+	collectortrace.RegisterTraceServiceServer(server, collector)
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+
+	client, err := New(context.Background(), Config{
+		ServiceName:  "telemetry-test",
+		Exporter:     ExporterOTLP,
+		OTLPEndpoint: listener.Addr().String(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	_, span, err := client.StartRun(context.Background(), RunAttributes{
+		Gaggle:     "acme-web",
+		WorkflowID: "wf",
+		RunID:      "0af7651916cd43dd8448eb211c80319c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.End()
+
+	select {
+	case <-collector.requests:
+		t.Fatal("secure OTLP configuration was weakened by inherited insecure mode")
+	case <-time.After(250 * time.Millisecond):
 	}
 }
 

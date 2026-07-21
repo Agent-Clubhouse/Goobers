@@ -32,6 +32,11 @@ credentials:
       env: GOOBERS_GITHUB_REVIEW_TOKEN
 telemetry:
   enabled: true
+  # Collector push is disabled unless an endpoint is configured here or with
+  # GOOBERS_OTLP_ENDPOINT. See docs/guides/jaeger-quickstart.md.
+  # otlp:
+  #   endpoint: http://127.0.0.1:4317
+  #   insecure: true
 # Opt in to native notifications for escalated and failed runs. The equivalent
 # one-shot daemon override is `goobers up --notify` (`--notify=all` includes
 # completed and aborted runs too).

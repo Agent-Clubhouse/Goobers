@@ -144,7 +144,11 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	var tel *telemetry.Client
 	var rollupDB *rollup.DB
 	if cfg.TelemetryEnabled() {
-		tel, err = buildTelemetryClient(ctx, l, sharedScrubber)
+		var otlpConfig instance.OTLPConfig
+		if cfg.Telemetry.OTLP != nil {
+			otlpConfig = *cfg.Telemetry.OTLP
+		}
+		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, otlpConfig)
 		if err != nil {
 			return nil, err
 		}
