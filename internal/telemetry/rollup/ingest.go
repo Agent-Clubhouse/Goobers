@@ -3,6 +3,8 @@ package rollup
 import (
 	"database/sql"
 	"fmt"
+	"math"
+	"strconv"
 	"time"
 
 	"github.com/goobers/goobers/internal/telemetry"
@@ -57,7 +59,7 @@ func (db *DB) IngestRun(runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "stage_attempts", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status"}
+var perRunTables = []string{"runs", "stage_attempts", "stage_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status"}
 
 func deleteRun(tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -399,6 +401,7 @@ func deleteSpan(tx *sql.Tx, runID, spanID string) error {
 }
 
 func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
+	usageAttempts := make(map[stageKey]struct{})
 	for _, s := range spans {
 		if _, err := tx.Exec(`
 			INSERT INTO spans (run_id, span_id, parent_span_id, name, kind, status, status_message, start_time, end_time, duration_ms)
@@ -426,6 +429,9 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 				return fmt.Errorf("rollup: insert span_business_status %s: %w", s.SpanID, err)
 			}
 		}
+		if err := insertStageUsage(tx, runID, s, usageAttempts); err != nil {
+			return err
+		}
 		for i, ev := range s.Events {
 			attrsJSON, err := marshalAttributes(ev.Attributes)
 			if err != nil {
@@ -440,4 +446,97 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 		}
 	}
 	return nil
+}
+
+func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord, seen map[stageKey]struct{}) error {
+	input, hasInput, err := usageInt64(span, telemetry.AttrGenAIUsageInputTokens)
+	if err != nil {
+		return err
+	}
+	output, hasOutput, err := usageInt64(span, telemetry.AttrGenAIUsageOutputTokens)
+	if err != nil {
+		return err
+	}
+	premium, hasPremium, err := usageFloat64(span, telemetry.AttrCopilotPremiumRequests)
+	if err != nil {
+		return err
+	}
+	cost, hasCost, err := usageFloat64(span, telemetry.AttrUsageCostUSD)
+	if err != nil {
+		return err
+	}
+	if !hasInput && !hasOutput && !hasPremium && !hasCost {
+		return nil
+	}
+	if span.Kind != telemetry.SpanKindTask {
+		return fmt.Errorf("rollup: span %s carries agent usage but has kind %q, want %q", span.SpanID, span.Kind, telemetry.SpanKindTask)
+	}
+	stage := span.Attributes[telemetry.AttrStage]
+	if stage == "" {
+		return fmt.Errorf("rollup: usage span %s has no %s attribute", span.SpanID, telemetry.AttrStage)
+	}
+	attemptText := span.Attributes[telemetry.AttrAttemptNumber]
+	attempt, err := strconv.Atoi(attemptText)
+	if err != nil || attempt < 1 {
+		return fmt.Errorf("rollup: usage span %s has invalid %s attribute %q", span.SpanID, telemetry.AttrAttemptNumber, attemptText)
+	}
+	key := stageKey{stage: stage, attempt: attempt}
+	if _, ok := seen[key]; ok {
+		return fmt.Errorf("rollup: multiple usage spans for stage attempt %s/%d", stage, attempt)
+	}
+	seen[key] = struct{}{}
+
+	result, err := tx.Exec(`
+		INSERT INTO stage_usage (
+			run_id, stage, attempt, input_tokens, output_tokens, copilot_premium_requests, cost_usd
+		)
+		SELECT run_id, stage, attempt, ?, ?, ?, ?
+		FROM stage_attempts
+		WHERE run_id = ? AND stage = ? AND attempt = ?`,
+		nullableInt64(input, hasInput), nullableInt64(output, hasOutput),
+		nullableFloat64(premium, hasPremium), nullableFloat64(cost, hasCost),
+		runID, stage, attempt)
+	if err != nil {
+		return fmt.Errorf("rollup: insert usage for stage attempt %s/%d: %w", stage, attempt, err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rollup: inspect usage update for stage attempt %s/%d: %w", stage, attempt, err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("rollup: usage span %s has no matching stage attempt %s/%d", span.SpanID, stage, attempt)
+	}
+	return nil
+}
+
+func usageInt64(span telemetry.SpanRecord, name string) (int64, bool, error) {
+	raw, ok := span.Attributes[name]
+	if !ok {
+		return 0, false, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0, false, fmt.Errorf("rollup: span %s has invalid %s attribute %q", span.SpanID, name, raw)
+	}
+	return value, true, nil
+}
+
+func usageFloat64(span telemetry.SpanRecord, name string) (float64, bool, error) {
+	raw, ok := span.Attributes[name]
+	if !ok {
+		return 0, false, nil
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return 0, false, fmt.Errorf("rollup: span %s has invalid %s attribute %q", span.SpanID, name, raw)
+	}
+	return value, true, nil
+}
+
+func nullableInt64(value int64, valid bool) sql.NullInt64 {
+	return sql.NullInt64{Int64: value, Valid: valid}
+}
+
+func nullableFloat64(value float64, valid bool) sql.NullFloat64 {
+	return sql.NullFloat64{Float64: value, Valid: valid}
 }

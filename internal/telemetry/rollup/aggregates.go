@@ -72,6 +72,28 @@ type StageStats struct {
 	MinDurationMs int64   `json:"minDurationMs"`
 	MaxDurationMs int64   `json:"maxDurationMs"`
 	HasDuration   bool    `json:"-"`
+
+	DurationSamples int   `json:"durationSamples"`
+	P50DurationMs   int64 `json:"p50DurationMs"`
+	P95DurationMs   int64 `json:"p95DurationMs"`
+
+	TokenSamples int   `json:"tokenSamples"`
+	P50Tokens    int64 `json:"p50Tokens"`
+	P95Tokens    int64 `json:"p95Tokens"`
+	HasTokens    bool  `json:"-"`
+
+	CostSamples int     `json:"costSamples"`
+	P50CostUSD  float64 `json:"p50CostUSD"`
+	P95CostUSD  float64 `json:"p95CostUSD"`
+	HasCost     bool    `json:"-"`
+
+	RetryWasteAttempts    int     `json:"retryWasteAttempts"`
+	RetryWasteDurationMs  int64   `json:"retryWasteDurationMs"`
+	RetryWasteTokens      int64   `json:"retryWasteTokens"`
+	RetryWasteCostUSD     float64 `json:"retryWasteCostUSD"`
+	HasRetryWasteDuration bool    `json:"-"`
+	HasRetryWasteTokens   bool    `json:"-"`
+	HasRetryWasteCost     bool    `json:"-"`
 }
 
 // StatsResult bundles the run-level and stage-level views a single Stats call
@@ -232,6 +254,9 @@ func (db *DB) Stats(req StatsRequest) (StatsResult, error) {
 	}
 	stages, err := db.stageStats(req)
 	if err != nil {
+		return StatsResult{}, err
+	}
+	if err := db.populateStageDistributions(req, stages); err != nil {
 		return StatsResult{}, err
 	}
 	return StatsResult{Runs: runs, Stages: stages}, nil

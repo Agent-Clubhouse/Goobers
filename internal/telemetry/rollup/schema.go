@@ -193,4 +193,23 @@ CREATE TABLE IF NOT EXISTS harness_transcript_schemas (
 
 CREATE INDEX IF NOT EXISTS idx_harness_transcript_schemas_run ON harness_transcript_schemas(run_id);
 `,
+	// v6 (issue #778): canonical agent usage is carried by task-span
+	// attributes and belongs to the same run/stage/attempt identity as the
+	// stage_attempts row. A satellite table keeps the migration replay-safe,
+	// while nullable columns preserve TEL-041's absent-versus-zero contract;
+	// existing attempts have no row rather than being backfilled as zero.
+	`
+CREATE TABLE IF NOT EXISTS stage_usage (
+	run_id                   TEXT NOT NULL,
+	stage                    TEXT NOT NULL,
+	attempt                  INTEGER NOT NULL,
+	input_tokens             INTEGER,
+	output_tokens            INTEGER,
+	copilot_premium_requests REAL,
+	cost_usd                 REAL,
+	PRIMARY KEY (run_id, stage, attempt)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stage_usage_run ON stage_usage(run_id);
+`,
 }
