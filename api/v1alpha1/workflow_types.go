@@ -3,31 +3,35 @@ package v1alpha1
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 // TriggerType differentiates workflow archetypes without splitting the taxonomy:
-// workflows run manually, consume backlog items, or react to a schedule or
-// external signal (WF-010, WF-013).
+// workflows run manually, consume backlog items, or react to a schedule,
+// external signal, or GitHub webhook (WF-010, WF-013).
 type TriggerType string
 
 const (
 	// TriggerManual declares a workflow that only runs through an explicit
 	// `goobers run` invocation.
 	TriggerManual TriggerType = "manual"
-	// TriggerBacklogItem fires when a matching backlog item becomes available.
+	// TriggerBacklogItem is reserved for V1 backlog routing. V0 accepts the
+	// declaration but has no runtime consumer for it.
 	TriggerBacklogItem TriggerType = "backlog-item"
 	// TriggerSchedule fires on a schedule / time-since-last-run.
 	TriggerSchedule TriggerType = "schedule"
 	// TriggerSignal fires on an external signal (incl. another workflow's output,
 	// always routed through the scheduler — WF-014).
 	TriggerSignal TriggerType = "signal"
+	// TriggerWebhook fires when the daemon receives a signed GitHub webhook for
+	// one of the declared event names. Delivery reuses the signal scheduler path.
+	TriggerWebhook TriggerType = "webhook"
 )
 
 // Trigger declares one condition under which the scheduler may start a run. A run
 // starts only when a trigger fires AND readiness is satisfied (WF-011).
 type Trigger struct {
-	// +kubebuilder:validation:Enum=manual;backlog-item;schedule;signal
+	// +kubebuilder:validation:Enum=manual;backlog-item;schedule;signal;webhook
 	// +kubebuilder:validation:Required
 	Type TriggerType `json:"type" yaml:"type"`
-	// Selector routes backlog items to this workflow via k8s-style label matching
-	// (WF-040, SCH-010). Used with type=backlog-item.
+	// Selector is reserved for V1 backlog-item routing via k8s-style label
+	// matching (WF-040, SCH-010). V0 accepts but does not consume it.
 	// +optional
 	Selector map[string]string `json:"selector,omitempty" yaml:"selector,omitempty"`
 	// Schedule is a cron expression or interval (e.g. "@every 1h") for
@@ -37,6 +41,11 @@ type Trigger struct {
 	// Signal is the named external signal for type=signal.
 	// +optional
 	Signal string `json:"signal,omitempty" yaml:"signal,omitempty"`
+	// Events are GitHub webhook event names (for example pull_request, issues,
+	// or check_suite) for type=webhook.
+	// +kubebuilder:validation:MinItems=1
+	// +optional
+	Events []string `json:"events,omitempty" yaml:"events,omitempty"`
 }
 
 // ReadinessConditions bound when a run may start and how emergent chains are
@@ -143,11 +152,20 @@ type Task struct {
 	// new attempt, never overwritten history.
 	// +optional
 	Retry *RetryPolicy `json:"retry,omitempty" yaml:"retry,omitempty"`
+	// TimeoutSeconds bounds one attempt's wall-clock execution. Unset preserves
+	// the executor's default timeout.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty" yaml:"timeoutSeconds,omitempty"`
+	// Limits bound this task's duration and agent usage. TimeoutSeconds, when
+	// set, is the authoritative duration and is copied into the invocation
+	// envelope's Limits.MaxDurationSeconds.
+	// +optional
+	Limits *Limits `json:"limits,omitempty" yaml:"limits,omitempty"`
 	// OnTimeout selects what the runner does when this stage's agentic session
-	// hits its wall-clock timeout (the harness session timeout — currently a
-	// flat 30m, internal/harness.DefaultTimeout; not yet per-stage configurable,
-	// #151). Empty or "fail" (the default) discards the timed-out attempt and
-	// lets Task.Retry run, failing the run once the budget is exhausted —
+	// hits its wall-clock timeout. Empty or "fail" (the default) discards the
+	// timed-out attempt and lets Task.Retry run, failing the run once the budget
+	// is exhausted —
 	// historically this discarded real, in-progress work whose only remaining
 	// step was CI (#724). "salvage" instead checks the run branch for a viable
 	// committed diff and, if present, completes the stage with that diff so the
@@ -161,6 +179,12 @@ type Task struct {
 	// accepts but does not enforce this field; validation emits VER003 when set.
 	// +optional
 	ExpectedOutputs []string `json:"expectedOutputs,omitempty" yaml:"expectedOutputs,omitempty"`
+	// ContinueOnError makes a ResultFailure best-effort: the failed status is
+	// journaled and remains visible to a following gate, but the runner advances
+	// to Next instead of failing the run. Outputs from the failed task are
+	// discarded so downstream tasks cannot consume partial results.
+	// +optional
+	ContinueOnError bool `json:"continueOnError,omitempty" yaml:"continueOnError,omitempty"`
 	// InputsFrom declares an explicit, small output->input handoff from the
 	// immediately preceding task's ResultEnvelope.Outputs into this task's
 	// Inputs: InputsFrom[inputKey] = outputKey. Unlike a gate (which receives
@@ -197,10 +221,15 @@ type RetryPolicy struct {
 }
 
 // DeterministicRun describes the code a deterministic task runs.
+// +kubebuilder:validation:XValidation:rule="!has(self.syncBase) || !self.syncBase || !has(self.workspace) || self.workspace != 'scratch'",message="syncBase requires a repo workspace"
 type DeterministicRun struct {
 	// Command is the command + args to execute.
 	// +kubebuilder:validation:Required
 	Command []string `json:"command" yaml:"command"`
+	// Env is the explicit environment supplied to the command in addition to
+	// the runner's minimal base environment and capability-scoped credentials.
+	// +optional
+	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
 	// Image optionally selects the command's container image. The V0 local
 	// runner executes commands directly and does not honor this field;
 	// validation emits VER003 when set.
@@ -217,6 +246,10 @@ type DeterministicRun struct {
 	// +kubebuilder:validation:Enum=repo;scratch
 	// +optional
 	Workspace WorkspaceMode `json:"workspace,omitempty" yaml:"workspace,omitempty"`
+	// SyncBase merges the freshly fetched base ref into an existing run branch
+	// before the command executes. It is valid only with a repository workspace.
+	// +optional
+	SyncBase bool `json:"syncBase,omitempty" yaml:"syncBase,omitempty"`
 }
 
 // NetworkMode selects the network access available to a deterministic command.
@@ -287,6 +320,19 @@ type AutomatedGate struct {
 	// Params parameterize the check (e.g. {"key": "coverage", "threshold": "80"}).
 	// +optional
 	Params map[string]string `json:"params,omitempty" yaml:"params,omitempty"`
+	// TimeoutSeconds bounds one evaluator attempt.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty" yaml:"timeoutSeconds,omitempty"`
+	// Retry declares the evaluator retry bound. Runtime retry semantics are
+	// implemented separately from this declarative contract.
+	// +optional
+	Retry *RetryPolicy `json:"retry,omitempty" yaml:"retry,omitempty"`
+	// PollIntervalSeconds declares remote CI polling cadence for checks that
+	// poll, such as ci-status (GT-020).
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	PollIntervalSeconds int32 `json:"pollIntervalSeconds,omitempty" yaml:"pollIntervalSeconds,omitempty"`
 }
 
 // AgenticGate invokes a scoped reviewer goober.
@@ -294,6 +340,14 @@ type AgenticGate struct {
 	// Goober names the reviewer goober that returns a Verdict.
 	// +kubebuilder:validation:Required
 	Goober string `json:"goober" yaml:"goober"`
+	// TimeoutSeconds bounds one reviewer attempt.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty" yaml:"timeoutSeconds,omitempty"`
+	// Retry declares the evaluator retry bound. Runtime retry semantics are
+	// implemented separately from this declarative contract.
+	// +optional
+	Retry *RetryPolicy `json:"retry,omitempty" yaml:"retry,omitempty"`
 }
 
 // HumanGate pauses for an explicit human decision, surfaced in the portal.

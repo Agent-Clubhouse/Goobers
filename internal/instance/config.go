@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -19,9 +20,12 @@ import (
 // apiVersion/kind convention (ARCHITECTURE.md §6) though instance.yaml is a
 // provisioning file, never a CR the operator reconciles.
 const (
-	ConfigAPIVersion        = "goobers.dev/v1alpha1"
-	ConfigKind              = "Instance"
-	DefaultAPIListenAddress = "127.0.0.1:8080"
+	ConfigAPIVersion            = "goobers.dev/v1alpha1"
+	ConfigKind                  = "Instance"
+	DefaultAPIListenAddress     = "127.0.0.1:8080"
+	DefaultWebhookListenAddress = "127.0.0.1:8081"
+	OTLPEndpointEnv             = "GOOBERS_OTLP_ENDPOINT"
+	OTLPInsecureEnv             = "GOOBERS_OTLP_INSECURE"
 )
 
 // Config is the parsed instance.yaml: target repo(s) + provider, token source
@@ -35,8 +39,12 @@ type Config struct {
 	Kind          string          `json:"kind" yaml:"kind"`
 	Repos         []RepoRef       `json:"repos" yaml:"repos"`
 	API           APIConfig       `json:"api,omitempty" yaml:"api,omitempty"`
+	Webhook       WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
 	Telemetry     TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	RunConditions RunConditions   `json:"runConditions,omitempty" yaml:"runConditions,omitempty"`
+	// Notifications opts `goobers up` into native desktop notifications for
+	// escalated and failed runs. It defaults to false.
+	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
 	// Credentials sources individual capabilities from their own token refs,
 	// beyond the default of backing every credentialed capability with the
 	// first repo's token (#287, multi-token credentials). Each entry points one
@@ -56,6 +64,16 @@ type Config struct {
 type APIConfig struct {
 	// Listen is a host:port address. Only loopback hosts are accepted.
 	Listen string `json:"listen,omitempty" yaml:"listen,omitempty"`
+}
+
+// WebhookConfig configures the optional GitHub webhook receiver. The daemon
+// starts this listener only when Secret is configured and at least one workflow
+// declares a webhook trigger.
+type WebhookConfig struct {
+	// Listen is a host:port address. Only loopback hosts are accepted.
+	Listen string `json:"listen,omitempty" yaml:"listen,omitempty"`
+	// Secret references the instance-wide GitHub webhook secret.
+	Secret TokenRef `json:"secret,omitempty" yaml:"secret,omitempty"`
 }
 
 // RepoRef is a target repository this instance connects to.
@@ -94,11 +112,22 @@ type CredentialGrant struct {
 	Token TokenRef `json:"token" yaml:"token"`
 }
 
-// TelemetryConfig configures the local telemetry rollup store (§8).
+// TelemetryConfig configures the local telemetry rollup store and optional
+// collector push (§8).
 type TelemetryConfig struct {
-	// Enabled toggles the local SQLite rollup (OTel client construction, span
-	// emission, and incremental ingest into telemetry.db). Defaults to true.
+	// Enabled toggles OTel client construction, span emission, local SQLite
+	// ingest, and configured collector push. Defaults to true.
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// OTLP opts into pushing the same spans to an OTLP/gRPC collector.
+	OTLP *OTLPConfig `json:"otlp,omitempty" yaml:"otlp,omitempty"`
+}
+
+// OTLPConfig configures an optional OTLP/gRPC collector. Endpoint absence
+// disables collector push. Header values are always indirect secret refs.
+type OTLPConfig struct {
+	Endpoint string              `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	Insecure bool                `json:"insecure,omitempty" yaml:"insecure,omitempty"`
+	Headers  map[string]TokenRef `json:"headers,omitempty" yaml:"headers,omitempty"`
 }
 
 // RunConditions are instance-level run conditions (§7): max parallel runs and
@@ -119,6 +148,74 @@ func (c *Config) TelemetryEnabled() bool {
 	return c.Telemetry.Enabled == nil || *c.Telemetry.Enabled
 }
 
+// ResolveOTLPConfig applies process environment overrides to instance.yaml and
+// validates the resulting collector configuration.
+func (c *Config) ResolveOTLPConfig(lookupEnv func(string) (string, bool)) (OTLPConfig, error) {
+	var resolved OTLPConfig
+	if c.Telemetry.OTLP != nil {
+		resolved = *c.Telemetry.OTLP
+	}
+	if endpoint, ok := lookupEnv(OTLPEndpointEnv); ok {
+		endpoint = strings.TrimSpace(endpoint)
+		if endpoint == "" {
+			return OTLPConfig{}, fmt.Errorf("%s must not be empty when set", OTLPEndpointEnv)
+		}
+		resolved.Endpoint = endpoint
+	}
+	if raw, ok := lookupEnv(OTLPInsecureEnv); ok {
+		raw = strings.TrimSpace(raw)
+		if !strings.EqualFold(raw, "true") && !strings.EqualFold(raw, "false") {
+			return OTLPConfig{}, fmt.Errorf("%s must be true or false", OTLPInsecureEnv)
+		}
+		resolved.Insecure = strings.EqualFold(raw, "true")
+	}
+	if err := resolved.Validate(); err != nil {
+		return OTLPConfig{}, fmt.Errorf("telemetry.otlp: %w", err)
+	}
+	if resolved.Enabled() && !c.TelemetryEnabled() {
+		return OTLPConfig{}, fmt.Errorf("telemetry.otlp.endpoint cannot be set when telemetry.enabled is false")
+	}
+	return resolved, nil
+}
+
+// Enabled reports whether collector push is configured.
+func (c OTLPConfig) Enabled() bool {
+	return c.Endpoint != ""
+}
+
+// Validate checks the collector endpoint, transport, and credential references.
+func (c OTLPConfig) Validate() error {
+	if c.Endpoint == "" {
+		if c.Insecure || len(c.Headers) != 0 {
+			return fmt.Errorf("endpoint is required when insecure mode or headers are configured")
+		}
+		return nil
+	}
+	if strings.TrimSpace(c.Endpoint) != c.Endpoint {
+		return fmt.Errorf("endpoint must not contain leading or trailing whitespace")
+	}
+	if err := validateOTLPEndpoint(c.Endpoint, c.Insecure); err != nil {
+		return fmt.Errorf("endpoint %q: %w", c.Endpoint, err)
+	}
+	seenHeaders := make(map[string]bool, len(c.Headers))
+	for name, ref := range c.Headers {
+		if !validHeaderName(name) {
+			return fmt.Errorf("headers: invalid header name %q", name)
+		}
+		canonicalName := strings.ToLower(name)
+		if seenHeaders[canonicalName] {
+			return fmt.Errorf("headers: header name %q is configured more than once", name)
+		}
+		seenHeaders[canonicalName] = true
+		hasEnv := ref.Env != ""
+		hasFile := ref.File != ""
+		if hasEnv == hasFile {
+			return fmt.Errorf("headers[%q] must reference exactly one of env or file; inline values are not permitted", name)
+		}
+	}
+	return nil
+}
+
 // APIListenAddress returns the configured HTTP address, defaulting to a
 // loopback-only listener.
 func (c *Config) APIListenAddress() string {
@@ -126,6 +223,21 @@ func (c *Config) APIListenAddress() string {
 		return DefaultAPIListenAddress
 	}
 	return c.API.Listen
+}
+
+// WebhookListenAddress returns the configured webhook address, defaulting to a
+// separate loopback-only listener.
+func (c *Config) WebhookListenAddress() string {
+	if c.Webhook.Listen == "" {
+		return DefaultWebhookListenAddress
+	}
+	return c.Webhook.Listen
+}
+
+// WebhookSecretConfigured reports whether either supported secret source is
+// present. Validate rejects a ref that sets both.
+func (c *Config) WebhookSecretConfigured() bool {
+	return c.Webhook.Secret.Env != "" || c.Webhook.Secret.File != ""
 }
 
 // Location resolves Timezone to a *time.Location, defaulting to UTC when
@@ -164,6 +276,13 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w (instance.yaml accepts only known fields; token refs must be "+
 			"token.env or token.file — inline secret values are not permitted, CFG-009/SEC-010)", path, err)
 	}
+	resolvedOTLP, err := cfg.ResolveOTLPConfig(os.LookupEnv)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if cfg.Telemetry.OTLP != nil || resolvedOTLP.Enabled() {
+		cfg.Telemetry.OTLP = &resolvedOTLP
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -178,9 +297,23 @@ func (c *Config) Validate() error {
 	if err := validateAPIListenAddress(c.APIListenAddress()); err != nil {
 		return fmt.Errorf("api.listen: %w", err)
 	}
+	if err := validateLoopbackListenAddress(c.WebhookListenAddress()); err != nil {
+		return fmt.Errorf("webhook.listen: %w", err)
+	}
+	if c.Webhook.Secret.Env != "" && c.Webhook.Secret.File != "" {
+		return fmt.Errorf("webhook.secret must reference exactly one of env or file — inline secret values are never permitted (CFG-009, SEC-010)")
+	}
 	if c.Timezone != "" {
 		if _, err := time.LoadLocation(c.Timezone); err != nil {
 			return fmt.Errorf("timezone %q: %w", c.Timezone, err)
+		}
+	}
+	if c.Telemetry.OTLP != nil {
+		if err := c.Telemetry.OTLP.Validate(); err != nil {
+			return fmt.Errorf("telemetry.otlp: %w", err)
+		}
+		if c.Telemetry.OTLP.Enabled() && !c.TelemetryEnabled() {
+			return fmt.Errorf("telemetry.otlp.endpoint cannot be set when telemetry.enabled is false")
 		}
 	}
 	for i, r := range c.Repos {
@@ -220,7 +353,100 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+func validateOTLPEndpoint(endpoint string, insecure bool) error {
+	var host, scheme string
+	if strings.Contains(endpoint, "://") {
+		u, err := url.Parse(endpoint)
+		if err != nil {
+			return fmt.Errorf("must be a valid URL: %w", err)
+		}
+		scheme = strings.ToLower(u.Scheme)
+		if scheme != "https" && scheme != "http" {
+			return fmt.Errorf("scheme must be https, or http with insecure mode")
+		}
+		if u.Host == "" || u.Hostname() == "" {
+			return fmt.Errorf("host is required")
+		}
+		if strings.HasSuffix(u.Host, ":") {
+			return fmt.Errorf("port must not be empty")
+		}
+		if u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("userinfo, paths, queries, and fragments are not supported")
+		}
+		host = u.Hostname()
+		if port := u.Port(); port != "" {
+			if err := validateCollectorPort(port); err != nil {
+				return err
+			}
+		}
+	} else {
+		if strings.ContainsAny(endpoint, "/?#@") {
+			return fmt.Errorf("must be a host:port address or an http(s) URL")
+		}
+		var port string
+		var err error
+		host, port, err = net.SplitHostPort(endpoint)
+		if err != nil {
+			return fmt.Errorf("must be a host:port address: %w", err)
+		}
+		if host == "" {
+			return fmt.Errorf("host is required")
+		}
+		if err := validateCollectorPort(port); err != nil {
+			return err
+		}
+	}
+
+	if scheme == "http" && !insecure {
+		return fmt.Errorf("http requires explicit insecure: true")
+	}
+	if scheme == "https" && insecure {
+		return fmt.Errorf("https conflicts with insecure: true")
+	}
+	if insecure && !isLoopbackHost(host) {
+		return fmt.Errorf("insecure mode is allowed only for localhost or a loopback IP")
+	}
+	return nil
+}
+
+func validateCollectorPort(port string) error {
+	number, err := strconv.Atoi(port)
+	if err != nil || number < 1 || number > 65535 {
+		return fmt.Errorf("port %q must be a number from 1 through 65535", port)
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func validHeaderName(name string) bool {
+	if name == "" || strings.HasPrefix(strings.ToLower(name), "grpc-") {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func validateAPIListenAddress(address string) error {
+	return validateLoopbackListenAddress(address)
+}
+
+func validateLoopbackListenAddress(address string) error {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return fmt.Errorf("must be a host:port address: %w", err)

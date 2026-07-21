@@ -22,6 +22,7 @@
         "harness": { "type": "string", "enum": ["copilot"] },
         "model": { "type": "string" },
         "harnessOptions": { "type": "object", "additionalProperties": true },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
         "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "skills": { "type": "array", "items": { "type": "string" } },
         "tools": { "type": "array", "items": { "type": "string" } },

@@ -1,10 +1,13 @@
 package validate
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func newV(t *testing.T) *Validator {
@@ -65,7 +68,7 @@ func TestInvalidEnvelopesFail(t *testing.T) {
 }
 
 // TestExampleConfigPasses is the headline acceptance check: the reference config
-// in /config-examples validates clean (exit 0 equivalent).
+// in /config-examples is valid and explains that its starter is manual-only.
 func TestExampleConfigPasses(t *testing.T) {
 	v := newV(t)
 	report, err := v.ValidateDir("../../config-examples")
@@ -75,11 +78,80 @@ func TestExampleConfigPasses(t *testing.T) {
 	if report.HasErrors() {
 		t.Fatalf("expected /config-examples to be valid, got issues:\n%s", joinIssues(report))
 	}
-	if warnings := report.Warnings(); len(warnings) != 0 {
-		t.Fatalf("expected /config-examples to be warning-clean, got %+v", warnings)
+	warnings := report.Warnings()
+	if len(warnings) != 1 ||
+		warnings[0].Code != WarningCompatibility ||
+		warnings[0].Severity != Warning ||
+		!strings.Contains(warnings[0].Explanation, "goobers run default-implement") {
+		t.Fatalf("expected one actionable manual-only warning, got %+v", warnings)
 	}
 	if report.Objects < 4 {
 		t.Errorf("expected at least 4 objects, got %d", report.Objects)
+	}
+}
+
+func TestGooberAssetsAreOpaqueToConfigValidation(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {
+		t.Fatal(err)
+	}
+	asset := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "assets", "fixture.yaml")
+	if err := os.MkdirAll(filepath.Dir(asset), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(asset, []byte("not: [valid yaml"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := newV(t).ValidateDir(root)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if report.HasErrors() {
+		t.Fatalf("asset fixture was parsed as config:\n%s", joinIssues(report))
+	}
+}
+
+func TestGooberAssetStructureIsValidated(t *testing.T) {
+	tests := map[string]func(*testing.T, string){
+		"symlink root": func(t *testing.T, assets string) {
+			if err := os.Symlink(t.TempDir(), assets); err != nil {
+				t.Skipf("symlinks unsupported: %v", err)
+			}
+		},
+		"symlink entry": func(t *testing.T, assets string) {
+			if err := os.Mkdir(assets, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(t.TempDir(), "outside"), filepath.Join(assets, "reference")); err != nil {
+				t.Skipf("symlinks unsupported: %v", err)
+			}
+		},
+		"special file": func(t *testing.T, assets string) {
+			if err := os.Mkdir(assets, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := unix.Mkfifo(filepath.Join(assets, "stream"), 0o600); err != nil {
+				t.Skipf("FIFO unsupported: %v", err)
+			}
+		},
+	}
+	for name, setup := range tests {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {
+				t.Fatal(err)
+			}
+			assets := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "assets")
+			setup(t, assets)
+
+			report, err := newV(t).ValidateDir(root)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			if !report.HasErrors() || !strings.Contains(joinIssues(report), "invalid goober assets") {
+				t.Fatalf("unsafe assets were accepted:\n%s", joinIssues(report))
+			}
+		})
 	}
 }
 
@@ -137,6 +209,45 @@ func TestWorkflowSchemaAcceptsExplicitManualOnlyTrigger(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := v.ValidateJSON("workflow.schema.json", []byte(strings.Replace(workflow, "TRIGGERS", tc.triggers, 1)))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected schema validation to pass, got %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkflowSchemaValidatesContinueOnError(t *testing.T) {
+	v := newV(t)
+	workflow := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"metadata": {"name": "best-effort"},
+		"spec": {
+			"gaggle": "example",
+			"triggers": [{"type": "manual"}],
+			"start": "notify",
+			"tasks": [{
+				"name": "notify",
+				"type": "deterministic",
+				"goal": "Notify without failing the workflow.",
+				"run": {"command": ["false"]},
+				"continueOnError": VALUE
+			}]
+		}
+	}`
+	for _, tc := range []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "boolean", value: "true"},
+		{name: "non-boolean", value: `"true"`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := v.ValidateJSON("workflow.schema.json", []byte(strings.Replace(workflow, "VALUE", tc.value, 1)))
 			if tc.wantErr && err == nil {
 				t.Fatal("expected schema validation to fail")
 			}
@@ -283,6 +394,157 @@ func TestWorkflowOwnerMustBelongToWorkflowGaggle(t *testing.T) {
 	if !strings.Contains(got, `targets goober "reviewer" in gaggle "beta", not workflow gaggle "alpha"`) ||
 		!strings.Contains(got, `reviewer goober "reviewer" is in gaggle "beta", not workflow gaggle "alpha"`) {
 		t.Fatalf("cross-gaggle owner errors missing:\n%s", got)
+	}
+}
+
+func TestForeignLayoutDiagnosticsAreActionable(t *testing.T) {
+	tests := []struct {
+		name              string
+		manifestGaggles   string
+		workflowGaggle    string
+		capability        string
+		writeInstructions bool
+		want              []string
+	}{
+		{
+			name:              "valid",
+			manifestGaggles:   "    - acme",
+			workflowGaggle:    "acme",
+			capability:        "repo:read",
+			writeInstructions: true,
+		},
+		{
+			name:              "unbound workflow",
+			manifestGaggles:   "    - acme",
+			workflowGaggle:    "ghost",
+			capability:        "repo:read",
+			writeInstructions: true,
+			want: []string{
+				`foreign.yaml Workflow/build: spec.gaggle names "ghost", but no Gaggle/ghost definition was found`,
+			},
+		},
+		{
+			name:              "manifest names undefined gaggle",
+			manifestGaggles:   "    - ghost",
+			workflowGaggle:    "acme",
+			capability:        "repo:read",
+			writeInstructions: true,
+			want: []string{
+				`foreign.yaml Manifest/foreign: spec.gaggles references "ghost", but no Gaggle/ghost definition was found`,
+			},
+		},
+		{
+			name:              "capability typo",
+			manifestGaggles:   "    - acme",
+			workflowGaggle:    "acme",
+			capability:        "github:prs:write",
+			writeInstructions: true,
+			want: []string{
+				`foreign.yaml Goober/coder: spec.capabilities contains unknown capability "github:prs:write"; did you mean "github:pr:write"?`,
+			},
+		},
+		{
+			name:            "missing instructions",
+			manifestGaggles: "    - acme",
+			workflowGaggle:  "acme",
+			capability:      "repo:read",
+			want: []string{
+				`foreign.yaml Goober/coder: spec.instructions file "instructions.md" was not found; expected it at "instructions.md"`,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			config := fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: foreign
+spec:
+  instance:
+    name: foreign
+    environment: dev
+  gaggles:
+%s
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: acme
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: app
+  backlog:
+    provider: github
+    project: acme/app
+  isolation:
+    namespace: gaggle-acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: acme
+  role: coder
+  instructions: instructions.md
+  capabilities:
+    - %s
+  workflows:
+    - build
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: build
+spec:
+  gaggle: %s
+  triggers:
+    - type: manual
+  start: build
+  tasks:
+    - name: build
+      type: deterministic
+      goal: Build the project.
+      run:
+        command: ["true"]
+        workspace: scratch
+`, tc.manifestGaggles, tc.capability, tc.workflowGaggle)
+			if err := os.WriteFile(filepath.Join(dir, "foreign.yaml"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tc.writeInstructions {
+				if err := os.WriteFile(filepath.Join(dir, "instructions.md"), []byte("# Coder\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			got := joinIssues(report)
+			if len(tc.want) == 0 {
+				if report.HasErrors() {
+					t.Fatalf("valid foreign layout reported errors:\n%s", got)
+				}
+				return
+			}
+			if !report.HasErrors() {
+				t.Fatalf("malformed foreign layout reported no errors")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("diagnostics missing %q:\n%s", want, got)
+				}
+			}
+			if tc.name == "capability typo" && strings.Count(got, `unknown capability "github:prs:write"`) != 1 {
+				t.Errorf("capability typo should be reported once at its Goober source:\n%s", got)
+			}
+		})
 	}
 }
 

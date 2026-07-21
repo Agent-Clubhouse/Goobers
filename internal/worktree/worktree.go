@@ -2,11 +2,14 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/goobers/goobers/internal/gooberassets"
 )
 
 // botGitUserName/botGitUserEmail are the commit identity Create sets local
@@ -37,8 +40,8 @@ type CreateOptions struct {
 	// Branch, if set, is the run branch this worktree checks out (e.g.
 	// "goobers/<workflow>/<run-id>", providers.BranchName). It is created off
 	// BaseRef the first time it is requested and checked out as-is (carrying
-	// the prior stages' commits, ignoring BaseRef) every time after — this is
-	// what gives a run's sequential stages continuity while keeping each stage
+	// the prior stages' commits) every time after unless SyncBase is set. This
+	// gives a run's sequential stages continuity while keeping each stage
 	// isolated in a fresh worktree (#133). If empty, the worktree is a detached
 	// checkout of BaseRef.
 	Branch string
@@ -60,6 +63,9 @@ type CreateOptions struct {
 	// stage in this same run fetched it. Anything that clears the mirror
 	// between stages reaches this path.
 	RequireExistingBranch bool
+	// SyncBase merges the freshly fetched BaseRef into an existing Branch
+	// before returning the worktree. New branches already start at BaseRef.
+	SyncBase bool
 }
 
 // Worktree is a disposable, isolated working copy for one run, branched off
@@ -73,8 +79,9 @@ type Worktree struct {
 	// Branch is the branch checked out in the worktree, or empty if detached.
 	Branch string
 
-	manager *Manager
-	key     string
+	manager  *Manager
+	key      string
+	startRef string
 }
 
 // validRunID reports whether id is safe to join onto a directory as a
@@ -109,6 +116,9 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	}
 	if opts.BaseRef == "" {
 		return nil, fmt.Errorf("worktree: BaseRef is required")
+	}
+	if opts.SyncBase && opts.Branch == "" {
+		return nil, fmt.Errorf("worktree: SyncBase requires Branch")
 	}
 
 	repoDir, err := m.WorkingCopy(ctx, opts.RepoURL)
@@ -153,10 +163,11 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	// run's actual diff rather than a pristine BaseRef (#133). A detached
 	// checkout (Branch == "") keeps the pre-#133 behavior.
 	args := []string{"worktree", "add"}
+	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
 	switch {
 	case opts.Branch == "":
 		args = append(args, "--detach", path, opts.BaseRef)
-	case branchExists(ctx, repoDir, opts.Branch):
+	case existingBranch:
 		// Existing run branch: check it out as-is. BaseRef is not the
 		// continuity point — the branch's own tip is. git forbids the same
 		// branch in two live worktrees, which holds here because stages run
@@ -173,6 +184,11 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	if err := runGit(ctx, repoDir, args...); err != nil {
 		return nil, fmt.Errorf("worktree: create for run %s: %w", opts.RunID, err)
 	}
+	startRef, err := gitOutput(ctx, path, "rev-parse", "HEAD")
+	if err != nil {
+		cleanupErr := runGit(ctx, repoDir, "worktree", "remove", "--force", path)
+		return nil, fmt.Errorf("worktree: resolve starting ref for run %s: %w", opts.RunID, errors.Join(err, cleanupErr))
+	}
 
 	// A bot identity local to THIS worktree's own .git/config (`git config`
 	// with no --global, so it never touches the managed working copy or the
@@ -184,10 +200,18 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	if err := runGit(ctx, path, "config", "user.email", botGitUserEmail); err != nil {
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
+	if opts.SyncBase && existingBranch {
+		if err := runGit(ctx, path, "merge", "--ff", "--no-edit", opts.BaseRef); err != nil {
+			_ = runGit(ctx, repoDir, "worktree", "remove", "--force", path)
+			return nil, fmt.Errorf("worktree: sync branch %q with base %q for run %s: %w", opts.Branch, opts.BaseRef, opts.RunID, err)
+		}
+	}
 
 	mk := marker{
 		RunID:      opts.RunID,
 		OwnerRunID: opts.OwnerRunID,
+		Branch:     opts.Branch,
+		StartRef:   startRef,
 		PID:        os.Getpid(),
 		CreatedAt:  time.Now(),
 		Status:     statusActive,
@@ -199,7 +223,123 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		return nil, fmt.Errorf("worktree: register run %s: %w", opts.RunID, err)
 	}
 
-	return &Worktree{RunID: opts.RunID, Path: path, Branch: opts.Branch, manager: m, key: key}, nil
+	return &Worktree{
+		RunID: opts.RunID, Path: path, Branch: opts.Branch,
+		manager: m, key: key, startRef: startRef,
+	}, nil
+}
+
+// ActivateAssetPathGuard persists that this invocation reserves the asset
+// workspace, allowing crash recovery to distinguish it from a stage for which
+// the same path is ordinary repository content.
+func (wt *Worktree) ActivateAssetPathGuard() error {
+	markerPath := wt.manager.markerPath(wt.key, wt.RunID)
+	mk, err := readMarker(markerPath)
+	if err != nil {
+		return fmt.Errorf("worktree: read marker for run %s: %w", wt.RunID, err)
+	}
+	mk.AssetPathGuard = true
+	if err := writeMarker(markerPath, mk); err != nil {
+		return fmt.Errorf("worktree: activate asset path guard for run %s: %w", wt.RunID, err)
+	}
+	return nil
+}
+
+// ValidateReservedPaths rejects a stage that forced the materialized asset
+// directory into the index or any commit it added, rewinding those commits so
+// the reserved content cannot cross the shared run-branch boundary.
+func (wt *Worktree) ValidateReservedPaths(ctx context.Context) error {
+	collision := fmt.Errorf("%w: %s must not be tracked on the run branch", gooberassets.ErrWorkspaceCollision, gooberassets.WorkspaceDir)
+	branchRef, branchCommitted, err := wt.inspectReservedBranch(ctx)
+	if err != nil {
+		return err
+	}
+	if branchCommitted {
+		if branchRef != wt.startRef {
+			if rollbackErr := wt.rollbackBranch(ctx, branchRef); rollbackErr != nil {
+				return fmt.Errorf("worktree: remove reserved asset path from run %s: %w", wt.RunID, errors.Join(collision, rollbackErr))
+			}
+		}
+		return collision
+	}
+
+	indexed, err := gitOutput(ctx, wt.Path, "ls-files", "--cached", "--", gooberassets.WorkspaceDir)
+	if err != nil {
+		return fmt.Errorf("worktree: inspect indexed asset path for run %s: %w", wt.RunID, err)
+	}
+	headCommitted, err := wt.reservedPathCommits(ctx, wt.Path, "HEAD")
+	if err != nil {
+		return err
+	}
+	if indexed == "" && !headCommitted {
+		return nil
+	}
+	return collision
+}
+
+func (wt *Worktree) reservedPathCommits(ctx context.Context, dir, endRef string) (bool, error) {
+	committed, err := gitOutput(ctx, dir, "log", "--full-history", "--format=%H", wt.startRef+".."+endRef, "--", gooberassets.WorkspaceDir)
+	if err != nil {
+		return false, fmt.Errorf("worktree: inspect committed asset path for run %s: %w", wt.RunID, err)
+	}
+	return committed != "", nil
+}
+
+func (wt *Worktree) inspectReservedBranch(ctx context.Context) (string, bool, error) {
+	if wt.Branch == "" {
+		return "", false, nil
+	}
+	repoDir := wt.manager.repoDirForKey(wt.key)
+	refName := "refs/heads/" + wt.Branch
+	currentRef, err := gitOutput(ctx, repoDir, "rev-parse", "--verify", refName)
+	if err != nil {
+		return "", false, fmt.Errorf("worktree: resolve run branch %q for run %s: %w", wt.Branch, wt.RunID, err)
+	}
+	committed, err := wt.reservedPathCommits(ctx, repoDir, refName)
+	if err != nil {
+		return "", false, err
+	}
+	return currentRef, committed, nil
+}
+
+func (wt *Worktree) rollbackBranch(ctx context.Context, currentRef string) error {
+	return runGit(
+		ctx,
+		wt.manager.repoDirForKey(wt.key),
+		"update-ref",
+		"refs/heads/"+wt.Branch,
+		wt.startRef,
+		currentRef,
+	)
+}
+
+func (wt *Worktree) restoreReservedBranch(ctx context.Context) error {
+	currentRef, committed, err := wt.inspectReservedBranch(ctx)
+	if err != nil {
+		return err
+	}
+	if !committed || currentRef == wt.startRef {
+		return nil
+	}
+	if err := wt.rollbackBranch(ctx, currentRef); err != nil {
+		return fmt.Errorf("worktree: restore run branch after reserved asset commit for run %s: %w", wt.RunID, err)
+	}
+	return nil
+}
+
+func (m *Manager) restoreReservedBranchFromMarker(ctx context.Context, key, path string, mk marker) error {
+	if !mk.AssetPathGuard || mk.Branch == "" || mk.StartRef == "" {
+		return nil
+	}
+	wt := &Worktree{
+		RunID:    mk.RunID,
+		Path:     path,
+		Branch:   mk.Branch,
+		manager:  m,
+		key:      key,
+		startRef: mk.StartRef,
+	}
+	return wt.restoreReservedBranch(ctx)
 }
 
 // Diff returns the unified diff of this worktree's branch against baseRef
@@ -233,6 +373,17 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 // cleared too — Create writes a fresh one immediately after.
 func (m *Manager) forceClear(ctx context.Context, key, path string) error {
 	repoDir := m.repoDirForKey(key)
+	runID := filepath.Base(path)
+	markerPath := m.markerPath(key, runID)
+	mk, markerErr := readMarker(markerPath)
+	switch {
+	case markerErr == nil:
+		if err := m.restoreReservedBranchFromMarker(ctx, key, path, mk); err != nil {
+			return fmt.Errorf("restore guarded branch for stale worktree: %w", err)
+		}
+	case !os.IsNotExist(markerErr):
+		return fmt.Errorf("read stale marker: %w", markerErr)
+	}
 	if err := runGit(ctx, repoDir, "worktree", "remove", "--force", path); err != nil {
 		if err := os.RemoveAll(path); err != nil {
 			return fmt.Errorf("remove stale worktree directory: %w", err)
@@ -241,8 +392,7 @@ func (m *Manager) forceClear(ctx context.Context, key, path string) error {
 			return fmt.Errorf("prune stale worktree registration: %w", err)
 		}
 	}
-	runID := filepath.Base(path)
-	if err := os.Remove(m.markerPath(key, runID)); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove stale marker: %w", err)
 	}
 	return nil
@@ -263,10 +413,23 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 	repoDir := wt.manager.repoDirForKey(wt.key)
 	markerPath := wt.manager.markerPath(wt.key, wt.RunID)
 
+	lock := wt.manager.lockFor(wt.key)
+	lock.Lock()
+	defer lock.Unlock()
+
+	mk, markerErr := readMarker(markerPath)
+	switch {
+	case markerErr == nil:
+		if err := wt.manager.restoreReservedBranchFromMarker(ctx, wt.key, wt.Path, mk); err != nil {
+			return fmt.Errorf("worktree: restore guarded branch for run %s: %w", wt.RunID, err)
+		}
+	case !os.IsNotExist(markerErr):
+		return fmt.Errorf("worktree: read marker for run %s: %w", wt.RunID, markerErr)
+	}
+
 	if opts.Keep {
-		mk, err := readMarker(markerPath)
-		if err != nil {
-			return fmt.Errorf("worktree: read marker for run %s: %w", wt.RunID, err)
+		if markerErr != nil {
+			return fmt.Errorf("worktree: read marker for run %s: %w", wt.RunID, markerErr)
 		}
 		mk.Status = statusKept
 		if err := writeMarker(markerPath, mk); err != nil {
@@ -274,10 +437,6 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		}
 		return nil
 	}
-
-	lock := wt.manager.lockFor(wt.key)
-	lock.Lock()
-	defer lock.Unlock()
 
 	if err := runGit(ctx, repoDir, "worktree", "remove", "--force", wt.Path); err != nil {
 		return fmt.Errorf("worktree: remove for run %s: %w", wt.RunID, err)

@@ -176,20 +176,30 @@ func postOrUpdateStickyComment(ctx context.Context, provider *providers.GitHubPr
 // carrying the label is never blocked by this check (false, nil) — this is
 // the ordinary case for the vast majority of candidates and costs nothing.
 //
-// A PR that DOES carry the label is only genuinely still stuck if its
-// current head/base SHA match the snapshot remediation-checkpoint recorded
-// at the moment it escalated: unchanged head AND unchanged base means
-// nothing about the PR's situation has moved since a human or the agent last
-// looked, so re-selecting it would just reproduce the same escalation. If
-// EITHER SHA has moved — new commits pushed, or a sibling merge advanced the
-// base (post-merge.go's fan-out sets goobers:needs-remediation on every
-// sibling targeting the same base, which is exactly the trigger) — the PR's
-// context has genuinely changed and selection re-enables automatically
-// (AC2's self-heal), without needing a human to clear the label by hand.
+// A PR that DOES carry the label is only genuinely still stuck if BOTH its
+// head is unchanged AND its base branch has not advanced since the snapshot
+// remediation-checkpoint recorded at the moment it escalated: nothing about
+// the PR's situation has moved since a human or the agent last looked, so
+// re-selecting it would just reproduce the same escalation. If EITHER has
+// moved — new commits pushed (head SHA changed), or a sibling merge advanced
+// the base branch — the PR's context has genuinely changed and selection
+// re-enables automatically (AC2's self-heal), without a human clearing the
+// label by hand.
 //
-// Fetches comments only for PRs that carry the label — a small, by-design
-// subset once this fix is live — so this stays cheap for the common case of
-// an unlabeled candidate.
+// Base-advance detection compares the snapshot against the LIVE base-branch
+// tip (provider.BranchTipSHA), NOT pr.BaseSHA. GitHub's pull_request.base.sha
+// is a pinned commit that does not advance when the base branch does (#1052):
+// keying the check off it made "a sibling merge advanced the base" a trigger
+// that could never fire, so escalations were permanent-until-human and whole
+// file-overlap clusters deadlocked. EscalatedBaseSHA is recorded as the live
+// base tip at escalation time (see runRemediationCheckpoint), so this compares
+// like-for-like. This applies uniformly to every escalation reason: a base
+// advance genuinely can resolve an overlap-driven content rejection too, and
+// any re-attempt that is still wrong simply re-escalates, bounded by the
+// per-PR repass budget (#364) — so an unblock is always safe, never a loop.
+//
+// Fetches comments (and one ref lookup) only for PRs that carry the label — a
+// small, by-design subset — so this stays cheap for the common unlabeled case.
 func escalationStillBlocks(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
 	if !hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) {
 		return false, nil
@@ -206,7 +216,14 @@ func escalationStillBlocks(ctx context.Context, provider *providers.GitHubProvid
 		// there is no snapshot to compare against.
 		return true, nil
 	}
-	if state.EscalatedHeadSHA != pr.HeadSHA || state.EscalatedBaseSHA != pr.BaseSHA {
+	if state.EscalatedHeadSHA != pr.HeadSHA {
+		return false, nil
+	}
+	liveBaseTip, err := provider.BranchTipSHA(ctx, repo, pr.Base)
+	if err != nil {
+		return false, err
+	}
+	if state.EscalatedBaseSHA != liveBaseTip {
 		return false, nil
 	}
 	return true, nil
@@ -442,11 +459,22 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 				return failProviderStage(stderr, fmt.Sprintf("load sibling-overlap findings for PR #%d", selectedNumber), err, "")
 			}
 		}
+		// Record the LIVE base-branch tip, not current.BaseSHA (GitHub's
+		// pinned pull_request.base.sha): escalationStillBlocks compares this
+		// snapshot against the live tip to detect a base advance, and
+		// pull_request.base.sha never moves when the base branch does, so
+		// pinning it here would make the self-heal comparison always match
+		// and the escalation permanent-until-human (#1052).
+		var escalatedBaseTip string
+		escalatedBaseTip, err = provider.BranchTipSHA(ctx, repo, base)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("resolve base branch %q tip for PR #%d", base, selectedNumber), err, "")
+		}
 		state = remediationState{
 			Cycles: cycles, LastDiffDigest: digest,
 			HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
 			Escalated: true, EscalatedReason: reason,
-			EscalatedHeadSHA: current.HeadSHA, EscalatedBaseSHA: current.BaseSHA,
+			EscalatedHeadSHA: current.HeadSHA, EscalatedBaseSHA: escalatedBaseTip,
 			SiblingOverlapContext: renderSiblingOverlapContext(overlaps),
 		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{

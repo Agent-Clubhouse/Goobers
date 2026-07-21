@@ -79,6 +79,28 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(0)
 	}
 
+	l := instance.NewLayout(root)
+	resolvedRunID, err := resolveRunID(l, *runID)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	runDir, err := runDirFor(l, resolvedRunID)
+	if err != nil {
+		pf(stderr, "error: locate run %q: %v\n", resolvedRunID, err)
+		return 2
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		pf(stderr, "error: open run %q: %v\n", resolvedRunID, err)
+		return 2
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		pf(stderr, "error: read run %q identity: %v\n", resolvedRunID, err)
+		return 2
+	}
+
 	secret, err := readSecret(*secretFile)
 	if err != nil {
 		pf(stderr, "error: read secret: %v\n", err)
@@ -89,9 +111,6 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	l := instance.NewLayout(root)
-	runDir := filepath.Join(l.RunsDir(), *runID)
-
 	// Build the target Ref from the bytes currently at rest: a stored blob commits
 	// to its own digest, so hashing what is on disk yields the digest the journal
 	// recorded (and lets Redact detect a no-op if the secret is not actually
@@ -99,10 +118,13 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 	blobFull := filepath.Join(runDir, *blobPath)
 	cur, err := os.ReadFile(blobFull)
 	if err != nil {
-		pf(stderr, "error: read target blob %q in run %q: %v\n", *blobPath, *runID, err)
+		pf(stderr, "error: read target blob %q in run %q: %v\n", *blobPath, resolvedRunID, err)
 		return 2
 	}
 	target := journal.Ref{Path: *blobPath, Digest: journal.Digest(cur), Size: int64(len(cur))}
+
+	pf(stdout, "run:      %s\n", resolvedRunID)
+	pf(stdout, "workflow: %s\n", identity.Workflow)
 
 	// Register the now-known secret so the scrubber catches it, then reopen the run
 	// for append and perform the sanctioned edit. Recover is the reopen-for-append
@@ -111,7 +133,7 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 	reg.Register(secret)
 	run, _, err := journal.Recover(runDir, journal.WithScrubber(scrub))
 	if err != nil {
-		pf(stderr, "error: open run %q: %v\n", *runID, err)
+		pf(stderr, "error: open run %q: %v\n", resolvedRunID, err)
 		return 2
 	}
 	defer func() { _ = run.Close() }()

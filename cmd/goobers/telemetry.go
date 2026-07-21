@@ -46,7 +46,11 @@ func runTelemetry(args []string, stdout, stderr io.Writer) int {
 // pre-#126 binary that never incrementally ingested).
 func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
 	if rebuild {
-		if err := rollup.Rebuild(l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
+		runDirs, err := l.RunDirs()
+		if err != nil {
+			return nil, err
+		}
+		if err := rollup.RebuildAll(l.TelemetryDB(), runDirs, l.SchedulerDir()); err != nil {
 			return nil, err
 		}
 	}

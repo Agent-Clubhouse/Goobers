@@ -19,7 +19,7 @@ func TestInitFresh(t *testing.T) {
 	if len(res.Skipped) != 0 {
 		t.Fatalf("expected nothing skipped on a fresh init, got %v", res.Skipped)
 	}
-	wantCreated := []string{ConfigFileName, ConfigDirName, RunsDirName, SchedulerDirName, WorkcopiesDirName, TelemetryDBName}
+	wantCreated := []string{ConfigFileName, ConfigDirName, GagglesDirName, SchedulerDirName, TelemetryDBName}
 	gotCreated := append([]string(nil), res.Created...)
 	sort.Strings(gotCreated)
 	sort.Strings(wantCreated)
@@ -33,7 +33,7 @@ func TestInitFresh(t *testing.T) {
 	}
 
 	l := NewLayout(root)
-	for _, dir := range []string{l.RunsDir(), l.SchedulerDir(), l.WorkcopiesDir(), l.ConfigDir()} {
+	for _, dir := range []string{l.GagglesDir(), l.SchedulerDir(), l.ConfigDir()} {
 		info, err := os.Stat(dir)
 		if err != nil || !info.IsDir() {
 			t.Fatalf("expected %s to be a directory: %v", dir, err)
@@ -114,7 +114,7 @@ func TestInitIdempotent(t *testing.T) {
 	if len(res.Created) != 0 {
 		t.Fatalf("expected nothing created on a repeated init, got %v", res.Created)
 	}
-	if len(res.Skipped) != 6 {
+	if len(res.Skipped) != 5 {
 		t.Fatalf("expected every piece skipped on a repeated init, got %v", res.Skipped)
 	}
 }

@@ -30,6 +30,7 @@ repos:
       env: GITHUB_TOKEN
 runConditions:
   maxParallelRuns: 2
+notifications: true
 `)
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -46,6 +47,9 @@ runConditions:
 	}
 	if cfg.RunConditions.MaxParallelRuns != 2 {
 		t.Fatalf("expected maxParallelRuns=2, got %d", cfg.RunConditions.MaxParallelRuns)
+	}
+	if !cfg.Notifications {
+		t.Fatal("expected notifications to be enabled")
 	}
 	if cfg.APIListenAddress() != DefaultAPIListenAddress {
 		t.Fatalf("APIListenAddress = %q, want %q", cfg.APIListenAddress(), DefaultAPIListenAddress)
@@ -65,6 +69,181 @@ api:
 	}
 	if got := cfg.APIListenAddress(); got != "[::1]:9090" {
 		t.Fatalf("APIListenAddress = %q, want [::1]:9090", got)
+	}
+}
+
+func TestLoadConfigWebhook(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+webhook:
+  listen: "[::1]:9091"
+  secret:
+    env: GITHUB_WEBHOOK_SECRET
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.WebhookListenAddress(); got != "[::1]:9091" {
+		t.Fatalf("WebhookListenAddress = %q, want [::1]:9091", got)
+	}
+	if !cfg.WebhookSecretConfigured() || cfg.Webhook.Secret.Env != "GITHUB_WEBHOOK_SECRET" {
+		t.Fatalf("unexpected webhook secret ref: %+v", cfg.Webhook.Secret)
+	}
+}
+
+func TestLoadConfigOTLP(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+telemetry:
+  otlp:
+    endpoint: https://collector.example.com:4317
+    headers:
+      authorization:
+        env: GOOBERS_OTLP_AUTHORIZATION
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Telemetry.OTLP.Endpoint != "https://collector.example.com:4317" {
+		t.Fatalf("unexpected OTLP endpoint: %q", cfg.Telemetry.OTLP.Endpoint)
+	}
+	if got := cfg.Telemetry.OTLP.Headers["authorization"].Env; got != "GOOBERS_OTLP_AUTHORIZATION" {
+		t.Fatalf("authorization env = %q, want GOOBERS_OTLP_AUTHORIZATION", got)
+	}
+}
+
+func TestLoadConfigOTLPEnvironmentOverridesFile(t *testing.T) {
+	t.Setenv(OTLPEndpointEnv, "https://collector.example.com:443")
+	t.Setenv(OTLPInsecureEnv, "false")
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+telemetry:
+  otlp:
+    endpoint: http://127.0.0.1:4317
+    insecure: true
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Telemetry.OTLP.Endpoint != "https://collector.example.com:443" || cfg.Telemetry.OTLP.Insecure {
+		t.Fatalf("resolved OTLP config = %+v, want environment endpoint with TLS", cfg.Telemetry.OTLP)
+	}
+}
+
+func TestLoadConfigOTLPRejectsInlineHeaderSecret(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+telemetry:
+  otlp:
+    endpoint: https://collector.example.com:4317
+    headers:
+      authorization:
+        value: Bearer secret
+`)
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("expected inline header value to be rejected, got %v", err)
+	}
+}
+
+func TestResolveOTLPConfig(t *testing.T) {
+	t.Run("disabled by default", func(t *testing.T) {
+		cfg := Config{}
+		resolved, err := cfg.ResolveOTLPConfig(func(string) (string, bool) { return "", false })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.Enabled() {
+			t.Fatalf("OTLP push enabled with empty configuration: %+v", resolved)
+		}
+	})
+
+	t.Run("environment overrides file", func(t *testing.T) {
+		cfg := Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{
+			Endpoint: "http://127.0.0.1:4317",
+			Insecure: true,
+		}}}
+		env := map[string]string{
+			OTLPEndpointEnv: "https://collector.example.com:443",
+			OTLPInsecureEnv: "false",
+		}
+		resolved, err := cfg.ResolveOTLPConfig(func(key string) (string, bool) {
+			value, ok := env[key]
+			return value, ok
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.Endpoint != env[OTLPEndpointEnv] || resolved.Insecure {
+			t.Fatalf("resolved OTLP config = %+v, want environment endpoint with TLS", resolved)
+		}
+	})
+
+	t.Run("environment can opt in", func(t *testing.T) {
+		cfg := Config{}
+		env := map[string]string{
+			OTLPEndpointEnv: "http://localhost:4317",
+			OTLPInsecureEnv: "true",
+		}
+		resolved, err := cfg.ResolveOTLPConfig(func(key string) (string, bool) {
+			value, ok := env[key]
+			return value, ok
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !resolved.Enabled() || !resolved.Insecure {
+			t.Fatalf("resolved OTLP config = %+v, want enabled insecure loopback", resolved)
+		}
+	})
+
+	t.Run("invalid environment fails closed", func(t *testing.T) {
+		cfg := Config{}
+		_, err := cfg.ResolveOTLPConfig(func(key string) (string, bool) {
+			if key == OTLPInsecureEnv {
+				return "sometimes", true
+			}
+			return "", false
+		})
+		if err == nil || !strings.Contains(err.Error(), OTLPInsecureEnv+" must be true or false") {
+			t.Fatalf("expected invalid environment error, got %v", err)
+		}
+	})
+}
+
+func TestOTLPConfigValidatesGRPCMetadataNames(t *testing.T) {
+	valid := OTLPConfig{
+		Endpoint: "https://collector.example.com:4317",
+		Headers:  map[string]TokenRef{"X.Trace_ID-1": {Env: "OTLP_TRACE_ID"}},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid gRPC metadata name rejected: %v", err)
+	}
+
+	for _, name := range []string{
+		"x-api+key",
+		"x-api!key",
+		"x-api~key",
+		"grpc-timeout",
+		"GRPC-custom",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := OTLPConfig{
+				Endpoint: "https://collector.example.com:4317",
+				Headers:  map[string]TokenRef{name: {Env: "OTLP_HEADER"}},
+			}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "invalid header name") {
+				t.Fatalf("expected invalid gRPC metadata name error, got %v", err)
+			}
+		})
 	}
 }
 
@@ -249,6 +428,25 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "must be a number",
 		},
 		{
+			name:    "webhook all interfaces",
+			cfg:     Config{Webhook: WebhookConfig{Listen: "0.0.0.0:8081"}},
+			wantErr: "webhook.listen",
+		},
+		{
+			name: "webhook secret both env and file",
+			cfg: Config{Webhook: WebhookConfig{
+				Secret: TokenRef{Env: "WEBHOOK_SECRET", File: "/run/secrets/webhook"},
+			}},
+			wantErr: "webhook.secret must reference exactly one",
+		},
+		{
+			name: "webhook loopback and env secret",
+			cfg: Config{Webhook: WebhookConfig{
+				Listen: "127.0.0.2:0",
+				Secret: TokenRef{Env: "WEBHOOK_SECRET"},
+			}},
+		},
+		{
 			name: "credentials unknown capability",
 			cfg: Config{Credentials: []CredentialGrant{
 				{Capability: "agent:mdoel", Token: TokenRef{Env: "T"}},
@@ -289,6 +487,78 @@ func TestConfigValidate(t *testing.T) {
 				{Capability: "repo:push", Token: TokenRef{File: "/run/secrets/push-token"}},
 			}},
 		},
+		{
+			name: "OTLP secure endpoint",
+			cfg: Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{
+				Endpoint: "https://collector.example.com:4317",
+				Headers:  map[string]TokenRef{"authorization": {Env: "OTLP_AUTHORIZATION"}},
+			}}},
+		},
+		{
+			name: "OTLP secure host port endpoint",
+			cfg:  Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{Endpoint: "collector.example.com:4317"}}},
+		},
+		{
+			name: "OTLP insecure loopback",
+			cfg: Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{
+				Endpoint: "http://127.0.0.1:4317",
+				Insecure: true,
+			}}},
+		},
+		{
+			name: "OTLP insecure remote",
+			cfg: Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{
+				Endpoint: "http://collector.example.com:4317",
+				Insecure: true,
+			}}},
+			wantErr: "insecure mode is allowed only",
+		},
+		{
+			name:    "OTLP http without insecure",
+			cfg:     Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{Endpoint: "http://localhost:4317"}}},
+			wantErr: "http requires explicit insecure",
+		},
+		{
+			name: "OTLP https with insecure",
+			cfg: Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{
+				Endpoint: "https://localhost:4317",
+				Insecure: true,
+			}}},
+			wantErr: "https conflicts with insecure",
+		},
+		{
+			name: "OTLP header without source",
+			cfg: Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{
+				Endpoint: "https://collector.example.com:4317",
+				Headers:  map[string]TokenRef{"authorization": {}},
+			}}},
+			wantErr: "must reference exactly one of env or file",
+		},
+		{
+			name: "OTLP ambiguous header source",
+			cfg: Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{
+				Endpoint: "https://collector.example.com:4317",
+				Headers: map[string]TokenRef{
+					"authorization": {Env: "AUTH", File: "/run/secrets/auth"},
+				},
+			}}},
+			wantErr: "must reference exactly one of env or file",
+		},
+		{
+			name: "OTLP settings without endpoint",
+			cfg: Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{
+				Insecure: true,
+			}}},
+			wantErr: "endpoint is required",
+		},
+		{
+			name: "OTLP disabled telemetry conflict",
+			cfg: Config{Telemetry: TelemetryConfig{
+				Enabled: boolConfig(false),
+				OTLP:    &OTLPConfig{Endpoint: "https://collector.example.com:4317"},
+			}},
+			wantErr: "cannot be set when telemetry.enabled is false",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -304,6 +574,10 @@ func TestConfigValidate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func boolConfig(value bool) *bool {
+	return &value
 }
 
 // TestConfigLocation is issue #137's timezone-config wiring: Config.Location
@@ -348,6 +622,13 @@ func TestWriteConfigRoundTrip(t *testing.T) {
 	}
 	if err := WriteConfig(path, cfg); err != nil {
 		t.Fatalf("WriteConfig: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "otlp:") {
+		t.Fatalf("disabled OTLP configuration should be omitted, got:\n%s", raw)
 	}
 	got, err := LoadConfig(path)
 	if err != nil {

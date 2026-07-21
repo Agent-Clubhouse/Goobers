@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/providers"
 )
 
 // seedBlockedRecords writes blocked.json directly under the instance's
@@ -107,6 +109,57 @@ func TestBlockedClearRemovesRecord(t *testing.T) {
 	code, _, _ = runArgs(t, "blocked", "clear", "pr/966", root)
 	if code != 1 {
 		t.Fatalf("second clear code = %d, want 1 (no such record)", code)
+	}
+}
+
+func TestBlockedClearResolvesScopedKeyAndRejectsAmbiguousID(t *testing.T) {
+	webRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	apiRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "api"}
+	webKey := blockedRecordKey(webRepo, "955")
+	apiKey := blockedRecordKey(apiRepo, "955")
+	root := seedBlockedRecords(t, map[string]blockedRecord{
+		webKey: {Repository: webRepo, ItemID: "955", Blockers: []string{"956"}, RunID: "web-run"},
+		apiKey: {Repository: apiRepo, ItemID: "955", Blockers: []string{"957"}, RunID: "api-run"},
+	})
+
+	code, _, stderr := runArgs(t, "blocked", "clear", "955", root)
+	if code != 1 || !strings.Contains(stderr, "multiple blocked records") {
+		t.Fatalf("ambiguous clear: code = %d, stderr = %q", code, stderr)
+	}
+
+	code, stdout, stderr := runArgs(t, "blocked", "clear", webKey, root)
+	if code != 0 {
+		t.Fatalf("scoped clear: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	recs, err := loadBlockedRecords(blockedRecordsPath(layoutFor(root)))
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if _, ok := recs[webKey]; ok {
+		t.Fatalf("web record still present: %+v", recs)
+	}
+	if _, ok := recs[apiKey]; !ok {
+		t.Fatalf("API record was removed with web record: %+v", recs)
+	}
+}
+
+func TestBlockedClearResolvesUniqueScopedItemID(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	key := blockedRecordKey(repo, "pr/966")
+	root := seedBlockedRecords(t, map[string]blockedRecord{
+		key: {Repository: repo, ItemID: "pr/966", Blockers: []string{"969"}, RunID: "run-b"},
+	})
+
+	code, stdout, stderr := runArgs(t, "blocked", "clear", "pr/966", root)
+	if code != 0 {
+		t.Fatalf("clear: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	recs, err := loadBlockedRecords(blockedRecordsPath(layoutFor(root)))
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("records after clear = %+v, want empty", recs)
 	}
 }
 

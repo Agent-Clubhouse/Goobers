@@ -2,16 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -142,7 +143,12 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 
 	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets, setup.RunConditions.WorkflowDailyBudgets))
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
-	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
+	runDirs, err := l.RunDirs()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if err := sched.ReconcileAll(runDirs, time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -174,7 +180,7 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 		return 0
 	}
 
-	phase, err := waitForRunTerminal(ctx, l.RunsDir(), runID)
+	phase, err := waitForRunTerminalWithProgress(ctx, l.ForGaggle(gaggle).RunsDir(), runID, stderr)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -221,7 +227,7 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root stri
 		return 0
 	}
 
-	phase, err := waitForRunTerminal(ctx, l.RunsDir(), runID)
+	phase, err := waitForRunTerminalInLayoutWithProgress(ctx, l, runID, stderr)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -277,33 +283,46 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
 	}
-	// runID is raw CLI input, joined onto RunsDir below and then used to
-	// append a terminal event — a traversal id (e.g. "../../x") must not
-	// touch anything outside the instance (#244).
-	if !apiv1.ValidRunID(runID) {
-		pf(stderr, "error: invalid run id %q\n", runID)
-		return 2
-	}
 
 	l := instance.NewLayout(root)
-	dir := filepath.Join(l.RunsDir(), runID)
-	wtMgr, err := worktree.NewManager(l.WorkcopiesDir())
+	runID, err := resolveRunID(l, runID)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	dir, err := l.FindRunDir(runID)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	reader, err := journal.OpenRead(dir)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	runLayout := l
+	if identity.Gaggle != "" && filepath.Clean(filepath.Dir(dir)) != filepath.Clean(l.RunsDir()) {
+		runLayout = l.ForGaggle(identity.Gaggle)
+	}
+	wtMgr, err := worktree.NewManager(runLayout.WorkcopiesDir())
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 
-	if reader, err := journal.OpenRead(dir); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	} else if phase, err := reader.Phase(); err == nil {
+	if phase, err := reader.Phase(); err == nil {
 		// Event-log-first (#242): a stale state.json can still claim
 		// {running, ...} after a crash-fsynced run.finished — trusting it
 		// here would let abort append a SECOND run.finished onto an
 		// already-terminal run, flipping its recorded terminal phase.
 		switch phase {
 		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-			if err := finalizeTerminalRun(l, nil, wtMgr, runID); err != nil {
+			if err := finalizeTerminalRun(runLayout, nil, wtMgr, runID); err != nil {
 				pf(stderr, "error: finalize terminal run %s: %v\n", runID, err)
 				return 2
 			}
@@ -319,14 +338,14 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	defer func() { _ = run.Close() }()
-	if err := prepareAbortedRunBranch(l, runID, run, registrar); err != nil {
+	if err := prepareAbortedRunBranch(runLayout, runID, run, registrar); err != nil {
 		pf(stderr, "warning: terminal branch cleanup for run %s: %v\n", runID, err)
 	}
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted)}); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if err := finalizeTerminalRun(l, nil, wtMgr, runID); err != nil {
+	if err := finalizeTerminalRun(runLayout, nil, wtMgr, runID); err != nil {
 		pf(stderr, "error: finalize aborted run %s: %v\n", runID, err)
 		return 2
 	}
@@ -366,18 +385,35 @@ func isTerminalPhase(p journal.RunPhase) bool {
 }
 
 func waitForRunTerminal(ctx context.Context, runsDir, runID string) (journal.RunPhase, error) {
+	return waitForRunTerminalWithProgress(ctx, runsDir, runID, io.Discard)
+}
+
+func waitForRunTerminalWithProgress(ctx context.Context, runsDir, runID string, progress io.Writer) (journal.RunPhase, error) {
+	return waitForRunTerminalWithReporter(ctx, runsDir, runID, newRunWaitReporter(runID, progress))
+}
+
+func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, progress *runWaitReporter) (journal.RunPhase, error) {
 	if runTerminalWaitTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, runTerminalWaitTimeout)
 		defer cancel()
 	}
+
 	dir := filepath.Join(runsDir, runID)
 	for {
 		if reader, err := journal.OpenRead(dir); err == nil {
+			events, eventsErr := reader.Events()
+			if eventsErr != nil {
+				return journal.PhaseRunning, fmt.Errorf("read progress for run %s: %w", runID, eventsErr)
+			}
+			progress.observe(events, time.Now())
 			if phase := runPhase(reader); isTerminalPhase(phase) {
 				return phase, nil
 			}
+		} else {
+			progress.heartbeat(time.Now())
 		}
+
 		select {
 		case <-ctx.Done():
 			if reader, err := journal.OpenRead(dir); err == nil {
@@ -394,6 +430,25 @@ func waitForRunTerminal(ctx context.Context, runsDir, runID string) (journal.Run
 				}
 				return phase, nil
 			}
+			return journal.PhaseRunning, ctx.Err()
+		case <-time.After(runPollInterval):
+		}
+	}
+}
+
+func waitForRunTerminalInLayoutWithProgress(ctx context.Context, layout instance.Layout, runID string, progress io.Writer) (journal.RunPhase, error) {
+	reporter := newRunWaitReporter(runID, progress)
+	for {
+		dir, err := layout.FindRunDir(runID)
+		if err == nil {
+			return waitForRunTerminalWithReporter(ctx, filepath.Dir(dir), runID, reporter)
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return journal.PhaseRunning, err
+		}
+		reporter.heartbeat(time.Now())
+		select {
+		case <-ctx.Done():
 			return journal.PhaseRunning, ctx.Err()
 		case <-time.After(runPollInterval):
 		}

@@ -3,16 +3,22 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
@@ -65,20 +71,28 @@ func TestStatusRejectsNonInstanceRoot(t *testing.T) {
 // the legitimate case: a real instance root that simply has no runs yet
 // still reports actionable no-runs guidance at exit 0.
 func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	code, stdout, stderr := runArgs(t, "status", root)
 	if code != 0 {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
-	const want = "Issues parked on learned dependencies: 0\n" +
-		"no runs found — trigger one with 'goobers run <workflow>'\n"
-	if stdout != want {
-		t.Fatalf("stdout = %q, want %q", stdout, want)
+	for _, want := range []string{
+		"Workflow summary (success rate over last 10 terminal runs):",
+		"default-implement",
+		"0/1",
+		"Issues parked on learned dependencies: 0",
+		"Open PRs with goobers:blocked-on-sibling: 0",
+		"Open PRs with goobers:merge-escalated: 0",
+		"no runs found — trigger one with 'goobers run <workflow>'",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want it to contain %q", stdout, want)
+		}
 	}
 }
 
 func TestStatusJSON(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	oldStartedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
 	newStartedAt := oldStartedAt.Add(time.Hour)
 	writeStatusRun(t, root, "a-new", "new-workflow", "new-gaggle", newStartedAt)
@@ -88,12 +102,21 @@ func TestStatusJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
 	}
-	want := fmt.Sprintf(
-		`{"warnings":[],"runs":[{"runId":"a-new","workflow":"new-workflow","gaggle":"new-gaggle","phase":"running","startedAt":%q},{"runId":"z-old","workflow":"old-workflow","gaggle":"old-gaggle","phase":"running","startedAt":%q}]}`+"\n",
-		newStartedAt.Format(time.RFC3339), oldStartedAt.Format(time.RFC3339),
-	)
-	if stdout != want {
-		t.Fatalf("stdout = %q, want %q", stdout, want)
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if len(got.Runs) != 2 ||
+		got.Runs[0].RunID != "a-new" ||
+		got.Runs[1].RunID != "z-old" ||
+		!got.Runs[0].StartedAt.Equal(newStartedAt) ||
+		!got.Runs[1].StartedAt.Equal(oldStartedAt) {
+		t.Fatalf("runs = %+v", got.Runs)
+	}
+	for _, run := range got.Runs {
+		if run.LastActivityAt.IsZero() {
+			t.Fatalf("run %q has no last activity timestamp", run.RunID)
+		}
 	}
 }
 
@@ -211,18 +234,229 @@ func TestStatusReadFailurePreservesUsageIOExitCode(t *testing.T) {
 }
 
 func TestStatusJSONEmptyInstance(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	code, stdout, stderr := runArgs(t, "status", "--json", root)
 	if code != 0 {
 		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
 	}
-	if stdout != `{"warnings":[],"runs":[]}`+"\n" {
-		t.Fatalf("stdout = %q, want an empty warnings/runs envelope", stdout)
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if got.Summary == nil || got.Summary.SuccessRateWindow != statusSuccessRateWindow ||
+		len(got.Summary.Workflows) != 1 || got.Summary.Workflows[0].Workflow != "default-implement" {
+		t.Fatalf("summary = %+v", got.Summary)
+	}
+	if got.Summary.Workflows[0].NextFire.Kind != statusNextFireScheduled ||
+		got.Summary.Workflows[0].NextFire.At == nil {
+		t.Fatalf("next fire = %+v", got.Summary.Workflows[0].NextFire)
+	}
+	if len(got.Runs) != 0 {
+		t.Fatalf("runs = %+v, want none", got.Runs)
 	}
 }
 
-func TestStatusDefaultTableOutputUnchanged(t *testing.T) {
-	root := initDemo(t)
+func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing.T) {
+	now := time.Date(2026, time.July, 20, 6, 30, 0, 0, time.UTC)
+	workflows := []apiv1.Workflow{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "scheduled"},
+			Spec: apiv1.WorkflowSpec{
+				Gaggle:    "fleet",
+				Triggers:  []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+				Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "manual"},
+			Spec: apiv1.WorkflowSpec{
+				Gaggle:   "fleet",
+				Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			},
+		},
+	}
+	runs := []runSummary{{
+		RunID: "active", Workflow: "scheduled", Gaggle: "fleet",
+		Phase: journal.PhaseRunning, StartedAt: now.Add(-time.Minute),
+	}}
+	for i := 0; i < statusSuccessRateWindow+1; i++ {
+		phase := journal.PhaseCompleted
+		if i%2 == 1 {
+			phase = journal.PhaseFailed
+		}
+		runs = append(runs, runSummary{
+			RunID: fmt.Sprintf("terminal-%02d", i), Workflow: "scheduled", Gaggle: "fleet",
+			Phase: phase, StartedAt: now.Add(-time.Duration(i+2) * time.Minute),
+			LastActivityAt: now.Add(-time.Duration(i+1) * time.Minute),
+		})
+	}
+
+	lastEvals := map[localscheduler.WorkflowIdentity]time.Time{
+		{Gaggle: "fleet", Workflow: "scheduled"}: now,
+	}
+	got, err := buildStatusFleetSummary(workflows, runs, lastEvals, now, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Workflows) != 2 {
+		t.Fatalf("workflows = %+v", got.Workflows)
+	}
+	manual, scheduled := got.Workflows[0], got.Workflows[1]
+	if manual.Workflow != "manual" || manual.NextFire.Kind != statusNextFireManual ||
+		manual.MaxConcurrentRuns != 1 || manual.TerminalRuns != 0 {
+		t.Fatalf("manual summary = %+v", manual)
+	}
+	if scheduled.Workflow != "scheduled" || scheduled.InFlight != 1 ||
+		scheduled.MaxConcurrentRuns != 2 || scheduled.LastOutcome != journal.PhaseCompleted ||
+		scheduled.TerminalRuns != statusSuccessRateWindow || scheduled.SuccessfulRuns != 5 ||
+		scheduled.SuccessRate == nil || *scheduled.SuccessRate != 0.5 {
+		t.Fatalf("scheduled summary = %+v", scheduled)
+	}
+	wantNext := time.Date(2026, time.July, 20, 7, 0, 0, 0, time.UTC)
+	if scheduled.NextFire.Kind != statusNextFireScheduled || scheduled.NextFire.At == nil ||
+		!scheduled.NextFire.At.Equal(wantNext) {
+		t.Fatalf("next fire = %+v, want %s", scheduled.NextFire, wantNext)
+	}
+
+	var text bytes.Buffer
+	renderStatusFleetSummary(&text, got, now)
+	for _, line := range strings.Split(text.String(), "\n") {
+		if len(line) > 80 {
+			t.Fatalf("summary line is %d columns, want at most 80: %q", len(line), line)
+		}
+	}
+}
+
+type statusSchedulerStarter struct {
+	started atomic.Int32
+}
+
+func (s *statusSchedulerStarter) Start(context.Context, localscheduler.StartRequest) (localscheduler.StartResult, error) {
+	s.started.Add(1)
+	return localscheduler.StartResult{Phase: journal.PhaseCompleted}, nil
+}
+
+func TestStatusIntervalNextFireMatchesSchedulerAfterManualFire(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	schedule, err := localscheduler.ParseSchedule("@every 1h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &statusSchedulerStarter{}
+	entry := localscheduler.WorkflowEntry{
+		Workflow:  "interval",
+		Gaggle:    "fleet",
+		Schedules: []localscheduler.Schedule{localscheduler.InLocation(schedule, time.UTC)},
+		Starter:   starter,
+	}
+	scheduler := localscheduler.New([]localscheduler.WorkflowEntry{entry}, log)
+	startedAt := time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	if err := scheduler.ReconcileAll(nil, startedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scheduler.Trigger(context.Background(), "interval", startedAt.Add(30*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.Wait()
+	workflows := []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "interval"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "fleet",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"}},
+		},
+	}}
+	now := startedAt.Add(30 * time.Minute)
+	lastEvals, err := statusWorkflowLastEvals(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, now, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next := got.Workflows[0].NextFire.At
+	want := time.Date(2026, time.July, 20, 10, 0, 0, 0, time.UTC)
+	if next == nil || !next.Equal(want) {
+		t.Fatalf("next fire = %v, want %s", next, want)
+	}
+
+	scheduler.Tick(context.Background(), want)
+	scheduler.Wait()
+	if got := starter.started.Load(); got != 2 {
+		t.Fatalf("scheduler dispatches = %d, want manual fire plus scheduled fire", got)
+	}
+}
+
+func TestStatusIntervalNextFireMatchesSchedulerAfterReload(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	schedule, err := localscheduler.ParseSchedule("@every 1h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &statusSchedulerStarter{}
+	scheduler := localscheduler.New(nil, log)
+	startedAt := time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	if err := scheduler.ReconcileAll(nil, startedAt); err != nil {
+		t.Fatal(err)
+	}
+	reloadedAt := startedAt.Add(30 * time.Minute)
+	if err := scheduler.Reload([]localscheduler.WorkflowEntry{{
+		Workflow:  "interval",
+		Gaggle:    "fleet",
+		Schedules: []localscheduler.Schedule{localscheduler.InLocation(schedule, time.UTC)},
+		Starter:   starter,
+	}}, nil, reloadedAt, "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	workflows := []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "interval"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "fleet",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"}},
+		},
+	}}
+	lastEvals, err := statusWorkflowLastEvals(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, reloadedAt, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next := got.Workflows[0].NextFire.At
+	want := time.Date(2026, time.July, 20, 10, 30, 0, 0, time.UTC)
+	if next == nil || !next.Equal(want) {
+		t.Fatalf("next fire = %v, want %s", next, want)
+	}
+
+	scheduler.Tick(context.Background(), want.Add(-time.Minute))
+	scheduler.Wait()
+	if got := starter.started.Load(); got != 0 {
+		t.Fatalf("scheduler dispatched %d runs before status next fire", got)
+	}
+	scheduler.Tick(context.Background(), want)
+	scheduler.Wait()
+	if got := starter.started.Load(); got != 1 {
+		t.Fatalf("scheduler dispatches = %d at status next fire, want 1", got)
+	}
+}
+
+func TestStatusDefaultTableIncludesLastActivity(t *testing.T) {
+	root := initScheduledDemo(t)
 	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
 	writeStatusRun(t, root, "fixture-run", "fixture-workflow", "fixture", startedAt)
 
@@ -230,14 +464,16 @@ func TestStatusDefaultTableOutputUnchanged(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
-	want := fmt.Sprintf(
-		"Issues parked on learned dependencies: 0\n"+
-			"%-34s  %-24s  %-10s  %-10s  %s\n%-34s  %-24s  %-10s  %-10s  %s\n",
-		"RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED",
-		"fixture-run", "fixture-workflow", "fixture", "running", startedAt.Format(time.RFC3339),
-	)
-	if stdout != want {
-		t.Fatalf("stdout = %q, want %q", stdout, want)
+	for _, want := range []string{
+		"LAST ACTIVITY",
+		"fixture-run",
+		"fixture-workflow",
+		startedAt.Format(time.RFC3339),
+		" ago\n",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want it to contain %q", stdout, want)
+		}
 	}
 }
 
@@ -303,7 +539,7 @@ func TestStatusFiltersByWorkflowBeforeLimit(t *testing.T) {
 }
 
 func TestStatusJSONFiltersByMultiplePhases(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
 	writeStatusRunWithPhase(t, root, "completed-run", "implementation", "goobers", startedAt, journal.PhaseCompleted)
 	writeStatusRunWithPhase(
@@ -329,18 +565,19 @@ func TestStatusJSONFiltersByMultiplePhases(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status --json --phase: code = %d, stderr = %q", code, stderr)
 	}
-	want := fmt.Sprintf(
-		`{"warnings":[],"runs":[{"runId":"escalated-run","workflow":"implementation","gaggle":"goobers","phase":"escalated","startedAt":%q},{"runId":"failed-run","workflow":"implementation","gaggle":"goobers","phase":"failed","startedAt":%q}]}`+"\n",
-		startedAt.Add(2*time.Minute).Format(time.RFC3339),
-		startedAt.Add(time.Minute).Format(time.RFC3339),
-	)
-	if stdout != want {
-		t.Fatalf("stdout = %q, want %q", stdout, want)
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if len(got.Runs) != 2 ||
+		got.Runs[0].RunID != "escalated-run" ||
+		got.Runs[1].RunID != "failed-run" {
+		t.Fatalf("runs = %+v", got.Runs)
 	}
 }
 
 func TestStatusFiltersCompose(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
 	writeStatusRunWithPhase(t, root, "merge-old", "merge-review", "goobers", startedAt, journal.PhaseFailed)
 	writeStatusRunWithPhase(
@@ -375,12 +612,14 @@ func TestStatusFiltersCompose(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status with composed filters: code = %d, stderr = %q", code, stderr)
 	}
-	want := fmt.Sprintf(
-		`{"warnings":[],"runs":[{"runId":"merge-new","workflow":"merge-review","gaggle":"goobers","phase":"failed","startedAt":%q}]}`+"\n",
-		startedAt.Add(time.Minute).Format(time.RFC3339),
-	)
-	if stdout != want {
-		t.Fatalf("stdout = %q, want %q", stdout, want)
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if len(got.Runs) != 1 ||
+		got.Runs[0].RunID != "merge-new" ||
+		!got.Runs[0].StartedAt.Equal(startedAt.Add(time.Minute)) {
+		t.Fatalf("runs = %+v", got.Runs)
 	}
 }
 
@@ -492,7 +731,7 @@ func TestWatchStatusRepaintsFiltersAndHighlightsPhaseChangeForOneFrame(t *testin
 		limit:    1,
 	}
 	var stdout bytes.Buffer
-	noStatusText := func() (string, error) { return "", nil }
+	noStatusText := func(context.Context, []runSummary, time.Time) (string, error) { return "", nil }
 	if err := watchStatus(ctx, time.Millisecond, options, &stdout, loadRuns, noStatusText); err != nil {
 		t.Fatalf("watchStatus: %v", err)
 	}
@@ -510,7 +749,7 @@ func TestWatchStatusRepaintsFiltersAndHighlightsPhaseChangeForOneFrame(t *testin
 		target.Workflow,
 		target.Gaggle,
 		journal.PhaseFailed,
-		target.StartedAt.Format(time.RFC3339),
+		"-",
 	)
 	if got := strings.Count(output, statusHighlight+failedRow+statusReset); got != 1 {
 		t.Fatalf("highlighted failed row count = %d, want 1 (output=%q)", got, output)
@@ -525,6 +764,19 @@ func TestWatchStatusRepaintsFiltersAndHighlightsPhaseChangeForOneFrame(t *testin
 		if len(line) > 80 {
 			t.Fatalf("watch line is %d columns, want at most 80: %q", len(line), line)
 		}
+	}
+}
+
+func TestFormatLastActivity(t *testing.T) {
+	now := time.Date(2026, time.July, 20, 9, 1, 30, 0, time.UTC)
+	if got := formatLastActivity(now, now.Add(-90*time.Second)); got != "1m30s ago" {
+		t.Fatalf("formatLastActivity() = %q, want %q", got, "1m30s ago")
+	}
+	if got := formatLastActivity(now, now.Add(time.Second)); got != "0s ago" {
+		t.Fatalf("future activity = %q, want %q", got, "0s ago")
+	}
+	if got := formatLastActivity(now, time.Time{}); got != "-" {
+		t.Fatalf("missing activity = %q, want %q", got, "-")
 	}
 }
 
@@ -582,7 +834,7 @@ func TestWatchStatusRepaintsProviderQuotaPauseLine(t *testing.T) {
 
 	frame := 0
 	const pauseLine = "GitHub quota exhausted — resuming dispatch at 2026-07-17T05:00:00Z\n"
-	loadStatusText := func() (string, error) {
+	loadStatusText := func(context.Context, []runSummary, time.Time) (string, error) {
 		defer func() { frame++ }()
 		switch frame {
 		case 0:

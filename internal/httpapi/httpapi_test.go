@@ -45,6 +45,17 @@ type fakeReader struct {
 	lastPage     readservice.PageRequest
 }
 
+type fakeAuthenticator struct {
+	principal *Principal
+	err       error
+	called    int
+}
+
+func (f *fakeAuthenticator) Authenticate(*http.Request) (*Principal, error) {
+	f.called++
+	return f.principal, f.err
+}
+
 func discardLogger() *log.Logger {
 	return log.New(io.Discard, "", 0)
 }
@@ -150,6 +161,98 @@ func TestHealthHandlerUsesSharedReadService(t *testing.T) {
 	if reader.called != 1 || !health.Ready || health.Instance.Name != "example" {
 		t.Fatalf("reader called %d times, health = %+v", reader.called, health)
 	}
+}
+
+func TestTierOneAuthenticatorDefaultsOpen(t *testing.T) {
+	reader := &fakeReader{health: readservice.Health{Ready: true}}
+	handler, err := NewHandler(reader, AllowAll, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, HealthPath, nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+	}
+	if reader.called != 1 {
+		t.Fatalf("reader called %d times, want 1", reader.called)
+	}
+}
+
+func TestAuthenticatorAcceptsAndRejectsBeforeAuthorization(t *testing.T) {
+	t.Run("accepts and establishes principal", func(t *testing.T) {
+		authenticator := &fakeAuthenticator{principal: &Principal{Subject: "user-1"}}
+		authorized := false
+		authorizer := authorizerFunc(func(request *http.Request) error {
+			principal, ok := PrincipalFromRequest(request)
+			if !ok || principal.Subject != "user-1" {
+				t.Fatalf("principal = %+v, present = %t", principal, ok)
+			}
+			authorized = true
+			return nil
+		})
+		handler, err := NewHandler(
+			&fakeReader{health: readservice.Health{Ready: true}},
+			authorizer,
+			discardLogger(),
+			WithAuthenticator(authenticator),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, HealthPath, nil))
+
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+		}
+		if authenticator.called != 1 || !authorized {
+			t.Fatalf("authenticator called %d times, authorized = %t", authenticator.called, authorized)
+		}
+	})
+
+	t.Run("rejects before authorization", func(t *testing.T) {
+		authenticator := &fakeAuthenticator{err: errors.New("invalid token")}
+		authorized := false
+		reader := &fakeReader{}
+		handler, err := NewHandler(
+			reader,
+			authorizerFunc(func(*http.Request) error {
+				authorized = true
+				return nil
+			}),
+			discardLogger(),
+			WithAuthenticator(authenticator),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, HealthPath, nil))
+
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+		}
+		var envelope ErrorEnvelope
+		if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Error.Code != "unauthenticated" {
+			t.Fatalf("error = %+v", envelope.Error)
+		}
+		if authenticator.called != 1 || authorized || reader.called != 0 {
+			t.Fatalf(
+				"authenticator called %d times, authorized = %t, reader called %d times",
+				authenticator.called,
+				authorized,
+				reader.called,
+			)
+		}
+	})
 }
 
 func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
@@ -543,6 +646,20 @@ func TestServerLifecycleAndStartupFailure(t *testing.T) {
 	}
 }
 
+func TestServerReadTimeoutOption(t *testing.T) {
+	const timeout = 3 * time.Second
+	server, err := NewServer("127.0.0.1:0", http.NotFoundHandler(), discardLogger(), WithReadTimeout(timeout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.http.ReadTimeout != timeout {
+		t.Fatalf("ReadTimeout = %s, want %s", server.http.ReadTimeout, timeout)
+	}
+	if _, err := NewServer("127.0.0.1:0", http.NotFoundHandler(), discardLogger(), WithReadTimeout(0)); err == nil {
+		t.Fatal("expected non-positive read timeout error")
+	}
+}
+
 func TestConstructorsRequireDependencies(t *testing.T) {
 	if _, err := NewHandler(nil, AllowAll, discardLogger()); err == nil {
 		t.Fatal("expected missing reader error")
@@ -553,6 +670,14 @@ func TestConstructorsRequireDependencies(t *testing.T) {
 	if _, err := NewHandler(&fakeReader{}, AllowAll, nil); err == nil {
 		t.Fatal("expected missing error logger error")
 	}
+	if _, err := NewHandler(
+		&fakeReader{},
+		AllowAll,
+		discardLogger(),
+		WithAuthenticator(nil),
+	); err == nil {
+		t.Fatal("expected missing authenticator error")
+	}
 	if _, err := NewServer("", http.NotFoundHandler(), discardLogger()); err == nil {
 		t.Fatal("expected missing address error")
 	}
@@ -561,5 +686,8 @@ func TestConstructorsRequireDependencies(t *testing.T) {
 	}
 	if _, err := NewServer("127.0.0.1:0", http.NotFoundHandler(), nil); err == nil {
 		t.Fatal("expected missing error logger error")
+	}
+	if _, err := NewServer("127.0.0.1:0", http.NotFoundHandler(), discardLogger(), nil); err == nil {
+		t.Fatal("expected missing server option error")
 	}
 }

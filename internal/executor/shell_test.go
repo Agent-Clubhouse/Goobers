@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,9 @@ func newTestInjector(t *testing.T, capability, envVar, value string) *credential
 
 func newTestExecutor(t *testing.T, injector *credentials.Injector) (*ShellExecutor, *fakeRecorder) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("ShellExecutor tests exercise Unix process and shell semantics")
+	}
 	if injector == nil {
 		resolver, err := credentials.NewResolver(nil)
 		if err != nil {
@@ -86,6 +90,7 @@ func TestShellExecutor_RunSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
 	}
@@ -94,6 +99,66 @@ func TestShellExecutor_RunSuccess(t *testing.T) {
 	}
 	if got := string(rec.recorded["task-1/stdout.log"]); !strings.Contains(got, "hello") {
 		t.Fatalf("stdout artifact = %q, want it to contain %q", got, "hello")
+	}
+}
+
+func TestShellExecutor_UsesDeclaredEnvironment(t *testing.T) {
+	exec, rec := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `printf %s "$GREETING"`},
+		Env:     map[string]string{"GREETING": "hello-from-dsl"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if got := string(rec.recorded["task-1/stdout.log"]); got != "hello-from-dsl" {
+		t.Fatalf("stdout = %q, want declared environment value", got)
+	}
+}
+
+func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *testing.T) {
+	stub := filepath.Join(t.TempDir(), "goobers")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s|%s' \"$GOOBERS_GAGGLE\" \"$GREETING\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, rec := newTestExecutor(t, nil)
+	exec.SelfBin = stub
+	env := baseEnvelope(t)
+	env.Gaggle = "alpha"
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "env-check"},
+		Env:     map[string]string{"GREETING": "hello-from-dsl"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if got := string(rec.recorded["task-1/stdout.log"]); got != "alpha|hello-from-dsl" {
+		t.Fatalf("stdout = %q, want gaggle context and declared environment", got)
+	}
+}
+
+func TestShellExecutor_TypedTimeoutOverridesLegacyInput(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Limits.MaxDurationSeconds = 7
+	env.Inputs = map[string]interface{}{InputTimeout: "2m"}
+
+	got, err := exec.timeoutFor(env)
+	if err != nil {
+		t.Fatalf("timeoutFor: %v", err)
+	}
+	if got != 7*time.Second {
+		t.Fatalf("timeout = %s, want 7s from invocation limits", got)
 	}
 }
 
@@ -880,21 +945,23 @@ func TestShellExecutor_ResultFileNonJSONIsNotAnError(t *testing.T) {
 // TestShellExecutor_NonGoobersStageOmitsRunContext proves the #322 leak
 // closure at the integration level: a stage whose command is NOT the goobers
 // CLI (here `sh`, standing in for local-ci's `make ci` → `go test ./...`) does
-// NOT receive the run's operational identity (GOOBERS_RUN_ID/GOOBERS_WORKFLOW/
-// GOOBERS_INSTANCE_ROOT) in its exec env — so, in a self-hosting project, a
-// live run can't perturb its own test suite through those vars. The stage's
-// own declared Task.Inputs (GOOBERS_INPUT_*) are unaffected: they are the
-// stage's config, not the runner's identity, so they still flow.
+// NOT receive the run's operational identity (GOOBERS_RUN_ID/GOOBERS_GAGGLE/
+// GOOBERS_WORKFLOW/GOOBERS_INSTANCE_ROOT) in its exec env — so, in a
+// self-hosting project, a live run can't perturb its own test suite through
+// those vars. The stage's own declared Task.Inputs (GOOBERS_INPUT_*) are
+// unaffected: they are the stage's config, not the runner's identity, so they
+// still flow.
 func TestShellExecutor_NonGoobersStageOmitsRunContext(t *testing.T) {
 	exec, rec := newTestExecutor(t, nil)
 	exec.InstanceRoot = "/instances/demo"
 	env := baseEnvelope(t)
 	env.RunID = "run-123"
+	env.Gaggle = "alpha"
 	env.WorkflowID = "implementation"
 	env.Inputs = map[string]interface{}{"trustLabel": "goobers:approved"}
 
 	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
-		Command: []string{"sh", "-c", `echo "run=$GOOBERS_RUN_ID wf=$GOOBERS_WORKFLOW root=$GOOBERS_INSTANCE_ROOT input=$GOOBERS_INPUT_TRUSTLABEL"`},
+		Command: []string{"sh", "-c", `echo "run=$GOOBERS_RUN_ID gaggle=$GOOBERS_GAGGLE wf=$GOOBERS_WORKFLOW root=$GOOBERS_INSTANCE_ROOT input=$GOOBERS_INPUT_TRUSTLABEL"`},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -905,7 +972,7 @@ func TestShellExecutor_NonGoobersStageOmitsRunContext(t *testing.T) {
 	got := string(rec.recorded["task-1/stdout.log"])
 	// Run-context vars empty (not injected for a non-goobers command); the
 	// declared input var still present.
-	want := "run= wf= root= input=goobers:approved\n"
+	want := "run= gaggle= wf= root= input=goobers:approved\n"
 	if got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}

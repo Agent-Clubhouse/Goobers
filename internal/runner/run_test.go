@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -98,6 +99,32 @@ func (s *stubDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope,
 		}}
 	}
 	return result, nil
+}
+
+type committingAssetlessGoober struct {
+	t *testing.T
+}
+
+func (g *committingAssetlessGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.t.Helper()
+	repositoryAsset := filepath.Join(env.Workspace, gooberassets.WorkspaceDir, "reference.md")
+	data, err := os.ReadFile(repositoryAsset)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("read repository-owned asset path: %w", err)
+	}
+	if string(data) != "repository content\n" {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("repository-owned asset = %q", data)
+	}
+	if err := os.WriteFile(filepath.Join(env.Workspace, "implementation.txt"), []byte("implemented\n"), 0o644); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	runGit(g.t, env.Workspace, "add", "implementation.txt")
+	runGit(g.t, env.Workspace, "commit", "-m", "implement")
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (g *committingAssetlessGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
 }
 
 // committingStubDeterministic is stubDeterministic that first commits a real
@@ -225,13 +252,217 @@ type blockingDeterministic struct {
 	started  chan struct{}
 	release  chan struct{}
 	finished chan struct{}
+	result   apiv1.ResultEnvelope
 }
 
 func (b *blockingDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	close(b.started)
 	<-b.release
 	close(b.finished)
-	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	if b.result.Status == "" {
+		b.result.Status = apiv1.ResultSuccess
+	}
+	return b.result, nil
+}
+
+type fakeHeartbeatTicker struct {
+	ticks   chan time.Time
+	stopped chan struct{}
+	once    sync.Once
+}
+
+func (t *fakeHeartbeatTicker) Ticks() <-chan time.Time { return t.ticks }
+func (t *fakeHeartbeatTicker) Stop() {
+	t.once.Do(func() { close(t.stopped) })
+}
+
+type heartbeatRecorder struct {
+	events chan journal.Event
+}
+
+func (r heartbeatRecorder) Append(event journal.Event) error {
+	r.events <- event
+	return nil
+}
+
+func TestStageHeartbeatUsesFixedIntervalAndStopsWithAttempt(t *testing.T) {
+	ticker := &fakeHeartbeatTicker{
+		ticks:   make(chan time.Time, 1),
+		stopped: make(chan struct{}),
+	}
+	var interval time.Duration
+	r := &Runner{
+		heartbeatInterval: StageHeartbeatInterval,
+		newHeartbeatTicker: func(got time.Duration) heartbeatTicker {
+			interval = got
+			return ticker
+		},
+	}
+	recorder := heartbeatRecorder{events: make(chan journal.Event, 1)}
+	heartbeat := r.startStageHeartbeat(recorder, "implement", 2, journal.AttemptPolicy)
+
+	ticker.ticks <- time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	select {
+	case event := <-recorder.events:
+		if event.Type != journal.EventStageHeartbeat ||
+			event.Stage != "implement" ||
+			event.Attempt != 2 ||
+			event.AttemptClass != journal.AttemptPolicy {
+			t.Fatalf("heartbeat event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat was not emitted after fake clock tick")
+	}
+	if interval != time.Minute {
+		t.Fatalf("heartbeat interval = %s, want 1m", interval)
+	}
+
+	if err := heartbeat.Stop(); err != nil {
+		t.Fatalf("stop heartbeat: %v", err)
+	}
+	select {
+	case <-ticker.stopped:
+	default:
+		t.Fatal("heartbeat ticker was not stopped")
+	}
+
+	ticker.ticks <- time.Date(2026, time.July, 20, 9, 1, 0, 0, time.UTC)
+	select {
+	case event := <-recorder.events:
+		t.Fatalf("heartbeat after attempt completion = %+v", event)
+	default:
+	}
+}
+
+func TestRunnerToleratedFailureStopsHeartbeatBeforeJournalingOutcome(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "notify",
+		Tasks: []apiv1.Task{{
+			Name: "notify", Type: apiv1.TaskDeterministic, Goal: "best-effort notification",
+			Run:             &apiv1.DeterministicRun{Command: []string{"false"}},
+			ContinueOnError: true,
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "tolerated-heartbeat", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	blocker := &blockingDeterministic{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}),
+		result: apiv1.ResultEnvelope{
+			Status:  apiv1.ResultFailure,
+			Outputs: map[string]interface{}{"partial": "must not escape"},
+		},
+	}
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(blocker.release) })
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return blocker, nil
+	}, nil)
+	ticker := &fakeHeartbeatTicker{
+		ticks:   make(chan time.Time, 1),
+		stopped: make(chan struct{}),
+	}
+	r.newHeartbeatTicker = func(time.Duration) heartbeatTicker { return ticker }
+
+	type startResult struct {
+		result Result
+		err    error
+	}
+	resultCh := make(chan startResult, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID:   "run-tolerated-heartbeat",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		resultCh <- startResult{result: result, err: err}
+	}()
+
+	select {
+	case <-blocker.started:
+	case <-time.After(time.Second):
+		t.Fatal("task did not start")
+	}
+	ticker.ticks <- time.Now()
+
+	runDir := filepath.Join(runsDir, "run-tolerated-heartbeat")
+	deadline := time.Now().Add(time.Second)
+	for {
+		rd, openErr := journal.OpenRead(runDir)
+		if openErr == nil {
+			events, eventsErr := rd.Events()
+			if eventsErr == nil {
+				sawHeartbeat := false
+				for _, event := range events {
+					sawHeartbeat = sawHeartbeat || event.Type == journal.EventStageHeartbeat
+				}
+				if sawHeartbeat {
+					break
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("heartbeat was not journaled while task was in flight")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	releaseOnce.Do(func() { close(blocker.release) })
+	var got startResult
+	select {
+	case got = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("run did not finish after task release")
+	}
+	if got.err != nil {
+		t.Fatalf("Start: %v", got.err)
+	}
+	if got.result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", got.result.Phase)
+	}
+	select {
+	case <-ticker.stopped:
+	default:
+		t.Fatal("heartbeat ticker was not stopped before the run completed")
+	}
+
+	rd, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	started, heartbeat, finished, tolerated, runFinished := -1, -1, -1, -1, -1
+	for i, event := range events {
+		switch {
+		case event.Type == journal.EventStageStarted && event.Stage == "notify":
+			started = i
+		case event.Type == journal.EventStageHeartbeat && event.Stage == "notify":
+			heartbeat = i
+		case event.Type == journal.EventStageFinished && event.Stage == "notify":
+			finished = i
+			if event.Status != string(apiv1.ResultFailure) || len(event.Outputs) != 0 {
+				t.Errorf("stage.finished = %+v, want failure with no outputs", event)
+			}
+		case event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode:
+			tolerated = i
+		case event.Type == journal.EventRunFinished:
+			runFinished = i
+		}
+	}
+	if started >= heartbeat || heartbeat >= finished || finished >= tolerated || tolerated >= runFinished {
+		t.Fatalf("event order indexes = started:%d heartbeat:%d finished:%d tolerated:%d run.finished:%d", started, heartbeat, finished, tolerated, runFinished)
+	}
 }
 
 // alwaysFailAutomated is an invoke.Automated that always reports "fail",
@@ -245,19 +476,38 @@ func (alwaysFailAutomated) Evaluate(context.Context, apiv1.AutomatedGate, apiv1.
 	return "fail", nil
 }
 
+type envelopeCapturingAutomated struct {
+	env apiv1.InvocationEnvelope
+}
+
+func (c *envelopeCapturingAutomated) Evaluate(_ context.Context, _ apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
+	c.env = env
+	return gate.OutcomePass, nil
+}
+
 // --- fixture repo: a local bare repo, so the test needs no network access ---
 
 func newFixtureRepo(t *testing.T) string {
+	return newFixtureRepoWithFiles(t, map[string]string{"README.md": "fixture\n"})
+}
+
+func newFixtureRepoWithFiles(t *testing.T, files map[string]string) string {
 	t.Helper()
 	work := t.TempDir()
 	bare := filepath.Join(t.TempDir(), "fixture.git")
 	runGit(t, work, "init", "--initial-branch=main")
 	runGit(t, work, "config", "user.email", "test@example.com")
 	runGit(t, work, "config", "user.name", "test")
-	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("fixture\n"), 0o644); err != nil {
-		t.Fatal(err)
+	for name, content := range files {
+		path := filepath.Join(work, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	runGit(t, work, "add", "README.md")
+	runGit(t, work, "add", ".")
 	runGit(t, work, "commit", "-m", "initial")
 	runGit(t, "", "clone", "--bare", work, bare)
 	return bare
@@ -641,6 +891,87 @@ func taskReservedNextFixtureMachine(t *testing.T, next string) *workflow.Machine
 	return m
 }
 
+func agenticReservedNextFixtureMachine(t *testing.T, next string) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a diff", Next: next,
+		}},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "agentic-reserved-next-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("compile agentic reserved-next fixture machine (next=%q): %v", next, err)
+	}
+	return m
+}
+
+func TestRunnerAssetlessStagesAllowRepositoryOwnedAssetPath(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		machine func(*testing.T, string) *workflow.Machine
+		config  func(*testing.T, string) Config
+	}{
+		{
+			name:    "deterministic",
+			machine: taskReservedNextFixtureMachine,
+			config: func(_ *testing.T, runID string) Config {
+				return Config{NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+					return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
+						runID + ":implement": {status: apiv1.ResultSuccess},
+					}}, nil
+				}}
+			},
+		},
+		{
+			name:    "goober_without_assets",
+			machine: agenticReservedNextFixtureMachine,
+			config: func(t *testing.T, _ string) Config {
+				return Config{NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+					return &committingAssetlessGoober{t: t}, nil
+				}}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instanceRoot := t.TempDir()
+			wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo := newFixtureRepoWithFiles(t, map[string]string{
+				"README.md": "fixture\n",
+				filepath.Join(gooberassets.WorkspaceDir, "reference.md"): "repository content\n",
+			})
+			runID := "run-" + strings.ReplaceAll(tc.name, "_", "-")
+			cfg := tc.config(t, runID)
+			cfg.Worktrees = wtMgr
+			cfg.RunsDir = filepath.Join(instanceRoot, "runs")
+			cfg.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return repo, nil }
+			r, err := New(cfg)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			result, err := r.Start(context.Background(), StartInput{
+				RunID:   runID,
+				Machine: tc.machine(t, workflow.TerminalComplete),
+				Gaggle:  "acme-web",
+				Trigger: journal.Trigger{Kind: journal.TriggerManual},
+				RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+			})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if result.Phase != journal.PhaseCompleted {
+				t.Fatalf("phase = %q, want completed", result.Phase)
+			}
+		})
+	}
+}
+
 // noWorkFixtureMachine is a two-task query-backlog -> curate chain — the
 // exact shape backlog-curation.yaml uses (issue #233) — where "curate" is
 // compiled into the machine but deliberately has NO canned output in the
@@ -797,6 +1128,118 @@ func TestRunnerThreadsInputsFromUpstreamOutputs(t *testing.T) {
 	}
 }
 
+func TestRunnerPopulatesDeclaredTaskAndGateLimits(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+			Run:            &apiv1.DeterministicRun{Command: []string{"true"}},
+			TimeoutSeconds: 90,
+			Limits:         &apiv1.Limits{MaxTokens: 2500, MaxCostUSD: 3.5},
+			Next:           "quality",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "quality",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals", TimeoutSeconds: 12},
+			Branches:  map[string]string{gate.OutcomePass: workflow.TerminalComplete, gate.OutcomeFail: workflow.TargetAbort},
+		}},
+	}
+
+	machine, err := workflow.Compile(workflow.Definition{Name: "limits-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-limits:build": {status: apiv1.ResultSuccess},
+	}}
+	auto := &envelopeCapturingAutomated{}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, auto)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-limits",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	taskLimits := det.received["run-limits:build"].Limits
+	if taskLimits.MaxDurationSeconds != 90 || taskLimits.MaxTokens != 2500 || taskLimits.MaxCostUSD != 3.5 {
+		t.Fatalf("task limits = %+v, want declared timeout/token/cost limits", taskLimits)
+	}
+	if auto.env.Limits.MaxDurationSeconds != 12 {
+		t.Fatalf("gate limits = %+v, want 12s duration", auto.env.Limits)
+	}
+}
+
+func TestRunnerThreadsAutomatedGateCadenceToCIPollTask(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "ci-poll",
+		Tasks: []apiv1.Task{{
+			Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll CI",
+			Run:          &apiv1.DeterministicRun{Command: []string{"true"}},
+			Inputs:       map[string]string{"kind": "ci-poll", "prNumber": "42"},
+			Capabilities: []string{"github:pr:write"},
+			Next:         "ci-gate",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "ci-gate",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "ci-status", PollIntervalSeconds: 7},
+			Branches: map[string]string{
+				gate.OutcomePass:    workflow.TerminalComplete,
+				gate.OutcomeFail:    workflow.TargetAbort,
+				gate.OutcomeTimeout: workflow.TargetEscalate,
+			},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "ci-cadence-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-cadence:ci-poll": {
+			status:  apiv1.ResultSuccess,
+			outputs: map[string]interface{}{"ciStatus": "passing"},
+		},
+	}}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-cadence",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	got := det.received["run-cadence:ci-poll"].Inputs["pollIntervalSeconds"]
+	if got != "7s" {
+		t.Fatalf("ci-poll cadence input = %v, want 7s from downstream gate", got)
+	}
+}
+
 // TestRunnerInputsFromMissingUpstreamOutputFailsClosed proves a declared
 // InputsFrom entry whose referenced upstream output key never showed up
 // fails the stage closed rather than silently dispatching with the key
@@ -894,6 +1337,7 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 		journal.EventArtifactRecorded, // runner-assembled context manifest
 		journal.EventArtifactRecorded,
 		journal.EventStageFinished,
+		journal.EventGatePaused,
 		journal.EventGateStarted, // recovery marker, excluded from conformance
 		journal.EventGateEvaluated,
 		journal.EventRunFinished,
@@ -1526,6 +1970,247 @@ func TestRunnerTaskFailureWithGateNextStillBranches(t *testing.T) {
 	}
 }
 
+func TestRunnerTaskFailureContinueOnErrorMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		continueOnError bool
+		nextIsGate      bool
+		wantPhase       journal.RunPhase
+		wantAfter       bool
+	}{
+		{name: "default direct task fails", wantPhase: journal.PhaseFailed},
+		{name: "tolerated direct task advances", continueOnError: true, wantPhase: journal.PhaseCompleted, wantAfter: true},
+		{name: "default gate preserves unresolved failure", nextIsGate: true, wantPhase: journal.PhaseFailed},
+		{name: "tolerated gate completes unresolved failure", continueOnError: true, nextIsGate: true, wantPhase: journal.PhaseCompleted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next := "after"
+			var gates []apiv1.Gate
+			if tc.nextIsGate {
+				next = "observe-failure"
+				gates = []apiv1.Gate{{
+					Name:      "observe-failure",
+					Evaluator: apiv1.EvaluatorAutomated,
+					Automated: &apiv1.AutomatedGate{Check: "status-equals", Params: map[string]string{"equals": "success"}},
+					Branches:  map[string]string{"pass": "after", "fail": workflow.TerminalComplete},
+				}}
+			}
+			spec := apiv1.WorkflowSpec{
+				Gaggle:   "acme-web",
+				Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+				Start:    "notify",
+				Tasks: []apiv1.Task{
+					{
+						Name: "notify", Type: apiv1.TaskDeterministic, Goal: "best-effort notification",
+						Run:             &apiv1.DeterministicRun{Command: []string{"false"}},
+						ContinueOnError: tc.continueOnError, Next: next,
+					},
+					{Name: "after", Type: apiv1.TaskDeterministic, Goal: "continue", Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+				},
+				Gates: gates,
+			}
+			machine, err := workflow.Compile(workflow.Definition{Name: "continue-on-error", Version: 1, Spec: spec})
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			runID := strings.ReplaceAll(tc.name, " ", "-")
+			r, runsDir := newTestRunner(t, map[string]stubTaskResult{
+				runID + ":notify": {
+					status:  apiv1.ResultFailure,
+					outputs: map[string]interface{}{"partial": "must not escape a tolerated failure"},
+				},
+				runID + ":after": {status: apiv1.ResultSuccess},
+			}, gate.NewAutomatedEvaluator())
+
+			res, err := r.Start(context.Background(), StartInput{
+				RunID:   runID,
+				Machine: machine,
+				Gaggle:  "acme-web",
+				Trigger: journal.Trigger{Kind: journal.TriggerManual},
+				RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+			})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if res.Phase != tc.wantPhase {
+				t.Fatalf("phase = %q, want %q", res.Phase, tc.wantPhase)
+			}
+
+			rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+			if err != nil {
+				t.Fatalf("OpenRead: %v", err)
+			}
+			events, err := rd.Events()
+			if err != nil {
+				t.Fatalf("Events: %v", err)
+			}
+			var sawAfter, sawGateFailure, sawTolerated bool
+			for _, event := range events {
+				if event.Type == journal.EventStageStarted && event.Stage == "after" {
+					sawAfter = true
+				}
+				if event.Type == journal.EventGateEvaluated && event.Gate == "observe-failure" && event.Verdict == gate.OutcomeFail {
+					sawGateFailure = true
+				}
+				if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+					sawTolerated = true
+				}
+				if event.Type == journal.EventStageFinished && event.Stage == "notify" {
+					if event.Status != string(apiv1.ResultFailure) {
+						t.Errorf("notify status = %q, want failure", event.Status)
+					}
+					if tc.continueOnError && len(event.Outputs) != 0 {
+						t.Errorf("tolerated failure outputs = %v, want absent", event.Outputs)
+					}
+					if !tc.continueOnError && event.Outputs["partial"] == nil {
+						t.Errorf("default failure outputs = %v, want unchanged", event.Outputs)
+					}
+				}
+			}
+			if sawAfter != tc.wantAfter {
+				t.Errorf("after dispatched = %t, want %t", sawAfter, tc.wantAfter)
+			}
+			if tc.nextIsGate && !sawGateFailure {
+				t.Error("status-equals gate did not observe the failed stage status")
+			}
+			if sawTolerated != tc.continueOnError {
+				t.Errorf("tolerated failure event = %t, want %t", sawTolerated, tc.continueOnError)
+			}
+		})
+	}
+}
+
+func TestJournalToleratedFailureIsIdempotentPerAttempt(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-tolerated-note"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+	if err := jr.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "notify", Attempt: 1, Status: string(apiv1.ResultFailure),
+	}); err != nil {
+		t.Fatalf("Append stage.finished: %v", err)
+	}
+
+	if err := journalToleratedFailure(jr, "notify"); err != nil {
+		t.Fatalf("journalToleratedFailure first call: %v", err)
+	}
+	if err := journalToleratedFailure(jr, "notify"); err != nil {
+		t.Fatalf("journalToleratedFailure replay: %v", err)
+	}
+
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var notes int
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+			notes++
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("tolerated failure notes = %d, want 1 after replay", notes)
+	}
+}
+
+func TestJournalToleratedFailurePreservesInfraAttemptMetadataOnReplay(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-infra-tolerated-note"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+	if err := jr.Append(journal.Event{
+		Type:         journal.EventStageFinished,
+		Stage:        "notify",
+		Attempt:      2,
+		AttemptClass: journal.AttemptInfra,
+		Status:       string(apiv1.ResultFailure),
+	}); err != nil {
+		t.Fatalf("Append stage.finished: %v", err)
+	}
+
+	if err := journalToleratedFailure(jr, "notify"); err != nil {
+		t.Fatalf("journalToleratedFailure first call: %v", err)
+	}
+	if err := journalToleratedFailure(jr, "notify"); err != nil {
+		t.Fatalf("journalToleratedFailure replay: %v", err)
+	}
+
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var notes []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+			notes = append(notes, event)
+		}
+	}
+	if len(notes) != 1 {
+		t.Fatalf("tolerated failure notes = %d, want 1 after replay", len(notes))
+	}
+	if notes[0].Attempt != 2 || notes[0].AttemptClass != journal.AttemptInfra {
+		t.Fatalf("tolerated failure note attempt = %d class = %q, want attempt=2 class=infra", notes[0].Attempt, notes[0].AttemptClass)
+	}
+	for _, event := range journal.ConformanceView(events) {
+		if event.Type == journal.EventError && event.Stage == "notify" && event.ErrorCode == toleratedFailureErrorCode {
+			t.Fatalf("infra tolerated failure note leaked into conformance view: %+v", event)
+		}
+	}
+}
+
+func TestRunnerToleratedFailureDoesNotSatisfyInputsFrom(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "notify",
+		Tasks: []apiv1.Task{
+			{
+				Name: "notify", Type: apiv1.TaskDeterministic, Goal: "best-effort notification",
+				Run:             &apiv1.DeterministicRun{Command: []string{"false"}},
+				ContinueOnError: true, Next: "consumer",
+			},
+			{
+				Name: "consumer", Type: apiv1.TaskDeterministic, Goal: "consume output",
+				Run:        &apiv1.DeterministicRun{Command: []string{"true"}},
+				InputsFrom: map[string]string{"messageID": "messageID"},
+			},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "continue-on-error-inputs", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		"run-tolerated-inputs:notify": {
+			status:  apiv1.ResultFailure,
+			outputs: map[string]interface{}{"messageID": "partial-result"},
+		},
+	}, nil)
+
+	_, err = r.Start(context.Background(), StartInput{
+		RunID:   "run-tolerated-inputs",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `upstream output "messageID" not found`) {
+		t.Fatalf("Start error = %v, want missing tolerated-failure output", err)
+	}
+}
+
 // TestRunnerTaskBlockedFinishesEscalated proves the #544 ruling: a "blocked"
 // business status ends the run at a canonical terminal phase — escalated —
 // with the cause journaled (blocked_by_agent), the Blocked handler invoked
@@ -1547,6 +2232,8 @@ func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 
 	var order []string
 	var got BlockedOutcome
+	commenter := &recordingCommenter{}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 	r.cfg.Blocked = func(_ context.Context, o BlockedOutcome) error {
 		order = append(order, "blocked")
 		got = o
@@ -1556,6 +2243,9 @@ func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 		order = append(order, "finalize")
 		if runID != "run-blocked" || phase != journal.PhaseEscalated {
 			t.Errorf("FinalizeTerminal got (%q, %q), want (run-blocked, escalated)", runID, phase)
+		}
+		if len(commenter.requests) != 1 {
+			t.Errorf("escalation notification calls = %d at finalization, want 1", len(commenter.requests))
 		}
 		return nil
 	}
@@ -1583,16 +2273,27 @@ func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 	}
 	want := BlockedOutcome{
 		RunID:    "run-blocked",
+		RepoRef:  apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Stage:    "implement",
 		ItemID:   "510",
 		Reason:   "DEPENDENCY_NOT_MET: issues #441 and #442 must merge first",
 		Blockers: []string{"441", "442"},
 	}
-	if got.RunID != want.RunID || got.Stage != want.Stage || got.ItemID != want.ItemID || got.Reason != want.Reason {
+	if got.RunID != want.RunID || got.RepoRef != want.RepoRef || got.Stage != want.Stage || got.ItemID != want.ItemID || got.Reason != want.Reason {
 		t.Fatalf("BlockedOutcome = %+v, want %+v", got, want)
 	}
 	if len(got.Blockers) != 2 || got.Blockers[0] != "441" || got.Blockers[1] != "442" {
 		t.Fatalf("Blockers = %v, want [441 442] (parsed, deduped, in order)", got.Blockers)
+	}
+	if len(commenter.requests) != 1 {
+		t.Fatalf("escalation notification calls = %d, want 1", len(commenter.requests))
+	}
+	notification := commenter.requests[0]
+	if notification.Repository != providerRepositoryRef(want.RepoRef) ||
+		notification.ID != "510" ||
+		!strings.Contains(notification.Comment, "implement") ||
+		!strings.Contains(notification.Comment, want.Reason) {
+		t.Fatalf("escalation notification = %+v, want item 510 with stage and blocked reason", notification)
 	}
 
 	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-blocked"))
@@ -3479,10 +4180,7 @@ func TestRunnerNotifiesExplicitGateEscalationOnce(t *testing.T) {
 	r, _ := newTestRunner(t, map[string]stubTaskResult{
 		"run-ci-timeout:ci-poll": {status: apiv1.ResultSuccess},
 	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-ci-timeout",
@@ -3514,10 +4212,7 @@ func TestRunnerTerminalGateNotificationFailureIsBestEffort(t *testing.T) {
 	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
 		"run-notify-error:ci-poll": {status: apiv1.ResultSuccess},
 	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-notify-error",
@@ -3587,10 +4282,7 @@ func TestRunnerNotifiesTerminalGateEscalationViaClaimLedgerFallback(t *testing.T
 	r, _ := newTestRunner(t, map[string]stubTaskResult{
 		"run-scheduled-claimed:ci-poll": {status: apiv1.ResultSuccess},
 	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 	var resolvedRunID string
 	r.cfg.ClaimedItems = func(runID string) ([]string, error) {
 		resolvedRunID = runID
@@ -3630,10 +4322,7 @@ func TestRunnerTerminalGateEscalationFanOutsToEveryClaimedItem(t *testing.T) {
 	r, _ := newTestRunner(t, map[string]stubTaskResult{
 		"run-multi-claimed:ci-poll": {status: apiv1.ResultSuccess},
 	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 	r.cfg.ClaimedItems = func(string) ([]string, error) { return []string{"57", "58"}, nil }
 
 	res, err := r.Start(context.Background(), StartInput{
@@ -3667,10 +4356,7 @@ func TestRunnerTerminalGateItemResolutionFailureIsBestEffort(t *testing.T) {
 	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
 		"run-resolve-error:ci-poll": {status: apiv1.ResultSuccess},
 	}, fixedOutcomeAutomated(gate.OutcomeTimeout))
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 	r.cfg.ClaimedItems = func(string) ([]string, error) { return nil, fmt.Errorf("claim ledger unreadable") }
 
 	res, err := r.Start(context.Background(), StartInput{
@@ -3718,10 +4404,7 @@ func TestRunnerNotifiesGateAbortWithReviewerRationale(t *testing.T) {
 	r.cfg.NewAgentic = func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
 		return reviewer, nil
 	}
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-review-abort",
@@ -3799,7 +4482,7 @@ func TestRunnerNotifyEscalatedSurvivesCancellation(t *testing.T) {
 		},
 		Automated:    gate.NewAutomatedEvaluator(),
 		MaxRepasses:  0, // escalate on the very first non-pass evaluation
-		Escalation:   &gate.EscalationNotifier{Poster: commenter, Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}},
+		Escalation:   &gate.EscalationNotifier{Poster: commenter},
 		Worktrees:    wtMgr,
 		RunsDir:      runsDir,
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
@@ -3865,10 +4548,7 @@ func TestRunnerAutomaticEscalationDoesNotDoubleNotify(t *testing.T) {
 		"run-auto-escalate:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "x", Message: "always fails"}},
 	}, gate.NewAutomatedEvaluator())
 	r.cfg.MaxRepasses = 1
-	r.cfg.Escalation = &gate.EscalationNotifier{
-		Poster:     commenter,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-	}
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:   "run-auto-escalate",
@@ -3977,6 +4657,21 @@ func (c *capturingReviewer) Review(_ context.Context, env apiv1.InvocationEnvelo
 	c.called = true
 	c.gotCaps = env.Capabilities
 	c.gotPointers = env.ContextPointers
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+type blockingReviewer struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (b *blockingReviewer) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	close(b.started)
+	<-b.release
 	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
 }
 
@@ -4731,6 +5426,190 @@ func TestRunnerDeterministicSubjectEmptyDiffStillReviews(t *testing.T) {
 	}
 }
 
+func TestCachedVerdictFromOutputsFailsClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		want   bool
+		mutate func(*apiv1.Verdict, map[string]interface{})
+	}{
+		{name: "complete match", want: true},
+		{name: "missing digest output", mutate: func(_ *apiv1.Verdict, outputs map[string]interface{}) {
+			delete(outputs, "reviewDigest")
+		}},
+		{name: "digest mismatch", mutate: func(_ *apiv1.Verdict, outputs map[string]interface{}) {
+			outputs["reviewDigest"] = "sha256:other"
+		}},
+		{name: "head mismatch", mutate: func(_ *apiv1.Verdict, outputs map[string]interface{}) {
+			outputs["selectedHeadSha"] = "other-head"
+		}},
+		{name: "missing source run", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.SourceRunID = ""
+		}},
+		{name: "invalid decision", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Decision = "approved"
+		}},
+		{name: "invalid finding severity", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Findings = []apiv1.Finding{{
+				Severity: "notice", Message: "bad severity", Class: apiv1.FindingSubstantive,
+			}}
+		}},
+		{name: "blank finding message", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Findings = []apiv1.Finding{{
+				Severity: apiv1.SeverityError, Message: " ", Class: apiv1.FindingSubstantive,
+			}}
+		}},
+		{name: "missing finding class", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Findings = []apiv1.Finding{{
+				Severity: apiv1.SeverityError, Message: "not routable",
+			}}
+		}},
+		{name: "invalid finding", mutate: func(verdict *apiv1.Verdict, _ map[string]interface{}) {
+			verdict.Findings = []apiv1.Finding{{
+				Severity: apiv1.SeverityError, Message: "missing blockers", Class: apiv1.FindingCrossPRBlocked,
+			}}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verdict := apiv1.Verdict{
+				Decision: apiv1.VerdictPass, Digest: "sha256:key", SourceRunID: "run-original",
+				HeadSHA: "head", BaseSHA: "base",
+			}
+			outputs := map[string]interface{}{
+				"reviewDigest":    verdict.Digest,
+				"selectedHeadSha": verdict.HeadSHA,
+				"selectedBaseSha": verdict.BaseSHA,
+			}
+			if tt.mutate != nil {
+				tt.mutate(&verdict, outputs)
+			}
+			data, err := json.Marshal(verdict)
+			if err != nil {
+				t.Fatalf("marshal verdict: %v", err)
+			}
+			outputs["cachedVerdictJson"] = string(data)
+
+			got := cachedVerdictFromOutputs(outputs)
+			if (got != nil) != tt.want {
+				t.Fatalf("cachedVerdictFromOutputs() = %+v, want cache hit %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunnerLiveReviewerEmitsHeartbeat(t *testing.T) {
+	runID := "run-live-review-heartbeat"
+	reviewer := &blockingReviewer{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{
+				rec: rec,
+				byTask: map[string]stubTaskResult{
+					runID + ":implement": {status: apiv1.ResultSuccess},
+				},
+			}, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return reviewer, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	taskTicker := &fakeHeartbeatTicker{ticks: make(chan time.Time, 1), stopped: make(chan struct{})}
+	gateTicker := &fakeHeartbeatTicker{ticks: make(chan time.Time, 1), stopped: make(chan struct{})}
+	var tickerCalls atomic.Int32
+	r.newHeartbeatTicker = func(time.Duration) heartbeatTicker {
+		switch tickerCalls.Add(1) {
+		case 1:
+			return taskTicker
+		case 2:
+			return gateTicker
+		default:
+			t.Errorf("unexpected heartbeat ticker construction")
+			return &fakeHeartbeatTicker{ticks: make(chan time.Time), stopped: make(chan struct{})}
+		}
+	}
+
+	type startResult struct {
+		result Result
+		err    error
+	}
+	resultCh := make(chan startResult, 1)
+	go func() {
+		result, startErr := r.Start(context.Background(), StartInput{
+			RunID:   runID,
+			Machine: agenticGateMachine(t),
+			Gaggle:  "acme-web",
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		resultCh <- startResult{result: result, err: startErr}
+	}()
+
+	select {
+	case <-reviewer.started:
+	case <-time.After(time.Second):
+		t.Fatal("reviewer did not start")
+	}
+	gateTicker.ticks <- time.Now()
+
+	runDir := filepath.Join(instanceRoot, "runs", runID)
+	deadline := time.Now().Add(time.Second)
+	for {
+		rd, openErr := journal.OpenRead(runDir)
+		if openErr == nil {
+			events, eventsErr := rd.Events()
+			if eventsErr == nil {
+				for _, event := range events {
+					if event.Type == journal.EventStageHeartbeat && event.Stage == "review" && event.Attempt == 1 {
+						goto heartbeatObserved
+					}
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("reviewer heartbeat was not journaled while the gate was in flight")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+heartbeatObserved:
+	close(reviewer.release)
+	var got startResult
+	select {
+	case got = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("run did not finish after reviewer release")
+	}
+	if got.err != nil {
+		t.Fatalf("Start: %v", got.err)
+	}
+	if got.result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", got.result.Phase)
+	}
+	if tickerCalls.Load() != 2 {
+		t.Fatalf("heartbeat ticker constructions = %d, want task and live reviewer", tickerCalls.Load())
+	}
+	select {
+	case <-gateTicker.stopped:
+	default:
+		t.Fatal("reviewer heartbeat ticker was not stopped")
+	}
+}
+
 // TestRunnerSkipsReviewerOnCachedVerdictOutput is issue #523's end-to-end
 // wiring proof: when the subject stage feeding an agentic review gate
 // emits a "cachedVerdictJson" output (merge-review's gather-sibling-context,
@@ -4747,6 +5626,7 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 	cached := apiv1.Verdict{
 		Decision: apiv1.VerdictPass, Summary: "reused from a prior run",
 		Digest: "sha256:cache-hit-digest", SourceRunID: "run-original-producer",
+		HeadSHA: "head", BaseSHA: "base",
 	}
 	cachedJSON, err := json.Marshal(cached)
 	if err != nil {
@@ -4755,10 +5635,16 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 	byTask := map[string]stubTaskResult{
 		runID + ":implement": {
 			status: apiv1.ResultSuccess, summary: "gathered sibling context",
-			outputs: map[string]interface{}{"cachedVerdictJson": string(cachedJSON)},
+			outputs: map[string]interface{}{
+				"cachedVerdictJson": string(cachedJSON),
+				"reviewDigest":      cached.Digest,
+				"selectedHeadSha":   cached.HeadSHA,
+				"selectedBaseSha":   cached.BaseSHA,
+			},
 		},
 	}
 	reviewer := &capturingReviewer{}
+	var reviewerConstructions atomic.Int32
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
 	if err != nil {
@@ -4770,6 +5656,7 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 			return &stubDeterministic{rec: rec, byTask: byTask}, nil
 		},
 		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			reviewerConstructions.Add(1)
 			return reviewer, nil
 		},
 		Worktrees:    wtMgr,
@@ -4778,6 +5665,11 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
+	}
+	var tickerConstructions atomic.Int32
+	r.newHeartbeatTicker = func(time.Duration) heartbeatTicker {
+		tickerConstructions.Add(1)
+		return &fakeHeartbeatTicker{ticks: make(chan time.Time), stopped: make(chan struct{})}
 	}
 
 	res, err := r.Start(context.Background(), StartInput{
@@ -4794,6 +5686,12 @@ func TestRunnerSkipsReviewerOnCachedVerdictOutput(t *testing.T) {
 	}
 	if reviewer.called {
 		t.Fatal("reviewer WAS invoked — a cachedVerdictJson output must short-circuit the reviewer call entirely (#523)")
+	}
+	if reviewerConstructions.Load() != 0 {
+		t.Fatalf("reviewer constructions = %d, want none on cache hit", reviewerConstructions.Load())
+	}
+	if tickerConstructions.Load() != 1 {
+		t.Fatalf("heartbeat ticker constructions = %d, want only the subject task on cache hit", tickerConstructions.Load())
 	}
 
 	rd, err := journal.OpenRead(filepath.Join(instanceRoot, "runs", runID))

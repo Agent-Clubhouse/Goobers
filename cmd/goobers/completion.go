@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 const recentCompletionRunLimit = 100
@@ -79,11 +80,23 @@ func completionCandidates(kind, start string) []string {
 		sort.Strings(names)
 		return names
 	case "runs":
-		runs, err := listRuns(layout.RunsDir())
+		runs, err := listLayoutRuns(layout, false)
 		if err != nil {
 			return nil
 		}
 		return recentCompletionRunIDs(runs)
+	case "escalations":
+		runs, err := listLayoutRuns(layout, false)
+		if err != nil {
+			return nil
+		}
+		escalated := make([]runSummary, 0, len(runs))
+		for _, run := range runs {
+			if run.Phase == journal.PhaseEscalated {
+				escalated = append(escalated, run)
+			}
+		}
+		return recentCompletionRunIDs(escalated)
 	default:
 		return nil
 	}
@@ -132,7 +145,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
+        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal claims backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge update-behind-pr gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -141,7 +154,7 @@ _goobers_completion()
     flags="-h --help"
     case "${command}" in
         validate) flags+=" --check-harness --source-tree" ;;
-        up) flags+=" --quiet" ;;
+        up) flags+=" --quiet --cleanup-spans-only-runs" ;;
         dashboard) flags+=" --port --no-open --dev-assets" ;;
         run) flags+=" --no-wait" ;;
         workflow)
@@ -155,7 +168,8 @@ _goobers_completion()
             ;;
         status) flags+=" --daemon --json --phase --workflow --limit --watch --interval" ;;
         stats) flags+=" --since --json" ;;
-        trace) flags+=" --json --transcripts --transcript" ;;
+        trace) flags+=" --json --follow --transcripts --transcript" ;;
+        escalations) flags+=" --json" ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
                 stats) flags+=" --workflow --gaggle --rebuild" ;;
@@ -164,6 +178,13 @@ _goobers_completion()
             ;;
         journal)
             [[ "${COMP_WORDS[2]:-}" == "redact" ]] && flags+=" --run --path --reason --secret-file"
+            ;;
+        claims)
+            if [[ "${COMP_WORDS[2]:-}" == "list" ]]; then
+                flags+=" --json --stale"
+            elif [[ "${COMP_WORDS[2]:-}" == "release" ]]; then
+                flags+=" --force"
+            fi
             ;;
         backlog-query) flags+=" --claim --release" ;;
         apply-verdict) flags+=" --gate" ;;
@@ -201,6 +222,14 @@ _goobers_completion()
                 candidates="$(command goobers __complete runs 2>/dev/null)"
             fi
             ;;
+        escalations)
+            if (( COMP_CWORD == 2 )); then
+                candidates="show"
+            elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
+                dynamic=1
+                candidates="$(command goobers __complete escalations 2>/dev/null)"
+            fi
+            ;;
         workflow)
             if (( COMP_CWORD == 2 )); then
                 candidates="show"
@@ -217,6 +246,9 @@ _goobers_completion()
             ;;
         journal)
             (( COMP_CWORD == 2 )) && candidates="redact"
+            ;;
+        claims)
+            (( COMP_CWORD == 2 )) && candidates="list release"
             ;;
     esac
 
@@ -257,9 +289,11 @@ _goobers_completion()
             'status:show run status'
             'stats:show the instance lifetime summary'
             'trace:show a run journal'
+            'escalations:inspect escalated runs'
             'telemetry:query telemetry'
             'telemetry-query:emit candidate findings'
             'journal:manage run journals'
+            'claims:inspect or force-release claims'
             'backlog-query:query or claim backlog work'
             'push-branch:push the current run branch'
             'open-pr:open or update the current run pull request'
@@ -271,6 +305,7 @@ _goobers_completion()
             'gather-sibling-context:gather sibling pull request context'
             'apply-verdict:apply a review verdict'
             'post-merge:perform post-merge updates'
+            'update-behind-pr:update a clean behind pull request'
             'gather-pr-context:gather pull request context'
             'rebase-pr:rebase a pull request'
             'remediation-checkpoint:record a remediation checkpoint'
@@ -289,7 +324,7 @@ _goobers_completion()
     flags=(-h --help)
     case "${command}" in
         validate) flags+=(--check-harness --source-tree) ;;
-        up) flags+=(--quiet) ;;
+        up) flags+=(--quiet --cleanup-spans-only-runs) ;;
         dashboard) flags+=(--port --no-open --dev-assets) ;;
         run) flags+=(--no-wait) ;;
         workflow)
@@ -303,7 +338,8 @@ _goobers_completion()
             ;;
         status) flags+=(--daemon --json --phase --workflow --limit --watch --interval) ;;
         stats) flags+=(--since --json) ;;
-        trace) flags+=(--json --transcripts --transcript) ;;
+        trace) flags+=(--json --follow --transcripts --transcript) ;;
+        escalations) flags+=(--json) ;;
         telemetry)
             case "${words[3]:-}" in
                 stats) flags+=(--workflow --gaggle --rebuild) ;;
@@ -312,6 +348,13 @@ _goobers_completion()
             ;;
         journal)
             [[ "${words[3]:-}" == "redact" ]] && flags+=(--run --path --reason --secret-file)
+            ;;
+        claims)
+            if [[ "${words[3]:-}" == "list" ]]; then
+                flags+=(--json --stale)
+            elif [[ "${words[3]:-}" == "release" ]]; then
+                flags+=(--force)
+            fi
             ;;
         backlog-query) flags+=(--claim --release) ;;
         apply-verdict) flags+=(--gate) ;;
@@ -360,6 +403,17 @@ _goobers_completion()
                 return
             fi
             ;;
+        escalations)
+            if (( CURRENT == 3 )); then
+                candidates=(show)
+                _describe 'command' candidates
+                return
+            elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then
+                candidates=("${(@f)$(command goobers __complete escalations 2>/dev/null)}")
+                _describe -V 'escalated run id' candidates
+                return
+            fi
+            ;;
         workflow)
             if (( CURRENT == 3 )); then
                 candidates=(show)
@@ -392,6 +446,13 @@ _goobers_completion()
                 return
             fi
             ;;
+        claims)
+            if (( CURRENT == 3 )); then
+                candidates=(list release)
+                _describe 'command' candidates
+                return
+            fi
+            ;;
     esac
 
     _directories
@@ -410,7 +471,7 @@ function __goobers_completion_runs
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'init scaffold validate up dashboard run signal workflow runs status stats trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal claims backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge update-behind-pr gather-pr-context rebase-pr remediation-checkpoint completion version help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -420,17 +481,21 @@ complete -c goobers -n '__fish_seen_subcommand_from scaffold; and test (count (c
 complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (commandline -opc)) -eq 2' -f -k -a 'abort (__goobers_completion_workflows)'
 complete -c goobers -n '__fish_seen_subcommand_from run; and __fish_seen_subcommand_from abort; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_runs)'
 complete -c goobers -n '__fish_seen_subcommand_from trace; and test (count (commandline -opc)) -eq 2' -f -k -a '(__goobers_completion_runs)'
+complete -c goobers -n '__fish_seen_subcommand_from escalations; and test (count (commandline -opc)) -eq 2' -f -a 'show'
+complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -k -a '(command goobers __complete escalations 2>/dev/null)'
 
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and test (count (commandline -opc)) -eq 2' -f -a 'show'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -a '(__goobers_completion_workflows)'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and test (count (commandline -opc)) -eq 2' -f -a 'list du'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'stats errors'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
+complete -c goobers -n '__fish_seen_subcommand_from claims; and test (count (commandline -opc)) -eq 2' -f -a 'list release'
 
 complete -c goobers -n '__fish_seen_subcommand_from scaffold' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-harness -d 'Check agent harnesses'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l source-tree -d 'Validate a checked-in config source tree'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress liveness heartbeats'
+complete -c goobers -n '__fish_seen_subcommand_from up' -l cleanup-spans-only-runs -d 'Delete reported legacy spans-only run directories at startup'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l port -r -d 'Dashboard port or auto'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l no-open -d 'Print the URL without opening a browser'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l dev-assets -r -d 'Serve a local portal build'
@@ -449,8 +514,10 @@ complete -c goobers -n '__fish_seen_subcommand_from stats' -l since -r -d 'Only 
 complete -c goobers -n '__fish_seen_subcommand_from stats' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l no-wait -d 'Return after the run is dispatched'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from trace' -l follow -d 'Stream events until the run reaches a terminal phase'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l transcripts -d 'Show every recorded agent-stage transcript'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l transcript -r -d 'Show recorded transcript data for one stage'
+complete -c goobers -n '__fish_seen_subcommand_from escalations' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from stats errors' -l workflow -r -a '(__goobers_completion_workflows)' -d 'Filter by workflow'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from stats errors' -l gaggle -r -d 'Filter by gaggle'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from errors' -l class -r -d 'Filter by error class'
@@ -460,6 +527,9 @@ complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_sub
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l path -r -d 'Journal path'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l reason -r -d 'Redaction reason'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l secret-file -r -d 'Secret file'
+complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l stale -d 'Show only expired claims'
+complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from release' -l force -d 'Release a claim held by a non-terminal run'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l claim -d 'Claim an item'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l release -d 'Release a claim'
 complete -c goobers -n '__fish_seen_subcommand_from apply-verdict' -l gate -r -d 'Gate name'

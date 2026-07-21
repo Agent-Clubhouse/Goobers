@@ -95,36 +95,39 @@ func TestBaseEnvStillBlocksSecretShapedVars(t *testing.T) {
 }
 
 // TestBuildStageEnv_InjectsRunContextOnlyWhenRequested is #322's core: the
-// run's operational identity (GOOBERS_RUN_ID/GOOBERS_WORKFLOW/
-// GOOBERS_INSTANCE_ROOT) is injected only when injectRunContext is set — i.e.
-// only for a stage whose command is the goobers CLI. A stage that runs the
-// project's own build/test suite gets a clean env, closing the leak at the
-// source. Declared inputs (GOOBERS_INPUT_*) are the stage's own config and
-// flow to every stage kind regardless. injector is nil (no declared caps), so
-// buildStageEnv returns before the credential/registrar path.
+// run's operational identity (GOOBERS_RUN_ID/GOOBERS_GAGGLE/
+// GOOBERS_WORKFLOW/GOOBERS_INSTANCE_ROOT) is injected only when
+// injectRunContext is set — i.e. only for a stage whose command is the goobers
+// CLI. A stage that runs the project's own build/test suite gets a clean env,
+// closing the leak at the source. Declared inputs (GOOBERS_INPUT_*) are the
+// stage's own config and flow to every stage kind regardless. injector is nil
+// (no declared caps), so buildStageEnv returns before the credential/registrar
+// path.
 func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 	inputs := map[string]interface{}{"trustLabel": "goobers:approved"}
 
-	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "/instances/demo", true, inputs)
+	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "/instances/demo", true, inputs, map[string]string{"FEATURE_FLAG": "enabled"})
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=true): %v", err)
 	}
 	for _, want := range []string{
 		"GOOBERS_RUN_ID=run-123",
+		"GOOBERS_GAGGLE=alpha",
 		"GOOBERS_WORKFLOW=implementation",
 		"GOOBERS_INSTANCE_ROOT=/instances/demo",
 		"GOOBERS_INPUT_TRUSTLABEL=goobers:approved",
+		"FEATURE_FLAG=enabled",
 	} {
 		if !hasEnv(withCtx, want) {
 			t.Errorf("injectRunContext=true: missing %q in %v", want, withCtx)
 		}
 	}
 
-	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "/instances/demo", false, inputs)
+	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "/instances/demo", false, inputs, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=false): %v", err)
 	}
-	for _, prefix := range []string{"GOOBERS_RUN_ID", "GOOBERS_WORKFLOW", "GOOBERS_INSTANCE_ROOT"} {
+	for _, prefix := range []string{"GOOBERS_RUN_ID", "GOOBERS_GAGGLE", "GOOBERS_WORKFLOW", "GOOBERS_INSTANCE_ROOT"} {
 		if hasEnvPrefix(noCtx, prefix) {
 			t.Errorf("injectRunContext=false: %s leaked into %v", prefix, noCtx)
 		}
@@ -136,12 +139,37 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 
 	// Even when requested, GOOBERS_INSTANCE_ROOT is omitted if unset (empty
 	// instanceRoot — see ShellExecutor.InstanceRoot), preserving prior behavior.
-	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "implementation", "", true, nil)
+	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "", true, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(empty instanceRoot): %v", err)
 	}
+
 	if hasEnvPrefix(emptyRoot, "GOOBERS_INSTANCE_ROOT") {
 		t.Errorf("empty instanceRoot should omit GOOBERS_INSTANCE_ROOT, got %v", emptyRoot)
+	}
+}
+
+func TestBuildStageEnvIncludesDeclaredEnvironment(t *testing.T) {
+	env, err := buildStageEnv(
+		context.Background(),
+		nil,
+		nil,
+		nil,
+		"",
+		"",
+		"",
+		"",
+		false,
+		nil,
+		map[string]string{"FEATURE_FLAG": "enabled", "EMPTY_VALUE": ""},
+	)
+	if err != nil {
+		t.Fatalf("buildStageEnv: %v", err)
+	}
+	for _, want := range []string{"FEATURE_FLAG=enabled", "EMPTY_VALUE="} {
+		if !hasEnv(env, want) {
+			t.Errorf("declared environment missing %q from %v", want, env)
+		}
 	}
 }
 
@@ -185,6 +213,7 @@ func TestStageInvokesProviderBuiltin(t *testing.T) {
 		// a single transient blip while watching a merge queue failed the
 		// whole merge-review run.
 		{"merge queue poll", []string{"goobers", "merge-queue-poll"}, true},
+		{"update behind pr", []string{"goobers", "update-behind-pr"}, true},
 		{"ci poll uses in-process classification", []string{"goobers", "ci-poll"}, false},
 		{"push branch is git-backed", []string{"goobers", "push-branch"}, false},
 		{"telemetry query", []string{"goobers", "telemetry-query"}, false},

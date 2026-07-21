@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
@@ -32,10 +33,11 @@ func TestTaskExecutor_DefaultsToShell(t *testing.T) {
 func TestTaskExecutor_RoutesToCIPoll(t *testing.T) {
 	shell, _ := newTestExecutor(t, nil)
 	poller := &fakePoller{results: []providers.CheckState{providers.CheckStatePassing}}
-	ciPoll, err := NewCIPollExecutor(poller)
+	ciPoll, err := NewCIPollExecutor(poller, newFakeRecorder())
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	ciPoll.Sleep = noSleep
 	te, err := NewTaskExecutor(shell, ciPoll)
 	if err != nil {
@@ -57,6 +59,85 @@ func TestTaskExecutor_RoutesToCIPoll(t *testing.T) {
 	}
 }
 
+func TestTaskExecutor_CIPollHonorsDeclaredDurationLimit(t *testing.T) {
+	shell, _ := newTestExecutor(t, nil)
+	poller := &fakePoller{results: []providers.CheckState{providers.CheckStatePending}}
+	ciPoll, err := NewCIPollExecutor(poller, newFakeRecorder())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciPoll.Sleep = noSleep
+	base := time.Now()
+	tick := 0
+	ciPoll.Now = func() time.Time {
+		at := base.Add(time.Duration(tick) * 2 * time.Second)
+		tick++
+		return at
+	}
+	te, err := NewTaskExecutor(shell, ciPoll)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := apiv1.InvocationEnvelope{
+		RepoRef:      apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Capabilities: []string{string(capability.GitHubPRWrite)},
+		Limits:       apiv1.Limits{MaxDurationSeconds: 1},
+		Inputs:       map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
+	}
+	result, err := te.Run(context.Background(), env, apiv1.DeterministicRun{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "poll_timeout" {
+		t.Fatalf("result = %+v, want typed poll_timeout failure", result)
+	}
+	if !strings.Contains(result.Error.Message, "after 900ms") {
+		t.Fatalf("timeout message = %q, want poll budget inside declared 1s stage limit", result.Error.Message)
+	}
+}
+
+func TestTaskExecutor_CIPollHonorsDeclaredPollInterval(t *testing.T) {
+	shell, _ := newTestExecutor(t, nil)
+	poller := &fakePoller{results: []providers.CheckState{
+		providers.CheckStatePending,
+		providers.CheckStatePassing,
+	}}
+	ciPoll, err := NewCIPollExecutor(poller, newFakeRecorder())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var slept time.Duration
+	ciPoll.Sleep = func(_ context.Context, interval time.Duration) error {
+		slept = interval
+		return nil
+	}
+	te, err := NewTaskExecutor(shell, ciPoll)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := apiv1.InvocationEnvelope{
+		RepoRef:      apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Capabilities: []string{string(capability.GitHubPRWrite)},
+		Inputs: map[string]interface{}{
+			InputKind:            KindCIPoll,
+			InputPRNumber:        "9",
+			InputPollIntervalSec: "7s",
+		},
+	}
+	result, err := te.Run(context.Background(), env, apiv1.DeterministicRun{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if slept != 7*time.Second {
+		t.Fatalf("poll sleep = %s, want declared 7s cadence", slept)
+	}
+}
+
 type dispatchCountingPoller struct {
 	calls int
 }
@@ -69,7 +150,7 @@ func (p *dispatchCountingPoller) PollPullRequest(context.Context, providers.Pull
 func TestTaskExecutor_CIPollWithoutCapabilityFailsBeforePolling(t *testing.T) {
 	shell, _ := newTestExecutor(t, nil)
 	poller := &dispatchCountingPoller{}
-	ciPoll, err := NewCIPollExecutor(poller)
+	ciPoll, err := NewCIPollExecutor(poller, newFakeRecorder())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +205,7 @@ func TestTaskExecutor_ClassifiesCIPollProviderFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			shell, _ := newTestExecutor(t, nil)
 			poller := &sequencedPoller{steps: []pollStep{{err: tc.err}}}
-			ciPoll, err := NewCIPollExecutor(poller)
+			ciPoll, err := NewCIPollExecutor(poller, newFakeRecorder())
 			if err != nil {
 				t.Fatal(err)
 			}

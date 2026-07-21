@@ -36,9 +36,15 @@ const (
 	RepoRead Capability = "repo:read"
 	// RepoPush grants `git push` to the target repository's per-stage worktree.
 	RepoPush Capability = "repo:push"
-	// GitHubIssuesWrite grants GitHub issue query/create/label/close/comment
-	// (the backlog-curation and work-nomination workflows' surface).
+	// GitHubIssuesWrite grants GitHub issue query/create/ordinary-label/close/
+	// comment operations (the backlog-curation and work-nomination workflows'
+	// surface). It does not grant the trust decision represented by
+	// goobers:approved.
 	GitHubIssuesWrite Capability = "github:issues:write"
+	// GitHubIssuesApprove grants the narrow authority to apply
+	// goobers:approved to a nominated issue. It is separate from general issue
+	// writes so a workflow must explicitly opt into approving its own output.
+	GitHubIssuesApprove Capability = "github:issues:approve"
 	// GitHubPRWrite grants GitHub PR open/poll/close (the implementation
 	// workflow's open-pr and ci-poll stages).
 	GitHubPRWrite Capability = "github:pr:write"
@@ -85,7 +91,7 @@ const (
 
 // All returns every canonical capability, in declaration order.
 func All() []Capability {
-	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, TelemetryRead, JournalRead, AgentModel}
+	return []Capability{RepoRead, RepoPush, GitHubIssuesWrite, GitHubIssuesApprove, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, TelemetryRead, JournalRead, AgentModel}
 }
 
 // Known reports whether s is a canonical capability string.
@@ -96,4 +102,48 @@ func Known(s string) bool {
 		}
 	}
 	return false
+}
+
+// Suggest returns the closest canonical capability for a likely typo.
+func Suggest(s string) (Capability, bool) {
+	if Known(s) {
+		return "", false
+	}
+	bestDistance := -1
+	var best Capability
+	for _, candidate := range All() {
+		distance := editDistance(s, string(candidate))
+		if bestDistance == -1 || distance < bestDistance {
+			bestDistance = distance
+			best = candidate
+		}
+	}
+	if bestDistance > 2 {
+		return "", false
+	}
+	return best, true
+}
+
+func editDistance(a, b string) int {
+	previous := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		current := make([]int, len(b)+1)
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 0
+			if a[i-1] != b[j-1] {
+				cost = 1
+			}
+			current[j] = min(
+				current[j-1]+1,
+				previous[j]+1,
+				previous[j-1]+cost,
+			)
+		}
+		previous = current
+	}
+	return previous[len(b)]
 }

@@ -123,12 +123,191 @@ func TestJournalSpanExporterAppendsAcrossExportCalls(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StartRun: %v", err)
 		}
+
 		_ = rctx
 		run.Succeed("ok")
 	}
 	recs := readSpanRecords(t, dir, runID)
 	if len(recs) != 3 {
 		t.Fatalf("expected 3 appended span records, got %d", len(recs))
+	}
+	if requests := readOTLPRequests(t, dir, runID); len(requests) != 3 {
+		t.Fatalf("expected 3 appended OTLP requests, got %d", len(requests))
+	}
+}
+
+func TestPerGaggleJournalSpanExporterRoutesToScopedRunDirectory(t *testing.T) {
+	root := t.TempDir()
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(context.Background(), Config{
+		ServiceName:  "goobers-test",
+		SpanExporter: NewPerGaggleJournalSpanExporter(root, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	_, span, err := client.StartRun(context.Background(), RunAttributes{
+		Gaggle: "alpha", WorkflowID: "implementation", RunID: runID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.Succeed("done")
+
+	for _, name := range []string{spanFileName, otlpFileName} {
+		path := filepath.Join(root, "gaggles", "alpha", "runs", runID, spansDirName, name)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("scoped spans file %s: %v", path, err)
+		}
+	}
+}
+
+func TestPerGaggleJournalSpanExporterSeparatesSchedulerAndRunArtifacts(t *testing.T) {
+	root := t.TempDir()
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(context.Background(), Config{
+		ServiceName:  "goobers-test",
+		SpanExporter: NewPerGaggleJournalSpanExporter(root, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	_, span, err := client.StartSchedulerSpan(context.Background(), SchedulerAttributes{
+		Gaggle: "alpha", WorkflowID: "implementation", RunID: runID, Action: "dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.Complete(OutcomeBlocked, false)
+
+	path := filepath.Join(root, "scheduler", spansDirName, spanFileName)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open scheduler spans: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	var got SpanRecord
+	if err := json.NewDecoder(f).Decode(&got); err != nil {
+		t.Fatalf("decode scheduler span: %v", err)
+	}
+	if got.TraceID != runID || got.Kind != SpanKindScheduler || got.Name != "scheduler/dispatch" {
+		t.Fatalf("scheduler span = %#v", got)
+	}
+
+	runDir := filepath.Join(root, "gaggles", "alpha", "runs", runID)
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("scheduler span created run directory %s: %v", runDir, err)
+	}
+
+	_, run, err := client.StartRun(context.Background(), RunAttributes{
+		Gaggle: "alpha", WorkflowID: "implementation", RunID: runID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Succeed("done")
+
+	for _, name := range []string{spanFileName, otlpFileName} {
+		path := filepath.Join(runDir, spansDirName, name)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("run spans file %s: %v", path, err)
+		}
+	}
+}
+
+func TestPerGaggleJournalSpanExporterRoutesSchedulerSpanToInstanceJournal(t *testing.T) {
+	root := t.TempDir()
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(context.Background(), Config{
+		ServiceName:  "goobers-test",
+		SpanExporter: NewPerGaggleJournalSpanExporter(root, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	_, span, err := client.StartSchedulerSpan(context.Background(), SchedulerAttributes{
+		Gaggle: "alpha", WorkflowID: "implementation", RunID: runID, Action: "dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.Complete(OutcomeBlocked, false)
+
+	path := filepath.Join(root, "scheduler", spansDirName, spanFileName)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open scheduler spans: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	var got SpanRecord
+	if err := json.NewDecoder(f).Decode(&got); err != nil {
+		t.Fatalf("decode scheduler span: %v", err)
+	}
+	if got.TraceID != runID || got.Kind != SpanKindScheduler || got.Name != "scheduler/dispatch" {
+		t.Fatalf("scheduler span = %#v", got)
+	}
+	runDir := filepath.Join(root, "gaggles", "alpha", "runs", runID)
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("scheduler span created run directory %s: %v", runDir, err)
+	}
+}
+
+func TestPerGaggleJournalSpanExporterRoutesToRetainedFlatJournal(t *testing.T) {
+	root := t.TempDir()
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := journal.Create(filepath.Join(root, "runs"), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "alpha",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(context.Background(), Config{
+		ServiceName:  "goobers-test",
+		SpanExporter: NewPerGaggleJournalSpanExporter(root, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	_, span, err := client.StartRun(context.Background(), RunAttributes{
+		Gaggle: "alpha", WorkflowID: "implementation", RunID: runID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.Succeed("done")
+
+	for _, name := range []string{spanFileName, otlpFileName} {
+		flatPath := filepath.Join(root, "runs", runID, spansDirName, name)
+		if _, err := os.Stat(flatPath); err != nil {
+			t.Fatalf("retained flat spans file %s: %v", flatPath, err)
+		}
+	}
+	scopedRun := filepath.Join(root, "gaggles", "alpha", "runs", runID)
+	if _, err := os.Stat(scopedRun); !os.IsNotExist(err) {
+		t.Fatalf("exporter created duplicate scoped run %s: %v", scopedRun, err)
 	}
 }
 
@@ -141,12 +320,14 @@ func TestJournalSpanExporterRedactsRegisteredSecret(t *testing.T) {
 	// Deliberately shapeless: no provider prefix, no key=value framing. The
 	// pattern net can't catch it — only the registry can (mechanism isolation).
 	const secret = "Kf9wQ2mNpZ7-internal-issued-value"
+	const numericSecret = "123456"
 	if got := string(journal.NewPatternScrubber().Scrub([]byte(secret))); got != secret {
 		t.Fatalf("precondition: the pattern net alone must NOT catch %q (got %q), else this does not isolate the registry", secret, got)
 	}
 
 	reg := journal.NewRegistryScrubber()
 	reg.Register([]byte(secret))
+	reg.Register([]byte(numericSecret))
 
 	dir := t.TempDir()
 	runID, err := NewRunID()
@@ -156,6 +337,10 @@ func TestJournalSpanExporterRedactsRegisteredSecret(t *testing.T) {
 	client, err := New(context.Background(), Config{
 		ServiceName:  "goobers-test",
 		SpanExporter: NewJournalSpanExporter(dir, journal.Chain(reg, journal.NewPatternScrubber())),
+		ResourceAttributes: []attribute.KeyValue{
+			attribute.String("resource.secret", secret),
+			attribute.Int64("resource.numeric_secret", 123456),
+		},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -174,19 +359,26 @@ func TestJournalSpanExporterRedactsRegisteredSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartTask: %v", err)
 	}
-	task.Event("provider."+secret, attribute.String("token."+secret, secret))
+	task.Event("provider."+secret,
+		attribute.String("token."+secret, secret),
+		attribute.Int64("numeric_secret", 123456),
+	)
 	task.Fail(fmt.Errorf("stage logged %s", secret))
 	run.Fail(fmt.Errorf("run carrying %s", secret))
 
-	raw, err := os.ReadFile(filepath.Join(dir, runID, spansDirName, spanFileName))
-	if err != nil {
-		t.Fatalf("read spans file: %v", err)
-	}
-	if strings.Contains(string(raw), secret) {
-		t.Fatalf("registered secret leaked into spans.jsonl — exporter bypassed the registry:\n%s", raw)
-	}
-	if !strings.Contains(string(raw), RedactedPlaceholder) {
-		t.Fatalf("expected the redaction placeholder in spans.jsonl:\n%s", raw)
+	for _, name := range []string{spanFileName, otlpFileName} {
+		raw, err := os.ReadFile(filepath.Join(dir, runID, spansDirName, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, registered := range []string{secret, numericSecret} {
+			if strings.Contains(string(raw), registered) {
+				t.Fatalf("registered secret leaked into %s — exporter bypassed the registry:\n%s", name, raw)
+			}
+		}
+		if !strings.Contains(string(raw), RedactedPlaceholder) {
+			t.Fatalf("expected the redaction placeholder in %s:\n%s", name, raw)
+		}
 	}
 }
 
@@ -217,13 +409,15 @@ func TestJournalSpanExporterRedactsSecrets(t *testing.T) {
 
 	// Read the raw file bytes, not just decoded records: the canary must never
 	// touch disk, in any field.
-	raw, err := os.ReadFile(filepath.Join(dir, runID, spansDirName, spanFileName))
-	if err != nil {
-		t.Fatalf("read spans file: %v", err)
-	}
-	for _, secret := range []string{canary, basicCredential} {
-		if strings.Contains(string(raw), secret) {
-			t.Fatalf("credential found at rest in spans.jsonl:\n%s", raw)
+	for _, name := range []string{spanFileName, otlpFileName} {
+		raw, err := os.ReadFile(filepath.Join(dir, runID, spansDirName, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, secret := range []string{canary, basicCredential} {
+			if strings.Contains(string(raw), secret) {
+				t.Fatalf("credential found at rest in %s:\n%s", name, raw)
+			}
 		}
 	}
 	recs := readSpanRecords(t, dir, runID)

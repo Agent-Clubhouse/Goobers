@@ -53,6 +53,18 @@ func InLocation(s Schedule, loc *time.Location) Schedule {
 	return locatedSchedule{s: s, loc: loc}
 }
 
+// NextScheduledFire returns the earliest next fire across schedules.
+func NextScheduledFire(schedules []Schedule, after time.Time) (time.Time, bool) {
+	var earliest time.Time
+	for _, schedule := range schedules {
+		next := schedule.Next(after)
+		if earliest.IsZero() || next.Before(earliest) {
+			earliest = next
+		}
+	}
+	return earliest, !earliest.IsZero()
+}
+
 type locatedSchedule struct {
 	s   Schedule
 	loc *time.Location

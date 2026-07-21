@@ -203,7 +203,8 @@ func stageInvokesProviderBuiltin(command []string) bool {
 		"post-merge",
 		"pr-select",
 		"rebase-pr",
-		"remediation-checkpoint":
+		"remediation-checkpoint",
+		"update-behind-pr":
 		return true
 	default:
 		return false
@@ -251,9 +252,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
 	injectRunContext := stageInvokesGoobersCLI(run.Command)
-	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.WorkflowID, e.InstanceRoot, injectRunContext, env.Inputs)
+	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, e.InstanceRoot, injectRunContext, env.Inputs, run.Env)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: resolve credentials: %w", err)
+		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
 	telemetryDir := telemetry.PrepareStageTelemetryDir(env.Workspace)
 	if telemetryDir != "" {
@@ -622,6 +623,9 @@ func lastNonEmptyLine(data []byte) string {
 }
 
 func (e *ShellExecutor) timeoutFor(env apiv1.InvocationEnvelope) (time.Duration, error) {
+	if env.Limits.MaxDurationSeconds > 0 {
+		return time.Duration(env.Limits.MaxDurationSeconds) * time.Second, nil
+	}
 	if s := stringInput(env, InputTimeout); s != "" {
 		d, err := time.ParseDuration(s)
 		if err != nil {

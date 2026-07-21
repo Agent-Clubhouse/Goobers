@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
+	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -127,22 +128,84 @@ func runUp(args []string, stdout, stderr io.Writer) int {
 	return runUpContext(ctx, args, stdout, stderr)
 }
 
+func handleSpansOnlyRunCleanup(l instance.Layout, remove bool, stdout io.Writer) error {
+	runDirs, err := l.RunDirs()
+	if err != nil {
+		return err
+	}
+	candidates, err := journal.SpansOnlyRunCandidates(runDirs)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		pf(stdout, "spans-only run cleanup candidate: %s\n", candidate)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	directoryNoun := "directories"
+	if len(candidates) == 1 {
+		directoryNoun = "directory"
+	}
+	if !remove {
+		pf(stdout, "dry run: %d spans-only run %s preserved; restart with --cleanup-spans-only-runs to delete\n",
+			len(candidates), directoryNoun)
+		return nil
+	}
+	removed, err := journal.RemoveSpansOnlyRuns(candidates)
+	if err != nil {
+		return err
+	}
+	directoryNoun = "directories"
+	if removed == 1 {
+		directoryNoun = "directory"
+	}
+	pf(stdout, "removed %d spans-only run %s\n", removed, directoryNoun)
+	return nil
+}
+
 // runUpContext is runUp's testable core: the OS signal wiring lives only in
 // runUp, so tests can drive shutdown deterministically via ctx cancellation
 // instead of sending real signals.
-func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Writer) int {
+	webhookGate, err := webhookhttp.NewDispatchGate(parentCtx)
+	if err != nil {
+		pf(stderr, "error: initialize daemon lifecycle: %v\n", err)
+		return 1
+	}
+	ctx := webhookGate.Context()
+	var ready atomic.Bool
+	stopDaemon := func() {
+		ready.Store(false)
+		webhookGate.Stop()
+	}
+	parentBridgeDone := make(chan struct{})
+	go func() {
+		defer close(parentBridgeDone)
+		select {
+		case <-parentCtx.Done():
+			stopDaemon()
+		case <-ctx.Done():
+		}
+	}()
+	defer func() {
+		stopDaemon()
+		<-parentBridgeDone
+	}()
 
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers up [--quiet] [--diagnostics] [path]\n\n"+
+		pf(stderr, "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--cleanup-spans-only-runs] [path]\n\n"+
 			"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n"+
-			"plus the local runner and loopback HTTP API (default path \".\"). Blocks\n"+
+			"plus the local runner, loopback HTTP API, and configured GitHub webhook\n"+
+			"listener (default path \".\"). Blocks\n"+
 			"until interrupted (SIGINT/SIGTERM), then drains in-flight runs before\n"+
 			"exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,\n"+
 			"2 = usage/IO error.\n\n"+
+			"Legacy spans-only run directories are reported as cleanup candidates\n"+
+			"and preserved by default. --cleanup-spans-only-runs deletes them at\n"+
+			"startup after reporting each candidate.\n\n"+
 			"--diagnostics turns on deep, opt-in capture for hard hangs: any\n"+
 			"deterministic stage still running past a couple of minutes gets a\n"+
 			"periodic native process sample + process tree + open-fd (lsof)\n"+
@@ -152,6 +215,9 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	diagnostics := fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
 	watchConfig := fs.Bool("watch-config", false, "experimental: hot-reload config edits without a restart (default off; superseded by the Workflow CD config source, #453)")
+	var notifications notifyFlag
+	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
+	cleanupSpansOnlyRuns := fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -190,7 +256,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 
 	var wg sync.WaitGroup
-	setup, err := buildSchedulerSetup(ctx, l, &wg)
+	setup, err := buildSchedulerSetup(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
 	if err != nil {
 		printValidationIssues(stderr, validationReportFromError(err))
 		pf(stderr, "error: %v\n", err)
@@ -198,8 +264,14 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	defer setup.Shutdown(context.Background())
 	printValidationWarnings(stdout, setup.Validation.CLIWarnings())
+	if warning := webhookConfigurationWarning(setup.Definitions, setup.Config); warning != "" {
+		pln(stdout, warning)
+	}
+	if err := handleSpansOnlyRunCleanup(l, *cleanupSpansOnlyRuns, stdout); err != nil {
+		pf(stderr, "error: clean up spans-only run directories: %v\n", err)
+		return 1
+	}
 
-	var ready atomic.Bool
 	reads, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      l,
 		Config:      setup.Config,
@@ -252,11 +324,13 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		})
 		return released, err
 	}
-	startupReleased, err := recoverExpiredClaims(time.Now())
+	startupReleased := append([]localscheduler.ClaimEntry(nil), setup.RecoveredClaims...)
+	newlyReleased, err := recoverExpiredClaims(time.Now())
 	if err != nil {
 		pf(stderr, "error: recover expired claims: %v\n", err)
 		return 1
 	}
+	startupReleased = append(startupReleased, newlyReleased...)
 	for _, entry := range startupReleased {
 		pf(stdout, "recovered expired claim %s (was held by run %s)\n", entry.ItemID, entry.RunID)
 	}
@@ -264,9 +338,17 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// Scratch workspaces have no git metadata to recover. Once this daemon
 	// holds the instance lock, every stage-* entry belongs to the prior process
 	// and can be removed before interrupted runs allocate fresh workspaces.
-	if err := runner.ReapScratchWorkspaces(filepath.Join(l.WorkcopiesDir(), "scratch")); err != nil {
-		pf(stderr, "error: reap scratch workspaces: %v\n", err)
-		return 1
+	for gaggle, manager := range setup.WorktreesByGaggle {
+		if err := runner.ReapScratchWorkspaces(filepath.Join(manager.Root, "scratch")); err != nil {
+			pf(stderr, "error: reap scratch workspaces for gaggle %s: %v\n", gaggle, err)
+			return 1
+		}
+	}
+	if setup.LegacyWorktrees != nil {
+		if err := runner.ReapScratchWorkspaces(filepath.Join(setup.LegacyWorktrees.Root, "scratch")); err != nil {
+			pf(stderr, "error: reap legacy scratch workspaces: %v\n", err)
+			return 1
+		}
 	}
 
 	// Reap crash-orphaned worktrees before anything tries to resume into one
@@ -274,15 +356,30 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// worktree directory that makes worktree.Create refuse forever (fixed
 	// separately by adopt-and-reset, but Reap is still what actually reclaims
 	// the disk space and the git worktree-list registration).
-	if _, warnings, err := setup.Worktrees.Reap(ctx, worktree.ReapOptions{
-		StaleAfter:    reapStaleAfter,
-		IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
-	}); err != nil {
-		pf(stderr, "error: reap worktrees: %v\n", err)
-		return 1
-	} else {
-		for _, w := range warnings {
-			pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
+	for gaggle, manager := range setup.WorktreesByGaggle {
+		if _, warnings, err := manager.Reap(ctx, worktree.ReapOptions{
+			StaleAfter:    reapStaleAfter,
+			IsRunTerminal: worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
+		}); err != nil {
+			pf(stderr, "error: reap worktrees for gaggle %s: %v\n", gaggle, err)
+			return 1
+		} else {
+			for _, w := range warnings {
+				pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
+			}
+		}
+	}
+	if setup.LegacyWorktrees != nil {
+		if _, warnings, err := setup.LegacyWorktrees.Reap(ctx, worktree.ReapOptions{
+			StaleAfter:    reapStaleAfter,
+			IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
+		}); err != nil {
+			pf(stderr, "error: reap legacy worktrees: %v\n", err)
+			return 1
+		} else {
+			for _, w := range warnings {
+				pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
+			}
 		}
 	}
 
@@ -301,7 +398,18 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
-	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
+	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
+	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	runDirs, err := l.RunDirs()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if err := sched.ReconcileAll(runDirs, time.Now()); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -310,17 +418,30 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		pf(stderr, "error: start HTTP API: %v\n", err)
 		return 1
 	}
+	if webhookServer != nil {
+		if err := webhookServer.Start(); err != nil {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
+			_ = apiServer.Shutdown(shutdownCtx)
+			shutdownCancel()
+			pf(stderr, "error: start webhook listener: %v\n", err)
+			return 1
+		}
+	}
 	apiStopped := false
 	defer func() {
 		if apiStopped {
 			return
 		}
-		ready.Store(false)
-		cancel()
+		stopDaemon()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
 		defer shutdownCancel()
 		if err := apiServer.Shutdown(shutdownCtx); err != nil {
 			pf(stderr, "error: %v\n", err)
+		}
+		if webhookServer != nil {
+			if err := webhookServer.Shutdown(shutdownCtx); err != nil {
+				pf(stderr, "error: shut down webhook listener: %v\n", err)
+			}
 		}
 	}()
 
@@ -334,7 +455,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
+	resumed, warned, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, setup.LegacyRunner, setup.Machines, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -350,6 +471,8 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// across daemon lifetimes are handled without waiting for the first tick.
 	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
 	triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
+	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
+	claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now))
 
 	// The periodic sweep runs on its own goroutine for the daemon's entire
 	// lifetime, concurrently with the main goroutine's own stdout/stderr
@@ -404,6 +527,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 				return
 			case <-delegationTicker.C:
 				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
+				claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now))
 			}
 		}
 	}()
@@ -442,8 +566,13 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		}
 	}()
 
-	ready.Store(true)
+	if webhookGate.Start() {
+		ready.Store(true)
+	}
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at http://%s%s\n", root, len(setup.Entries), apiServer.Address(), httpapi.Prefix)
+	if webhookServer != nil {
+		pf(stdout, "GitHub webhooks listening at http://%s%s\n", webhookServer.Address(), webhookhttp.Path)
+	}
 	if diagnosticsMode {
 		pln(stdout, "diagnostics mode: ON — long-running stages get periodic process samples + lsof + un-truncated output recorded as run artifacts")
 	}
@@ -461,8 +590,13 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	go func() { schedulerDone <- sched.Run(ctx) }()
 	var runErr error
 	apiFailed := false
+	webhookFailed := false
 	configFailed := false
 	configWatcherDone := false
+	var webhookErrors <-chan error
+	if webhookServer != nil {
+		webhookErrors = webhookServer.Errors()
+	}
 	select {
 	case runErr = <-schedulerDone:
 	case reloadErr := <-configDone:
@@ -474,7 +608,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			configFailed = true
 			pf(stderr, "error: config watcher stopped: %v\n", reloadErr)
 		}
-		cancel()
+		stopDaemon()
 		runErr = <-schedulerDone
 	case serveErr, ok := <-apiServer.Errors():
 		apiFailed = true
@@ -482,11 +616,18 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			serveErr = errors.New("server stopped unexpectedly")
 		}
 		pf(stderr, "error: HTTP API stopped: %v\n", serveErr)
-		cancel()
+		stopDaemon()
+		runErr = <-schedulerDone
+	case serveErr, ok := <-webhookErrors:
+		webhookFailed = true
+		if !ok {
+			serveErr = errors.New("server stopped unexpectedly")
+		}
+		pf(stderr, "error: webhook listener stopped: %v\n", serveErr)
+		stopDaemon()
 		runErr = <-schedulerDone
 	}
-	ready.Store(false)
-	cancel()
+	stopDaemon()
 	if *watchConfig && !configWatcherDone {
 		if reloadErr := <-configDone; reloadErr != nil {
 			configFailed = true
@@ -497,11 +638,19 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
 	shutdownErr := apiServer.Shutdown(shutdownCtx)
+	var webhookShutdownErr error
+	if webhookServer != nil {
+		webhookShutdownErr = webhookServer.Shutdown(shutdownCtx)
+	}
 	shutdownCancel()
 	apiStopped = true
 	if shutdownErr != nil {
 		apiFailed = true
 		pf(stderr, "error: %v\n", shutdownErr)
+	}
+	if webhookShutdownErr != nil {
+		webhookFailed = true
+		pf(stderr, "error: shut down webhook listener: %v\n", webhookShutdownErr)
 	}
 	if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
 		apiFailed = true
@@ -531,7 +680,7 @@ func runUpContext(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	} else {
 		pf(stdout, "shutdown timed out after %s: some runs may still be checkpointing\n", drainGrace)
 	}
-	if apiFailed || configFailed {
+	if apiFailed || webhookFailed || configFailed {
 		return 1
 	}
 	return 0

@@ -12,11 +12,12 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 func TestConvertCopilotSessionEventsFixture(t *testing.T) {
 	native := readTestData(t, "copilot-session-events.jsonl")
-	want := readTestData(t, "copilot-transcript.jsonl")
+	want := canonicalTranscriptFixture(t, readTestData(t, "copilot-transcript.jsonl"))
 
 	for i := 0; i < 2; i++ {
 		got, ok := convertCopilotSessionEvents(bytes.NewReader(native), 0)
@@ -26,15 +27,155 @@ func TestConvertCopilotSessionEventsFixture(t *testing.T) {
 		if !bytes.Equal(got.data, want) {
 			t.Fatalf("converted transcript:\n%s\nwant:\n%s", got.data, want)
 		}
+		if events := decodeTranscriptEvents(t, got.data); len(events) != 9 {
+			t.Fatalf("converted transcript events = %d, want 9", len(events))
+		}
 		if got.truncated || got.droppedBytes != 0 {
 			t.Fatalf("unexpected truncation: truncated=%v dropped=%d", got.truncated, got.droppedBytes)
 		}
+		wantMetrics := map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens:  28,
+			telemetry.AttrGenAIUsageOutputTokens: 13,
+			telemetry.AttrCopilotPremiumRequests: 2,
+			telemetry.AttrUsageCostUSD:           0.00000003,
+		}
+		if !mapsEqual(got.metrics, wantMetrics) {
+			t.Fatalf("usage metrics = %#v, want %#v", got.metrics, wantMetrics)
+		}
+	}
+}
+
+func TestCopilotUsagePreservesAbsentAndZero(t *testing.T) {
+	absent, ok := convertCopilotSessionEvents(strings.NewReader(
+		`{"type":"session.shutdown","data":{"modelMetrics":{"model":{"requests":{"count":1},"usage":{}}}}}`+"\n",
+	), 0)
+	if !ok {
+		t.Fatal("shutdown event was not recognized")
+	}
+	if absent.metrics != nil {
+		t.Fatalf("absent usage produced metrics: %#v", absent.metrics)
+	}
+
+	zero, ok := convertCopilotSessionEvents(strings.NewReader(
+		`{"type":"session.shutdown","data":{"modelMetrics":{"model":{"requests":{"count":1,"cost":0},"usage":{"inputTokens":0,"outputTokens":0},"totalNanoAiu":0}}}}`+"\n",
+	), 0)
+	if !ok {
+		t.Fatal("zero-valued shutdown event was not recognized")
+	}
+	for _, name := range []string{
+		telemetry.AttrGenAIUsageInputTokens,
+		telemetry.AttrGenAIUsageOutputTokens,
+		telemetry.AttrCopilotPremiumRequests,
+		telemetry.AttrUsageCostUSD,
+	} {
+		value, present := zero.metrics[name]
+		if !present || value != 0 {
+			t.Errorf("zero metric %q = %v, present=%v", name, value, present)
+		}
+	}
+}
+
+func TestCopilotUsageMatchesEnvelopeAndSpan(t *testing.T) {
+	native := readTestData(t, "copilot-session-events.jsonl")
+	want := map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens:  28,
+		telemetry.AttrGenAIUsageOutputTokens: 13,
+		telemetry.AttrCopilotPremiumRequests: 2,
+		telemetry.AttrUsageCostUSD:           0.00000003,
+	}
+
+	for _, tc := range []struct {
+		name   string
+		native []byte
+		want   map[string]float64
+	}{
+		{name: "known session fixture", native: native, want: want},
+		{name: "usage unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			t.Setenv("HOME", t.TempDir())
+			runner := &fakeProcessRunner{
+				result: ProcessResult{Transcript: []byte("stdout compatibility floor"), ExitCode: 0},
+				act: func(req ProcessRequest) error {
+					if err := WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}); err != nil {
+						return err
+					}
+					if tc.native != nil {
+						return writeNativeSessionLog(req, tc.native)
+					}
+					return nil
+				},
+			}
+			recorder := &fakeRecorder{}
+			executor, err := NewExecutor(
+				&CopilotAdapter{Command: []string{"copilot"}, Runner: runner},
+				testInjector(t, "", "", noopRegistrar{}),
+				recorder,
+				recorder,
+				recorder,
+				journal.NewPatternScrubber(),
+				"",
+			)
+			if err != nil {
+				t.Fatalf("NewExecutor: %v", err)
+			}
+
+			exporter := telemetry.NewMemoryExporter()
+			client, err := telemetry.New(context.Background(), telemetry.Config{
+				ServiceName:  "copilot-usage-test",
+				SpanExporter: exporter,
+			})
+			if err != nil {
+				t.Fatalf("telemetry.New: %v", err)
+			}
+			t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+			const runID = "0123456789abcdef0123456789abcdef"
+			ctx, span, err := client.StartTask(context.Background(), telemetry.TaskAttributes{
+				Gaggle:     "example",
+				WorkflowID: "default-implement",
+				RunID:      runID,
+				TaskID:     "implement",
+				TaskType:   telemetry.StageTypeAgentic,
+			})
+			if err != nil {
+				t.Fatalf("StartTask: %v", err)
+			}
+			env := testEnvelope(workspace, "repo:read")
+			env.RunID = runID
+			result, err := executor.Invoke(ctx, env)
+			if err != nil {
+				t.Fatalf("Invoke: %v", err)
+			}
+			span.End()
+
+			if !mapsEqual(result.Metrics, tc.want) {
+				t.Fatalf("envelope metrics = %#v, want %#v", result.Metrics, tc.want)
+			}
+			spans := exporter.Spans()
+			if len(spans) != 1 {
+				t.Fatalf("exported spans = %d, want 1", len(spans))
+			}
+			gotSpan := make(map[string]float64, 4)
+			for _, attr := range spans[0].Attributes() {
+				switch string(attr.Key) {
+				case telemetry.AttrGenAIUsageInputTokens, telemetry.AttrGenAIUsageOutputTokens:
+					gotSpan[string(attr.Key)] = float64(attr.Value.AsInt64())
+				case telemetry.AttrCopilotPremiumRequests, telemetry.AttrUsageCostUSD:
+					gotSpan[string(attr.Key)] = attr.Value.AsFloat64()
+				}
+			}
+			if !mapsEqual(gotSpan, tc.want) {
+				t.Fatalf("span metrics = %#v, want %#v", gotSpan, tc.want)
+			}
+		})
 	}
 }
 
 func TestConvertCopilotSessionEventsSalvagesPartialTrailingRecord(t *testing.T) {
 	native := append(readTestData(t, "copilot-session-events.jsonl"), []byte("{partial")...)
-	want := readTestData(t, "copilot-transcript.jsonl")
+	want := canonicalTranscriptFixture(t, readTestData(t, "copilot-transcript.jsonl"))
 
 	got, ok := convertCopilotSessionEvents(bytes.NewReader(native), 0)
 	if !ok {
@@ -58,7 +199,7 @@ func TestCopilotAdapterPrefersNativeSessionTranscript(t *testing.T) {
 		t.Fatalf("write Copilot config: %v", err)
 	}
 	native := readTestData(t, "copilot-session-events.jsonl")
-	want := readTestData(t, "copilot-transcript.jsonl")
+	want := canonicalTranscriptFixture(t, readTestData(t, "copilot-transcript.jsonl"))
 	runner := &fakeProcessRunner{
 		result: ProcessResult{Transcript: []byte("stdout compatibility floor"), ExitCode: 0},
 		act: func(req ProcessRequest) error {
@@ -98,12 +239,52 @@ func TestCopilotAdapterPrefersNativeSessionTranscript(t *testing.T) {
 	if !bytes.Equal(out.Transcript, want) {
 		t.Fatalf("Transcript:\n%s\nwant native conversion:\n%s", out.Transcript, want)
 	}
+	if out.TranscriptSchema != telemetry.GenAIEventSchema {
+		t.Fatalf("TranscriptSchema = %q, want %q", out.TranscriptSchema, telemetry.GenAIEventSchema)
+	}
 	path, ok := nativeSessionLogPath(runner.lastReq)
 	if !ok {
 		t.Fatalf("Copilot command/env missing native session location: %+v", runner.lastReq)
 	}
 	if filepath.Dir(filepath.Dir(filepath.Dir(path))) != copilotHome {
 		t.Fatalf("session log path %q is not rooted under active Copilot home %q", path, copilotHome)
+	}
+}
+
+func TestCopilotAdapterKeepsStdoutWhenNativeLogOnlyHasUsage(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	floor := []byte("stdout compatibility floor")
+	native := []byte(`{"type":"session.shutdown","data":{"totalPremiumRequests":2,"totalNanoAiu":3000,"modelMetrics":{}}}` + "\n")
+	runner := &fakeProcessRunner{
+		result: ProcessResult{Transcript: floor, ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			if err := WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}); err != nil {
+				return err
+			}
+			return writeNativeSessionLog(req, native)
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    pushCredentials(t, "unused", "unused"),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !bytes.Equal(out.Transcript, floor) {
+		t.Fatalf("Transcript = %q, want floor %q", out.Transcript, floor)
+	}
+	wantMetrics := map[string]float64{
+		telemetry.AttrCopilotPremiumRequests: 2,
+		telemetry.AttrUsageCostUSD:           0.00000003,
+	}
+	if !mapsEqual(out.Metrics, wantMetrics) {
+		t.Fatalf("usage metrics = %#v, want %#v", out.Metrics, wantMetrics)
 	}
 }
 
@@ -157,8 +338,23 @@ func TestCopilotAdapterFallsBackWhenNativeSessionLogUnavailable(t *testing.T) {
 			if !bytes.Equal(out.Transcript, floor) {
 				t.Fatalf("Transcript = %q, want floor %q", out.Transcript, floor)
 			}
+			if out.Metrics != nil {
+				t.Fatalf("unavailable native usage produced metrics: %#v", out.Metrics)
+			}
 		})
 	}
+}
+
+func mapsEqual(got, want map[string]float64) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for name, value := range want {
+		if gotValue, ok := got[name]; !ok || gotValue != value {
+			return false
+		}
+	}
+	return true
 }
 
 func TestCopilotAdapterSkipsNativeTranscriptForSelectedSession(t *testing.T) {
@@ -199,10 +395,16 @@ func TestCopilotAdapterSkipsNativeTranscriptForSelectedSession(t *testing.T) {
 }
 
 func TestCopilotAdapterBoundsNativeSessionTranscript(t *testing.T) {
-	const limit = int64(80)
+	const limit = int64(512)
+	const prompt = "Implement the parser."
+	const finalOutput = "The parser is implemented."
 	workspace := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
-	native := readTestData(t, "copilot-session-events.jsonl")
+	native := []byte(
+		`{"type":"user.message","data":{"content":"` + prompt + `"}}` + "\n" +
+			`{"type":"session.error","data":{"message":"` + strings.Repeat("x", int(limit)) + `"}}` + "\n" +
+			`{"type":"assistant.message","data":{"messageId":"message-final","model":"gpt-5.4","content":"` + finalOutput + `"}}` + "\n",
+	)
 	runner := &fakeProcessRunner{
 		result: ProcessResult{Transcript: []byte("floor"), ExitCode: 0},
 		act: func(req ProcessRequest) error {
@@ -227,8 +429,26 @@ func TestCopilotAdapterBoundsNativeSessionTranscript(t *testing.T) {
 	if !out.TranscriptTruncated || out.TranscriptDroppedBytes <= 0 {
 		t.Fatalf("native truncation = %v, dropped = %d; want a positive truncation", out.TranscriptTruncated, out.TranscriptDroppedBytes)
 	}
-	if !strings.Contains(string(out.Transcript), "[transcript truncated:") {
-		t.Fatalf("Transcript missing truncation marker: %q", out.Transcript)
+	events := decodeTranscriptEvents(t, out.Transcript)
+	if len(events) != 3 {
+		t.Fatalf("native transcript events = %#v, want prompt, final output, and marker", events)
+	}
+	if events[0].Role != "user" || events[0].Content != prompt {
+		t.Fatalf("prompt event = %#v, want retained native prompt", events[0])
+	}
+	if events[1].Role != "assistant" || events[1].Content != finalOutput || !events[1].Truncated {
+		t.Fatalf("final output event = %#v, want retained truncated native final output", events[1])
+	}
+	marker := events[len(events)-1]
+	if marker.Role != "system" || !marker.Truncated || !strings.Contains(marker.Content, "[transcript truncated:") {
+		t.Fatalf("truncation marker = %#v", marker)
+	}
+	encodedMarker, err := marshalTranscriptEvents(marker)
+	if err != nil {
+		t.Fatalf("marshal truncation marker: %v", err)
+	}
+	if retained := len(out.Transcript) - len(encodedMarker); retained > int(limit) {
+		t.Fatalf("retained transcript bytes = %d, want at most %d", retained, limit)
 	}
 }
 

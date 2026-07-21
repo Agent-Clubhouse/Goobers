@@ -21,6 +21,20 @@ var backlogClaimPattern = regexp.MustCompile(`(?s)backlog-query.*--claim`)
 // CheckWarnings reports non-fatal workflow diagnostics.
 func CheckWarnings(def Definition) []string {
 	var warnings []string
+	hasAutonomousTrigger := false
+	for _, trigger := range def.Spec.Triggers {
+		if trigger.Type == apiv1.TriggerSchedule || trigger.Type == apiv1.TriggerWebhook {
+			hasAutonomousTrigger = true
+			break
+		}
+	}
+	if !hasAutonomousTrigger {
+		warnings = append(warnings, fmt.Sprintf(
+			"workflow %q has no schedule trigger; it will not fire autonomously — run it with `goobers run %s`",
+			def.Name,
+			def.Name,
+		))
+	}
 	for _, task := range def.Spec.Tasks {
 		// expectedOutputs is inert only when the stage has no channel to
 		// emit through. With a resultFile declared it is a real contract
@@ -95,7 +109,15 @@ func CheckTriggerFields(def Definition) []string {
 // goober definitions. The config validator enforces its schema's harness enum;
 // Compile additionally checks the production registry via WithKnownHarnesses.
 func CheckAdmission(def Definition, goobers map[string]apiv1.GooberSpec) []string {
-	return admissionProblems(def, goobers, nil)
+	return admissionProblems(def, goobers, nil, true)
+}
+
+// CheckWorkflowAdmission reports workflow-local capability and harness
+// violations. Definition-level goober capability names are omitted so a config
+// validator can report each one once at its Goober source instead of repeating
+// it for every workflow.
+func CheckWorkflowAdmission(def Definition, goobers map[string]apiv1.GooberSpec) []string {
+	return admissionProblems(def, goobers, nil, false)
 }
 
 // CheckGateVocabulary reports an automated gate whose declared
@@ -121,6 +143,9 @@ func workspaceProblems(def Definition) []string {
 		case "", apiv1.WorkspaceRepo, apiv1.WorkspaceScratch:
 		default:
 			problems = append(problems, fmt.Sprintf("task %q: unknown workspace %q (want repo or scratch)", task.Name, task.Run.Workspace))
+		}
+		if task.Run.SyncBase && task.Run.Workspace == apiv1.WorkspaceScratch {
+			problems = append(problems, fmt.Sprintf("task %q: syncBase requires a repo workspace", task.Name))
 		}
 		switch task.Run.Network {
 		case "", apiv1.NetworkNone:
@@ -236,9 +261,10 @@ func CheckGateOutcomes(def Definition) []string {
 }
 
 // triggerFieldProblems reports a trigger declared without the field its own
-// type requires to do anything (#125): type=signal with no Signal name has
-// nothing to fire on. type=schedule's own requirement (a non-empty Schedule
-// expression) is already covered by scheduleProblems.
+// type requires to do anything (#125): type=signal with no Signal name and
+// type=webhook with no event names have nothing to fire on. type=schedule's
+// own requirement (a non-empty Schedule expression) is already covered by
+// scheduleProblems.
 //
 // #125 also flagged type=backlog-item with no Selector — deliberately NOT
 // enforced here: Selector (WF-040/SCH-010) has no runtime consumer anywhere
@@ -261,6 +287,16 @@ func triggerFieldProblems(def Definition) []string {
 				continue
 			}
 			problems = append(problems, fmt.Sprintf("trigger[%d] type=signal requires a signal name", i))
+		case apiv1.TriggerWebhook:
+			if len(tr.Events) == 0 {
+				problems = append(problems, fmt.Sprintf("trigger[%d] type=webhook requires at least one event name", i))
+				continue
+			}
+			for eventIndex, event := range tr.Events {
+				if strings.TrimSpace(event) == "" {
+					problems = append(problems, fmt.Sprintf("trigger[%d] type=webhook event[%d] must not be empty", i, eventIndex))
+				}
+			}
 		}
 	}
 	if manualIndex >= 0 && len(def.Spec.Triggers) != 1 {

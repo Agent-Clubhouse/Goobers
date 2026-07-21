@@ -95,10 +95,13 @@ type BacklogItem struct {
 // Limits bound a stage's execution. Zero values mean "no explicit limit".
 type Limits struct {
 	// MaxDurationSeconds caps wall-clock time for the stage.
+	// +kubebuilder:validation:Minimum=0
 	MaxDurationSeconds int32 `json:"maxDurationSeconds,omitempty"`
 	// MaxTokens caps model tokens the run may consume.
+	// +kubebuilder:validation:Minimum=0
 	MaxTokens int64 `json:"maxTokens,omitempty"`
 	// MaxCostUSD caps the run's spend.
+	// +kubebuilder:validation:Minimum=0
 	MaxCostUSD float64 `json:"maxCostUSD,omitempty"`
 }
 
@@ -150,6 +153,10 @@ type ResultEnvelope struct {
 	// Artifacts are the stage's produced outputs, each a journal-relative pointer
 	// (path + sha256 digest). Downstream stages receive these as ContextPointers.
 	Artifacts []ArtifactPointer `json:"artifacts,omitempty"`
+	// Transcript points at the runner-captured, scrubbed transcript for this
+	// agentic attempt. It is separate from produced Artifacts because it is
+	// diagnostic evidence, not a stage output handed to downstream stages.
+	Transcript *ArtifactPointer `json:"transcript,omitempty"`
 	// Summary is a human-readable summary of what happened.
 	Summary string `json:"summary,omitempty"`
 	// Metrics are numeric measures (duration, tokens, cost, custom).

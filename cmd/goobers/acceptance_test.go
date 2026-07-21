@@ -150,6 +150,7 @@ func initAcceptanceDemo(t *testing.T) string {
 		dir := filepath.Join(gaggleDir, "goobers", g.name)
 		writeFixture(t, filepath.Join(dir, "goober.yaml"), acceptanceGooberYAML(g.name, g.role, g.caps))
 		writeFixture(t, filepath.Join(dir, "instructions.md"), "You are the "+g.name+" fixture goober for the #30 acceptance check.\n")
+		writeFixture(t, filepath.Join(dir, "assets", "identity.txt"), g.name)
 	}
 
 	fixtureRepo := newDaemonFixtureRepo(t)
@@ -167,6 +168,13 @@ func initAcceptanceDemo(t *testing.T) string {
 		return &harness.FakeAdapter{
 			Transcript: []byte("fake harness session for " + gooberName + "\n"),
 			Act: func(_ context.Context, req harness.RunRequest) error {
+				asset, err := os.ReadFile(filepath.Join(req.Workspace, ".goober-assets", "identity.txt"))
+				if err != nil {
+					return err
+				}
+				if string(asset) != gooberName {
+					return fmt.Errorf("goober asset = %q, want %q", asset, gooberName)
+				}
 				mu.Lock()
 				calls[gooberName]++
 				n := calls[gooberName]

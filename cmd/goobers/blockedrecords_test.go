@@ -4,17 +4,193 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
+
+func blockedCycleTestRecords(repo providers.RepositoryRef, dependencies map[string][]string) map[string]blockedRecord {
+	recs := make(map[string]blockedRecord, len(dependencies))
+	for itemID, blockers := range dependencies {
+		recs[blockedRecordKey(repo, itemID)] = blockedRecord{
+			Repository: repo,
+			ItemID:     itemID,
+			Blockers:   blockers,
+		}
+	}
+	return recs
+}
+
+func TestFindBlockedCycle(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	tests := []struct {
+		name         string
+		dependencies map[string][]string
+		item         string
+		wantAffected []string
+		wantPaths    [][]string
+	}{
+		{
+			name: "acyclic",
+			dependencies: map[string][]string{
+				"510": {"441"},
+				"441": {"440"},
+			},
+			item: "510",
+		},
+		{
+			name: "two issue cycle",
+			dependencies: map[string][]string{
+				"510": {"441"},
+				"441": {"510"},
+			},
+			item:         "510",
+			wantAffected: []string{"510", "441"},
+			wantPaths:    [][]string{{"510", "441", "510"}},
+		},
+		{
+			name: "self dependency",
+			dependencies: map[string][]string{
+				"510": {"510"},
+			},
+			item:         "510",
+			wantAffected: []string{"510"},
+			wantPaths:    [][]string{{"510", "510"}},
+		},
+		{
+			name: "longer cycle",
+			dependencies: map[string][]string{
+				"510": {"441"},
+				"441": {"442"},
+				"442": {"510"},
+			},
+			item:         "510",
+			wantAffected: []string{"510", "441", "442"},
+			wantPaths:    [][]string{{"510", "441", "442", "510"}},
+		},
+		{
+			name: "multiple cycles",
+			dependencies: map[string][]string{
+				"510": {"441", "442"},
+				"441": {"510"},
+				"442": {"510"},
+			},
+			item:         "510",
+			wantAffected: []string{"510", "441", "442"},
+			wantPaths: [][]string{
+				{"510", "441", "510"},
+				{"510", "442", "510"},
+			},
+		},
+		{
+			name: "pull request claim key",
+			dependencies: map[string][]string{
+				"pr/955": {"956"},
+				"956":    {"955"},
+			},
+			item:         "pr/955",
+			wantAffected: []string{"955", "956"},
+			wantPaths:    [][]string{{"955", "956", "955"}},
+		},
+		{
+			name: "unrelated reachable cycle",
+			dependencies: map[string][]string{
+				"510": {"441"},
+				"441": {"442"},
+				"442": {"441"},
+			},
+			item: "510",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			recs := blockedCycleTestRecords(repo, tc.dependencies)
+			got := findBlockedCycle(recs, blockedRecordKey(repo, tc.item))
+			var gotAffected []string
+			for _, node := range got.Affected {
+				gotAffected = append(gotAffected, node.ItemID)
+			}
+			if !reflect.DeepEqual(gotAffected, tc.wantAffected) {
+				t.Errorf("affected = %v, want %v", gotAffected, tc.wantAffected)
+			}
+			if !reflect.DeepEqual(got.Paths, tc.wantPaths) {
+				t.Errorf("paths = %v, want %v", got.Paths, tc.wantPaths)
+			}
+		})
+	}
+}
+
+func TestFindBlockedCycleBoundsDenseGraphPaths(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	dependencies := make(map[string][]string)
+	const nodes = 12
+	for i := 0; i < nodes; i++ {
+		itemID := fmt.Sprintf("%d", 500+i)
+		for j := 0; j < nodes; j++ {
+			dependencies[itemID] = append(dependencies[itemID], fmt.Sprintf("%d", 500+j))
+		}
+	}
+
+	result := findBlockedCycle(blockedCycleTestRecords(repo, dependencies), blockedRecordKey(repo, "500"))
+	if len(result.Affected) != nodes {
+		t.Fatalf("affected nodes = %d, want %d", len(result.Affected), nodes)
+	}
+	if len(result.Paths) != maxBlockedCyclePaths {
+		t.Fatalf("representative paths = %d, want cap %d", len(result.Paths), maxBlockedCyclePaths)
+	}
+	if !result.MorePaths {
+		t.Fatal("MorePaths = false, want dense graph truncation reported")
+	}
+}
+
+func TestFindBlockedCycleCoversAffectedMembersBeforeTruncating(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	dependencies := map[string][]string{
+		"500": {"501"},
+		"501": {"500", "502", "503"},
+		"502": {"501"},
+		"503": {"501"},
+	}
+
+	result := findBlockedCycle(blockedCycleTestRecords(repo, dependencies), blockedRecordKey(repo, "500"))
+	if result.MorePaths {
+		t.Fatal("MorePaths = true, want every cycle edge represented within the path cap")
+	}
+	represented := make(map[string]bool)
+	for _, path := range result.Paths {
+		for _, itemID := range path {
+			represented[itemID] = true
+		}
+	}
+	for _, node := range result.Affected {
+		if !represented[node.ItemID] {
+			t.Errorf("affected item %s is absent from representative paths %v", node.ItemID, result.Paths)
+		}
+	}
+
+	dependencies["501"] = append(dependencies["501"], "504")
+	dependencies["504"] = []string{"501"}
+	result = findBlockedCycle(blockedCycleTestRecords(repo, dependencies), blockedRecordKey(repo, "500"))
+	if len(result.Paths) != maxBlockedCyclePaths {
+		t.Fatalf("representative paths = %d, want cap %d", len(result.Paths), maxBlockedCyclePaths)
+	}
+	if !result.MorePaths {
+		t.Fatal("MorePaths = false, want the unrepresented affected member reported")
+	}
+}
 
 func TestBlockedRecordsLoadSaveRoundTrip(t *testing.T) {
 	dir := t.TempDir()
@@ -118,9 +294,12 @@ func (c *stalledIssueClient) Do(req *http.Request) (*http.Response, error) {
 func TestFilterBlockedEligibilityNoRecordsIsNoop(t *testing.T) {
 	_, provider, repo := blockedFilterFixture(t)
 	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}}
-	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, eligible, map[string]blockedRecord{})
+	filtered, skipped, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, map[string]blockedRecord{})
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %+v, want none", skipped)
 	}
 	if changed {
 		t.Fatal("changed = true, want false for an empty records map")
@@ -140,9 +319,12 @@ func TestFilterBlockedEligibilitySkipsWhileBlockerOpen(t *testing.T) {
 	server.addIssue(511, "unrelated item", "goobers:ready")
 
 	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}}
-	recs := map[string]blockedRecord{"510": {Blockers: []string{"441"}, RunID: "run-1"}}
+	recordKey := blockedRecordKey(repo, "510")
+	recs := map[string]blockedRecord{
+		recordKey: {Repository: repo, ItemID: "510", Blockers: []string{"441"}, RunID: "run-1"},
+	}
 
-	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	filtered, skipped, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -152,8 +334,221 @@ func TestFilterBlockedEligibilitySkipsWhileBlockerOpen(t *testing.T) {
 	if len(filtered) != 1 || filtered[0].ID != "511" {
 		t.Fatalf("filtered = %v, want only 511 (510 skipped, its blocker 441 still open)", filtered)
 	}
-	if _, ok := recs["510"]; !ok {
+	if len(skipped) != 1 || skipped[0].reason() != "learned block: item 510 parked on open blocker(s): 441" {
+		t.Fatalf("skipped = %+v, want a journal-ready reason for item 510 on blocker 441", skipped)
+	}
+	if _, ok := recs[recordKey]; !ok {
 		t.Fatal("record for 510 was removed, want it to survive (blocker still open)")
+	}
+}
+
+func TestFilterBlockedEligibilityScopesSameNumberByRepository(t *testing.T) {
+	server, provider, webRepo := blockedFilterFixture(t)
+	server.addIssue(441, "web prerequisite", "goobers:ready")
+	server.addIssue(510, "web blocked item", "goobers:ready")
+	server.addIssue(511, "web unrelated item", "goobers:ready")
+	apiRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "api"}
+	webRecord := blockedRecord{Repository: webRepo, ItemID: "510", Blockers: []string{"441"}, RunID: "web-run"}
+	apiRecord := blockedRecord{Repository: apiRepo, ItemID: "510", Blockers: []string{"999"}, RunID: "api-run"}
+
+	recs := map[string]blockedRecord{
+		blockedRecordKey(webRepo, "510"): webRecord,
+		blockedRecordKey(apiRepo, "510"): apiRecord,
+	}
+	filtered, _, changed, warnings := filterBlockedEligibility(
+		context.Background(), provider, webRepo,
+		[]providers.WorkItem{{ID: "510"}, {ID: "511"}}, recs,
+	)
+	if changed || len(warnings) != 0 {
+		t.Fatalf("changed = %v, warnings = %v; want only the web record evaluated cleanly", changed, warnings)
+	}
+	if len(filtered) != 1 || filtered[0].ID != "511" {
+		t.Fatalf("filtered = %v, want web#510 skipped and web#511 retained", filtered)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("records = %+v, want both repositories retained", recs)
+	}
+
+	filtered, _, changed, warnings = filterBlockedEligibility(
+		context.Background(),
+		provider,
+		webRepo,
+		[]providers.WorkItem{{ID: "510"}, {ID: "511"}},
+		map[string]blockedRecord{blockedRecordKey(apiRepo, "510"): apiRecord},
+	)
+	if changed || len(warnings) != 0 {
+		t.Fatalf("other-repo-only changed = %v, warnings = %v; want a no-op", changed, warnings)
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("other-repo-only filtered = %v, want both web items eligible", filtered)
+	}
+}
+
+func TestFilterBlockedEligibilityUsesMigratedLegacyRecords(t *testing.T) {
+	server, provider, repo := blockedFilterFixture(t)
+	server.addIssue(441, "prerequisite", "goobers:ready")
+	server.addIssue(510, "legacy blocked item", "goobers:ready")
+	server.addIssue(511, "scoped blocked item", "goobers:ready")
+	server.addIssue(512, "unrelated item", "goobers:ready")
+	scopedKey := blockedRecordKey(repo, "511")
+	recs := map[string]blockedRecord{
+		"510": {Blockers: []string{"441"}, RunID: "legacy-run"},
+		scopedKey: {
+			Repository: repo,
+			ItemID:     "511",
+			Blockers:   []string{"441"},
+			RunID:      "scoped-run",
+		},
+	}
+	if !migrateLegacyBlockedRecords(recs, repo) {
+		t.Fatal("legacy migration reported no change")
+	}
+
+	filtered, _, changed, warnings := filterBlockedEligibility(
+		context.Background(),
+		provider,
+		repo,
+		[]providers.WorkItem{{ID: "510"}, {ID: "511"}, {ID: "512"}},
+		recs,
+	)
+	if changed || len(warnings) != 0 {
+		t.Fatalf("changed = %v, warnings = %v; want both records retained without warnings", changed, warnings)
+	}
+	if len(filtered) != 1 || filtered[0].ID != "512" {
+		t.Fatalf("filtered = %v, want only unrelated item 512", filtered)
+	}
+	if _, legacy := recs["510"]; legacy {
+		t.Fatalf("records = %+v, want the legacy key removed", recs)
+	}
+	if migrated, ok := recs[blockedRecordKey(repo, "510")]; !ok || migrated.Repository != repo || migrated.ItemID != "510" {
+		t.Fatalf("records = %+v, want legacy record scoped to the active repository", recs)
+	}
+}
+
+func TestFilterBlockedEligibilityMixedBlockerStatesRemainParked(t *testing.T) {
+	server, provider, repo := blockedFilterFixture(t)
+	server.addIssue(441, "closed prerequisite", "goobers:ready")
+	server.addIssue(442, "open prerequisite", "goobers:ready")
+	server.addIssue(510, "blocked item", "goobers:ready")
+	server.closeIssue(441)
+
+	recordKey := blockedRecordKey(repo, "510")
+	recs := map[string]blockedRecord{recordKey: {Repository: repo, ItemID: "510", Blockers: []string{"442", "441"}, RunID: "run-1"}}
+	filtered, skipped, changed, warnings := filterBlockedEligibility(
+		context.Background(),
+		provider,
+		repo,
+		[]providers.WorkItem{{ID: "510"}},
+		recs,
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if len(filtered) != 0 || !changed {
+		t.Fatalf("filtered = %v, changed = %v; want item parked with resolved blocker pruned", filtered, changed)
+	}
+	if len(skipped) != 1 || skipped[0].reason() != "learned block: item 510 parked on open blocker(s): 442" {
+		t.Fatalf("skipped = %+v, want only the still-open blocker 442", skipped)
+	}
+	if got := recs[recordKey].Blockers; !slices.Equal(got, []string{"442"}) {
+		t.Fatalf("record blockers = %v, want only still-open blocker 442", got)
+	}
+}
+
+func TestFilterBlockedEligibilityProviderFailureKeepsAffectedItemParked(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/issues/509"):
+			_, _ = w.Write([]byte(`{"number":509,"state":"closed"}`))
+		case strings.HasSuffix(r.URL.Path, "/issues/510"):
+			_, _ = w.Write([]byte(`{"number":510,"state":"open"}`))
+		case strings.HasSuffix(r.URL.Path, "/issues/441"):
+			http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(api.Close)
+	provider := providers.NewGitHubProvider("test-token", func(p *providers.GitHubProvider) {
+		p.BaseURL = api.URL
+	})
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	key509 := blockedRecordKey(repo, "509")
+	key510 := blockedRecordKey(repo, "510")
+	recs := map[string]blockedRecord{
+		key509: {Repository: repo, ItemID: "509", Blockers: []string{"440"}, RunID: "old-run"},
+		key510: {Repository: repo, ItemID: "510", Blockers: []string{"441"}, RunID: "run-1"},
+	}
+
+	filtered, skipped, changed, warnings := filterBlockedEligibility(
+		context.Background(),
+		provider,
+		repo,
+		[]providers.WorkItem{{ID: "510"}},
+		recs,
+	)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "check blocker 441 for 510") {
+		t.Fatalf("warnings = %v, want blocker lookup failure", warnings)
+	}
+	if !changed {
+		t.Fatal("changed = false, want the independently closed record pruned")
+	}
+	if len(filtered) != 0 {
+		t.Fatalf("filtered = %v, want issue 510 parked while its blocker state is unresolved", filtered)
+	}
+	if len(skipped) != 1 || skipped[0].reason() != "learned block: item 510 parked; blocker state unresolved: 441" {
+		t.Fatalf("skipped = %+v, want issue 510 parked on unresolved blocker 441", skipped)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("records after provider failure = %+v, want only affected record 510 preserved", recs)
+	}
+	if _, ok := recs[key509]; ok {
+		t.Fatal("closed record 509 survived an unrelated blocker lookup failure")
+	}
+	if _, ok := recs[key510]; !ok {
+		t.Fatal("record 510 was removed after its blocker lookup failed")
+	}
+}
+
+func TestFilterBlockedEligibilityProviderFailureKeepsUnresolvedItemParked(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/issues/510") {
+			http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(api.Close)
+	provider := providers.NewGitHubProvider("test-token", func(p *providers.GitHubProvider) {
+		p.BaseURL = api.URL
+	})
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	key510 := blockedRecordKey(repo, "510")
+	recs := map[string]blockedRecord{
+		key510: {Repository: repo, ItemID: "510", Blockers: []string{"441"}, RunID: "run-1"},
+	}
+
+	filtered, skipped, changed, warnings := filterBlockedEligibility(
+		context.Background(),
+		provider,
+		repo,
+		[]providers.WorkItem{{ID: "510"}, {ID: "511"}},
+		recs,
+	)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "check blocked item 510") {
+		t.Fatalf("warnings = %v, want blocked-item lookup failure", warnings)
+	}
+	if changed {
+		t.Fatal("changed = true, want unresolved record preserved unchanged")
+	}
+	if len(filtered) != 1 || filtered[0].ID != "511" {
+		t.Fatalf("filtered = %v, want unresolved issue 510 parked and unrelated issue 511 eligible", filtered)
+	}
+	if len(skipped) != 1 || skipped[0].reason() != "learned block: item 510 parked; item state unresolved" {
+		t.Fatalf("skipped = %+v, want issue 510 parked on unresolved item state", skipped)
+	}
+	if _, ok := recs[key510]; !ok {
+		t.Fatal("record for unresolved issue 510 was removed")
 	}
 }
 
@@ -170,11 +565,17 @@ func TestFilterBlockedEligibilitySelfHealsWhenBlockersClose(t *testing.T) {
 	server.closeIssue(442)
 
 	eligible := []providers.WorkItem{{ID: "510"}}
-	recs := map[string]blockedRecord{"510": {Blockers: []string{"441", "442"}, RunID: "run-1"}}
+	recordKey := blockedRecordKey(repo, "510")
+	recs := map[string]blockedRecord{
+		recordKey: {Repository: repo, ItemID: "510", Blockers: []string{"441", "442"}, RunID: "run-1"},
+	}
 
-	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	filtered, skipped, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %+v, want none once all blockers close", skipped)
 	}
 	if !changed {
 		t.Fatal("changed = false, want true — the self-healed record must be persisted")
@@ -182,7 +583,7 @@ func TestFilterBlockedEligibilitySelfHealsWhenBlockersClose(t *testing.T) {
 	if len(filtered) != 1 || filtered[0].ID != "510" {
 		t.Fatalf("filtered = %v, want 510 eligible again (both blockers closed)", filtered)
 	}
-	if _, ok := recs["510"]; ok {
+	if _, ok := recs[recordKey]; ok {
 		t.Fatal("record for 510 still present, want it cleared by self-heal — no human involved")
 	}
 }
@@ -200,11 +601,19 @@ func TestFilterBlockedEligibilityPrunesRecordForClosedItem(t *testing.T) {
 	// 510 no longer appears in this tick's eligible set (it's closed, so the
 	// provider query wouldn't return it) — filterBlockedEligibility must still
 	// prune its stale record via the direct GetWorkItem check.
-	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, nil, map[string]blockedRecord{
-		"510": {Blockers: []string{"441"}, RunID: "run-1"},
+	filtered, skipped, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, nil, map[string]blockedRecord{
+		blockedRecordKey(repo, "510"): {
+			Repository: repo,
+			ItemID:     "510",
+			Blockers:   []string{"441"},
+			RunID:      "run-1",
+		},
 	})
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %+v, want none for a closed item", skipped)
 	}
 	if !changed {
 		t.Fatal("changed = false, want true — the stale record must be persisted as removed")
@@ -214,24 +623,128 @@ func TestFilterBlockedEligibilityPrunesRecordForClosedItem(t *testing.T) {
 	}
 }
 
-// TestBacklogQuerySkipsKnownBlockedThenSelfHeals is the end-to-end CLI
-// acceptance for #552: a blocked.json record for issue 510 blocks it from
-// `backlog-query --claim` while its recorded blocker (441) is open, and
-// claiming 510 succeeds automatically — no human, no re-record — the tick
-// after 441 closes.
-func TestBacklogQuerySkipsKnownBlockedThenSelfHeals(t *testing.T) {
+// TestBacklogQueryRechecksBlockedRecordsBeforeClaim recreates #722's race:
+// provider eligibility has finished, but a learned block arrives before the
+// ledger acquisition. The claim transaction must observe that write.
+func TestBacklogQueryRechecksBlockedRecordsBeforeClaim(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	// 441 is deliberately NOT goobers:ready — it's the prerequisite, not
-	// itself a backlog-query candidate; only its open/closed state matters.
-	server.addIssue(441, "prerequisite", "goobers:approved")
+	server.addIssue(441, "open prerequisite", "goobers:approved")
 	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
 
 	l := layoutFor(root)
 	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
 		t.Fatalf("mkdir scheduler dir: %v", err)
 	}
-	recs := map[string]blockedRecord{"510": {Blockers: []string{"441"}, RunID: "prior-run"}}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-race")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	claimReady := make(chan struct{})
+	resumeClaim := make(chan struct{})
+	defer func() {
+		select {
+		case <-resumeClaim:
+		default:
+			close(resumeClaim)
+		}
+	}()
+
+	type queryResult struct {
+		code   int
+		stdout string
+		stderr string
+	}
+	queryDone := make(chan queryResult, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		code := runBacklogQueryWithClaimBarrier([]string{"--claim", root}, &stdout, &stderr, func() {
+			close(claimReady)
+			<-resumeClaim
+		})
+		queryDone <- queryResult{code: code, stdout: stdout.String(), stderr: stderr.String()}
+	}()
+
+	select {
+	case <-claimReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("backlog-query did not reach the claim transaction")
+	}
+
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	concurrentKey := blockedRecordKey(repo, "510")
+	if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
+		recs[concurrentKey] = blockedRecord{Repository: repo, ItemID: "510", Blockers: []string{"441"}, RunID: "prior-run"}
+		return true
+	}); err != nil {
+		t.Fatalf("write concurrent blocked record: %v", err)
+	}
+	close(resumeClaim)
+
+	var result queryResult
+	select {
+	case result = <-queryDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("backlog-query did not finish after blocked record was written")
+	}
+	if result.code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", result.code, result.stdout, result.stderr)
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if entry, ok := ledger.Lookup("510"); ok {
+		t.Fatalf("issue 510 was claimed after its blocked record arrived: %+v", entry)
+	}
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatalf("read instance journal: %v", err)
+	}
+	skipFound := false
+	for _, event := range events {
+		if event.Type == journal.EventClaimAcquired && event.Name == "510" {
+			t.Fatal("journal contains a claim for issue 510 after its blocked record arrived")
+		}
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["annotation"] == blockedEligibilitySkipAnnotation &&
+			event.Runner["itemId"] == "510" {
+			skipFound = true
+		}
+	}
+	if !skipFound {
+		t.Fatal("journal does not contain the blocked eligibility skip for issue 510")
+	}
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("load blocked records: %v", err)
+	}
+	if _, ok := recs[concurrentKey]; !ok {
+		t.Fatal("concurrent blocked record for issue 510 was not preserved")
+	}
+}
+
+// TestBacklogQuerySkipsKnownBlockedThenSelfHeals covers #792's repeated-claim
+// shape: a blocked record remains parked without new claims until its final
+// blocker closes, then becomes eligible in that same query cycle.
+func TestBacklogQuerySkipsKnownBlockedThenSelfHeals(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(441, "closed prerequisite", "goobers:approved")
+	server.addIssue(442, "open prerequisite", "goobers:approved")
+	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
+	server.closeIssue(441)
+
+	l := layoutFor(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	recs := map[string]blockedRecord{"510": {Blockers: []string{"442", "441"}, RunID: "prior-run"}}
 	if err := saveBlockedRecords(blockedRecordsPath(l), recs); err != nil {
 		t.Fatalf("seed blocked.json: %v", err)
 	}
@@ -243,11 +756,11 @@ func TestBacklogQuerySkipsKnownBlockedThenSelfHeals(t *testing.T) {
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
-	// First tick: 441 still open, so 510 is skipped — nothing else eligible,
+	// First tick: 442 is still open, so 510 is skipped — nothing else eligible,
 	// clean no-work exit (#233's contract), not a business error.
-	code, stdout, _ := runArgs(t, "backlog-query", "--claim", root)
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
 	if code != 0 {
-		t.Fatalf("first backlog-query: code = %d, stdout = %q", code, stdout)
+		t.Fatalf("first backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
 	if err != nil {
@@ -258,18 +771,62 @@ func TestBacklogQuerySkipsKnownBlockedThenSelfHeals(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if noWork["claimed"] != false {
-		t.Fatalf("first tick claimed = %v, want false (510's blocker 441 is still open)", noWork["claimed"])
+		t.Fatalf("first tick claimed = %v, want false (510's blocker 442 is still open)", noWork["claimed"])
 	}
-	if recs, _ := loadBlockedRecords(blockedRecordsPath(l)); len(recs) != 1 {
-		t.Fatalf("blocked.json after first tick = %+v, want the record to survive", recs)
+	reloaded, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("reload migrated blocked.json: %v", err)
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	if _, legacy := reloaded["510"]; legacy {
+		t.Fatalf("blocked.json after first tick = %+v, want legacy key migrated", reloaded)
+	}
+	migrated, ok := reloaded[blockedRecordKey(repo, "510")]
+	if !ok || migrated.Repository != repo || migrated.ItemID != "510" {
+		t.Fatalf("blocked.json after first tick = %+v, want scoped migrated record", reloaded)
+	}
+	if !slices.Equal(migrated.Blockers, []string{"442"}) {
+		t.Fatalf("blocked.json after first tick = %+v, want only open blocker 442 (441 self-healed)", reloaded)
 	}
 
-	// Second tick: 441 closes — self-heal fires, 510 becomes eligible and is
-	// claimed automatically.
-	server.closeIssue(441)
-	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	// Repeating the query without a blocker-state change must remain no-work,
+	// rather than re-claiming and re-running the same blocked issue.
+	t.Setenv("GOOBERS_RUN_ID", "run-3")
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
 	if code != 0 {
-		t.Fatalf("second backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		t.Fatalf("repeated backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if recs, _ := loadBlockedRecords(blockedRecordsPath(l)); len(recs) != 1 {
+		t.Fatalf("blocked.json after repeated tick = %+v, want the record to remain parked", recs)
+	}
+
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatalf("read instance journal: %v", err)
+	}
+	var skips, claims int
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["annotation"] == blockedEligibilitySkipAnnotation {
+			skips++
+			if event.Reason != "learned block: item 510 parked on open blocker(s): 442" {
+				t.Fatalf("skip reason = %q, want deterministic open-blocker reason", event.Reason)
+			}
+		}
+		if event.Type == journal.EventClaimAcquired && event.Name == "510" {
+			claims++
+		}
+	}
+	if skips != 2 || claims != 0 {
+		t.Fatalf("journal before final blocker closes: skips=%d claims=%d, want 2 skips and 0 claims", skips, claims)
+	}
+
+	// Final blocker closes: self-heal fires and 510 becomes eligible in this
+	// query cycle, with exactly one claim transition.
+	server.closeIssue(442)
+	t.Setenv("GOOBERS_RUN_ID", "run-4")
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("self-healing backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	data, err = os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
 	if err != nil {
@@ -280,10 +837,28 @@ func TestBacklogQuerySkipsKnownBlockedThenSelfHeals(t *testing.T) {
 		t.Fatalf("unmarshal claimed-item.json: %v", err)
 	}
 	if claimed["id"] != "510" {
-		t.Fatalf("second tick claimed id = %v, want 510 (self-healed, no human involved)", claimed["id"])
+		t.Fatalf("self-healing tick claimed id = %v, want 510", claimed["id"])
 	}
 	if recs, _ := loadBlockedRecords(blockedRecordsPath(l)); len(recs) != 0 {
 		t.Fatalf("blocked.json after self-heal = %+v, want empty", recs)
+	}
+
+	t.Setenv("GOOBERS_RUN_ID", "run-5")
+	if code, _, stderr = runArgs(t, "backlog-query", "--claim", root); code != 0 {
+		t.Fatalf("post-heal repeated query: code = %d, stderr = %q", code, stderr)
+	}
+	events, err = journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatalf("read final instance journal: %v", err)
+	}
+	claims = 0
+	for _, event := range events {
+		if event.Type == journal.EventClaimAcquired && event.Name == "510" {
+			claims++
+		}
+	}
+	if claims != 1 {
+		t.Fatalf("claim transitions after blocker-state change = %d, want exactly 1", claims)
 	}
 }
 
@@ -301,16 +876,22 @@ func TestFilterBlockedEligibilityResolvesPRPrefixedKey(t *testing.T) {
 	server.addIssue(511, "unrelated item", "goobers:ready")
 
 	eligible := []providers.WorkItem{{ID: "955"}, {ID: "511"}}
-	recs := map[string]blockedRecord{"pr/955": {Blockers: []string{"956"}, RunID: "run-1"}}
+	recordKey := blockedRecordKey(repo, "pr/955")
+	recs := map[string]blockedRecord{
+		recordKey: {Repository: repo, ItemID: "pr/955", Blockers: []string{"956"}, RunID: "run-1"},
+	}
 
-	filtered, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	filtered, skipped, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
 	if len(warnings) != 0 {
 		t.Fatalf("pr/-prefixed key produced warnings, want a clean lookup: %v", warnings)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %+v, want none because the claim key is pr/955, not eligible id 955", skipped)
 	}
 	if changed {
 		t.Fatal("changed = true, want false — the blocker is still open, nothing to persist")
 	}
-	if _, ok := recs["pr/955"]; !ok {
+	if _, ok := recs[recordKey]; !ok {
 		t.Fatal("record for pr/955 was removed, want it to survive (blocker still open)")
 	}
 	if len(filtered) != 2 {
@@ -326,15 +907,21 @@ func TestFilterBlockedEligibilityPrunesPRPrefixedKeyWhenMerged(t *testing.T) {
 	server.addIssue(955, "the pull request", "goobers:ready")
 	server.closeIssue(955)
 
-	recs := map[string]blockedRecord{"pr/955": {Blockers: []string{"956"}, RunID: "run-1"}}
-	_, changed, warnings, _ := filterBlockedEligibility(context.Background(), provider, repo, nil, recs)
+	recordKey := blockedRecordKey(repo, "pr/955")
+	recs := map[string]blockedRecord{
+		recordKey: {Repository: repo, ItemID: "pr/955", Blockers: []string{"956"}, RunID: "run-1"},
+	}
+	_, skipped, changed, warnings := filterBlockedEligibility(context.Background(), provider, repo, nil, recs)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %+v, want none for a closed pull request", skipped)
 	}
 	if !changed {
 		t.Fatal("changed = false, want true — a closed pull request's record must be pruned")
 	}
-	if _, ok := recs["pr/955"]; ok {
+	if _, ok := recs[recordKey]; ok {
 		t.Fatal("record for pr/955 survived, want it pruned once its pull request closed")
 	}
 }
@@ -351,50 +938,67 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 	server.addIssue(511, "unrelated item", "goobers:ready")
 
 	eligible := []providers.WorkItem{{ID: "510"}, {ID: "511"}, {ID: "not-a-real-key"}}
+	healthyKey := blockedRecordKey(repo, "510")
+	malformedKey := blockedRecordKey(repo, "not-a-real-key")
+	candidates := append([]providers.WorkItem(nil), eligible...)
 	recs := map[string]blockedRecord{
-		"510":            {Blockers: []string{"441"}, RunID: "run-1"},
-		"not-a-real-key": {Blockers: []string{"441"}, RunID: "run-2"},
+		healthyKey: {
+			Repository: repo,
+			ItemID:     "510",
+			Blockers:   []string{"441"},
+			RunID:      "run-1",
+		},
+		malformedKey: {
+			Repository: repo,
+			ItemID:     "not-a-real-key",
+			Blockers:   []string{"441"},
+			RunID:      "run-2",
+		},
 	}
 
-	filtered, _, warnings, unresolved := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
+	filtered, skipped, _, warnings := filterBlockedEligibility(context.Background(), provider, repo, eligible, recs)
 	if len(warnings) != 1 {
 		t.Fatalf("warnings = %v, want exactly one for the unresolvable key", warnings)
 	}
 	if !strings.Contains(warnings[0], "not-a-real-key") {
 		t.Fatalf("warning = %q, want it to name the offending key", warnings[0])
 	}
-	if _, ok := recs["not-a-real-key"]; !ok {
+	if _, ok := recs[malformedKey]; !ok {
 		t.Fatal("unresolvable record was pruned, want it left untouched for a human to resolve")
 	}
 	// The healthy record must still have been applied — one bad key degrades
 	// only itself, which is the entire point of the change.
-	if len(filtered) != 2 || filtered[0].ID != "511" || filtered[1].ID != "not-a-real-key" {
-		t.Fatalf("filtered = %v, want 511 and the unresolved item — record 510 must still skip despite the bad sibling key", filtered)
+	if len(filtered) != 1 || filtered[0].ID != "511" {
+		t.Fatalf("filtered = %v, want only 511 — unresolved record must stay parked without blocking healthy items", filtered)
 	}
 
 	path := filepath.Join(t.TempDir(), blockedRecordsFileName)
 	if err := saveBlockedRecords(path, recs); err != nil {
 		t.Fatal(err)
 	}
-	reconciled, err := reconcileBlockedEligibilityLocked(path, append([]providers.WorkItem(nil), filtered...), nil, unresolved)
+	verifiedSkips := make(map[string]blockedEligibilitySkip, len(skipped))
+	for _, skip := range skipped {
+		verifiedSkips[skip.ItemID] = skip
+	}
+	reconciled, reconciledSkips, err := reconcileBlockedEligibilityLocked(path, repo, append([]providers.WorkItem(nil), candidates...), nil, nil, verifiedSkips)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reconciled) != 2 || reconciled[1].ID != "not-a-real-key" {
-		t.Fatalf("reconciled = %v, want the unchanged unresolved record to remain eligible", reconciled)
+	if len(reconciled) != 1 || reconciled[0].ID != "511" || len(reconciledSkips) != 2 {
+		t.Fatalf("reconciled = %v, skips = %+v; want only 511 with both blocked records parked", reconciled, reconciledSkips)
 	}
 
-	replacement := recs["not-a-real-key"]
+	replacement := recs[malformedKey]
 	replacement.RunID = "replacement-run"
-	if err := saveBlockedRecords(path, map[string]blockedRecord{"not-a-real-key": replacement}); err != nil {
+	if err := saveBlockedRecords(path, map[string]blockedRecord{malformedKey: replacement}); err != nil {
 		t.Fatal(err)
 	}
-	reconciled, err = reconcileBlockedEligibilityLocked(path, append([]providers.WorkItem(nil), filtered...), nil, unresolved)
+	reconciled, reconciledSkips, err = reconcileBlockedEligibilityLocked(path, repo, append([]providers.WorkItem(nil), candidates...), nil, nil, verifiedSkips)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reconciled) != 1 || reconciled[0].ID != "511" {
-		t.Fatalf("reconciled after replacement = %v, want only 511", reconciled)
+	if len(reconciled) != 2 || len(reconciledSkips) != 1 || !reconciledSkips[0].VerificationPending {
+		t.Fatalf("reconciled after replacement = %v, skips = %+v; want the replacement parked pending verification", reconciled, reconciledSkips)
 	}
 }
 
@@ -410,13 +1014,17 @@ func TestBacklogQueryDoesNotClaimConcurrentBlockedRecordReplacement(t *testing.T
 	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
 
 	observed := blockedRecord{
+		Repository: repo,
+		ItemID:     "510",
 		Blockers:   []string{"441"},
 		RunID:      "old-run",
 		RecordedAt: time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC),
 	}
-	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{"510": observed}); err != nil {
+	recordKey := blockedRecordKey(repo, "510")
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{recordKey: observed}); err != nil {
 		t.Fatal(err)
 	}
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
@@ -461,12 +1069,14 @@ func TestBacklogQueryDoesNotClaimConcurrentBlockedRecordReplacement(t *testing.T
 	}
 
 	replacement := blockedRecord{
+		Repository: repo,
+		ItemID:     "510",
 		Blockers:   []string{"442"},
 		RunID:      "new-run",
 		RecordedAt: time.Date(2026, 7, 18, 11, 0, 0, 0, time.UTC),
 	}
 	if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
-		recs["510"] = replacement
+		recs[recordKey] = replacement
 		return true
 	}); err != nil {
 		t.Fatal(err)
@@ -484,7 +1094,7 @@ func TestBacklogQueryDoesNotClaimConcurrentBlockedRecordReplacement(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := recs["510"]; !ok || !sameBlockedRecord(got, replacement) {
+	if got, ok := recs[recordKey]; !ok || !sameBlockedRecord(got, replacement) {
 		t.Fatalf("concurrent replacement = (%+v, %v), want preserved %+v", got, ok, replacement)
 	}
 	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
@@ -517,8 +1127,14 @@ func TestStalledBlockedStateProviderCallDoesNotDelayFinalizer(t *testing.T) {
 	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
 	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
-		"510": {Blockers: []string{"441"}, RunID: "prior-run"},
+		blockedRecordKey(repo, "510"): {
+			Repository: repo,
+			ItemID:     "510",
+			Blockers:   []string{"441"},
+			RunID:      "prior-run",
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}

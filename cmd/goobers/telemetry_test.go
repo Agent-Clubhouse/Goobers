@@ -30,12 +30,16 @@ import (
 // suites cover real dispatch/ingestion behavior respectively.
 func writeFixtureRunWithError(t *testing.T, root string) {
 	t.Helper()
-	l := instance.NewLayout(root)
+	writeFixtureRunWithErrorForGaggle(t, instance.NewLayout(root), "fixture-run-1", "example")
+}
+
+func writeFixtureRunWithErrorForGaggle(t *testing.T, l instance.Layout, runID, gaggle string) {
+	t.Helper()
 	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
-		RunID:           "fixture-run-1",
+		RunID:           runID,
 		Workflow:        "default-implement",
 		WorkflowVersion: 1,
-		Gaggle:          "example",
+		Gaggle:          gaggle,
 		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
 	}, nil)
 	if err != nil {

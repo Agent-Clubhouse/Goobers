@@ -36,6 +36,7 @@ cloud cluster without change.
 |---|---|
 | Identity | Name + role (e.g. "coder", "perf-hunter"). |
 | Instructions | Instruction markdown defining behavior/persona/scope. |
+| Assets | Optional static files under `assets/`, available to every invocation at workspace path `.goober-assets/`. |
 | Skills | Skill set available to the goober. |
 | Tools | MCP servers / tools it can use (incl. management tools — see telemetry), declared as a capability allowlist. |
 | Harness binding | The harness adapter it runs on (first adapter: GitHub Copilot CLI). |
@@ -69,6 +70,11 @@ cloud cluster without change.
   portal roster as a team member. *(All tiers)*
 - **GBO-004 (SHOULD):** Goober definitions SHOULD be composable/reusable (shared
   instruction or skill fragments) to avoid duplication across similar goobers.
+- **GBO-005 (MUST):** When a Goober definition includes an `assets/` directory,
+  each invocation MUST receive an isolated snapshot of that directory at the
+  fixed workspace-relative path `.goober-assets/`. Goobers without `assets/`
+  MUST be unaffected, and assets MUST NOT be shared across Goobers or stages.
+  The reserved workspace path MUST NOT be tracked on a run branch. *(All tiers)*
 
 ### Runtime & invocation
 - **GBO-010 (MUST):** A Goober MUST only execute work when invoked by a workflow task;

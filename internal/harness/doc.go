@@ -21,7 +21,7 @@
 //     resolve a credential for a capability the stage didn't declare
 //     (internal/credentials.Set.Token fails closed on that itself).
 //   - The harness transcript is captured and handed to the caller-supplied
-//     SpanRecorder (typically internal/journal.Run.RecordSpan) after
+//     SpanRecorder (typically internal/journal.Run.RecordSpanWithSchema) after
 //     passing through the caller-supplied Scrubber. This package does
 //     import internal/journal (since #73/#94), but only for its small,
 //     stable Ref/Scrubber value types — never its full durability/

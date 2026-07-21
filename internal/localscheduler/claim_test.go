@@ -45,6 +45,157 @@ func TestClaimAndRelease(t *testing.T) {
 	}
 }
 
+func TestClaimsAreIndependentAcrossGaggles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	alpha := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "159"}
+	beta := ClaimKey{Gaggle: "beta", Provider: "github", ExternalID: "159"}
+
+	if ok, _, err := ledger.ClaimScoped(alpha, "run-alpha", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("claim alpha: ok=%v err=%v", ok, err)
+	}
+	if ok, _, err := ledger.ClaimScoped(beta, "run-beta", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("claim beta: ok=%v err=%v", ok, err)
+	}
+	if ok, holder, err := ledger.ClaimScoped(alpha, "run-other", "implementation", time.Hour); err != nil || ok || holder != "run-alpha" {
+		t.Fatalf("duplicate alpha claim: ok=%v holder=%q err=%v", ok, holder, err)
+	}
+
+	reopened, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, ok := reopened.LookupScoped(alpha); !ok || entry.RunID != "run-alpha" {
+		t.Fatalf("alpha lookup = %+v, %v", entry, ok)
+	}
+	if entry, ok := reopened.LookupScoped(beta); !ok || entry.RunID != "run-beta" {
+		t.Fatalf("beta lookup = %+v, %v", entry, ok)
+	}
+	if err := reopened.ReleaseScoped(alpha, "run-alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reopened.LookupScoped(alpha); ok {
+		t.Fatal("alpha claim still held after release")
+	}
+	if entry, ok := reopened.LookupScoped(beta); !ok || entry.RunID != "run-beta" {
+		t.Fatalf("releasing alpha changed beta claim: %+v, %v", entry, ok)
+	}
+}
+
+func TestMigrateLegacyClaimNamespace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.Claim("159", "legacy-run", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("legacy claim: ok=%v err=%v", ok, err)
+	}
+	if err := ledger.MigrateLegacyNamespace("alpha", "github"); err != nil {
+		t.Fatal(err)
+	}
+	key := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "159"}
+	if entry, ok := ledger.LookupScoped(key); !ok || entry.RunID != "legacy-run" {
+		t.Fatalf("migrated claim = %+v, %v", entry, ok)
+	}
+	if _, ok := ledger.Lookup("159"); ok {
+		t.Fatal("legacy item-only key still exists")
+	}
+}
+
+func TestMigrateLegacyClaimsUsesPerRunOwnership(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, claim := range []struct {
+		itemID string
+		runID  string
+	}{
+		{itemID: "159", runID: "run-alpha"},
+		{itemID: "27", runID: "run-beta"},
+	} {
+		if ok, _, err := ledger.Claim(claim.itemID, claim.runID, "implementation", time.Hour); err != nil || !ok {
+			t.Fatalf("legacy claim %s: ok=%v err=%v", claim.itemID, ok, err)
+		}
+	}
+
+	namespaces := map[string]ClaimNamespace{
+		"run-alpha": {Gaggle: "alpha", Provider: "github"},
+		"run-beta":  {Gaggle: "beta", Provider: "ado"},
+	}
+	if err := ledger.MigrateLegacyClaims(func(entry ClaimEntry) (ClaimNamespace, error) {
+		namespace, ok := namespaces[entry.RunID]
+		if !ok {
+			return ClaimNamespace{}, fmt.Errorf("unknown run %s", entry.RunID)
+		}
+		return namespace, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, key := range []ClaimKey{
+		{Gaggle: "alpha", Provider: "github", ExternalID: "159"},
+		{Gaggle: "beta", Provider: "ado", ExternalID: "27"},
+	} {
+		if entry, ok := ledger.LookupScoped(key); !ok || entry.Gaggle != key.Gaggle || entry.Provider != key.Provider {
+			t.Fatalf("migrated claim %v = %+v, %v", key, entry, ok)
+		}
+		if _, ok := ledger.Lookup(key.ExternalID); ok {
+			t.Fatalf("legacy item-only key %q still exists", key.ExternalID)
+		}
+	}
+}
+
+func TestMigrateLegacyClaimsRetainsUnresolvedEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, claim := range []struct {
+		itemID string
+		runID  string
+	}{
+		{itemID: "159", runID: "run-active"},
+		{itemID: "27", runID: "run-removed"},
+	} {
+		if ok, _, err := ledger.Claim(claim.itemID, claim.runID, "implementation", time.Hour); err != nil || !ok {
+			t.Fatalf("legacy claim %s: ok=%v err=%v", claim.itemID, ok, err)
+		}
+	}
+
+	if err := ledger.MigrateLegacyClaims(func(entry ClaimEntry) (ClaimNamespace, error) {
+		if entry.RunID == "run-removed" {
+			return ClaimNamespace{}, fmt.Errorf("%w: inactive gaggle", ErrLegacyClaimOwnershipUnresolved)
+		}
+		return ClaimNamespace{Gaggle: "alpha", Provider: "github"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := ledger.LookupScoped(ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "159"}); !ok {
+		t.Fatal("resolvable legacy claim was not migrated")
+	}
+	entry, ok := ledger.Lookup("27")
+	if !ok || entry.RunID != "run-removed" || entry.Gaggle != "" || entry.Provider != "" {
+		t.Fatalf("unresolved legacy claim = %+v, %v; want unchanged item-only claim", entry, ok)
+	}
+
+	key := ClaimKey{Gaggle: "beta", Provider: "github", ExternalID: "27"}
+	if ok, holder, err := ledger.ClaimScoped(key, "run-competing", "implementation", time.Hour); err != nil || ok || holder != "run-removed" {
+		t.Fatalf("scoped claim competing with unresolved legacy claim: ok=%v holder=%q err=%v", ok, holder, err)
+	}
+	if _, ok := ledger.LookupScoped(key); ok {
+		t.Fatal("competing scoped claim was recorded alongside unresolved legacy claim")
+	}
+}
+
 // TestClaimRejectsNonPositiveLeaseDuration is issue #235 edge 1: a
 // non-positive leaseDuration computes ExpiresAt <= ClaimedAt, so the entry
 // is expired() at the moment it's written — the very check the exclusivity
@@ -165,6 +316,86 @@ func TestReleaseIsIdempotentAndOwnerScoped(t *testing.T) {
 	// Double release is a no-op, not an error.
 	if err := l.Release("item", "run-a"); err != nil {
 		t.Fatalf("double release should be a no-op: %v", err)
+	}
+}
+
+func TestForceReleaseIgnoresOwnerAndPreservesOtherClaims(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	l, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, itemID := range []string{"issue-9", "issue-8"} {
+		if ok, _, err := l.Claim(itemID, "run-a", "curate", time.Minute); err != nil || !ok {
+			t.Fatalf("Claim(%s): ok=%v err=%v", itemID, ok, err)
+		}
+	}
+
+	if err := l.ForceRelease("issue-8"); err != nil {
+		t.Fatalf("ForceRelease: %v", err)
+	}
+	if _, held := l.Lookup("issue-8"); held {
+		t.Fatal("force-released item is still held")
+	}
+	if ok, holder, err := l.Claim("issue-8", "run-b", "implement", time.Minute); err != nil || !ok || holder != "run-b" {
+		t.Fatalf("force-released item is not claimable again: ok=%v holder=%q err=%v", ok, holder, err)
+	}
+	if entry, held := l.Lookup("issue-9"); !held || entry.RunID != "run-a" {
+		t.Fatalf("unrelated claim changed: %+v held=%v", entry, held)
+	}
+	if err := l.ForceRelease("issue-8"); err != nil {
+		t.Fatalf("idempotent ForceRelease: %v", err)
+	}
+}
+
+func TestForceReleaseEntryPreservesOtherNamespaces(t *testing.T) {
+	l, err := OpenClaimLedger(filepath.Join(t.TempDir(), "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "42"}
+	beta := ClaimKey{Gaggle: "beta", Provider: "github", ExternalID: "42"}
+	for _, claim := range []struct {
+		key   ClaimKey
+		runID string
+	}{
+		{key: alpha, runID: "run-alpha"},
+		{key: beta, runID: "run-beta"},
+	} {
+		if ok, _, err := l.ClaimScoped(claim.key, claim.runID, "implement", time.Minute); err != nil || !ok {
+			t.Fatalf("ClaimScoped(%+v): ok=%v err=%v", claim.key, ok, err)
+		}
+	}
+
+	entry, held := l.LookupScoped(alpha)
+	if !held {
+		t.Fatal("alpha claim is not held")
+	}
+	if err := l.ForceReleaseEntry(entry, "cli"); err != nil {
+		t.Fatalf("ForceReleaseEntry: %v", err)
+	}
+	if _, held := l.LookupScoped(alpha); held {
+		t.Fatal("alpha claim is still held")
+	}
+	if entry, held := l.LookupScoped(beta); !held || entry.RunID != "run-beta" {
+		t.Fatalf("beta claim changed: %+v held=%v", entry, held)
+	}
+}
+
+func TestSnapshotReturnsAllClaimsInItemOrder(t *testing.T) {
+	l, err := OpenClaimLedger(filepath.Join(t.TempDir(), "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, itemID := range []string{"issue-9", "issue-8"} {
+		if ok, _, err := l.Claim(itemID, "run-a", "curate", time.Minute); err != nil || !ok {
+			t.Fatalf("Claim(%s): ok=%v err=%v", itemID, ok, err)
+		}
+	}
+
+	entries := l.Snapshot()
+	if len(entries) != 2 || entries[0].ItemID != "issue-8" || entries[1].ItemID != "issue-9" {
+		t.Fatalf("Snapshot() = %+v, want issue-8 then issue-9", entries)
 	}
 }
 
@@ -362,6 +593,26 @@ func TestReleasePersistFailureLeavesClaimHeld(t *testing.T) {
 	ok, holder, err := l.Claim("issue-51", "run-b", "curate", time.Minute)
 	if err != nil || ok || holder != "run-a" {
 		t.Fatalf("prior owner should still hold the claim: ok=%v holder=%s err=%v", ok, holder, err)
+	}
+}
+
+func TestForceReleasePersistFailureLeavesClaimHeld(t *testing.T) {
+	dir := t.TempDir()
+	goodPath := filepath.Join(dir, "claims.json")
+	l, err := OpenClaimLedger(goodPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := l.Claim("issue-51", "run-a", "curate", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	l.path = filepath.Join(dir, "missing-subdir", "claims.json")
+	if err := l.ForceRelease("issue-51"); err == nil {
+		t.Fatal("expected a persist error on the failed force release")
+	}
+	if entry, held := l.Lookup("issue-51"); !held || entry.RunID != "run-a" {
+		t.Fatalf("failed force release must preserve the claim: %+v held=%v", entry, held)
 	}
 }
 

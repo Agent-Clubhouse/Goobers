@@ -2,13 +2,89 @@ package providers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestGitHubProviderUpdateBranchUsesExpectedHeadLease(t *testing.T) {
+	var requestBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPut)
+		if r.URL.Path != "/repos/acme/app/pulls/42/update-branch" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		decodeJSON(t, r, &requestBody)
+		w.WriteHeader(http.StatusAccepted)
+		writeJSON(t, w, map[string]string{
+			"message": "Updating pull request branch.",
+			"url":     "https://api.github.test/repos/acme/app/pulls/42",
+		})
+	}))
+	defer server.Close()
+
+	rec := &recordingRecorder{}
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL }, WithMutationRecorder(rec))
+	result, err := provider.UpdateBranch(context.Background(), UpdateBranchRequest{
+		Repository:      RepositoryRef{Owner: "acme", Name: "app"},
+		PullID:          "42",
+		ExpectedHeadSHA: "deadbeef",
+	})
+	if err != nil {
+		t.Fatalf("UpdateBranch returned error: %v", err)
+	}
+	if requestBody["expected_head_sha"] != "deadbeef" {
+		t.Fatalf("expected_head_sha = %q, want deadbeef", requestBody["expected_head_sha"])
+	}
+	if result.Number != 42 || result.Message != "Updating pull request branch." {
+		t.Fatalf("result = %+v", result)
+	}
+	ref, ok := rec.last()
+	if !ok || ref.Operation != "update-branch" {
+		t.Fatalf("recorded ref = (%+v, %v), want update-branch", ref, ok)
+	}
+}
+
+func TestGitHubProviderUpdateBranchReturnsTypedRejection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		writeJSON(t, w, map[string]string{"message": "expected head SHA did not match"})
+	}))
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	_, err := provider.UpdateBranch(context.Background(), UpdateBranchRequest{
+		Repository:      RepositoryRef{Owner: "acme", Name: "app"},
+		PullID:          "42",
+		ExpectedHeadSHA: "stale",
+	})
+	var updateErr *UpdateBranchError
+	if !errors.As(err, &updateErr) {
+		t.Fatalf("error = %v, want *UpdateBranchError", err)
+	}
+	if updateErr.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(updateErr.Message, "expected head SHA") {
+		t.Fatalf("typed error = %+v", updateErr)
+	}
+}
+
+func TestGitHubProviderUpdateBranchRequiresExpectedHead(t *testing.T) {
+	provider := NewGitHubProvider("token")
+	_, err := provider.UpdateBranch(context.Background(), UpdateBranchRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+		PullID:     "42",
+	})
+	if err == nil || !strings.Contains(err.Error(), "expected head SHA is required") {
+		t.Fatalf("error = %v, want expected-head validation", err)
+	}
+}
 
 func TestGitHubProviderMapsWorkItemsAndStatus(t *testing.T) {
 	mux := http.NewServeMux()
@@ -108,6 +184,367 @@ func TestGitHubProviderDeleteBranch(t *testing.T) {
 			}
 			if calls != 1 {
 				t.Fatalf("calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestGitHubProviderDeleteBranchUsesExpectedSHALease(t *testing.T) {
+	runner := &fakeEnvironmentRunner{}
+	provider := NewGitHubProvider("secret-token", func(p *GitHubProvider) {
+		p.Runner = runner
+	})
+	result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
+		Repository: RepositoryRef{
+			Owner: "acme",
+			Name:  "app",
+			URL:   "https://github.example/acme/app.git",
+		},
+		Name:        "goobers/implementation/run-1",
+		ExpectedSHA: "validated-sha",
+	})
+	if err != nil {
+		t.Fatalf("DeleteBranch returned error: %v", err)
+	}
+	if !result.Deleted {
+		t.Fatal("Deleted = false, want true")
+	}
+	if len(runner.calls) != 1 || runner.calls[0].name != "git" ||
+		!slicesEqual(runner.calls[0].args[:3], []string{"init", "--bare", "--quiet"}) {
+		t.Fatalf("runner calls = %+v", runner.calls)
+	}
+	if len(runner.envCalls) != 1 {
+		t.Fatalf("environment runner calls = %+v", runner.envCalls)
+	}
+	call := runner.envCalls[0]
+	if call.name != "git" || len(call.args) != 6 ||
+		!strings.HasPrefix(call.args[0], "--git-dir=") ||
+		call.args[1] != "push" ||
+		call.args[2] != "--porcelain" ||
+		call.args[3] != "--force-with-lease=refs/heads/goobers/implementation/run-1:validated-sha" ||
+		call.args[4] != "https://github.example/acme/app.git" ||
+		call.args[5] != ":refs/heads/goobers/implementation/run-1" {
+		t.Fatalf("push call = %+v", call)
+	}
+	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:secret-token"))
+	if !containsString(call.env, "GIT_CONFIG_VALUE_0=AUTHORIZATION: basic "+auth) {
+		t.Fatal("push environment does not contain the injected authorization header")
+	}
+}
+
+func TestGitHubProviderDeleteBranchPreservesStaleLease(t *testing.T) {
+	runner := &fakeEnvironmentRunner{
+		envOutput: []byte("! refs/heads/run:refs/heads/run [rejected] (stale info)\n"),
+		envErr:    errors.New("exit status 1"),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/app/git/ref/heads/goobers/implementation/run-1":
+			writeJSON(t, w, map[string]any{
+				"ref": "refs/heads/goobers/implementation/run-1",
+				"object": map[string]string{
+					"sha": "concurrent-sha",
+				},
+			})
+		case "/repos/acme/app/activity":
+			writeJSON(t, w, []map[string]any{})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) {
+		p.Runner = runner
+		p.BaseURL = server.URL
+	})
+	result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
+		Repository:  RepositoryRef{Owner: "acme", Name: "app"},
+		Name:        "goobers/implementation/run-1",
+		ExpectedSHA: "validated-sha",
+	})
+	var tipChanged *BranchTipChangedError
+	if !errors.As(err, &tipChanged) {
+		t.Fatalf("DeleteBranch error = %v, want BranchTipChangedError", err)
+	}
+	if result.Deleted {
+		t.Fatal("Deleted = true for a stale lease")
+	}
+}
+
+func TestGitHubProviderDeleteBranchLeaseTreatsConcurrentDeletionAsAbsent(t *testing.T) {
+	runner := &fakeEnvironmentRunner{
+		envOutput: []byte("! refs/heads/run:refs/heads/run [rejected] (stale info)\n"),
+		envErr:    errors.New("exit status 1"),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/app/git/ref/heads/goobers/implementation/run-1" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) {
+		p.Runner = runner
+		p.BaseURL = server.URL
+	})
+
+	result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
+		Repository:  RepositoryRef{Owner: "acme", Name: "app"},
+		Name:        "goobers/implementation/run-1",
+		ExpectedSHA: "validated-sha",
+	})
+	if err != nil {
+		t.Fatalf("DeleteBranch returned error: %v", err)
+	}
+	if result.Deleted {
+		t.Fatal("Deleted = true for an already absent branch")
+	}
+}
+
+func TestGitHubProviderDeleteBranchLeaseClassifiesRateLimits(t *testing.T) {
+	tests := []struct {
+		name          string
+		output        string
+		wantStatus    int
+		wantSecondary bool
+	}{
+		{
+			name:       "too many requests",
+			output:     "fatal: unable to access repository: The requested URL returned error: 429\n",
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			name:          "secondary limit",
+			output:        "remote: You have exceeded a secondary rate limit. Please wait before retrying.\nfatal: HTTP 403\n",
+			wantStatus:    http.StatusForbidden,
+			wantSecondary: true,
+		},
+		{
+			name:          "abuse limit",
+			output:        "remote: You have triggered an abuse detection mechanism.\nfatal: HTTP 403\n",
+			wantStatus:    http.StatusForbidden,
+			wantSecondary: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeEnvironmentRunner{
+				envOutput: []byte(tc.output),
+				envErr:    errors.New("exit status 1"),
+			}
+			provider := NewGitHubProvider("token", func(p *GitHubProvider) {
+				p.Runner = runner
+			})
+
+			result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
+				Repository:  RepositoryRef{Owner: "acme", Name: "app"},
+				Name:        "goobers/implementation/run-1",
+				ExpectedSHA: "validated-sha",
+			})
+			var rateLimitErr *RateLimitError
+			if !errors.As(err, &rateLimitErr) {
+				t.Fatalf("DeleteBranch error = %v, want RateLimitError", err)
+			}
+			if rateLimitErr.Status != tc.wantStatus || rateLimitErr.Secondary != tc.wantSecondary {
+				t.Fatalf("RateLimitError = %+v", rateLimitErr)
+			}
+			if result.Deleted {
+				t.Fatal("Deleted = true for a rate-limited push")
+			}
+		})
+	}
+}
+
+func TestGitHubProviderDeleteBranchLeaseRejectsConcurrentPush(t *testing.T) {
+	remoteDir := filepath.Join(t.TempDir(), "remote.git")
+	workDir := filepath.Join(t.TempDir(), "work")
+	runGitTest(t, "init", "--bare", "--quiet", remoteDir)
+	runGitTest(t, "init", "--quiet", workDir)
+	runGitTest(t, "-C", workDir, "config", "user.name", "Goobers Test")
+	runGitTest(t, "-C", workDir, "config", "user.email", "goobers@example.test")
+
+	tracked := filepath.Join(workDir, "tracked.txt")
+	if err := os.WriteFile(tracked, []byte("validated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, "-C", workDir, "add", "tracked.txt")
+	runGitTest(t, "-C", workDir, "commit", "--quiet", "-m", "validated tip")
+	ref := "refs/heads/goobers/implementation/run-1"
+	runGitTest(t, "-C", workDir, "push", "--quiet", remoteDir, "HEAD:"+ref)
+	validatedSHA := strings.TrimSpace(runGitTest(t, "--git-dir="+remoteDir, "rev-parse", ref))
+
+	if err := os.WriteFile(tracked, []byte("concurrent push\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, "-C", workDir, "commit", "--quiet", "-am", "concurrent push")
+	runGitTest(t, "-C", workDir, "push", "--quiet", remoteDir, "HEAD:"+ref)
+	concurrentSHA := strings.TrimSpace(runGitTest(t, "--git-dir="+remoteDir, "rev-parse", ref))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/app/git/ref/heads/goobers/implementation/run-1":
+			writeJSON(t, w, map[string]any{
+				"ref":    ref,
+				"object": map[string]string{"sha": concurrentSHA},
+			})
+		case "/repos/acme/app/activity":
+			writeJSON(t, w, []map[string]any{})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	provider := NewGitHubProvider("", func(p *GitHubProvider) {
+		p.BaseURL = server.URL
+	})
+	result, err := provider.DeleteBranch(context.Background(), DeleteBranchRequest{
+		Repository:  RepositoryRef{Owner: "acme", Name: "app", URL: remoteDir},
+		Name:        "goobers/implementation/run-1",
+		ExpectedSHA: validatedSHA,
+	})
+	var tipChanged *BranchTipChangedError
+	if !errors.As(err, &tipChanged) {
+		t.Fatalf("DeleteBranch error = %v, want BranchTipChangedError", err)
+	}
+	if result.Deleted {
+		t.Fatal("Deleted = true for a stale lease")
+	}
+	if got := strings.TrimSpace(runGitTest(t, "--git-dir="+remoteDir, "rev-parse", ref)); got != concurrentSHA {
+		t.Fatalf("remote tip = %s, want concurrent tip %s", got, concurrentSHA)
+	}
+}
+
+func TestGitHubProviderListBranchesIsBoundedAndCursorable(t *testing.T) {
+	var calls int
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/repos/acme/app/git/matching-refs/heads/goobers" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if r.URL.Query().Get("per_page") != "100" {
+			t.Fatalf("per_page = %q, want 100", r.URL.Query().Get("per_page"))
+		}
+		if calls == 1 {
+			w.Header().Set("Link", "<"+server.URL+r.URL.Path+"?page=2&per_page=100>; rel=\"next\"")
+			writeJSON(t, w, []map[string]interface{}{
+				{"ref": "refs/tags/goobers/workflow/run-tag", "object": map[string]string{"sha": "sha-tag"}},
+				{"ref": "refs/heads/goobers-other", "object": map[string]string{"sha": "sha-other"}},
+				{"ref": "refs/heads/goobers/workflow/run-a", "url": "ref-a", "object": map[string]string{"sha": "sha-a"}},
+			})
+			return
+		}
+		if r.URL.Query().Get("page") != "2" {
+			t.Fatalf("page = %q, want 2", r.URL.Query().Get("page"))
+		}
+		writeJSON(t, w, []map[string]interface{}{
+			{"ref": "refs/heads/goobers/workflow/run-c", "url": "ref-c", "object": map[string]string{"sha": "sha-c"}},
+			{"ref": "refs/tags/goobers/workflow/run-tag", "object": map[string]string{"sha": "sha-tag"}},
+			{"ref": "refs/heads/goobers/workflow/run-b", "url": "ref-b", "object": map[string]string{"sha": "sha-b"}},
+		})
+	}))
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	branches, err := provider.ListBranches(context.Background(), ListBranchesRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+		Prefix:     "goobers/",
+		After:      "goobers/workflow/run-a",
+		Limit:      1,
+	})
+	if err != nil {
+		t.Fatalf("ListBranches: %v", err)
+	}
+	if len(branches) != 1 || branches[0].Name != "goobers/workflow/run-b" || branches[0].SHA != "sha-b" || branches[0].URL != "ref-b" {
+		t.Fatalf("branches = %+v", branches)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestGitHubProviderListBranchesValidatesBound(t *testing.T) {
+	provider := NewGitHubProvider("token")
+	repo := RepositoryRef{Owner: "acme", Name: "app"}
+	if _, err := provider.ListBranches(context.Background(), ListBranchesRequest{Repository: repo, Limit: 1}); err == nil {
+		t.Fatal("missing prefix: err = nil")
+	}
+	if _, err := provider.ListBranches(context.Background(), ListBranchesRequest{Repository: repo, Prefix: "goobers/"}); err == nil {
+		t.Fatal("zero limit: err = nil")
+	}
+}
+
+func TestGitHubProviderGetBranch(t *testing.T) {
+	activityAt := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		status    int
+		wantFound bool
+		wantErr   bool
+	}{
+		{name: "found", status: http.StatusOK, wantFound: true},
+		{name: "absent", status: http.StatusNotFound},
+		{name: "provider failure", status: http.StatusForbidden, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assertMethod(t, r, http.MethodGet)
+				switch r.URL.Path {
+				case "/repos/acme/app/git/ref/heads/goobers/implementation/run-1":
+					w.WriteHeader(tc.status)
+					if tc.status != http.StatusOK {
+						return
+					}
+					writeJSON(t, w, map[string]interface{}{
+						"ref":    "refs/heads/goobers/implementation/run-1",
+						"url":    "ref-url",
+						"object": map[string]string{"sha": "tip-sha"},
+					})
+				case "/repos/acme/app/activity":
+					if tc.status != http.StatusOK {
+						t.Fatal("activity requested after missing or failed ref lookup")
+					}
+					if got := r.URL.Query().Get("ref"); got != "refs/heads/goobers/implementation/run-1" {
+						t.Fatalf("activity ref = %q", got)
+					}
+					if got := r.URL.Query().Get("direction"); got != "desc" {
+						t.Fatalf("activity direction = %q", got)
+					}
+					if got := r.URL.Query().Get("per_page"); got != "1" {
+						t.Fatalf("activity per_page = %q", got)
+					}
+					writeJSON(t, w, []map[string]interface{}{{
+						"ref":       "refs/heads/goobers/implementation/run-1",
+						"timestamp": activityAt,
+					}})
+				default:
+					t.Fatalf("path = %q", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+
+			provider := NewGitHubProvider("token", func(p *GitHubProvider) {
+				p.BaseURL = server.URL
+				p.maxRetries = 0
+			})
+			branch, found, err := provider.GetBranch(
+				context.Background(),
+				RepositoryRef{Owner: "acme", Name: "app"},
+				"goobers/implementation/run-1",
+			)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("GetBranch error = %v, wantErr %t", err, tc.wantErr)
+			}
+			if found != tc.wantFound {
+				t.Fatalf("found = %t, want %t", found, tc.wantFound)
+			}
+			if found && (branch.Name != "goobers/implementation/run-1" || branch.SHA != "tip-sha" ||
+				branch.URL != "ref-url" || branch.LastActivityAt == nil || !branch.LastActivityAt.Equal(activityAt)) {
+				t.Fatalf("branch = %+v", branch)
 			}
 		})
 	}
@@ -565,7 +1002,7 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 		writeJSON(t, w, map[string]interface{}{
 			"check_runs": []map[string]interface{}{
 				{"name": "unit-tests", "status": "completed", "conclusion": "success", "html_url": "https://ci/unit"},
-				{"name": "e2e", "status": "in_progress", "html_url": "https://ci/e2e"},
+				{"name": "e2e", "status": "in_progress", "html_url": "https://ci/e2e", "output": map[string]interface{}{"summary": "waiting for a runner"}},
 			},
 		})
 	})
@@ -599,6 +1036,16 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 	}
 	if len(result.Checks) != 3 {
 		t.Fatalf("len(Checks) = %d, want 3 (1 status + 2 check-runs)", len(result.Checks))
+	}
+	wantChecks := []CheckDetail{
+		{Name: "legacy-ci", State: CheckStateFailing, URL: "https://ci/legacy", Summary: "boom"},
+		{Name: "unit-tests", State: CheckStatePassing, URL: "https://ci/unit"},
+		{Name: "e2e", State: CheckStatePending, URL: "https://ci/e2e", Summary: "waiting for a runner"},
+	}
+	for i := range wantChecks {
+		if result.Checks[i] != wantChecks[i] {
+			t.Fatalf("Checks[%d] = %+v, want %+v", i, result.Checks[i], wantChecks[i])
+		}
 	}
 	if result.Mergeable == nil || !*result.Mergeable {
 		t.Fatalf("Mergeable = %v, want true", result.Mergeable)
@@ -1597,4 +2044,61 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte
 	f.name = name
 	f.args = append([]string(nil), args...)
 	return nil, nil
+}
+
+type runnerCall struct {
+	name string
+	args []string
+	env  []string
+}
+
+type fakeEnvironmentRunner struct {
+	calls     []runnerCall
+	envCalls  []runnerCall
+	envOutput []byte
+	envErr    error
+}
+
+func (f *fakeEnvironmentRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	f.calls = append(f.calls, runnerCall{name: name, args: append([]string(nil), args...)})
+	return nil, nil
+}
+
+func (f *fakeEnvironmentRunner) RunWithEnv(_ context.Context, env []string, name string, args ...string) ([]byte, error) {
+	f.envCalls = append(f.envCalls, runnerCall{
+		name: name,
+		args: append([]string(nil), args...),
+		env:  append([]string(nil), env...),
+	})
+	return f.envOutput, f.envErr
+}
+
+func slicesEqual(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func runGitTest(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return string(out)
 }

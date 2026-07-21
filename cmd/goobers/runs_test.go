@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ import (
 )
 
 func TestStatusAndRunsListShareRunTable(t *testing.T) {
-	root := initDemo(t)
+	root := initScheduledDemo(t)
 	start := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
 	writeStatusRunWithPhase(t, root, "old-run", "implementation", "goobers", start, journal.PhaseFailed)
 	writeStatusRunWithPhase(t, root, "middle-run", "implementation", "goobers", start.Add(time.Minute), journal.PhaseFailed)
@@ -29,11 +30,17 @@ func TestStatusAndRunsListShareRunTable(t *testing.T) {
 		t.Fatalf("status code = %d, stderr = %q; runs list code = %d, stderr = %q",
 			statusCode, statusStderr, runsCode, runsStderr)
 	}
-	const parkedSummary = "Issues parked on learned dependencies: 0\n"
-	if !strings.HasPrefix(statusStdout, parkedSummary) {
-		t.Fatalf("status stdout = %q, want parked dependency summary", statusStdout)
+	for _, want := range []string{
+		"Issues parked on learned dependencies: 0\n",
+		"Open PRs with goobers:blocked-on-sibling: 0\n",
+		"Open PRs with goobers:merge-escalated: 0\n",
+	} {
+		if !strings.Contains(statusStdout, want) {
+			t.Fatalf("status stdout = %q, want it to contain %q", statusStdout, want)
+		}
 	}
-	if runsStdout != strings.TrimPrefix(statusStdout, parkedSummary) {
+	runTableAt := strings.Index(statusStdout, "RUN ID")
+	if runTableAt == -1 || runsStdout != statusStdout[runTableAt:] {
 		t.Fatalf("runs list stdout = %q, want status run table %q", runsStdout, statusStdout)
 	}
 	newIndex := strings.Index(statusStdout, "new-run")
@@ -52,8 +59,19 @@ func TestStatusAndRunsListShareRunTable(t *testing.T) {
 		t.Fatalf("status --json code = %d, stderr = %q; runs list --json code = %d, stderr = %q",
 			statusCode, statusStderr, runsCode, runsStderr)
 	}
-	if runsStdout != statusStdout {
-		t.Fatalf("runs list --json stdout = %q, want byte-identical status output %q", runsStdout, statusStdout)
+	var statusOutput, runsOutput statusJSONOutput
+	if err := json.Unmarshal([]byte(statusStdout), &statusOutput); err != nil {
+		t.Fatalf("status JSON = %q: %v", statusStdout, err)
+	}
+	if err := json.Unmarshal([]byte(runsStdout), &runsOutput); err != nil {
+		t.Fatalf("runs list JSON = %q: %v", runsStdout, err)
+	}
+	if statusOutput.Summary == nil || runsOutput.Summary != nil {
+		t.Fatalf("status summary = %+v, runs list summary = %+v", statusOutput.Summary, runsOutput.Summary)
+	}
+	if !reflect.DeepEqual(runsOutput.Warnings, statusOutput.Warnings) ||
+		!reflect.DeepEqual(runsOutput.Runs, statusOutput.Runs) {
+		t.Fatalf("runs list output = %+v, want status warnings/runs %+v", runsOutput, statusOutput)
 	}
 }
 

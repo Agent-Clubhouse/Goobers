@@ -201,7 +201,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 			// flight. Re-dispatching it now would silently re-run its side
 			// effects (#107); instead apply the exact transition a live
 			// walk would have taken right after runTask returned.
-			next, res, advance, terr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, item, t, lastResult, 0)
+			next, res, advance, terr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.RepoRef, item, t, lastResult, 0)
 			if terr != nil {
 				return res, terr
 			}
@@ -227,7 +227,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		span.Fail(err)
 		return result, err
 	}
-	span.Succeed(string(result.Phase))
+	completeRunSpan(span, result)
 	return result, nil
 }
 
@@ -268,6 +268,7 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 	// third PhaseFailed producer. FailureStage stays empty: a resume-time
 	// digest check isn't attributable to one stage.
 	res := Result{Phase: journal.PhaseFailed, FailureCode: code, FailureMessage: boundFailureMessage(msg)}
+	r.notifyTerminal(runID, journal.PhaseFailed, "")
 	if err := r.FinalizeTerminal(runID, journal.PhaseFailed); err != nil {
 		return res, fmt.Errorf("runner: %s (additionally failed to finalize terminal refusal: %w)", msg, err)
 	}

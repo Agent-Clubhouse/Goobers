@@ -26,13 +26,11 @@ func (f *fakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWo
 
 func TestNotifyEscalatedPostsComment(t *testing.T) {
 	poster := &fakeCommenter{}
-	n := &EscalationNotifier{
-		Poster:     poster,
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"},
-	}
+	n := &EscalationNotifier{Poster: poster}
+	repository := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
 
 	r := Result{Gate: "autogate", Attempt: 3, Outcome: OutcomeFail, Target: "@escalate", Escalated: true}
-	if err := n.NotifyEscalated(context.Background(), "42", r, "repass budget exhausted"); err != nil {
+	if err := n.NotifyEscalated(context.Background(), repository, "42", r, "repass budget exhausted"); err != nil {
 		t.Fatalf("NotifyEscalated: %v", err)
 	}
 	if poster.calls != 1 {
@@ -40,6 +38,9 @@ func TestNotifyEscalatedPostsComment(t *testing.T) {
 	}
 	if poster.lastReq.ID != "42" {
 		t.Fatalf("request = %+v, want id=42", poster.lastReq)
+	}
+	if poster.lastReq.Repository != repository {
+		t.Fatalf("repository = %+v, want %+v", poster.lastReq.Repository, repository)
 	}
 	if poster.lastReq.Title != nil || poster.lastReq.Body != nil || poster.lastReq.State != "" || len(poster.lastReq.AddLabels) != 0 || len(poster.lastReq.RemoveLabels) != 0 {
 		t.Fatalf("request = %+v, want comment-only (no other field touched)", poster.lastReq)
@@ -49,13 +50,38 @@ func TestNotifyEscalatedPostsComment(t *testing.T) {
 	}
 }
 
+func TestNotifyStageEscalatedPostsComment(t *testing.T) {
+	poster := &fakeCommenter{}
+	n := &EscalationNotifier{Poster: poster}
+	repository := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
+
+	if err := n.NotifyStageEscalated(context.Background(), repository, "42", "implement", "blocked on issue 41"); err != nil {
+		t.Fatalf("NotifyStageEscalated: %v", err)
+	}
+	if poster.calls != 1 {
+		t.Fatalf("calls = %d, want 1", poster.calls)
+	}
+	if poster.lastReq.ID != "42" {
+		t.Fatalf("request = %+v, want id=42", poster.lastReq)
+	}
+	if poster.lastReq.Repository != repository {
+		t.Fatalf("repository = %+v, want %+v", poster.lastReq.Repository, repository)
+	}
+	if poster.lastReq.Title != nil || poster.lastReq.Body != nil || poster.lastReq.State != "" || len(poster.lastReq.AddLabels) != 0 || len(poster.lastReq.RemoveLabels) != 0 {
+		t.Fatalf("request = %+v, want comment-only (no other field touched)", poster.lastReq)
+	}
+	if !strings.Contains(poster.lastReq.Comment, "implement") || !strings.Contains(poster.lastReq.Comment, "blocked on issue 41") {
+		t.Fatalf("comment = %q, want it to mention the stage and reason", poster.lastReq.Comment)
+	}
+}
+
 func TestNotifyEscalatedNoopWithoutPosterOrItem(t *testing.T) {
 	poster := &fakeCommenter{}
-	if err := (&EscalationNotifier{Poster: nil}).NotifyEscalated(context.Background(), "42", Result{}, "why"); err != nil {
+	if err := (&EscalationNotifier{Poster: nil}).NotifyEscalated(context.Background(), providers.RepositoryRef{}, "42", Result{}, "why"); err != nil {
 		t.Fatalf("nil poster: %v", err)
 	}
 	n := &EscalationNotifier{Poster: poster}
-	if err := n.NotifyEscalated(context.Background(), "", Result{}, "why"); err != nil {
+	if err := n.NotifyEscalated(context.Background(), providers.RepositoryRef{}, "", Result{}, "why"); err != nil {
 		t.Fatalf("empty item id: %v", err)
 	}
 	if poster.calls != 0 {
@@ -65,8 +91,8 @@ func TestNotifyEscalatedNoopWithoutPosterOrItem(t *testing.T) {
 
 func TestNotifyEscalatedPropagatesProviderError(t *testing.T) {
 	poster := &fakeCommenter{err: errors.New("rate limited")}
-	n := &EscalationNotifier{Poster: poster, Repository: providers.RepositoryRef{Name: "widgets"}}
-	if err := n.NotifyEscalated(context.Background(), "42", Result{}, "why"); err == nil {
+	n := &EscalationNotifier{Poster: poster}
+	if err := n.NotifyEscalated(context.Background(), providers.RepositoryRef{Name: "widgets"}, "42", Result{}, "why"); err == nil {
 		t.Fatal("want error propagated from provider")
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -123,6 +125,24 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "pr-context.json")
 	}
+	claimedNumber, hasExistingClaim, err := claimedPullRequestNumber(root)
+	if err != nil {
+		pf(stderr, "error: resolve this run's existing PR claim: %v\n", err)
+		return 1
+	}
+	if hasExistingClaim {
+		var claimed []providers.PullRequestSummary
+		for _, pr := range prs {
+			if pr.Number == claimedNumber {
+				claimed = append(claimed, pr)
+				break
+			}
+		}
+		if len(claimed) == 0 {
+			return writeNoWorkResult(stdout, stderr, fmt.Sprintf("this run's claimed PR #%d is no longer open", claimedNumber))
+		}
+		prs = claimed
+	}
 
 	// #716's core fix, applied upstream of #596's tier selection: a PR
 	// carrying goobers:merge-escalated only stays excluded from EVERY tier
@@ -135,46 +155,45 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// here, before tiering, means an excluded top-tier PR correctly falls
 	// through to a lower tier's candidates rather than forcing a no-work
 	// cycle when a perfectly eligible lower-tier PR exists.
-	var nonBlocked []providers.PullRequestSummary
-	for _, pr := range prs {
-		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("check escalation state for PR #%d", pr.Number), err, "pr-context.json")
-		}
-		if blocked {
-			continue
-		}
-		// #748: also exclude a PR parked goobers:blocked-on-sibling whose
-		// named blockers are not all resolved yet — same blocker-aware
-		// self-heal pr-select applies, so gather-pr-context (pr-remediation's
-		// selection) never spends a cycle on a PR waiting purely on a sibling.
-		sibBlocked, err := blockedOnSiblingStillBlocks(ctx, provider, repo, pr)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "pr-context.json")
-		}
-		if sibBlocked {
-			continue
-		}
-		nonBlocked = append(nonBlocked, pr)
+	// #872/#1007: a PR whose head branch is still checked out by another live
+	// worktree (its originating implementation run's ci-poll stage, holding the
+	// branch while it polls CI on the PR it just opened) cannot be checked out
+	// here — git forbids the same branch in two worktrees of the shared managed
+	// mirror. De-select such a PR this tick so gather-pr-context skips it
+	// cleanly (no claim, no failed run) rather than claiming it and colliding on
+	// the checkout every ~60s until the owning run releases the branch; normal
+	// selection resumes automatically once it does. Enumerated once here (a
+	// local git query, no provider call) and reused across the candidate loop.
+	heldBranches := worktreeHeldBranches(".")
+
+	nonBlocked, err := filterRemediationPullRequests(ctx, provider, repo, prs, heldBranches)
+	if err != nil {
+		return failProviderStage(stderr, "filter remediation candidates", err, "pr-context.json")
 	}
 
-	fetchedBases := make(map[string]bool)
-	candidates, _, err := selectRemediationCandidates(nonBlocked, func(pr providers.PullRequestSummary) (bool, error) {
-		if !fetchedBases[pr.Base] {
-			if _, err := fetchExistingBranch(".", pr.Base, pushToken); err != nil {
-				return false, fmt.Errorf("fetch base branch %q: %w", pr.Base, err)
+	// update-behind-pr already selected and claimed a full-remediation
+	// candidate. Re-running fallback eligibility here against the PR summary's
+	// pinned BaseSHA can drop a PR that was behind the live base tip.
+	candidates := nonBlocked
+	if !hasExistingClaim {
+		fetchedBases := make(map[string]bool)
+		candidates, _, err = selectRemediationCandidates(nonBlocked, func(pr providers.PullRequestSummary) (bool, error) {
+			if !fetchedBases[pr.Base] {
+				if _, err := fetchExistingBranch(".", pr.Base, pushToken); err != nil {
+					return false, fmt.Errorf("fetch base branch %q: %w", pr.Base, err)
+				}
+				fetchedBases[pr.Base] = true
 			}
-			fetchedBases[pr.Base] = true
-		}
-		headSHA, err := fetchExistingBranch(".", pr.Head, pushToken)
+			headSHA, err := fetchExistingBranch(".", pr.Head, pushToken)
+			if err != nil {
+				return false, fmt.Errorf("fetch PR #%d branch %q: %w", pr.Number, pr.Head, err)
+			}
+			return isCommitBehindBase(".", pr.BaseSHA, headSHA)
+		})
 		if err != nil {
-			return false, fmt.Errorf("fetch PR #%d branch %q: %w", pr.Number, pr.Head, err)
+			pf(stderr, "error: determine remediation eligibility: %v\n", err)
+			return 1
 		}
-		return isCommitBehindBase(".", pr.BaseSHA, headSHA)
-	})
-	if err != nil {
-		pf(stderr, "error: determine remediation eligibility: %v\n", err)
-		return 1
 	}
 	if len(candidates) == 0 {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
@@ -325,6 +344,35 @@ func gatherPRVerdict(comments []providers.Comment, author string) *apiv1.Verdict
 	return legacy
 }
 
+// filterRemediationPullRequests applies the shared exclusion rules before
+// either the API fast lane or the full worktree-backed remediation path selects
+// a candidate. heldBranches is nil for the API-only lane, which can safely
+// update a branch even while another local worktree has it checked out.
+func filterRemediationPullRequests(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary, heldBranches map[string]bool) ([]providers.PullRequestSummary, error) {
+	var eligible []providers.PullRequestSummary
+	for _, pr := range prs {
+		if heldBranches[pr.Head] {
+			continue
+		}
+		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
+		if err != nil {
+			return nil, fmt.Errorf("check escalation state for PR #%d: %w", pr.Number, err)
+		}
+		if blocked {
+			continue
+		}
+		blocked, err = blockedOnSiblingStillBlocks(ctx, provider, repo, pr)
+		if err != nil {
+			return nil, fmt.Errorf("check blocked-on-sibling state for PR #%d: %w", pr.Number, err)
+		}
+		if blocked {
+			continue
+		}
+		eligible = append(eligible, pr)
+	}
+	return eligible, nil
+}
+
 // remediationPriorityFor classifies a single PR's remediation urgency,
 // independent of its peers — needs-remediation outranks failing CI, and
 // neither implies anything about whether the PR is merely behind its base
@@ -448,6 +496,82 @@ func referencesTarget(matches [][]string, target string) bool {
 		}
 	}
 	return false
+}
+
+// worktreeHeldBranches returns the set of branch short-names currently checked
+// out by a git worktree at dir's repository OTHER than the worktree at dir
+// itself. pr-remediation's stages run in a worktree that shares one managed
+// mirror clone (internal/worktree.Manager) with every other in-flight run, and
+// git refuses to check out a branch a different live worktree already holds.
+//
+// A freshly-opened implementation PR's head branch
+// (goobers/implementation/<runId>) is still held by its OWN originating run's
+// ci-poll worktree while that run polls GitHub CI on the PR it just opened, so
+// checking it out here collides ("fatal: '<branch>' is already used by
+// worktree at ...") and fails on every ~60s retry until the owning run
+// releases it — #872 / #1007. Enumerating the held branches up front lets
+// runGatherPRContext de-select such a PR for this tick (a clean no-work skip
+// that resumes normal selection once the owning run finishes) instead of
+// claiming it and failing the checkout every cycle.
+//
+// Best-effort by design: it must only ever PREVENT a checkout already
+// guaranteed to collide, never block an otherwise-fine one. If the worktree
+// list cannot be enumerated (e.g. dir is not inside a git repo — as in
+// selection-only unit paths), it returns an empty set and no error, leaving
+// behavior exactly as it was before this guard existed. The worktree at dir is
+// excluded from the result: `git checkout -B` on our own current branch never
+// collides.
+func worktreeHeldBranches(dir string) map[string]bool {
+	held := make(map[string]bool)
+
+	self := exec.Command("git", "rev-parse", "--show-toplevel")
+	self.Dir = dir
+	selfOut, err := self.Output()
+	if err != nil {
+		return held // not a git worktree (or unreadable): nothing to guard against
+	}
+	selfPath := canonicalPath(strings.TrimSpace(string(selfOut)))
+
+	list := exec.Command("git", "worktree", "list", "--porcelain")
+	list.Dir = dir
+	out, err := list.Output()
+	if err != nil {
+		return held
+	}
+	// Porcelain output is newline-separated records: a "worktree <path>" line
+	// begins each record, an optional "branch refs/heads/<name>" line names the
+	// branch it holds (absent for a bare mirror or a detached checkout).
+	var isSelf bool
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			wtPath := canonicalPath(strings.TrimSpace(strings.TrimPrefix(line, "worktree ")))
+			isSelf = wtPath == selfPath
+		case strings.HasPrefix(line, "branch "):
+			if isSelf {
+				continue // our own worktree — checking out our own branch never collides
+			}
+			branch := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(line, "branch ")), "refs/heads/")
+			if branch != "" {
+				held[branch] = true
+			}
+		}
+	}
+	return held
+}
+
+// canonicalPath resolves symlinks in p so two spellings of the same directory
+// compare equal — on macOS a worktree recorded under /var/folders and the same
+// path reported by `git rev-parse --show-toplevel` as /private/var/folders must
+// not be mistaken for two different worktrees. Falls back to the input on any
+// resolution error (e.g. the path no longer exists), which is safe: a failed
+// self-match at worst leaves our own already-checked-out branch in the held
+// set, and that branch is never a remediation candidate's head.
+func canonicalPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return p
 }
 
 // checkoutExistingBranch fetches branch from origin and checks it out at

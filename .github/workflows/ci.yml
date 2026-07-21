@@ -1,9 +1,9 @@
 name: CI
 
 # Goobers control-plane and portal CI — the enforced merge gate.
-# Runs `make ci` (Go fmt/vet/build/test/lint + portal build/test) on Ubuntu and
-# macOS on every PR to main, push to main, and merge-group build. See Makefile
-# `ci` target for the authoritative full-gate step list.
+# Runs the portable Go CI entrypoint (Go fmt/vet/build/test/lint + portal
+# build/test) on Ubuntu and macOS on every PR to main, push to main, and
+# merge-group build. See test/ci for the authoritative full-gate step list.
 
 on:
   push:
@@ -63,10 +63,10 @@ jobs:
             | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      # Single faithful reproduction of the local gate. This is exactly what QA
-      # reruns on PR heads, so the CI check and the local `make ci` never diverge.
-      - name: make ci
-        run: make ci
+      # Single faithful reproduction of the local gate. `make ci` delegates to
+      # this command on Unix without introducing a second implementation.
+      - name: Portable CI
+        run: go run ./test/ci
 
       # Parity with the ADO pipeline's coverage publish (informational; the
       # coverage *gate* is `make cover-check`, intentionally separate from `ci`).
@@ -83,7 +83,7 @@ jobs:
   # GitHub's point of view — but it still published a red check status on every
   # PR, and the Goobers merge flow has no notion of an advisory check, so it
   # read that red as a hard block. Removed until Windows can actually pass
-  # `make ci` (#620, #623, #625, #627, #630), at which point it joins the `ci`
+  # the portable CI entrypoint (#620, #623, #625, #627, #630), at which point it joins the `ci`
   # matrix as a required leg (#633). Do not reintroduce it as an expected-red
   # advisory job while the merge flow still treats every check as gating.
 

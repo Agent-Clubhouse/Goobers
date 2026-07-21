@@ -84,12 +84,12 @@ func runRunsDU(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return 2
 	}
-	runs, err := listRunsStrict(l.RunsDir())
+	runs, err := listLayoutRuns(l, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	usage, err := measureRunsDiskUsage(l.RunsDir(), runs)
+	usage, err := measureLayoutRunsDiskUsage(l, runs)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -113,10 +113,14 @@ func runRunsDU(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func measureRunsDiskUsage(runsDir string, runs []runSummary) (runsDiskUsage, error) {
+func measureLayoutRunsDiskUsage(layout instance.Layout, runs []runSummary) (runsDiskUsage, error) {
 	usage := runsDiskUsage{Runs: make([]runDiskUsage, 0, len(runs))}
 	for _, run := range runs {
-		runUsage, err := measureRunDiskUsage(filepath.Join(runsDir, run.DirName), run.RunID)
+		runDir, err := layout.FindRunDir(run.RunID)
+		if err != nil {
+			return runsDiskUsage{}, err
+		}
+		runUsage, err := measureRunDiskUsage(runDir, run.RunID)
 		if err != nil {
 			return runsDiskUsage{}, err
 		}
@@ -170,12 +174,13 @@ func measureRunDiskUsage(runDir, runID string) (runDiskUsage, error) {
 
 // runSummary is the flat, journal-derived row the run-listing commands print.
 type runSummary struct {
-	RunID     string
-	DirName   string
-	Workflow  string
-	Gaggle    string
-	Phase     journal.RunPhase
-	StartedAt time.Time
+	RunID          string
+	DirName        string
+	Workflow       string
+	Gaggle         string
+	Phase          journal.RunPhase
+	StartedAt      time.Time
+	LastActivityAt time.Time
 }
 
 // listRuns scans an instance's runs/ directory for run subdirectories and
@@ -187,8 +192,26 @@ func listRuns(runsDir string) ([]runSummary, error) {
 	return listRunsWithPolicy(runsDir, false)
 }
 
-func listRunsStrict(runsDir string) ([]runSummary, error) {
-	return listRunsWithPolicy(runsDir, true)
+func listLayoutRuns(layout instance.Layout, strict bool) ([]runSummary, error) {
+	runDirs, err := layout.RunDirs()
+	if err != nil {
+		return nil, err
+	}
+	var runs []runSummary
+	for _, runsDir := range runDirs {
+		found, err := listRunsWithPolicy(runsDir, strict)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, found...)
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].StartedAt.Equal(runs[j].StartedAt) {
+			return runs[i].RunID < runs[j].RunID
+		}
+		return runs[i].StartedAt.After(runs[j].StartedAt)
+	})
+	return runs, nil
 }
 
 func listRunsWithPolicy(runsDir string, strict bool) ([]runSummary, error) {

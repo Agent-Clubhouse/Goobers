@@ -3,6 +3,7 @@ package localscheduler
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -61,7 +62,7 @@ func (f *fakeStarter) count() int {
 	return len(f.starts)
 }
 
-func newTestScheduler(t *testing.T, entries []WorkflowEntry) (*Scheduler, string) {
+func newTestScheduler(t *testing.T, entries []WorkflowEntry, opts ...Option) (*Scheduler, string) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "scheduler")
 	log, _, err := journal.OpenInstanceLog(dir)
@@ -69,7 +70,7 @@ func newTestScheduler(t *testing.T, entries []WorkflowEntry) (*Scheduler, string
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = log.Close() })
-	return New(entries, log), dir
+	return New(entries, log, opts...), dir
 }
 
 func TestTickDispatchesDueWorkflow(t *testing.T) {
@@ -103,6 +104,37 @@ func TestTickDispatchesDueWorkflow(t *testing.T) {
 	if !sawFired || !sawStarted {
 		t.Fatalf("expected trigger.fired + run.started journaled: %+v", events)
 	}
+}
+
+func TestTickDispatchesWhenTriggerStatePersistenceFails(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	scheduler, dir := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+		Starter:   starter,
+	}})
+	scheduler.writeTriggerState = func(string, map[WorkflowIdentity]time.Time) error {
+		return errors.New("state unavailable")
+	}
+	scheduler.mu.Lock()
+	lastEval := scheduler.triggers[WorkflowIdentity{Workflow: "implement"}].LastEval
+	scheduler.mu.Unlock()
+
+	scheduler.Tick(context.Background(), lastEval.Add(time.Hour))
+	waitForCount(t, starter.count, 1)
+	scheduler.Wait()
+
+	events, err := journal.ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Error != nil &&
+			event.Error.Code == "trigger_state_persist_failed" {
+			return
+		}
+	}
+	t.Fatal("trigger-state persistence failure was not journaled")
 }
 
 func TestReloadUsesNewStarterWithoutChangingInflightRun(t *testing.T) {
@@ -256,6 +288,7 @@ func TestReconcileKeepsDuplicateWorkflowTriggerHistoryDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if err := past.Append(journal.Event{
 		Type: journal.EventTriggerFired, Gaggle: "beta", Workflow: "deploy",
 	}); err != nil {
@@ -291,6 +324,74 @@ func TestReconcileKeepsDuplicateWorkflowTriggerHistoryDistinct(t *testing.T) {
 	sched.Wait()
 	if got := alpha.count(); got != 0 {
 		t.Fatalf("alpha starts = %d, want 0 from its recent scoped firing", got)
+	}
+}
+
+func TestReconcileIgnoresNonScheduleTriggerHistory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	scheduledAt := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
+	eventTime := scheduledAt
+	past, _, err := journal.OpenInstanceLog(dir, journal.WithClock(func() time.Time { return eventTime }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Append(journal.Event{
+		Type: journal.EventTriggerFired, Gaggle: "fleet", Workflow: "interval", Reason: "scheduled",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = scheduledAt.Add(30 * time.Minute)
+	if err := past.Append(journal.Event{
+		Type: journal.EventTriggerFired, Gaggle: "fleet", Workflow: "interval", Reason: "manual",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	scheduler := New([]WorkflowEntry{{
+		Gaggle: "fleet", Workflow: "interval", Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+	}}, log)
+	if err := scheduler.ReconcileAll(nil, scheduledAt.Add(45*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	evaluations, err := ReadTriggerEvaluations(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := WorkflowIdentity{Gaggle: "fleet", Workflow: "interval"}
+	if got := evaluations[identity]; !got.Equal(scheduledAt) {
+		t.Fatalf("LastEval = %s, want scheduled fire %s", got, scheduledAt)
+	}
+}
+
+func TestScheduledTriggerFiredClassificationMatchesFireReasons(t *testing.T) {
+	tests := []struct {
+		name string
+		tick TickResult
+		kind journal.TriggerKind
+		want bool
+	}{
+		{name: "scheduled", kind: journal.TriggerSchedule, want: true},
+		{name: "catch up", tick: TickResult{CatchUp: true, MissedTicks: 2}, kind: journal.TriggerSchedule, want: true},
+		{name: "manual", kind: journal.TriggerManual},
+		{name: "signal", kind: journal.TriggerSignal},
+		{name: "backlog item", kind: journal.TriggerItem},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason := fireReason(tt.tick, tt.kind)
+			if got := scheduledTriggerFired(reason); got != tt.want {
+				t.Fatalf("scheduledTriggerFired(%q) = %t, want %t", reason, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -768,9 +869,9 @@ func TestSignalReasonIsSignalNotScheduled(t *testing.T) {
 // TestDispatchRefusesWhenTriggerFiredJournalFails is issue #142/SCH-031: a
 // failed trigger.fired append used to be silently swallowed, so dispatch
 // would start a run whose firing was never durably recorded — on restart,
-// ReconstructLastEval (which derives LastEval purely from trigger.fired
-// history) would then replay that same nominal firing, double-dispatching a
-// run for it. Refusing to dispatch when the append fails closes that gap.
+// ReconstructLastEval would then replay that same nominal scheduled firing,
+// double-dispatching a run for it. Refusing to dispatch when the append fails
+// closes that gap.
 func TestDispatchRefusesWhenTriggerFiredJournalFails(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "scheduler")
 	log, _, err := journal.OpenInstanceLog(dir)
@@ -1105,11 +1206,13 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	t.Cleanup(func() { _ = log.Close() })
 
 	sched := New([]WorkflowEntry{{
-		Workflow:  "implement",
-		Gaggle:    "acme-web",
-		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
-		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
-		Starter:   starter,
+		Workflow:        "implement",
+		WorkflowVersion: 7,
+		WorkflowDigest:  "sha256:workflow",
+		Gaggle:          "acme-web",
+		Readiness:       apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Schedules:       []Schedule{fakeSchedule{d: time.Hour}},
+		Starter:         starter,
 	}}, log, WithTelemetry(spans))
 
 	now := time.Now()
@@ -1121,8 +1224,69 @@ func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	spans.mu.Lock()
 	got := spans.calls[0]
 	spans.mu.Unlock()
-	if got.Gaggle != "acme-web" || got.WorkflowID != "implement" || got.Action != "dispatch" {
-		t.Fatalf("scheduler span attrs = %+v, want gaggle=acme-web workflowId=implement action=dispatch", got)
+	starter.mu.Lock()
+	startedRunID := starter.starts[0].RunID
+	starter.mu.Unlock()
+	if got.Gaggle != "acme-web" || got.WorkflowID != "implement" ||
+		got.WorkflowVersion != "7" || got.WorkflowDigest != "sha256:workflow" ||
+		got.RunID == "" || got.RunID != startedRunID || got.Action != "dispatch" {
+		t.Fatalf("scheduler span attrs = %+v, want pinned workflow identity and candidate run id %q", got, startedRunID)
+	}
+}
+
+func TestSkippedDispatchDoesNotCreateRunDirectory(t *testing.T) {
+	root := t.TempDir()
+	runsDir := filepath.Join(root, "gaggles", "acme-web", "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(filepath.Join(root, "scheduler"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	client, err := telemetry.New(context.Background(), telemetry.Config{
+		ServiceName:  "goobers-test",
+		SpanExporter: telemetry.NewPerGaggleJournalSpanExporter(root, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	starter := &fakeStarter{}
+	sched := New([]WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "acme-web",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+		Starter:   starter,
+	}}, log, WithTelemetry(client))
+	sched.conditions.ReconcileWorkflows(map[WorkflowIdentity]int{
+		{Gaggle: "acme-web", Workflow: "implement"}: 1,
+	})
+
+	sched.Tick(context.Background(), time.Now().Add(2*time.Hour))
+
+	if starter.count() != 0 {
+		t.Fatal("skipped dispatch started a run")
+	}
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("runs directory contains %d entries after skipped dispatch", len(entries))
+	}
+	events, err := journal.ReadInstanceLog(filepath.Join(root, "scheduler"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[1].Type != journal.EventTickSkipped {
+		t.Fatalf("scheduler events = %#v, want trigger.fired then tick.skipped", events)
+	}
+	if _, err := os.Stat(filepath.Join(root, "scheduler", "spans", "spans.jsonl")); err != nil {
+		t.Fatalf("scheduler span was not journaled: %v", err)
 	}
 }
 

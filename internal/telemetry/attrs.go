@@ -3,73 +3,72 @@ package telemetry
 import "go.opentelemetry.io/otel/attribute"
 
 func runAttributeSet(a RunAttributes) []attribute.KeyValue {
-	return withOptional([]attribute.KeyValue{
-		attribute.String(AttrSpanKind, SpanKindRun),
-		attribute.String(AttrGaggle, a.Gaggle),
-		attribute.String(AttrWorkflowID, a.WorkflowID),
+	attrs := []attribute.KeyValue{
 		attribute.String(AttrRunID, a.RunID),
-	}, map[string]string{
-		AttrWorkflowVersion: a.WorkflowVersion,
-		AttrItemID:          a.ItemID,
-		AttrItemProvider:    a.ItemProvider,
-		AttrTrigger:         a.Trigger,
-	})
+		attribute.String(AttrGaggle, a.Gaggle),
+		attribute.String(AttrWorkflow, a.WorkflowID),
+	}
+	attrs = appendOptionalString(attrs, AttrWorkflowVersion, a.WorkflowVersion)
+	attrs = appendOptionalString(attrs, AttrWorkflowDigest, a.WorkflowDigest)
+	attrs = appendOptionalString(attrs, AttrItemID, a.ItemID)
+	return appendOptionalString(attrs, AttrItemURL, a.ItemURL)
 }
 
 func taskAttributeSet(a TaskAttributes) []attribute.KeyValue {
-	return withOptional([]attribute.KeyValue{
-		attribute.String(AttrSpanKind, SpanKindTask),
-		attribute.String(AttrGaggle, a.Gaggle),
-		attribute.String(AttrWorkflowID, a.WorkflowID),
+	attempt := a.Attempt
+	if attempt == 0 {
+		attempt = 1
+	}
+	attrs := []attribute.KeyValue{
 		attribute.String(AttrRunID, a.RunID),
-		attribute.String(AttrTaskID, a.TaskID),
-	}, map[string]string{
-		AttrWorkflowVersion: a.WorkflowVersion,
-		AttrTaskType:        a.TaskType,
-		AttrGooberID:        a.GooberID,
-		AttrItemID:          a.ItemID,
-		AttrItemProvider:    a.ItemProvider,
-	})
+		attribute.String(AttrGaggle, a.Gaggle),
+		attribute.String(AttrWorkflow, a.WorkflowID),
+		attribute.String(AttrStage, a.TaskID),
+		attribute.Int(AttrAttemptNumber, attempt),
+	}
+	attrs = appendOptionalString(attrs, AttrWorkflowVersion, a.WorkflowVersion)
+	attrs = appendOptionalString(attrs, AttrWorkflowDigest, a.WorkflowDigest)
+	attrs = appendOptionalString(attrs, AttrGoober, a.GooberID)
+	attrs = appendOptionalString(attrs, AttrStageType, a.TaskType)
+	attrs = appendOptionalString(attrs, AttrAttemptKind, a.AttemptKind)
+	attrs = appendOptionalString(attrs, AttrItemID, a.ItemID)
+	return appendOptionalString(attrs, AttrItemURL, a.ItemURL)
 }
 
 func gateAttributeSet(a GateAttributes) []attribute.KeyValue {
-	return withOptional([]attribute.KeyValue{
-		attribute.String(AttrSpanKind, SpanKindGate),
-		attribute.String(AttrGaggle, a.Gaggle),
-		attribute.String(AttrWorkflowID, a.WorkflowID),
+	attrs := []attribute.KeyValue{
 		attribute.String(AttrRunID, a.RunID),
-		attribute.String(AttrGateID, a.GateID),
-	}, map[string]string{
-		AttrWorkflowVersion: a.WorkflowVersion,
-		AttrGateEvaluator:   a.Evaluator,
-		AttrGateDecision:    a.Decision,
-		AttrGooberID:        a.GooberID,
-		AttrItemID:          a.ItemID,
-		AttrItemProvider:    a.ItemProvider,
-	})
+		attribute.String(AttrGaggle, a.Gaggle),
+		attribute.String(AttrWorkflow, a.WorkflowID),
+		attribute.String(AttrStage, a.GateID),
+		attribute.String(AttrStageType, StageTypeGate),
+		attribute.Int(AttrGateRepassNumber, a.RepassNumber),
+	}
+	attrs = appendOptionalString(attrs, AttrWorkflowVersion, a.WorkflowVersion)
+	attrs = appendOptionalString(attrs, AttrWorkflowDigest, a.WorkflowDigest)
+	attrs = appendOptionalString(attrs, AttrGoober, a.GooberID)
+	attrs = appendOptionalString(attrs, AttrGateDecision, a.Decision)
+	attrs = appendOptionalString(attrs, AttrItemID, a.ItemID)
+	return appendOptionalString(attrs, AttrItemURL, a.ItemURL)
 }
 
 func schedulerAttributeSet(a SchedulerAttributes) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
-		attribute.String(AttrSpanKind, SpanKindScheduler),
 		attribute.String(AttrGaggle, a.Gaggle),
-		attribute.String(AttrWorkflowID, a.WorkflowID),
-		attribute.String(AttrSchedulerAction, a.Action),
+		attribute.String(AttrWorkflow, a.WorkflowID),
+		attribute.String(AttrStage, a.Action),
+		attribute.String(AttrStageType, StageTypeScheduler),
 	}
-	return withOptional(attrs, map[string]string{
-		AttrWorkflowVersion: a.WorkflowVersion,
-		AttrRunID:           a.RunID,
-		AttrSchedulerReason: a.Reason,
-		AttrItemID:          a.ItemID,
-		AttrItemProvider:    a.ItemProvider,
-	})
+	attrs = appendOptionalString(attrs, AttrRunID, a.RunID)
+	attrs = appendOptionalString(attrs, AttrWorkflowVersion, a.WorkflowVersion)
+	attrs = appendOptionalString(attrs, AttrWorkflowDigest, a.WorkflowDigest)
+	attrs = appendOptionalString(attrs, AttrItemID, a.ItemID)
+	return appendOptionalString(attrs, AttrItemURL, a.ItemURL)
 }
 
-func withOptional(attrs []attribute.KeyValue, values map[string]string) []attribute.KeyValue {
-	for key, value := range values {
-		if value != "" {
-			attrs = append(attrs, attribute.String(key, value))
-		}
+func appendOptionalString(attrs []attribute.KeyValue, key, value string) []attribute.KeyValue {
+	if value == "" {
+		return attrs
 	}
-	return attrs
+	return append(attrs, attribute.String(key, value))
 }

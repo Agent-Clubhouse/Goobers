@@ -57,7 +57,7 @@ func (db *DB) IngestRun(runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "stage_attempts", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "span_business_status"}
+var perRunTables = []string{"runs", "stage_attempts", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status"}
 
 func deleteRun(tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -237,6 +237,13 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 				runID, ev.Seq, ev.Stage, ev.Name, digest, size, formatTime(ev.Time)); err != nil {
 				return fmt.Errorf("rollup: insert harness_transcript seq %d: %w", ev.Seq, err)
 			}
+			if ev.DataSchema != "" {
+				if _, err := tx.Exec(`
+					INSERT INTO harness_transcript_schemas (run_id, seq, schema)
+					VALUES (?, ?, ?)`, runID, ev.Seq, ev.DataSchema); err != nil {
+					return fmt.Errorf("rollup: insert harness_transcript schema seq %d: %w", ev.Seq, err)
+				}
+			}
 
 		case eventRefTouched:
 			if ev.ExternalRef == nil {
@@ -291,18 +298,19 @@ func gateRunnerJSON(ev journalEvent) (sql.NullString, error) {
 	return runnerJSON(m)
 }
 
-// IngestSchedulerLog reads the instance journal (scheduler/events.jsonl) —
-// trigger.fired/tick.skipped/claim.acquired/claim.released, scheduler
-// decisions, claim transitions, the instance-level run.started/run.finished
-// echoes localscheduler's dispatch appends, and instance-level errors — and
-// (re)populates scheduler_events (issue #128: this was never ingested at
-// all). Idempotent (delete-then-insert over the whole table, since the
-// instance log is a single stream, not per-run), so it's safe to call after
-// every dispatch tick (incremental) or as part of Rebuild (full rescan).
+// IngestSchedulerLog reads the instance journal and its rolling scheduler
+// spans, including claim transitions and scheduler starvation signals, then
+// (re)populates their rollup rows. Idempotent (delete-then-insert over the
+// instance-level data), so it is safe to call incrementally or as part of
+// Rebuild.
 // Historical duplicate seq values are corruption, but retaining the first
 // occurrence keeps one bad record from permanently preventing all rollup.
 func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	events, err := readInstanceEvents(schedulerDir)
+	if err != nil {
+		return err
+	}
+	spans, err := readSchedulerSpans(schedulerDir)
 	if err != nil {
 		return err
 	}
@@ -321,7 +329,7 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	}
 	for _, ev := range events {
 		switch ev.Type {
-		case eventTriggerFired, eventTickSkipped, eventClaimAcquired, eventClaimReleased, eventRunStarted, eventRunFinished, eventError:
+		case eventTriggerFired, eventTickSkipped, eventClaimAcquired, eventClaimReleased, eventClaimForceReleased, eventRunStarted, eventRunFinished, eventError:
 			if _, err := tx.Exec(`
 				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -338,6 +346,25 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 					return fmt.Errorf("rollup: insert scheduler_error seq %d: %w", ev.Seq, err)
 				}
 			}
+		case eventWorkflowStarved:
+			if _, err := tx.Exec(`
+				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(seq) DO NOTHING`,
+				ev.Seq, ev.Type, nullIfEmpty(ev.Workflow), nullIfEmpty(ev.RunID), nullIfEmpty(ev.Reason), nullIfEmpty(ev.Status), formatTime(ev.Time)); err != nil {
+				return fmt.Errorf("rollup: insert scheduler_event seq %d: %w", ev.Seq, err)
+			}
+		}
+	}
+	for _, span := range spans {
+		if span.TraceID == "" {
+			return fmt.Errorf("rollup: scheduler span %s has no trace id", span.SpanID)
+		}
+		if err := deleteSpan(tx, span.TraceID, span.SpanID); err != nil {
+			return err
+		}
+		if err := insertSpans(tx, span.TraceID, []telemetry.SpanRecord{span}); err != nil {
+			return err
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -359,6 +386,18 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	return nil
 }
 
+func deleteSpan(tx *sql.Tx, runID, spanID string) error {
+	for _, table := range []string{"span_events", "span_business_status"} {
+		if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE run_id = ? AND span_id = ?`, table), runID, spanID); err != nil {
+			return fmt.Errorf("rollup: clear %s for span %s: %w", table, spanID, err)
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM spans WHERE run_id = ? AND span_id = ?`, runID, spanID); err != nil {
+		return fmt.Errorf("rollup: clear span %s: %w", spanID, err)
+	}
+	return nil
+}
+
 func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 	for _, s := range spans {
 		if _, err := tx.Exec(`
@@ -368,14 +407,18 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 			nullIfEmpty(s.StatusMessage), formatTime(s.StartTime), formatTime(s.EndTime), durationMillis(s.StartTime, s.EndTime)); err != nil {
 			return fmt.Errorf("rollup: insert span %s: %w", s.SpanID, err)
 		}
-		// businessStatus (issue #710) rides the span's own generic Attributes
+		// The canonical outcome rides the span's own generic Attributes
 		// map (Span.Complete sets it as an OTel attribute; JournalSpanExporter
 		// already captures every attribute into SpanRecord.Attributes with no
 		// exporter change needed) — a satellite row, not a spans column (see
 		// schema.go's v3 migration comment): empty/absent for a span
 		// predating this fix or one that never called Complete (a gate span,
 		// still Succeed/Fail).
-		if businessStatus := s.Attributes[telemetry.AttrBusinessStatus]; businessStatus != "" {
+		businessStatus := s.Attributes[telemetry.AttrOutcome]
+		if businessStatus == "" {
+			businessStatus = s.Attributes["goobers.business_status"]
+		}
+		if businessStatus != "" {
 			if _, err := tx.Exec(`
 				INSERT INTO span_business_status (run_id, span_id, business_status)
 				VALUES (?, ?, ?)`,

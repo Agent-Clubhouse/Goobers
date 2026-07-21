@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,11 +27,13 @@ import (
 // Tick/signal delivery evaluates whichever are set, since nothing prevents
 // a workflow from declaring more than one trigger type.
 type WorkflowEntry struct {
-	Workflow  string
-	Gaggle    string
-	Readiness apiv1.ReadinessConditions
-	Schedules []Schedule
-	Signals   []string
+	Workflow        string
+	WorkflowVersion int
+	WorkflowDigest  string
+	Gaggle          string
+	Readiness       apiv1.ReadinessConditions
+	Schedules       []Schedule
+	Signals         []string
 	// BacklogCounter, when set, marks this workflow as backlog-item-triggered
 	// (#344): Tick polls it every backlogPollInterval instead of (or in
 	// addition to, if Schedules is also set) evaluating a cron schedule, and
@@ -70,6 +74,8 @@ const minPoll = time.Second
 // count that often.
 const backlogPollInterval = 30 * time.Second
 
+const starvationSkipThreshold = 3
+
 // newRunID is the run-id generator; swappable in tests for determinism.
 var newRunID = telemetry.NewRunID
 
@@ -85,12 +91,14 @@ type SpanStarter interface {
 // evaluation, run conditions, and the Starter seam together into one
 // idle-between-ticks loop, journaling every decision to the instance journal.
 type Scheduler struct {
-	workflows  map[WorkflowIdentity]WorkflowEntry
-	conditions *Conditions
-	log        *journal.InstanceLog
-	now        func() time.Time
-	after      func(d time.Duration) <-chan time.Time
-	telemetry  SpanStarter
+	workflows         map[WorkflowIdentity]WorkflowEntry
+	conditions        *Conditions
+	log               *journal.InstanceLog
+	now               func() time.Time
+	after             func(d time.Duration) <-chan time.Time
+	telemetry         SpanStarter
+	afterTick         func(context.Context)
+	writeTriggerState func(string, map[WorkflowIdentity]time.Time) error
 
 	mu         sync.Mutex
 	tickMu     sync.Mutex
@@ -109,6 +117,14 @@ type Scheduler struct {
 	// the worst case is one extra poll right after a restart, not a
 	// correctness bug, so it isn't worth the added Reconcile complexity.
 	backlogLastCheck map[WorkflowIdentity]time.Time
+	// consecutivePoolSkips ages workflows that were due and otherwise ready
+	// but could not enter the shared instance concurrency pool.
+	consecutivePoolSkips map[WorkflowIdentity]int
+	// lastDispatchedGaggle is the cursor for work-conserving round-robin
+	// dispatch across gaggles. hasDispatchedGaggle distinguishes the initial
+	// state from a legacy single-gaggle entry whose gaggle name is empty.
+	lastDispatchedGaggle string
+	hasDispatchedGaggle  bool
 }
 
 // Option configures a Scheduler.
@@ -128,6 +144,14 @@ func WithClock(now func() time.Time, after func(time.Duration) <-chan time.Time)
 func WithTelemetry(t SpanStarter) Option {
 	return func(s *Scheduler) {
 		s.telemetry = t
+	}
+}
+
+// WithAfterTick registers work that runs after each trigger evaluation, once
+// all scheduler decision spans opened by that tick have ended.
+func WithAfterTick(afterTick func(context.Context)) Option {
+	return func(s *Scheduler) {
+		s.afterTick = afterTick
 	}
 }
 
@@ -171,15 +195,17 @@ func WithProviderQuota(gate ProviderQuotaGate) Option {
 // a restart; a freshly-created instance can skip it (everything starts empty).
 func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Scheduler {
 	s := &Scheduler{
-		workflows:        make(map[WorkflowIdentity]WorkflowEntry, len(entries)),
-		conditions:       NewConditions(),
-		log:              log,
-		now:              time.Now,
-		after:            time.After,
-		triggers:         make(map[WorkflowIdentity]TriggerState),
-		reconciledRuns:   make(map[string]WorkflowIdentity),
-		backlogLastCheck: make(map[WorkflowIdentity]time.Time),
-		wake:             make(chan struct{}, 1),
+		workflows:            make(map[WorkflowIdentity]WorkflowEntry, len(entries)),
+		conditions:           NewConditions(),
+		log:                  log,
+		now:                  time.Now,
+		after:                time.After,
+		triggers:             make(map[WorkflowIdentity]TriggerState),
+		reconciledRuns:       make(map[string]WorkflowIdentity),
+		backlogLastCheck:     make(map[WorkflowIdentity]time.Time),
+		consecutivePoolSkips: make(map[WorkflowIdentity]int),
+		wake:                 make(chan struct{}, 1),
+		writeTriggerState:    writeTriggerEvaluations,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -205,7 +231,12 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 // otherwise the seeded count never comes back down and the workflow starves
 // for the rest of the daemon's life.
 func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
-	active, runs, err := activeRuns(runsDir)
+	return s.ReconcileAll([]string{runsDir}, now)
+}
+
+// ReconcileAll reconciles durable state across all per-gaggle run roots.
+func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
+	active, runs, err := activeRuns(runsDirs)
 	if err != nil {
 		return fmt.Errorf("localscheduler: reconcile active runs: %w", err)
 	}
@@ -242,11 +273,11 @@ func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 		startsCutoff = resetAt
 	}
 	for _, ev := range events {
-		if ev.Type == journal.EventTriggerFired {
+		if ev.Type == journal.EventTriggerFired && scheduledTriggerFired(ev.Reason) {
 			fired = append(fired, TriggerFiredRecord{Gaggle: ev.Gaggle, Workflow: ev.Workflow, Time: ev.Time})
 		}
 		if ev.Type == journal.EventRunStarted && ev.Time.After(startsCutoff) {
-			for _, identity := range resolveRunStartedIdentities(runsDir, ev, identities) {
+			for _, identity := range resolveRunStartedIdentities(runsDirs, ev, identities) {
 				starts[identity] = append(starts[identity], ev.Time)
 			}
 		}
@@ -256,6 +287,9 @@ func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.persistTriggerEvaluationsLocked(last); err != nil {
+		return err
+	}
 	for identity := range s.triggers {
 		ts := s.triggers[identity]
 		at := last[identity]
@@ -265,7 +299,7 @@ func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 	return nil
 }
 
-func resolveRunStartedIdentities(runsDir string, event journal.Event, workflows []WorkflowIdentity) []WorkflowIdentity {
+func resolveRunStartedIdentities(runsDirs []string, event journal.Event, workflows []WorkflowIdentity) []WorkflowIdentity {
 	if identity, ok := resolveWorkflowIdentity(event.Gaggle, event.Workflow, workflows); ok {
 		return []WorkflowIdentity{identity}
 	}
@@ -274,12 +308,14 @@ func resolveRunStartedIdentities(runsDir string, event journal.Event, workflows 
 	}
 
 	if apiv1.ValidRunID(event.RunID) {
-		reader, err := journal.OpenRead(filepath.Join(runsDir, event.RunID))
-		if err == nil {
-			run, err := reader.Identity()
-			if err == nil && run.RunID == event.RunID && run.Workflow == event.Workflow {
-				if identity, ok := resolveWorkflowIdentity(run.Gaggle, run.Workflow, workflows); ok {
-					return []WorkflowIdentity{identity}
+		for _, runsDir := range runsDirs {
+			reader, err := journal.OpenRead(filepath.Join(runsDir, event.RunID))
+			if err == nil {
+				run, err := reader.Identity()
+				if err == nil && run.RunID == event.RunID && run.Workflow == event.Workflow {
+					if identity, ok := resolveWorkflowIdentity(run.Gaggle, run.Workflow, workflows); ok {
+						return []WorkflowIdentity{identity}
+					}
 				}
 			}
 		}
@@ -339,10 +375,54 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-// Tick evaluates every workflow's trigger at now and dispatches what's due and
-// admitted. Exported (not just used by Run's loop) so a manual `goobers run
-// <workflow>` trigger and tests can drive a single evaluation deterministically
-// without running the full timer loop.
+type tickCandidate struct {
+	entry              WorkflowEntry
+	schedule           TickResult
+	scheduleDue        bool
+	backlogRemaining   int
+	poolSkips          int
+	dispatchedThisTick bool
+	stopped            bool
+}
+
+func (c *tickCandidate) next() (TickResult, journal.TriggerKind, bool) {
+	if c.scheduleDue {
+		c.scheduleDue = false
+		return c.schedule, journal.TriggerSchedule, true
+	}
+	if c.backlogRemaining > 0 {
+		c.backlogRemaining--
+		return TickResult{Fire: true, LastEval: c.schedule.LastEval}, journal.TriggerItem, true
+	}
+	return TickResult{}, "", false
+}
+
+type tickGaggle struct {
+	candidates []*tickCandidate
+	nextIndex  int
+}
+
+func (g *tickGaggle) next() (*tickCandidate, TickResult, journal.TriggerKind, bool) {
+	for range len(g.candidates) {
+		candidate := g.candidates[g.nextIndex]
+		g.nextIndex = (g.nextIndex + 1) % len(g.candidates)
+		if candidate.stopped {
+			continue
+		}
+		tick, kind, ok := candidate.next()
+		if ok {
+			return candidate, tick, kind, true
+		}
+	}
+	return nil, TickResult{}, "", false
+}
+
+// Tick evaluates every workflow's trigger at now, orders due workflows by
+// starvation age within each gaggle, and dispatches one item per ready gaggle
+// per pass until demand or capacity is exhausted. The gaggle order resumes
+// after the most recently admitted gaggle. With G continuously ready gaggles,
+// this bounds a gaggle's wait to G-1 successful dispatches by other gaggles.
+// Gaggles without ready work are omitted, so they never reserve capacity.
 func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
@@ -354,8 +434,13 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	}
 	s.mu.Unlock()
 
+	candidates := make([]*tickCandidate, 0, len(entries))
 	for _, entry := range entries {
 		identity := entryIdentity(entry)
+		candidate := &tickCandidate{
+			entry:    entry,
+			schedule: TickResult{LastEval: now},
+		}
 		if len(entry.Schedules) > 0 {
 			// Read, evaluate, and write the trigger state under a single lock
 			// acquisition. Tick is exported so a manual trigger and concurrent
@@ -366,17 +451,129 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			s.mu.Lock()
 			ts := s.triggers[identity]
 			res := Tick(ts, now)
+			var persistErr error
+			if res.LastEval != ts.LastEval {
+				evaluations := s.triggerEvaluationsLocked()
+				evaluations[identity] = res.LastEval
+				persistErr = s.persistTriggerEvaluationsLocked(evaluations)
+			}
 			s.triggers[identity] = TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: res.LastEval}
 			s.mu.Unlock()
+			if persistErr != nil {
+				s.journalEvent(journal.Event{
+					Type:     journal.EventError,
+					Workflow: entry.Workflow,
+					Gaggle:   entry.Gaggle,
+					Error:    &journal.ErrorDetail{Code: "trigger_state_persist_failed", Message: persistErr.Error()},
+				})
+			}
 			if res.Fire {
-				s.dispatch(ctx, entry, now, res, journal.TriggerSchedule)
+				candidate.schedule = res
+				candidate.scheduleDue = true
 			}
 		}
 
 		if entry.BacklogCounter != nil {
-			s.tickBacklog(ctx, entry, now)
+			candidate.backlogRemaining = s.pollBacklog(ctx, entry, now)
+		}
+		if candidate.scheduleDue || candidate.backlogRemaining > 0 {
+			s.mu.Lock()
+			candidate.poolSkips = s.consecutivePoolSkips[identity]
+			s.mu.Unlock()
+			candidates = append(candidates, candidate)
 		}
 	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].poolSkips != candidates[j].poolSkips {
+			return candidates[i].poolSkips > candidates[j].poolSkips
+		}
+		if candidates[i].entry.Workflow != candidates[j].entry.Workflow {
+			return candidates[i].entry.Workflow < candidates[j].entry.Workflow
+		}
+		return candidates[i].entry.Gaggle < candidates[j].entry.Gaggle
+	})
+
+	byGaggle := make(map[string]*tickGaggle)
+	gaggleNames := make([]string, 0)
+	for _, candidate := range candidates {
+		gaggle := candidate.entry.Gaggle
+		group, ok := byGaggle[gaggle]
+		if !ok {
+			group = &tickGaggle{}
+			byGaggle[gaggle] = group
+			gaggleNames = append(gaggleNames, gaggle)
+		}
+		group.candidates = append(group.candidates, candidate)
+	}
+	gaggleNames = s.orderedGaggles(gaggleNames)
+	gaggles := make([]*tickGaggle, 0, len(gaggleNames))
+	for _, name := range gaggleNames {
+		gaggles = append(gaggles, byGaggle[name])
+	}
+
+	for {
+		attempted := false
+		for _, gaggle := range gaggles {
+			for {
+				candidate, tick, kind, ok := gaggle.next()
+				if !ok {
+					break
+				}
+				attempted = true
+				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, tick, kind)
+				if admitted {
+					candidate.dispatchedThisTick = true
+					break
+				}
+				candidate.stopped = true
+				if reason == ReasonInstanceMaxParallel {
+					if !candidate.dispatchedThisTick {
+						s.recordPoolSkip(candidate.entry)
+					}
+					break
+				}
+			}
+		}
+		if !attempted {
+			break
+		}
+	}
+	if s.afterTick != nil {
+		s.afterTick(ctx)
+	}
+}
+
+func (s *Scheduler) orderedGaggles(gaggles []string) []string {
+	sort.Strings(gaggles)
+	if len(gaggles) < 2 {
+		return gaggles
+	}
+
+	s.mu.Lock()
+	last, hasLast := s.lastDispatchedGaggle, s.hasDispatchedGaggle
+	s.mu.Unlock()
+	if !hasLast {
+		return gaggles
+	}
+
+	start := sort.Search(len(gaggles), func(i int) bool {
+		return gaggles[i] > last
+	})
+	if start == len(gaggles) {
+		start = 0
+	}
+	ordered := make([]string, 0, len(gaggles))
+	ordered = append(ordered, gaggles[start:]...)
+	ordered = append(ordered, gaggles[:start]...)
+	return ordered
+}
+
+func (s *Scheduler) recordGaggleDispatch(gaggle string) {
+	s.mu.Lock()
+	s.lastDispatchedGaggle = gaggle
+	s.hasDispatchedGaggle = true
+	s.mu.Unlock()
 }
 
 // Reload atomically replaces the configured workflows between scheduler ticks.
@@ -388,6 +585,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	workflows := make(map[WorkflowIdentity]WorkflowEntry, len(entries))
 	triggers := make(map[WorkflowIdentity]TriggerState, len(entries))
 	backlogLastCheck := make(map[WorkflowIdentity]time.Time, len(entries))
+	consecutivePoolSkips := make(map[WorkflowIdentity]int, len(entries))
 
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
@@ -407,6 +605,9 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		if checked, ok := s.backlogLastCheck[identity]; ok {
 			backlogLastCheck[identity] = checked
 		}
+		if skips := s.consecutivePoolSkips[identity]; skips > 0 {
+			consecutivePoolSkips[identity] = skips
+		}
 	}
 
 	if err := s.appendJournalEvent(journal.Event{
@@ -418,11 +619,19 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	}); err != nil {
 		return fmt.Errorf("localscheduler: journal config reload: %w", err)
 	}
+	evaluations := make(map[WorkflowIdentity]time.Time, len(triggers))
+	for identity, state := range triggers {
+		evaluations[identity] = state.LastEval
+	}
+	if err := s.persistTriggerEvaluationsLocked(evaluations); err != nil {
+		return err
+	}
 
 	s.conditions.SetOpenPRCounter(openPRs)
 	s.workflows = workflows
 	s.triggers = triggers
 	s.backlogLastCheck = backlogLastCheck
+	s.consecutivePoolSkips = consecutivePoolSkips
 
 	select {
 	case s.wake <- struct{}{}:
@@ -431,16 +640,9 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	return nil
 }
 
-// tickBacklog polls entry's BacklogCounter at most once per
-// backlogPollInterval and fans out up to that many dispatches (#344) —
-// each still gated by the ordinary run-conditions Admit check inside
-// dispatch, so a workflow near its MaxConcurrentRuns/budget ceiling still
-// only starts as many runs as conditions actually allow, not the raw ready
-// count. dispatch's own Admit refusal is what bounds the fan-out to
-// min(ready, room) — this loop just stops as soon as one dispatch is
-// refused, since every subsequent attempt in the same evaluation would be
-// refused for the identical reason.
-func (s *Scheduler) tickBacklog(ctx context.Context, entry WorkflowEntry, now time.Time) {
+// pollBacklog returns the current demand for a backlog-triggered workflow when
+// its provider polling interval is due.
+func (s *Scheduler) pollBacklog(ctx context.Context, entry WorkflowEntry, now time.Time) int {
 	identity := entryIdentity(entry)
 	s.mu.Lock()
 	last := s.backlogLastCheck[identity]
@@ -450,7 +652,7 @@ func (s *Scheduler) tickBacklog(ctx context.Context, entry WorkflowEntry, now ti
 	}
 	s.mu.Unlock()
 	if !due {
-		return
+		return 0
 	}
 
 	ready, err := entry.BacklogCounter.EligibleCount(ctx)
@@ -461,14 +663,12 @@ func (s *Scheduler) tickBacklog(ctx context.Context, entry WorkflowEntry, now ti
 			Gaggle:   entry.Gaggle,
 			Error:    &journal.ErrorDetail{Code: "backlog_count_failed", Message: err.Error()},
 		})
-		return
+		return 0
 	}
-	for i := 0; i < ready; i++ {
-		_, admitted, _ := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerItem)
-		if !admitted {
-			break
-		}
+	if ready < 0 {
+		return 0
 	}
+	return ready
 }
 
 // Trigger manually fires workflow now, bypassing its cron schedule but still
@@ -556,9 +756,12 @@ func (s *Scheduler) RecordTriggerRefusal(workflow, reason string) {
 // so a conditions-driven skip is silent per subscriber (best-effort, the same
 // semantics a cron Tick's skip has) rather than a caller-facing error; the
 // skip is still journaled via dispatch's own tick.skipped event. Returns the
-// run ids of every workflow actually admitted, in workflow-name order for
-// determinism.
+// run ids of every workflow actually admitted, in bounded-fair gaggle order
+// and workflow-name order within each gaggle.
 func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []string {
+	s.tickMu.Lock()
+	defer s.tickMu.Unlock()
+
 	s.mu.Lock()
 	var subscribed []WorkflowEntry
 	for _, e := range s.workflows {
@@ -571,16 +774,43 @@ func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []st
 	}
 	s.mu.Unlock()
 	sort.Slice(subscribed, func(i, j int) bool {
-		if subscribed[i].Workflow != subscribed[j].Workflow {
-			return subscribed[i].Workflow < subscribed[j].Workflow
+		if subscribed[i].Gaggle != subscribed[j].Gaggle {
+			return subscribed[i].Gaggle < subscribed[j].Gaggle
 		}
-		return subscribed[i].Gaggle < subscribed[j].Gaggle
+		return subscribed[i].Workflow < subscribed[j].Workflow
 	})
 
-	var runIDs []string
+	byGaggle := make(map[string][]WorkflowEntry)
+	gaggleNames := make([]string, 0)
 	for _, entry := range subscribed {
-		if runID, admitted, _ := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerSignal); admitted {
-			runIDs = append(runIDs, runID)
+		if _, ok := byGaggle[entry.Gaggle]; !ok {
+			gaggleNames = append(gaggleNames, entry.Gaggle)
+		}
+		byGaggle[entry.Gaggle] = append(byGaggle[entry.Gaggle], entry)
+	}
+	gaggleNames = s.orderedGaggles(gaggleNames)
+
+	var runIDs []string
+	next := make(map[string]int, len(gaggleNames))
+	for {
+		attempted := false
+		for _, gaggle := range gaggleNames {
+			for next[gaggle] < len(byGaggle[gaggle]) {
+				entry := byGaggle[gaggle][next[gaggle]]
+				next[gaggle]++
+				attempted = true
+				runID, admitted, reason := s.dispatch(ctx, entry, now, TickResult{Fire: true, LastEval: now}, journal.TriggerSignal)
+				if admitted {
+					runIDs = append(runIDs, runID)
+					break
+				}
+				if reason == ReasonInstanceMaxParallel {
+					break
+				}
+			}
+		}
+		if !attempted {
+			break
 		}
 	}
 	return runIDs
@@ -595,26 +825,37 @@ func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []st
 // not admitted — the run-conditions skip reason, so Trigger can surface it to
 // a human caller instead of silently doing nothing.
 //
-// The telemetry span it opens covers only the decision (trigger -> admit/skip
-// -> run-id mint), not the run itself: entry.Starter.Start runs in its own
+// The telemetry span it opens covers only the decision (trigger -> admit/skip),
+// not the run itself: entry.Starter.Start runs in its own
 // goroutine below and outlives dispatch's return, so the run gets its own
-// root span (via runner.Runner.startRunSpan) on its own trace rather than a
-// child of a span that already ended — same rationale as
-// internal/scheduler.Scheduler.startSpan omitting RunID.
+// root span (via runner.Runner.startRunSpan). The candidate run ID is minted
+// first so both spans share its trace even when admission blocks the dispatch.
 func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, tick TickResult, kind journal.TriggerKind) (runID string, admitted bool, skipReason string) {
-	span := s.startSpan(ctx, entry, tick, kind)
+	runID, err := newRunID()
+	if err != nil {
+		reason := "run-id generation failed: " + err.Error()
+		s.journalEvent(journal.Event{
+			Type:     journal.EventTickSkipped,
+			Workflow: entry.Workflow,
+			Gaggle:   entry.Gaggle,
+			Reason:   reason,
+		})
+		return "", false, reason
+	}
+
+	span := s.startSpan(ctx, entry, runID)
 	defer span.End()
 
 	// Unlike the journalEvent calls below (best-effort: they record a
 	// decision already made, so a write failure doesn't roll it back), a
 	// failed trigger.fired append MUST stop this dispatch here rather than
 	// being swallowed (SCH-031, issue #142): ReconstructLastEval rebuilds
-	// each workflow's LastEval purely from trigger.fired history after a
-	// restart, so a fire that started a run but never durably recorded
-	// having fired would replay on the very next restart — dispatching a
-	// second run for the same nominal firing. Refusing to dispatch keeps the
-	// invariant that a run only ever starts once its trigger.fired record
-	// has durably landed.
+	// each workflow's LastEval from scheduled trigger.fired history after a
+	// restart, so a scheduled fire that started a run but never durably
+	// recorded having fired would replay on the very next restart —
+	// dispatching a second run for the same nominal firing. Refusing every
+	// trigger kind keeps the invariant that a run only ever starts once its
+	// trigger.fired record has durably landed.
 	if err := s.appendJournalEvent(journal.Event{
 		Type:     journal.EventTriggerFired,
 		Workflow: entry.Workflow,
@@ -635,23 +876,11 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 			Gaggle:   entry.Gaggle,
 			Reason:   reason,
 		})
-		span.Succeed("skipped: " + reason)
+		span.Complete(telemetry.OutcomeBlocked, false)
 		return "", false, reason
 	}
-
-	runID, err := newRunID()
-	if err != nil {
-		s.conditions.ReleaseWorkflow(identity)
-		reason := "run-id generation failed: " + err.Error()
-		s.journalEvent(journal.Event{
-			Type:     journal.EventTickSkipped,
-			Workflow: entry.Workflow,
-			Gaggle:   entry.Gaggle,
-			Reason:   reason,
-		})
-		span.Fail(err)
-		return "", false, reason
-	}
+	s.resetPoolSkips(identity)
+	s.recordGaggleDispatch(entry.Gaggle)
 
 	s.journalEvent(journal.Event{
 		Type:     journal.EventRunStarted,
@@ -707,18 +936,44 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	return runID, true, ""
 }
 
+func (s *Scheduler) resetPoolSkips(identity WorkflowIdentity) {
+	s.mu.Lock()
+	delete(s.consecutivePoolSkips, identity)
+	s.mu.Unlock()
+}
+
+func (s *Scheduler) recordPoolSkip(entry WorkflowEntry) {
+	identity := entryIdentity(entry)
+	s.mu.Lock()
+	s.consecutivePoolSkips[identity]++
+	skips := s.consecutivePoolSkips[identity]
+	s.mu.Unlock()
+
+	if skips == starvationSkipThreshold {
+		s.journalEvent(journal.Event{
+			Type:      journal.EventWorkflowStarved,
+			Workflow:  entry.Workflow,
+			Gaggle:    entry.Gaggle,
+			Reason:    fmt.Sprintf("consecutive instance pool skips: %d", skips),
+			SkipCount: skips,
+		})
+	}
+}
+
 // startSpan opens a scheduler decision span for entry's dispatch, if
 // telemetry is configured. A zero telemetry.Span is safe to use (its methods
 // no-op), so callers need no nil checks.
-func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, tick TickResult, kind journal.TriggerKind) telemetry.Span {
+func (s *Scheduler) startSpan(ctx context.Context, entry WorkflowEntry, runID string) telemetry.Span {
 	if s.telemetry == nil {
 		return telemetry.Span{}
 	}
 	attrs := telemetry.SchedulerAttributes{
-		Gaggle:     entry.Gaggle,
-		WorkflowID: entry.Workflow,
-		Action:     "dispatch",
-		Reason:     fireReason(tick, kind),
+		Gaggle:          entry.Gaggle,
+		WorkflowID:      entry.Workflow,
+		WorkflowVersion: strconv.Itoa(entry.WorkflowVersion),
+		WorkflowDigest:  entry.WorkflowDigest,
+		RunID:           runID,
+		Action:          "dispatch",
 	}
 	_, span, err := s.telemetry.StartSchedulerSpan(ctx, attrs)
 	if err != nil {
@@ -743,9 +998,9 @@ func fireReason(tick TickResult, kind journal.TriggerKind) string {
 		return "backlog item ready"
 	}
 	if tick.CatchUp {
-		return fmt.Sprintf("catch-up (missed %d)", tick.MissedTicks)
+		return fmt.Sprintf("%s(missed %d)", triggerReasonCatchUpPrefix, tick.MissedTicks)
 	}
-	return "scheduled"
+	return triggerReasonScheduled
 }
 
 // nextWakeup computes how long to sleep until the earliest workflow trigger is
@@ -766,11 +1021,11 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 	}
 	for name, entry := range s.workflows {
 		ts := s.triggers[name]
-		for _, sched := range entry.Schedules {
-			consider(sched.Next(ts.LastEval))
+		if next, ok := NextScheduledFire(entry.Schedules, ts.LastEval); ok {
+			consider(next)
 		}
 		if entry.BacklogCounter != nil {
-			// tickBacklog's own due check, mirrored here so the Run loop
+			// pollBacklog's own due check, mirrored here so the Run loop
 			// wakes in time to poll it (#344) — otherwise a mixed instance
 			// with both schedule- and backlog-item-triggered workflows
 			// could starve the latter's poll cadence down to whatever the
@@ -803,4 +1058,23 @@ func (s *Scheduler) appendJournalEvent(ev journal.Event) error {
 		return nil
 	}
 	return s.log.Append(ev)
+}
+
+func (s *Scheduler) triggerEvaluationsLocked() map[WorkflowIdentity]time.Time {
+	evaluations := make(map[WorkflowIdentity]time.Time, len(s.triggers))
+	for identity, state := range s.triggers {
+		evaluations[identity] = state.LastEval
+	}
+	return evaluations
+}
+
+func (s *Scheduler) persistTriggerEvaluationsLocked(evaluations map[WorkflowIdentity]time.Time) error {
+	if s.log == nil {
+		return nil
+	}
+	return s.writeTriggerState(s.log.Dir(), evaluations)
+}
+
+func scheduledTriggerFired(reason string) bool {
+	return reason == "" || reason == triggerReasonScheduled || strings.HasPrefix(reason, triggerReasonCatchUpPrefix)
 }

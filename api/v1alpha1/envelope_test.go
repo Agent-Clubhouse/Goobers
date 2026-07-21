@@ -43,12 +43,13 @@ func TestInvocationEnvelopeRoundTrip(t *testing.T) {
 
 func TestResultEnvelopeRoundTrip(t *testing.T) {
 	in := ResultEnvelope{
-		Status:    ResultFailure,
-		Outputs:   map[string]interface{}{"attempts": float64(3)},
-		Artifacts: []ArtifactPointer{{Path: "artifacts/impl/log.txt", Digest: Digest([]byte("log")), MediaType: "text/plain", Size: 3}},
-		Summary:   "could not satisfy the failing test",
-		Metrics:   map[string]float64{"durationSeconds": 12.5},
-		Error:     &ErrorInfo{Code: "test_failure", Message: "TestFoo failed", Retryable: true},
+		Status:     ResultFailure,
+		Outputs:    map[string]interface{}{"attempts": float64(3)},
+		Artifacts:  []ArtifactPointer{{Path: "artifacts/impl/log.txt", Digest: Digest([]byte("log")), MediaType: "text/plain", Size: 3}},
+		Transcript: &ArtifactPointer{Path: "spans/sha256/01/transcript", Digest: Digest([]byte("transcript")), Size: 10},
+		Summary:    "could not satisfy the failing test",
+		Metrics:    map[string]float64{"durationSeconds": 12.5},
+		Error:      &ErrorInfo{Code: "test_failure", Message: "TestFoo failed", Retryable: true},
 	}
 	data, err := json.Marshal(in)
 	if err != nil {
@@ -60,6 +61,24 @@ func TestResultEnvelopeRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(in, out) {
 		t.Errorf("round-trip mismatch:\n in: %#v\nout: %#v", in, out)
+	}
+}
+
+func TestLegacyResultEnvelopeWithoutTranscriptRoundTrip(t *testing.T) {
+	const legacy = `{"status":"success","summary":"legacy result"}`
+	var result ResultEnvelope
+	if err := json.Unmarshal([]byte(legacy), &result); err != nil {
+		t.Fatalf("unmarshal legacy envelope: %v", err)
+	}
+	if result.Transcript != nil {
+		t.Fatalf("Transcript = %+v, want nil for legacy envelope", result.Transcript)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("re-marshal legacy envelope: %v", err)
+	}
+	if string(data) != legacy {
+		t.Fatalf("legacy envelope changed across round-trip:\n got: %s\nwant: %s", data, legacy)
 	}
 }
 

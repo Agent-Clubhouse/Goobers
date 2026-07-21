@@ -13,7 +13,7 @@ import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { WorkflowPage } from "./pages/WorkflowPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
-import { instanceWarnings, workflowWarnings, workflows } from "./prototypeData";
+import { instanceWarnings } from "./prototypeData";
 import { activeArea, parseRoute, routeHash, type Route } from "./routing";
 import { PortalShell } from "./shell/PortalShell";
 
@@ -77,22 +77,17 @@ function Portal({
     },
   });
 
-  const workflow =
-    route.page === "workflow"
-      ? workflows.find((candidate) => candidate.id === route.id)
-      : undefined;
   let warningSource: ConfigurationWarningSource = { kind: "none" };
   let warningFixtures = noWarnings;
   if (route.page === "overview") {
     warningSource = { kind: "instance" };
     warningFixtures = instanceWarnings;
-  } else if (route.page === "workflow" && workflow) {
+  } else if (route.page === "workflow" && route.gaggle) {
     warningSource = {
       kind: "workflow",
-      gaggle: workflow.gaggle,
-      workflow: workflow.id,
+      gaggle: route.gaggle,
+      workflow: route.id,
     };
-    warningFixtures = workflowWarnings[workflow.id] ?? noWarnings;
   }
   const configurationWarnings = useConfigurationWarnings(
     warningClient,
@@ -111,11 +106,14 @@ function Portal({
       )}
       {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
       {route.page === "runs" && <RunsPage navigate={navigate} />}
-      {route.page === "workflow" && workflow && (
+      {route.page === "workflow" && route.gaggle && (
         <WorkflowPage
+          client={client}
           configurationWarnings={configurationWarnings}
+          gaggle={route.gaggle}
           navigate={navigate}
-          workflow={workflow}
+          standalone={standalone}
+          workflowName={route.id}
         />
       )}
       {route.page === "run" && (
@@ -127,7 +125,9 @@ function Portal({
           standalone={standalone}
         />
       )}
-      {route.page === "workflow" && !workflow && <p role="alert">Workflow not found.</p>}
+      {route.page === "workflow" && !route.gaggle && (
+        <p role="alert">Workflow routes require both a gaggle and workflow name.</p>
+      )}
     </PortalShell>
   );
 }

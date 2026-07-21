@@ -7,27 +7,69 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"strings"
+	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/providers"
+)
+
+const (
+	traceFollowPollInterval  = 200 * time.Millisecond
+	traceInterruptedExitCode = 130
 )
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
+	return runTraceWithFactories(args, stdout, stderr, readservice.NewOfflineRuns, signals.SetupSignalContext)
+}
+
+func runTraceWithFollowContext(followCtx context.Context, args []string, stdout, stderr io.Writer) int {
+	return runTraceWithFollowContextAndFactory(followCtx, args, stdout, stderr, readservice.NewOfflineRuns)
+}
+
+func runTraceWithFollowContextAndFactory(
+	followCtx context.Context,
+	args []string,
+	stdout, stderr io.Writer,
+	newOfflineRuns func(instance.Layout) (readservice.OfflineRuns, error),
+) int {
+	return runTraceWithFactories(
+		args,
+		stdout,
+		stderr,
+		newOfflineRuns,
+		func() (context.Context, func()) {
+			return followCtx, func() {}
+		},
+	)
+}
+
+func runTraceWithFactories(
+	args []string,
+	stdout, stderr io.Writer,
+	newOfflineRuns func(instance.Layout) (readservice.OfflineRuns, error),
+	newFollowContext func() (context.Context, func()),
+) int {
 	fs := flag.NewFlagSet("trace", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit the run trace as JSON")
+	follow := fs.Bool("follow", false, "stream events until the run reaches a terminal phase")
 	showTranscripts := fs.Bool("transcripts", false, "show every recorded agent-stage transcript")
 	transcriptStage := fs.String("transcript", "", "show recorded transcript data for one stage")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers trace [--json] [--transcripts | --transcript=<stage>] <run-id> [path]\n\n"+
+		pf(stderr, "Usage: goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]\n\n"+
 			"Show a run's journal events and, if the telemetry rollup has ingested it,\n"+
 			"its trace spans. Use --transcripts to show all recorded agent transcripts,\n"+
-			"or --transcript to select one stage (default path \".\"). Exit codes:\n"+
-			"0 = OK, 1 = run/transcript not found, 2 = usage/IO error.\n")
+			"or --transcript to select one stage. With --follow, stream a live run's\n"+
+			"events until it finishes; --json --follow emits JSON Lines (default path\n"+
+			"\".\"). Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO\n"+
+			"error, 130 = interrupted while following.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -40,6 +82,10 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	})
 	if *showTranscripts && transcriptSelected {
 		pf(stderr, "error: --transcripts and --transcript cannot be used together\n")
+		return 2
+	}
+	if *follow && (*showTranscripts || transcriptSelected) {
+		pf(stderr, "error: --follow cannot be used with --transcripts or --transcript\n")
 		return 2
 	}
 	selectedStage := strings.TrimSpace(*transcriptStage)
@@ -56,42 +102,28 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
 	}
-	// Reject traversal-shaped prefixes before asking the shared service to
-	// inspect or list any run.
-	if !apiv1.ValidRunID(runID) {
-		pf(stderr, "error: invalid run id %q\n", runID)
-		return 2
-	}
 
 	l := instance.NewLayout(root)
-	reads, err := readservice.NewOfflineRuns(l)
+	runID, err := resolveRunID(l, runID)
+	if errors.Is(err, iofs.ErrNotExist) {
+		pf(stderr, "error: no run %q found in %s; list runs with 'goobers status'\n", fs.Arg(0), root)
+		return 1
+	}
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	reads, err := newOfflineRuns(l)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	ctx := context.Background()
-	detail, matches, err := resolveTraceRun(ctx, reads, runID)
+	detail, err := reads.GetRun(ctx, runID)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	switch len(matches) {
-	case 0:
-		if detail.ID == "" {
-			pf(stderr, "error: no run %q found in %s; list runs with 'goobers status'\n", runID, root)
-			return 1
-		}
-	case 1:
-		detail, err = reads.GetRun(ctx, matches[0])
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
-		}
-	default:
-		pf(stderr, "error: ambiguous prefix %q matches %d runs: %s\n", runID, len(matches), strings.Join(matches, ", "))
-		return 2
-	}
-	runID = detail.ID
 
 	if *showTranscripts || transcriptSelected {
 		transcripts, err := reads.RunTranscripts(ctx, runID, selectedStage)
@@ -113,6 +145,26 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
+	}
+	if *follow && !detail.Terminal {
+		if !traceEventsTerminal(ledger.Events) {
+			followCtx, stop := newFollowContext()
+			defer stop()
+			if err := followTrace(followCtx, reads, runID, ledger.Events, *jsonOutput, stdout); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return traceInterruptedExitCode
+				}
+				pf(stderr, "error: follow trace: %v\n", err)
+				return 2
+			}
+			return 0
+		}
+
+		detail, err = reads.GetRun(ctx, runID)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
 	}
 	identity, state, err := reads.RunMetadata(ctx, runID)
 	if err != nil {
@@ -136,15 +188,26 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	escalation := traceEscalation(detail, traceEscalationDetail, ledger.Events)
+	transcripts, transcriptErr := reads.RunTranscripts(ctx, runID, "")
+	if transcriptErr != nil {
+		// Usage is optional timeline enrichment. A missing or torn transcript
+		// must not make the canonical event trace unavailable.
+		transcripts = nil
+	}
+	now := time.Now()
+	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, now)
+	terminal := terminalCause(detail, ledger.Events)
 	if *jsonOutput {
 		result := traceJSONResult{
-			Identity:   identity,
-			Phase:      detail.Phase,
-			State:      state,
-			Repasses:   repasses,
-			Escalation: escalation,
-			Events:     traceJSONEvents(ledger.Events),
-			Spans:      spans,
+			Identity:      identity,
+			Phase:         detail.Phase,
+			State:         state,
+			Repasses:      repasses,
+			Timeline:      timeline,
+			TerminalCause: terminal,
+			Escalation:    escalation,
+			Events:        traceJSONEvents(ledger.Events),
+			Spans:         spans,
 		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
 			pf(stderr, "error: encode trace: %v\n", err)
@@ -152,7 +215,13 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+	ciFailures, err := traceCIFailures(ctx, reads, runID, ledger.Events)
+	if err != nil {
+		pf(stderr, "error: CI failure evidence: %v\n", err)
+		return 2
+	}
 
+	printTraceTimeline(stdout, timeline, terminal)
 	if escalation != nil {
 		printEscalationSummary(stdout, *escalation)
 	}
@@ -166,6 +235,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	pf(stdout, "started:  %s\n", detail.StartedAt.Format("2006-01-02T15:04:05Z07:00"))
 	if state != nil {
 		pf(stdout, "phase:    %s (machineState=%q, lastSeq=%d)\n", state.Phase, state.MachineState, state.LastSeq)
+		pf(stdout, "last activity: %s (%s)\n", formatLastActivity(now, state.UpdatedAt), state.UpdatedAt.Format(time.RFC3339))
 	}
 	pf(stdout, "repasses: %d\n", repasses)
 	pln(stdout, "\nevents:")
@@ -173,18 +243,96 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		pln(stdout, "  "+formatEvent(traceJournalEvent(event)))
 	}
 
+	printCIFailures(stdout, ciFailures)
 	printSpans(stdout, spans)
 	return 0
 }
 
+func followTrace(
+	ctx context.Context,
+	reads readservice.OfflineRuns,
+	runID string,
+	events []readservice.RunEvent,
+	jsonOutput bool,
+	stdout io.Writer,
+) error {
+	ticker := time.NewTicker(traceFollowPollInterval)
+	defer ticker.Stop()
+
+	var lastSeq uint64
+	for {
+		for _, event := range events {
+			if event.Seq <= lastSeq {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := writeFollowEvent(stdout, event, jsonOutput); err != nil {
+				return err
+			}
+			lastSeq = event.Seq
+			if event.Type == journal.EventRunFinished {
+				return nil
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+		ledger, err := reads.RunEvents(ctx, runID)
+		if err != nil {
+			return err
+		}
+		events = ledger.Events
+	}
+}
+
+func writeFollowEvent(stdout io.Writer, event readservice.RunEvent, jsonOutput bool) error {
+	var (
+		record []byte
+		err    error
+	)
+	if jsonOutput {
+		record, err = json.Marshal(traceJSONEvents([]readservice.RunEvent{event})[0])
+		if err != nil {
+			return fmt.Errorf("encode event %d: %w", event.Seq, err)
+		}
+	} else {
+		record = []byte(formatEvent(traceJournalEvent(event)))
+	}
+	record = append(record, '\n')
+	n, err := stdout.Write(record)
+	if err != nil {
+		return fmt.Errorf("write event %d: %w", event.Seq, err)
+	}
+	if n != len(record) {
+		return fmt.Errorf("write event %d: %w", event.Seq, io.ErrShortWrite)
+	}
+	return nil
+}
+
+func traceEventsTerminal(events []readservice.RunEvent) bool {
+	for _, event := range events {
+		if event.Type == journal.EventRunFinished {
+			return true
+		}
+	}
+	return false
+}
+
 type traceJSONResult struct {
-	Identity   journal.RunIdentity  `json:"identity"`
-	Phase      journal.RunPhase     `json:"phase"`
-	State      *journal.State       `json:"state,omitempty"`
-	Repasses   int                  `json:"repasses"`
-	Escalation *escalationSummary   `json:"escalation,omitempty"`
-	Events     []traceJSONEvent     `json:"events"`
-	Spans      []rollup.SpanSummary `json:"spans"`
+	Identity      journal.RunIdentity  `json:"identity"`
+	Phase         journal.RunPhase     `json:"phase"`
+	State         *journal.State       `json:"state,omitempty"`
+	Repasses      int                  `json:"repasses"`
+	Timeline      []traceTimelineStage `json:"timeline"`
+	TerminalCause *traceTerminalCause  `json:"terminalCause,omitempty"`
+	Escalation    *escalationSummary   `json:"escalation,omitempty"`
+	Events        []traceJSONEvent     `json:"events"`
+	Spans         []rollup.SpanSummary `json:"spans"`
 }
 
 type traceJSONEvent struct {
@@ -276,6 +424,58 @@ func printEscalationSummary(stdout io.Writer, summary escalationSummary) {
 	pf(stdout, "  last needs-changes reason: %s\n\n", reason)
 }
 
+func traceCIFailures(
+	ctx context.Context,
+	reads readservice.OfflineRuns,
+	runID string,
+	events []readservice.RunEvent,
+) ([]providers.CheckDetail, error) {
+	var failures []providers.CheckDetail
+	for _, event := range events {
+		if !event.KnownSchema ||
+			event.Type != journal.EventStageFinished ||
+			event.Outputs[executor.OutputCIStatus] != string(providers.CheckStateFailing) {
+			continue
+		}
+		for _, metadata := range event.Artifacts {
+			if metadata.Name != executor.CIChecksArtifactName {
+				continue
+			}
+			content, err := reads.Artifact(ctx, runID, metadata.Digest)
+			if err != nil {
+				return nil, err
+			}
+			var artifact executor.CIChecksArtifact
+			if err := json.Unmarshal(content.Bytes, &artifact); err != nil {
+				return nil, fmt.Errorf("decode %s: %w", executor.CIChecksArtifactName, err)
+			}
+			for _, check := range artifact.Checks {
+				if check.State == providers.CheckStateFailing {
+					failures = append(failures, check)
+				}
+			}
+		}
+	}
+	return failures, nil
+}
+
+func printCIFailures(stdout io.Writer, checks []providers.CheckDetail) {
+	if len(checks) == 0 {
+		return
+	}
+	pln(stdout, "\nCI failed checks:")
+	for _, check := range checks {
+		pf(stdout, "  check=%q summary=%q url=%q\n",
+			check.Name, firstLine(check.Summary), check.URL)
+	}
+}
+
+func firstLine(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	line, _, _ := strings.Cut(value, "\n")
+	return strings.TrimSuffix(line, "\r")
+}
+
 // formatEvent renders one journal event as a single debug line, matching the
 // per-type field groupings documented in internal/journal/README.md's
 // cat/jq debugging section so `trace` output reads the same as `jq`-ing the
@@ -283,7 +483,7 @@ func printEscalationSummary(stdout io.Writer, summary escalationSummary) {
 func formatEvent(ev journal.Event) string {
 	prefix := fmt.Sprintf("[%d] %s", ev.Seq, ev.Type)
 	switch ev.Type {
-	case journal.EventStageStarted, journal.EventStageFinished:
+	case journal.EventStageStarted, journal.EventStageHeartbeat, journal.EventStageFinished:
 		s := fmt.Sprintf("%s stage=%s attempt=%d", prefix, ev.Stage, ev.Attempt)
 		if ev.AttemptClass != "" {
 			s += fmt.Sprintf(" class=%s", ev.AttemptClass)
@@ -332,28 +532,6 @@ func formatEvent(ev journal.Event) string {
 	default:
 		return prefix
 	}
-}
-
-func resolveTraceRun(ctx context.Context, reads readservice.OfflineRuns, runID string) (readservice.RunDetail, []string, error) {
-	detail, err := reads.GetRun(ctx, runID)
-	if err == nil {
-		return detail, nil, nil
-	}
-	if !errors.Is(err, readservice.ErrNotFound) {
-		return readservice.RunDetail{}, nil, err
-	}
-
-	ids, err := reads.RunIDs(ctx)
-	if err != nil {
-		return readservice.RunDetail{}, nil, err
-	}
-	matches := make([]string, 0)
-	for _, id := range ids {
-		if strings.HasPrefix(id, runID) {
-			matches = append(matches, id)
-		}
-	}
-	return readservice.RunDetail{}, matches, nil
 }
 
 func traceJSONEvents(events []readservice.RunEvent) []traceJSONEvent {

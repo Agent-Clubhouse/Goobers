@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/goobers/goobers/internal/credentials"
@@ -42,15 +43,15 @@ func baseEnv() []string {
 }
 
 // buildStageEnv resolves credentials for declared, and returns the full
-// process env for the stage: baseEnv() plus one GOOBERS_CRED_* var per
-// declared capability that has a materialized credential, plus — only when
-// injectRunContext is set — GOOBERS_RUN_ID/GOOBERS_WORKFLOW/
-// GOOBERS_INSTANCE_ROOT (instanceRoot may be empty — see
-// ShellExecutor.InstanceRoot), and one GOOBERS_INPUT_* var per entry in
-// inputs. Every resolved token is also registered with registrar so it can be
-// scrubbed from anything the stage's process writes.
+// process env for the stage: baseEnv(), the definition's explicit env, one
+// GOOBERS_CRED_* var per declared capability that has a materialized credential,
+// plus — only when injectRunContext is set — GOOBERS_RUN_ID/GOOBERS_GAGGLE/
+// GOOBERS_WORKFLOW/GOOBERS_INSTANCE_ROOT (instanceRoot may be empty — see
+// ShellExecutor.InstanceRoot), and one GOOBERS_INPUT_* var per entry in inputs.
+// Every resolved token is also registered with registrar so it can be scrubbed
+// from anything the stage's process writes.
 //
-// Inputs/RunID/WorkflowID/InstanceRoot are the only way a `goobers` CLI
+// Inputs/RunID/Gaggle/WorkflowID/InstanceRoot are the only way a `goobers` CLI
 // subcommand invoked as a stage's command (e.g. backlog-query/open-pr/
 // issue-close-out, #131/#132) learns its declared Task.Inputs or which run
 // it's part of — DeterministicRun.Command is a static argv, and
@@ -71,8 +72,20 @@ func baseEnv() []string {
 // (credentials.Injector's own contract — not every capability is
 // credentialed); resolution failure for a capability that IS granted fails
 // closed.
-func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, workflowID, instanceRoot string, injectRunContext bool, inputs map[string]interface{}) ([]string, error) {
+func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string) ([]string, error) {
 	env := baseEnv()
+	keys := make([]string, 0, len(declaredEnv))
+	for key := range declaredEnv {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := declaredEnv[key]
+		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, '\x00') {
+			return nil, errors.New("executor: declared environment contains an invalid name or value")
+		}
+		env = append(env, key+"="+value)
+	}
 	// GOTRACEBACK=all makes every Go stage subprocess (go test under `make ci`,
 	// the goobers CLI, goober-runtime) print ALL goroutines — including runtime
 	// and system stacks — when it dumps on SIGQUIT (the timeout-diagnostics path
@@ -82,7 +95,7 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	// user goroutines.
 	env = append(env, "GOTRACEBACK=all")
 	if injectRunContext {
-		env = append(env, "GOOBERS_RUN_ID="+runID, "GOOBERS_WORKFLOW="+workflowID)
+		env = append(env, "GOOBERS_RUN_ID="+runID, "GOOBERS_GAGGLE="+gaggle, "GOOBERS_WORKFLOW="+workflowID)
 		if instanceRoot != "" {
 			env = append(env, "GOOBERS_INSTANCE_ROOT="+instanceRoot)
 		}

@@ -67,10 +67,23 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "type": "string", "enum": ["manual", "backlog-item", "schedule", "signal"] },
-        "selector": { "type": "object", "additionalProperties": { "type": "string" } },
+        "type": {
+          "type": "string",
+          "enum": ["manual", "backlog-item", "schedule", "signal", "webhook"],
+          "description": "Trigger kind. backlog-item is reserved for V1 and has no V0 runtime consumer; webhook requires GitHub event names in events."
+        },
+        "selector": {
+          "type": "object",
+          "description": "Reserved for V1 backlog-item routing; accepted by the V0 schema but not consumed at runtime.",
+          "additionalProperties": { "type": "string" }
+        },
         "schedule": { "type": "string" },
-        "signal": { "type": "string" }
+        "signal": { "type": "string" },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
       }
     },
     "task": {
@@ -88,10 +101,23 @@
           "required": ["command"],
           "properties": {
             "command": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "env": { "type": "object", "additionalProperties": { "type": "string" } },
             "image": { "type": "string" },
             "network": { "type": "string", "enum": ["none"] },
-            "workspace": { "type": "string", "enum": ["repo", "scratch"] }
-          }
+            "workspace": { "type": "string", "enum": ["repo", "scratch"] },
+            "syncBase": { "type": "boolean" }
+          },
+          "allOf": [
+            {
+              "not": {
+                "properties": {
+                  "workspace": { "const": "scratch" },
+                  "syncBase": { "const": true }
+                },
+                "required": ["workspace", "syncBase"]
+              }
+            }
+          ]
         },
         "inputs": { "type": "object", "additionalProperties": { "type": "string" } },
         "inputsFrom": { "type": "object", "additionalProperties": { "type": "string" } },
@@ -105,7 +131,18 @@
             "backoffSeconds": { "type": "integer", "minimum": 0 }
           }
         },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxDurationSeconds": { "type": "integer", "minimum": 0 },
+            "maxTokens": { "type": "integer", "minimum": 0 },
+            "maxCostUSD": { "type": "number", "minimum": 0 }
+          }
+        },
         "expectedOutputs": { "type": "array", "items": { "type": "string" } },
+        "continueOnError": { "type": "boolean" },
         "onTimeout": { "type": "string", "enum": ["fail", "salvage"] },
         "next": { "type": "string" }
       },
@@ -145,14 +182,37 @@
               "type": "object",
               "description": "Check parameters. Output equality checks use key+equals; numeric checks use key+threshold; output-matches uses key+pattern (RE2).",
               "additionalProperties": { "type": "string" }
-            }
+            },
+            "timeoutSeconds": { "type": "integer", "minimum": 1 },
+            "retry": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["maxAttempts"],
+              "properties": {
+                "maxAttempts": { "type": "integer", "minimum": 1 },
+                "backoffSeconds": { "type": "integer", "minimum": 0 }
+              }
+            },
+            "pollIntervalSeconds": { "type": "integer", "minimum": 1 }
           }
         },
         "agentic": {
           "type": "object",
           "additionalProperties": false,
           "required": ["goober"],
-          "properties": { "goober": { "type": "string", "minLength": 1 } }
+          "properties": {
+            "goober": { "type": "string", "minLength": 1 },
+            "timeoutSeconds": { "type": "integer", "minimum": 1 },
+            "retry": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["maxAttempts"],
+              "properties": {
+                "maxAttempts": { "type": "integer", "minimum": 1 },
+                "backoffSeconds": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
         },
         "human": {
           "type": "object",

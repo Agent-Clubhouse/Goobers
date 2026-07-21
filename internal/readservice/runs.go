@@ -99,6 +99,7 @@ type RunSummary struct {
 	StartedAt        time.Time        `json:"startedAt"`
 	FinishedAt       *time.Time       `json:"finishedAt,omitempty"`
 	DurationMillis   int64            `json:"durationMillis"`
+	LastActivityAt   time.Time        `json:"lastActivityAt"`
 	LastSeq          uint64           `json:"lastSeq"`
 	RepassCount      int              `json:"repassCount"`
 	RetryCount       int              `json:"retryCount"`
@@ -308,38 +309,44 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 }
 
 func (s *Local) runSummaries(ctx context.Context, skipUnreadable bool) ([]RunSummary, error) {
-	entries, err := os.ReadDir(s.sources.Layout.RunsDir())
+	runDirs, err := s.sources.Layout.RunDirs()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []RunSummary{}, nil
-		}
-		return nil, fmt.Errorf("read runs directory: %w", err)
+		return nil, err
 	}
 
 	observedAt := s.now().UTC()
-	summaries := make([]RunSummary, 0, len(entries))
-	for _, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if !entry.IsDir() {
-			continue
-		}
-		run, err := s.openRun(entry.Name())
+	var summaries []RunSummary
+	for _, runsDir := range runDirs {
+		entries, err := os.ReadDir(runsDir)
 		if err != nil {
-			if skipUnreadable || errors.Is(err, ErrNotFound) {
+			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return nil, err
+			return nil, fmt.Errorf("read runs directory: %w", err)
 		}
-		summary, err := summarizeRun(run, observedAt)
-		if err != nil {
-			if skipUnreadable {
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if !entry.IsDir() {
 				continue
 			}
-			return nil, fmt.Errorf("summarize run %q: %w", entry.Name(), err)
+			run, err := s.openRun(entry.Name())
+			if err != nil {
+				if skipUnreadable || errors.Is(err, ErrNotFound) {
+					continue
+				}
+				return nil, err
+			}
+			summary, err := summarizeRun(run, observedAt)
+			if err != nil {
+				if skipUnreadable {
+					continue
+				}
+				return nil, fmt.Errorf("summarize run %q: %w", entry.Name(), err)
+			}
+			summaries = append(summaries, summary)
 		}
-		summaries = append(summaries, summary)
 	}
 
 	sort.Slice(summaries, func(i, j int) bool {
@@ -358,22 +365,29 @@ func (s *Local) RunIDs(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(s.sources.Layout.RunsDir())
+	runDirs, err := s.sources.Layout.RunDirs()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []string{}, nil
-		}
-		return nil, fmt.Errorf("read runs directory: %w", err)
+		return nil, err
 	}
-	ids := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	var ids []string
+	for _, runsDir := range runDirs {
+		entries, err := os.ReadDir(runsDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("read runs directory: %w", err)
 		}
-		if entry.IsDir() && apiv1.ValidRunID(entry.Name()) {
-			ids = append(ids, entry.Name())
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if entry.IsDir() && apiv1.ValidRunID(entry.Name()) {
+				ids = append(ids, entry.Name())
+			}
 		}
 	}
+	sort.Strings(ids)
 	return ids, nil
 }
 
@@ -394,11 +408,15 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 	if err != nil {
 		return RunDetail{}, err
 	}
+	escalation, err := escalationCause(summary, run.records)
+	if err != nil {
+		return RunDetail{}, err
+	}
 	return RunDetail{
 		RunSummary:  summary,
 		Graph:       graph,
 		GraphStatus: status,
-		Escalation:  escalationCause(summary, run.records),
+		Escalation:  escalation,
 	}, nil
 }
 
@@ -707,7 +725,13 @@ func (s *Local) openRun(runID string) (runRead, error) {
 	if !apiv1.ValidRunID(runID) {
 		return runRead{}, fmt.Errorf("%w: invalid run id", ErrInvalidArgument)
 	}
-	dir := filepath.Join(s.sources.Layout.RunsDir(), runID)
+	dir, err := s.sources.Layout.FindRunDir(runID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
+		}
+		return runRead{}, err
+	}
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -749,6 +773,7 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	phase := journal.PhaseRunning
 	var finishedAt *time.Time
 	var lastSeq uint64
+	var lastActivityAt time.Time
 	currentStage := ""
 	seenInitial := make(map[string]bool)
 	repasses, retries, policyRetries, infraRetries := 0, 0, 0, 0
@@ -757,6 +782,7 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 		event := record.Event
 		if event.Seq > lastSeq {
 			lastSeq = event.Seq
+			lastActivityAt = event.Time
 		}
 		if !event.KnownSchema() {
 			continue
@@ -825,6 +851,7 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 		StartedAt:        run.identity.StartedAt,
 		FinishedAt:       finishedAt,
 		DurationMillis:   duration,
+		LastActivityAt:   lastActivityAt,
 		LastSeq:          lastSeq,
 		RepassCount:      repasses,
 		RetryCount:       retries,
@@ -879,35 +906,46 @@ func canonicalTrigger(trigger journal.TriggerKind) bool {
 	}
 }
 
-func escalationCause(summary RunSummary, records []journal.EventRecord) *EscalationCause {
+func escalationCause(summary RunSummary, records []journal.EventRecord) (*EscalationCause, error) {
 	if summary.Phase != journal.PhaseEscalated {
-		return nil
+		return nil, nil
 	}
 	cause := &EscalationCause{
 		RepassCount: summary.RepassCount,
 		RetryCount:  summary.RetryCount,
 	}
+	terminalStage := successfulTerminalStage(records)
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
 		if event.KnownSchema() &&
 			event.Type == journal.EventGateEvaluated &&
-			event.Target == workflow.TargetEscalate {
+			(event.Target == workflow.TargetEscalate ||
+				gateMarkedEscalated(event) ||
+				(terminalStage != "" && event.Target == terminalStage)) {
 			cause.Selector = EscalationSelector{Kind: "gate", Name: event.Gate}
 			cause.SelectedBranch = event.Verdict
 			cause.TerminalReason = gateEscalationReason(event)
 			cause.CausalEventSeq = event.Seq
-			return cause
+			repasses, err := gateRepassCount(records[:i+1], event.Gate)
+			if err != nil {
+				return nil, err
+			}
+			cause.RepassCount = repasses
+			return cause, nil
 		}
 	}
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
-		if !event.KnownSchema() || event.Type != journal.EventStageFinished {
+		if !event.KnownSchema() ||
+			event.Type != journal.EventStageFinished ||
+			(event.Status != string(apiv1.ResultFailure) &&
+				event.Status != string(apiv1.ResultBlocked)) {
 			continue
 		}
 		cause.Selector = EscalationSelector{Kind: "stage", Name: event.Stage}
 		cause.TerminalReason = stageEscalationReason(event, records[i+1:])
 		cause.CausalEventSeq = event.Seq
-		return cause
+		return cause, nil
 	}
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
@@ -923,7 +961,21 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) *Escalat
 		cause.CausalEventSeq = event.Seq
 		break
 	}
-	return cause
+	return cause, nil
+}
+
+func successfulTerminalStage(records []journal.EventRecord) string {
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventStageFinished {
+			continue
+		}
+		if event.Status == string(apiv1.ResultSuccess) {
+			return event.Stage
+		}
+		return ""
+	}
+	return ""
 }
 
 func gateRepassCount(records []journal.EventRecord, gate string) (int, error) {
@@ -997,8 +1049,7 @@ func lastNeedsChangesReason(reader *journal.Reader, records []journal.EventRecor
 }
 
 func gateEscalationReason(event journal.Event) string {
-	escalated, _ := event.Runner["escalated"].(bool)
-	if escalated {
+	if gateMarkedEscalated(event) {
 		duplicateDiff, _ := event.Runner["duplicateDiff"].(bool)
 		if duplicateDiff {
 			return "repass produced a diff identical to the immediately prior attempt"
@@ -1006,6 +1057,11 @@ func gateEscalationReason(event journal.Event) string {
 		return "repass budget exhausted"
 	}
 	return fmt.Sprintf("gate %s resolved %s -> %s", event.Gate, event.Verdict, event.Target)
+}
+
+func gateMarkedEscalated(event journal.Event) bool {
+	escalated, _ := event.Runner["escalated"].(bool)
+	return escalated
 }
 
 func stageEscalationReason(event journal.Event, subsequent []journal.EventRecord) string {

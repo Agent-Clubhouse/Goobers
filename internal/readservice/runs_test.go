@@ -341,6 +341,7 @@ func TestRunDetailEventsAttemptsAndPinnedGraph(t *testing.T) {
 	if detail.Escalation == nil ||
 		detail.Escalation.Selector.Name != "review" ||
 		detail.Escalation.SelectedBranch != "fail" ||
+		detail.Escalation.RepassCount != 4 ||
 		detail.Escalation.TerminalReason != "repass budget exhausted" {
 		t.Fatalf("escalation = %+v", detail.Escalation)
 	}
@@ -438,6 +439,9 @@ func TestLiveRunDurationUsesObservationTime(t *testing.T) {
 	}
 	if detail.Terminal || detail.DurationMillis != 30_000 {
 		t.Fatalf("live run summary = %+v", detail.RunSummary)
+	}
+	if want := started.Add(2 * time.Second); !detail.LastActivityAt.Equal(want) {
+		t.Fatalf("last activity = %s, want %s", detail.LastActivityAt, want)
 	}
 }
 
@@ -939,6 +943,93 @@ func TestDirectStageEscalationIncludesCause(t *testing.T) {
 	}
 }
 
+func TestParkedStageEscalationUsesOriginatingFailure(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-parked-stage-escalation",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 17, 16, 15, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerItem, Ref: "511"},
+		false,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageStarted,
+		Stage:   "implement",
+		Attempt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "implement",
+		Attempt: 1,
+		Status:  string(apiv1.ResultFailure),
+		Error:   &journal.ErrorDetail{Code: "NEEDS_DECOMPOSITION", Message: "split this issue"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageStarted,
+		Stage:   "park-escalated",
+		Attempt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "park-escalated",
+		Attempt: 1,
+		Status:  string(apiv1.ResultSuccess),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseEscalated)
+
+	detail, err := service.GetRun(context.Background(), "run-parked-stage-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Escalation == nil ||
+		detail.Escalation.Selector.Kind != "stage" ||
+		detail.Escalation.Selector.Name != "implement" ||
+		detail.Escalation.TerminalReason != "split this issue" {
+		t.Fatalf("parked stage escalation = %+v", detail.Escalation)
+	}
+	events, err := service.RunEvents(context.Background(), "run-parked-stage-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var implementSeq, parkingSeq uint64
+	for _, event := range events.Events {
+		if event.Type != journal.EventStageFinished {
+			continue
+		}
+		switch event.Stage {
+		case "implement":
+			implementSeq = event.Seq
+		case "park-escalated":
+			parkingSeq = event.Seq
+		}
+	}
+	if detail.Escalation.CausalEventSeq != implementSeq ||
+		detail.Escalation.CausalEventSeq == parkingSeq {
+		t.Fatalf(
+			"causal event = %d, implement = %d, parking = %d",
+			detail.Escalation.CausalEventSeq,
+			implementSeq,
+			parkingSeq,
+		)
+	}
+}
+
 func TestDuplicateDiffEscalationUsesRunnerMetadata(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, clock := createFixtureRun(
@@ -979,6 +1070,117 @@ func TestDuplicateDiffEscalationUsesRunnerMetadata(t *testing.T) {
 		detail.Escalation.SelectedBranch != "needs-changes" ||
 		detail.Escalation.TerminalReason != "repass produced a diff identical to the immediately prior attempt" {
 		t.Fatalf("duplicate-diff escalation = %+v", detail.Escalation)
+	}
+}
+
+func TestRoutedGateEscalationIncludesCause(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-routed-escalation",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 17, 16, 40, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerItem, Ref: "511"},
+		false,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventGateEvaluated,
+		Gate:    "review",
+		Verdict: string(apiv1.VerdictNeedsChanges),
+		Target:  "park-escalated",
+		Runner: map[string]any{
+			"repassAttempt": 4,
+			"escalated":     true,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "park-escalated",
+		Attempt: 1,
+		Status:  string(apiv1.ResultSuccess),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseEscalated)
+
+	detail, err := service.GetRun(context.Background(), "run-routed-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Escalation == nil ||
+		detail.Escalation.Selector.Kind != "gate" ||
+		detail.Escalation.Selector.Name != "review" ||
+		detail.Escalation.SelectedBranch != string(apiv1.VerdictNeedsChanges) ||
+		detail.Escalation.RepassCount != 4 ||
+		detail.Escalation.TerminalReason != "repass budget exhausted" {
+		t.Fatalf("routed escalation = %+v", detail.Escalation)
+	}
+}
+
+func TestRoutedGateFailureIncludesCause(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-routed-failure",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 17, 16, 42, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerItem, Ref: "511"},
+		false,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventGateEvaluated,
+		Gate:    "review",
+		Verdict: string(apiv1.VerdictFail),
+		Target:  "park-escalated",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "park-escalated",
+		Attempt: 1,
+		Status:  string(apiv1.ResultSuccess),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseEscalated)
+
+	detail, err := service.GetRun(context.Background(), "run-routed-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := service.RunEvents(context.Background(), "run-routed-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gateSeq uint64
+	for _, event := range events.Events {
+		if event.Type == journal.EventGateEvaluated {
+			gateSeq = event.Seq
+			break
+		}
+	}
+	if detail.Escalation == nil ||
+		detail.Escalation.Selector.Kind != "gate" ||
+		detail.Escalation.Selector.Name != "review" ||
+		detail.Escalation.SelectedBranch != string(apiv1.VerdictFail) ||
+		detail.Escalation.RepassCount != 1 ||
+		detail.Escalation.TerminalReason != "gate review resolved fail -> park-escalated" ||
+		gateSeq == 0 ||
+		detail.Escalation.CausalEventSeq != gateSeq {
+		t.Fatalf("routed gate failure = %+v", detail.Escalation)
 	}
 }
 

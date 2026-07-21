@@ -11,13 +11,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
@@ -52,7 +52,7 @@ func newTelemetryGitHubProvider(token string, opts ...func(*providers.GitHubProv
 const (
 	claimLedgerFileName = "claims.json"
 	claimLockFileName   = "claims.lock"
-	// mergeLockFileName is the cross-process flock `merge-pr` (mergepr.go)
+	// mergeLockFileName is the cross-process file lock `merge-pr` (mergepr.go)
 	// takes around its poll->decide->merge window (issue #719): once
 	// merge-review's readiness allows several concurrent runs to review
 	// DIFFERENT PRs at once, each independently reaches merge-pr, but only
@@ -75,6 +75,9 @@ const (
 	claimLockOperationRunRelease           = "run-claims.release"
 	claimLockOperationCloseOutLookup       = "issue-close-out.lookup"
 	claimLockOperationCloseOutRelease      = "issue-close-out.release"
+	claimLockOperationMigration            = "claim-ledger.migrate"
+	claimLockOperationAdminList            = "claims.list"
+	claimLockOperationAdminRelease         = "claims.release"
 
 	claimLockSlowThreshold = 5 * time.Second
 )
@@ -189,6 +192,10 @@ func providerRunContext() (runID, workflow string, err error) {
 		return "", "", fmt.Errorf("GOOBERS_WORKFLOW is not set — this subcommand must run as a workflow stage")
 	}
 	return runID, workflow, nil
+}
+
+func providerGaggle() string {
+	return os.Getenv("GOOBERS_GAGGLE")
 }
 
 // Typed error codes a provider-chain subcommand's declared result file
@@ -327,7 +334,7 @@ func failProviderStage(stderr io.Writer, what string, err error, resultFileDefau
 // withClaimLock serializes fn against every other process (a concurrent
 // `goobers backlog-query` from a racing run, or `goobers up`'s periodic
 // RecoverExpired) touching the same instance's claim ledger, via a blocking
-// exclusive flock on lockPath. localscheduler.ClaimLedger's own mutex is
+// exclusive file lock on lockPath. localscheduler.ClaimLedger's own mutex is
 // documented as in-process only ("designed for one embedded scheduler per
 // instance... not cross-process file locking") — but backlog-query runs as
 // its own OS process per stage dispatch, so two concurrent runs'
@@ -336,7 +343,7 @@ func failProviderStage(stderr io.Writer, what string, err error, resultFileDefau
 // file before either persists, and the second write would silently clobber
 // the first's claim (a lost update), defeating "one claim wins" (#131's
 // acceptance criterion). A blocking (not acquireInstanceLock's non-blocking)
-// flock is deliberate: the loser here should wait its turn and get a
+// lock is deliberate: the loser here should wait its turn and get a
 // consistent read, not fail outright the way a second `goobers up` should.
 // Every caller supplies a stable operation label. Wait and hold durations are
 // measured for every acquisition, while only threshold breaches are journaled
@@ -397,30 +404,26 @@ func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration 
 	return nil
 }
 
-// withFileLock is the un-instrumented blocking flock used by non-claim cache
+// withFileLock is the un-instrumented blocking lock used by non-claim cache
 // and merge locks. Claim-ledger and blocked-record access must go through
 // withClaimLock instead so its wait/hold contention is measured (#791).
 func withFileLock(lockPath string, fn func() error) error {
 	return withBlockingFileLock(lockPath, nil, nil, fn)
 }
 
-// withBlockingFileLock provides the blocking flock discipline shared by the
+// withBlockingFileLock provides the blocking lock discipline shared by the
 // claims lock and unrelated cache/merge locks. The optional callbacks run
 // immediately after acquisition and release.
 func withBlockingFileLock(lockPath string, onAcquired, onReleased func(), fn func() error) error {
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	held, err := lock.Acquire(lockPath)
 	if err != nil {
-		return fmt.Errorf("open lock file: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
 	if onAcquired != nil {
 		onAcquired()
 	}
 	defer func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = held.Release()
 		if onReleased != nil {
 			onReleased()
 		}

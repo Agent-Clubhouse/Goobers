@@ -15,11 +15,17 @@ const (
 	EventRunFinished EventType = "run.finished"
 	// EventStageStarted marks a stage attempt beginning.
 	EventStageStarted EventType = "stage.started"
+	// EventStageHeartbeat records that a stage attempt remains active. It is
+	// lightweight operational telemetry and excluded from conformance.
+	EventStageHeartbeat EventType = "stage.heartbeat"
 	// EventStageFinished marks a stage attempt ending with a result.
 	EventStageFinished EventType = "stage.finished"
 	// EventGateStarted marks a gate evaluation beginning. It is recovery
 	// bookkeeping, excluded from cross-runner conformance.
 	EventGateStarted EventType = "gate.started"
+	// EventGatePaused marks a run waiting at a gate for its verdict. It is
+	// operational state, excluded from cross-runner conformance.
+	EventGatePaused EventType = "gate.paused"
 	// EventGateEvaluated records a gate verdict and the branch it selected.
 	EventGateEvaluated EventType = "gate.evaluated"
 	// EventArtifactRecorded records an artifact committed by content digest.
@@ -53,11 +59,16 @@ const (
 	// EventTickSkipped records a tick that did not start a run, with Reason set
 	// (e.g. "conditions: max-parallel", "conditions: budget").
 	EventTickSkipped EventType = "tick.skipped"
+	// EventWorkflowStarved records a workflow crossing the scheduler's
+	// consecutive shared-pool skip threshold.
+	EventWorkflowStarved EventType = "workflow.starved"
 	// EventClaimAcquired records the claim ledger granting a lease.
 	EventClaimAcquired EventType = "claim.acquired"
 	// EventClaimReleased records a lease release (run finished, expired, or
 	// crash-recovered).
 	EventClaimReleased EventType = "claim.released"
+	// EventClaimForceReleased records an operator overriding a claim lease.
+	EventClaimForceReleased EventType = "claim.force_released"
 	// EventClaimLockSlow records claims-lock contention above the local runner's
 	// diagnostic threshold. Timing, operation, and process details live under
 	// Runner because they are runner-specific and excluded from conformance.
@@ -107,15 +118,16 @@ type Event struct {
 	// --- orchestration payload (normative unless noted) ---
 
 	// Stage is the stage name for stage.* events and stage-scoped artifacts.
-	// Normative.
+	// Normative except on stage.heartbeat, which is excluded as a whole.
 	Stage string `json:"stage,omitempty"`
 	// Attempt is the 1-based attempt number for stage.* events and
-	// stage-scoped artifacts. Normative.
+	// stage-scoped artifacts. Normative except on stage.heartbeat.
 	Attempt int `json:"attempt,omitempty"`
-	// AttemptClass tags a retry attempt. Normative iff not "infra".
+	// AttemptClass tags a retry attempt. Normative iff the event is not a
+	// heartbeat and the class is not "infra".
 	AttemptClass AttemptClass `json:"attemptClass,omitempty"`
 	// Gate is the gate name for gate.* events. Normative on gate.evaluated;
-	// gate.started is excluded as recovery bookkeeping.
+	// gate.started and gate.paused are excluded as operational state.
 	Gate string `json:"gate,omitempty"`
 	// Verdict is the gate decision for gate.evaluated. Normative.
 	Verdict string `json:"verdict,omitempty"`
@@ -141,6 +153,9 @@ type Event struct {
 	Ref *Ref `json:"ref,omitempty"`
 	// Name labels the Ref (artifact/input name). Normative.
 	Name string `json:"name,omitempty"`
+	// DataSchema identifies the record shape of schema-aware span content.
+	// EXCLUDED from conformance because span.recorded is excluded as a whole.
+	DataSchema string `json:"dataSchema,omitempty"`
 	// ExternalRef identifies an external reference touched. Normative — by
 	// (Provider, Kind, ID), not by URL.
 	ExternalRef *ExternalRef `json:"externalRef,omitempty"`
@@ -165,9 +180,12 @@ type Event struct {
 	Gaggle string `json:"gaggle,omitempty"`
 	// RunID is the run a scheduler decision or claim transition pertains to.
 	RunID string `json:"runId,omitempty"`
-	// Reason is a short, stable explanation for a tick.skipped decision (e.g.
-	// "conditions: max-parallel", "conditions: budget").
+	// Reason is a short, stable explanation for a tick.skipped or
+	// workflow.starved decision.
 	Reason string `json:"reason,omitempty"`
+	// SkipCount is the consecutive shared-pool refusal count for a
+	// workflow.starved event.
+	SkipCount int `json:"skipCount,omitempty"`
 }
 
 // ExternalRef identifies an external reference the run touched — an issue or PR
@@ -197,16 +215,18 @@ type RedactionInfo struct {
 }
 
 // IsConformanceNormative reports whether this event participates in the
-// cross-runner conformance set (§3.3). Excluded: infra-retry attempts, and the
-// recovery/repair bookkeeping events that are local-runner mechanics.
+// cross-runner conformance set (§3.3). Excluded: heartbeats, infra-retry
+// attempts, and recovery/repair bookkeeping events that are local-runner
+// mechanics.
 func (e Event) IsConformanceNormative() bool {
 	if e.AttemptClass == AttemptInfra {
 		return false
 	}
 	switch e.Type {
-	case EventGateStarted, EventRepaired:
-		// Pre-dispatch gate markers and torn-write repair are durability
-		// mechanics, not orchestration outcomes.
+	case EventStageHeartbeat, EventGateStarted, EventGatePaused, EventRepaired:
+		// Gate markers and torn-write repair are durability/operational
+		// mechanics; heartbeats are operational liveness, not orchestration
+		// outcomes.
 		return false
 	case EventRunnerAnnotation:
 		// Local-runner lifecycle bookkeeping lives under runner.* only.

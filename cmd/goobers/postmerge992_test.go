@@ -44,6 +44,10 @@ func TestUnparkSelfHealedEscalations(t *testing.T) {
 	server.addIssue(632, "unrelated pr")
 	server.addOpenPR(632, "goobers/impl/other", "main", "h632", "b632", false, nil, nil)
 
+	// Live main tip == #630's recorded base: #630's base has NOT advanced (it
+	// stays parked), while #631 self-heals on its head SHA moving (#1052).
+	server.setBranchTip("main", "b630")
+
 	provider := server.newGitHubProvider("token")
 	unparked, errs := unparkSelfHealedEscalations(context.Background(), provider, repo, 999, "main", io.Discard)
 	if len(errs) != 0 {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -14,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
@@ -34,13 +36,68 @@ import (
 // layout goobers trace/telemetry read back through the rollup. Shared by
 // up.go/run.go exactly like buildRunnerConfig; each caller owns calling
 // Shutdown on the returned client once it's done driving runs.
-func buildTelemetryClient(ctx context.Context, l instance.Layout, scrubber journal.Scrubber) (*telemetry.Client, error) {
-	return telemetry.New(ctx, telemetry.Config{
+func buildTelemetryClient(
+	ctx context.Context,
+	l instance.Layout,
+	scrubber journal.Scrubber,
+	registry *journal.RegistryScrubber,
+	otlp instance.OTLPConfig,
+) (*telemetry.Client, error) {
+	cfg := telemetry.Config{
 		ServiceName:    "goobers",
 		ServiceVersion: version.Get().Version,
-		SpanExporter:   telemetry.NewJournalSpanExporter(l.RunsDir(), scrubber),
+		SpanExporter:   telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
+		Scrubber:       scrubber,
 		Batch:          true,
-	})
+	}
+	if otlp.Enabled() {
+		headers, err := resolveOTLPHeaders(ctx, otlp.Headers, registry)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Exporter = telemetry.ExporterOTLP
+		cfg.OTLPEndpoint = otlp.Endpoint
+		cfg.OTLPInsecure = otlp.Insecure
+		cfg.OTLPHeaders = headers
+	}
+	return telemetry.New(ctx, cfg)
+}
+
+func resolveOTLPHeaders(
+	ctx context.Context,
+	headerRefs map[string]instance.TokenRef,
+	registry *journal.RegistryScrubber,
+) (map[string]string, error) {
+	names := make([]string, 0, len(headerRefs))
+	for name := range headerRefs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	refs := make([]credentials.TokenRef, 0, len(names))
+	for _, name := range names {
+		ref := headerRefs[name]
+		refs = append(refs, credentials.TokenRef{
+			Name: "telemetry.otlp.headers." + strings.ToLower(name),
+			Env:  ref.Env,
+			File: ref.File,
+		})
+	}
+	resolver, err := credentials.NewResolver(refs)
+	if err != nil {
+		return nil, fmt.Errorf("configure telemetry OTLP headers: %w", err)
+	}
+
+	headers := make(map[string]string, len(names))
+	for i, name := range names {
+		value, err := resolver.Resolve(ctx, refs[i].Name)
+		if err != nil {
+			return nil, fmt.Errorf("resolve telemetry OTLP header %q: %w", name, err)
+		}
+		registry.Register([]byte(value))
+		headers[name] = value
+	}
+	return headers, nil
 }
 
 // teeRegistrar forwards every registered secret to BOTH a run's own
@@ -59,7 +116,7 @@ func (t teeRegistrar) Register(secret []byte) {
 }
 
 // ingestRunTelemetry incrementally ingests one finished run, plus a refresh
-// of the scheduler decision log, into the local telemetry rollup (issues
+// of the scheduler decision log and spans, into the local telemetry rollup (issues
 // #127/#128) — internal/telemetry/rollup/ingest.go's own doc comment already
 // claimed IngestRun is meant to hook a run's completion ("call it once a run
 // finishes"), but nothing in cmd/goobers ever called it; every `goobers
@@ -74,19 +131,14 @@ func (t teeRegistrar) Register(secret []byte) {
 // the source of truth, so an ingest failure here must never fail the run
 // itself.
 //
-// tel.Flush MUST run before IngestRun reads spans.jsonl: buildTelemetryClient
-// sets Batch: true, so completed spans sit in the OTel SDK's in-memory batch
-// processor and are only written to disk on the processor's own interval or
-// an explicit flush/shutdown — not synchronously when a span ends. Without
-// this, IngestRun would race that flush and snapshot a run's spans as empty
-// into telemetry.db, with nothing to re-ingest them later even after
-// spans.jsonl itself eventually gets written (issue #129's checklist: this
-// is exactly the gap that made `goobers trace` depend on a prior
-// `goobers telemetry` call, which itself flushed via a DIFFERENT process's
-// tel.Shutdown before this fix existed).
+// FlushLocal MUST run before IngestRun reads spans.jsonl: the local journal
+// exporter batches completed spans, but flushing the whole provider would also
+// wait for a configured remote collector and delay scheduler-slot release.
 func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout, runID string, log *journal.InstanceLog) {
 	if tel != nil {
-		_ = tel.Flush(context.Background())
+		if err := tel.FlushLocal(context.Background()); err != nil {
+			logIngestFailure(log, runID, "telemetry_flush_failed", err)
+		}
 	}
 	if db == nil {
 		return
@@ -102,7 +154,23 @@ func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout,
 	if err := db.IngestRun(filepath.Join(l.RunsDir(), runID)); err != nil {
 		logIngestFailure(log, runID, "telemetry_ingest_run_failed", err)
 	}
-	if err := db.IngestSchedulerLog(l.SchedulerDir()); err != nil {
+	ingestSchedulerLog(db, l.SchedulerDir(), log, runID)
+}
+
+func ingestSchedulerTelemetry(ctx context.Context, tel *telemetry.Client, db *rollup.DB, schedulerDir string, log *journal.InstanceLog) {
+	if tel != nil {
+		if err := tel.Flush(ctx); err != nil {
+			logIngestFailure(log, "", "telemetry_flush_failed", err)
+		}
+	}
+	if db == nil {
+		return
+	}
+	ingestSchedulerLog(db, schedulerDir, log, "")
+}
+
+func ingestSchedulerLog(db *rollup.DB, schedulerDir string, log *journal.InstanceLog, runID string) {
+	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
 		logIngestFailure(log, runID, "telemetry_ingest_scheduler_log_failed", err)
 	}
 }
@@ -145,8 +213,8 @@ var newAgenticAdapter func(gooberName string, envCaps map[string]string) harness
 // providers.GitHubProvider over the resolved repo token.
 var newPRPoller func(token string) executor.PRPoller
 
-// credentialGrantEnv is the environment variable the Copilot CLI reads a
-// credentialed capability's token from (internal/harness.CopilotAdapter's
+// credentialGrantEnv is the environment variable the Copilot CLI reads most
+// credentialed capabilities' tokens from (internal/harness.CopilotAdapter's
 // EnvCapabilities convention — matches internal/harness/copilot_test.go's
 // {"repo:push": "GH_TOKEN"} fixture).
 const credentialGrantEnv = "GH_TOKEN"
@@ -156,29 +224,29 @@ const credentialGrantEnv = "GH_TOKEN"
 // for model auth (§3.3), so mapping agent:model to a DISTINCT env var from
 // credentialGrantEnv lets one agentic subprocess carry a personal "Copilot
 // Requests" PAT for the model (agent:model → COPILOT_GITHUB_TOKEN) AND the
-// org-repo token for the github tool (credentialedCapabilities → GH_TOKEN) at
-// once — credentialEnv appends both, and because the vars differ neither
+// org-repo token for the github tool (ordinary repo capabilities → GH_TOKEN)
+// at once — credentialEnv appends both, and because the vars differ neither
 // clobbers the other (#288, multi-token credentials 2/3).
 const copilotModelEnv = "COPILOT_GITHUB_TOKEN"
 
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
-	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubIssuesApprove, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
 }
 
 // buildEnvCapabilities maps each capability the Copilot adapter injects to the
-// environment variable the CLI reads its token from: the org-repo capabilities
-// to GH_TOKEN (the github tool's var) and agent:model to COPILOT_GITHUB_TOKEN
-// (the model backend's var, #288, §3.3). The two vars are distinct on purpose —
-// credentialEnv appends one entry per declared capability, so a stage declaring
-// both agent:model and an org-repo capability carries both tokens in a single
-// subprocess with neither clobbering the other.
+// environment variable that consumes its token. General org-repo capabilities
+// use GH_TOKEN (the github tool's var), github:issues:approve uses its dedicated
+// GOOBERS_CRED_* variable so the nominator can detect and exercise that opt-in
+// separately, and agent:model uses COPILOT_GITHUB_TOKEN (the model backend's
+// var, #288, §3.3).
 func buildEnvCapabilities() map[string]string {
 	envCaps := make(map[string]string, len(credentialedCapabilities)+1)
 	for _, c := range credentialedCapabilities {
 		envCaps[string(c)] = credentialGrantEnv
 	}
+	envCaps[string(capability.GitHubIssuesApprove)] = executor.CredentialEnvVar(string(capability.GitHubIssuesApprove))
 	envCaps[string(capability.AgentModel)] = copilotModelEnv
 	return envCaps
 }
@@ -301,6 +369,7 @@ func credentialRefName(cap string) string { return "credential:" + cap }
 type ciPollTaskExecutor struct {
 	fallback invoke.Deterministic
 	injector *credentials.Injector
+	recorder executor.ArtifactRecorder
 }
 
 func (e *ciPollTaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -323,7 +392,7 @@ func (e *ciPollTaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 	} else {
 		poller = providers.NewGitHubProvider(token)
 	}
-	ciPoll, err := executor.NewCIPollExecutor(poller)
+	ciPoll, err := executor.NewCIPollExecutor(poller, e.recorder)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
@@ -337,7 +406,7 @@ func (e *ciPollTaskExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 // buildCIPollExecutor wraps the deterministic dispatcher for a repo-backed
 // instance. Credential resolution stays lazy so a non-ci-poll stage never
 // requires the PR capability or token.
-func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, fallback invoke.Deterministic) (invoke.Deterministic, error) {
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, fallback invoke.Deterministic, recorder executor.ArtifactRecorder) (invoke.Deterministic, error) {
 	if len(cfg.Repos) == 0 {
 		return fallback, nil
 	}
@@ -347,7 +416,10 @@ func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, f
 	if fallback == nil {
 		return nil, fmt.Errorf("build ci-poll executor: fallback executor is nil")
 	}
-	return &ciPollTaskExecutor{fallback: fallback, injector: injector}, nil
+	if recorder == nil {
+		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
+	}
+	return &ciPollTaskExecutor{fallback: fallback, injector: injector, recorder: recorder}, nil
 }
 
 // newEscalationPoster constructs the provider the escalation notifier posts
@@ -361,17 +433,20 @@ var newEscalationPoster = func(token string) gate.Commenter { return providers.N
 // contract rather than capturing a token once at daemon startup — registers it
 // for scrubbing, then posts through a freshly-authenticated provider.
 type escalationCommenter struct {
-	ref      string
 	resolver credentials.Resolver
 	reg      runner.SecretRegistrar
 }
 
 func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
-	token, err := c.resolver.Resolve(ctx, c.ref)
+	ref := req.Repository.Owner + "/" + req.Repository.Name
+	token, err := c.resolver.Resolve(ctx, ref)
 	if err != nil {
-		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", c.ref, err)
+		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
 	}
 	c.reg.Register([]byte(token))
+	// PR remediation uses pr/<number> as its internal claim key; provider work
+	// item endpoints use the shared bare issue/PR number.
+	req.ID = blockedLookupID(req.ID)
 	return newEscalationPoster(token).UpdateWorkItem(ctx, req)
 }
 
@@ -380,8 +455,8 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 // constructed, so runner.Config.Escalation stayed nil and a repass-budget
 // escalation posted nothing to the driving issue (#312, the same "real seam,
 // zero production callers" shape as epic #130). Returns nil when no repo is
-// configured — a schedule-only producer instance has no driving issue to
-// comment on, and NotifyEscalated only fires when in.Item is non-nil anyway.
+// configured. The run supplies its repository to each notification so a
+// multi-repo instance resolves and posts through the matching connection.
 // Comment-only by deliberate design: the Commenter/UpdateWorkItem seam was
 // chosen specifically so escalation never touches the item's status label
 // (#63); #20's escalation surfacing is a provider comment on the driving issue,
@@ -391,32 +466,28 @@ func buildEscalationNotifier(cfg *instance.Config, resolver credentials.Resolver
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
-	repo := cfg.Repos[0]
 	return &gate.EscalationNotifier{
 		Poster: &escalationCommenter{
-			ref:      repo.Owner + "/" + repo.Name,
 			resolver: resolver,
 			reg:      reg,
 		},
-		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name},
 	}
 }
 
 // buildBlockedHandler wires runner.Config.Blocked (#544/#545/#552): the
 // instance-level consequences of a stage reporting status "blocked". Returns
-// nil when no repo is configured, mirroring buildEscalationNotifier. Two
-// dispositions, keyed on whether the stage referenced its blockers in
-// machine-readable form (the documented outputs.blockedBy convention):
+// nil when no repo is configured, mirroring buildEscalationNotifier.
+// Every blocked driving issue is parked goobers:needs-human (swap off
+// goobers:ready and the provider-visible claim marker) per the #544 ruling /
+// #539 convention. This prevents the released claim from making the same item
+// immediately eligible again.
 //
-//   - Known blockers: record the learned block in scheduler/blocked.json so
-//     backlog-query skips the item until every blocker closes (#552's
-//     self-healing skip — a dependency block needs time, not a human), and
-//     comment the same on the driving issue.
-//   - No parseable blockers: park the issue goobers:needs-human (swap off
-//     goobers:ready) per the #544 ruling / #539 convention — an agent saying
-//     "I can't proceed" with nothing selection can key off IS a
-//     human-attention signal, and without the label swap the freed claim
-//     would be re-claimed and re-blocked on the very next tick.
+// When the stage also references blockers through outputs.blockedBy, record
+// them in scheduler/blocked.json so #552's selection guard still protects the
+// issue if a human re-promotes it before every dependency closes. If a new
+// record closes a cycle, every issue in that cycle is parked and receives a
+// cycle-specific comment for human resolution. The runner's shared
+// EscalationNotifier owns the normal explanatory provider comment.
 //
 // The handler runs before FinalizeTerminal releases the run's claims, so a
 // run with no StartInput.Item (scheduled/fan-out implementation runs claim
@@ -428,13 +499,10 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
-	repo := cfg.Repos[0]
 	poster := &escalationCommenter{
-		ref:      repo.Owner + "/" + repo.Name,
 		resolver: resolver,
 		reg:      reg,
 	}
-	repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
 
 	return func(ctx context.Context, o runner.BlockedOutcome) error {
 		itemIDs := []string{o.ItemID}
@@ -453,36 +521,130 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 		}
 
 		var errs []error
+		repoRef := providers.RepositoryRef{
+			Provider: providers.ProviderKind(o.RepoRef.Provider),
+			Owner:    o.RepoRef.Owner,
+			Name:     o.RepoRef.Name,
+		}
+		if blockedRepositoryEmpty(repoRef) {
+			return fmt.Errorf("blocked outcome for run %s has no repository", o.RunID)
+		}
 		for _, itemID := range itemIDs {
-			req := providers.UpdateWorkItemRequest{Repository: repoRef, ID: itemID}
+			req := providers.UpdateWorkItemRequest{
+				Repository:   repoRef,
+				ID:           itemID,
+				AddLabels:    []string{providers.LabelNeedsHuman},
+				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
+			}
 			if len(o.Blockers) > 0 {
+				var cycle blockedCycleResult
 				if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
-					recs[itemID] = blockedRecord{
+					recordKey := blockedRecordKey(repoRef, itemID)
+					recs[recordKey] = blockedRecord{
+						Repository: repoRef,
+						ItemID:     itemID,
 						Blockers:   o.Blockers,
 						RunID:      o.RunID,
 						Stage:      o.Stage,
 						Reason:     o.Reason,
 						RecordedAt: time.Now().UTC(),
 					}
+					cycle = findBlockedCycle(recs, recordKey)
 					return true
 				}); err != nil {
 					errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
+				}
+				if len(cycle.Affected) > 0 {
+					comments := blockedCycleComments(cycle)
+					for _, cycleItem := range cycle.Affected {
+						for _, comment := range comments {
+							cycleReq := providers.UpdateWorkItemRequest{
+								Repository:   cycleItem.Repository,
+								ID:           cycleItem.ItemID,
+								Comment:      comment,
+								AddLabels:    []string{providers.LabelNeedsHuman},
+								RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
+							}
+							if _, err := poster.UpdateWorkItem(ctx, cycleReq); err != nil {
+								errs = append(errs, fmt.Errorf("escalate circular dependency on %s#%s: %w", cycleItem.Repository.Name, cycleItem.ItemID, err))
+							}
+						}
+					}
 					continue
 				}
-				req.Comment = fmt.Sprintf(
-					"Goobers run %s: stage %q reported this issue blocked on %s — %s. The run finished escalated and released its claim. Backlog selection skips this issue until every blocking issue is closed, then it becomes eligible again automatically.",
-					o.RunID, o.Stage, issueRefList(o.Blockers), o.Reason,
-				)
-			} else {
-				req.Comment = fmt.Sprintf(
-					"Goobers run %s: stage %q reported this issue blocked without machine-readable blocking issues (`outputs.blockedBy`) — %s. The run finished escalated and released its claim; parking `%s` for a human decision.",
-					o.RunID, o.Stage, o.Reason, providers.LabelNeedsHuman,
-				)
-				req.AddLabels = []string{providers.LabelNeedsHuman}
-				req.RemoveLabels = []string{providers.LabelReady}
 			}
 			if _, err := poster.UpdateWorkItem(ctx, req); err != nil {
-				errs = append(errs, fmt.Errorf("notify blocked on %s#%s: %w", repoRef.Name, itemID, err))
+				errs = append(errs, fmt.Errorf("park blocked item %s#%s: %w", repoRef.Name, itemID, err))
+			}
+		}
+		return errors.Join(errs...)
+	}
+}
+
+// buildFailedHandler wires runner.Config.Failed (#1054): the instance-level
+// consequence of a run reaching terminal PhaseFailed. Returns nil when no repo
+// is configured, mirroring buildBlockedHandler. Leaves a human-visible trace on
+// the driving item — a comment recording the terminal failure cause and the run
+// id — so repeated terminal failures on the same item accumulate a countable
+// signal instead of the item silently returning to goobers:ready with no
+// record. The motivating case (#1054) is a recurring copilot-cli harness
+// session timeout in the implement stage: it retries once, times out again, and
+// ends the run `failed` (not `escalated`), so today the driving issue returns to
+// ready indistinguishable from one never attempted and is re-claimed and
+// re-failed forever with nothing accumulating anywhere a human can see.
+//
+// Deliberately does NOT apply goobers:needs-human: that label is reserved for
+// the escalated/park path (buildEscalationNotifier / buildBlockedHandler's
+// no-blockers park), keeping a `failed` terminal distinct from an escalation.
+// Comment-only, via the same escalationCommenter/UpdateWorkItem seam (which
+// normalizes a pr/<n> claim to its bare number).
+//
+// Like buildBlockedHandler, the handler runs before FinalizeTerminal releases
+// the run's claims, so it resolves the driving item(s) from the claim ledger by
+// run id — implementation and pr-remediation runs (the two workflows that hit
+// this) self-select their item mid-run, so they never carry a StartInput.Item
+// snapshot and the ledger is the only source. Best-effort per item: one item's
+// provider failure doesn't skip the rest; the joined error is journaled by the
+// runner (failed_handling_failed), never fatal to the terminal transition.
+func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) runner.FailedHandler {
+	if len(cfg.Repos) == 0 {
+		return nil
+	}
+	poster := &escalationCommenter{
+		resolver: resolver,
+		reg:      reg,
+	}
+
+	return func(ctx context.Context, o runner.FailedOutcome) error {
+		itemIDs, err := claimedItemIDsForRun(l, o.RunID)
+		if err != nil {
+			return err
+		}
+		if len(itemIDs) == 0 {
+			// No driving item anywhere (a producer/schedule run, or a run whose
+			// claim was already released) — nothing to trace; the journaled
+			// run_failed cause and the failed phase are the whole story.
+			return nil
+		}
+		cause := strings.TrimSpace(o.Cause)
+		if cause == "" {
+			cause = "no cause recorded"
+		}
+		repoRef := providers.RepositoryRef{
+			Provider: providers.ProviderKind(o.RepoRef.Provider),
+			Owner:    o.RepoRef.Owner,
+			Name:     o.RepoRef.Name,
+		}
+		var errs []error
+		for _, itemID := range itemIDs {
+			comment := fmt.Sprintf(
+				"Goobers run %s terminated `failed`: %s. The run released its claim and this issue returned to the backlog; this comment records the terminal failure so repeated failures on this item are visible instead of silently recurring. No `%s` applied — a `failed` terminal is distinct from an escalation.",
+				o.RunID, cause, providers.LabelNeedsHuman,
+			)
+			if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+				Repository: repoRef, ID: itemID, Comment: comment,
+			}); err != nil {
+				errs = append(errs, fmt.Errorf("notify failed on %s#%s: %w", repoRef.Name, itemID, err))
 			}
 		}
 		return errors.Join(errs...)
@@ -538,6 +700,243 @@ func issueRefList(numbers []string) string {
 		out = append(out, n...)
 	}
 	return string(out)
+}
+
+const cyclePathSeparator = " -> "
+
+func issueCyclePath(numbers []string) string {
+	var out strings.Builder
+	for i, n := range numbers {
+		if i > 0 {
+			out.WriteString(cyclePathSeparator)
+		}
+		out.WriteByte('#')
+		out.WriteString(n)
+	}
+	return out.String()
+}
+
+func issueCyclePathLength(numbers []string, maxLength int) (int, bool) {
+	length := 0
+	for i, number := range numbers {
+		addition := 1 + len(number)
+		if i > 0 {
+			addition += len(cyclePathSeparator)
+		}
+		if addition > maxLength-length {
+			return 0, false
+		}
+		length += addition
+	}
+	return length, true
+}
+
+func boundedIssueCyclePath(numbers []string, maxLength int) (string, bool) {
+	if _, fits := issueCyclePathLength(numbers, maxLength); fits {
+		return issueCyclePath(numbers), false
+	}
+	return truncatedIssueCyclePath(numbers, maxLength), true
+}
+
+func truncatedIssueCyclePath(numbers []string, maxLength int) string {
+	if len(numbers) == 0 || maxLength <= 0 {
+		return ""
+	}
+
+	bestHead, bestIdentified := 0, -1
+	bestTail := false
+	prefixLength := 0
+	for head := 0; head < len(numbers); head++ {
+		consider := func(includeTail bool) {
+			omitted := len(numbers) - head
+			identified := head
+			if includeTail {
+				omitted--
+				identified++
+			}
+			if omitted <= 0 {
+				return
+			}
+
+			length := prefixLength
+			if head > 0 {
+				length += len(cyclePathSeparator)
+			}
+			length += len(cycleMembersOmitted(omitted))
+			if includeTail {
+				length += len(cyclePathSeparator) + 1 + len(numbers[len(numbers)-1])
+			}
+			if length <= maxLength &&
+				(identified > bestIdentified || identified == bestIdentified && head > bestHead) {
+				bestHead = head
+				bestTail = includeTail
+				bestIdentified = identified
+			}
+		}
+
+		consider(false)
+		consider(head < len(numbers)-1)
+
+		addition := 1 + len(numbers[head])
+		if head > 0 {
+			addition += len(cyclePathSeparator)
+		}
+		prefixLength += addition
+		if prefixLength > maxLength {
+			break
+		}
+	}
+	if bestIdentified < 0 {
+		return ""
+	}
+
+	omitted := len(numbers) - bestHead
+	if bestTail {
+		omitted--
+	}
+	parts := make([]string, 0, bestHead+2)
+	for _, number := range numbers[:bestHead] {
+		parts = append(parts, "#"+number)
+	}
+	parts = append(parts, cycleMembersOmitted(omitted))
+	if bestTail {
+		parts = append(parts, "#"+numbers[len(numbers)-1])
+	}
+	return strings.Join(parts, cyclePathSeparator)
+}
+
+func cycleMembersOmitted(count int) string {
+	return fmt.Sprintf("[%d cycle members omitted]", count)
+}
+
+const maxBlockedCycleCommentLength = 2000
+
+func blockedCycleComment(paths [][]string, morePaths bool) string {
+	const prefix = "Goobers detected circular issue dependencies. Representative cycles: "
+	const additionalPathsOmitted = "additional cycle paths omitted"
+	suffix := fmt.Sprintf(
+		". Every issue in the cycle has been marked `%s` and removed from `%s` for human resolution.",
+		providers.LabelNeedsHuman, providers.LabelReady,
+	)
+	available := maxBlockedCycleCommentLength - len(prefix) - len(suffix)
+	if summaries, ok := completeCycleSummaries(paths, morePaths, available, additionalPathsOmitted); ok {
+		return prefix + summaries + suffix
+	}
+
+	var summaries strings.Builder
+	included := 0
+	for i, path := range paths {
+		separatorLength := 0
+		if summaries.Len() > 0 {
+			separatorLength = 2
+		}
+
+		reservedNoticeLength := 0
+		if morePaths || i < len(paths)-1 {
+			reservedNoticeLength = 2 + len(additionalPathsOmitted)
+		}
+		pathBudget := available - summaries.Len() - separatorLength - reservedNoticeLength
+		summary, truncated := boundedIssueCyclePath(path, pathBudget)
+		if summary == "" {
+			break
+		}
+		if separatorLength > 0 {
+			summaries.WriteString("; ")
+		}
+		summaries.WriteString(summary)
+		included++
+		if truncated {
+			break
+		}
+	}
+
+	if morePaths || included < len(paths) {
+		if summaries.Len() > 0 {
+			summaries.WriteString("; ")
+		}
+		summaries.WriteString(additionalPathsOmitted)
+	}
+	return prefix + summaries.String() + suffix
+}
+
+func blockedCycleComments(cycle blockedCycleResult) []string {
+	report := blockedCycleComment(cycle.Paths, cycle.MorePaths)
+	itemIDs := make([]string, len(cycle.Affected))
+	for i, item := range cycle.Affected {
+		itemIDs[i] = item.ItemID
+	}
+
+	memberList := " Affected issues: " + issueRefList(itemIDs) + "."
+	if len(report)+len(memberList) <= maxBlockedCycleCommentLength {
+		return []string{report + memberList}
+	}
+
+	comments := []string{report}
+	const prefix = "Affected issues in this dependency cycle: "
+	var current strings.Builder
+	current.WriteString(prefix)
+	for _, itemID := range itemIDs {
+		separator := ""
+		if current.Len() > len(prefix) {
+			separator = ", "
+		}
+		reference := "#" + itemID
+		if current.Len()+len(separator)+len(reference)+1 > maxBlockedCycleCommentLength {
+			current.WriteByte('.')
+			comments = append(comments, current.String())
+			current.Reset()
+			current.WriteString(prefix)
+			separator = ""
+		}
+		current.WriteString(separator)
+		current.WriteString(reference)
+	}
+	if current.Len() > len(prefix) {
+		current.WriteByte('.')
+		comments = append(comments, current.String())
+	}
+	return comments
+}
+
+func completeCycleSummaries(paths [][]string, morePaths bool, maxLength int, additionalPathsOmitted string) (string, bool) {
+	total := 0
+	for i, path := range paths {
+		separatorLength := 0
+		if i > 0 {
+			separatorLength = 2
+		}
+		pathLength, fits := issueCyclePathLength(path, maxLength-total-separatorLength)
+		if !fits {
+			return "", false
+		}
+		total += separatorLength + pathLength
+	}
+	if morePaths {
+		separatorLength := 0
+		if len(paths) > 0 {
+			separatorLength = 2
+		}
+		if len(additionalPathsOmitted) > maxLength-total-separatorLength {
+			return "", false
+		}
+		total += separatorLength + len(additionalPathsOmitted)
+	}
+
+	var summaries strings.Builder
+	summaries.Grow(total)
+	for i, path := range paths {
+		if i > 0 {
+			summaries.WriteString("; ")
+		}
+		summaries.WriteString(issueCyclePath(path))
+	}
+	if morePaths {
+		if summaries.Len() > 0 {
+			summaries.WriteString("; ")
+		}
+		summaries.WriteString(additionalPathsOmitted)
+	}
+	return summaries.String(), true
 }
 
 // newOpenPRProvider builds the GitHub client the open-PR lister polls; a package
@@ -680,8 +1079,12 @@ func buildBacklogCounter(cfg *instance.Config, wf *apiv1.Workflow, repoRef apiv1
 // config-examples/, selfhost/) lays goobers out at the same fixed path, so
 // that layout convention is reproduced here rather than widening ConfigSet's
 // shape for this one field.
+func gooberDefinitionDir(configDir string, spec apiv1.GooberSpec, gooberName string) string {
+	return filepath.Join(configDir, "gaggles", spec.Gaggle, "goobers", gooberName)
+}
+
 func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string) string {
-	return filepath.Join(configDir, "gaggles", spec.Gaggle, "goobers", gooberName, spec.Instructions)
+	return filepath.Join(gooberDefinitionDir(configDir, spec, gooberName), spec.Instructions)
 }
 
 // buildRunnerConfig assembles the runner.Config the daemon (`goobers up`) and
@@ -734,12 +1137,18 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		return runner.Config{}, nil, err
 	}
 	instructionsByGoober := make(map[string]string, len(goobers))
+	assetsByGoober := make(map[string]*gooberassets.Bundle, len(goobers))
 	for name, spec := range goobers {
 		instructions, err := os.ReadFile(instructionsPath(l.ConfigDir(), spec, name))
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("read goober %q instructions: %w", name, err)
 		}
 		instructionsByGoober[name] = string(instructions)
+		assets, err := gooberassets.Load(filepath.Join(gooberDefinitionDir(l.ConfigDir(), spec, name), gooberassets.SourceDir))
+		if err != nil {
+			return runner.Config{}, nil, fmt.Errorf("load goober %q assets: %w", name, err)
+		}
+		assetsByGoober[name] = assets
 	}
 
 	// An agentic gate's reviewer has no stage-level capabilities of its own, so
@@ -789,7 +1198,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if err != nil {
 				return nil, err
 			}
-			return buildCIPollExecutor(cfg, injector, fallback)
+			return buildCIPollExecutor(cfg, injector, fallback, rec)
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			spec, ok := goobers[gooberName]
@@ -841,6 +1250,18 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				return nil, fmt.Errorf("runner secret registrar does not implement journal.Scrubber")
 			}
 			scrubber := journal.Chain(registryScrubber, journal.NewPatternScrubber())
+			opts := []harness.Option{
+				harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
+				harness.WithAssetBundle(assetsByGoober[gooberName]),
+			}
+			// Goober-level default timeout (#1070): raises this goober's built-in
+			// 30m harness bound so its bigger tasks aren't cut off, without
+			// annotating every stage. A stage's own Task.TimeoutSeconds still
+			// wins via env.Limits (invocationTimeout); this only moves the
+			// fallback that applies when a stage sets none.
+			if spec.TimeoutSeconds > 0 {
+				opts = append(opts, harness.WithTimeout(time.Duration(spec.TimeoutSeconds)*time.Second))
+			}
 			return harness.NewExecutor(
 				adapter,
 				injector,
@@ -849,7 +1270,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				contextResolver,
 				scrubber,
 				instructionsByGoober[gooberName],
-				harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
+				opts...,
 			)
 		},
 		Automated:              gate.NewAutomatedEvaluator(),
@@ -869,6 +1290,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// Wire the blocked handler (#544/#552): record/park the driving issue
 		// when a stage reports blocked; nil for a repo-less instance.
 		Blocked: buildBlockedHandler(l, cfg, resolver, sharedReg),
+		// Wire the failed handler (#1054): leave a human-visible trace on the
+		// driving item when a run ends terminal `failed`, so a recurring infra
+		// fault (e.g. a copilot-cli session timeout) stops silently returning the
+		// item to ready with no record; nil for a repo-less instance.
+		Failed: buildFailedHandler(l, cfg, resolver, sharedReg),
 	}
 	if tel != nil {
 		rc.Telemetry = tel
@@ -898,6 +1324,7 @@ func knownAutomatedCheckNames() []string {
 	for name := range checks {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 

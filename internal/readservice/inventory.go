@@ -524,7 +524,11 @@ func (s *Local) Workflow(ctx context.Context, gaggle, name string) (WorkflowDeta
 }
 
 func (s *Local) activeRunCounts() (map[localscheduler.WorkflowIdentity]int, error) {
-	counts, err := localscheduler.ActiveRunCountsByWorkflow(s.sources.Layout.RunsDir())
+	runDirs, err := s.sources.Layout.RunDirs()
+	if err != nil {
+		return nil, fmt.Errorf("enumerate run roots: %w", err)
+	}
+	counts, err := localscheduler.ActiveRunCountsByWorkflowDirs(runDirs)
 	if err != nil {
 		return nil, fmt.Errorf("read active run projection: %w", err)
 	}

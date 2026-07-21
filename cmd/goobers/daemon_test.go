@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,9 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -61,9 +65,8 @@ metadata:
 spec:
   gaggle: example
   triggers:
-    - type: backlog-item
-      selector:
-        goobers: "true"
+    - type: schedule
+      schedule: "@every 24h"
   start: local-ci
   tasks:
     - name: local-ci
@@ -103,15 +106,314 @@ func initDeterministicDemo(t *testing.T) string {
 	return root
 }
 
+func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(context.Background())
+
+	for identity, machine := range setup.Machines {
+		var found bool
+		for _, entry := range setup.Entries {
+			if entry.Gaggle != identity.Gaggle || entry.Workflow != identity.Workflow {
+				continue
+			}
+			found = true
+			if entry.WorkflowVersion != machine.Def.Version || entry.WorkflowDigest != machine.Digest() {
+				t.Errorf("workflow entry identity = version %d digest %q, want version %d digest %q",
+					entry.WorkflowVersion, entry.WorkflowDigest, machine.Def.Version, machine.Digest())
+			}
+		}
+		if !found {
+			t.Errorf("missing workflow entry for %+v", identity)
+		}
+	}
+}
+
+func TestSpansOnlyRunCleanupIsDryRunUnlessOptedIn(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	runsDir := l.ForGaggle("example").RunsDir()
+	spansOnlyRun := filepath.Join(runsDir, "scheduler-exhaust")
+	spansOnly := filepath.Join(spansOnlyRun, "spans")
+	if err := os.MkdirAll(spansOnly, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spansOnly, "spans.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	realRun := filepath.Join(runsDir, "real-run")
+	createTerminalRun(t, l.ForGaggle("example"), "real-run")
+
+	runUpOnce := func(args ...string) (string, string) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var stdout, stderr bytes.Buffer
+		if code := runUpContext(ctx, append(args, root), &stdout, &stderr); code != 0 {
+			t.Fatalf("runUpContext(%v) code = %d, stderr = %q", args, code, stderr.String())
+		}
+		return stdout.String(), stderr.String()
+	}
+
+	output, _ := runUpOnce()
+	if _, err := os.Stat(spansOnlyRun); err != nil {
+		t.Fatalf("dry-run removed candidate: %v", err)
+	}
+	if !strings.Contains(output, "cleanup candidate: "+spansOnlyRun) ||
+		!strings.Contains(output, "--cleanup-spans-only-runs") {
+		t.Fatalf("dry-run output = %q, want candidate and opt-in flag", output)
+	}
+
+	output, _ = runUpOnce("--cleanup-spans-only-runs")
+	if _, err := os.Stat(spansOnlyRun); !os.IsNotExist(err) {
+		t.Fatalf("spans-only run directory survived opt-in cleanup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(realRun, "events.jsonl")); err != nil {
+		t.Fatalf("real run was not preserved: %v", err)
+	}
+	if !strings.Contains(output, "removed 1 spans-only run directory") {
+		t.Fatalf("opt-in output = %q, want removal count", output)
+	}
+}
+
+func TestIdleTickIngestsBatchedSchedulerTelemetry(t *testing.T) {
+	ctx := context.Background()
+	l := instance.NewLayout(t.TempDir())
+	runsDir := filepath.Join(l.Root, "gaggles", "example", "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = instanceLog.Close() })
+	tel, err := buildTelemetryClient(ctx, l, nil, journal.NewRegistryScrubber(), instance.OTLPConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := rollup.Open(l.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tickAt := time.Now().Add(2 * time.Minute)
+	quota := localscheduler.NewProviderQuotaState()
+	quota.RecordExhausted(tickAt.Add(time.Hour))
+	setup := &schedulerSetup{
+		Telemetry:     tel,
+		RollupDB:      db,
+		InstanceLog:   instanceLog,
+		ProviderQuota: quota,
+	}
+	t.Cleanup(func() { setup.Shutdown(ctx) })
+	schedule, err := localscheduler.ParseSchedule("@every 1m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := localscheduler.New([]localscheduler.WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "example",
+		Schedules: []localscheduler.Schedule{schedule},
+	}}, instanceLog, setup.SchedulerOptions()...)
+
+	sched.Tick(ctx, tickAt)
+
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("idle tick created %d run directories", len(entries))
+	}
+	events, err := db.SchedulerEvents("implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[1].Type != string(journal.EventTickSkipped) {
+		t.Fatalf("scheduler events = %#v, want ingested trigger.fired and tick.skipped", events)
+	}
+
+	spanData, err := os.ReadFile(filepath.Join(l.SchedulerDir(), "spans", "spans.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record telemetry.SpanRecord
+	if err := json.Unmarshal(bytes.TrimSpace(spanData), &record); err != nil {
+		t.Fatal(err)
+	}
+	spans, err := db.Spans(record.TraceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spans) != 1 || spans[0].Kind != telemetry.SpanKindScheduler || spans[0].Name != "scheduler/dispatch" {
+		t.Fatalf("scheduler spans = %#v, want incrementally ingested dispatch span", spans)
+	}
+}
+
+func TestSchedulerOptionsIngestsBlockedTickSpan(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(context.Background())
+
+	tickAt := time.Now().Add(25 * time.Hour)
+	setup.ProviderQuota.RecordExhausted(tickAt.Add(time.Hour))
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog, setup.SchedulerOptions()...)
+	sched.Tick(context.Background(), tickAt)
+
+	body, err := os.ReadFile(filepath.Join(l.SchedulerDir(), "spans", "spans.jsonl"))
+	if err != nil {
+		t.Fatalf("read scheduler spans: %v", err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(body), []byte{'\n'})
+	var record telemetry.SpanRecord
+	if err := json.Unmarshal(lines[len(lines)-1], &record); err != nil {
+		t.Fatalf("decode scheduler span: %v", err)
+	}
+	spans, err := setup.RollupDB.Spans(record.TraceID)
+	if err != nil {
+		t.Fatalf("query scheduler spans: %v", err)
+	}
+	if len(spans) != 1 || spans[0].Name != "scheduler/dispatch" ||
+		spans[0].Kind != telemetry.SpanKindScheduler ||
+		spans[0].BusinessStatus != string(telemetry.OutcomeBlocked) {
+		t.Fatalf("scheduler spans = %#v", spans)
+	}
+	runs, err := setup.RollupDB.Runs()
+	if err != nil {
+		t.Fatalf("query runs: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("runs = %#v, want none for blocked tick", runs)
+	}
+}
+
+func TestSchedulerShutdownIngestsRejectedDispatchSpans(t *testing.T) {
+	tests := []struct {
+		name     string
+		dispatch func(*testing.T, *localscheduler.Scheduler, string, time.Time)
+	}{
+		{
+			name: "manual",
+			dispatch: func(t *testing.T, sched *localscheduler.Scheduler, workflow string, now time.Time) {
+				t.Helper()
+				if _, err := sched.Trigger(context.Background(), workflow, now); err == nil {
+					t.Fatal("Trigger admitted, want provider quota rejection")
+				}
+			},
+		},
+		{
+			name: "signal",
+			dispatch: func(t *testing.T, sched *localscheduler.Scheduler, _ string, now time.Time) {
+				t.Helper()
+				if runIDs := sched.Signal(context.Background(), "release", now); len(runIDs) != 0 {
+					t.Fatalf("Signal run IDs = %v, want provider quota rejection", runIDs)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := initDeterministicDemo(t)
+			l := instance.NewLayout(root)
+			var wg sync.WaitGroup
+			setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			entries := append([]localscheduler.WorkflowEntry(nil), setup.Entries...)
+			entries[0].Signals = []string{"release"}
+			now := time.Now()
+			setup.ProviderQuota.RecordExhausted(now.Add(time.Hour))
+			sched := localscheduler.New(entries, setup.InstanceLog, setup.SchedulerOptions()...)
+			tt.dispatch(t, sched, entries[0].Workflow, now)
+			setup.Shutdown(context.Background())
+
+			body, err := os.ReadFile(filepath.Join(l.SchedulerDir(), "spans", "spans.jsonl"))
+			if err != nil {
+				t.Fatalf("read scheduler spans: %v", err)
+			}
+			lines := bytes.Split(bytes.TrimSpace(body), []byte{'\n'})
+			var record telemetry.SpanRecord
+			if err := json.Unmarshal(lines[len(lines)-1], &record); err != nil {
+				t.Fatalf("decode scheduler span: %v", err)
+			}
+
+			db, err := rollup.Open(l.TelemetryDB())
+			if err != nil {
+				t.Fatalf("reopen telemetry rollup: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+			spans, err := db.Spans(record.TraceID)
+			if err != nil {
+				t.Fatalf("query scheduler spans: %v", err)
+			}
+			if len(spans) != 1 || spans[0].Name != "scheduler/dispatch" ||
+				spans[0].Kind != telemetry.SpanKindScheduler ||
+				spans[0].BusinessStatus != string(telemetry.OutcomeBlocked) {
+				t.Fatalf("scheduler spans = %#v", spans)
+			}
+			runs, err := db.Runs()
+			if err != nil {
+				t.Fatalf("query runs: %v", err)
+			}
+			if len(runs) != 0 {
+				t.Fatalf("runs = %#v, want none for rejected %s dispatch", runs, tt.name)
+			}
+		})
+	}
+}
+
+func TestBuildSchedulerSetupRejectsInvalidOTLPEnvironment(t *testing.T) {
+	root := initDeterministicDemo(t)
+	t.Setenv(instance.OTLPEndpointEnv, "http://collector.example.com:4317")
+	t.Setenv(instance.OTLPInsecureEnv, "true")
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if setup != nil {
+		setup.Shutdown(context.Background())
+		t.Fatal("buildSchedulerSetup returned a setup for invalid OTLP configuration")
+	}
+	if err == nil || !strings.Contains(err.Error(), "insecure mode is allowed only") {
+		t.Fatalf("expected OTLP security validation error, got %v", err)
+	}
+}
+
 // TestUpIdlesThenDrainsOnCancel is issue #23's core daemon-loop acceptance:
 // `goobers up` starts the scheduler+runner daemon, and a cancelled context
 // (standing in for SIGINT/SIGTERM — runUp itself wires the real signal via
 // internal/signals) drains cleanly and returns 0 rather than hanging. The
-// deterministic demo's only workflow has a backlog-item trigger, not a
-// schedule trigger, so the scheduler has nothing to dispatch and simply
-// idles — proving the idle path doesn't busy-loop or block shutdown.
+// This test makes the deterministic demo's only workflow schedule-less, so the
+// scheduler has nothing to dispatch and simply idles — proving the idle path
+// doesn't busy-loop or block shutdown while startup reports why it is idle.
 func TestUpIdlesThenDrainsOnCancel(t *testing.T) {
 	root := initDeterministicDemo(t)
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	scheduleless := strings.Replace(
+		deterministicWorkflowYAML,
+		"    - type: schedule\n      schedule: \"@every 24h\"",
+		"    - type: backlog-item",
+		1,
+	)
+	if scheduleless == deterministicWorkflowYAML {
+		t.Fatal("deterministic workflow fixture did not contain expected schedule trigger")
+	}
+	if err := os.WriteFile(workflowPath, []byte(scheduleless), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(200*time.Millisecond, cancel)
@@ -134,6 +436,26 @@ func TestUpIdlesThenDrainsOnCancel(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "shutdown complete") {
 		t.Fatalf("stdout = %q, want clean-shutdown message", stdout.String())
+	}
+	const warning = "workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`"
+	if count := strings.Count(stdout.String(), warning); count != 1 {
+		t.Fatalf("stdout = %q, warning count = %d, want exactly one", stdout.String(), count)
+	}
+}
+
+func TestUpScheduledWorkflowHasNoScheduleWarning(t *testing.T) {
+	root := initDeterministicDemo(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+
+	var stdout, stderr bytes.Buffer
+	code := runUpContext(ctx, []string{root}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "has no schedule trigger") {
+		t.Fatalf("stdout = %q, want no schedule warning", stdout.String())
 	}
 }
 

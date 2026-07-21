@@ -45,7 +45,11 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	assertActionClass(t, cliSurfaceActions(), "telemetry stats", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, cliSurfaceActions(), "telemetry errors", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, cliSurfaceActions(), "journal redact", apicontract.ActionMaintenance)
+	assertActionClass(t, cliSurfaceActions(), "claims list", apicontract.ActionReadOnlyNavigation)
+	assertActionClass(t, cliSurfaceActions(), "claims release", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "status", apicontract.ActionReadOnlyNavigation)
+	assertActionClass(t, cliSurfaceActions(), "escalations", apicontract.ActionReadOnlyNavigation)
+	assertActionClass(t, cliSurfaceActions(), "escalations show", apicontract.ActionReadOnlyNavigation)
 
 	apiActions := httpapi.SurfaceActions()
 	if len(apiActions) != len(apicontract.V1Routes()) {

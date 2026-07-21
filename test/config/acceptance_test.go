@@ -5,8 +5,8 @@
 // shipped bad fixture does not exercise (GT-016 one-evaluator, duplicate states,
 // dangling next/branch targets) so a regression in any of them fails CI here.
 //
-// Deliberately NOT a copy of cmd/validate/main_test.go (which already covers the
-// happy-path example + exit codes) — this adds breadth, not duplication.
+// Deliberately broader than the cmd/goobers validation tests, which cover the
+// supported CLI's happy path and exit codes.
 package config_acceptance
 
 import (

@@ -47,7 +47,8 @@ Usage:
   goobers scaffold goober|workflow [--force] <name> [path]
                                 scaffold a goober or workflow in a gaggle
   goobers validate [flags] [path]  validate an instance or checked-in config source tree
-  goobers up [--quiet] [path]   run the daemon (scheduler + runner + loopback HTTP API)
+  goobers up [--quiet] [--notify[=all]] [path]
+                                run the daemon (scheduler + runner + loopback HTTP API)
   goobers dashboard [--port=<port|auto>] [--no-open] [path]
                                 serve and open the local operations portal
   goobers run <workflow> [--no-wait] [path]
@@ -66,13 +67,23 @@ Usage:
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
   goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)
   goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock
-  goobers trace [--json] [--transcripts | --transcript=<stage>] <run-id> [path]
-                                show a run's journal events (+ spans if rolled up), or recorded agent transcripts
+  goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]
+                                print current claim leases, optionally only expired leases
+  goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]
+                                force-release a claim through the live daemon or claims.lock
+  goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
+                                show a run's journal events, follow a live run, or show recorded agent transcripts
+  goobers escalations [--json] [path]
+                                list escalated runs newest first
+  goobers escalations show [--json] <run-id> [path]
+                                show escalation cause + per-stage artifact timeline
   goobers completion bash|zsh|fish  generate a shell completion script
   goobers telemetry stats|errors [flags] [path]  success rate/duration or recent-error aggregates
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
+  goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
+                                report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
   goobers open-pr                        open or update the run's PR (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
@@ -84,6 +95,7 @@ Usage:
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
   goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)
+  goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
   goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)
@@ -94,8 +106,8 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-query/telemetry-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/apply-verdict/post-merge/gather-pr-context/
+backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
+pr-select/gather-sibling-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
 rebase-pr/remediation-checkpoint/push-remediated are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
 #359/#360/#361/#362/#363/#364/#392): invoked by the runner as a deterministic

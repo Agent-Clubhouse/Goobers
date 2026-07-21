@@ -188,20 +188,20 @@ describe("portal foundation", () => {
     expect(screen.getByRole("main")).toHaveFocus();
   });
 
-  it("supports directional graph selection and exposes the compact responsive contract", () => {
-    window.location.hash = "#/workflow/implementation";
-    render(<App />);
-    const firstStage = screen.getByRole("button", { name: "Gather context, pending" });
-    const secondStage = screen.getByRole("button", { name: "Implement, pending" });
+  it("supports directional graph selection and exposes the scroll-safe responsive contract", async () => {
+    window.location.hash = "#/workflow/core/implementation";
+    renderLiveApp();
+    const firstStage = await screen.findByRole("button", { name: /^query,/ });
+    const secondStage = screen.getByRole("button", { name: /^implement,/ });
 
     firstStage.focus();
     fireEvent.keyDown(firstStage, { key: "ArrowRight" });
 
     expect(secondStage).toHaveFocus();
     expect(secondStage).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("group", { name: /Implementation execution graph/ })).toHaveAttribute(
+    expect(screen.getByRole("group", { name: /implementation execution graph/i })).toHaveAttribute(
       "data-responsive-layout",
-      "compact-under-820",
+      "scroll-under-820",
     );
   });
 

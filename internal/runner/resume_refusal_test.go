@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,19 +40,44 @@ func newRefusalRun(t *testing.T, runsDir, runID, digest string) {
 	}
 }
 
+type terminalNotificationCall struct {
+	runID      string
+	phase      journal.RunPhase
+	finalState string
+}
+
 // refusalTestRunner builds a Runner whose FinalizeTerminal hook records its
 // calls — the seam cmd/goobers wires to claim release (#526), so "the hook
 // fired with the terminal phase" is the runner-level proof the claim is
 // released.
-func refusalTestRunner(t *testing.T, runsDir, fixtureRepo string, wtMgr *worktree.Manager, det invoke.Deterministic) (*Runner, *[]journal.RunPhase) {
+func refusalTestRunner(t *testing.T, runsDir, fixtureRepo string, wtMgr *worktree.Manager, det invoke.Deterministic) (*Runner, *[]journal.RunPhase, *[]terminalNotificationCall) {
 	t.Helper()
 	var finalized []journal.RunPhase
+	var notified []terminalNotificationCall
 	r, err := New(Config{
 		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
 		Automated:        gate.NewAutomatedEvaluator(),
 		Worktrees:        wtMgr,
 		RunsDir:          runsDir,
 		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		NotifyTerminal: func(runID string, phase journal.RunPhase, finalState string) error {
+			if len(finalized) != 0 {
+				t.Fatal("NotifyTerminal ran after FinalizeTerminal")
+			}
+			rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+			if err != nil {
+				t.Fatalf("NotifyTerminal OpenRead: %v", err)
+			}
+			journalPhase, err := rd.Phase()
+			if err != nil {
+				t.Fatalf("NotifyTerminal Phase: %v", err)
+			}
+			if journalPhase != phase {
+				t.Fatalf("NotifyTerminal observed journal phase %q, want %q", journalPhase, phase)
+			}
+			notified = append(notified, terminalNotificationCall{runID: runID, phase: phase, finalState: finalState})
+			return errors.New("notification delivery failed")
+		},
 		FinalizeTerminal: func(_ string, phase journal.RunPhase) error {
 			finalized = append(finalized, phase)
 			return nil
@@ -60,7 +86,7 @@ func refusalTestRunner(t *testing.T, runsDir, fixtureRepo string, wtMgr *worktre
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return r, &finalized
+	return r, &finalized, &notified
 }
 
 // TestRunnerResumeDigestMismatchFailsAndFinalizes is #520's acceptance
@@ -81,7 +107,7 @@ func TestRunnerResumeDigestMismatchFailsAndFinalizes(t *testing.T) {
 	newRefusalRun(t, runsDir, runID, "sha256:pinned-to-the-old-workflow-shape")
 
 	det := &countingDeterministic{}
-	r, finalized := refusalTestRunner(t, runsDir, fixtureRepo, wtMgr, det)
+	r, finalized, notified := refusalTestRunner(t, runsDir, fixtureRepo, wtMgr, det)
 
 	res, err := r.Resume(context.Background(), ResumeInput{
 		RunID:   runID,
@@ -99,6 +125,9 @@ func TestRunnerResumeDigestMismatchFailsAndFinalizes(t *testing.T) {
 	}
 	if len(*finalized) != 1 || (*finalized)[0] != journal.PhaseFailed {
 		t.Fatalf("FinalizeTerminal calls = %v, want exactly [failed] — this hook is what releases the run's claim", *finalized)
+	}
+	if len(*notified) != 1 || (*notified)[0].runID != runID || (*notified)[0].phase != journal.PhaseFailed || (*notified)[0].finalState != "" {
+		t.Fatalf("NotifyTerminal calls = %+v, want exactly one failed notification for %q", *notified, runID)
 	}
 
 	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
@@ -167,7 +196,7 @@ func TestRunnerResumeMissingDigestFailsAndFinalizes(t *testing.T) {
 	newRefusalRun(t, runsDir, runID, "")
 
 	det := &countingDeterministic{}
-	r, finalized := refusalTestRunner(t, runsDir, fixtureRepo, wtMgr, det)
+	r, finalized, _ := refusalTestRunner(t, runsDir, fixtureRepo, wtMgr, det)
 
 	res, err := r.Resume(context.Background(), ResumeInput{
 		RunID:   runID,
@@ -224,7 +253,7 @@ func TestRunnerResumeAfterRefusalIsTerminalNoop(t *testing.T) {
 	newRefusalRun(t, runsDir, runID, "sha256:pinned-to-the-old-workflow-shape")
 
 	det := &countingDeterministic{}
-	r, finalized := refusalTestRunner(t, runsDir, fixtureRepo, wtMgr, det)
+	r, finalized, notified := refusalTestRunner(t, runsDir, fixtureRepo, wtMgr, det)
 	in := ResumeInput{
 		RunID:   runID,
 		Machine: machine,
@@ -240,6 +269,9 @@ func TestRunnerResumeAfterRefusalIsTerminalNoop(t *testing.T) {
 	}
 	if res.Phase != journal.PhaseFailed {
 		t.Fatalf("second Resume phase = %q, want failed", res.Phase)
+	}
+	if len(*notified) != 1 {
+		t.Fatalf("NotifyTerminal calls = %+v, want exactly one for the newly-terminal refusal", *notified)
 	}
 	// The terminal fast path re-fires FinalizeTerminal (idempotent claim
 	// release, same as any already-terminal resume) — both calls must carry

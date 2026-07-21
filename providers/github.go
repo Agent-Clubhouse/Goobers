@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -168,17 +170,127 @@ func (p *GitHubProvider) CreateBranch(ctx context.Context, req BranchRequest) (B
 	return BranchResult{Name: req.Name, SHA: out.Object.SHA, URL: out.URL}, nil
 }
 
-// DeleteBranch removes a GitHub branch ref. A missing ref is an idempotent
-// no-op, reported through DeleteBranchResult rather than as an error — both
-// #605's post-merge cleanup and #607's orphaned-branch cleanup call this
-// with a branch that may already be gone (a concurrent cleanup, or a human
-// deleted it manually) and neither wants that treated as failure.
+// ListBranches returns a bounded lexicographic page of remote refs matching a
+// prefix. It follows GitHub pagination until the requested page is full; After
+// makes repeated bounded sweeps progress without depending on page numbers that
+// shift when an earlier branch is deleted.
+func (p *GitHubProvider) ListBranches(ctx context.Context, req ListBranchesRequest) ([]BranchSummary, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return nil, err
+	}
+	if req.Prefix == "" {
+		return nil, fmt.Errorf("branch prefix is required")
+	}
+	if req.Limit < 1 {
+		return nil, fmt.Errorf("branch limit must be positive")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "git", "matching-refs", "heads", req.Prefix)
+	if err != nil {
+		return nil, err
+	}
+	const headPrefix = "refs/heads/"
+	branches := make([]BranchSummary, 0, req.Limit)
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var refs []githubRef
+		if err := json.Unmarshal(page, &refs); err != nil {
+			return fmt.Errorf("decode branch refs: %w", err)
+		}
+		for _, ref := range refs {
+			if !strings.HasPrefix(ref.Ref, headPrefix) {
+				continue
+			}
+			name := strings.TrimPrefix(ref.Ref, headPrefix)
+			if !strings.HasPrefix(name, req.Prefix) || (req.After != "" && name <= req.After) {
+				continue
+			}
+			branches = append(branches, BranchSummary{Name: name, SHA: ref.Object.SHA, URL: ref.URL})
+		}
+		sort.Slice(branches, func(i, j int) bool { return branches[i].Name < branches[j].Name })
+		if len(branches) >= req.Limit {
+			return errStopPaging
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if len(branches) > req.Limit {
+		branches = branches[:req.Limit]
+	}
+	return branches, nil
+}
+
+// GetBranch reads one exact branch ref and its latest repository activity for
+// reconciliation's pre-delete staleness check. A missing ref is reported
+// separately from provider failure.
+func (p *GitHubProvider) GetBranch(ctx context.Context, repo RepositoryRef, name string) (BranchSummary, bool, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return BranchSummary{}, false, err
+	}
+	if name == "" {
+		return BranchSummary{}, false, fmt.Errorf("branch name is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "git", "ref", "heads", name)
+	if err != nil {
+		return BranchSummary{}, false, err
+	}
+	resp, err := p.send(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return BranchSummary{}, false, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNotFound {
+		return BranchSummary{}, false, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return BranchSummary{}, false, fmt.Errorf("GET %s failed: status %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var ref githubRef
+	if err := json.NewDecoder(resp.Body).Decode(&ref); err != nil {
+		return BranchSummary{}, false, fmt.Errorf("decode branch ref: %w", err)
+	}
+	const headPrefix = "refs/heads/"
+	if ref.Ref != headPrefix+name {
+		return BranchSummary{}, false, fmt.Errorf("provider returned branch ref %q for %q", ref.Ref, name)
+	}
+	activityEndpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "activity")
+	if err != nil {
+		return BranchSummary{}, false, err
+	}
+	activityEndpoint, err = addQuery(activityEndpoint, url.Values{
+		"direction": []string{"desc"},
+		"per_page":  []string{"1"},
+		"ref":       []string{headPrefix + name},
+	})
+	if err != nil {
+		return BranchSummary{}, false, err
+	}
+	var activities []githubRepositoryActivity
+	if err := p.do(ctx, http.MethodGet, activityEndpoint, nil, &activities); err != nil {
+		return BranchSummary{}, false, err
+	}
+	branch := BranchSummary{Name: name, SHA: ref.Object.SHA, URL: ref.URL}
+	if len(activities) > 0 {
+		if activities[0].Ref != headPrefix+name {
+			return BranchSummary{}, false, fmt.Errorf("provider returned activity for ref %q instead of %q", activities[0].Ref, headPrefix+name)
+		}
+		branch.LastActivityAt = &activities[0].Timestamp
+	}
+	return branch, true, nil
+}
+
+// DeleteBranch removes a GitHub branch ref. ExpectedSHA opts into an atomic
+// force-with-lease deletion; callers without a lease retain the idempotent REST
+// deletion used by post-merge cleanup.
 func (p *GitHubProvider) DeleteBranch(ctx context.Context, req DeleteBranchRequest) (DeleteBranchResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return DeleteBranchResult{}, err
 	}
 	if req.Name == "" {
 		return DeleteBranchResult{}, fmt.Errorf("branch name is required")
+	}
+	if req.ExpectedSHA != "" {
+		return p.deleteBranchWithLease(ctx, req)
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "git", "refs", "heads", req.Name)
 	if err != nil {
@@ -200,6 +312,98 @@ func (p *GitHubProvider) DeleteBranch(ctx context.Context, req DeleteBranchReque
 		Operation: "delete",
 	})
 	return DeleteBranchResult{Deleted: deleted}, nil
+}
+
+func (p *GitHubProvider) deleteBranchWithLease(ctx context.Context, req DeleteBranchRequest) (DeleteBranchResult, error) {
+	runner, ok := p.Runner.(environmentCommandRunner)
+	if !ok {
+		return DeleteBranchResult{}, fmt.Errorf("conditional branch deletion requires an environment-capable command runner")
+	}
+	gitDir, err := os.MkdirTemp("", "goobers-delete-branch-*")
+	if err != nil {
+		return DeleteBranchResult{}, fmt.Errorf("create temporary git directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(gitDir) }()
+
+	if out, err := p.Runner.Run(ctx, "git", "init", "--bare", "--quiet", gitDir); err != nil {
+		return DeleteBranchResult{}, fmt.Errorf("initialize temporary git directory: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	token, err := p.resolveToken(ctx)
+	if err != nil {
+		return DeleteBranchResult{}, err
+	}
+	remoteURL := req.Repository.URL
+	if remoteURL == "" {
+		remoteURL = fmt.Sprintf("https://github.com/%s/%s.git", req.Repository.Owner, req.Repository.Name)
+	}
+	ref := "refs/heads/" + req.Name
+	args := []string{
+		"--git-dir=" + gitDir,
+		"push",
+		"--porcelain",
+		"--force-with-lease=" + ref + ":" + req.ExpectedSHA,
+		remoteURL,
+		":" + ref,
+	}
+	out, err := runner.RunWithEnv(ctx, githubGitAuthEnv(token), "git", args...)
+	if err != nil {
+		if rateLimitErr := githubGitPushRateLimitError(req.Repository, out); rateLimitErr != nil {
+			return DeleteBranchResult{}, rateLimitErr
+		}
+		if strings.Contains(string(out), "(stale info)") {
+			_, found, lookupErr := p.GetBranch(ctx, req.Repository, req.Name)
+			if lookupErr != nil {
+				return DeleteBranchResult{}, fmt.Errorf("resolve conditional branch deletion rejection: %w", lookupErr)
+			}
+			if !found {
+				return DeleteBranchResult{}, nil
+			}
+			return DeleteBranchResult{}, &BranchTipChangedError{Name: req.Name, ExpectedSHA: req.ExpectedSHA}
+		}
+		return DeleteBranchResult{}, fmt.Errorf("delete branch with lease: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       fmt.Sprintf("%s/%s@%s", req.Repository.Owner, req.Repository.Name, req.Name),
+		Operation: "delete",
+	})
+	return DeleteBranchResult{Deleted: true}, nil
+}
+
+func githubGitPushRateLimitError(repo RepositoryRef, output []byte) *RateLimitError {
+	message := strings.ToLower(string(output))
+	secondary := strings.Contains(message, "secondary rate limit") ||
+		strings.Contains(message, "abuse detection") ||
+		strings.Contains(message, "abuse rate limit")
+	status := 0
+	switch {
+	case strings.Contains(message, "error: 429"),
+		strings.Contains(message, "http 429"),
+		strings.Contains(message, "status 429"),
+		strings.Contains(message, "too many requests"):
+		status = http.StatusTooManyRequests
+	case secondary, strings.Contains(message, "rate limit exceeded"):
+		status = http.StatusForbidden
+	default:
+		return nil
+	}
+	return &RateLimitError{
+		Endpoint:  fmt.Sprintf("git push %s/%s", repo.Owner, repo.Name),
+		Status:    status,
+		Secondary: secondary,
+	}
+}
+
+func githubGitAuthEnv(token string) []string {
+	if token == "" {
+		return os.Environ()
+	}
+	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	return append(os.Environ(),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.extraheader",
+		"GIT_CONFIG_VALUE_0=AUTHORIZATION: basic "+auth,
+	)
 }
 
 // Commit writes file changes to a GitHub branch.
@@ -333,11 +537,14 @@ func (p *GitHubProvider) FindPullRequestByBranch(ctx context.Context, repo Repos
 	if err != nil {
 		return PullRequestResult{}, false, err
 	}
-	endpoint, err = addQuery(endpoint, url.Values{
+	query := url.Values{
 		"head":  []string{repo.Owner + ":" + head},
-		"base":  []string{base},
 		"state": []string{"open"},
-	})
+	}
+	if base != "" {
+		query.Set("base", base)
+	}
+	endpoint, err = addQuery(endpoint, query)
 	if err != nil {
 		return PullRequestResult{}, false, err
 	}
@@ -535,6 +742,78 @@ func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequ
 		Fields:    fields,
 	})
 	return ClosePullRequestResult{Number: out.Number, Merged: out.Merged, State: state}, nil
+}
+
+// UpdateBranchError is a typed rejection from GitHub's update-branch endpoint.
+// StatusCode distinguishes lease/conflict validation failures (422) from
+// permission failures (403) without requiring callers to parse error strings.
+type UpdateBranchError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *UpdateBranchError) Error() string {
+	return fmt.Sprintf("update pull request branch failed: status %d: %s", e.StatusCode, e.Message)
+}
+
+// UpdateBranch merges a pull request's current base into its head through
+// GitHub's native update-branch endpoint. expected_head_sha is always sent:
+// omitting the lease would allow a stale selector to update a head it never
+// inspected.
+func (p *GitHubProvider) UpdateBranch(ctx context.Context, req UpdateBranchRequest) (UpdateBranchResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return UpdateBranchResult{}, err
+	}
+	if req.PullID == "" {
+		return UpdateBranchResult{}, fmt.Errorf("pull id is required")
+	}
+	if req.ExpectedHeadSHA == "" {
+		return UpdateBranchResult{}, fmt.Errorf("expected head SHA is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "update-branch")
+	if err != nil {
+		return UpdateBranchResult{}, err
+	}
+	resp, err := p.send(ctx, http.MethodPut, endpoint, map[string]string{"expected_head_sha": req.ExpectedHeadSHA})
+	if err != nil {
+		return UpdateBranchResult{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return UpdateBranchResult{}, fmt.Errorf("read update-branch response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		message := strings.TrimSpace(string(body))
+		var failure struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(body, &failure) == nil && failure.Message != "" {
+			message = failure.Message
+		}
+		return UpdateBranchResult{}, &UpdateBranchError{
+			StatusCode: resp.StatusCode,
+			Message:    message,
+		}
+	}
+	var out struct {
+		Message string `json:"message"`
+		URL     string `json:"url"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return UpdateBranchResult{}, fmt.Errorf("decode update-branch response: %w", err)
+	}
+	number, _ := strconv.Atoi(req.PullID)
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(req.Repository, req.PullID),
+		URL:       out.URL,
+		Operation: "update-branch",
+		Fields: map[string]FieldDigest{
+			"headSha": {Before: digestString(req.ExpectedHeadSHA)},
+		},
+	})
+	return UpdateBranchResult{Number: number, Message: out.Message, URL: out.URL}, nil
 }
 
 // MergePullRequest merges a GitHub pull request (issue #360) via the
@@ -1686,6 +1965,20 @@ func (p *GitHubProvider) contentSHA(ctx context.Context, endpoint string) (strin
 	return out.SHA, out.SHA != "", nil
 }
 
+// BranchTipSHA resolves the current commit SHA at the tip of branch — the
+// live base-branch head. The merge-escalated self-heal check (#1052) needs
+// this because GitHub's pull_request.base.sha is a PINNED commit: it does not
+// advance when the base branch does (only when the PR head is synchronized),
+// so an escalation snapshot must compare against this live tip — not the PR's
+// own BaseSHA — to detect a sibling merge having advanced the base.
+func (p *GitHubProvider) BranchTipSHA(ctx context.Context, repo RepositoryRef, branch string) (string, error) {
+	ref, err := p.getGitHubRef(ctx, repo, "heads/"+branch)
+	if err != nil {
+		return "", err
+	}
+	return ref.Object.SHA, nil
+}
+
 func (p *GitHubProvider) getGitHubRef(ctx context.Context, repo RepositoryRef, ref string) (githubRef, error) {
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "git", "ref", ref)
 	if err != nil {
@@ -1895,6 +2188,11 @@ type githubRef struct {
 		SHA string `json:"sha"`
 		URL string `json:"url"`
 	} `json:"object"`
+}
+
+type githubRepositoryActivity struct {
+	Ref       string    `json:"ref"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type githubContentResponse struct {

@@ -4,8 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"go.opentelemetry.io/otel/codes"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
@@ -19,6 +22,9 @@ import (
 )
 
 func TestShellStageTelemetryRoundTripsToRollup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test telemetry producer uses POSIX shell syntax")
+	}
 	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "runner-stage-telemetry-test",
@@ -184,6 +190,10 @@ func (*telemetryEmittingReviewer) Review(_ context.Context, env apiv1.Invocation
 }
 
 func TestAgenticGateTelemetryRoundTripsToRollup(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
 	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "runner-gate-telemetry-test",
@@ -192,6 +202,7 @@ func TestAgenticGateTelemetryRoundTripsToRollup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
 
 	// These stages declare no capabilities, so no ref is ever resolved.
@@ -231,7 +242,7 @@ func TestAgenticGateTelemetryRoundTripsToRollup(t *testing.T) {
 			Start:  "prepare",
 			Tasks: []apiv1.Task{{
 				Name: "prepare", Type: apiv1.TaskDeterministic, Goal: "prepare review",
-				Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+				Run:  &apiv1.DeterministicRun{Command: []string{testExecutable, "-test.run=^$"}},
 				Next: "review",
 			}},
 			Gates: []apiv1.Gate{{
@@ -301,5 +312,106 @@ func TestAgenticGateTelemetryRoundTripsToRollup(t *testing.T) {
 	}
 	if events[1].Name != "review.complete" || events[1].Attributes["findingCount"] != "0" {
 		t.Fatalf("gate custom event = %#v", events[1])
+	}
+}
+
+func TestResumeFailedRunSpanMatchesJournalOutcome(t *testing.T) {
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	exporter := telemetry.NewMemoryExporter()
+	client, err := telemetry.New(context.Background(), telemetry.Config{
+		ServiceName:  "runner-resume-telemetry-test",
+		SpanExporter: exporter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	machine, err := workflow.Compile(workflow.Definition{
+		Name:    "resume-failure",
+		Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "acme-web",
+			Start:  "fail",
+			Tasks: []apiv1.Task{{
+				Name: "fail", Type: apiv1.TaskDeterministic, Goal: "fail",
+				Run:  &apiv1.DeterministicRun{Command: []string{"false"}},
+				Next: workflow.TerminalComplete,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, err := telemetry.NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
+				runID + ":fail": {
+					status:    apiv1.ResultFailure,
+					errorInfo: &apiv1.ErrorInfo{Code: "build_failed", Message: "build failed"},
+				},
+			}}, nil
+		},
+		Automated: gate.NewAutomatedEvaluator(),
+		Worktrees: wtMgr,
+		RunsDir:   runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
+			return fixtureRepo, nil
+		},
+		Telemetry: client,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   runID,
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, want failed", result.Phase)
+	}
+
+	var found bool
+	for _, span := range exporter.Spans() {
+		if span.Name() != "run/resume-failure" {
+			continue
+		}
+		found = true
+		attrs := map[string]string{}
+		for _, attr := range span.Attributes() {
+			attrs[string(attr.Key)] = attr.Value.Emit()
+		}
+		if got := attrs[telemetry.AttrOutcome]; got != telemetry.OutcomeFailure {
+			t.Errorf("run outcome = %q, want failure", got)
+		}
+		if got := attrs[telemetry.AttrErrorCode]; got != "build_failed" {
+			t.Errorf("run error code = %q, want build_failed", got)
+		}
+		if span.Status().Code != codes.Error {
+			t.Errorf("run status = %s, want Error", span.Status().Code)
+		}
+	}
+	if !found {
+		t.Fatal("resumed run span not exported")
 	}
 }

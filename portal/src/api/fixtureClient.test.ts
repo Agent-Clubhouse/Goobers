@@ -53,6 +53,7 @@ function fixtures(): DaemonFixtures {
         terminal: false,
         startedAt: "2026-07-18T00:00:00Z",
         durationMillis: 1,
+        lastActivityAt: "2026-07-18T00:00:01Z",
         lastSeq: 1,
         repassCount: 0,
         retryCount: 0,

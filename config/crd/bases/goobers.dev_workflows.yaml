@@ -67,6 +67,32 @@ spec:
                           description: Goober names the reviewer goober that returns
                             a Verdict.
                           type: string
+                        retry:
+                          description: |-
+                            Retry declares the evaluator retry bound. Runtime retry semantics are
+                            implemented separately from this declarative contract.
+                          properties:
+                            backoffSeconds:
+                              description: BackoffSeconds is the constant delay between
+                                attempts, in seconds.
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            maxAttempts:
+                              description: |-
+                                MaxAttempts is the total number of attempts including the first (>=1). 1
+                                means no retry.
+                              format: int32
+                              minimum: 1
+                              type: integer
+                          required:
+                          - maxAttempts
+                          type: object
+                        timeoutSeconds:
+                          description: TimeoutSeconds bounds one reviewer attempt.
+                          format: int32
+                          minimum: 1
+                          type: integer
                       required:
                       - goober
                       type: object
@@ -84,6 +110,39 @@ spec:
                           description: 'Params parameterize the check (e.g. {"threshold":
                             "80"}).'
                           type: object
+                        pollIntervalSeconds:
+                          description: |-
+                            PollIntervalSeconds declares remote CI polling cadence for checks that
+                            poll, such as ci-status (GT-020).
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        retry:
+                          description: |-
+                            Retry declares the evaluator retry bound. Runtime retry semantics are
+                            implemented separately from this declarative contract.
+                          properties:
+                            backoffSeconds:
+                              description: BackoffSeconds is the constant delay between
+                                attempts, in seconds.
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            maxAttempts:
+                              description: |-
+                                MaxAttempts is the total number of attempts including the first (>=1). 1
+                                means no retry.
+                              format: int32
+                              minimum: 1
+                              type: integer
+                          required:
+                          - maxAttempts
+                          type: object
+                        timeoutSeconds:
+                          description: TimeoutSeconds bounds one evaluator attempt.
+                          format: int32
+                          minimum: 1
+                          type: integer
                       required:
                       - check
                       type: object
@@ -166,6 +225,13 @@ spec:
                     Task is a state in the workflow's state machine — the smallest unit of work the
                     engine tracks. It is exactly one of deterministic or agentic (TSK-002).
                   properties:
+                    continueOnError:
+                      description: |-
+                        ContinueOnError makes a ResultFailure best-effort: the failed status is
+                        journaled and remains visible to a following gate, but the runner advances
+                        to Next instead of failing the run. Outputs from the failed task are
+                        discarded so downstream tasks cannot consume partial results.
+                      type: boolean
                     expectedOutputs:
                       description: ExpectedOutputs are postconditions downstream gates
                         can validate (TSK-003).
@@ -187,6 +253,28 @@ spec:
                         Inputs are static, task-specific inputs merged into the invocation
                         envelope's inputs blob at runtime.
                       type: object
+                    limits:
+                      description: |-
+                        Limits bound this task's duration and agent usage. TimeoutSeconds, when
+                        set, is the authoritative duration and is copied into the invocation
+                        envelope's Limits.MaxDurationSeconds.
+                      properties:
+                        maxCostUSD:
+                          description: MaxCostUSD caps the run's spend.
+                          minimum: 0
+                          type: number
+                        maxDurationSeconds:
+                          description: MaxDurationSeconds caps wall-clock time for
+                            the stage.
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        maxTokens:
+                          description: MaxTokens caps model tokens the run may consume.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      type: object
                     name:
                       description: Name uniquely identifies this state within the
                         workflow.
@@ -198,10 +286,8 @@ spec:
                     onTimeout:
                       description: |-
                         OnTimeout selects what the runner does when this stage's agentic session
-                        hits its wall-clock timeout (the harness session timeout — currently a
-                        flat 30m, internal/harness.DefaultTimeout; not yet per-stage configurable,
-                        #151). Empty or "fail" (the default) discards the timed-out attempt and
-                        lets Task.Retry run, failing the run once the budget is exhausted —
+                        hits its wall-clock timeout. Empty or "fail" (the default) discards the
+                        timed-out attempt and lets Task.Retry run, failing the run once the budget is exhausted —
                         historically this discarded real, in-progress work whose only remaining
                         step was CI (#724). "salvage" instead checks the run branch for a viable
                         committed diff and, if present, completes the stage with that diff so the
@@ -222,6 +308,13 @@ spec:
                           items:
                             type: string
                           type: array
+                        env:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Env is the explicit environment supplied to the command in addition to
+                            the runner's minimal base environment and capability-scoped credentials.
+                          type: object
                         image:
                           description: Image optionally overrides the container image
                             the command runs in.
@@ -233,6 +326,11 @@ spec:
                           enum:
                           - none
                           type: string
+                        syncBase:
+                          description: |-
+                            SyncBase merges the freshly fetched base ref into an existing run branch
+                            before the command executes. It is valid only with a repository workspace.
+                          type: boolean
                         workspace:
                           description: |-
                             Workspace selects where the command runs. Empty or "repo" provisions the
@@ -245,6 +343,17 @@ spec:
                       required:
                       - command
                       type: object
+                      x-kubernetes-validations:
+                      - message: syncBase requires a repo workspace
+                        rule: '!has(self.syncBase) || !self.syncBase || !has(self.workspace)
+                          || self.workspace != ''scratch'''
+                    timeoutSeconds:
+                      description: |-
+                        TimeoutSeconds bounds one attempt's wall-clock execution. Unset preserves
+                        the executor's default timeout.
+                      format: int32
+                      minimum: 1
+                      type: integer
                     type:
                       description: 'TaskType is the execution kind of a task: code-driven
                         or goober-executed.'
@@ -267,6 +376,14 @@ spec:
                     Trigger declares one condition under which the scheduler may start a run. A run
                     starts only when a trigger fires AND readiness is satisfied (WF-011).
                   properties:
+                    events:
+                      description: |-
+                        Events are GitHub webhook event names (for example pull_request, issues,
+                        or check_suite) for type=webhook.
+                      items:
+                        type: string
+                      minItems: 1
+                      type: array
                     schedule:
                       description: |-
                         Schedule is a cron expression or interval (e.g. "@every 1h") for
@@ -285,13 +402,14 @@ spec:
                     type:
                       description: |-
                         TriggerType differentiates workflow archetypes without splitting the taxonomy:
-                        workflows run manually, consume backlog items, or react to a schedule or
-                        external signal (WF-010, WF-013).
+                        workflows run manually, consume backlog items, or react to a schedule,
+                        external signal, or GitHub webhook (WF-010, WF-013).
                       enum:
                       - manual
                       - backlog-item
                       - schedule
                       - signal
+                      - webhook
                       type: string
                   required:
                   - type

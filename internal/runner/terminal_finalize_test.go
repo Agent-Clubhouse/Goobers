@@ -83,6 +83,49 @@ func TestFinishSurfacesFinalizerFailureWithTerminalResult(t *testing.T) {
 	}
 }
 
+func TestFinishIgnoresTerminalNotificationFailure(t *testing.T) {
+	const runID = "terminal-notification-failure"
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: runID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = jr.Close() }()
+
+	var notified, finalized bool
+	r := &Runner{cfg: Config{
+		NotifyTerminal: func(gotRunID string, gotPhase journal.RunPhase, finalState string) error {
+			if gotRunID != runID || gotPhase != journal.PhaseEscalated || finalState != "review" {
+				t.Fatalf("notifier got (%q, %q, %q)", gotRunID, gotPhase, finalState)
+			}
+			rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			phase, err := rd.Phase()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if phase != journal.PhaseEscalated {
+				t.Fatalf("phase visible to notifier = %q, want escalated", phase)
+			}
+			notified = true
+			return errors.New("notification delivery failed")
+		},
+		FinalizeTerminal: func(string, journal.RunPhase) error {
+			finalized = true
+			return nil
+		},
+	}}
+	res, err := r.finish(runID, jr, journal.PhaseEscalated, "review", 2)
+	if err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated || !notified || !finalized {
+		t.Fatalf("result=%+v notified=%v finalized=%v", res, notified, finalized)
+	}
+}
+
 func TestFinishPreparesBeforeRunFinished(t *testing.T) {
 	const runID = "terminal-preparer"
 	runsDir := t.TempDir()

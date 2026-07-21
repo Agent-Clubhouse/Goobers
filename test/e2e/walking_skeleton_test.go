@@ -15,12 +15,24 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
@@ -30,9 +42,43 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
+
+const (
+	e2eCommandHelperMode = "GOOBERS_TEST_E2E_COMMAND_HELPER_MODE"
+	e2eCommandHelperPath = "GOOBERS_TEST_E2E_COMMAND_HELPER_PATH"
+)
+
+func TestE2ECommandHelper(t *testing.T) {
+	switch os.Getenv(e2eCommandHelperMode) {
+	case "":
+		return
+	case "success":
+		os.Exit(0)
+	case "read-file":
+		data, err := os.ReadFile(os.Getenv(e2eCommandHelperPath))
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		_, _ = os.Stdout.Write(data)
+		os.Exit(0)
+	default:
+		os.Exit(2)
+	}
+}
+
+func e2eTestCommand(t *testing.T) []string {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	return []string{executable, "-test.run=^TestE2ECommandHelper$"}
+}
 
 // --- fixture repo: a local bare git repo, so the walking skeleton needs no
 // network access (issue #29 acceptance: "green in CI on a runner with no
@@ -91,7 +137,13 @@ func skeletonMachine(t *testing.T) *workflow.Machine {
 				Retry: &apiv1.RetryPolicy{MaxAttempts: 2},
 				Next:  "review",
 			},
-			{Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "run the local CI-equivalent", Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+			{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "run the local CI-equivalent",
+				Run: &apiv1.DeterministicRun{
+					Command: e2eTestCommand(t),
+					Env:     map[string]string{e2eCommandHelperMode: "success"},
+				},
+			},
 		},
 		Gates: []apiv1.Gate{
 			{
@@ -119,6 +171,34 @@ func skeletonMachine(t *testing.T) *workflow.Machine {
 // (#8) — only the goober harness's Copilot subprocess is faked. ---
 
 func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) interface{}) (*runner.Runner, string) {
+	return newSkeletonRunnerWithSpanCapture(t, coderAct, reviewerAct, nil)
+}
+
+type skeletonSpanExporter []sdktrace.SpanExporter
+
+func (e skeletonSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	for _, exporter := range e {
+		if err := exporter.ExportSpans(ctx, spans); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e skeletonSpanExporter) Shutdown(ctx context.Context) error {
+	for _, exporter := range e {
+		if err := exporter.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func newSkeletonRunnerWithSpanCapture(
+	t *testing.T,
+	coderAct, reviewerAct func(callNum int) interface{},
+	capture *telemetry.MemoryExporter,
+) (*runner.Runner, string) {
 	t.Helper()
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -127,6 +207,18 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 	}
 	runsDir := filepath.Join(instanceRoot, "runs")
 	fixtureRepo := newSkeletonFixtureRepo(t)
+	var spanExporter sdktrace.SpanExporter = telemetry.NewJournalSpanExporter(runsDir, nil)
+	if capture != nil {
+		spanExporter = skeletonSpanExporter{capture, spanExporter}
+	}
+	tel, err := telemetry.New(context.Background(), telemetry.Config{
+		ServiceName:  "walking-skeleton",
+		SpanExporter: spanExporter,
+	})
+	if err != nil {
+		t.Fatalf("new telemetry client: %v", err)
+	}
+	t.Cleanup(func() { _ = tel.Shutdown(context.Background()) })
 
 	resolver, err := credentials.NewResolver(nil)
 	if err != nil {
@@ -218,6 +310,7 @@ func newSkeletonRunner(t *testing.T, coderAct, reviewerAct func(callNum int) int
 		Automated: gate.NewAutomatedEvaluator(),
 		Worktrees: wtMgr,
 		RunsDir:   runsDir,
+		Telemetry: tel,
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
 			return fixtureRepo, nil
 		},
@@ -288,9 +381,14 @@ func TestWalkingSkeletonLocalRunnerCompletesWithRepass(t *testing.T) {
 		}
 		return verdictPayload(apiv1.VerdictPass, "looks good")
 	}
-	r, runsDir := newSkeletonRunner(t, coderAct, reviewerAct)
+	liveSpans := telemetry.NewMemoryExporter()
+	r, runsDir := newSkeletonRunnerWithSpanCapture(t, coderAct, reviewerAct, liveSpans)
 
-	res, err := r.Start(context.Background(), skeletonStartInput("run-skeleton-1", machine))
+	runID, err := telemetry.NewRunID()
+	if err != nil {
+		t.Fatalf("NewRunID: %v", err)
+	}
+	res, err := r.Start(context.Background(), skeletonStartInput(runID, machine))
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -301,7 +399,7 @@ func TestWalkingSkeletonLocalRunnerCompletesWithRepass(t *testing.T) {
 		t.Fatalf("finalState = %q, want local-ci", res.FinalState)
 	}
 
-	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-skeleton-1"))
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
 	if err != nil {
 		t.Fatalf("OpenRead: %v", err)
 	}
@@ -383,6 +481,290 @@ func TestWalkingSkeletonLocalRunnerCompletesWithRepass(t *testing.T) {
 				t.Errorf("SpanBytes(%+v): %v", e.Ref, err)
 			}
 		}
+	}
+	assertSkeletonSpanAttributes(t, runsDir, runID, machine.Digest())
+	assertSkeletonOTLPMatchesLiveSpans(t, runsDir, runID, liveSpans.Spans())
+}
+
+func assertSkeletonSpanAttributes(t *testing.T, runsDir, runID, workflowDigest string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(runsDir, runID, "spans", "spans.jsonl"))
+	if err != nil {
+		t.Fatalf("read OTel spans: %v", err)
+	}
+
+	counts := map[string]int{}
+	gateResults := map[string]int{}
+	for _, line := range bytes.Split(bytes.TrimSpace(raw), []byte("\n")) {
+		var span telemetry.SpanRecord
+		if err := json.Unmarshal(line, &span); err != nil {
+			t.Fatalf("decode OTel span: %v", err)
+		}
+		counts[span.Kind]++
+		for key, want := range map[string]string{
+			telemetry.AttrRunID:           runID,
+			telemetry.AttrGaggle:          "acme-web",
+			telemetry.AttrWorkflow:        "walking-skeleton",
+			telemetry.AttrWorkflowVersion: "1",
+			telemetry.AttrWorkflowDigest:  workflowDigest,
+			telemetry.AttrItemID:          "101",
+			telemetry.AttrItemURL:         "https://github.com/acme/web/issues/101",
+		} {
+			if got := span.Attributes[key]; got != want {
+				t.Errorf("span %q attribute %s = %q, want %q", span.Name, key, got, want)
+			}
+		}
+
+		switch outcome := span.Attributes[telemetry.AttrOutcome]; outcome {
+		case telemetry.OutcomeSuccess, telemetry.OutcomeFailure, telemetry.OutcomeBlocked:
+		default:
+			t.Errorf("span %q %s = %q, want success, failure, or blocked", span.Name, telemetry.AttrOutcome, outcome)
+		}
+		for _, legacy := range []string{"gaggle", "workflowId", "runId", "goobers.span.kind", "goobers.business_status"} {
+			if _, ok := span.Attributes[legacy]; ok {
+				t.Errorf("span %q carries legacy attribute %q", span.Name, legacy)
+			}
+		}
+
+		switch span.Kind {
+		case telemetry.SpanKindTask:
+			if span.Attributes[telemetry.AttrStage] == "" ||
+				span.Attributes[telemetry.AttrStageType] == "" ||
+				span.Attributes[telemetry.AttrAttemptNumber] != "1" {
+				t.Errorf("task span %q has incomplete stage-attempt attributes: %+v", span.Name, span.Attributes)
+			}
+		case telemetry.SpanKindGate:
+			decision := span.Attributes[telemetry.AttrGateDecision]
+			repass := span.Attributes[telemetry.AttrGateRepassNumber]
+			if span.Attributes[telemetry.AttrStage] != "review" ||
+				span.Attributes[telemetry.AttrStageType] != telemetry.StageTypeGate ||
+				decision == "" || repass == "" {
+				t.Errorf("gate span %q has incomplete gate attributes: %+v", span.Name, span.Attributes)
+			}
+			gateResults[decision+"/"+repass]++
+		}
+	}
+	if counts[telemetry.SpanKindRun] != 1 || counts[telemetry.SpanKindTask] != 3 || counts[telemetry.SpanKindGate] != 2 {
+		t.Fatalf("OTel span kinds = %v, want run=1 task=3 gate=2", counts)
+	}
+	if gateResults["needs-changes/1"] != 1 || gateResults["pass/0"] != 1 {
+		t.Fatalf("gate span decisions/repasses = %v, want needs-changes/1 and pass/0", gateResults)
+	}
+}
+
+type skeletonOTLPSpan struct {
+	resource *tracepb.ResourceSpans
+	scope    *tracepb.ScopeSpans
+	span     *tracepb.Span
+}
+
+func assertSkeletonOTLPMatchesLiveSpans(t *testing.T, runsDir, runID string, live []sdktrace.ReadOnlySpan) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(runsDir, runID, "spans", "otlp.jsonl"))
+	if err != nil {
+		t.Fatalf("read OTLP journal spans: %v", err)
+	}
+
+	journalSpans := make(map[string]skeletonOTLPSpan)
+	for _, line := range bytes.Split(bytes.TrimSpace(raw), []byte("\n")) {
+		traces, err := (&ptrace.JSONUnmarshaler{}).UnmarshalTraces(line)
+		if err != nil {
+			t.Fatalf("decode OTLP/JSON: %v", err)
+		}
+		wire, err := (&ptrace.ProtoMarshaler{}).MarshalTraces(traces)
+		if err != nil {
+			t.Fatalf("encode OTLP protobuf: %v", err)
+		}
+		request := new(collectortracepb.ExportTraceServiceRequest)
+		if err := proto.Unmarshal(wire, request); err != nil {
+			t.Fatalf("decode OTLP protobuf: %v", err)
+		}
+		for _, resourceSpans := range request.ResourceSpans {
+			for _, scopeSpans := range resourceSpans.ScopeSpans {
+				for _, span := range scopeSpans.Spans {
+					journalSpans[hex.EncodeToString(span.SpanId)] = skeletonOTLPSpan{
+						resource: resourceSpans,
+						scope:    scopeSpans,
+						span:     span,
+					}
+				}
+			}
+		}
+	}
+	if len(journalSpans) != len(live) {
+		t.Fatalf("OTLP journal spans = %d, live exported spans = %d", len(journalSpans), len(live))
+	}
+
+	for _, want := range live {
+		spanID := want.SpanContext().SpanID().String()
+		got, ok := journalSpans[spanID]
+		if !ok {
+			t.Errorf("live span %s (%q) missing from OTLP journal", spanID, want.Name())
+			continue
+		}
+		wantParentSpanID := ""
+		if want.Parent().SpanID().IsValid() {
+			wantParentSpanID = want.Parent().SpanID().String()
+		}
+		if hex.EncodeToString(got.span.TraceId) != want.SpanContext().TraceID().String() ||
+			hex.EncodeToString(got.span.SpanId) != spanID ||
+			hex.EncodeToString(got.span.ParentSpanId) != wantParentSpanID {
+			t.Errorf("span %q identity differs: %+v", want.Name(), got.span)
+		}
+		if got.span.TraceState != want.SpanContext().TraceState().String() ||
+			got.span.Name != want.Name() ||
+			got.span.Kind != skeletonOTLPSpanKind(want.SpanKind()) ||
+			got.span.StartTimeUnixNano != uint64(want.StartTime().UnixNano()) ||
+			got.span.EndTimeUnixNano != uint64(want.EndTime().UnixNano()) {
+			t.Errorf("span %q core fields differ: %+v", want.Name(), got.span)
+		}
+		if got.span.Status.Code != skeletonOTLPStatus(want.Status().Code) ||
+			got.span.Status.Message != want.Status().Description {
+			t.Errorf("span %q status differs: %+v vs %+v", want.Name(), got.span.Status, want.Status())
+		}
+		assertSkeletonOTLPAttributes(t, want.Name()+" span", want.Attributes(), got.span.Attributes)
+		if got.span.DroppedAttributesCount != uint32(want.DroppedAttributes()) ||
+			got.span.DroppedEventsCount != uint32(want.DroppedEvents()) ||
+			got.span.DroppedLinksCount != uint32(want.DroppedLinks()) {
+			t.Errorf("span %q dropped counts differ", want.Name())
+		}
+
+		resource := want.Resource()
+		if got.resource.SchemaUrl != resource.SchemaURL() {
+			t.Errorf("span %q resource schema = %q, want %q", want.Name(), got.resource.SchemaUrl, resource.SchemaURL())
+		}
+		assertSkeletonOTLPAttributes(t, want.Name()+" resource", resource.Attributes(), got.resource.Resource.Attributes)
+
+		scope := want.InstrumentationScope()
+		if got.scope.SchemaUrl != scope.SchemaURL || got.scope.Scope.Name != scope.Name || got.scope.Scope.Version != scope.Version {
+			t.Errorf("span %q scope differs: %+v vs %+v", want.Name(), got.scope, scope)
+		}
+		assertSkeletonOTLPAttributes(t, want.Name()+" scope", scope.Attributes.ToSlice(), got.scope.Scope.Attributes)
+
+		if len(got.span.Events) != len(want.Events()) {
+			t.Errorf("span %q event count = %d, want %d", want.Name(), len(got.span.Events), len(want.Events()))
+		} else {
+			for i, event := range want.Events() {
+				gotEvent := got.span.Events[i]
+				if gotEvent.Name != event.Name ||
+					gotEvent.TimeUnixNano != uint64(event.Time.UnixNano()) ||
+					gotEvent.DroppedAttributesCount != uint32(event.DroppedAttributeCount) {
+					t.Errorf("span %q event %d differs: %+v vs %+v", want.Name(), i, gotEvent, event)
+				}
+				assertSkeletonOTLPAttributes(t, want.Name()+" event", event.Attributes, gotEvent.Attributes)
+			}
+		}
+		if len(got.span.Links) != len(want.Links()) {
+			t.Errorf("span %q link count = %d, want %d", want.Name(), len(got.span.Links), len(want.Links()))
+		} else {
+			for i, link := range want.Links() {
+				gotLink := got.span.Links[i]
+				if hex.EncodeToString(gotLink.TraceId) != link.SpanContext.TraceID().String() ||
+					hex.EncodeToString(gotLink.SpanId) != link.SpanContext.SpanID().String() ||
+					gotLink.TraceState != link.SpanContext.TraceState().String() ||
+					gotLink.DroppedAttributesCount != uint32(link.DroppedAttributeCount) {
+					t.Errorf("span %q link %d differs: %+v vs %+v", want.Name(), i, gotLink, link)
+				}
+				assertSkeletonOTLPAttributes(t, want.Name()+" link", link.Attributes, gotLink.Attributes)
+			}
+		}
+	}
+}
+
+func assertSkeletonOTLPAttributes(t *testing.T, name string, want []attribute.KeyValue, got []*commonpb.KeyValue) {
+	t.Helper()
+	gotByKey := make(map[string]*commonpb.AnyValue, len(got))
+	for _, attr := range got {
+		gotByKey[attr.Key] = attr.Value
+	}
+	if len(gotByKey) != len(want) {
+		t.Errorf("%s OTLP attributes = %d, live attributes = %d", name, len(gotByKey), len(want))
+	}
+	for _, attr := range want {
+		value, ok := gotByKey[string(attr.Key)]
+		if !ok {
+			t.Errorf("%s attribute %q missing from OTLP journal", name, attr.Key)
+			continue
+		}
+		gotValue, gotType := skeletonOTLPAttributeValue(value)
+		wantValue := attr.Value.AsInterface()
+		if gotType != attr.Value.Type() || !reflect.DeepEqual(gotValue, wantValue) {
+			t.Errorf("%s attribute %q = %T(%v), want %v(%v)", name, attr.Key, gotValue, gotValue, attr.Value.Type(), wantValue)
+		}
+	}
+}
+
+func skeletonOTLPAttributeValue(value *commonpb.AnyValue) (any, attribute.Type) {
+	switch value := value.Value.(type) {
+	case *commonpb.AnyValue_BoolValue:
+		return value.BoolValue, attribute.BOOL
+	case *commonpb.AnyValue_IntValue:
+		return value.IntValue, attribute.INT64
+	case *commonpb.AnyValue_DoubleValue:
+		return value.DoubleValue, attribute.FLOAT64
+	case *commonpb.AnyValue_StringValue:
+		return value.StringValue, attribute.STRING
+	case *commonpb.AnyValue_ArrayValue:
+		if len(value.ArrayValue.Values) == 0 {
+			return []string{}, attribute.STRINGSLICE
+		}
+		first := value.ArrayValue.Values[0]
+		switch first.Value.(type) {
+		case *commonpb.AnyValue_BoolValue:
+			out := make([]bool, len(value.ArrayValue.Values))
+			for i, item := range value.ArrayValue.Values {
+				out[i] = item.GetBoolValue()
+			}
+			return out, attribute.BOOLSLICE
+		case *commonpb.AnyValue_IntValue:
+			out := make([]int64, len(value.ArrayValue.Values))
+			for i, item := range value.ArrayValue.Values {
+				out[i] = item.GetIntValue()
+			}
+			return out, attribute.INT64SLICE
+		case *commonpb.AnyValue_DoubleValue:
+			out := make([]float64, len(value.ArrayValue.Values))
+			for i, item := range value.ArrayValue.Values {
+				out[i] = item.GetDoubleValue()
+			}
+			return out, attribute.FLOAT64SLICE
+		default:
+			out := make([]string, len(value.ArrayValue.Values))
+			for i, item := range value.ArrayValue.Values {
+				out[i] = item.GetStringValue()
+			}
+			return out, attribute.STRINGSLICE
+		}
+	default:
+		return nil, attribute.INVALID
+	}
+}
+
+func skeletonOTLPSpanKind(kind trace.SpanKind) tracepb.Span_SpanKind {
+	switch kind {
+	case trace.SpanKindInternal:
+		return tracepb.Span_SPAN_KIND_INTERNAL
+	case trace.SpanKindServer:
+		return tracepb.Span_SPAN_KIND_SERVER
+	case trace.SpanKindClient:
+		return tracepb.Span_SPAN_KIND_CLIENT
+	case trace.SpanKindProducer:
+		return tracepb.Span_SPAN_KIND_PRODUCER
+	case trace.SpanKindConsumer:
+		return tracepb.Span_SPAN_KIND_CONSUMER
+	default:
+		return tracepb.Span_SPAN_KIND_UNSPECIFIED
+	}
+}
+
+func skeletonOTLPStatus(code codes.Code) tracepb.Status_StatusCode {
+	switch code {
+	case codes.Ok:
+		return tracepb.Status_STATUS_CODE_OK
+	case codes.Error:
+		return tracepb.Status_STATUS_CODE_ERROR
+	default:
+		return tracepb.Status_STATUS_CODE_UNSET
 	}
 }
 
@@ -475,6 +857,18 @@ func TestWalkingSkeletonLocalRunnerDeterministicJournal(t *testing.T) {
 		if !sawPolicyRetry {
 			t.Fatalf("Start(%s): expected a policy-retried implement attempt, saw none", runID)
 		}
+		spans := readSkeletonSpanRecords(t, runsDir, runID)
+		var sawPolicyRetrySpan bool
+		for _, span := range spans {
+			if span.Attributes[telemetry.AttrStage] == "implement" &&
+				span.Attributes[telemetry.AttrAttemptNumber] == "2" &&
+				span.Attributes[telemetry.AttrAttemptKind] == telemetry.AttemptKindPolicy {
+				sawPolicyRetrySpan = true
+			}
+		}
+		if !sawPolicyRetrySpan {
+			t.Fatalf("Start(%s): expected a policy-retried implement span, got %+v", runID, spans)
+		}
 		return journal.ConformanceView(events)
 	}
 
@@ -482,7 +876,7 @@ func TestWalkingSkeletonLocalRunnerDeterministicJournal(t *testing.T) {
 	// instance root/runsDir, so there's no on-disk collision, and pinning the
 	// identity is what makes RunID-embedding fields (artifact/span Name)
 	// comparable across the two runs.
-	const pinnedRunID = "run-skeleton-det"
+	const pinnedRunID = "11111111111111111111111111111111"
 	a := canon(pinnedRunID)
 	b := canon(pinnedRunID)
 
@@ -494,6 +888,23 @@ func TestWalkingSkeletonLocalRunnerDeterministicJournal(t *testing.T) {
 			t.Errorf("normative event %d differs:\n a: %s\n b: %s", i, a[i], b[i])
 		}
 	}
+}
+
+func readSkeletonSpanRecords(t *testing.T, runsDir, runID string) []telemetry.SpanRecord {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(runsDir, runID, "spans", "spans.jsonl"))
+	if err != nil {
+		t.Fatalf("read OTel spans for %s: %v", runID, err)
+	}
+	var spans []telemetry.SpanRecord
+	for _, line := range bytes.Split(bytes.TrimSpace(raw), []byte("\n")) {
+		var span telemetry.SpanRecord
+		if err := json.Unmarshal(line, &span); err != nil {
+			t.Fatalf("decode OTel span for %s: %v", runID, err)
+		}
+		spans = append(spans, span)
+	}
+	return spans
 }
 
 // simulateSkeletonCrashMidImplement hand-builds a run journal exactly to the

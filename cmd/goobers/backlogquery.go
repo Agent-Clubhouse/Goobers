@@ -47,7 +47,15 @@ const DefaultClaimLease = 6 * time.Hour
 // ListWorkItems call below.
 const backlogScanCeiling = 250
 
+const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
+
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
+	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
+}
+
+// The barrier lets the blocked-record race regression pause immediately before
+// the lock-protected reconciliation and claim transaction.
+func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, beforeClaimTransaction func()) int {
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
@@ -68,6 +76,13 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 			"implementation workflow). Idempotent: releasing claims this run does not\n"+
 			"hold (already released, e.g. re-run after a crash) is a no-op success, not\n"+
 			"an error. --claim and --release are mutually exclusive.\n\n"+
+			"With --claim, contested-file dispatch awareness (#1085) deprioritizes\n"+
+			"claiming an issue whose referenced files are already contested by\n"+
+			"contestedFileMinPRs+ (default 2) open PRs, so new work isn't fed into an\n"+
+			"overlap cluster faster than merge-review can drain it. It only reorders\n"+
+			"candidates (never drops one — an all-contested cycle still claims FIFO)\n"+
+			"and falls back to FIFO on any provider error. Disable with input\n"+
+			"deprioritizeContestedFiles=false.\n\n"+
 			"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n"+
 			"(--release), 1 = business error (no eligible/claimable item, missing\n"+
 			"trustLabel with --claim, config/credential/provider error), 2 =\n"+
@@ -225,7 +240,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// Dependency-aware skip (#552): snapshot blocked.json under its local
 	// lock, then resolve every provider-backed issue state after releasing it.
 	// A stalled provider must never prevent terminal claim finalization.
-	observedRecords, err := snapshotBlockedRecords(l)
+	observedRecords, err := snapshotBlockedRecordsForRepository(l, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -234,19 +249,21 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	for itemID, record := range observedRecords {
 		remainingRecords[itemID] = record
 	}
-	eligible, changed, blockedWarnings, unresolvedRecords := filterBlockedEligibility(ctx, provider, repo, eligible, remainingRecords)
+	_, observedSkips, _, blockedWarnings := filterBlockedEligibility(
+		ctx,
+		provider,
+		repo,
+		append([]providers.WorkItem(nil), eligible...),
+		remainingRecords,
+	)
 	for _, warning := range blockedWarnings {
-		// Warn, never fail: blocked.json is a selection optimization, and a
-		// record we cannot resolve must not stall every backlog tick (#971).
+		// Warn, never fail the whole query: only the affected record stays
+		// parked when its provider state cannot be resolved.
 		pf(stderr, "warning: blocked records: %s\n", warning)
 	}
-	resolvedRecords := make(map[string]blockedRecord)
-	if changed {
-		for itemID, record := range observedRecords {
-			if _, remains := remainingRecords[itemID]; !remains {
-				resolvedRecords[itemID] = record
-			}
-		}
+	verifiedSkips := make(map[string]blockedEligibilitySkip, len(observedSkips))
+	for _, skip := range observedSkips {
+		verifiedSkips[skip.ItemID] = skip
 	}
 
 	// Claim order was an accident of whichever sort order the provider's
@@ -266,7 +283,14 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	if !*claim {
 		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
 			var rerr error
-			eligible, rerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords, unresolvedRecords)
+			eligible, _, rerr = reconcileBlockedEligibilityLocked(
+				blockedRecordsPath(l),
+				repo,
+				eligible,
+				observedRecords,
+				remainingRecords,
+				verifiedSkips,
+			)
 			return rerr
 		})
 		if err != nil {
@@ -283,9 +307,49 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	// Contested-file dispatch awareness (#1085): with more than one candidate
+	// in hand, deprioritize claiming an issue whose referenced files are
+	// already contested by contestedFileMinPRs+ open PRs, so `implementation`
+	// stops feeding new work into an overlap cluster faster than merge-review
+	// can drain it. Soft + best-effort by construction (contestedfiles.go):
+	// it only REORDERS the FIFO'd candidates (never drops one, so a cycle where
+	// every candidate is contested still claims FIFO — no starvation), and any
+	// provider error falls back to plain FIFO rather than stalling dispatch.
+	// Gated on github:pr:write, exactly like the open-PR backstop above, since
+	// it lists open PRs and their files.
+	if len(eligible) > 1 && providerInput("deprioritizeContestedFiles", "true") == "true" {
+		if _, err := providerToken(capability.GitHubPRWrite); err == nil {
+			minPRs := 2
+			if s := providerInput("contestedFileMinPRs", ""); s != "" {
+				if n, perr := strconv.Atoi(s); perr == nil && n >= 1 {
+					minPRs = n
+				} else {
+					pf(stderr, "warning: invalid contestedFileMinPRs %q; using %d\n", s, minPRs)
+				}
+			}
+			if touches, terr := openPRTouches(ctx, provider, repo); terr != nil {
+				pf(stderr, "warning: contested-file dispatch awareness unavailable (%v); using FIFO order\n", terr)
+			} else {
+				reordered, deprioritized := partitionByContention(eligible, touches, minPRs)
+				if n := len(deprioritized); n > 0 && n < len(reordered) {
+					pf(stderr, "contested-file dispatch: deprioritized %d contested issue(s) [%s] behind %d disjoint one(s)\n",
+						n, strings.Join(deprioritized, ","), len(reordered)-n)
+				}
+				eligible = reordered
+			}
+		}
+	}
+
 	if len(eligible) == 0 {
 		err = withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
-			_, rerr := reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords, unresolvedRecords)
+			_, _, rerr := reconcileBlockedEligibilityLocked(
+				blockedRecordsPath(l),
+				repo,
+				eligible,
+				observedRecords,
+				remainingRecords,
+				verifiedSkips,
+			)
 			return rerr
 		})
 		if err != nil {
@@ -330,21 +394,69 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	// batch (maxItems 20), implementation a single item (maxItems 1). All claims
 	// share this run's id; each item gets its own ledger entry.
 	var claimed []providers.WorkItem
+	gaggle := providerGaggle()
+	if beforeClaimTransaction != nil {
+		beforeClaimTransaction()
+	}
 	err = withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
+		var lerr error
+		eligible, observedSkips, lerr = reconcileBlockedEligibilityLocked(
+			blockedRecordsPath(l),
+			repo,
+			eligible,
+			observedRecords,
+			remainingRecords,
+			verifiedSkips,
+		)
+		if lerr != nil {
+			return lerr
+		}
+		for _, skip := range observedSkips {
+			runner := map[string]any{
+				"annotation":   blockedEligibilitySkipAnnotation,
+				"itemId":       skip.ItemID,
+				"openBlockers": skip.OpenBlockers,
+			}
+			if skip.ItemStateUnresolved {
+				runner["itemStateUnresolved"] = true
+			}
+			if len(skip.UnresolvedBlockers) != 0 {
+				runner["unresolvedBlockers"] = skip.UnresolvedBlockers
+			}
+			if skip.VerificationPending {
+				runner["verificationPending"] = true
+			}
+			if jerr := instanceLog.Append(journal.Event{
+				Type:     journal.EventRunnerAnnotation,
+				Workflow: workflow,
+				RunID:    runID,
+				Reason:   skip.reason(),
+				Runner:   runner,
+			}); jerr != nil {
+				return fmt.Errorf("journal blocked eligibility skip for %s: %w", skip.ItemID, jerr)
+			}
+		}
+
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName), localscheduler.WithInstanceLog(instanceLog))
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
-		}
-		eligible, lerr = reconcileBlockedEligibilityLocked(blockedRecordsPath(l), eligible, resolvedRecords, unresolvedRecords)
-		if lerr != nil {
-			return lerr
 		}
 		for i := range eligible {
 			if len(claimed) >= maxItems {
 				break
 			}
 			item := eligible[i]
-			ok, _, cerr := ledger.Claim(item.ID, runID, workflow, leaseDuration)
+			var ok bool
+			var cerr error
+			if gaggle == "" {
+				ok, _, cerr = ledger.Claim(item.ID, runID, workflow, leaseDuration)
+			} else {
+				ok, _, cerr = ledger.ClaimScoped(localscheduler.ClaimKey{
+					Gaggle:     gaggle,
+					Provider:   string(repo.Provider),
+					ExternalID: item.ID,
+				}, runID, workflow, leaseDuration)
+			}
 			if cerr != nil {
 				return fmt.Errorf("claim %s in ledger: %w", item.ID, cerr)
 			}
@@ -499,7 +611,7 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 		// is belt-and-suspenders for the "nothing to report" stdout case
 		// below, not required for correctness.
 		for _, entry := range ledger.ForRunAll(runID) {
-			if rerr := ledger.Release(entry.ItemID, runID); rerr != nil {
+			if rerr := ledger.ReleaseEntry(entry, runID); rerr != nil {
 				return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
 			}
 			released = append(released, entry.ItemID)

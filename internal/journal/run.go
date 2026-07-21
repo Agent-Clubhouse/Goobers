@@ -26,17 +26,18 @@ type Run struct {
 
 	mu           sync.Mutex
 	events       *os.File
-	lock         *os.File
+	lock         *journalLock
 	seq          uint64
 	phase        RunPhase
 	machineState string
 	reason       string
+	appendErr    error
 	closed       bool
 }
 
-// acquireRunLock takes a blocking exclusive flock on dir's lock file,
+// acquireRunLock takes a blocking exclusive lock on dir's lock file,
 // serializing every writer that opens the same run directory (#243): the
-// only flocks before this were the whole-instance up.lock and the claim
+// only file locks before this were the whole-instance up.lock and the claim
 // ledger's — the run journal itself took none, so `goobers run abort`
 // (which deliberately skips up.lock, see cmd/goobers/run.go) racing a live
 // daemon's own Resume of the same crashed run could open two independent
@@ -50,15 +51,15 @@ type Run struct {
 // It is not reentrant: acquiring the same run lock twice through separate
 // descriptors in one process blocks too. Current flows avoid that deadlock:
 // Create uses a fresh run id, and in-process resume closes its writer first.
-func acquireRunLock(dir string) (*os.File, error) {
+func acquireRunLock(dir string) (*journalLock, error) {
 	return acquireJournalLock(dir, "run")
 }
 
 // releaseRunLock unlocks and closes a lock file acquireRunLock returned. Safe
 // to call with nil (a Run that never acquired one, e.g. a construction path
 // that failed before acquireRunLock ran).
-func releaseRunLock(f *os.File) {
-	releaseJournalLock(f)
+func releaseRunLock(held *journalLock) {
+	releaseJournalLock(held)
 }
 
 // config holds constructor options.
@@ -240,8 +241,45 @@ func (r *Run) Append(ev Event) error {
 
 // append is the lock-held core: assign seq, scrub the serialized line, write, fsync.
 func (r *Run) append(ev Event) error {
+	if r.appendErr != nil {
+		return fmt.Errorf("journal: append blocked after prior write failure: %w", r.appendErr)
+	}
 	_, err := appendEvent(r.events, &r.seq, r.scrubber, r.now, ev)
+	if err != nil {
+		r.appendErr = err
+	}
 	return err
+}
+
+// RepairAppendBoundary restores events.jsonl after an Append failure. A torn
+// final record is discarded and recorded with a repaired event; a complete
+// final record is retained. The sequence is reconstructed from the surviving
+// log before appends are allowed again.
+func (r *Run) RepairAppendBoundary() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return ErrClosed
+	}
+
+	path := filepath.Join(r.dir, fileEvents)
+	events, tornBytes, err := readEvents(path)
+	if err != nil {
+		return err
+	}
+	if err := truncateTornTail(path, tornBytes); err != nil {
+		return err
+	}
+
+	r.seq = highestEventSeq(events)
+	r.appendErr = nil
+	if tornBytes == 0 {
+		return nil
+	}
+	return r.append(Event{
+		Type:   EventRepaired,
+		Runner: map[string]any{"discardedBytes": tornBytes},
+	})
 }
 
 // SetMachineState records the current state-machine node used in the next
@@ -255,9 +293,7 @@ func (r *Run) SetMachineState(state string) {
 // Checkpoint writes state.json immediately, reflecting the current
 // MachineState. Most transitions checkpoint implicitly as part of Append or
 // RecordArtifact; call Checkpoint directly when a transition pauses without
-// either — e.g. a human gate (ARCHITECTURE.md §5: "a human gate executes
-// nothing"), which appends no event but still must leave state.json pointing
-// at the correct resume state.
+// either.
 func (r *Run) Checkpoint() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -322,6 +358,17 @@ func (r *Run) recordArtifact(ev Event, data []byte) (Ref, error) {
 // excluded from conformance (§3.3) since harness/LLM output is not
 // content-comparable across runners.
 func (r *Run) RecordSpan(stage, name string, data []byte) (Ref, error) {
+	return r.recordSpan(stage, name, "", data)
+}
+
+// RecordSpanWithSchema records a span and identifies the schema of its
+// content. RecordSpan remains the compatibility path for legacy unversioned
+// transcript rows.
+func (r *Run) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (Ref, error) {
+	return r.recordSpan(stage, name, dataSchema, data)
+}
+
+func (r *Run) recordSpan(stage, name, dataSchema string, data []byte) (Ref, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -337,7 +384,7 @@ func (r *Run) RecordSpan(stage, name string, data []byte) (Ref, error) {
 	if err != nil {
 		return Ref{}, fmt.Errorf("journal: record span %q: %w", name, err)
 	}
-	if err := r.append(Event{Type: EventSpanRecorded, Stage: stage, Name: name, Ref: &ref}); err != nil {
+	if err := r.append(Event{Type: EventSpanRecorded, Stage: stage, Name: name, DataSchema: dataSchema, Ref: &ref}); err != nil {
 		return Ref{}, err
 	}
 	if err := r.checkpoint(); err != nil {

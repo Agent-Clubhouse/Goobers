@@ -183,7 +183,12 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	if status == issueCloseOutNeedsHuman {
 		if comment == "" {
 			gateName := providerInput("reasonFromGate", "")
-			reason, err := issueCloseOutReason(l.RunsDir(), runID, gateName)
+			runsDir, err := runsDirForRun(l, runID)
+			if err != nil {
+				pf(stderr, "error: locate run journal: %v\n", err)
+				return 1
+			}
+			reason, err := issueCloseOutReason(runsDir, runID, gateName)
 			if err != nil {
 				pf(stderr, "error: resolve parking reason: %v\n", err)
 				return 1
@@ -255,7 +260,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		if lerr != nil {
 			return fmt.Errorf("open claim ledger: %w", lerr)
 		}
-		return ledger.Release(claim.ItemID, runID)
+		return ledger.ReleaseEntry(claim, runID)
 	})
 	if err != nil {
 		pf(stderr, "warning: release claim %s: %v\n", claim.ItemID, err)

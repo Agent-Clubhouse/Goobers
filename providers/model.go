@@ -1,6 +1,9 @@
 package providers
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // ProviderKind identifies a concrete provider backend.
 type ProviderKind string
@@ -16,7 +19,7 @@ const (
 // marker meaning an item is scoped and eligible for implementation; the
 // needs-human label parks an item pending a human decision (the curator's
 // existing vocabulary — #539's convention; also applied when a stage reports
-// blocked without machine-readable blockers, #544).
+// blocked, #544).
 const (
 	LabelClaimed    = "goobers:claimed"
 	LabelReady      = "goobers:ready"
@@ -133,15 +136,43 @@ type BranchResult struct {
 	URL  string `json:"url,omitempty"`
 }
 
+// ListBranchesRequest selects a bounded, stable page of remote branches.
+type ListBranchesRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	Prefix     string        `json:"prefix"`
+	After      string        `json:"after,omitempty"`
+	Limit      int           `json:"limit"`
+}
+
+// BranchSummary is the remote ref identity and activity needed for branch reconciliation.
+type BranchSummary struct {
+	Name           string     `json:"name"`
+	SHA            string     `json:"sha"`
+	URL            string     `json:"url,omitempty"`
+	LastActivityAt *time.Time `json:"lastActivityAt,omitempty"`
+}
+
 // DeleteBranchRequest identifies a remote branch ref to remove.
 type DeleteBranchRequest struct {
-	Repository RepositoryRef `json:"repository"`
-	Name       string        `json:"name"`
+	Repository  RepositoryRef `json:"repository"`
+	Name        string        `json:"name"`
+	ExpectedSHA string        `json:"expectedSha,omitempty"`
 }
 
 // DeleteBranchResult reports whether the branch existed and was deleted.
 type DeleteBranchResult struct {
 	Deleted bool `json:"deleted"`
+}
+
+// BranchTipChangedError reports that a conditional branch deletion lost its
+// lease because the remote ref no longer points at the expected commit.
+type BranchTipChangedError struct {
+	Name        string
+	ExpectedSHA string
+}
+
+func (e *BranchTipChangedError) Error() string {
+	return fmt.Sprintf("branch %q no longer points at expected SHA %s", e.Name, e.ExpectedSHA)
 }
 
 // CommitChangeType identifies how a file changes in a commit.
@@ -246,8 +277,8 @@ const (
 type CheckDetail struct {
 	Name    string     `json:"name"`
 	State   CheckState `json:"state"`
-	URL     string     `json:"url,omitempty"`
-	Summary string     `json:"summary,omitempty"`
+	URL     string     `json:"url"`
+	Summary string     `json:"summary"`
 }
 
 // PullRequestComment is a normalized issue-thread comment on a pull request.
@@ -318,6 +349,22 @@ type ClosePullRequestResult struct {
 	Number int    `json:"number"`
 	Merged bool   `json:"merged"`
 	State  string `json:"state"`
+}
+
+// UpdateBranchRequest asks a provider to incorporate the current base branch
+// into a pull request's head branch. ExpectedHeadSHA is mandatory optimistic
+// concurrency: the update must be refused if the head moved after selection.
+type UpdateBranchRequest struct {
+	Repository      RepositoryRef `json:"repository"`
+	PullID          string        `json:"pullId"`
+	ExpectedHeadSHA string        `json:"expectedHeadSha"`
+}
+
+// UpdateBranchResult reports an accepted pull request branch update.
+type UpdateBranchResult struct {
+	Number  int    `json:"number"`
+	Message string `json:"message,omitempty"`
+	URL     string `json:"url,omitempty"`
 }
 
 // MergeMethod controls how a provider incorporates a pull request's commits.

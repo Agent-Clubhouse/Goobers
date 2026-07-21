@@ -38,12 +38,15 @@ func sampleInput() RunInput {
 	return RunInput{RunID: "web/flow/item-1", Gaggle: "web", WorkflowName: "flow", Version: 1, Spec: linearSpec()}
 }
 
-func TestRunIDJoinsNonEmptyParts(t *testing.T) {
-	if got := RunID("web", "flow", "item-1"); got != "web/flow/item-1" {
-		t.Errorf("RunID = %q, want web/flow/item-1", got)
+func TestRunIDDerivesDeterministicTraceID(t *testing.T) {
+	if got := RunID("web", "flow", "item-1"); got != "367a0f0c2c9c47b4d4946044615a1c2f" {
+		t.Errorf("RunID = %q, want deterministic trace id", got)
 	}
-	if got := RunID("web", "", "tick"); got != "web/tick" {
-		t.Errorf("RunID skipping empties = %q, want web/tick", got)
+	if got := RunID("web", "", "tick"); got != "05d327988d22595720a7870f6e7f2f73" {
+		t.Errorf("RunID skipping empties = %q, want deterministic trace id", got)
+	}
+	if got := RunID(); got != "" {
+		t.Errorf("RunID with no parts = %q, want empty", got)
 	}
 }
 

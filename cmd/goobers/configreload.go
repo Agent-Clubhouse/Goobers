@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -118,7 +119,13 @@ func (r *configReloader) poll(now time.Time) error {
 			err:    fmt.Errorf("config directory invalid: %w", err),
 		})
 	}
-	definitions, _, err := buildSchedulerDefinitions(
+	if webhookListenerTopologyChanged(r.setup.Definitions, set) {
+		return r.reject(digest, errors.New("adding the first or removing the last webhook trigger requires a daemon restart"))
+	}
+	if err := r.layout.MigrateLegacyRuntime(configuredGaggleNames(set)); err != nil {
+		return r.reject(digest, err)
+	}
+	definitions, err := buildSchedulerDefinitions(
 		r.layout,
 		r.setup.Config,
 		set,
@@ -128,8 +135,9 @@ func (r *configReloader) poll(now time.Time) error {
 		r.setup.RollupDB,
 		r.setup.InstanceLog,
 		r.setup.SharedRegistry,
-		r.setup.Worktrees,
+		r.setup.WorktreesByGaggle,
 		r.setup.ProviderQuota,
+		r.setup.TerminalNotifier,
 	)
 	if err != nil {
 		return r.reject(digest, &configReportError{report: report, err: err})
@@ -147,6 +155,10 @@ func (r *configReloader) poll(now time.Time) error {
 	if err := r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest); err != nil {
 		return err
 	}
+	r.setup.Runner = definitions.Runner
+	r.setup.Runners = definitions.Runners
+	r.setup.Worktrees = definitions.Worktrees
+	r.setup.WorktreesByGaggle = definitions.WorktreesByGaggle
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
 		return fmt.Errorf("reload read service definitions: %w", err)
@@ -193,20 +205,48 @@ func configReloadErrorMessage(err error) string {
 }
 
 // configDirectoryDigest fingerprints the config directory so the reloader can
-// tell a real change from a no-op. Its file-selection surface MUST match what
-// instance.LoadConfigDir / validate.ValidateDir actually consume (readDocs in
-// internal/instance/configdir.go: .yaml/.yml only). Hashing a wider surface is
-// a footgun: churn in non-config files (a README, a tracked repo's .git/) would
-// journal spurious config.reloaded events, and — worse — an editor's atomic
-// write-then-rename or a git checkout racing WalkDir would surface a transient
-// read error that the poll loop records as a false config.reload.rejected.
+// tell a real change from a no-op. It tracks YAML definitions plus every file
+// in a goober assets directory; unrelated config-tree churn remains excluded.
 func configDirectoryDigest(root string) (string, error) {
 	hash := sha256.New()
+	writeEntry := func(path string, mode fs.FileMode, content []byte) error {
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(len(relative)))
+		_, _ = hash.Write(size[:])
+		_, _ = hash.Write([]byte(relative))
+		binary.BigEndian.PutUint64(size[:], uint64(mode))
+		_, _ = hash.Write(size[:])
+		binary.BigEndian.PutUint64(size[:], uint64(len(content)))
+		_, _ = hash.Write(size[:])
+		_, _ = hash.Write(content)
+		return nil
+	}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		name := entry.Name()
+		if gooberassets.IsSourceDir(path) {
+			bundle, err := gooberassets.Load(path)
+			if err != nil {
+				return err
+			}
+			if bundle == nil {
+				return nil
+			}
+			if err := writeEntry(path, 0, []byte(bundle.Fingerprint())); err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if entry.IsDir() {
 			// Skip dotfile directories (notably .git when the config dir is a
 			// tracked repo, per the Workflow-CD epic #453) and all their churn.
@@ -215,19 +255,13 @@ func configDirectoryDigest(root string) (string, error) {
 			}
 			return nil
 		}
-		// Only the file types the loader consumes contribute to the digest.
-		// This filters out dotfiles, editor swap/backup/temp files (.swp, ~,
-		// vim's 4913, #file#), and any other non-config content.
+		// Outside asset bundles, only YAML definitions contribute.
 		if strings.HasPrefix(name, ".") {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))
 		if ext != ".yaml" && ext != ".yml" {
 			return nil
-		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
 		}
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -240,15 +274,7 @@ func configDirectoryDigest(root string) (string, error) {
 			}
 			return err
 		}
-		relative = filepath.ToSlash(relative)
-		var size [8]byte
-		binary.BigEndian.PutUint64(size[:], uint64(len(relative)))
-		_, _ = hash.Write(size[:])
-		_, _ = hash.Write([]byte(relative))
-		binary.BigEndian.PutUint64(size[:], uint64(len(content)))
-		_, _ = hash.Write(size[:])
-		_, _ = hash.Write(content)
-		return nil
+		return writeEntry(path, 0, content)
 	})
 	if err != nil {
 		return "", fmt.Errorf("digest config directory: %w", err)

@@ -194,13 +194,14 @@ export interface GooberPage {
   page: PageInfo;
 }
 
-export type WorkflowTriggerType = "manual" | "backlog-item" | "schedule" | "signal";
+export type WorkflowTriggerType = "manual" | "backlog-item" | "schedule" | "signal" | "webhook";
 
 export interface WorkflowTrigger {
   type: WorkflowTriggerType;
   selector?: Record<string, string>;
   schedule?: string;
   signal?: string;
+  events?: string[];
 }
 
 export interface ReadinessConditions {
@@ -308,6 +309,7 @@ export interface RunSummary {
   startedAt: string;
   finishedAt?: string;
   durationMillis: number;
+  lastActivityAt: string;
   lastSeq: number;
   repassCount: number;
   retryCount: number;

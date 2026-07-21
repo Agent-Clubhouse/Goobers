@@ -2,19 +2,24 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/providers"
 )
 
 func TestTraceJSONIncludesFailedRunErrorAndSpans(t *testing.T) {
@@ -99,6 +104,13 @@ func TestTraceJSONIncludesFailedRunErrorAndSpans(t *testing.T) {
 	if terminalError == nil || terminalError.Code != "stage_failed" || terminalError.Message != "implementation failed" {
 		t.Fatalf("events missing terminal error: %#v", got.Events)
 	}
+	if got.TerminalCause == nil ||
+		got.TerminalCause.Phase != journal.PhaseFailed ||
+		got.TerminalCause.Stage != "implement" ||
+		got.TerminalCause.Code != "stage_failed" ||
+		got.TerminalCause.Message != "implementation failed" {
+		t.Fatalf("terminal cause = %#v", got.TerminalCause)
+	}
 	if len(got.Spans) != 1 || got.Spans[0].Name != "task/implement" ||
 		got.Spans[0].Status != "error" || got.Spans[0].DurationMs != 1500 {
 		t.Fatalf("spans = %#v", got.Spans)
@@ -139,6 +151,65 @@ func TestTraceJSONPreservesAttemptClassCompatibility(t *testing.T) {
 	}
 	if strings.Join(classes, ",") != ",policy" {
 		t.Fatalf("attempt classes = %v, want empty initial class then policy", classes)
+	}
+}
+
+func TestTraceRendersPersistedCIFailureEvidence(t *testing.T) {
+	root := t.TempDir()
+	const runID = "ci-failure-evidence"
+	run := newTraceTestRun(t, root, runID)
+	if _, err := run.RecordArtifact("unrelated/"+executor.CIChecksArtifactName, []byte("not CI evidence")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageStarted, Stage: "ci-poll", Attempt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	artifactData, err := json.Marshal(executor.CIChecksArtifact{
+		Checks: []providers.CheckDetail{
+			{Name: "unit-tests", State: providers.CheckStateFailing, URL: "https://ci.example/unit", Summary: "panic in TestWidget\nfull stack"},
+			{Name: "integration", State: providers.CheckStatePending, URL: "https://ci.example/integration", Summary: "still running"},
+			{Name: "lint\ninjected", State: providers.CheckStateFailing, URL: "https://ci.example/lint\nignored", Summary: "format mismatch\r\nsecond line"},
+		},
+		Metadata: executor.CIChecksArtifactMetadata{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := run.RecordArtifact(executor.CIChecksArtifactName, artifactData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "ci-poll", Attempt: 1,
+		Status:    string(apiv1.ResultSuccess),
+		Outputs:   map[string]any{executor.OutputCIStatus: string(providers.CheckStateFailing)},
+		Artifacts: []journal.Ref{ref},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", runID, root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{
+		"CI failed checks:\n",
+		`check="unit-tests" summary="panic in TestWidget" url="https://ci.example/unit"`,
+		`check="lint\ninjected" summary="format mismatch" url="https://ci.example/lint\nignored"`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("trace output missing %q:\n%s", want, stdout)
+		}
+	}
+	for _, unwanted := range []string{"full stack", "second line", `check="integration"`} {
+		if strings.Contains(stdout, unwanted) {
+			t.Fatalf("trace output contains %q:\n%s", unwanted, stdout)
+		}
 	}
 }
 
@@ -326,6 +397,405 @@ func newTraceTestRun(t *testing.T, root, runID string) *journal.Run {
 	return run
 }
 
+func TestTraceInstallsSignalContextOnlyForActiveFollow(t *testing.T) {
+	root := t.TempDir()
+	const runID = "signal-context-scope"
+	run := newTraceTestRun(t, root, runID)
+	if _, err := run.RecordSpan("implement", "copilot-cli.transcript", []byte("done")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "ordinary trace", args: []string{runID, root}},
+		{name: "transcript", args: []string{"--transcripts", runID, root}},
+		{name: "terminal follow", args: []string{"--follow", runID, root}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupCalls := 0
+			var stdout, stderr bytes.Buffer
+			code := runTraceWithFactories(
+				tc.args,
+				&stdout,
+				&stderr,
+				readservice.NewOfflineRuns,
+				func() (context.Context, func()) {
+					setupCalls++
+					return context.Background(), func() {}
+				},
+			)
+			if code != 0 {
+				t.Fatalf("trace: code = %d, stderr = %q", code, stderr.String())
+			}
+			if setupCalls != 0 {
+				t.Fatalf("signal context setups = %d, want 0", setupCalls)
+			}
+		})
+	}
+
+	activeRoot := t.TempDir()
+	activeRun := newTraceTestRun(t, activeRoot, "active-follow")
+	t.Cleanup(func() { _ = activeRun.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	setupCalls := 0
+	stopped := false
+	var stdout, stderr bytes.Buffer
+	code := runTraceWithFactories(
+		[]string{"--follow", "active-follow", activeRoot},
+		&stdout,
+		&stderr,
+		readservice.NewOfflineRuns,
+		func() (context.Context, func()) {
+			setupCalls++
+			return ctx, func() { stopped = true }
+		},
+	)
+	if code != traceInterruptedExitCode {
+		t.Fatalf("active trace --follow: code = %d, want %d; stderr = %q", code, traceInterruptedExitCode, stderr.String())
+	}
+	if setupCalls != 1 || !stopped {
+		t.Fatalf("signal context setups = %d, stopped = %t; want 1, true", setupCalls, stopped)
+	}
+}
+
+func TestTraceFollowStreamsLiveEventsOnceInOrder(t *testing.T) {
+	root := t.TempDir()
+	const runID = "follow-live-events-run"
+	run := newTraceTestRun(t, root, runID)
+	t.Cleanup(func() { _ = run.Close() })
+
+	stdout := newTraceFollowBuffer()
+	var stderr bytes.Buffer
+	result := make(chan int, 1)
+	go func() {
+		result <- runTraceWithFollowContext(
+			context.Background(),
+			[]string{"--follow", "follow-live", root},
+			stdout,
+			&stderr,
+		)
+	}()
+	stdout.waitForWrite(t)
+
+	for _, event := range []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)},
+	} {
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := waitForTraceFollow(t, result); code != 0 {
+		t.Fatalf("trace --follow: code = %d, stderr = %q", code, stderr.String())
+	}
+	want := strings.Join([]string{
+		"[1] run.started status=running",
+		"[2] stage.started stage=implement attempt=1",
+		"[3] stage.finished stage=implement attempt=1 status=success",
+		"[4] run.finished status=completed",
+		"",
+	}, "\n")
+	if got := stdout.String(); got != want {
+		t.Fatalf("trace --follow stdout = %q, want %q", got, want)
+	}
+}
+
+func TestTraceJSONFollowEmitsExistingEventShapeAsJSONLines(t *testing.T) {
+	root := t.TempDir()
+	const runID = "follow-json-lines-run"
+	run := newTraceTestRun(t, root, runID)
+	t.Cleanup(func() { _ = run.Close() })
+
+	stdout := newTraceFollowBuffer()
+	var stderr bytes.Buffer
+	result := make(chan int, 1)
+	go func() {
+		result <- runTraceWithFollowContext(
+			context.Background(),
+			[]string{"--json", "--follow", runID, root},
+			stdout,
+			&stderr,
+		)
+	}()
+	stdout.waitForWrite(t)
+
+	for _, event := range []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "pass", Target: "local-ci"},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)},
+	} {
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := waitForTraceFollow(t, result); code != 0 {
+		t.Fatalf("trace --json --follow: code = %d, stderr = %q", code, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("JSON Lines count = %d, want 3: %q", len(lines), stdout.String())
+	}
+	wantTypes := []journal.EventType{
+		journal.EventRunStarted,
+		journal.EventGateEvaluated,
+		journal.EventRunFinished,
+	}
+	for i, line := range lines {
+		var event traceJSONEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("line %d is not valid JSON: %v: %q", i+1, err, line)
+		}
+		if event.Type != wantTypes[i] || event.Seq != uint64(i+1) {
+			t.Fatalf("line %d event = type %q seq %d, want type %q seq %d", i+1, event.Type, event.Seq, wantTypes[i], i+1)
+		}
+		var shape map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(line), &shape); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := shape["events"]; ok {
+			t.Fatalf("line %d unexpectedly wraps events: %q", i+1, line)
+		}
+		if _, ok := shape["identity"]; ok {
+			t.Fatalf("line %d unexpectedly contains a trace summary: %q", i+1, line)
+		}
+	}
+}
+
+func TestTraceFollowTerminalRunUsesOrdinaryTraceOutput(t *testing.T) {
+	root := t.TempDir()
+	const runID = "follow-terminal-run"
+	run := newTraceTestRun(t, root, runID)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runTraceWithFollowContext(
+		context.Background(),
+		[]string{"--json", "--follow", runID, root},
+		&stdout,
+		&stderr,
+	)
+	if code != 0 {
+		t.Fatalf("terminal trace --follow: code = %d, stderr = %q", code, stderr.String())
+	}
+	var got traceJSONResult
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("terminal trace --follow did not use ordinary JSON output: %v: %q", err, stdout.String())
+	}
+	if got.Identity.RunID != runID || got.Phase != journal.PhaseCompleted || len(got.Events) != 2 {
+		t.Fatalf("terminal trace --follow = identity %q phase %q events %d", got.Identity.RunID, got.Phase, len(got.Events))
+	}
+}
+
+func TestTraceFollowRefreshesRunThatFinishesBeforeInitialEventRead(t *testing.T) {
+	root := t.TempDir()
+	const runID = "follow-startup-race"
+	run := newTraceTestRun(t, root, runID)
+
+	var raceReader *traceFinishOnEventsReader
+	factory := func(layout instance.Layout) (readservice.OfflineRuns, error) {
+		reads, err := readservice.NewOfflineRuns(layout)
+		if err != nil {
+			return nil, err
+		}
+		raceReader = &traceFinishOnEventsReader{
+			OfflineRuns: reads,
+			run:         run,
+		}
+		return raceReader, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runTraceWithFollowContextAndFactory(
+		context.Background(),
+		[]string{"--json", "--follow", runID, root},
+		&stdout,
+		&stderr,
+		factory,
+	)
+	if code != 0 {
+		t.Fatalf("terminal trace --follow: code = %d, stderr = %q", code, stderr.String())
+	}
+	var got traceJSONResult
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("terminal trace --follow did not use ordinary JSON output: %v: %q", err, stdout.String())
+	}
+	if got.Phase != journal.PhaseCompleted || got.State == nil || got.State.Phase != journal.PhaseCompleted {
+		t.Fatalf("terminal trace --follow phase = %q, state = %#v", got.Phase, got.State)
+	}
+	if raceReader.getRunCalls != 2 {
+		t.Fatalf("GetRun calls = %d, want initial read and terminal refresh", raceReader.getRunCalls)
+	}
+}
+
+type traceFinishOnEventsReader struct {
+	readservice.OfflineRuns
+	run         *journal.Run
+	getRunCalls int
+	finishOnce  sync.Once
+	finishErr   error
+}
+
+func (r *traceFinishOnEventsReader) GetRun(ctx context.Context, runID string) (readservice.RunDetail, error) {
+	r.getRunCalls++
+	return r.OfflineRuns.GetRun(ctx, runID)
+}
+
+func (r *traceFinishOnEventsReader) RunEvents(ctx context.Context, runID string) (readservice.EventList, error) {
+	r.finishOnce.Do(func() {
+		r.finishErr = r.run.Append(journal.Event{
+			Type:   journal.EventRunFinished,
+			Status: string(journal.PhaseCompleted),
+		})
+		if r.finishErr == nil {
+			r.finishErr = r.run.Close()
+		}
+	})
+	if r.finishErr != nil {
+		return readservice.EventList{}, r.finishErr
+	}
+	return r.OfflineRuns.RunEvents(ctx, runID)
+}
+
+func TestTraceFollowCancellationSkipsTornRecordAndExitsInterrupted(t *testing.T) {
+	root := t.TempDir()
+	const runID = "follow-cancel-run"
+	run := newTraceTestRun(t, root, runID)
+	t.Cleanup(func() { _ = run.Close() })
+
+	eventsPath := filepath.Join(instance.NewLayout(root).RunsDir(), runID, "events.jsonl")
+	file, err := os.OpenFile(eventsPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"schema":"goobers.dev/journal/event/v1","seq":2`); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stdout := newTraceFollowBuffer()
+	var stderr bytes.Buffer
+	result := make(chan int, 1)
+	go func() {
+		result <- runTraceWithFollowContext(
+			ctx,
+			[]string{"--json", "--follow", runID, root},
+			stdout,
+			&stderr,
+		)
+	}()
+	stdout.waitForWrite(t)
+	cancel()
+
+	if code := waitForTraceFollow(t, result); code != traceInterruptedExitCode {
+		t.Fatalf("cancelled trace --follow: code = %d, want %d; stderr = %q", code, traceInterruptedExitCode, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("cancelled JSON Lines = %q, want one complete event", stdout.String())
+	}
+	var event traceJSONEvent
+	if err := json.Unmarshal([]byte(lines[0]), &event); err != nil {
+		t.Fatalf("cancelled trace emitted a partial record: %v: %q", err, stdout.String())
+	}
+	if event.Type != journal.EventRunStarted || event.Seq != 1 {
+		t.Fatalf("cancelled trace event = type %q seq %d", event.Type, event.Seq)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("cancelled trace stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestTraceFollowRejectsTranscriptFlags(t *testing.T) {
+	for _, transcriptFlag := range []string{"--transcripts", "--transcript=implement"} {
+		t.Run(transcriptFlag, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := runTraceWithFollowContext(
+				context.Background(),
+				[]string{"--follow", transcriptFlag, "run-id"},
+				&stdout,
+				&stderr,
+			)
+			if code != 2 || stdout.Len() != 0 ||
+				!strings.Contains(stderr.String(), "--follow cannot be used with --transcripts or --transcript") {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+type traceFollowBuffer struct {
+	mu    sync.Mutex
+	buf   bytes.Buffer
+	once  sync.Once
+	wrote chan struct{}
+}
+
+func newTraceFollowBuffer() *traceFollowBuffer {
+	return &traceFollowBuffer{wrote: make(chan struct{})}
+}
+
+func (b *traceFollowBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	n, err := b.buf.Write(p)
+	b.mu.Unlock()
+	if n > 0 {
+		b.once.Do(func() { close(b.wrote) })
+	}
+	return n, err
+}
+
+func (b *traceFollowBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *traceFollowBuffer) waitForWrite(t *testing.T) {
+	t.Helper()
+	select {
+	case <-b.wrote:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for trace --follow output")
+	}
+}
+
+func waitForTraceFollow(t *testing.T, result <-chan int) int {
+	t.Helper()
+	select {
+	case code := <-result:
+		return code
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for trace --follow to exit")
+		return -1
+	}
+}
+
 func TestTraceShowsEscalationSummary(t *testing.T) {
 	root := t.TempDir()
 	l := instance.NewLayout(root)
@@ -388,8 +858,14 @@ func TestTraceShowsEscalationSummary(t *testing.T) {
 		"  gate: review\n" +
 		"  repass count: 4\n" +
 		"  last needs-changes reason: " + reason + "\n\n"
-	if !strings.HasPrefix(stdout, wantSummary) {
-		t.Fatalf("trace stdout = %q, want prefix %q", stdout, wantSummary)
+	if !strings.HasPrefix(stdout, "timeline:\n") {
+		t.Fatalf("trace stdout = %q, want timeline prefix", stdout)
+	}
+	if !strings.Contains(stdout, "  terminal: escalated - gate review - repass budget exhausted\n") {
+		t.Fatalf("trace stdout missing terminal cause: %q", stdout)
+	}
+	if !strings.Contains(stdout, "\n"+wantSummary) {
+		t.Fatalf("trace stdout = %q, want escalation summary %q", stdout, wantSummary)
 	}
 	if !strings.Contains(stdout, "events:") {
 		t.Fatalf("trace stdout missing raw events after summary: %q", stdout)
@@ -690,6 +1166,14 @@ func TestFormatEvent(t *testing.T) {
 			want: "[4] stage.started stage=implement attempt=2 class=infra",
 		},
 		{
+			name: "stage heartbeat",
+			event: journal.Event{
+				Seq: 5, Type: journal.EventStageHeartbeat, Stage: "implement", Attempt: 2,
+				AttemptClass: journal.AttemptPolicy,
+			},
+			want: "[5] stage.heartbeat stage=implement attempt=2 class=policy",
+		},
+		{
 			name: "stage finished",
 			event: journal.Event{
 				Seq: 5, Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
@@ -851,6 +1335,9 @@ func TestTraceShowsRepassCount(t *testing.T) {
 			}
 			if !strings.Contains(stdout.String(), "phase:    running (machineState=\"\", lastSeq=") {
 				t.Fatalf("trace stdout missing phase header: %q", stdout.String())
+			}
+			if !strings.Contains(stdout.String(), "\nlast activity: ") {
+				t.Fatalf("trace stdout missing last activity: %q", stdout.String())
 			}
 			if !strings.Contains(stdout.String(), "\n"+tt.want+"\nevents:") {
 				t.Fatalf("trace stdout missing repass header %q after phase: %q", tt.want, stdout.String())

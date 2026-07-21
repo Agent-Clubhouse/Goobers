@@ -242,6 +242,9 @@ func trueCommand() *exec.Cmd {
 
 func requiredNativeSandbox(t *testing.T) Sandbox {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("native sandbox probes use POSIX shell commands")
+	}
 	s, err := New()
 	if err == nil {
 		return s

@@ -73,9 +73,8 @@ func TestStatusOmitsProviderQuotaPauseAfterResume(t *testing.T) {
 	}
 }
 
-// TestStatusJSONOmitsProviderQuotaPause confirms --json mode's output stays
-// exactly {warnings, runs} (#696's schema) — the paused-state line is a
-// plain-text-only affordance, not a third field grafted onto the JSON shape.
+// TestStatusJSONOmitsProviderQuotaPause confirms the paused-state line remains
+// a plain-text-only affordance rather than becoming part of the JSON summary.
 func TestStatusJSONOmitsProviderQuotaPause(t *testing.T) {
 	root := initDemo(t)
 	l := instance.NewLayout(root)
@@ -101,7 +100,7 @@ func TestStatusJSONOmitsProviderQuotaPause(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("unmarshal stdout %q: %v", stdout, err)
 	}
-	if len(got) != 2 || got["warnings"] == nil || got["runs"] == nil {
-		t.Fatalf("stdout = %q, want exactly {warnings, runs} with no paused-state field", stdout)
+	if len(got) != 3 || got["warnings"] == nil || got["summary"] == nil || got["runs"] == nil {
+		t.Fatalf("stdout = %q, want exactly {warnings, summary, runs} with no paused-state field", stdout)
 	}
 }

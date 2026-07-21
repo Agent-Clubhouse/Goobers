@@ -22,11 +22,11 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
                         # token refs, telemetry settings
       config/           # the config repo/directory: gaggles, goobers, workflows,
                         # gates, instruction markdown (the ONLY Tutor-writable path)
-      runs/             # run journals (append-only events, snapshots, artifacts)
+      gaggles/<gaggle>/
+        runs/           # run journals (append-only events, snapshots, artifacts)
+        workcopies/     # managed working copies and per-run worktrees
       scheduler/        # instance journal: scheduler decisions + claim ledger
       telemetry.db      # local telemetry rollup store
-      workcopies/       # managed working copies of target repos; per-run
-                        # worktrees branch off these
     ```
 
   - **Tier 3 (Temporal runner, V2):** bootstrapped from a real **`infra` repo**
@@ -70,8 +70,9 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
   *(All tiers)*
 - **INST-010 (MUST):** At tiers 1–2, `goobers init` MUST scaffold the instance root:
   `instance.yaml` (connections: target repos, provider, token refs, telemetry
-  settings), `config/`, `runs/`, `scheduler/` (the instance journal), the local
-  telemetry rollup store, and `workcopies/`. This is the owning statement of the
+  settings), `config/`, `gaggles/`, `scheduler/` (the instance journal), and the local
+  telemetry rollup store. Per-gaggle `runs/` and `workcopies/` are created under
+  `gaggles/<gaggle>/`. This is the owning statement of the
   local scaffold (`DEP-021` defers here). *(Tiers 1–2)*
 - **INST-011 (MUST):** At tiers 1–2 an instance MUST run as a single binary with no
   database, message-bus, or service-cluster dependency; all durable state MUST be
@@ -108,7 +109,7 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
   + config), not envs-within-one-instance. See `VISION §8`. At tiers 1–2 that is
   simply two instance roots.
 - **INST-Q2:** **Resolved (updated 2026-07-12):** what is shared at instance level
-  follows the tier — tiers 1–2: the daemon, `runs/`, and the telemetry rollup store
-  (partitioned per gaggle); tier 3: AKS, the ADX telemetry store (partitioned per
+  follows the tier — tiers 1–2: the daemon and telemetry rollup store are shared,
+  while `runs/` and `workcopies/` are scoped per gaggle; tier 3: AKS, the ADX telemetry store (partitioned per
   gaggle), and logging. Isolated per gaggle at every tier per the isolation ladder
   (`GAG-011/012`, `SEC-001/002/003`, `ARCHITECTURE.md §9`).

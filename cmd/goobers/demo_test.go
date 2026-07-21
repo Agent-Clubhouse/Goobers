@@ -79,9 +79,8 @@ func TestInitDemoBannerGolden(t *testing.T) {
 	want := fmt.Sprintf(`initialized instance at %s
   created  instance.yaml
   created  config
-  created  runs
+  created  gaggles
   created  scheduler
-  created  workcopies
   created  telemetry.db
 
 Demo tour (run these from %s):
@@ -121,9 +120,11 @@ func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
 		t.Fatalf("resolve test binary: %v", err)
 	}
 	demo.Spec.Tasks[0].Run.Command = []string{
-		"sh", "-c",
-		`exec "$1" -test.run=^TestDemoNetworkProbe$ -- demo-network-probe "$2"`,
-		"demo-probe", testBin, probe.Addr().String(),
+		testBin,
+		"-test.run=^TestDemoNetworkProbe$",
+		"--",
+		"demo-network-probe",
+		probe.Addr().String(),
 	}
 	workflowData, err = yaml.Marshal(demo)
 	if err != nil {

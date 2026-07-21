@@ -41,6 +41,7 @@ type journalEvent struct {
 	Status       string              `json:"status,omitempty"`
 	Ref          *journalRef         `json:"ref,omitempty"`
 	Name         string              `json:"name,omitempty"`
+	DataSchema   string              `json:"dataSchema,omitempty"`
 	ExternalRef  *journalExternalRef `json:"externalRef,omitempty"`
 	Error        *journalErrorDetail `json:"error,omitempty"`
 	Redaction    *journalRedaction   `json:"redaction,omitempty"`
@@ -50,21 +51,24 @@ type journalEvent struct {
 	Reason       string              `json:"reason,omitempty"`
 }
 
-// Event type values, mirroring internal/journal's EventType constants.
+// Event type values accepted from run and instance journals.
 const (
-	eventStageStarted  = "stage.started"
-	eventStageFinished = "stage.finished"
-	eventGateEvaluated = "gate.evaluated"
-	eventRefTouched    = "ref.touched"
-	eventError         = "error"
-	eventRunStarted    = "run.started"
-	eventRunFinished   = "run.finished"
-	eventSpanRecorded  = "span.recorded"
-	eventTriggerFired  = "trigger.fired"
-	eventTickSkipped   = "tick.skipped"
-	eventClaimAcquired = "claim.acquired"
-	eventClaimReleased = "claim.released"
+	eventStageStarted       = "stage.started"
+	eventStageFinished      = "stage.finished"
+	eventGateEvaluated      = "gate.evaluated"
+	eventRefTouched         = "ref.touched"
+	eventError              = "error"
+	eventRunStarted         = "run.started"
+	eventRunFinished        = "run.finished"
+	eventSpanRecorded       = "span.recorded"
+	eventTriggerFired       = "trigger.fired"
+	eventTickSkipped        = "tick.skipped"
+	eventClaimAcquired      = "claim.acquired"
+	eventClaimReleased      = "claim.released"
+	eventClaimForceReleased = "claim.force_released"
 )
+
+const eventWorkflowStarved = "workflow.starved"
 
 // journalRef mirrors internal/journal.Ref.
 type journalRef struct {

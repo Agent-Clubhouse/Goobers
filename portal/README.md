@@ -5,9 +5,10 @@ This directory contains the production UI for the Dashboard / Portal milestone
 
 It is a React/Vite application with reusable shell, navigation, dense-list,
 graph, inspector, status, icon, theme, accessibility, query-state, and typed
-daemon-client modules. Overview, Workflows, and run detail read the live daemon
-API, as do configuration warnings on the overview and workflow routes; the
-remaining prototype routes use static fixtures until their vertical slices land.
+daemon-client modules. Overview, workflow inventory and detail, and run detail
+read the live daemon API, as do configuration warnings on the overview and
+workflow routes; the remaining prototype routes use static fixtures until their
+vertical slices land.
 
 ## Run it
 
@@ -37,12 +38,22 @@ uses another address, set the proxy target when starting the portal:
 GOOBERS_DAEMON_URL=http://127.0.0.1:9090 npm --prefix portal run dev
 ```
 
-The production build and component tests are:
+The portal CI gate is reproduced locally with:
 
 ```bash
-npm --prefix portal test
-npm --prefix portal run build
+make portal-ci
 ```
+
+This lockfile-installs dependencies, type-checks, builds, runs the portal tests,
+and verifies the generated Go wire fixtures. To reproduce only the Go/TypeScript
+contract gate, including fixture regeneration and the stale-output diff:
+
+```bash
+make portal-contract
+```
+
+`make generate` intentionally updates the checked-in route contract and wire
+fixtures after a Go contract change.
 
 The production build writes `cmd/goobers/portal-dist`, which is embedded in the
 `goobers` binary.
@@ -78,10 +89,9 @@ The full product and architecture authority is
 
 ## Current boundaries
 
-- Workflow detail still uses static data intentionally shaped around a
-  representative workflow. Overview, workflow inventory, gaggle rosters, run
-  detail, and configuration warnings use the HTTP daemon adapter, with the
-  fixture adapter reserved for tests.
+- Workflow detail uses the current definition, canonical graph, stage summaries,
+  and recent runs from the HTTP daemon adapter. The fixture adapter is reserved
+  for tests.
 - Attempt, artifact, replay, and escalation views remain deferred to their
   dedicated portal slices.
 - Run detail uses the pinned graph topology and an ordered stage presentation

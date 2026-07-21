@@ -160,10 +160,52 @@ func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
 	}
 }
 
+func TestCheckWarningsNoScheduleTrigger(t *testing.T) {
+	cases := []struct {
+		name     string
+		triggers []apiv1.Trigger
+		want     string
+	}{
+		{
+			name:     "backlog-item-only",
+			triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+			want:     "workflow \"backlog-item-only\" has no schedule trigger; it will not fire autonomously — run it with `goobers run backlog-item-only`",
+		},
+		{
+			name:     "manual-only",
+			triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			want:     "workflow \"manual-only\" has no schedule trigger; it will not fire autonomously — run it with `goobers run manual-only`",
+		},
+		{
+			name:     "scheduled",
+			triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		},
+		{
+			name:     "webhook",
+			triggers: []apiv1.Trigger{{Type: apiv1.TriggerWebhook, Events: []string{"issues"}}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			def := Definition{Name: tc.name, Spec: apiv1.WorkflowSpec{Triggers: tc.triggers}}
+			warnings := CheckWarnings(def)
+			if tc.want == "" {
+				if len(warnings) != 0 {
+					t.Fatalf("warnings = %v, want none", warnings)
+				}
+				return
+			}
+			if len(warnings) != 1 || warnings[0] != tc.want {
+				t.Fatalf("warnings = %v, want exactly %q", warnings, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckWarningsAcceptedButInertFields(t *testing.T) {
 	def := Definition{Name: "inert-fields", Version: 1, Spec: apiv1.WorkflowSpec{
 		Gaggle:   "web",
-		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
 		Start:    "build",
 		Tasks: []apiv1.Task{{
 			Name:            "build",
@@ -378,6 +420,26 @@ func TestCompileRejectsSignalTriggerWithNoName(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsWebhookTriggerWithoutEvents(t *testing.T) {
+	spec := linearSpec()
+	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerWebhook}}
+	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `trigger[0] type=webhook requires at least one event name`) {
+		t.Fatalf("expected missing-webhook-events error, got %v", err)
+	}
+
+	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerWebhook, Events: []string{"issues", " "}}}
+	_, err = Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `trigger[0] type=webhook event[1] must not be empty`) {
+		t.Fatalf("expected empty-webhook-event error, got %v", err)
+	}
+
+	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerWebhook, Events: []string{"issues", "pull_request"}}}
+	if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("a webhook trigger with events should compile, got %v", err)
+	}
+}
+
 func TestCompileRejectsUnknownWorkspace(t *testing.T) {
 	spec := linearSpec()
 	spec.Tasks[0] = apiv1.Task{
@@ -390,6 +452,22 @@ func TestCompileRejectsUnknownWorkspace(t *testing.T) {
 	_, err := Compile(Definition{Name: "bad-workspace", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), `unknown workspace "host"`) {
 		t.Fatalf("Compile error = %v, want unknown workspace", err)
+	}
+}
+
+func TestCompileRejectsSyncBaseInScratchWorkspace(t *testing.T) {
+	spec := linearSpec()
+	spec.Tasks[0] = apiv1.Task{
+		Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+		Run: &apiv1.DeterministicRun{
+			Command:   []string{"true"},
+			Workspace: apiv1.WorkspaceScratch,
+			SyncBase:  true,
+		},
+	}
+	_, err := Compile(Definition{Name: "bad-sync-base", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "syncBase requires a repo workspace") {
+		t.Fatalf("Compile error = %v, want syncBase repo-workspace requirement", err)
 	}
 }
 

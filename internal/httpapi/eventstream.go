@@ -44,19 +44,11 @@ var (
 )
 
 // Invalidation identifies versioned read models that clients should refetch.
-type Invalidation struct {
-	Cursor    string        `json:"cursor"`
-	Models    []string      `json:"models"`
-	RunIDs    []string      `json:"runIds,omitempty"`
-	Workflows []WorkflowRef `json:"workflows,omitempty"`
-}
+type Invalidation = apicontract.Invalidation
 
 // WorkflowRef identifies one workflow read model. An empty list with the
 // workflow model means all workflow inventory should be refetched.
-type WorkflowRef struct {
-	Gaggle string `json:"gaggle,omitempty"`
-	Name   string `json:"name"`
-}
+type WorkflowRef = apicontract.WorkflowRef
 
 // StreamEvent is one SSE message with a stable ID for client deduplication.
 type StreamEvent struct {
@@ -389,19 +381,25 @@ func (s *EventStream) journalSources() ([]journalSource, error) {
 		return nil, fmt.Errorf("http API: stat instance journal: %w", err)
 	}
 
-	entries, err := os.ReadDir(s.layout.RunsDir())
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("http API: read runs directory: %w", err)
+	runDirs, err := s.layout.RunDirs()
+	if err != nil {
+		return nil, fmt.Errorf("http API: enumerate runs directories: %w", err)
 	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+	for _, runsDir := range runDirs {
+		entries, err := os.ReadDir(runsDir)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("http API: read runs directory: %w", err)
 		}
-		path := filepath.Join(s.layout.RunsDir(), entry.Name(), "events.jsonl")
-		if _, err := os.Stat(path); err == nil {
-			sources = append(sources, journalSource{path: path, runID: entry.Name()})
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("http API: stat run journal %q: %w", entry.Name(), err)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			path := filepath.Join(runsDir, entry.Name(), "events.jsonl")
+			if _, err := os.Stat(path); err == nil {
+				sources = append(sources, journalSource{path: path, runID: entry.Name()})
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("http API: stat run journal %q: %w", entry.Name(), err)
+			}
 		}
 	}
 	sort.Slice(sources, func(i, j int) bool { return sources[i].path < sources[j].path })

@@ -1,7 +1,6 @@
 # Goobers control-plane Makefile.
 # Owns the Go build/test/lint toolchain for the monorepo (module github.com/goobers/goobers).
 
-SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
 # ---- Build metadata (injected into internal/version via -ldflags) -----------
@@ -54,7 +53,7 @@ generate:
 ## manifests: Regenerate CRD YAML manifests from the CRD types.
 .PHONY: manifests
 manifests:
-	$(CONTROLLER_GEN) crd paths=./api/v1alpha1/... output:crd:dir=config/crd/bases
+	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths=./api/v1alpha1/... output:crd:dir=config/crd/bases
 
 ## test-envtest: Run tests with envtest binaries provisioned (operator integration).
 .PHONY: test-envtest
@@ -131,10 +130,14 @@ JOURNAL_TEST_FSYNC_OFF := GOOBERS_DISABLE_FSYNC=1
 test:
 	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
 
-## portal-ci: Install, type-check, build, and test the portal.
-.PHONY: portal-install portal-build portal-test portal-ci
+## portal-ci: Install, type-check, build, test, and verify the Go wire contract.
+.PHONY: portal-install portal-typecheck portal-build portal-test portal-contract portal-ci
 portal-install:
 	$(NPM) --prefix portal ci --no-audit --no-fund
+
+## portal-typecheck: Install and type-check the portal.
+portal-typecheck: portal-install
+	$(NPM) --prefix portal run typecheck
 
 portal-build: portal-install
 	$(NPM) --prefix portal run build
@@ -142,7 +145,14 @@ portal-build: portal-install
 portal-test: portal-install
 	$(NPM) --prefix portal test
 
-portal-ci: portal-build portal-test
+## portal-contract: Regenerate, diff, type-check, and test the Go/TypeScript wire contract.
+portal-contract: portal-install
+	$(GO) generate ./internal/apicontract
+	git diff --exit-code -- portal/src/api/contract.generated.ts portal/src/api/wire.generated.ts
+	$(NPM) --prefix portal run typecheck
+	$(NPM) --prefix portal run test:contract
+
+portal-ci: portal-build portal-test portal-contract
 
 ## cover: Show total test coverage.
 .PHONY: cover
@@ -157,9 +167,10 @@ cover: test
 cover-check: test
 	COVERAGE_PROFILE=coverage.out $(GO) run ./test/coveragegate $(COVERAGE_THRESHOLD)
 
-## ci: Full Go and portal gate run locally (matches the pipeline).
+## ci: Run the portable full Go and portal gate (matches the pipeline).
 .PHONY: ci
-ci: fmt-check vet build test lint portal-ci
+ci:
+	$(GO) run ./test/ci
 
 ## clean: Remove build artifacts.
 .PHONY: clean

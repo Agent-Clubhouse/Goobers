@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
+        candidates="init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal claims backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge update-behind-pr gather-pr-context rebase-pr remediation-checkpoint completion version help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -15,7 +15,7 @@ _goobers_completion()
     flags="-h --help"
     case "${command}" in
         validate) flags+=" --check-harness --source-tree" ;;
-        up) flags+=" --quiet" ;;
+        up) flags+=" --quiet --cleanup-spans-only-runs" ;;
         dashboard) flags+=" --port --no-open --dev-assets" ;;
         run) flags+=" --no-wait" ;;
         workflow)
@@ -29,7 +29,8 @@ _goobers_completion()
             ;;
         status) flags+=" --daemon --json --phase --workflow --limit --watch --interval" ;;
         stats) flags+=" --since --json" ;;
-        trace) flags+=" --json --transcripts --transcript" ;;
+        trace) flags+=" --json --follow --transcripts --transcript" ;;
+        escalations) flags+=" --json" ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
                 stats) flags+=" --workflow --gaggle --rebuild" ;;
@@ -38,6 +39,13 @@ _goobers_completion()
             ;;
         journal)
             [[ "${COMP_WORDS[2]:-}" == "redact" ]] && flags+=" --run --path --reason --secret-file"
+            ;;
+        claims)
+            if [[ "${COMP_WORDS[2]:-}" == "list" ]]; then
+                flags+=" --json --stale"
+            elif [[ "${COMP_WORDS[2]:-}" == "release" ]]; then
+                flags+=" --force"
+            fi
             ;;
         backlog-query) flags+=" --claim --release" ;;
         apply-verdict) flags+=" --gate" ;;
@@ -75,6 +83,14 @@ _goobers_completion()
                 candidates="$(command goobers __complete runs 2>/dev/null)"
             fi
             ;;
+        escalations)
+            if (( COMP_CWORD == 2 )); then
+                candidates="show"
+            elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
+                dynamic=1
+                candidates="$(command goobers __complete escalations 2>/dev/null)"
+            fi
+            ;;
         workflow)
             if (( COMP_CWORD == 2 )); then
                 candidates="show"
@@ -91,6 +107,9 @@ _goobers_completion()
             ;;
         journal)
             (( COMP_CWORD == 2 )) && candidates="redact"
+            ;;
+        claims)
+            (( COMP_CWORD == 2 )) && candidates="list release"
             ;;
     esac
 

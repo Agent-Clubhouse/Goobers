@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/worktree"
@@ -40,6 +41,15 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 	}
 	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]string{"login": login})
+	})
+
+	// git/ref/heads/<branch> answers GitHubProvider.BranchTipSHA — the LIVE
+	// base-branch tip escalationStillBlocks compares against (#1052). Defaults
+	// to s.baseSHA so an unchanged fixture (baseSHA == snapshot's
+	// EscalatedBaseSHA) stays blocked, while a fixture whose baseSHA has moved
+	// past the snapshot self-heals — matching the pre-#1052 in-memory semantics.
+	mux.HandleFunc(prefix+"/git/ref/", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"object": map[string]string{"sha": s.baseSHA}})
 	})
 
 	mux.HandleFunc(prefix+"/pulls", func(w http.ResponseWriter, r *http.Request) {
@@ -142,6 +152,41 @@ func initPRBranchOrigin(t *testing.T, prBranch string) (origin, headSHA, baseSHA
 	baseSHA = strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD"))
 
 	return origin, headSHA, baseSHA
+}
+
+func initConflictingPRBranchOrigin(t *testing.T, prBranch string) (origin, headSHA, pinnedBaseSHA string) {
+	t.Helper()
+	root := t.TempDir()
+	origin = filepath.Join(root, "origin.git")
+	runGitT(t, root, "init", "--bare", "-b", "main", origin)
+
+	work := filepath.Join(root, "work")
+	runGitT(t, root, "clone", origin, work)
+	runGitT(t, work, "config", "user.name", "seed")
+	runGitT(t, work, "config", "user.email", "seed@example.com")
+	if err := os.WriteFile(filepath.Join(work, "shared.txt"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+	runGitT(t, work, "add", "shared.txt")
+	runGitT(t, work, "commit", "-m", "seed")
+	runGitT(t, work, "push", "origin", "main")
+	pinnedBaseSHA = strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD"))
+
+	runGitT(t, work, "checkout", "-b", prBranch)
+	if err := os.WriteFile(filepath.Join(work, "shared.txt"), []byte("pr change\n"), 0o644); err != nil {
+		t.Fatalf("write PR change: %v", err)
+	}
+	runGitT(t, work, "commit", "-am", "pr change")
+	runGitT(t, work, "push", "origin", prBranch)
+	headSHA = strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD"))
+
+	runGitT(t, work, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(work, "shared.txt"), []byte("base change\n"), 0o644); err != nil {
+		t.Fatalf("write base change: %v", err)
+	}
+	runGitT(t, work, "commit", "-am", "base change")
+	runGitT(t, work, "push", "origin", "main")
+	return origin, headSHA, pinnedBaseSHA
 }
 
 // TestGatherPRContextChecksOutSelectedPRAndLoadsContext is #362's headline
@@ -741,6 +786,92 @@ func TestGatherPRContextSelectsBehindBaseOnlyPRAndRebases(t *testing.T) {
 	}
 }
 
+func TestGatherPRContextPreservesClaimedConflictedBehindPR(t *testing.T) {
+	const (
+		prBranch = "goobers/impl/run-conflicted-behind"
+		runID    = "run-conflicted-behind"
+	)
+	origin, headSHA, pinnedBaseSHA := initConflictingPRBranchOrigin(t, prBranch)
+
+	srv := gatherPRContextServer{
+		owner: "your-org", repo: "your-repo",
+		prNumber: 59, head: prBranch, base: "main",
+		headSHA: headSHA, baseSHA: pinnedBaseSHA,
+	}
+	server := srv.start(t)
+
+	prev := newGitHubProvider
+	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: runID, BaseRef: "main",
+		Branch: "goobers/pr-remediation/" + runID,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
+
+	instanceRoot := initDemo(t)
+	t.Setenv("GOOBERS_RUN_ID", runID)
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	if _, err := claimPullRequest(instanceRoot, []providers.PullRequestSummary{{Number: 59}}, runID, "pr-remediation", time.Hour); err != nil {
+		t.Fatalf("claim PR: %v", err)
+	}
+	t.Chdir(wt.Path)
+
+	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
+	if code != 0 {
+		t.Fatalf("gather-pr-context code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(wt.Path, "pr-context.json"))
+	if err != nil {
+		t.Fatalf("read pr-context.json: %v", err)
+	}
+	var contextResult struct {
+		SelectedNumber         string `json:"selectedNumber"`
+		Head                   string `json:"head"`
+		Base                   string `json:"base"`
+		HasSubstantiveFindings string `json:"hasSubstantiveFindings"`
+		HasFailingCI           string `json:"hasFailingCI"`
+	}
+	if err := json.Unmarshal(data, &contextResult); err != nil {
+		t.Fatalf("unmarshal pr-context.json: %v", err)
+	}
+	if contextResult.SelectedNumber != "59" {
+		t.Fatalf("selectedNumber = %q, want claimed PR 59", contextResult.SelectedNumber)
+	}
+
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", contextResult.SelectedNumber)
+	t.Setenv("GOOBERS_INPUT_HEAD", contextResult.Head)
+	t.Setenv("GOOBERS_INPUT_BASE", contextResult.Base)
+	t.Setenv("GOOBERS_INPUT_HASSUBSTANTIVEFINDINGS", contextResult.HasSubstantiveFindings)
+	t.Setenv("GOOBERS_INPUT_HASFAILINGCI", contextResult.HasFailingCI)
+	code, stdout, stderr = runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("rebase-pr code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	rebaseData, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	var rebaseResult map[string]string
+	if err := json.Unmarshal(rebaseData, &rebaseResult); err != nil {
+		t.Fatalf("unmarshal rebase-result.json: %v", err)
+	}
+	if rebaseResult["conflict"] != "true" || rebaseResult["needsAgent"] != "true" {
+		t.Fatalf("rebase result = %v, want conflict routed to full remediation", rebaseResult)
+	}
+}
+
 func TestGatherPRContextDoesNotReselectEscalatedFailingPR(t *testing.T) {
 	srv := gatherPRContextServer{
 		owner: "your-org", repo: "your-repo",
@@ -769,6 +900,113 @@ func TestGatherPRContextDoesNotReselectEscalatedFailingPR(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "no work") {
 		t.Fatalf("stdout = %q, want no work after terminal escalation", stdout)
+	}
+}
+
+// TestGatherPRContextSkipsPRHeldByInFlightWorktree is #872/#1007's regression
+// guard: when a PR's head branch is still checked out by another live worktree
+// — its originating implementation run's ci-poll stage, which holds the branch
+// while polling CI on the PR it just opened — gather-pr-context must skip that
+// PR cleanly (exit 0, no-work, no claim, no checkout) instead of claiming it
+// and colliding on the checkout every retry ("fatal: '<branch>' is already
+// used by worktree at ..."). Once that worktree is gone (the owning run
+// finished), the very next tick proceeds and remediates the PR exactly as
+// normal — proving the guard defers rather than permanently drops the PR.
+func TestGatherPRContextSkipsPRHeldByInFlightWorktree(t *testing.T) {
+	const prBranch = "goobers/implementation/owning-run"
+	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
+
+	srv := gatherPRContextServer{
+		owner: "your-org", repo: "your-repo",
+		prNumber: 72, head: prBranch, base: "main",
+		headSHA: headSHA, baseSHA: baseSHA,
+		labels: []string{"goobers:needs-remediation"},
+	}
+	server := srv.start(t)
+
+	prev := newGitHubProvider
+	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	// One manager => one shared managed mirror, exactly like the live daemon:
+	// the pr-remediation stage worktree and the "owning run" worktree below are
+	// two linked worktrees of the same clone, so git's same-branch-in-two-
+	// worktrees prohibition (the collision) is faithfully reproduced.
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	remWT, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "run-rem", BaseRef: "main",
+		Branch: "goobers/pr-remediation/run-rem",
+	})
+	if err != nil {
+		t.Fatalf("Create pr-remediation worktree: %v", err)
+	}
+	t.Cleanup(func() { _ = remWT.Remove(t.Context(), worktree.RemoveOptions{}) })
+
+	// The still-alive originating implementation run: a second worktree holding
+	// the PR's own head branch checked out (its ci-poll stage).
+	owningWT, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "owning-run", BaseRef: "main",
+		Branch: prBranch, RequireExistingBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("Create owning-run worktree: %v", err)
+	}
+
+	instanceRoot := initDemo(t)
+	t.Setenv("GOOBERS_RUN_ID", "run-rem")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Chdir(remWT.Path)
+
+	// Phase 1: the owning run still holds the branch — expect a clean skip.
+	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
+	if code != 0 {
+		t.Fatalf("phase 1 code = %d, stdout = %q, stderr = %q — want a clean no-work skip, not a checkout collision", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("phase 1 stdout = %q, want a no-work skip while the owning run holds the branch", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(remWT.Path, "pr-context.json")); !os.IsNotExist(err) {
+		t.Fatalf("phase 1 wrote pr-context.json (err=%v) — it must not gather/claim a PR whose branch is held by a live worktree", err)
+	}
+	if branch := strings.TrimSpace(runGitOutputT(t, remWT.Path, "symbolic-ref", "--short", "HEAD")); branch != "goobers/pr-remediation/run-rem" {
+		t.Fatalf("phase 1 checked out %q — the guard must skip BEFORE any checkout, leaving the stage worktree on its own branch", branch)
+	}
+
+	// Phase 2: the owning run finishes and releases its worktree — the next
+	// tick must now select and gather the PR exactly as normal.
+	if err := owningWT.Remove(t.Context(), worktree.RemoveOptions{}); err != nil {
+		t.Fatalf("Remove owning-run worktree: %v", err)
+	}
+
+	code, stdout, stderr = runArgs(t, "gather-pr-context", instanceRoot)
+	if code != 0 {
+		t.Fatalf("phase 2 code = %d, stdout = %q, stderr = %q — want normal remediation once the branch is free", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "PR #72") {
+		t.Fatalf("phase 2 stdout = %q, want PR #72 gathered once its branch was released", stdout)
+	}
+	data, err := os.ReadFile(filepath.Join(remWT.Path, "pr-context.json"))
+	if err != nil {
+		t.Fatalf("phase 2 read pr-context.json: %v", err)
+	}
+	var got struct {
+		SelectedNumber string `json:"selectedNumber"`
+		Head           string `json:"head"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("phase 2 unmarshal pr-context.json: %v (data=%s)", err, data)
+	}
+	if got.SelectedNumber != "72" || got.Head != prBranch {
+		t.Fatalf("phase 2 got = %+v, want selectedNumber=\"72\" head=%q", got, prBranch)
+	}
+	if branch := strings.TrimSpace(runGitOutputT(t, remWT.Path, "symbolic-ref", "--short", "HEAD")); branch != prBranch {
+		t.Fatalf("phase 2 checked-out branch = %q, want %q (the PR's own branch)", branch, prBranch)
 	}
 }
 

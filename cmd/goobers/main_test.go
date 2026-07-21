@@ -109,6 +109,10 @@ func TestInitThenValidate(t *testing.T) {
 	if !strings.Contains(stdout, "OK:") {
 		t.Fatalf("validate stdout = %q", stdout)
 	}
+	const warning = "workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`"
+	if count := strings.Count(stdout, warning); count != 1 {
+		t.Fatalf("validate stdout = %q, warning count = %d, want exactly one", stdout, count)
+	}
 
 	// Re-running init is a no-op, not an error.
 	code, stdout, _ = runArgs(t, "init", root)
@@ -117,6 +121,18 @@ func TestInitThenValidate(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "nothing to do") {
 		t.Fatalf("second init stdout = %q", stdout)
+	}
+}
+
+func TestValidateScheduledWorkflowHasNoScheduleWarning(t *testing.T) {
+	root := initScheduledDemo(t)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "has no schedule trigger") {
+		t.Fatalf("validate stdout = %q, want no schedule warning", stdout)
 	}
 }
 

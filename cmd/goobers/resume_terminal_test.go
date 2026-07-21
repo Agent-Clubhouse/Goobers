@@ -200,6 +200,67 @@ func TestResumeScanReleasesClaimsForAlreadyTerminalRun(t *testing.T) {
 	}
 }
 
+func TestResumeScanFinalizesTerminalRunFromRemovedGaggle(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	removed := l.ForGaggle("removed")
+	const runID = "removed-terminal-run"
+
+	jr, err := journal.Create(removed.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "default-implement", WorkflowVersion: 1, Gaggle: "removed",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimKey := localscheduler.ClaimKey{Gaggle: "removed", Provider: "github", ExternalID: "498"}
+	if ok, _, err := ledger.ClaimScoped(claimKey, runID, "default-implement", time.Hour); err != nil || !ok {
+		t.Fatalf("seed scoped claim: ok=%v err=%v", ok, err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(context.Background())
+
+	var released []string
+	resumed, warned, err := resumeInterruptedRunsWithRunners(
+		context.Background(), l, setup.Runners, nil, setup.Machines, setup.RepoRefs,
+		setup.InstanceLog, setup.Telemetry, setup.RollupDB,
+		func(_ string, workflow string) { released = append(released, workflow) }, &wg,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed) != 0 || len(warned) != 0 {
+		t.Fatalf("resumed=%v warned=%v, want neither for terminal run", resumed, warned)
+	}
+	if len(released) != 1 || released[0] != "default-implement" {
+		t.Fatalf("released = %v, want terminal workflow slot released once", released)
+	}
+	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, ok := reopened.LookupScoped(claimKey); ok {
+		t.Fatalf("removed gaggle's terminal claim survived startup cleanup: %+v", entry)
+	}
+}
+
 // TestRunAbortRejectsStaleTerminalCheckpoint is #242's `run abort` acceptance
 // scenario: aborting a run whose journal already shows it finished — even
 // though its checkpoint still claims {running, ...} — must be rejected the

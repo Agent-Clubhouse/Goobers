@@ -6,6 +6,7 @@ package telemetry
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -46,6 +48,7 @@ type Config struct {
 	Exporter           ExporterKind
 	OTLPEndpoint       string
 	OTLPInsecure       bool
+	OTLPHeaders        map[string]string
 	Stdout             io.Writer
 	SpanExporter       sdktrace.SpanExporter
 	Scrubber           journal.Scrubber
@@ -55,10 +58,11 @@ type Config struct {
 
 // Client owns the OTel tracer and meter providers for a Goobers process.
 type Client struct {
-	tracerProvider *sdktrace.TracerProvider
-	meterProvider  *metric.MeterProvider
-	tracer         trace.Tracer
-	scrubber       journal.Scrubber
+	tracerProvider     *sdktrace.TracerProvider
+	localSpanProcessor sdktrace.SpanProcessor
+	meterProvider      *metric.MeterProvider
+	tracer             trace.Tracer
+	scrubber           journal.Scrubber
 }
 
 // New configures OpenTelemetry tracing and metrics for a Goobers process.
@@ -79,14 +83,14 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("build telemetry resource: %w", err)
 	}
 
-	exporter, err := spanExporter(ctx, cfg)
+	exporters, err := spanExporters(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	spanLimits := sdktrace.NewSpanLimits()
-	// A task span spans every retry, so keep a finite total-span budget. The
-	// SDK reports overflow through ReadOnlySpan.DroppedEvents.
+	// Bound within-attempt event accumulation. The SDK reports overflow through
+	// ReadOnlySpan.DroppedEvents.
 	spanLimits.EventCountLimit = maxSpanEvents
 	// Ingest rejects larger attribute maps and reserves room for required
 	// telemetry metadata, so accepted records cannot be partially truncated.
@@ -96,10 +100,16 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		sdktrace.WithIDGenerator(runIDGenerator{}),
 		sdktrace.WithRawSpanLimits(spanLimits),
 	}
-	if cfg.Batch {
-		options = append(options, sdktrace.WithBatcher(exporter))
-	} else {
-		options = append(options, sdktrace.WithSyncer(exporter))
+	processors := make([]sdktrace.SpanProcessor, 0, len(exporters))
+	for _, exporter := range exporters {
+		var processor sdktrace.SpanProcessor
+		if cfg.Batch {
+			processor = sdktrace.NewBatchSpanProcessor(exporter)
+		} else {
+			processor = sdktrace.NewSimpleSpanProcessor(exporter)
+		}
+		processors = append(processors, processor)
+		options = append(options, sdktrace.WithSpanProcessor(processor))
 	}
 
 	tracerProvider := sdktrace.NewTracerProvider(options...)
@@ -107,12 +117,16 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	otel.SetTracerProvider(tracerProvider)
 	otel.SetMeterProvider(meterProvider)
 
-	return &Client{
+	client := &Client{
 		tracerProvider: tracerProvider,
 		meterProvider:  meterProvider,
 		tracer:         tracerProvider.Tracer(ScopeName),
 		scrubber:       scrubber,
-	}, nil
+	}
+	if cfg.SpanExporter != nil {
+		client.localSpanProcessor = processors[0]
+	}
+	return client, nil
 }
 
 // NewRunID returns a valid OpenTelemetry trace id for use as a Goobers run id.
@@ -223,6 +237,18 @@ func (c *Client) Flush(ctx context.Context) error {
 	return nil
 }
 
+// FlushLocal forces pending spans through the caller-provided exporter without
+// waiting for a separately configured remote exporter.
+func (c *Client) FlushLocal(ctx context.Context) error {
+	if c.localSpanProcessor == nil {
+		return nil
+	}
+	if err := c.localSpanProcessor.ForceFlush(ctx); err != nil {
+		return fmt.Errorf("flush local telemetry traces: %w", err)
+	}
+	return nil
+}
+
 // Shutdown flushes and shuts down telemetry providers.
 func (c *Client) Shutdown(ctx context.Context) error {
 	var errs []error
@@ -235,11 +261,16 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func spanExporter(ctx context.Context, cfg Config) (sdktrace.SpanExporter, error) {
+func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, error) {
+	var exporters []sdktrace.SpanExporter
 	if cfg.SpanExporter != nil {
-		return cfg.SpanExporter, nil
+		exporters = append(exporters, cfg.SpanExporter)
+	}
+	if cfg.Exporter == "" && len(exporters) != 0 {
+		return exporters, nil
 	}
 
+	var exporter sdktrace.SpanExporter
 	switch cfg.Exporter {
 	case "", ExporterStdout:
 		opts := []stdouttrace.Option{stdouttrace.WithPrettyPrint()}
@@ -248,11 +279,11 @@ func spanExporter(ctx context.Context, cfg Config) (sdktrace.SpanExporter, error
 		} else {
 			opts = append(opts, stdouttrace.WithWriter(os.Stdout))
 		}
-		exporter, err := stdouttrace.New(opts...)
+		var err error
+		exporter, err = stdouttrace.New(opts...)
 		if err != nil {
 			return nil, fmt.Errorf("create stdout telemetry exporter: %w", err)
 		}
-		return exporter, nil
 	case ExporterOTLP:
 		opts := []otlptracegrpc.Option{}
 		if cfg.OTLPEndpoint != "" {
@@ -264,15 +295,25 @@ func spanExporter(ctx context.Context, cfg Config) (sdktrace.SpanExporter, error
 		}
 		if cfg.OTLPInsecure {
 			opts = append(opts, otlptracegrpc.WithInsecure())
+		} else {
+			opts = append(opts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(&tls.Config{
+				MinVersion: tls.VersionTLS12,
+			})))
 		}
-		exporter, err := otlptracegrpc.New(ctx, opts...)
+		headers := make(map[string]string, len(cfg.OTLPHeaders))
+		for name, value := range cfg.OTLPHeaders {
+			headers[name] = value
+		}
+		opts = append(opts, otlptracegrpc.WithHeaders(headers))
+		var err error
+		exporter, err = otlptracegrpc.New(ctx, opts...)
 		if err != nil {
 			return nil, fmt.Errorf("create otlp telemetry exporter: %w", err)
 		}
-		return exporter, nil
 	default:
 		return nil, fmt.Errorf("unsupported telemetry exporter %q", cfg.Exporter)
 	}
+	return append(exporters, exporter), nil
 }
 
 func resourceAttrs(serviceName string, cfg Config) []attribute.KeyValue {

@@ -3,14 +3,8 @@
 This directory is a **reference example** of a Goobers `config` repo: the workforce
 as code that a deploy/reconcile drives into a running instance (config-as-code,
 `docs/requirements/config-as-code.md`). It is intentionally minimal — one gaggle,
-one coder goober, and the default length-1 workflow — so it reads as a starting
-point, not a kitchen sink.
-
-Validate it with the `validate` CLI:
-
-```sh
-go run ./cmd/validate ./config-examples      # exits 0
-```
+one coder goober, and a manual claim-then-implement workflow — so it reads as a
+starting point, not a kitchen sink.
 
 ## Folder layout
 
@@ -28,8 +22,8 @@ config-examples/
         <workflow-name>.yaml            # kind: Workflow (tasks + gates)
 ```
 
-The layout is a convention for discoverability (CFG-007); the `validate` CLI and
-the operator key off each object's `kind` + `metadata.name`, not its path, so you
+The layout is a convention for discoverability (CFG-007); config loading keys
+off each object's `kind` + `metadata.name`, not its path, so you
 may split or combine files as you like (multi-document YAML with `---` is
 supported).
 

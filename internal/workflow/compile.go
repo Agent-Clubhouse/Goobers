@@ -75,6 +75,19 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	m := newMachine(def)
 
 	var problems []string
+	problems = append(problems, CheckWorkflowFeatures(def)...)
+	if o.goobers != nil {
+		names := make([]string, 0, len(o.goobers))
+		for name := range o.goobers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			for _, problem := range CheckGooberFeatures(o.goobers[name]) {
+				problems = append(problems, fmt.Sprintf("goober %q: %s", name, problem))
+			}
+		}
+	}
 	problems = append(problems, structuralProblems(m)...)
 	// Reachability and loop analysis only make sense on a well-formed graph;
 	// when the structure is broken those problems are already reported and the
@@ -86,7 +99,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	problems = append(problems, evaluatorSupportProblems(def)...)
 	problems = append(problems, gateOutcomeProblems(def, o.knownChecks)...)
 	problems = append(problems, triggerFieldProblems(def)...)
-	problems = append(problems, admissionProblems(def, o.goobers, o.knownHarnesses)...)
+	problems = append(problems, admissionProblems(def, o.goobers, o.knownHarnesses, true)...)
 	problems = append(problems, gateVocabProblems(def)...)
 	problems = append(problems, gateParamProblems(def)...)
 	problems = append(problems, workspaceProblems(def)...)
@@ -249,7 +262,7 @@ func reachabilityProblems(m *Machine) []string {
 // admissionProblems reports capability and harness violations. Built-in task
 // requirements are intrinsic to the workflow and always checked; goober grant
 // and harness checks require the referenced goober definitions.
-func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool) []string {
+func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, checkAllGooberCapabilities bool) []string {
 	var problems []string
 	for _, t := range def.Spec.Tasks {
 		if t.Inputs["kind"] == "ci-poll" && !toSet(t.Capabilities)[string(capability.GitHubPRWrite)] {
@@ -260,18 +273,20 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		return problems
 	}
 
-	// Every granted capability must be a canonical one (internal/capability,
-	// issue #74) — sorted for deterministic error ordering, since map
-	// iteration order is not.
-	names := make([]string, 0, len(goobers))
-	for name := range goobers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		for _, c := range goobers[name].Capabilities {
-			if !capability.Known(c) {
-				problems = append(problems, fmt.Sprintf("goober %q grants unknown capability %q", name, c))
+	if checkAllGooberCapabilities {
+		// Every granted capability must be a canonical one (internal/capability,
+		// issue #74) — sorted for deterministic error ordering, since map
+		// iteration order is not.
+		names := make([]string, 0, len(goobers))
+		for name := range goobers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			for _, c := range goobers[name].Capabilities {
+				if !capability.Known(c) {
+					problems = append(problems, fmt.Sprintf("goober %q grants %s", name, unknownCapability(c)))
+				}
 			}
 		}
 	}
@@ -300,7 +315,7 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		// entirely).
 		for _, cap := range t.Capabilities {
 			if !capability.Known(cap) {
-				problems = append(problems, fmt.Sprintf("task %q declares unknown capability %q", t.Name, cap))
+				problems = append(problems, fmt.Sprintf("task %q declares %s", t.Name, unknownCapability(cap)))
 			}
 		}
 		if t.Type != apiv1.TaskAgentic || t.Goober == "" {
@@ -324,6 +339,14 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		}
 	}
 	return problems
+}
+
+func unknownCapability(value string) string {
+	message := fmt.Sprintf("unknown capability %q", value)
+	if suggestion, ok := capability.Suggest(value); ok {
+		message += fmt.Sprintf(" (did you mean %q?)", suggestion)
+	}
+	return message
 }
 
 // agenticOutcomes is the closed set of decisions an agentic gate's reviewer

@@ -147,7 +147,7 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 		}
 
 		path := filepath.Join(m.runsDirForKey(key), mk.RunID)
-		if err := m.reapOne(ctx, key, path, markerPath); err != nil {
+		if err := m.reapOne(ctx, key, path, markerPath, &mk); err != nil {
 			return results, warnings, fmt.Errorf("worktree: reap run %s: %w", mk.RunID, err)
 		}
 		results = append(results, ReapResult{RunID: mk.RunID, Path: path, Reason: reason})
@@ -201,7 +201,7 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 			}
 		}
 		markerPath := m.markerPath(key, e.Name())
-		if err := m.reapOne(ctx, key, path, markerPath); err != nil {
+		if err := m.reapOne(ctx, key, path, markerPath, nil); err != nil {
 			return results, warnings, fmt.Errorf("worktree: reap markerless run %s: %w", e.Name(), err)
 		}
 		results = append(results, ReapResult{RunID: e.Name(), Path: path, Reason: ReapReasonMarkerless})
@@ -209,12 +209,17 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 	return results, warnings, nil
 }
 
-func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string) error {
+func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk *marker) error {
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
 
 	repoDir := m.repoDirForKey(key)
+	if mk != nil {
+		if err := m.restoreReservedBranchFromMarker(ctx, key, path, *mk); err != nil {
+			return err
+		}
+	}
 	if err := runGit(ctx, repoDir, "worktree", "remove", "--force", path); err != nil {
 		// The worktree directory itself may already be gone (e.g. the crash
 		// happened mid-remove); prune the administrative metadata instead of

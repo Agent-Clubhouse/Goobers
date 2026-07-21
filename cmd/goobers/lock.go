@@ -8,9 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/version"
 )
 
@@ -37,7 +37,7 @@ type instanceLockState struct {
 	HolderPID    int            `json:"holderPid"`
 }
 
-// acquireInstanceLock takes a non-blocking exclusive flock on lockPath so a
+// acquireInstanceLock takes a non-blocking exclusive lock on lockPath so a
 // second `goobers up` on the same instance root fails fast with a clear
 // message (issue #23 AC3) instead of two daemons racing the same
 // runs/scheduler state. The returned release func unlocks and closes the
@@ -61,14 +61,10 @@ func acquireDaemonLock(lockPath, instanceRoot string) (release func(), err error
 }
 
 func acquireInstanceLockWithIdentity(lockPath string, identity *daemonIdentity) (release func(), err error) {
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	held, err := lock.TryAcquire(lockPath)
 	if err != nil {
-		return nil, fmt.Errorf("open lock file: %w", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			state, _ := readInstanceLockState(f)
-			_ = f.Close()
+		if errors.Is(err, lock.ErrHeld) {
+			state, _ := readInstanceLockStatePath(lockPath)
 			if state != nil && state.HolderKind == lockHolderDaemon {
 				return nil, fmt.Errorf(
 					"another `goobers up` already holds the lock on this instance root (%s; holder pid %d)",
@@ -78,9 +74,9 @@ func acquireInstanceLockWithIdentity(lockPath string, identity *daemonIdentity) 
 			}
 			return nil, fmt.Errorf("another `goobers up` already holds the lock on this instance root (%s)", lockPath)
 		}
-		_ = f.Close()
 		return nil, fmt.Errorf("acquire lock: %w", err)
 	}
+	f := held.File()
 	holderKind := lockHolderDaemon
 	holderPID := os.Getpid()
 	if identity == nil {
@@ -93,13 +89,10 @@ func acquireInstanceLockWithIdentity(lockPath string, identity *daemonIdentity) 
 		holderPID = identity.PID
 	}
 	if err := writeInstanceLockState(f, newInstanceLockState(identity, holderKind, holderPID)); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-		return nil, err
+		return nil, errors.Join(err, held.Release())
 	}
 	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
+		_ = held.Release()
 	}, nil
 }
 
@@ -185,6 +178,15 @@ func readInstanceLockState(f *os.File) (*instanceLockState, error) {
 	return &state, nil
 }
 
+func readInstanceLockStatePath(lockPath string) (*instanceLockState, error) {
+	f, err := os.Open(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	return readInstanceLockState(f)
+}
+
 func (s instanceLockState) daemonIdentity() (*daemonIdentity, error) {
 	hasIdentity := s.PID != 0 || s.StartedAt != nil || s.InstanceRoot != "" || s.Version != ""
 	if !hasIdentity {
@@ -209,11 +211,12 @@ func inspectDaemonLock(lockPath string) (running bool, identity *daemonIdentity,
 		}
 		return false, nil, fmt.Errorf("open lock file: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	_ = f.Close()
 
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			state, readErr := readInstanceLockState(f)
+	held, err := lock.TryAcquire(lockPath)
+	if err != nil {
+		if errors.Is(err, lock.ErrHeld) {
+			state, readErr := readInstanceLockStatePath(lockPath)
 			if readErr != nil || state == nil {
 				return false, nil, readErr
 			}
@@ -225,8 +228,8 @@ func inspectDaemonLock(lockPath string) (running bool, identity *daemonIdentity,
 		}
 		return false, nil, fmt.Errorf("inspect lock: %w", err)
 	}
-	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	defer func() { _ = held.Release() }()
 
-	identity, err = readDaemonIdentity(f)
+	identity, err = readDaemonIdentity(held.File())
 	return false, identity, err
 }

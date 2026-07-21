@@ -74,11 +74,13 @@ spec:
     - name: check-todos
       type: deterministic
       goal: Count tracked TODO markers and publish the full listing.
+      timeoutSeconds: 30
       run:
         command: ["sh", "scripts/check-todos.sh"]
+        env:
+          LC_ALL: C
       inputs:
         resultFile: "todo-check-result.json"
-        timeout: "30s"
         maxOutputBytes: "65536"
       capabilities: []
       next: todos-found
@@ -167,13 +169,23 @@ the `todos-found` gate must evaluate.
 
 ### Limits and environment
 
-- `timeout` is a Go duration such as `30s` or `5m`; the default is 10 minutes.
-  A timeout kills the process group and returns a retryable failure.
+- `timeoutSeconds` bounds each task attempt; the default for deterministic
+  commands is 10 minutes, and for agentic stages 30 minutes. A timeout kills
+  the process group and returns a retryable failure.
+- To raise the baseline for a goober that does large work (a bigger
+  implementation task legitimately exceeding 30 minutes) without stamping
+  `timeoutSeconds` onto every stage, set `spec.timeoutSeconds` on the goober
+  itself. Precedence is task `timeoutSeconds` > goober `spec.timeoutSeconds` >
+  the built-in default; unset at both levels keeps the built-in.
+- `limits.maxTokens` and `limits.maxCostUSD` carry optional agent-usage bounds
+  into the invocation envelope. `limits.maxDurationSeconds` is also accepted,
+  but `timeoutSeconds` takes precedence when both are set.
 - `maxOutputBytes` is a positive decimal byte count for each captured stream.
   The default is 1 MiB per stdout/stderr stream. Excess output is truncated and
   reported by `stdoutTruncated` or `stderrTruncated`.
 - The command's working directory is the fresh project worktree.
-- Ambient environment is default-deny. Goobers carries only tool/runtime
+- Ambient environment is default-deny. Add explicit command variables under
+  `run.env`. Goobers otherwise carries only tool/runtime
   basics (`PATH`, `HOME`, `TMPDIR`, XDG, locale, CA/proxy, and Go toolchain
   variables), declared inputs as normalized `GOOBERS_INPUT_*` variables, and
   credentials for declared capabilities as `GOOBERS_CRED_*`.

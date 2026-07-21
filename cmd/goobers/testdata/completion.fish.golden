@@ -8,7 +8,7 @@ function __goobers_completion_runs
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'init scaffold validate up dashboard run signal workflow runs status stats trace telemetry telemetry-query journal backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge gather-pr-context rebase-pr remediation-checkpoint completion version help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'init scaffold validate up dashboard run signal workflow runs status stats trace escalations telemetry telemetry-query journal claims backlog-query push-branch open-pr issue-close-out reset-rate-limit merge-pr merge-queue-poll pr-select gather-sibling-context apply-verdict post-merge update-behind-pr gather-pr-context rebase-pr remediation-checkpoint completion version help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -18,17 +18,21 @@ complete -c goobers -n '__fish_seen_subcommand_from scaffold; and test (count (c
 complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (commandline -opc)) -eq 2' -f -k -a 'abort (__goobers_completion_workflows)'
 complete -c goobers -n '__fish_seen_subcommand_from run; and __fish_seen_subcommand_from abort; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_runs)'
 complete -c goobers -n '__fish_seen_subcommand_from trace; and test (count (commandline -opc)) -eq 2' -f -k -a '(__goobers_completion_runs)'
+complete -c goobers -n '__fish_seen_subcommand_from escalations; and test (count (commandline -opc)) -eq 2' -f -a 'show'
+complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -k -a '(command goobers __complete escalations 2>/dev/null)'
 
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and test (count (commandline -opc)) -eq 2' -f -a 'show'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -a '(__goobers_completion_workflows)'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and test (count (commandline -opc)) -eq 2' -f -a 'list du'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'stats errors'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
+complete -c goobers -n '__fish_seen_subcommand_from claims; and test (count (commandline -opc)) -eq 2' -f -a 'list release'
 
 complete -c goobers -n '__fish_seen_subcommand_from scaffold' -l force -d 'Replace generated files that already exist'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l check-harness -d 'Check agent harnesses'
 complete -c goobers -n '__fish_seen_subcommand_from validate' -l source-tree -d 'Validate a checked-in config source tree'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress liveness heartbeats'
+complete -c goobers -n '__fish_seen_subcommand_from up' -l cleanup-spans-only-runs -d 'Delete reported legacy spans-only run directories at startup'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l port -r -d 'Dashboard port or auto'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l no-open -d 'Print the URL without opening a browser'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l dev-assets -r -d 'Serve a local portal build'
@@ -47,8 +51,10 @@ complete -c goobers -n '__fish_seen_subcommand_from stats' -l since -r -d 'Only 
 complete -c goobers -n '__fish_seen_subcommand_from stats' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l no-wait -d 'Return after the run is dispatched'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from trace' -l follow -d 'Stream events until the run reaches a terminal phase'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l transcripts -d 'Show every recorded agent-stage transcript'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l transcript -r -d 'Show recorded transcript data for one stage'
+complete -c goobers -n '__fish_seen_subcommand_from escalations' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from stats errors' -l workflow -r -a '(__goobers_completion_workflows)' -d 'Filter by workflow'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from stats errors' -l gaggle -r -d 'Filter by gaggle'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from errors' -l class -r -d 'Filter by error class'
@@ -58,6 +64,9 @@ complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_sub
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l path -r -d 'Journal path'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l reason -r -d 'Redaction reason'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l secret-file -r -d 'Secret file'
+complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l stale -d 'Show only expired claims'
+complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from release' -l force -d 'Release a claim held by a non-terminal run'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l claim -d 'Claim an item'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l release -d 'Release a claim'
 complete -c goobers -n '__fish_seen_subcommand_from apply-verdict' -l gate -r -d 'Gate name'

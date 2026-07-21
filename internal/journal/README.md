@@ -64,7 +64,7 @@ for the machine-readable contract; every field there is tagged
 |---|---|
 | `schema` | envelope version (`goobers.dev/journal/event/v1`) |
 | `seq` | monotonic per-run sequence from 1 — the ordering key |
-| `type` | `run.started` · `run.finished` · `stage.started` · `stage.finished` · `gate.evaluated` · `artifact.recorded` · `span.recorded` · `input.snapshot` · `ref.touched` · `error` · `redaction` · `repaired` |
+| `type` | `run.started` · `run.finished` · `stage.started` · `stage.heartbeat` · `stage.finished` · `gate.evaluated` · `artifact.recorded` · `span.recorded` · `input.snapshot` · `ref.touched` · `error` · `redaction` · `repaired` |
 | `branch` | 0 at tiers 1–2; reserved for tier-3 parallel branches |
 | `time` | timestamp — **excluded** from conformance |
 | `stage`/`attempt`/`attemptClass` | stage identity; `attemptClass` is `policy` or `infra` |
@@ -86,9 +86,10 @@ on either runner. "Equivalent" compares only the **normative** fields, in
   external-ref identity `(provider, kind, id)`, artifact **digest**, error
   `code`, redaction digests. Retry attempts count **only when
   `attemptClass != "infra"`**.
-- **Excluded:** `time` and any duration, `spans/` (and its `span.recorded`
-  events — harness/LLM output, structural only), `state.json` (derived), the
-  entire `runner.*` namespace, `ref.path`/`size`, `url`, human `message`.
+- **Excluded:** `time` and any duration, `stage.heartbeat`, `spans/` (and its
+  `span.recorded` events — harness/LLM output, structural only), `state.json`
+  (derived), the entire `runner.*` namespace, `ref.path`/`size`, `url`, human
+  `message`.
 
 `Event.IsConformanceNormative()` and the per-field `x-conformance` markers in the
 schema drive #29's determinism assertion and the V2 conformance harness (#40).
@@ -132,13 +133,14 @@ current version; the schema validates that exact shape).
 Alongside per-run journals, the instance root has its own long-lived log at
 `<instance-root>/scheduler/events.jsonl` (§4/§6): scheduler decisions
 (`trigger.fired`, `tick.skipped`, an instance-level `run.started`/`run.finished`
-echo) and claim-ledger transitions (`claim.acquired`, `claim.released`). It uses
+echo) and claim-ledger transitions (`claim.acquired`, `claim.released`,
+`claim.force_released`). It uses
 the **same envelope, same append+fsync durability, and the same torn-tail
 crash-recovery** as a run's `events.jsonl` — `InstanceLog` shares its core with
 `Run` (`appendEvent`, `truncateTornTail`) rather than duplicating it. Unlike a
 `Run`, it is opened once for the daemon's lifetime (`OpenInstanceLog`), not once
-per run, and carries no `run.yaml`/`state.json`/artifacts. The four
-instance-only event types add two informational fields not used in a run's own
+per run, and carries no `run.yaml`/`state.json`/artifacts. Instance-only event
+types add two informational fields not used in a run's own
 log: `workflow` (which workflow the decision concerns) and `runId` (which run a
 claim/dispatch pertains to) — a run's own events don't need either since both
 are implicit from the run directory.

@@ -1,17 +1,24 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // copilotAuthCheckArgs is the confirmed non-interactive Copilot authentication
@@ -42,15 +49,18 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	checkHarness := fs.Bool("check-harness", false, "also verify every referenced agent harness is installed and signed in")
+	checkRepos := fs.Bool("check-repos", false, "also verify every target repository is reachable with its configured credential")
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
 	fs.Usage = func() {
-		pf(stderr, "Usage: goobers validate [--check-harness] [--source-tree] [path]\n\n"+
+		pf(stderr, "Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [path]\n\n"+
 			"Validate an instance's instance.yaml and config/ directory (default\n"+
 			"path \".\"). --source-tree validates a checked-in config source tree\n"+
 			"using instance.yaml.example and the path itself as config/. "+
 			"--check-harness additionally preflights every agent harness\n"+
 			"referenced by a goober (GBO-011) — installed, signed in, actionable\n"+
-			"guidance otherwise. Exit codes: 0 = valid, 1 = validation errors, 2 = usage/IO error.\n")
+			"guidance otherwise. --check-repos resolves each target repository's\n"+
+			"token and verifies authenticated git access. Exit codes: 0 = valid,\n"+
+			"1 = validation errors, 2 = usage/IO error.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -80,7 +90,8 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if _, err := instance.LoadConfig(configFile); err != nil {
+	cfg, err := instance.LoadConfig(configFile)
+	if err != nil {
 		pf(stdout, "INVALID instance.yaml:\n  %v\n", err)
 		return 1
 	}
@@ -100,9 +111,6 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
-		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
-
 	// api/validate's cross-reference checks (above) mirror most of
 	// workflow.Compile's own semantic analysis (CheckReachability/
 	// CheckSchedules/CheckGateOutcomes/CheckAdmission), but this is the one
@@ -120,7 +128,109 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
+	if *checkRepos && !checkTargetRepositories(cfg.Repos, stdout) {
+		return 1
+	}
+	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
+		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
 	return 0
+}
+
+const (
+	repositoryPreflightTimeout = 30 * time.Second
+	repositoryKillWaitDelay    = time.Second
+)
+
+var targetRepositoryReachable = gitRepositoryReachable
+
+func checkTargetRepositories(repos []instance.RepoRef, stdout io.Writer) bool {
+	if len(repos) == 0 {
+		pln(stdout, "REPOSITORY: no target repositories configured; nothing to check")
+		return true
+	}
+	ok := true
+	for i, repo := range repos {
+		label := fmt.Sprintf("repos[%d] %s/%s", i, repo.Owner, repo.Name)
+		refName := fmt.Sprintf("validate-repo-%d", i)
+		var token string
+		resolver, err := credentials.NewResolver([]credentials.TokenRef{{
+			Name: refName,
+			Env:  repo.Token.Env,
+			File: repo.Token.File,
+		}})
+		if err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
+			token, err = resolver.Resolve(ctx, refName)
+			if err == nil {
+				err = targetRepositoryReachable(ctx, repo, token)
+			}
+			cancel()
+		}
+		if err != nil {
+			pf(stdout, "REPOSITORY %s: unreachable: %s\n", label, scrubRepositoryError(err, token))
+			pf(stdout, "  Check the owner/name, token source, repository access, and network connection.\n")
+			ok = false
+			continue
+		}
+		pf(stdout, "REPOSITORY %s: reachable\n", label)
+	}
+	return ok
+}
+
+func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token string) error {
+	if repo.Provider != "github" {
+		return fmt.Errorf("provider %q does not support repository preflight", repo.Provider)
+	}
+	url := fmt.Sprintf("https://github.com/%s/%s.git", repo.Owner, repo.Name)
+	cmd := exec.Command("git",
+		"-c", "credential.helper=",
+		"-c", "credential.interactive=never",
+		"ls-remote", url,
+	)
+	cmd.Env = append(gitAuthEnv(token), "GIT_TERMINAL_PROMPT=0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+
+	var err error
+	select {
+	case err = <-waitDone:
+	case <-ctx.Done():
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		select {
+		case <-waitDone:
+		case <-time.After(repositoryKillWaitDelay):
+			// A descendant may have escaped the group while retaining an
+			// output pipe. Do not let cmd.Wait block validation indefinitely.
+		}
+		return ctx.Err()
+	}
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	detail := strings.TrimSpace(output.String())
+	if detail == "" {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, detail)
+}
+
+func scrubRepositoryError(err error, token string) string {
+	registry := journal.NewRegistryScrubber()
+	registry.Register([]byte(token))
+	scrubber := journal.Chain(registry, journal.NewPatternScrubber())
+	return string(scrubber.Scrub([]byte(err.Error())))
 }
 
 // harnessAdapterFor is the harness-adapter lookup checkHarnesses uses.

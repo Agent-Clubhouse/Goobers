@@ -3,6 +3,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +48,34 @@ type Authorizer interface {
 	Authorize(*http.Request) error
 }
 
+// Principal is the identity established by an Authenticator.
+type Principal struct {
+	Subject string
+}
+
+// Authenticator establishes the caller identity before authorization.
+type Authenticator interface {
+	Authenticate(*http.Request) (*Principal, error)
+}
+
+// NullAuthenticator is the tier-1 local-trust authenticator. It requires no
+// identity and leaves the request anonymous.
+type NullAuthenticator struct{}
+
+// Authenticate accepts anonymous local requests.
+func (NullAuthenticator) Authenticate(*http.Request) (*Principal, error) { return nil, nil }
+
+type principalContextKey struct{}
+
+// PrincipalFromRequest returns the identity established for a request.
+func PrincipalFromRequest(request *http.Request) (Principal, bool) {
+	if request == nil {
+		return Principal{}, false
+	}
+	principal, ok := request.Context().Value(principalContextKey{}).(Principal)
+	return principal, ok
+}
+
 type authorizerFunc func(*http.Request) error
 
 func (f authorizerFunc) Authorize(r *http.Request) error { return f(r) }
@@ -55,25 +84,22 @@ func (f authorizerFunc) Authorize(r *http.Request) error { return f(r) }
 var AllowAll Authorizer = authorizerFunc(func(*http.Request) error { return nil })
 
 // ErrorEnvelope is the single error shape returned by every API route.
-type ErrorEnvelope struct {
-	Error APIError `json:"error"`
-}
+type ErrorEnvelope = apicontract.ErrorEnvelope
 
 // APIError is a stable machine code and safe human-readable message.
-type APIError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
+type APIError = apicontract.APIError
 
 // Router registers read-only routes behind an Authorizer.
 type Router struct {
-	mux        *http.ServeMux
-	authorizer Authorizer
-	routes     []apicontract.Route
+	mux           *http.ServeMux
+	authenticator Authenticator
+	authorizer    Authorizer
+	routes        []apicontract.Route
 }
 
 type handlerConfig struct {
-	events *EventStream
+	events        *EventStream
+	authenticator Authenticator
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -86,6 +112,17 @@ func WithEventStream(stream *EventStream) HandlerOption {
 			return errors.New("http API event stream is required")
 		}
 		config.events = stream
+		return nil
+	}
+}
+
+// WithAuthenticator replaces the tier-1 NullAuthenticator.
+func WithAuthenticator(authenticator Authenticator) HandlerOption {
+	return func(config *handlerConfig) error {
+		if authenticator == nil {
+			return errors.New("http API authenticator is required")
+		}
+		config.authenticator = authenticator
 		return nil
 	}
 }
@@ -103,6 +140,13 @@ func (h *apiHandler) shutdown() {
 
 // NewRouter constructs an empty API router.
 func NewRouter(authorizer Authorizer) (*Router, error) {
+	return newRouter(NullAuthenticator{}, authorizer)
+}
+
+func newRouter(authenticator Authenticator, authorizer Authorizer) (*Router, error) {
+	if authenticator == nil {
+		return nil, errors.New("http API authenticator is required")
+	}
 	if authorizer == nil {
 		return nil, errors.New("http API authorizer is required")
 	}
@@ -110,7 +154,7 @@ func NewRouter(authorizer Authorizer) (*Router, error) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "route not found")
 	})
-	return &Router{mux: mux, authorizer: authorizer}, nil
+	return &Router{mux: mux, authenticator: authenticator, authorizer: authorizer}, nil
 }
 
 // Handle registers a typed contract route. Other methods receive the structured
@@ -126,6 +170,14 @@ func (r *Router) Handle(routeID apicontract.RouteID, handler http.HandlerFunc) {
 			w.Header().Set("Allow", route.Method)
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
+		}
+		principal, err := r.authenticator.Authenticate(request)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "unauthenticated", "request is not authenticated")
+			return
+		}
+		if principal != nil {
+			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, *principal))
 		}
 		if err := r.authorizer.Authorize(request); err != nil {
 			writeError(w, http.StatusForbidden, "forbidden", "request is not authorized")
@@ -163,13 +215,13 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if errorLog == nil {
 		return nil, errors.New("http API error logger is required")
 	}
-	config := handlerConfig{}
+	config := handlerConfig{authenticator: NullAuthenticator{}}
 	for _, opt := range opts {
 		if err := opt(&config); err != nil {
 			return nil, err
 		}
 	}
-	router, err := NewRouter(authorizer)
+	router, err := newRouter(config.authenticator, authorizer)
 	if err != nil {
 		return nil, err
 	}

@@ -105,11 +105,18 @@ type Outcome struct {
 	// Payload is the raw bytes read from CompletionPath — unvalidated; the
 	// Executor validates it against the mode's schema.
 	Payload []byte
+	// Metrics contains adapter-observed numeric measures under canonical
+	// telemetry names. An absent measure is omitted; an observed zero is kept.
+	Metrics map[string]float64
 	// Transcript is the raw (unredacted) harness transcript, for the caller
 	// to scrub and record as a journal span (GBO-020). Bounded at
 	// MaxTranscriptBytes — a truncated transcript carries a trailing marker
 	// (#245), never a silently cut-off blob.
 	Transcript []byte
+	// TranscriptSchema identifies Transcript's record shape when the adapter
+	// already produced structured events. Empty means the Executor must emit
+	// the adapter-composed canonical prompt/output floor.
+	TranscriptSchema string
 	// TranscriptTruncated reports whether Transcript was capped.
 	TranscriptTruncated bool
 	// TranscriptDroppedBytes is how many transcript bytes were discarded past
