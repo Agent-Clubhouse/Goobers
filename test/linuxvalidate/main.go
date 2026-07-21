@@ -65,11 +65,10 @@ func main() {
 }
 
 func defaultBin() string {
-	name := "goobers"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	return filepath.Join("bin", name)
+	// This orchestrator is unix-only (//go:build unix), so the built binary is
+	// always plain "bin/goobers" — no ".exe" branch, which staticcheck would
+	// (correctly) flag as unreachable dead code under the build constraint.
+	return filepath.Join("bin", "goobers")
 }
 
 func run(bin, outDir string) error {
