@@ -340,13 +340,33 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 // this guard fills only a missing result, preserving the actual stderr reason
 // from early business failures that returned before reaching those writers.
 func runProviderStageCommand(name, resultFileDefault string, handler cliCommandHandler, args []string, stdout, stderr io.Writer) int {
+	resultFile := providerInput("resultFile", resultFileDefault)
+	if resultFile != "" {
+		if err := os.Remove(resultFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			message := fmt.Sprintf("prepare provider-stage result %s: %v", resultFile, err)
+			pf(stderr, "error: %s\n", message)
+			errorCode, retryable, extra := classifyProviderError(errors.New(message))
+			payload := map[string]interface{}{
+				executor.OutputErrorCode:      errorCode,
+				executor.OutputErrorMessage:   message,
+				executor.OutputErrorRetryable: retryable,
+			}
+			for key, value := range extra {
+				payload[key] = value
+			}
+			if writeErr := writeProviderStageResult(resultFile, payload); writeErr != nil {
+				pf(stderr, "warning: write provider-stage result %s: %v\n", resultFile, writeErr)
+			}
+			return 1
+		}
+	}
+
 	var captured bytes.Buffer
 	code := handler(args, stdout, io.MultiWriter(stderr, &captured))
 	if code == 2 {
 		return code
 	}
 
-	resultFile := providerInput("resultFile", resultFileDefault)
 	if resultFile == "" || validProviderStageResult(resultFile) {
 		return code
 	}

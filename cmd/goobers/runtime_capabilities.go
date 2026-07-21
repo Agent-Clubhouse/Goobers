@@ -55,9 +55,10 @@ func (c cliCommand) withExamples(examples ...string) cliCommand {
 }
 
 // withProviderStageResult marks a provider-chain stage command as owning a
-// result file on every non-usage exit. An empty default requires the workflow
-// to declare inputs.resultFile. dispatch enforces the contract after the
-// handler returns, so new stages opt into the convention in one registry entry.
+// fresh result file on every non-usage exit. The default must match the shipped
+// workflow's result filename so standalone invocations retain the same
+// contract. dispatch enforces it, so new stages opt in through one registry
+// entry.
 func (c cliCommand) withProviderStageResult(resultFile string) cliCommand {
 	c.providerStage = true
 	c.resultFile = resultFile
@@ -321,7 +322,7 @@ func init() {
 			withHelp("open or update the run's PR (a workflow stage)", openPRHelp).
 			withExamples("goobers open-pr"),
 		command("issue-close-out", apicontract.ActionWorkflowExecution, runIssueCloseOut).
-			withProviderStageResult("").
+			withProviderStageResult("issue-close-out-result.json").
 			withSynopsis(synopsisByID["issue-close-out"]).
 			withHelp("comment + close out the claimed issue (a workflow stage)", issueCloseOutHelp).
 			withExamples("goobers issue-close-out"),
@@ -340,7 +341,7 @@ func init() {
 			withHelp("watch an enqueued PR until merged or evicted (a workflow stage)", mergeQueuePollHelp).
 			withExamples("goobers merge-queue-poll"),
 		command("post-merge", apicontract.ActionWorkflowExecution, runPostMerge).
-			withProviderStageResult("").
+			withProviderStageResult("post-merge-result.json").
 			withSynopsis(synopsisByID["post-merge"]).
 			withHelp("post-merge fan-out + close the referenced issue (a workflow stage)", postMergeHelp).
 			withExamples("goobers post-merge"),
@@ -387,7 +388,7 @@ func init() {
 			withHelp("rebase-first, finding-driven remediation routing (a workflow stage)", rebasePRHelp).
 			withExamples("goobers rebase-pr"),
 		command("remediation-checkpoint", apicontract.ActionWorkflowExecution, runRemediationCheckpoint).
-			withProviderStageResult("").
+			withProviderStageResult("checkpoint-result.json").
 			withSynopsis(synopsisByID["remediation-checkpoint"]).
 			withHelp("durable per-PR repass budget + same-diff escalation (a workflow stage)", remediationCheckpointHelp).
 			withExamples("goobers remediation-checkpoint --budget 3"),

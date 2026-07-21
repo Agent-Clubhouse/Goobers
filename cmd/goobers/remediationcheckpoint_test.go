@@ -572,6 +572,7 @@ func TestRemediationCheckpointPRNoLongerOpenIsMoot(t *testing.T) {
 // github:pr:write is absent.
 func TestRemediationCheckpointRefusesWithoutCapability(t *testing.T) {
 	instanceRoot := initDemo(t)
+	t.Chdir(t.TempDir())
 	t.Setenv("GOOBERS_RUN_ID", "run-364-nocap")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "77")
@@ -590,6 +591,7 @@ func TestRemediationCheckpointRefusesWithoutCapability(t *testing.T) {
 // uses elsewhere.
 func TestRemediationCheckpointRefusesWithoutRepoPushCapability(t *testing.T) {
 	instanceRoot := initDemo(t)
+	t.Chdir(t.TempDir())
 	t.Setenv("GOOBERS_RUN_ID", "run-364-norepopush")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
@@ -607,6 +609,7 @@ func TestRemediationCheckpointRefusesWithoutRepoPushCapability(t *testing.T) {
 // context's own required-input contract).
 func TestRemediationCheckpointRequiresSelectedNumber(t *testing.T) {
 	instanceRoot := initDemo(t)
+	t.Chdir(t.TempDir())
 	t.Setenv("GOOBERS_RUN_ID", "run-364-noinput")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
