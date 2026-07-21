@@ -30,9 +30,14 @@ func TestStatusAndRunsListShareRunTable(t *testing.T) {
 		t.Fatalf("status code = %d, stderr = %q; runs list code = %d, stderr = %q",
 			statusCode, statusStderr, runsCode, runsStderr)
 	}
-	const parkedSummary = "Issues parked on learned dependencies: 0\n"
-	if !strings.Contains(statusStdout, parkedSummary) {
-		t.Fatalf("status stdout = %q, want parked dependency summary", statusStdout)
+	for _, want := range []string{
+		"Issues parked on learned dependencies: 0\n",
+		"Open PRs with goobers:blocked-on-sibling: 0\n",
+		"Open PRs with goobers:merge-escalated: 0\n",
+	} {
+		if !strings.Contains(statusStdout, want) {
+			t.Fatalf("status stdout = %q, want it to contain %q", statusStdout, want)
+		}
 	}
 	runTableAt := strings.Index(statusStdout, "RUN ID")
 	if runTableAt == -1 || runsStdout != statusStdout[runTableAt:] {

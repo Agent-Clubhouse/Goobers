@@ -22,10 +22,12 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/providers"
 )
 
 const (
 	defaultStatusWatchInterval = 2 * time.Second
+	statusProviderQueryTimeout = 30 * time.Second
 	statusClearScreen          = "\x1b[H\x1b[2J"
 	statusHighlight            = "\x1b[1m"
 	statusReset                = "\x1b[0m"
@@ -56,6 +58,95 @@ func parkedDependencyStatusText(parked []parkedDependency) string {
 		pf(&text, "  #%s blocked by %s\n", dependency.ItemID, strings.Join(blockers, ", "))
 	}
 	return text.String()
+}
+
+type statusPRLabelCounts struct {
+	blockedOnSibling int
+	mergeEscalated   int
+}
+
+func prLabelStatusText(counts statusPRLabelCounts) string {
+	return fmt.Sprintf(
+		"Open PRs with %s: %d\nOpen PRs with %s: %d\n",
+		blockedOnSiblingLabel,
+		counts.blockedOnSibling,
+		remediationEscalatedLabel,
+		counts.mergeEscalated,
+	)
+}
+
+func prLabelStatusUnavailableText(err error) string {
+	return fmt.Sprintf("Open PR label counts unavailable: %v\n", err)
+}
+
+var (
+	loadStatusPRLabelCounts = queryStatusPRLabelCounts
+	newStatusGitHubProvider = providers.NewGitHubProvider
+)
+
+type statusPRLabelCountCache struct {
+	load     func(context.Context, *instance.Config) (statusPRLabelCounts, error)
+	now      func() time.Time
+	loadedAt time.Time
+	counts   statusPRLabelCounts
+	err      error
+}
+
+func newStatusPRLabelCountCache() *statusPRLabelCountCache {
+	return &statusPRLabelCountCache{
+		load: loadStatusPRLabelCounts,
+		now:  time.Now,
+	}
+}
+
+func (c *statusPRLabelCountCache) Load(ctx context.Context, cfg *instance.Config) (statusPRLabelCounts, error) {
+	if c.loadedAt.IsZero() || !c.now().Before(c.loadedAt.Add(localscheduler.DefaultOpenPRRefreshInterval)) {
+		c.counts, c.err = c.load(ctx, cfg)
+		c.loadedAt = c.now()
+	}
+	return c.counts, c.err
+}
+
+func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (statusPRLabelCounts, error) {
+	if len(cfg.Repos) == 0 {
+		return statusPRLabelCounts{}, errors.New("no target repository configured")
+	}
+	resolver, _, err := buildCredentials(cfg)
+	if err != nil {
+		return statusPRLabelCounts{}, err
+	}
+	repo := cfg.Repos[0]
+	ref := repo.Owner + "/" + repo.Name
+	ctx, cancel := context.WithTimeout(ctx, statusProviderQueryTimeout)
+	defer cancel()
+	token, err := resolver.Resolve(ctx, ref)
+	if err != nil {
+		return statusPRLabelCounts{}, fmt.Errorf("resolve status token for %s: %w", ref, err)
+	}
+	prs, err := newStatusGitHubProvider(token).ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: providers.RepositoryRef{
+			Provider: providers.ProviderGitHub,
+			Owner:    repo.Owner,
+			Name:     repo.Name,
+		},
+		SkipCheckState: true,
+	})
+	if err != nil {
+		return statusPRLabelCounts{}, fmt.Errorf("list open pull requests for %s: %s", ref, scrubRepositoryError(err, token))
+	}
+
+	var counts statusPRLabelCounts
+	for _, pr := range prs {
+		for _, label := range pr.Labels {
+			switch label {
+			case blockedOnSiblingLabel:
+				counts.blockedOnSibling++
+			case remediationEscalatedLabel:
+				counts.mergeEscalated++
+			}
+		}
+	}
+	return counts, nil
 }
 
 type statusJSONSummary struct {
@@ -366,7 +457,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "Validate active config, show warnings, and list runs under an instance's\n"+
 			"runs/ directory with their current phase, newest first (default path \".\").\n")
 		if supportsWatch {
-			pln(stderr, "Status also reports issues parked on learned dependencies and their recorded blockers.")
+			pln(stderr, "Status also reports parked issue dependencies and separate blocked-on-sibling/merge-escalated PR counts.")
 			pln(stderr, "With --daemon, report daemon health instead.")
 		}
 		pf(stderr, "Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n")
@@ -483,9 +574,12 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		}
 		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, now, statusLocation)
 	}
+	prLabelCounts := newStatusPRLabelCountCache()
 	// Scheduler state is loaded per redraw so watch reflects both quota
-	// transitions and backlog-query's learned-dependency refresh.
-	loadStatusText := func(runs []runSummary, now time.Time) (string, error) {
+	// transitions and backlog-query's learned-dependency refresh. Provider PR
+	// counts use the scheduler's coarser PR refresh cadence to keep watch API
+	// traffic bounded.
+	loadStatusText := func(ctx context.Context, runs []runSummary, now time.Time) (string, error) {
 		if !supportsWatch {
 			return "", nil
 		}
@@ -504,6 +598,12 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			return "", err
 		}
 		text.WriteString(parkedDependencyStatusText(parked))
+		counts, err := prLabelCounts.Load(ctx, cfg)
+		if err != nil {
+			text.WriteString(prLabelStatusUnavailableText(err))
+			return text.String(), nil
+		}
+		text.WriteString(prLabelStatusText(counts))
 		return text.String(), nil
 	}
 	if supportsWatch && *watch {
@@ -553,7 +653,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	// Skipped in --json mode since the structured summary has no plain-text
 	// side channel.
 	printValidationWarnings(stdout, warnings)
-	statusText, err := loadStatusText(allRuns, now)
+	statusText, err := loadStatusText(context.Background(), allRuns, now)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -619,7 +719,7 @@ func watchStatus(
 	options statusOptions,
 	stdout io.Writer,
 	loadRuns func() ([]runSummary, error),
-	loadStatusText func([]runSummary, time.Time) (string, error),
+	loadStatusText func(context.Context, []runSummary, time.Time) (string, error),
 ) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -638,7 +738,7 @@ func watchStatus(
 		}
 		current := statusRunPhases(allRuns)
 		now := time.Now()
-		statusText, err := loadStatusText(allRuns, now)
+		statusText, err := loadStatusText(ctx, allRuns, now)
 		if err != nil {
 			return err
 		}

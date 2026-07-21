@@ -16,6 +16,12 @@ import (
 
 func initDemo(t *testing.T) string {
 	t.Helper()
+	previousStatusPRLabelCounts := loadStatusPRLabelCounts
+	loadStatusPRLabelCounts = func(context.Context, *instance.Config) (statusPRLabelCounts, error) {
+		return statusPRLabelCounts{}, nil
+	}
+	t.Cleanup(func() { loadStatusPRLabelCounts = previousStatusPRLabelCounts })
+
 	root := filepath.Join(t.TempDir(), "demo")
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code = %d, stderr = %q", code, stderr)

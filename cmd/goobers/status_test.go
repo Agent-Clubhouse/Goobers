@@ -81,6 +81,8 @@ func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
 		"default-implement",
 		"0/1",
 		"Issues parked on learned dependencies: 0",
+		"Open PRs with goobers:blocked-on-sibling: 0",
+		"Open PRs with goobers:merge-escalated: 0",
 		"no runs found — trigger one with 'goobers run <workflow>'",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -729,7 +731,7 @@ func TestWatchStatusRepaintsFiltersAndHighlightsPhaseChangeForOneFrame(t *testin
 		limit:    1,
 	}
 	var stdout bytes.Buffer
-	noStatusText := func([]runSummary, time.Time) (string, error) { return "", nil }
+	noStatusText := func(context.Context, []runSummary, time.Time) (string, error) { return "", nil }
 	if err := watchStatus(ctx, time.Millisecond, options, &stdout, loadRuns, noStatusText); err != nil {
 		t.Fatalf("watchStatus: %v", err)
 	}
@@ -832,7 +834,7 @@ func TestWatchStatusRepaintsProviderQuotaPauseLine(t *testing.T) {
 
 	frame := 0
 	const pauseLine = "GitHub quota exhausted — resuming dispatch at 2026-07-17T05:00:00Z\n"
-	loadStatusText := func([]runSummary, time.Time) (string, error) {
+	loadStatusText := func(context.Context, []runSummary, time.Time) (string, error) {
 		defer func() { frame++ }()
 		switch frame {
 		case 0:
