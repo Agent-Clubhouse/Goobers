@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -30,25 +32,23 @@ func TestValidateCheckedInTreesRunsEveryTree(t *testing.T) {
 }
 
 func TestValidateCheckedInTreesFailsOnValidationError(t *testing.T) {
-	t.Setenv("GO_WANT_CONFIGVALIDATE_HELPER", "1")
-	t.Setenv("GO_BAD_CONFIG_TREE", "internal-instance-starter")
+	root := moduleRoot(t)
 	var stdout, stderr bytes.Buffer
-	code := validateCheckedInTrees(
-		moduleRoot(t),
-		validatorCommand{
-			path:       os.Args[0],
-			prefixArgs: []string{"-test.run=TestValidatorHelperProcess", "--"},
-		},
+	code := validateTrees(
+		root,
+		[]checkedInTree{{path: "test/configvalidate/testdata/invalid"}},
+		validatorCommand{path: buildValidator(t, root)},
 		&stdout,
 		&stderr,
 	)
 	if code != 1 {
 		t.Fatalf("validateCheckedInTrees code=%d, want 1; stdout=%q stderr=%q", code, &stdout, &stderr)
 	}
-	if !strings.Contains(stdout.String(), "Workflow/default-implement: known validation error") {
+	want := `gaggles/example/workflows/default-implement.yaml Workflow/default-implement: spec.gaggle names "ghost", but no Gaggle/ghost definition was found`
+	if !strings.Contains(stdout.String(), want) {
 		t.Fatalf("validator diagnostic was not preserved:\n%s", &stdout)
 	}
-	if !strings.Contains(stderr.String(), "internal/instance/starter") {
+	if !strings.Contains(stderr.String(), "test/configvalidate/testdata/invalid") {
 		t.Fatalf("failure did not identify the offending config tree:\n%s", &stderr)
 	}
 }
@@ -85,10 +85,6 @@ func TestValidatorHelperProcess(t *testing.T) {
 			}
 		}
 	}
-	if bad := os.Getenv("GO_BAD_CONFIG_TREE"); bad != "" && strings.Contains(target, bad) {
-		_, _ = fmt.Fprintln(os.Stdout, "gaggles/example/workflows/default-implement.yaml Workflow/default-implement: known validation error")
-		os.Exit(1)
-	}
 	_, _ = fmt.Fprintf(os.Stdout, "VALIDATED %s\n", target)
 	os.Exit(0)
 }
@@ -109,4 +105,19 @@ func moduleRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func buildValidator(t *testing.T, root string) string {
+	t.Helper()
+	name := "goobers"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	binary := filepath.Join(t.TempDir(), name)
+	cmd := exec.Command("go", "build", "-o", binary, "./cmd/goobers")
+	cmd.Dir = root
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build validator: %v\n%s", err, output)
+	}
+	return binary
 }

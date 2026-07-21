@@ -65,6 +65,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func validateCheckedInTrees(root string, validator validatorCommand, stdout, stderr io.Writer) int {
+	return validateTrees(root, checkedInTrees, validator, stdout, stderr)
+}
+
+func validateTrees(root string, trees []checkedInTree, validator validatorCommand, stdout, stderr io.Writer) int {
 	tempDir, err := os.MkdirTemp(root, ".validate-configs-")
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "validate-configs: create temporary instance roots: %v\n", err)
@@ -73,7 +77,7 @@ func validateCheckedInTrees(root string, validator validatorCommand, stdout, std
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	failed := false
-	for _, tree := range checkedInTrees {
+	for _, tree := range trees {
 		_, _ = fmt.Fprintf(stdout, "==> validate-config %s\n", tree.path)
 		args, err := validationArgs(root, tempDir, tree)
 		if err != nil {

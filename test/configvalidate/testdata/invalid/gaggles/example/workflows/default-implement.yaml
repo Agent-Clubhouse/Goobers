@@ -1,0 +1,15 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: default-implement
+spec:
+  gaggle: ghost
+  displayName: Known invalid workflow
+  triggers:
+    - type: manual
+  start: check
+  tasks:
+    - name: check
+      type: deterministic
+      run:
+        command: ["true"]
