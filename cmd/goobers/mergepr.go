@@ -47,6 +47,24 @@ const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
 	"error (missing capability/config, malformed inputs, provider failure),\n" +
 	"2 = usage/IO error.\n"
 
+// ciReadyForMerge reports whether the PR's CI permits a merge. A non-passing
+// aggregate CheckState normally blocks — but the check-state this codebase
+// derives from raw check-runs cannot tell a required check from an advisory
+// (continue-on-error) one, so a single red advisory check would wrongly gate an
+// otherwise-mergeable PR (#961). GitHub answers that distinction authoritatively
+// via mergeable_state: "unstable" means the PR IS mergeable and every red or
+// pending check is NON-required. So when the provider reports that state, CI is
+// merge-ready despite a red advisory check. Any other state (including a
+// provider that supplies none — empty MergeableState, e.g. ADO) falls through
+// to the conservative "all checks must pass" gate, so a required-check failure,
+// a genuinely-blocked PR, or an unknown state still blocks exactly as before.
+func ciReadyForMerge(poll providers.PullRequestPollResult) bool {
+	if poll.CheckState == providers.CheckStatePassing {
+		return true
+	}
+	return poll.MergeableState == providers.MergeableStateUnstable
+}
+
 func runMergePR(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("merge-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -156,7 +174,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		if apiv1.VerdictDecision(verdict) != apiv1.VerdictPass {
 			reasons = append(reasons, fmt.Sprintf("verdict is %q, want pass", verdict))
 		}
-		if poll.CheckState != providers.CheckStatePassing {
+		if !ciReadyForMerge(poll) {
 			reasons = append(reasons, fmt.Sprintf("CI is %q, want passing", poll.CheckState))
 		}
 		if poll.Draft {

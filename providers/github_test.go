@@ -979,8 +979,9 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 		assertMethod(t, r, http.MethodGet)
 		writeJSON(t, w, map[string]interface{}{
 			"number": 9, "state": "open", "merged": false, "mergeable": mergeable,
-			"html_url": "https://github.com/acme/app/pull/9",
-			"head":     map[string]interface{}{"sha": "deadbeef"},
+			"mergeable_state": "unstable",
+			"html_url":        "https://github.com/acme/app/pull/9",
+			"head":            map[string]interface{}{"sha": "deadbeef"},
 		})
 	})
 	mux.HandleFunc("/repos/acme/app/pulls/9/reviews", func(w http.ResponseWriter, r *http.Request) {
@@ -1049,6 +1050,9 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 	}
 	if result.Mergeable == nil || !*result.Mergeable {
 		t.Fatalf("Mergeable = %v, want true", result.Mergeable)
+	}
+	if result.MergeableState != MergeableStateUnstable {
+		t.Fatalf("MergeableState = %q, want %q (mergeable_state passed through for #961's advisory-check gating)", result.MergeableState, MergeableStateUnstable)
 	}
 	if len(result.CommentsSince) != 1 || result.CommentsSince[0].Author != "carol" {
 		t.Fatalf("CommentsSince = %#v", result.CommentsSince)
