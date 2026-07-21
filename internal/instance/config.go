@@ -29,6 +29,7 @@ const (
 	OTLPEndpointEnv             = "GOOBERS_OTLP_ENDPOINT"
 	OTLPInsecureEnv             = "GOOBERS_OTLP_INSECURE"
 	DefaultStalledRunTimeout    = 45 * time.Minute
+	DefaultClaimsLockTimeout    = 30 * time.Second
 )
 
 // Config is the parsed instance.yaml: target repo(s) + provider, token source
@@ -172,6 +173,9 @@ type RunConditions struct {
 	// StalledRunTimeout is the maximum period a running journal may remain
 	// silent before the daemon escalates it. Empty defaults to 45 minutes.
 	StalledRunTimeout string `json:"stalledRunTimeout,omitempty" yaml:"stalledRunTimeout,omitempty"`
+	// ClaimsLockTimeout bounds cross-process claim-ledger lock acquisition.
+	// Empty defaults to 30 seconds.
+	ClaimsLockTimeout string `json:"claimsLockTimeout,omitempty" yaml:"claimsLockTimeout,omitempty"`
 }
 
 // StalledRunTimeoutDuration resolves the configured stalled-run deadline.
@@ -185,6 +189,21 @@ func (c RunConditions) StalledRunTimeoutDuration() (time.Duration, error) {
 	}
 	if timeout <= 0 {
 		return 0, fmt.Errorf("runConditions.stalledRunTimeout must be positive, got %s", timeout)
+	}
+	return timeout, nil
+}
+
+// ClaimsLockTimeoutDuration resolves the configured claims-lock deadline.
+func (c RunConditions) ClaimsLockTimeoutDuration() (time.Duration, error) {
+	if c.ClaimsLockTimeout == "" {
+		return DefaultClaimsLockTimeout, nil
+	}
+	timeout, err := time.ParseDuration(c.ClaimsLockTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("runConditions.claimsLockTimeout %q: %w", c.ClaimsLockTimeout, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("runConditions.claimsLockTimeout must be positive, got %s", timeout)
 	}
 	return timeout, nil
 }
@@ -366,6 +385,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	if _, err := c.RunConditions.StalledRunTimeoutDuration(); err != nil {
+		return err
+	}
+	if _, err := c.RunConditions.ClaimsLockTimeoutDuration(); err != nil {
 		return err
 	}
 	for i, r := range c.Repos {

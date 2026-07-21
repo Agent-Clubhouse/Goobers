@@ -80,7 +80,37 @@ const (
 	claimLockOperationAdminRelease         = "claims.release"
 
 	claimLockSlowThreshold = 5 * time.Second
+	claimLockRetryInterval = 10 * time.Millisecond
+	claimsLockTimeoutCode  = "claims_lock_timeout"
 )
+
+type claimsLockTimeoutError struct {
+	Operation    string
+	Timeout      time.Duration
+	WaitDuration time.Duration
+}
+
+func (e *claimsLockTimeoutError) Error() string {
+	return fmt.Sprintf("claims lock operation %q timed out after %s", e.Operation, e.WaitDuration)
+}
+
+type journaledClaimsLockTimeoutError struct {
+	timeout *claimsLockTimeoutError
+}
+
+func (e *journaledClaimsLockTimeoutError) Error() string { return e.timeout.Error() }
+func (e *journaledClaimsLockTimeoutError) Unwrap() error { return e.timeout }
+
+type claimLockEventContext struct {
+	Gaggle   string
+	Workflow string
+	RunID    string
+}
+
+func isJournaledClaimsLockTimeout(err error) bool {
+	var timeoutErr *journaledClaimsLockTimeoutError
+	return errors.As(err, &timeoutErr)
+}
 
 // layoutFor is instance.NewLayout, named for readability at each provider-
 // chain subcommand's call site.
@@ -345,7 +375,7 @@ func failProviderStage(stderr io.Writer, what string, err error, resultFileDefau
 
 // withClaimLock serializes fn against every other process (a concurrent
 // `goobers backlog-query` from a racing run, or `goobers up`'s periodic
-// RecoverExpired) touching the same instance's claim ledger, via a blocking
+// RecoverExpired) touching the same instance's claim ledger, via a bounded
 // exclusive file lock on lockPath. localscheduler.ClaimLedger's own mutex is
 // documented as in-process only ("designed for one embedded scheduler per
 // instance... not cross-process file locking") — but backlog-query runs as
@@ -354,9 +384,9 @@ func failProviderStage(stderr io.Writer, what string, err error, resultFileDefau
 // against the SAME claims.json file: without this lock, both could read the
 // file before either persists, and the second write would silently clobber
 // the first's claim (a lost update), defeating "one claim wins" (#131's
-// acceptance criterion). A blocking (not acquireInstanceLock's non-blocking)
-// lock is deliberate: the loser here should wait its turn and get a
-// consistent read, not fail outright the way a second `goobers up` should.
+// acceptance criterion). The loser waits for a consistent read, but only up
+// to runConditions.claimsLockTimeout so a wedged holder cannot convoy the
+// runner indefinitely.
 // Every caller supplies a stable operation label. Wait and hold durations are
 // measured for every acquisition, while only threshold breaches are journaled
 // so normal lock traffic stays low-noise.
@@ -365,17 +395,67 @@ func withClaimLock(lockPath, operation string, fn func() error) error {
 }
 
 func withClaimLockThreshold(lockPath, operation string, slowThreshold time.Duration, fn func() error) error {
+	timeout, err := claimsLockTimeoutForPath(lockPath)
+	if err != nil {
+		return err
+	}
+	return withClaimLockBounds(lockPath, operation, timeout, slowThreshold, claimLockEventContext{
+		Gaggle:   providerGaggle(),
+		Workflow: os.Getenv("GOOBERS_WORKFLOW"),
+		RunID:    os.Getenv("GOOBERS_RUN_ID"),
+	}, fn)
+}
+
+func withClaimLockForRun(lockPath, operation, gaggle, runID string, fn func() error) error {
+	timeout, err := claimsLockTimeoutForPath(lockPath)
+	if err != nil {
+		return err
+	}
+	return withClaimLockBounds(lockPath, operation, timeout, claimLockSlowThreshold, claimLockEventContext{
+		Gaggle: gaggle,
+		RunID:  runID,
+	}, fn)
+}
+
+func claimsLockTimeoutForPath(lockPath string) (time.Duration, error) {
+	root := filepath.Dir(filepath.Dir(lockPath))
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return instance.DefaultClaimsLockTimeout, nil
+		}
+		return 0, err
+	}
+	return cfg.RunConditions.ClaimsLockTimeoutDuration()
+}
+
+func withClaimLockBounds(lockPath, operation string, timeout, slowThreshold time.Duration, eventContext claimLockEventContext, fn func() error) error {
 	if operation == "" {
 		return errors.New("claim lock operation is required")
 	}
+	if timeout <= 0 {
+		return fmt.Errorf("claim lock timeout must be positive, got %s", timeout)
+	}
 
 	waitStarted := time.Now()
-	var acquiredAt time.Time
-	var releasedAt time.Time
-	defer func() {
-		if acquiredAt.IsZero() {
-			return
+	held, err := acquireClaimLock(lockPath, operation, timeout, waitStarted)
+	if err != nil {
+		var timeoutErr *claimsLockTimeoutError
+		if !errors.As(err, &timeoutErr) {
+			return err
 		}
+		journalErr := recordClaimLockTimeout(lockPath, eventContext, timeoutErr)
+		resultErr := writeClaimLockTimeoutResult(timeoutErr)
+		if journalErr != nil || resultErr != nil {
+			return errors.Join(timeoutErr, journalErr, resultErr)
+		}
+		return &journaledClaimsLockTimeoutError{timeout: timeoutErr}
+	}
+
+	acquiredAt := time.Now()
+	defer func() {
+		_ = held.Release()
+		releasedAt := time.Now()
 		waitDuration := acquiredAt.Sub(waitStarted)
 		holdDuration := releasedAt.Sub(acquiredAt)
 		if waitDuration > slowThreshold || holdDuration > slowThreshold {
@@ -385,12 +465,47 @@ func withClaimLockThreshold(lockPath, operation string, slowThreshold time.Durat
 			_ = recordSlowClaimLock(lockPath, operation, waitDuration, holdDuration)
 		}
 	}()
+	return fn()
+}
 
-	return withBlockingFileLock(lockPath, func() {
-		acquiredAt = time.Now()
-	}, func() {
-		releasedAt = time.Now()
-	}, fn)
+func acquireClaimLock(lockPath, operation string, timeout time.Duration, started time.Time) (*lock.Handle, error) {
+	retryInterval := claimLockRetryInterval
+	if timeout < retryInterval {
+		retryInterval = timeout / 10
+		if retryInterval <= 0 {
+			retryInterval = time.Nanosecond
+		}
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	retry := time.NewTicker(retryInterval)
+	defer retry.Stop()
+
+	for {
+		held, err := lock.TryAcquire(lockPath)
+		switch {
+		case err == nil:
+			return held, nil
+		case !errors.Is(err, lock.ErrHeld):
+			return nil, fmt.Errorf("acquire claims lock: %w", err)
+		}
+		if waited := time.Since(started); waited >= timeout {
+			return nil, &claimsLockTimeoutError{
+				Operation:    operation,
+				Timeout:      timeout,
+				WaitDuration: waited,
+			}
+		}
+		select {
+		case <-timer.C:
+			return nil, &claimsLockTimeoutError{
+				Operation:    operation,
+				Timeout:      timeout,
+				WaitDuration: time.Since(started),
+			}
+		case <-retry.C:
+		}
+	}
 }
 
 func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration time.Duration) error {
@@ -412,6 +527,57 @@ func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration 
 	}
 	if err := log.Close(); err != nil {
 		return fmt.Errorf("close instance log after slow claim lock event: %w", err)
+	}
+	return nil
+}
+
+func recordClaimLockTimeout(lockPath string, eventContext claimLockEventContext, timeoutErr *claimsLockTimeoutError) error {
+	log, _, err := journal.OpenInstanceLog(filepath.Dir(lockPath))
+	if err != nil {
+		return fmt.Errorf("open instance log for claim lock timeout: %w", err)
+	}
+	if err := log.Append(journal.Event{
+		Type:     journal.EventClaimLockTimeout,
+		Gaggle:   eventContext.Gaggle,
+		Workflow: eventContext.Workflow,
+		RunID:    eventContext.RunID,
+		Error: &journal.ErrorDetail{
+			Code:    claimsLockTimeoutCode,
+			Message: timeoutErr.Error(),
+		},
+		Runner: map[string]any{
+			"operation":    timeoutErr.Operation,
+			"pid":          os.Getpid(),
+			"waitDuration": timeoutErr.WaitDuration.String(),
+			"timeout":      timeoutErr.Timeout.String(),
+			"retryable":    true,
+			"failureClass": "infra",
+		},
+	}); err != nil {
+		_ = log.Close()
+		return fmt.Errorf("append claim lock timeout event: %w", err)
+	}
+	if err := log.Close(); err != nil {
+		return fmt.Errorf("close instance log after claim lock timeout event: %w", err)
+	}
+	return nil
+}
+
+func writeClaimLockTimeoutResult(timeoutErr *claimsLockTimeoutError) error {
+	resultFile := providerInput(executor.InputResultFile, "")
+	if resultFile == "" {
+		return nil
+	}
+	data, err := json.Marshal(map[string]any{
+		executor.OutputErrorCode:      claimsLockTimeoutCode,
+		executor.OutputErrorMessage:   timeoutErr.Error(),
+		executor.OutputErrorRetryable: true,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal claim lock timeout result: %w", err)
+	}
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		return fmt.Errorf("write claim lock timeout result %s: %w", resultFile, err)
 	}
 	return nil
 }

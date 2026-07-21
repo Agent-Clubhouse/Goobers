@@ -44,11 +44,14 @@ telemetry:
 # Optional instance-level ceilings on top of each workflow's own `readiness`
 # block: maxParallelRuns caps total concurrent runs across every workflow in
 # this instance; workflowBudgets (a map of workflow name -> runs/hour)
-# overrides a named workflow's own maxRunsPerHour. See the three workflow
-# definitions under gaggles/goobers/workflows/ for the per-workflow
-# maxConcurrentRuns/maxRunsPerHour guardrails these ceilings sit on top of.
+# overrides a named workflow's own maxRunsPerHour. claimsLockTimeout bounds
+# cross-process claim-ledger lock acquisition so a wedged holder cannot convoy
+# stage dispatch or terminal cleanup. See the three workflow definitions under
+# gaggles/goobers/workflows/ for the per-workflow guardrails these ceilings sit
+# on top of.
 runConditions:
   maxParallelRuns: 2
+  claimsLockTimeout: 30s
 # Optional runner block. `capabilities` are the toolchains/platform properties
 # this runner advertises as preinstalled (RRQ-1); a gaggle/stage requiring one
 # the runner does not claim fails to schedule. `envPassthrough` names extra

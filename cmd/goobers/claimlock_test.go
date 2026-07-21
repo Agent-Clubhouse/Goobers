@@ -1,11 +1,15 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/lock"
 )
@@ -94,6 +98,101 @@ func TestClaimLockSlowHoldReportsBothDurations(t *testing.T) {
 	holdDuration := claimLockEventDuration(t, event, "holdDuration")
 	if holdDuration <= threshold {
 		t.Fatalf("holdDuration = %s, want above %s", holdDuration, threshold)
+	}
+}
+
+func TestClaimLockTimeoutIsJournaledRetryableAndDoesNotReleaseHolder(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.RunConditions.ClaimsLockTimeout = "20ms"
+	if err := instance.WriteConfig(l.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	resultFile := filepath.Join(t.TempDir(), "stage-result.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+	t.Setenv("GOOBERS_RUN_ID", "run-lock-timeout")
+	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv("GOOBERS_GAGGLE", "example")
+
+	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
+	holder, err := lock.Acquire(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Release() }()
+
+	called := false
+	started := time.Now()
+	err = withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
+		called = true
+		return nil
+	})
+	elapsed := time.Since(started)
+	var timeoutErr *claimsLockTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("error = %v, want claimsLockTimeoutError", err)
+	}
+	if called {
+		t.Fatal("timed-out caller ran the protected callback")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("lock acquisition took %s, want bounded near 20ms", elapsed)
+	}
+
+	if competing, err := lock.TryAcquire(lockPath); !errors.Is(err, lock.ErrHeld) {
+		if err == nil {
+			_ = competing.Release()
+		}
+		t.Fatalf("TryAcquire after timeout = %v, want ErrHeld", err)
+	}
+
+	data, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result[executor.OutputErrorCode] != claimsLockTimeoutCode {
+		t.Fatalf("errorCode = %v, want %s", result[executor.OutputErrorCode], claimsLockTimeoutCode)
+	}
+	if result[executor.OutputErrorRetryable] != true {
+		t.Fatalf("errorRetryable = %v, want true", result[executor.OutputErrorRetryable])
+	}
+
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %+v, want one timeout event", events)
+	}
+	event := events[0]
+	if event.Type != journal.EventClaimLockTimeout || event.Error == nil || event.Error.Code != claimsLockTimeoutCode {
+		t.Fatalf("timeout event = %+v", event)
+	}
+	if event.RunID != "run-lock-timeout" || event.Runner["retryable"] != true || event.Runner["failureClass"] != "infra" {
+		t.Fatalf("timeout classification = %+v", event)
+	}
+
+	if err := holder.Release(); err != nil {
+		t.Fatal(err)
+	}
+	redispatched := false
+	if err := withClaimLock(lockPath, claimLockOperationBacklogClaim, func() error {
+		redispatched = true
+		return nil
+	}); err != nil {
+		t.Fatalf("later dispatch did not acquire released lock: %v", err)
+	}
+	if !redispatched {
+		t.Fatal("later dispatch did not run after actual holder released the lock")
 	}
 }
 
