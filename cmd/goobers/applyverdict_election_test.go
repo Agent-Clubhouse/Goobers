@@ -103,7 +103,7 @@ func TestElectedLanderPass(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			elected, rationale := electedLanderPass(tt.number, tt.verdict, nil)
+			elected, rationale := electedLanderPass(tt.number, tt.verdict, nil, electedLander, "fifo")
 			if elected != tt.wantPass {
 				t.Fatalf("electedLanderPass(#%d, %s) = %v, want %v", tt.number, tt.verdict.Decision, elected, tt.wantPass)
 			}
@@ -160,7 +160,7 @@ func TestElectedLanderPassAgreesWithElectLander(t *testing.T) {
 		gotElected, _ := electedLanderPass(c.number, apiv1.Verdict{
 			Decision: apiv1.VerdictNeedsChanges,
 			Findings: c.findings,
-		}, nil)
+		}, nil, policy, defaultElectionPolicy)
 		if gotElected != wantElected {
 			t.Errorf("PR #%d findings=%d: apply-verdict derived elected=%v but elect-lander decides %v — "+
 				"the two stages MUST agree or a PR is crowned by one and parked by the other",

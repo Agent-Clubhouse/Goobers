@@ -177,10 +177,12 @@ spec:
         # fail branch into apply-verdict, where the equally-vanished
         # reviewDigest crashed the run.
         resultFile: "election.json"
-        # #834: lander-election policy — "fifo" (lowest PR#, default) or
-        # "newest" (highest PR#). An unknown value falls back to fifo. Cluster-
-        # data policies (most-blockers, fewest-overlaps) are follow-ups that
-        # plug into the same registry.
+        # Lander-election policy. Pure: "fifo" (lowest PR#, default, #834) or
+        # "newest" (highest PR#). Cluster-data (#1028/#1029, opt-in): "most-
+        # blockers" (elect the PR the most open siblings are blocked on — drains
+        # the cluster fastest) or "fewest-overlaps" (elect the PR sharing the
+        # fewest files with siblings — smallest reconcile surface). An unknown
+        # value falls back to fifo. MUST match apply-verdict's electionPolicy.
         electionPolicy: "fifo"
       capabilities:
         - github:pr:write
