@@ -17,8 +17,10 @@ import (
 type Severity string
 
 const (
+	// Informational marks an allowed operational tuning difference.
 	Informational Severity = "info"
-	Error         Severity = "error"
+	// Error marks a required structural parity difference.
+	Error Severity = "error"
 )
 
 // Difference is one deterministic, name-addressed workflow difference.
