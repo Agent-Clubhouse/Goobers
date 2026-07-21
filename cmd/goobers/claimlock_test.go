@@ -1,15 +1,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/lock"
 )
@@ -194,6 +200,119 @@ func TestClaimLockTimeoutIsJournaledRetryableAndDoesNotReleaseHolder(t *testing.
 	if !redispatched {
 		t.Fatal("later dispatch did not run after actual holder released the lock")
 	}
+}
+
+func TestClaimLockTimeoutWithoutResultFileIsInfrastructureRetryableThroughStageDispatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("helper process wrapper uses a POSIX shell")
+	}
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.RunConditions.ClaimsLockTimeout = "20ms"
+	if err := instance.WriteConfig(l.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	testBinary, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(t.TempDir(), "goobers")
+	script := "#!/bin/sh\nexec \"$GOOBERS_TEST_BINARY\" -test.run=^TestClaimLockStageHelperProcess$ -- \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, _ := journal.DefaultScrubber()
+	injector, err := credentials.NewInjector(resolver, nil, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell, err := executor.NewShellExecutor(injector, claimLockTestRecorder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell.InstanceRoot = root
+	shell.SelfBin = wrapper
+	dispatch, err := executor.NewTaskExecutor(shell, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := apiv1.InvocationEnvelope{
+		TaskID:     "release-claim",
+		WorkflowID: "backlog-curation",
+		RunID:      "run-stage-lock-timeout",
+		Gaggle:     "example",
+		Workspace:  t.TempDir(),
+	}
+	run := apiv1.DeterministicRun{
+		Command: []string{"goobers", "backlog-query", "--release"},
+		Env: map[string]string{
+			"GOOBERS_CLAIM_LOCK_HELPER_PROCESS": "1",
+			"GOOBERS_TEST_BINARY":               testBinary,
+		},
+	}
+
+	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
+	holder, err := lock.Acquire(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Release() }()
+
+	started := time.Now()
+	result, err := dispatch.Run(context.Background(), env, run)
+	if !invoke.IsInfrastructureFailure(err) {
+		t.Fatalf("stage result=%+v error=%v, want infrastructure failure", result, err)
+	}
+	if !strings.Contains(err.Error(), claimsLockTimeoutCode) {
+		t.Fatalf("stage error = %q, want typed code %q", err, claimsLockTimeoutCode)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("stage dispatch took %s, want bounded near 20ms", elapsed)
+	}
+
+	if err := holder.Release(); err != nil {
+		t.Fatal(err)
+	}
+	result, err = dispatch.Run(context.Background(), env, run)
+	if err != nil {
+		t.Fatalf("later stage dispatch: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("later stage status = %q, want success: %+v", result.Status, result)
+	}
+}
+
+func TestClaimLockStageHelperProcess(t *testing.T) {
+	if os.Getenv("GOOBERS_CLAIM_LOCK_HELPER_PROCESS") != "1" {
+		return
+	}
+	for i, arg := range os.Args {
+		if arg != "--" {
+			continue
+		}
+		if i+1 >= len(os.Args) || os.Args[i+1] != "backlog-query" {
+			os.Exit(2)
+		}
+		os.Exit(runBacklogQuery(os.Args[i+2:], os.Stdout, os.Stderr))
+	}
+	os.Exit(2)
+}
+
+type claimLockTestRecorder struct{}
+
+func (claimLockTestRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
+	return journal.Ref{Path: name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
 }
 
 func readSingleSlowClaimLockEvent(t *testing.T, schedulerDir, operation string) journal.Event {

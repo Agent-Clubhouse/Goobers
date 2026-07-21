@@ -445,9 +445,9 @@ func withClaimLockBounds(lockPath, operation string, timeout, slowThreshold time
 			return err
 		}
 		journalErr := recordClaimLockTimeout(lockPath, eventContext, timeoutErr)
-		resultErr := writeClaimLockTimeoutResult(timeoutErr)
-		if journalErr != nil || resultErr != nil {
-			return errors.Join(timeoutErr, journalErr, resultErr)
+		outcomeErr := writeClaimLockTimeoutOutcome(timeoutErr)
+		if journalErr != nil || outcomeErr != nil {
+			return errors.Join(timeoutErr, journalErr, outcomeErr)
 		}
 		return &journaledClaimsLockTimeoutError{timeout: timeoutErr}
 	}
@@ -563,9 +563,10 @@ func recordClaimLockTimeout(lockPath string, eventContext claimLockEventContext,
 	return nil
 }
 
-func writeClaimLockTimeoutResult(timeoutErr *claimsLockTimeoutError) error {
+func writeClaimLockTimeoutOutcome(timeoutErr *claimsLockTimeoutError) error {
 	resultFile := providerInput(executor.InputResultFile, "")
-	if resultFile == "" {
+	builtinErrorFile := os.Getenv(executor.BuiltinErrorFileEnvVar)
+	if resultFile == "" && builtinErrorFile == "" {
 		return nil
 	}
 	data, err := json.Marshal(map[string]any{
@@ -576,10 +577,18 @@ func writeClaimLockTimeoutResult(timeoutErr *claimsLockTimeoutError) error {
 	if err != nil {
 		return fmt.Errorf("marshal claim lock timeout result: %w", err)
 	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		return fmt.Errorf("write claim lock timeout result %s: %w", resultFile, err)
+	var errs []error
+	if resultFile != "" {
+		if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+			errs = append(errs, fmt.Errorf("write claim lock timeout result %s: %w", resultFile, err))
+		}
 	}
-	return nil
+	if builtinErrorFile != "" {
+		if err := os.WriteFile(builtinErrorFile, data, 0o600); err != nil {
+			errs = append(errs, fmt.Errorf("write claim lock timeout built-in error %s: %w", builtinErrorFile, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // withFileLock is the un-instrumented blocking lock used by non-claim cache
