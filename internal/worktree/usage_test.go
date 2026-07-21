@@ -108,7 +108,7 @@ func TestUsageMeasurementsTrackHousekeepingWithoutScanningLiveWorktrees(t *testi
 	}
 }
 
-func TestUsageMeasurementsTrackRetentionDeletionThroughSharedReaper(t *testing.T) {
+func TestUsageMeasurementsTrackPruneRetainedDeletion(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
 	var measurements []UsageMeasurement
@@ -130,13 +130,19 @@ func TestUsageMeasurementsTrackRetentionDeletionThroughSharedReaper(t *testing.T
 	retained := measurements[len(measurements)-1]
 	measurements = nil
 
-	markerPath := m.markerPath(wt.key, wt.RunID)
-	mk, err := readMarker(markerPath)
-	if err != nil {
-		t.Fatal(err)
+	results, warnings, err := PruneRetained(ctx, []*Manager{m}, RetentionOptions{
+		Delete:           true,
+		MaxRetainedBytes: 1,
+		IsTerminalFailure: func(_, _, _ string) (bool, error) {
+			return true, nil
+		},
+	})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("PruneRetained = warnings %+v, err %v", warnings, err)
 	}
-	if err := m.reapOne(ctx, wt.key, wt.Path, markerPath, &mk); err != nil {
-		t.Fatal(err)
+	if len(results) != 1 || results[0].WorktreeID != wt.RunID ||
+		results[0].Rule != RetentionRuleStorageCap || !results[0].Deleted || results[0].BytesReclaimed <= 0 {
+		t.Fatalf("retention results = %+v", results)
 	}
 
 	if len(measurements) != 1 {
