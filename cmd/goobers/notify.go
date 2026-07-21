@@ -175,7 +175,8 @@ func terminalNotificationCause(events []journal.Event, phase journal.RunPhase, f
 			if event.Error.Code == "run_failed" && phase == journal.PhaseFailed {
 				return event.Error.Message
 			}
-			if event.Error.Code == "blocked_by_agent" && phase == journal.PhaseEscalated {
+			if (event.Error.Code == "blocked_by_agent" || event.Error.Code == runner.RunStalledErrorCode) &&
+				phase == journal.PhaseEscalated {
 				return event.Error.Message
 			}
 		}

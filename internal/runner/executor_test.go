@@ -75,6 +75,7 @@ func TestGooberInvocationActivatesAssetPathGuardBeforeCall(t *testing.T) {
 type gateHeartbeatJournalStub struct{}
 
 func (gateHeartbeatJournalStub) Append(journal.Event) error  { return nil }
+func (gateHeartbeatJournalStub) ObserveActivity()            {}
 func (gateHeartbeatJournalStub) RepairAppendBoundary() error { return nil }
 
 func TestGateHeartbeatGooberComposesWithAssetGuard(t *testing.T) {

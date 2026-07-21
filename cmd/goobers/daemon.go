@@ -69,6 +69,7 @@ type schedulerSetup struct {
 	ProviderQuota    *localscheduler.ProviderQuotaState
 	SharedRegistry   *journal.RegistryScrubber
 	TerminalNotifier runner.TerminalNotifier
+	RunnerRegistry   *daemonRunnerRegistry
 }
 
 type schedulerDefinitions struct {
@@ -203,10 +204,12 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	// schedulerSetup.ProviderQuota's doc comment for why a shared pointer,
 	// not a Scheduler-owned field, is needed here.
 	providerQuota := localscheduler.NewProviderQuotaState()
-	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, tel, rollupDB, instanceLog, sharedReg, nil, providerQuota, terminalNotifier)
+	runnerRegistry := newDaemonRunnerRegistry()
+	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, instanceLog, sharedReg, nil, providerQuota, terminalNotifier)
 	if err != nil {
 		return nil, err
 	}
+	runnerRegistry.Replace(definitions.Runners)
 	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(l, cfg, set, tel, instanceLog, sharedReg, providerQuota, terminalNotifier)
 	if err != nil {
 		return nil, err
@@ -249,6 +252,7 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 		ProviderQuota:     providerQuota,
 		SharedRegistry:    sharedReg,
 		TerminalNotifier:  terminalNotifier,
+		RunnerRegistry:    runnerRegistry,
 	}, nil
 }
 
@@ -292,6 +296,7 @@ func buildSchedulerDefinitions(
 	set *instance.ConfigSet,
 	report *validate.Report,
 	wg *sync.WaitGroup,
+	runnerRegistry *daemonRunnerRegistry,
 	tel *telemetry.Client,
 	rollupDB *rollup.DB,
 	instanceLog *journal.InstanceLog,
@@ -380,7 +385,7 @@ func buildSchedulerDefinitions(
 			Schedules:       scheds,
 			Signals:         sigs,
 			BacklogCounter:  buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg),
-			Starter:         &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog},
+			Starter:         &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
 			RepoRef:         repoRefs[identity],
 		})
 	}
@@ -554,11 +559,14 @@ type trackedStarter struct {
 	tel      *telemetry.Client
 	rollupDB *rollup.DB
 	log      *journal.InstanceLog
+	runners  *daemonRunnerRegistry
 }
 
 func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
 	s.wg.Add(1)
 	defer s.wg.Done()
+	untrack := s.runners.Track(req.RunID, s.r)
+	defer untrack()
 	res, err := s.r.Start(ctx, runner.StartInput{
 		RunID:   req.RunID,
 		Machine: s.machine,
@@ -614,10 +622,10 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // terminal-run cleanup fails; claim cleanup fails closed rather than silently
 // leaving a known terminal owner in the ledger.
 func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
-	return resumeInterruptedRunsWithRunners(ctx, l, nil, rn, machines, repoRefs, log, tel, rollupDB, release, wg)
+	return resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, machines, repoRefs, log, tel, rollupDB, release, wg)
 }
 
-func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	runDirs, err := l.RunDirs()
 	if err != nil {
 		return nil, nil, err
@@ -703,9 +711,11 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 
 			resumed = append(resumed, id.RunID)
 			wg.Add(1)
-			go func(runID, gaggle, wfName string, rn *runner.Runner, runLayout instance.Layout) {
+			untrack := runnerRegistry.Track(id.RunID, rn)
+			go func(runID, gaggle, wfName string, rn *runner.Runner, runLayout instance.Layout, untrack func()) {
 				defer wg.Done()
 				defer release(runID, wfName)
+				defer untrack()
 				result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, RepoRef: repoRef})
 				ingestRunTelemetry(tel, rollupDB, runLayout, runID, log)
 				// #710: same fix as localscheduler/scheduler.go's dispatch echo —
@@ -733,7 +743,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 				if log != nil {
 					_ = log.Append(ev)
 				}
-			}(id.RunID, id.Gaggle, id.Workflow, rn, runLayout)
+			}(id.RunID, id.Gaggle, id.Workflow, rn, runLayout, untrack)
 		}
 	}
 	return resumed, warned, nil

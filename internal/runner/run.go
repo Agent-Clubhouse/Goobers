@@ -10,11 +10,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
-	"github.com/goobers/goobers/internal/gooberruntime"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -31,9 +31,17 @@ const DefaultMaxSteps = 10000
 // independently of a task's policy retry allowance.
 const DefaultMaxInfrastructureAttempts int32 = 2
 
-// StageHeartbeatInterval bounds active-attempt journal growth to one compact
-// liveness event per minute.
+// StageHeartbeatInterval coalesces observable executor progress into at most
+// one compact liveness event per minute.
 const StageHeartbeatInterval = time.Minute
+
+// StalledCancellationGrace bounds how long the watchdog waits for a live owner
+// to honor cancellation before taking over terminalization.
+const StalledCancellationGrace = 5 * time.Second
+
+// StalledTerminalizationGrace bounds how long a sweep waits after another
+// goroutine has already begun terminal cleanup.
+const StalledTerminalizationGrace = 30 * time.Second
 
 type heartbeatTicker interface {
 	Ticks() <-chan time.Time
@@ -49,6 +57,7 @@ func (t wallHeartbeatTicker) Stop()                   { t.ticker.Stop() }
 
 type journalAppender interface {
 	Append(journal.Event) error
+	ObserveActivity()
 }
 
 type stageHeartbeat struct {
@@ -290,10 +299,13 @@ type Config struct {
 // through the pre-existing internal/invoke seam. It is the substrate-neutral
 // local runner core (ARCHITECTURE.md §3.1).
 type Runner struct {
-	cfg                Config
-	maxSteps           int
-	heartbeatInterval  time.Duration
-	newHeartbeatTicker func(time.Duration) heartbeatTicker
+	cfg                  Config
+	maxSteps             int
+	heartbeatInterval    time.Duration
+	newHeartbeatTicker   func(time.Duration) heartbeatTicker
+	stalledCancelGrace   time.Duration
+	stalledTerminalGrace time.Duration
+	active               activeRunSet
 }
 
 // New validates cfg and returns a ready Runner.
@@ -318,6 +330,8 @@ func New(cfg Config) (*Runner, error) {
 		newHeartbeatTicker: func(interval time.Duration) heartbeatTicker {
 			return wallHeartbeatTicker{ticker: time.NewTicker(interval)}
 		},
+		stalledCancelGrace:   StalledCancellationGrace,
+		stalledTerminalGrace: StalledTerminalizationGrace,
 	}, nil
 }
 
@@ -441,32 +455,35 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	}
 	defer func() { _ = jr.Close() }()
 
-	ctx, span := r.startRunSpan(ctx, in)
-	defer span.End()
+	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+		ctx, span := r.startRunSpan(ctx, in)
+		defer span.End()
+		setStalledAttemptContext(ctx)
 
-	// A scratch-only workflow has no repository branch. Repo-backed workflows
-	// retain the run branch as their primary external ref (#133).
-	if machineUsesRepo(in.Machine) {
-		if err := jr.Append(journal.Event{
-			Type: journal.EventRefTouched,
-			ExternalRef: &journal.ExternalRef{
-				Provider: string(in.RepoRef.Provider),
-				Kind:     "branch",
-				ID:       providers.BranchName(in.Machine.Def.Name, in.RunID),
-			},
-		}); err != nil {
-			span.Fail(err)
-			return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
+		// A scratch-only workflow has no repository branch. Repo-backed workflows
+		// retain the run branch as their primary external ref (#133).
+		if machineUsesRepo(in.Machine) {
+			if err := jr.Append(journal.Event{
+				Type: journal.EventRefTouched,
+				ExternalRef: &journal.ExternalRef{
+					Provider: string(in.RepoRef.Provider),
+					Kind:     "branch",
+					ID:       providers.BranchName(in.Machine.Def.Name, in.RunID),
+				},
+			}); err != nil {
+				span.Fail(err)
+				return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
+			}
 		}
-	}
 
-	result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, registrar, walkSeed{})
-	if err != nil {
-		span.Fail(err)
-		return result, err
-	}
-	completeRunSpan(span, result)
-	return result, nil
+		result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, registrar, walkSeed{})
+		if err != nil {
+			span.Fail(err)
+			return result, err
+		}
+		completeRunSpan(span, result)
+		return result, nil
+	})
 }
 
 func completeRunSpan(span telemetry.Span, result Result) {
@@ -727,6 +744,10 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 		}
 		jr.SetMachineState(state)
 
+		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, state, steps); stalled {
+			return stalledResult, stalledErr
+		}
+
 		// Drain, don't abort, on cancellation (SIGTERM: internal/signals
 		// cancels this same ctx). Checked only BETWEEN stages — an in-flight
 		// dispatch below runs on context.WithoutCancel(ctx), so a signal never
@@ -761,6 +782,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				resume = nil
 			}
 			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, workspaceBranch)
+			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, t.Name, steps); stalled {
+				return stalledResult, stalledErr
+			}
 			if err != nil {
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, t.Name, steps, err)
 			}
@@ -779,6 +803,11 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}
 
 			next, res, advance, oerr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.RepoRef, in.Item, t, result, steps)
+			if res.Phase == "" {
+				if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, t.Name, steps); stalled {
+					return stalledResult, stalledErr
+				}
+			}
 			if oerr != nil {
 				return res, oerr
 			}
@@ -804,6 +833,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			}
 
 			gr, err, removeErr := r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, lastResult, pointers, workspaceBranch)
+			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, g.Name, steps); stalled {
+				return stalledResult, stalledErr
+			}
 			if removeErr != nil {
 				// Non-fatal (issue #136), same rationale as runTask's own
 				// worktree_remove_failed journaling — the teardown failure
@@ -826,8 +858,12 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, err)
 			}
 			if reason, ok := terminalGateNotificationReason(gr); ok {
-				if err := r.notifyTerminalGate(context.WithoutCancel(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason); err != nil {
-					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, err)
+				notifyErr := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason)
+				if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, g.Name, steps); stalled {
+					return stalledResult, stalledErr
+				}
+				if notifyErr != nil {
+					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, notifyErr)
 				}
 			}
 			switch gr.Target {
@@ -1213,10 +1249,12 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	// FinalizeTerminal releases the run's claims — this walk-level path is the
 	// harness-timeout terminal (a dispatch-level runTask error routed here from
 	// walk), the exact case that was silently returning the issue to ready.
-	// context.WithoutCancel matches notifyBlocked: a SIGTERM drain already in
-	// progress must not skip the trace. The full origErr (not the bounded copy)
-	// is the cause the item's comment records.
-	nerr := r.notifyFailed(context.WithoutCancel(ctx), jr, FailedOutcome{RunID: runID, RepoRef: repoRef, Stage: finalState, Cause: origErr.Error()})
+	// SIGTERM must not skip the trace, but a stalled-run watchdog can interrupt
+	// a hung provider call. The full origErr is what the item's comment records.
+	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, RepoRef: repoRef, Stage: finalState, Cause: origErr.Error()})
+	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, finalState, steps); stalled {
+		return stalledResult, stalledErr
+	}
 	res, ferr := r.finish(runID, jr, journal.PhaseFailed, finalState, steps)
 	// FailureStage/Code/Message (issue #710) are populated on the RETURNED
 	// Result regardless of the append's own outcome — even a best-effort
@@ -1268,7 +1306,10 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 	// #1054: leave a human-visible trace on the driving item for a stage-reported
 	// terminal failure too, before finish()'s FinalizeTerminal releases claims.
 	// The code-prefixed journaledMessage is the run's terminal cause.
-	nerr := r.notifyFailed(context.WithoutCancel(ctx), jr, FailedOutcome{RunID: runID, RepoRef: repoRef, Stage: stage, Cause: journaledMessage})
+	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, RepoRef: repoRef, Stage: stage, Cause: journaledMessage})
+	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, stage, steps); stalled {
+		return stalledResult, stalledErr
+	}
 	res, err := r.finish(runID, jr, journal.PhaseFailed, stage, steps)
 	res.FailureStage, res.FailureCode, res.FailureMessage = stage, code, boundFailureMessage(message)
 	if err == nil && nerr != nil {
@@ -1292,6 +1333,9 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 // instance-level handler (Config.Blocked); the transition decision itself
 // stays pure.
 func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run, machine *workflow.Machine, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
+	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, t.Name, steps); stalled {
+		return "", stalledResult, false, stalledErr
+	}
 	switch result.Status {
 	case apiv1.ResultBlocked:
 		// #544 ruling: blocked is a schema-valid producer value, so it maps to
@@ -1321,13 +1365,21 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 			res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal blocked cause for %q: %w", t.Name, aerr))
 			return "", res, false, err
 		}
-		if nerr := r.notifyBlockedEscalation(context.WithoutCancel(ctx), jr, runID, item, o); nerr != nil {
+		nerr := r.notifyBlockedEscalation(stalledAttemptContext(ctx), jr, runID, item, o)
+		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, t.Name, steps); stalled {
+			return "", stalledResult, false, stalledErr
+		}
+		if nerr != nil {
 			res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, nerr)
 			return "", res, false, err
 		}
 		// Same drain contract as notifyTerminalGate's call site: a SIGTERM
 		// already in progress must not skip the block recording/parking.
-		if nerr := r.notifyBlocked(context.WithoutCancel(ctx), jr, o); nerr != nil {
+		nerr = r.notifyBlocked(stalledAttemptContext(ctx), jr, o)
+		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, t.Name, steps); stalled {
+			return "", stalledResult, false, stalledErr
+		}
+		if nerr != nil {
 			res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, nerr)
 			return "", res, false, err
 		}
@@ -1344,7 +1396,11 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		if result.Error != nil && result.Error.Code == providers.ErrorCodeRateLimited {
 			if resetAt, ok := outputRateLimitReset(result.Outputs); ok {
 				o := RateLimitedOutcome{RunID: runID, Stage: t.Name, ResetAt: resetAt}
-				if nerr := r.notifyRateLimited(context.WithoutCancel(ctx), jr, o); nerr != nil {
+				nerr := r.notifyRateLimited(stalledAttemptContext(ctx), jr, o)
+				if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, t.Name, steps); stalled {
+					return "", stalledResult, false, stalledErr
+				}
+				if nerr != nil {
 					res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, nerr)
 					return "", res, false, err
 				}
@@ -1472,9 +1528,17 @@ func journalToleratedFailure(jr *journal.Run, stage string) error {
 	})
 }
 
-// finish prepares terminal cleanup, appends run.finished, then performs the
-// configured post-terminal finalization.
+// finish claims terminalization from the watchdog before preparing cleanup.
 func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
+	if outcome, takenOver := r.claimOwnerTerminalization(runID); takenOver {
+		return outcome.result, outcome.err
+	}
+	return r.finishTakeover(runID, jr, phase, finalState, steps)
+}
+
+// finishTakeover performs terminal cleanup for an already-claimed watchdog
+// takeover, or for a recovered run with no live owner.
+func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
 	if err := r.prepareTerminal(runID, phase, jr); err != nil {
 		return Result{}, err
 	}
@@ -1532,10 +1596,9 @@ func (r *Runner) FinalizeTerminal(runID string, phase journal.RunPhase) error {
 // infrastructure; other dispatch retries use Task.Retry and are policy
 // attempts.
 //
-// Dispatch runs on a context.WithoutCancel of ctx: a run-level cancellation
-// (SIGTERM) must let the CURRENT attempt — including any retries already in
-// flight for this same stage — finish and journal cleanly; walk only checks
-// ctx between stages, never mid-dispatch.
+// Dispatch ignores ordinary run-level cancellation (SIGTERM), so the current
+// attempt can finish and journal cleanly; only a stalled-run watchdog request
+// cancels it mid-dispatch. walk checks ordinary cancellation between stages.
 //
 // startAttempt is normally 1; a resume past an interrupted attempt (resume.go)
 // passes the next attempt number instead, so the attempts a crash already
@@ -1546,7 +1609,7 @@ func (r *Runner) FinalizeTerminal(runID string, phase journal.RunPhase) error {
 // zero value for the run's first task) — dispatchTask threads its Outputs
 // into this task's Inputs per t.InputsFrom (#132), the task-to-task analog
 // of evaluateGate's unconditional Outputs flatten.
-func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt int, class journal.AttemptClass) stageHeartbeat {
+func (r *Runner) startStageHeartbeat(ctx context.Context, jr journalAppender, stage string, attempt int, class journal.AttemptClass) (context.Context, stageHeartbeat) {
 	interval := r.heartbeatInterval
 	if interval <= 0 {
 		interval = StageHeartbeatInterval
@@ -1560,6 +1623,11 @@ func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt i
 	ticker := newTicker(interval)
 	stop := make(chan struct{})
 	done := make(chan error, 1)
+	var progressed atomic.Bool
+	ctx = invoke.WithProgressReporter(ctx, func() {
+		jr.ObserveActivity()
+		progressed.Store(true)
+	})
 	go func() {
 		var heartbeatErr error
 		defer func() {
@@ -1570,7 +1638,12 @@ func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt i
 			select {
 			case <-stop:
 				return
+			case <-ctx.Done():
+				return
 			case <-ticker.Ticks():
+				if !progressed.Swap(false) {
+					continue
+				}
 				if err := jr.Append(journal.Event{
 					Type:         journal.EventStageHeartbeat,
 					Stage:        stage,
@@ -1583,7 +1656,7 @@ func (r *Runner) startStageHeartbeat(jr journalAppender, stage string, attempt i
 			}
 		}
 	}()
-	return stageHeartbeat{stop: stop, done: done}
+	return ctx, stageHeartbeat{stop: stop, done: done}
 }
 
 type gateHeartbeatGoober struct {
@@ -1604,7 +1677,7 @@ func (g gateHeartbeatGoober) Invoke(ctx context.Context, env apiv1.InvocationEnv
 }
 
 func (g gateHeartbeatGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	heartbeat := g.runner.startStageHeartbeat(g.journal, g.stage, g.attempt, journal.AttemptPolicy)
+	ctx, heartbeat := g.runner.startStageHeartbeat(ctx, g.journal, g.stage, g.attempt, journal.AttemptPolicy)
 	verdict, reviewErr := g.goober.Review(ctx, env)
 	heartbeatErr := heartbeat.Stop()
 	if heartbeatErr != nil {
@@ -1674,6 +1747,9 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 	policyAttempts := startAttempt - 1
 	var infrastructureFailures int32
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
+		if _, ok := stalledRequestFromContext(ctx); ok {
+			return apiv1.ResultEnvelope{}, nil, errStalledRun
+		}
 		// The initial attempt carries no class and is always conformance-
 		// normative. A retry within THIS dispatch uses the class selected by
 		// the prior failure: "infra" for an InfrastructureFailure marker,
@@ -1697,18 +1773,21 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		if class != journal.AttemptInfra || attempt == startAttempt {
 			policyAttempts++
 		}
-		attemptCtx, span := r.startTaskSpan(context.WithoutCancel(ctx), in, t, int(attempt), string(class))
+		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, int(attempt), string(class))
 		if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: t.Name, Attempt: int(attempt), AttemptClass: class}); err != nil {
 			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
-		heartbeat := r.startStageHeartbeat(jr, t.Name, int(attempt), class)
+		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)
 		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, span, workspaceBranch)
 		if err := finishTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, removeErr); err != nil {
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
+		}
+		if _, ok := stalledRequestFromContext(ctx); ok {
+			return apiv1.ResultEnvelope{}, nil, errStalledRun
 		}
 		if dispatchErr != nil {
 			lastErr = dispatchErr
@@ -1752,7 +1831,11 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 					select {
 					case <-time.After(backoff):
 					case <-ctx.Done():
+					case <-attemptCtx.Done():
 					}
+				}
+				if _, ok := stalledRequestFromContext(ctx); ok {
+					return apiv1.ResultEnvelope{}, nil, errStalledRun
 				}
 				continue
 			}
@@ -2136,9 +2219,9 @@ func taskEscalationTarget(machine *workflow.Machine, task apiv1.Task) string {
 // evaluation and turned a worktree-provisioning failure (disk, git) into a
 // failure of a gate that touches no filesystem whatsoever.
 func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string) (result gate.Result, err error, removeErr error) {
-	// Same drain contract as runTask: a gate attempt already underway when
-	// SIGTERM cancels the run-level ctx finishes and journals cleanly.
-	ctx = context.WithoutCancel(ctx)
+	// Same drain contract as runTask: SIGTERM does not interrupt an active gate,
+	// but a stalled-run watchdog request does.
+	ctx = stalledAttemptContext(ctx)
 
 	gooberName := ""
 	if g.Evaluator == apiv1.EvaluatorAgentic && g.Agentic != nil {
@@ -2249,11 +2332,26 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 		}
 	}
 
-	// A deterministic subject may offer a prior merge-review verdict. Treat
-	// it as a cache hit only when its decision, provenance, SHA pins, and
-	// digest all agree with this subject's complete cache-key outputs.
-	// Anything missing or malformed falls through to live evaluation.
-	cachedVerdict := cachedVerdictFromOutputs(subjectResult.Outputs)
+	// cachedVerdict (issue #523): a deterministic subject stage (merge-
+	// review's gather-sibling-context) may have already found a digest-
+	// matched prior verdict for this exact evaluation and handed it back as
+	// a scalar JSON string output — subjectResult.Outputs is a generic
+	// map[string]interface{} no gate-package code should need to know the
+	// shape of, so the decode (and the "is this even a merge-review-style
+	// cache hit" question) lives entirely here, at the one call site that
+	// already owns subjectResult. A decode failure is silently ignored, not
+	// fatal: an absent or malformed cachedVerdictJson is exactly the normal
+	// "no cache hit" case for every gate that never produces this key at
+	// all (every gate but merge-review's review gate). Rebound on every
+	// call — possibly to nil — mirroring Reviewer's own rebind contract
+	// just below, so a hit for one gate can never leak into the next.
+	var cachedVerdict *apiv1.Verdict
+	if raw, ok := subjectResult.Outputs["cachedVerdictJson"].(string); ok && raw != "" {
+		var v apiv1.Verdict
+		if jerr := json.Unmarshal([]byte(raw), &v); jerr == nil {
+			cachedVerdict = &v
+		}
+	}
 	gateEval.CachedVerdict = cachedVerdict
 
 	switch g.Evaluator {
@@ -2303,28 +2401,6 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 	span.SetGateResult(result.Outcome, result.Attempt)
 	span.Complete(telemetry.OutcomeSuccess, false)
 	return result, nil, nil
-}
-
-func cachedVerdictFromOutputs(outputs map[string]interface{}) *apiv1.Verdict {
-	raw, rawOK := outputs["cachedVerdictJson"].(string)
-	digest, digestOK := outputs["reviewDigest"].(string)
-	headSHA, headOK := outputs["selectedHeadSha"].(string)
-	baseSHA, baseOK := outputs["selectedBaseSha"].(string)
-	if !rawOK || !digestOK || !headOK || !baseOK ||
-		raw == "" || digest == "" || headSHA == "" || baseSHA == "" {
-		return nil
-	}
-
-	var verdict apiv1.Verdict
-	if err := json.Unmarshal([]byte(raw), &verdict); err != nil ||
-		gooberruntime.ValidateMergeReviewVerdict(verdict) != nil ||
-		verdict.Digest != digest ||
-		strings.TrimSpace(verdict.SourceRunID) == "" ||
-		verdict.HeadSHA != headSHA ||
-		verdict.BaseSHA != baseSHA {
-		return nil
-	}
-	return &verdict
 }
 
 // recordReviewerDiff produces an agentic reviewer gate's evidence (#301): the

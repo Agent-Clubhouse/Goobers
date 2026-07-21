@@ -129,11 +129,13 @@ telemetry:
 timezone: America/Los_Angeles
 runConditions:
   maxParallelRuns: 1
+  stalledRunTimeout: 45m
 ```
 
 `timezone` is an IANA location used for every workflow schedule; omit it for
 UTC. Token references may use `token.file` instead of `token.env`, but never an
-inline token value.
+inline token value. `stalledRunTimeout` defaults to 45 minutes and escalates a
+running journal that has received no event or stage heartbeat for that period.
 
 ## 4. Make the workforce repository-specific
 
@@ -436,6 +438,7 @@ telemetry:
 timezone: America/Los_Angeles
 runConditions:
   maxParallelRuns: 2
+  stalledRunTimeout: 45m
   workflowDailyBudgets:
     widget-implementation: 2
     widget-docs-implementation: 2

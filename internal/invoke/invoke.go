@@ -11,6 +11,26 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+type progressReporterKey struct{}
+
+// WithProgressReporter attaches the runner's coalesced stage-progress signal
+// to an invocation context.
+func WithProgressReporter(ctx context.Context, report func()) context.Context {
+	if report == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, progressReporterKey{}, report)
+}
+
+// ReportProgress records observable executor progress. Runtime implementations
+// call it after output or a completed remote probe; it is a no-op when the
+// caller is not running under a progress-aware runner.
+func ReportProgress(ctx context.Context) {
+	if report, ok := ctx.Value(progressReporterKey{}).(func()); ok {
+		report()
+	}
+}
+
 // Goober is the boundary the runtime implements to execute agentic work. The
 // engine builds a canonical invocation envelope and asks for either a task
 // result or a reviewer verdict; it knows nothing about how a goober pod is

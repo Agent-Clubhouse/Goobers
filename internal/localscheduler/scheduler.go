@@ -109,6 +109,9 @@ type Scheduler struct {
 	// Conditions' startup counts, so recovery releases cannot consume another
 	// run's workflow-level slot.
 	reconciledRuns map[string]WorkflowIdentity
+	// admittedRuns identifies live dispatches whose condition slots remain
+	// reserved until their Starter returns or a watchdog terminalizes them.
+	admittedRuns map[string]WorkflowIdentity
 	// backlogLastCheck tracks, per backlog-item-triggered workflow, when its
 	// BacklogCounter was last polled (#344) — separate from triggers'
 	// LastEval, which is cron-Schedule-specific bookkeeping a workflow with
@@ -202,6 +205,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		after:                time.After,
 		triggers:             make(map[WorkflowIdentity]TriggerState),
 		reconciledRuns:       make(map[string]WorkflowIdentity),
+		admittedRuns:         make(map[string]WorkflowIdentity),
 		backlogLastCheck:     make(map[WorkflowIdentity]time.Time),
 		consecutivePoolSkips: make(map[WorkflowIdentity]int),
 		wake:                 make(chan struct{}, 1),
@@ -345,6 +349,29 @@ func (s *Scheduler) ReleaseReconciled(runID, workflow string) {
 	s.mu.Unlock()
 	if ok && reconciledWorkflow.Workflow == workflow {
 		s.conditions.ReleaseWorkflow(reconciledWorkflow)
+	}
+}
+
+// ReleaseRun returns a run's live admission or restart-reconciled slot exactly
+// once. Watchdogs use this after terminalizing a run; dispatch and resume
+// cleanup may safely call it again.
+func (s *Scheduler) ReleaseRun(runID, workflow string) {
+	s.mu.Lock()
+	identity, admitted := s.admittedRuns[runID]
+	if admitted && identity.Workflow == workflow {
+		delete(s.admittedRuns, runID)
+	}
+	reconciledIdentity, reconciled := s.reconciledRuns[runID]
+	if reconciled && reconciledIdentity.Workflow == workflow {
+		delete(s.reconciledRuns, runID)
+	}
+	s.mu.Unlock()
+
+	switch {
+	case admitted && identity.Workflow == workflow:
+		s.conditions.ReleaseWorkflow(identity)
+	case reconciled && reconciledIdentity.Workflow == workflow:
+		s.conditions.ReleaseWorkflow(reconciledIdentity)
 	}
 }
 
@@ -890,10 +917,13 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	})
 	span.Succeed("started: " + runID)
 
+	s.mu.Lock()
+	s.admittedRuns[runID] = identity
+	s.mu.Unlock()
 	s.dispatches.Add(1)
 	go func() {
 		defer s.dispatches.Done()
-		defer s.conditions.ReleaseWorkflow(identity)
+		defer s.ReleaseRun(runID, entry.Workflow)
 		result, startErr := entry.Starter.Start(ctx, StartRequest{
 			RunID:   runID,
 			Gaggle:  entry.Gaggle,

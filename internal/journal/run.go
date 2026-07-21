@@ -31,6 +31,7 @@ type Run struct {
 	phase        RunPhase
 	machineState string
 	reason       string
+	lastActivity time.Time
 	appendErr    error
 	closed       bool
 }
@@ -244,11 +245,38 @@ func (r *Run) append(ev Event) error {
 	if r.appendErr != nil {
 		return fmt.Errorf("journal: append blocked after prior write failure: %w", r.appendErr)
 	}
-	_, err := appendEvent(r.events, &r.seq, r.scrubber, r.now, ev)
+	stamped, err := appendEvent(r.events, &r.seq, r.scrubber, r.now, ev)
 	if err != nil {
 		r.appendErr = err
+	} else {
+		r.lastActivity = stamped.Time
 	}
 	return err
+}
+
+// IfLastActivityBefore runs claim while holding the writer mutex only when no
+// event has been appended at or after cutoff. It lets a live owner atomically
+// claim a stale journal without racing a concurrent heartbeat append.
+func (r *Run) IfLastActivityBefore(cutoff time.Time, claim func(time.Time)) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.lastActivity.Before(cutoff) {
+		return false
+	}
+	claim(r.lastActivity)
+	return true
+}
+
+// ObserveActivity makes live executor progress immediately visible to the
+// watchdog without adding another durable event. Heartbeat events still
+// coalesce that progress for crash recovery and inspection.
+func (r *Run) ObserveActivity() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now()
+	if r.lastActivity.Before(now) {
+		r.lastActivity = now
+	}
 }
 
 // RepairAppendBoundary restores events.jsonl after an Append failure. A torn

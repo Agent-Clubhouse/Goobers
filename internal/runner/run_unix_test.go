@@ -3,6 +3,7 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/signal"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -67,7 +69,8 @@ func TestFinishTaskDispatchRepairsPartialHeartbeatBeforeSideEffects(t *testing.T
 			return ticker
 		},
 	}
-	heartbeat := r.startStageHeartbeat(run, "implement", 2, journal.AttemptPolicy)
+	ctx, heartbeat := r.startStageHeartbeat(context.Background(), run, "implement", 2, journal.AttemptPolicy)
+	invoke.ReportProgress(ctx)
 	ticker.ticks <- time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
 	select {
 	case <-ticker.stopped:

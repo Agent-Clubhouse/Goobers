@@ -294,8 +294,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		return apiv1.ResultEnvelope{}, err
 	}
 
-	stdout := &capturingWriter{limit: maxOutput}
-	stderr := &capturingWriter{limit: maxOutput}
+	progress := func() { invoke.ReportProgress(runCtx) }
+	stdout := &capturingWriter{limit: maxOutput, progress: progress}
+	stderr := &capturingWriter{limit: maxOutput, progress: progress}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
@@ -782,9 +783,13 @@ type capturingWriter struct {
 	buf       bytes.Buffer
 	limit     int64
 	truncated bool
+	progress  func()
 }
 
 func (w *capturingWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 && w.progress != nil {
+		w.progress()
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.truncated {
