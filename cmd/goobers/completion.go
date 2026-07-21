@@ -30,9 +30,11 @@ func runCompletionScript(script string, args []string, stdout, stderr io.Writer)
 	return 0
 }
 
+const completionHelp = "Usage: goobers completion <bash|zsh|fish>\n\n" +
+	"Generate a shell completion script. Source the output in the target shell.\n"
+
 func completionUsage(w io.Writer) {
-	pf(w, "Usage: goobers completion <bash|zsh|fish>\n\n"+
-		"Generate a shell completion script. Source the output in the target shell.\n")
+	pf(w, "%s", completionHelp)
 }
 
 // runCompletionCandidates is intentionally hidden from help. Generated scripts

@@ -73,26 +73,26 @@ type siblingPR struct {
 // of every volatile field (draft/labels/head SHA) — but a sibling whose
 // head SHA is unchanged since the last gather reuses its cached files.
 // Check state is always refreshed because CI can be rerun on the same SHA.
+const gatherSiblingContextHelp = "Usage: goobers gather-sibling-context [--no-cache] [--no-verdict-cache] [path]\n\n" +
+	"Load the other open goober-authored PRs' touched files + state as\n" +
+	"evidence for the holistic review (a workflow stage, follows\n" +
+	"pr-select). Requires selectedNumber/selectedHead/selectedBase inputs\n" +
+	"(Task.InputsFrom pr-select's own outputs). Sibling files are memoized\n" +
+	"per head SHA under the instance scheduler dir, while check state is\n" +
+	"always refreshed; --no-cache bypasses the file memo entirely (neither\n" +
+	"read nor written) to force a fully fresh gather. Separately, this stage\n" +
+	"also computes the selected PR's\n" +
+	"reviewDigest and checks the PR's own most recent verdict comment for a\n" +
+	"matching one (issue #523's verdict-level cache) — a match is emitted as\n" +
+	"cachedVerdictJson, letting the runner skip the reviewer gate's LLM call\n" +
+	"entirely; --no-verdict-cache skips that lookup, always forcing a fresh\n" +
+	"review. Exit codes: 0 = context gathered (possibly empty — no siblings\n" +
+	"is not an error), 1 = business error, 2 = usage/IO error.\n"
+
 func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("gather-sibling-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers gather-sibling-context [--no-cache] [--no-verdict-cache] [path]\n\n"+
-			"Load the other open goober-authored PRs' touched files + state as\n"+
-			"evidence for the holistic review (a workflow stage, follows\n"+
-			"pr-select). Requires selectedNumber/selectedHead/selectedBase inputs\n"+
-			"(Task.InputsFrom pr-select's own outputs). Sibling files are memoized\n"+
-			"per head SHA under the instance scheduler dir, while check state is\n"+
-			"always refreshed; --no-cache bypasses the file memo entirely (neither\n"+
-			"read nor written) to force a fully fresh gather. Separately, this stage\n"+
-			"also computes the selected PR's\n"+
-			"reviewDigest and checks the PR's own most recent verdict comment for a\n"+
-			"matching one (issue #523's verdict-level cache) — a match is emitted as\n"+
-			"cachedVerdictJson, letting the runner skip the reviewer gate's LLM call\n"+
-			"entirely; --no-verdict-cache skips that lookup, always forcing a fresh\n"+
-			"review. Exit codes: 0 = context gathered (possibly empty — no siblings\n"+
-			"is not an error), 1 = business error, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "gather-sibling-context")
 	noCache := fs.Bool("no-cache", false, "bypass the sibling-context cache (debug/remediation escape hatch)")
 	noVerdictCache := fs.Bool("no-verdict-cache", false, "skip the verdict-cache lookup, always forcing a fresh review (debug/remediation escape hatch)")
 	if err := fs.Parse(args); err != nil {

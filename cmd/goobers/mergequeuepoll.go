@@ -33,25 +33,25 @@ import (
 // "not ready yet is not a stage failure" philosophy, not ci-poll's
 // executor-kind ResultFailure/Retryable convention (this is a plain
 // provider-chain subcommand, not that distinct executor path).
+const mergeQueuePollHelp = "Usage: goobers merge-queue-poll [path]\n\n" +
+	"Watch a pull request already enqueued to its repo's merge queue (issue\n" +
+	"#758's Land, in merge-queue-enqueue policy) until the queue merges or\n" +
+	"evicts it, or this stage's own poll times out. Declared inputs:\n" +
+	"pullNumber (required), pollIntervalSeconds/pollMaxIntervalSeconds/\n" +
+	"pollTimeoutSeconds (time.ParseDuration strings, default to\n" +
+	"internal/executor's ci-poll defaults), resultFile (default\n" +
+	"queue-result.json). An eviction applies goobers:needs-remediation plus\n" +
+	"an explanatory comment before reporting queueOutcome=evicted — that\n" +
+	"labeling is the acceptance criterion, so a failure to apply it is a\n" +
+	"stage failure, not a swallowed warning. Exit codes: 0 = evaluated\n" +
+	"(merged, evicted, or still-pending-timeout — see the result file's\n" +
+	"queueOutcome field), 1 = business error (missing capability/config,\n" +
+	"provider failure), 2 = usage/IO error.\n"
+
 func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("merge-queue-poll", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers merge-queue-poll [path]\n\n"+
-			"Watch a pull request already enqueued to its repo's merge queue (issue\n"+
-			"#758's Land, in merge-queue-enqueue policy) until the queue merges or\n"+
-			"evicts it, or this stage's own poll times out. Declared inputs:\n"+
-			"pullNumber (required), pollIntervalSeconds/pollMaxIntervalSeconds/\n"+
-			"pollTimeoutSeconds (time.ParseDuration strings, default to\n"+
-			"internal/executor's ci-poll defaults), resultFile (default\n"+
-			"queue-result.json). An eviction applies goobers:needs-remediation plus\n"+
-			"an explanatory comment before reporting queueOutcome=evicted — that\n"+
-			"labeling is the acceptance criterion, so a failure to apply it is a\n"+
-			"stage failure, not a swallowed warning. Exit codes: 0 = evaluated\n"+
-			"(merged, evicted, or still-pending-timeout — see the result file's\n"+
-			"queueOutcome field), 1 = business error (missing capability/config,\n"+
-			"provider failure), 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "merge-queue-poll")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

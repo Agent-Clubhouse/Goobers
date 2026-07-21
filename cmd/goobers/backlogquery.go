@@ -53,6 +53,33 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
 
+const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --release] [path]\n\n" +
+	"Query the provider for eligible backlog items — labeled with both\n" +
+	"trustLabel (SEC-047: required on public repos, since backlog content is\n" +
+	"untrusted input otherwise) and requireLabels. With --claim, claims\n" +
+	"exactly one via the local claim ledger (source of truth) mirrored to a\n" +
+	"provider-visible marker, and writes it to the declared result file.\n" +
+	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
+	"a plain list (no --claim) does not require it.\n\n" +
+	"With --release, releases every claim this run holds in the local ledger\n" +
+	"(issue #234: a workflow that only reads/labels an item, never opening a\n" +
+	"PR or closing the issue — e.g. backlog-curation — must release its own\n" +
+	"claim explicitly, since issue-close-out's release is reached only by the\n" +
+	"implementation workflow). Idempotent: releasing claims this run does not\n" +
+	"hold (already released, e.g. re-run after a crash) is a no-op success, not\n" +
+	"an error. --claim and --release are mutually exclusive.\n\n" +
+	"With --claim, contested-file dispatch awareness (#1085) deprioritizes\n" +
+	"claiming an issue whose referenced files are already contested by\n" +
+	"contestedFileMinPRs+ (default 2) open PRs, so new work isn't fed into an\n" +
+	"overlap cluster faster than merge-review can drain it. It only reorders\n" +
+	"candidates (never drops one — an all-contested cycle still claims FIFO)\n" +
+	"and falls back to FIFO on any provider error. Disable with input\n" +
+	"deprioritizeContestedFiles=false.\n\n" +
+	"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n" +
+	"(--release), 1 = business error (no eligible/claimable item, missing\n" +
+	"trustLabel with --claim, config/credential/provider error), 2 =\n" +
+	"usage/IO error.\n"
+
 // The barrier lets the blocked-record race regression pause immediately before
 // the lock-protected reconciliation and claim transaction.
 func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, beforeClaimTransaction func()) int {
@@ -60,34 +87,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	fs.SetOutput(stderr)
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
 	release := fs.Bool("release", false, "release this run's claim ledger leases early (issue #234) — no provider access, pure ledger operation")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers backlog-query [--claim | --release] [path]\n\n"+
-			"Query the provider for eligible backlog items — labeled with both\n"+
-			"trustLabel (SEC-047: required on public repos, since backlog content is\n"+
-			"untrusted input otherwise) and requireLabels. With --claim, claims\n"+
-			"exactly one via the local claim ledger (source of truth) mirrored to a\n"+
-			"provider-visible marker, and writes it to the declared result file.\n"+
-			"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n"+
-			"a plain list (no --claim) does not require it.\n\n"+
-			"With --release, releases every claim this run holds in the local ledger\n"+
-			"(issue #234: a workflow that only reads/labels an item, never opening a\n"+
-			"PR or closing the issue — e.g. backlog-curation — must release its own\n"+
-			"claim explicitly, since issue-close-out's release is reached only by the\n"+
-			"implementation workflow). Idempotent: releasing claims this run does not\n"+
-			"hold (already released, e.g. re-run after a crash) is a no-op success, not\n"+
-			"an error. --claim and --release are mutually exclusive.\n\n"+
-			"With --claim, contested-file dispatch awareness (#1085) deprioritizes\n"+
-			"claiming an issue whose referenced files are already contested by\n"+
-			"contestedFileMinPRs+ (default 2) open PRs, so new work isn't fed into an\n"+
-			"overlap cluster faster than merge-review can drain it. It only reorders\n"+
-			"candidates (never drops one — an all-contested cycle still claims FIFO)\n"+
-			"and falls back to FIFO on any provider error. Disable with input\n"+
-			"deprioritizeContestedFiles=false.\n\n"+
-			"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n"+
-			"(--release), 1 = business error (no eligible/claimable item, missing\n"+
-			"trustLabel with --claim, config/credential/provider error), 2 =\n"+
-			"usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "backlog-query")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

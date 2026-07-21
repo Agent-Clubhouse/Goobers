@@ -52,16 +52,16 @@ type escalationInspection struct {
 	CurrentState escalationCurrentState       `json:"currentState"`
 }
 
+const escalationsHelp = "Usage: goobers escalations [--json] [path]\n" +
+	"       goobers escalations show [--json] <run-id> [path]\n\n" +
+	"List escalated runs newest first. Use `escalations show` to inspect an\n" +
+	"escalation cause and the artifacts available before and after each stage.\n"
+
 func runEscalations(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("escalations", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit escalated runs as JSON")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers escalations [--json] [path]\n"+
-			"       goobers escalations show [--json] <run-id> [path]\n\n"+
-			"List escalated runs newest first. Use `escalations show` to inspect an\n"+
-			"escalation cause and the artifacts available before and after each stage.\n")
-	}
+	fs.Usage = helpUsage(stderr, "escalations")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -95,14 +95,14 @@ func runEscalations(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+const escalationsShowHelp = "Usage: goobers escalations show [--json] <run-id> [path]\n\n" +
+	"Show an escalation's structured cause and per-stage artifact timeline.\n"
+
 func runEscalationShow(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("escalations show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit the escalation inspection as JSON")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers escalations show [--json] <run-id> [path]\n\n"+
-			"Show an escalation's structured cause and per-stage artifact timeline.\n")
-	}
+	fs.Usage = helpUsage(stderr, "escalations show")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

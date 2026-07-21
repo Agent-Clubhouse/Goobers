@@ -244,6 +244,19 @@ func verdictPinVoidReason(verdict apiv1.Verdict, selectedHeadSHA, selectedBaseSH
 	return ""
 }
 
+const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n" +
+	"Read the holistic review gate's Verdict from this run's own journal,\n" +
+	"cross-check its optional SHA echo against the deterministic review\n" +
+	"pin, re-check that pin against the PR's current head/base, and — if\n" +
+	"still valid — post the verdict as a native GitHub review and retain\n" +
+	"the PR-comment handoff. Non-pass verdicts also apply a remediation\n" +
+	"label. A\n" +
+	"stale SHA pin voids the verdict: no comment, no label, exit 0 (this\n" +
+	"cycle's work is simply moot, not an error — merge-review re-reviews\n" +
+	"next tick). Requires selectedNumber, selectedHeadSha, and\n" +
+	"selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or\n" +
+	"voided), 1 = business error, 2 = usage/IO error.\n"
+
 // runApplyVerdict implements `goobers apply-verdict` (issue #359): reads the
 // holistic review gate's Verdict back from this run's own journal (the gate
 // already records it as an artifact via internal/gate's recordVerdict — no
@@ -267,20 +280,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("apply-verdict", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	gateName := fs.String("gate", "review", "the gate name whose verdict to apply")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers apply-verdict [--gate name] [path]\n\n"+
-			"Read the holistic review gate's Verdict from this run's own journal,\n"+
-			"cross-check its optional SHA echo against the deterministic review\n"+
-			"pin, re-check that pin against the PR's current head/base, and — if\n"+
-			"still valid — post the verdict as a native GitHub review and retain\n"+
-			"the PR-comment handoff. Non-pass verdicts also apply a remediation\n"+
-			"label. A\n"+
-			"stale SHA pin voids the verdict: no comment, no label, exit 0 (this\n"+
-			"cycle's work is simply moot, not an error — merge-review re-reviews\n"+
-			"next tick). Requires selectedNumber, selectedHeadSha, and\n"+
-			"selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or\n"+
-			"voided), 1 = business error, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "apply-verdict")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

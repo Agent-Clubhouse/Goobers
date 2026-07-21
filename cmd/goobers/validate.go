@@ -45,23 +45,23 @@ var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all
 // hang `goobers validate` or `goobers up`/`run` startup.
 const harnessPreflightTimeout = 90 * time.Second
 
+const validateHelp = "Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [path]\n\n" +
+	"Validate an instance's instance.yaml and config/ directory (default\n" +
+	"path \".\"). --source-tree validates a checked-in config source tree\n" +
+	"using instance.yaml.example and the path itself as config/. " +
+	"--check-harness additionally preflights every agent harness\n" +
+	"referenced by a goober (GBO-011) — installed, signed in, actionable\n" +
+	"guidance otherwise. --check-repos resolves each target repository's\n" +
+	"token and verifies authenticated git access. Exit codes: 0 = valid,\n" +
+	"1 = validation errors, 2 = usage/IO error.\n"
+
 func runValidate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	checkHarness := fs.Bool("check-harness", false, "also verify every referenced agent harness is installed and signed in")
 	checkRepos := fs.Bool("check-repos", false, "also verify every target repository is reachable with its configured credential")
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [path]\n\n"+
-			"Validate an instance's instance.yaml and config/ directory (default\n"+
-			"path \".\"). --source-tree validates a checked-in config source tree\n"+
-			"using instance.yaml.example and the path itself as config/. "+
-			"--check-harness additionally preflights every agent harness\n"+
-			"referenced by a goober (GBO-011) — installed, signed in, actionable\n"+
-			"guidance otherwise. --check-repos resolves each target repository's\n"+
-			"token and verifies authenticated git access. Exit codes: 0 = valid,\n"+
-			"1 = validation errors, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "validate")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

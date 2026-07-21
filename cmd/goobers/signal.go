@@ -15,6 +15,19 @@ import (
 	"github.com/goobers/goobers/internal/signals"
 )
 
+const signalHelp = "Usage: goobers signal <name> [path]\n\n" +
+	"Fire an external signal by name, dispatching every workflow with a\n" +
+	"type=signal trigger subscribed to it, through the same scheduler (run\n" +
+	"conditions, instance journal, single-instance lock) a live `goobers up`\n" +
+	"daemon uses (default path \".\"). A signal may match zero, one, or many\n" +
+	"workflows; waits for every dispatched run to reach a terminal state or\n" +
+	"pause before returning (same blocking UX as `goobers run`).\n" +
+	"Exit codes after waiting: 0 = every admitted run completed (also used when\n" +
+	"none were admitted), 1 = any run failed/aborted or a business error, 2 =\n" +
+	"usage/IO error, 3 = any run escalated. Escalation takes precedence for\n" +
+	"mixed outcomes; successful submission-only modes exit 0 because they do\n" +
+	"not observe a terminal phase.\n"
+
 // runSignal implements `goobers signal <name>` (#342): fires an external
 // signal by name, dispatching every workflow with a type=signal trigger
 // subscribed to it. TriggerSignal was declared in the schema
@@ -27,20 +40,7 @@ import (
 func runSignal(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("signal", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers signal <name> [path]\n\n"+
-			"Fire an external signal by name, dispatching every workflow with a\n"+
-			"type=signal trigger subscribed to it, through the same scheduler (run\n"+
-			"conditions, instance journal, single-instance lock) a live `goobers up`\n"+
-			"daemon uses (default path \".\"). A signal may match zero, one, or many\n"+
-			"workflows; waits for every dispatched run to reach a terminal state or\n"+
-			"pause before returning (same blocking UX as `goobers run`).\n"+
-			"Exit codes after waiting: 0 = every admitted run completed (also used when\n"+
-			"none were admitted), 1 = any run failed/aborted or a business error, 2 =\n"+
-			"usage/IO error, 3 = any run escalated. Escalation takes precedence for\n"+
-			"mixed outcomes; successful submission-only modes exit 0 because they do\n"+
-			"not observe a terminal phase.\n")
-	}
+	fs.Usage = helpUsage(stderr, "signal")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

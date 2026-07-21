@@ -33,17 +33,17 @@ const defaultExcludeLabels = "goobers:merge-ready,goobers:needs-remediation"
 // declarative-selection model), not a batch scan of the whole open-PR set in
 // a single run. The selected PR is leased in the shared PR claim namespace so
 // concurrent merge-review and pr-remediation runs cannot select it together.
+const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
+	"Select at most one open, non-draft, green-CI goober-authored PR for\n" +
+	"merge-review to evaluate this cycle (a workflow stage). Writes the\n" +
+	"selected PR's number/head/base/headSha/baseSha/url to the declared\n" +
+	"result file. Exit codes: 0 = selected (or no-work), 1 = business error,\n" +
+	"2 = usage/IO error.\n"
+
 func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("pr-select", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers pr-select [path]\n\n"+
-			"Select at most one open, non-draft, green-CI goober-authored PR for\n"+
-			"merge-review to evaluate this cycle (a workflow stage). Writes the\n"+
-			"selected PR's number/head/base/headSha/baseSha/url to the declared\n"+
-			"result file. Exit codes: 0 = selected (or no-work), 1 = business error,\n"+
-			"2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "pr-select")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

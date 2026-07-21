@@ -11,17 +11,17 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
+	"Open the run's PR — or, on a repass through this stage, find and update\n" +
+	"the PR it already opened (idempotent: the run's branch name is stable\n" +
+	"across repasses, providers.BranchName). Writes prNumber/pull-request-url\n" +
+	"to the declared result file for a downstream stage's Task.InputsFrom.\n" +
+	"Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.\n"
+
 func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("open-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers open-pr [path]\n\n"+
-			"Open the run's PR — or, on a repass through this stage, find and update\n"+
-			"the PR it already opened (idempotent: the run's branch name is stable\n"+
-			"across repasses, providers.BranchName). Writes prNumber/pull-request-url\n"+
-			"to the declared result file for a downstream stage's Task.InputsFrom.\n"+
-			"Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "open-pr")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

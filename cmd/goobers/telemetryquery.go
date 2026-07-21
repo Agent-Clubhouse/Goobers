@@ -173,6 +173,15 @@ func (v *telemetryThresholdValue) Set(raw string) error {
 	return nil
 }
 
+const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings] [path]\n\n" +
+	"Query the instance telemetry rollup for threshold-crossing failure and gate\n" +
+	"patterns. The built-in connector stage writes a versioned candidate-findings\n" +
+	"artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.\n" +
+	"With no --aggregate, all supported aggregates are evaluated. Threshold rates\n" +
+	"are fractions from 0 through 1; count thresholds are positive integers.\n\n" +
+	"Exit codes: 0 = OK (including a clean no-work result), 1 = business error,\n" +
+	"2 = usage/IO error.\n"
+
 // runTelemetryQuery implements the deterministic telemetry connector stage.
 // It locates the instance through GOOBERS_INSTANCE_ROOT because the stage's
 // working directory is its isolated worktree, not the instance root.
@@ -186,16 +195,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	thresholds := rollup.DefaultThresholds()
 	fs.Var(&telemetryThresholdValue{thresholds: &thresholds}, "threshold",
 		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs)")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings] [path]\n\n"+
-			"Query the instance telemetry rollup for threshold-crossing failure and gate\n"+
-			"patterns. The built-in connector stage writes a versioned candidate-findings\n"+
-			"artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.\n"+
-			"With no --aggregate, all supported aggregates are evaluated. Threshold rates\n"+
-			"are fractions from 0 through 1; count thresholds are positive integers.\n\n"+
-			"Exit codes: 0 = OK (including a clean no-work result), 1 = business error,\n"+
-			"2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "telemetry-query")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

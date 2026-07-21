@@ -43,20 +43,20 @@ import (
 // clobbering a human's concurrent push is exactly the outcome the lease exists
 // to prevent, and this workflow's whole premise (§5) is that Goobers loses
 // gracefully and re-selects next tick.
+const pushRemediatedHelp = "Usage: goobers push-remediated [path]\n\n" +
+	"Force-push (with lease) the remediated branch to the claimed PR's head\n" +
+	"and clear goobers:needs-remediation so merge-review re-evaluates it.\n" +
+	"Recovers the PR from this run's own claim ledger entry and the lease\n" +
+	"expectation from the head SHA remediation-checkpoint recorded on the\n" +
+	"PR's sticky state comment — neither can be threaded here, since the\n" +
+	"agentic chain sits between this stage and the one that selected the PR.\n" +
+	"Exit codes: 0 = pushed (or an idempotent no-op), 1 = business error,\n" +
+	"2 = usage/IO error.\n"
+
 func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("push-remediated", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers push-remediated [path]\n\n"+
-			"Force-push (with lease) the remediated branch to the claimed PR's head\n"+
-			"and clear goobers:needs-remediation so merge-review re-evaluates it.\n"+
-			"Recovers the PR from this run's own claim ledger entry and the lease\n"+
-			"expectation from the head SHA remediation-checkpoint recorded on the\n"+
-			"PR's sticky state comment — neither can be threaded here, since the\n"+
-			"agentic chain sits between this stage and the one that selected the PR.\n"+
-			"Exit codes: 0 = pushed (or an idempotent no-op), 1 = business error,\n"+
-			"2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "push-remediated")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

@@ -426,6 +426,23 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	return runRunTable(args, stdout, stderr, "status")
 }
 
+// statusHelp and runsListHelp are the two rendered variants of the shared
+// runRunTable help: `status` supports --daemon/--watch and reports the extra
+// dependency/PR lines, while `runs list` is the flag-reduced alias. runRunTable
+// selects between them via helpUsage(stderr, command) (#1095).
+const statusHelp = "Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
+	"Validate active config, show warnings, and list runs under an instance's\n" +
+	"runs/ directory with their current phase, newest first (default path \".\").\n" +
+	"Status also reports parked issue dependencies and separate blocked-on-sibling/merge-escalated PR counts.\n" +
+	"With --daemon, report daemon health instead.\n" +
+	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
+
+const runsListHelp = "Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [path]\n\n" +
+	"Alias for the goobers status run table, with the same flags (minus --daemon/--watch).\n" +
+	"Validate active config, show warnings, and list runs under an instance's\n" +
+	"runs/ directory with their current phase, newest first (default path \".\").\n" +
+	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
+
 func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -445,23 +462,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		interval = fs.Duration("interval", defaultStatusWatchInterval, "watch refresh interval")
 		daemon = fs.Bool("daemon", false, "report daemon health and identity")
 	}
-	fs.Usage = func() {
-		if supportsWatch {
-			pf(stderr, "Usage: goobers %s [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n",
-				command)
-		} else {
-			pf(stderr, "Usage: goobers %s [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [path]\n\n",
-				command)
-			pln(stderr, "Alias for the goobers status run table, with the same flags (minus --daemon/--watch).")
-		}
-		pf(stderr, "Validate active config, show warnings, and list runs under an instance's\n"+
-			"runs/ directory with their current phase, newest first (default path \".\").\n")
-		if supportsWatch {
-			pln(stderr, "Status also reports parked issue dependencies and separate blocked-on-sibling/merge-escalated PR counts.")
-			pln(stderr, "With --daemon, report daemon health instead.")
-		}
-		pf(stderr, "Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, command)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

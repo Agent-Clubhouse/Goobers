@@ -86,21 +86,21 @@ const needsRemediationLabel = "goobers:needs-remediation"
 // successful `goobers merge-pr` (gated on its merged=true output). A PR that
 // references no issue, or has no other open PRs to label, is a normal
 // outcome (exit 0), not an error — not every merged PR closes a backlog item.
+const postMergeHelp = "Usage: goobers post-merge [path]\n\n" +
+	"Run the two actions that follow a successful merge: triage every\n" +
+	"other open PR targeting the same base branch and label ONLY the\n" +
+	"conflicted or file-overlapping ones goobers:needs-remediation (issue\n" +
+	"#715 — a clean disjoint sibling is left untouched), and mark each\n" +
+	"issue the merged PR's body references (Fixes/Closes/Resolves #N)\n" +
+	"done. Declared input: pullNumber (required — the just-merged PR).\n" +
+	"Exit codes: 0 = done (even if the PR body references no issue, or\n" +
+	"there are no other open PRs — both are normal outcomes, not\n" +
+	"errors), 1 = business error, 2 = usage/IO error.\n"
+
 func runPostMerge(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("post-merge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers post-merge [path]\n\n"+
-			"Run the two actions that follow a successful merge: triage every\n"+
-			"other open PR targeting the same base branch and label ONLY the\n"+
-			"conflicted or file-overlapping ones goobers:needs-remediation (issue\n"+
-			"#715 — a clean disjoint sibling is left untouched), and mark each\n"+
-			"issue the merged PR's body references (Fixes/Closes/Resolves #N)\n"+
-			"done. Declared input: pullNumber (required — the just-merged PR).\n"+
-			"Exit codes: 0 = done (even if the PR body references no issue, or\n"+
-			"there are no other open PRs — both are normal outcomes, not\n"+
-			"errors), 1 = business error, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "post-merge")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

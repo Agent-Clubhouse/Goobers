@@ -32,25 +32,25 @@ import (
 // "still pending" (internal/executor/cipoll.go's ciPollOutcome doc). Only a
 // genuine provider/config error (missing capability, unresolvable repo, a
 // merge attempt that should have succeeded but didn't) is a business error.
+const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
+	"Merge a pull request, but only when every independent conjunct holds:\n" +
+	"verdict=pass, CI green, not a draft, and the SHA-pin still matches the\n" +
+	"PR's live head/base (never a bare self-approval). Declared inputs:\n" +
+	"pullNumber, verdict, headSha, baseSha (all required), verdictAuthor\n" +
+	"(required for the default commit message; supplied by apply-verdict), advisoryMode\n" +
+	"(default false — report only, no merge attempted), mergeMethod\n" +
+	"(merge/squash/rebase; default squash), commitMessage (default: PR\n" +
+	"title + review rationale + referenced issues), resultFile (default\n" +
+	"merge-result.json). Successful merges also report headBranch and\n" +
+	"branchCleanup (deleted, skipped-stacked, or failed). Exit codes: 0 = evaluated\n" +
+	"(merged or not — see the result file's \"merged\" field), 1 = business\n" +
+	"error (missing capability/config, malformed inputs, provider failure),\n" +
+	"2 = usage/IO error.\n"
+
 func runMergePR(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("merge-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers merge-pr [path]\n\n"+
-			"Merge a pull request, but only when every independent conjunct holds:\n"+
-			"verdict=pass, CI green, not a draft, and the SHA-pin still matches the\n"+
-			"PR's live head/base (never a bare self-approval). Declared inputs:\n"+
-			"pullNumber, verdict, headSha, baseSha (all required), verdictAuthor\n"+
-			"(required for the default commit message; supplied by apply-verdict), advisoryMode\n"+
-			"(default false — report only, no merge attempted), mergeMethod\n"+
-			"(merge/squash/rebase; default squash), commitMessage (default: PR\n"+
-			"title + review rationale + referenced issues), resultFile (default\n"+
-			"merge-result.json). Successful merges also report headBranch and\n"+
-			"branchCleanup (deleted, skipped-stacked, or failed). Exit codes: 0 = evaluated\n"+
-			"(merged or not — see the result file's \"merged\" field), 1 = business\n"+
-			"error (missing capability/config, malformed inputs, provider failure),\n"+
-			"2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "merge-pr")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

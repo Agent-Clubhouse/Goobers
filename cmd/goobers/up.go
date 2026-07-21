@@ -184,6 +184,22 @@ func handleSpansOnlyRunCleanup(l instance.Layout, remove bool, stdout io.Writer)
 	return nil
 }
 
+const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--cleanup-spans-only-runs] [path]\n\n" +
+	"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n" +
+	"plus the local runner, loopback HTTP API, and configured GitHub webhook\n" +
+	"listener (default path \".\"). Blocks\n" +
+	"until interrupted (SIGINT/SIGTERM), then drains in-flight runs before\n" +
+	"exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,\n" +
+	"2 = usage/IO error.\n\n" +
+	"Legacy spans-only run directories are reported as cleanup candidates\n" +
+	"and preserved by default. --cleanup-spans-only-runs deletes them at\n" +
+	"startup after reporting each candidate.\n\n" +
+	"--diagnostics turns on deep, opt-in capture for hard hangs: any\n" +
+	"deterministic stage still running past a couple of minutes gets a\n" +
+	"periodic native process sample + process tree + open-fd (lsof)\n" +
+	"snapshot recorded as a run artifact, and stage stdout/stderr are kept\n" +
+	"un-truncated. Verbose and slightly heavier; leave off for normal runs.\n"
+
 // runUpContext is runUp's testable core: the OS signal wiring lives only in
 // runUp, so tests can drive shutdown deterministically via ctx cancellation
 // instead of sending real signals.
@@ -215,23 +231,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--cleanup-spans-only-runs] [path]\n\n"+
-			"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n"+
-			"plus the local runner, loopback HTTP API, and configured GitHub webhook\n"+
-			"listener (default path \".\"). Blocks\n"+
-			"until interrupted (SIGINT/SIGTERM), then drains in-flight runs before\n"+
-			"exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,\n"+
-			"2 = usage/IO error.\n\n"+
-			"Legacy spans-only run directories are reported as cleanup candidates\n"+
-			"and preserved by default. --cleanup-spans-only-runs deletes them at\n"+
-			"startup after reporting each candidate.\n\n"+
-			"--diagnostics turns on deep, opt-in capture for hard hangs: any\n"+
-			"deterministic stage still running past a couple of minutes gets a\n"+
-			"periodic native process sample + process tree + open-fd (lsof)\n"+
-			"snapshot recorded as a run artifact, and stage stdout/stderr are kept\n"+
-			"un-truncated. Verbose and slightly heavier; leave off for normal runs.\n")
-	}
+	fs.Usage = helpUsage(stderr, "up")
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	diagnostics := fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
 	watchConfig := fs.Bool("watch-config", false, "experimental: hot-reload config edits without a restart (default off; superseded by the Workflow CD config source, #453)")

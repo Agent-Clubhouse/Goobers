@@ -8,20 +8,32 @@ import (
 	"time"
 )
 
+const blockedHelp = "Usage: goobers blocked <command> [flags] [path]\n\n" +
+	"Inspect and clear scheduler/blocked.json, the learned dependency-block\n" +
+	"ledger (#552). Reads and writes go through the same claims.lock the\n" +
+	"daemon holds, so they are safe against a concurrent tick.\n\n" +
+	"Commands:\n" +
+	"  list     print the current blocked-item records\n" +
+	"  clear    remove one blocked-item record by item id\n"
+
+const blockedListHelp = "Usage: goobers blocked list [--json] [path]\n\n" +
+	"Print the current scheduler/blocked.json records (item id, repository,\n" +
+	"record key, blockers, stage, reason, recordedAt), snapshotted under\n" +
+	"claims.lock. Default path is \".\". Exit codes: 0 = printed, 2 =\n" +
+	"usage/IO error.\n"
+
+const blockedClearHelp = "Usage: goobers blocked clear <item-id> [path]\n\n" +
+	"Remove one scheduler/blocked.json record by item id (e.g. \"955\" or\n" +
+	"\"pr/955\"), or by the repository-scoped key shown by `blocked list`\n" +
+	"when the id is ambiguous. Default path is \".\". Exit codes: 0 =\n" +
+	"cleared, 1 = no unique record, 2 = usage/IO error.\n"
+
 // runBlocked is the `goobers blocked` command group (#973): operator-facing
 // inspection and clearing of scheduler/blocked.json, the learned
 // dependency-block ledger (#552). Its list/clear subcommands are routed by
 // the CLI dispatcher; this handler only fields the bare/help/unknown cases.
 func runBlocked(args []string, stdout, stderr io.Writer) int {
-	usage := func(w io.Writer) {
-		pf(w, "Usage: goobers blocked <command> [flags] [path]\n\n"+
-			"Inspect and clear scheduler/blocked.json, the learned dependency-block\n"+
-			"ledger (#552). Reads and writes go through the same claims.lock the\n"+
-			"daemon holds, so they are safe against a concurrent tick.\n\n"+
-			"Commands:\n"+
-			"  list     print the current blocked-item records\n"+
-			"  clear    remove one blocked-item record by item id\n")
-	}
+	usage := func(w io.Writer) { pf(w, "%s", blockedHelp) }
 	if len(args) == 0 {
 		usage(stderr)
 		return 2
@@ -45,13 +57,7 @@ func runBlockedList(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("blocked list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit the records as JSON")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers blocked list [--json] [path]\n\n"+
-			"Print the current scheduler/blocked.json records (item id, repository,\n"+
-			"record key, blockers, stage, reason, recordedAt), snapshotted under\n"+
-			"claims.lock. Default path is \".\". Exit codes: 0 = printed, 2 =\n"+
-			"usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "blocked list")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -112,13 +118,7 @@ func runBlockedList(args []string, stdout, stderr io.Writer) int {
 func runBlockedClear(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("blocked clear", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers blocked clear <item-id> [path]\n\n"+
-			"Remove one scheduler/blocked.json record by item id (e.g. \"955\" or\n"+
-			"\"pr/955\"), or by the repository-scoped key shown by `blocked list`\n"+
-			"when the id is ambiguous. Default path is \".\". Exit codes: 0 =\n"+
-			"cleared, 1 = no unique record, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "blocked clear")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

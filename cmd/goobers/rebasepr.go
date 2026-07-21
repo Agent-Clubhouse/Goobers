@@ -28,25 +28,25 @@ import (
 // with gather-pr-context): this stage gets its OWN fresh worktree — see
 // checkoutExistingBranch's doc comment — so it cannot assume gather-pr-
 // context's checkout survived.
+const rebasePRHelp = "Usage: goobers rebase-pr [path]\n\n" +
+	"Check out the selected PR's branch, attempt a rebase onto its base\n" +
+	"(force-with-lease is mandatory for the eventual push — never a bare\n" +
+	"push), and route on the result: a clean rebase with no substantive\n" +
+	"finding or failing CI force-pushes and clears goobers:needs-remediation;\n" +
+	"anything else (a conflict, substantive finding, or failing CI) needs the\n" +
+	"agentic remediation chain, reported via the needsAgent output for the\n" +
+	"workflow to route on. Requires selectedNumber/head/base\n" +
+	"(Task.InputsFrom gather-pr-context's own outputs) and\n" +
+	"hasSubstantiveFindings/hasFailingCI. Exit codes: 0 = routed, 1 =\n" +
+	"business error, 2 = usage/IO error.\n"
+
 func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
 	fs := flag.NewFlagSet("rebase-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers rebase-pr [path]\n\n"+
-			"Check out the selected PR's branch, attempt a rebase onto its base\n"+
-			"(force-with-lease is mandatory for the eventual push — never a bare\n"+
-			"push), and route on the result: a clean rebase with no substantive\n"+
-			"finding or failing CI force-pushes and clears goobers:needs-remediation;\n"+
-			"anything else (a conflict, substantive finding, or failing CI) needs the\n"+
-			"agentic remediation chain, reported via the needsAgent output for the\n"+
-			"workflow to route on. Requires selectedNumber/head/base\n"+
-			"(Task.InputsFrom gather-pr-context's own outputs) and\n"+
-			"hasSubstantiveFindings/hasFailingCI. Exit codes: 0 = routed, 1 =\n"+
-			"business error, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "rebase-pr")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
