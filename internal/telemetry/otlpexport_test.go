@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -66,6 +67,26 @@ func TestExportJournalOTLPMatchesLiveEmission(t *testing.T) {
 	}
 }
 
+func TestExportJournalOTLPClassifiesOutputFailure(t *testing.T) {
+	since := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	runsDir := t.TempDir()
+	if err := NewJournalSpanExporter(runsDir, nil).ExportSpans(
+		t.Context(),
+		[]sdktrace.ReadOnlySpan{
+			exportFixtureSpan(t, "33333333333333333333333333333333", "0000000000000001", "selected", since),
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	writeErr := errors.New("fixture staging write failure")
+
+	err := ExportJournalOTLP([]string{runsDir}, since, time.Time{}, failingExportWriter{err: writeErr})
+	var outputErr *ExportOutputError
+	if !errors.As(err, &outputErr) || !errors.Is(err, writeErr) {
+		t.Fatalf("error = %v, want ExportOutputError wrapping %v", err, writeErr)
+	}
+}
+
 func TestExportJournalOTLPRejectsInvalidJournalData(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -103,6 +124,14 @@ func TestExportJournalOTLPRejectsInvalidJournalData(t *testing.T) {
 			}
 		})
 	}
+}
+
+type failingExportWriter struct {
+	err error
+}
+
+func (w failingExportWriter) Write([]byte) (int, error) {
+	return 0, w.err
 }
 
 func exportFixtureSpan(t *testing.T, traceID, spanID, name string, start time.Time) sdktrace.ReadOnlySpan {

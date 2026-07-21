@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -374,8 +376,36 @@ func TestTelemetryExportRequiresSince(t *testing.T) {
 	}
 }
 
+func TestTelemetryExportRejectsMissingInstanceRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing")
+
+	code, stdout, stderr := runArgs(t, "telemetry", "export", "--since=2026-07-21T00:00:00Z", root)
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "not an instance root") {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+}
+
+func TestTelemetryExportClassifiesStagingWriteFailureAsOutputError(t *testing.T) {
+	root := initDemo(t)
+	writeErr := errors.New("fixture staging write failure")
+	export := func([]string, time.Time, time.Time, io.Writer) error {
+		return &telemetry.ExportOutputError{Err: writeErr}
+	}
+
+	var stdout, stderr strings.Builder
+	code := runTelemetryExportWithExporter(
+		[]string{"--since=2026-07-21T00:00:00Z", root},
+		&stdout,
+		&stderr,
+		export,
+	)
+	if code != 2 || stdout.String() != "" || !strings.Contains(stderr.String(), writeErr.Error()) {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestTelemetryExportEmitsWindowAndDoesNotEmitPartialOutputOnCorruptJournal(t *testing.T) {
-	root := t.TempDir()
+	root := initDemo(t)
 	runsDir := instance.NewLayout(root).RunsDir()
 	validPath := filepath.Join(runsDir, "a-valid", "spans", "otlp.jsonl")
 	corruptPath := filepath.Join(runsDir, "b-corrupt", "spans", "otlp.jsonl")

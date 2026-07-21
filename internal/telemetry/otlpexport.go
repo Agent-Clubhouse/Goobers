@@ -15,6 +15,20 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
+// ExportOutputError reports a failure writing selected records to the export
+// destination.
+type ExportOutputError struct {
+	Err error
+}
+
+func (e *ExportOutputError) Error() string {
+	return fmt.Sprintf("write journaled OTLP export: %v", e.Err)
+}
+
+func (e *ExportOutputError) Unwrap() error {
+	return e.Err
+}
+
 // ExportJournalOTLP writes journaled OTLP trace requests whose spans start in
 // [since, until). A zero until leaves the window open-ended.
 func ExportJournalOTLP(runsDirs []string, since, until time.Time, out io.Writer) error {
@@ -97,10 +111,10 @@ func exportRunOTLP(runID, runDir string, since, until time.Time, out io.Writer) 
 		framed := append(filtered, '\n')
 		written, err := out.Write(framed)
 		if err != nil {
-			return fmt.Errorf("write journaled OTLP export: %w", err)
+			return &ExportOutputError{Err: err}
 		}
 		if written != len(framed) {
-			return fmt.Errorf("write journaled OTLP export: %w", io.ErrShortWrite)
+			return &ExportOutputError{Err: io.ErrShortWrite}
 		}
 	}
 	if recordNumber == 0 {

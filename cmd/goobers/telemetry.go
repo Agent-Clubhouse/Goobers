@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -45,6 +46,14 @@ const telemetryExportHelp = "Usage: goobers telemetry export --since=RFC3339 [--
 	"1 = journal data error, 2 = usage/output error.\n"
 
 func runTelemetryExport(args []string, stdout, stderr io.Writer) int {
+	return runTelemetryExportWithExporter(args, stdout, stderr, telemetry.ExportJournalOTLP)
+}
+
+func runTelemetryExportWithExporter(
+	args []string,
+	stdout, stderr io.Writer,
+	export func([]string, time.Time, time.Time, io.Writer) error,
+) int {
 	fs := flag.NewFlagSet("telemetry export", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	sinceValue := fs.String("since", "", "inclusive RFC3339 span-start lower bound (required)")
@@ -71,7 +80,12 @@ func runTelemetryExport(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(0)
 	}
 
-	runDirs, err := instance.NewLayout(root).RunDirs()
+	layout := instance.NewLayout(root)
+	if _, err := os.Stat(layout.ConfigFile()); err != nil {
+		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", layout.ConfigFile())
+		return 2
+	}
+	runDirs, err := layout.RunDirs()
 	if err != nil {
 		pf(stderr, "error: discover run journals: %v\n", err)
 		return 2
@@ -86,8 +100,12 @@ func runTelemetryExport(args []string, stdout, stderr io.Writer) int {
 		_ = os.Remove(staged.Name())
 	}()
 
-	if err := telemetry.ExportJournalOTLP(runDirs, since, until, staged); err != nil {
+	if err := export(runDirs, since, until, staged); err != nil {
 		pf(stderr, "error: export journaled OTLP: %v\n", err)
+		var outputErr *telemetry.ExportOutputError
+		if errors.As(err, &outputErr) {
+			return 2
+		}
 		return 1
 	}
 	if _, err := staged.Seek(0, io.SeekStart); err != nil {
