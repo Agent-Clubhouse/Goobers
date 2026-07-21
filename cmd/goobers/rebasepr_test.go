@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -216,6 +217,9 @@ func TestRebasePRCleanNoSubstantiveForcePushesAndClearsLabel(t *testing.T) {
 }
 
 func TestRebasePRProviderDeadlineIncludesGitWork(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX pre-receive hook to delay git")
+	}
 	const prBranch = "goobers/impl/run-deadline"
 	origin := initNonConflictingPRBranch(t, prBranch)
 	hook := filepath.Join(origin, "hooks", "pre-receive")

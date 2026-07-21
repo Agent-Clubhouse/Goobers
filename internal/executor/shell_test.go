@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,9 @@ func newTestInjector(t *testing.T, capability, envVar, value string) *credential
 
 func newTestExecutor(t *testing.T, injector *credentials.Injector) (*ShellExecutor, *fakeRecorder) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("ShellExecutor tests exercise Unix process and shell semantics")
+	}
 	if injector == nil {
 		resolver, err := credentials.NewResolver(nil)
 		if err != nil {

@@ -53,7 +53,18 @@ still use Unix tools and are not the supported Windows path.
 |---|---|---|
 | Linux | Go from `go.mod`, Node.js 24 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
 | macOS | Go from `go.mod`, Node.js 24 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
-| Windows | Go from `go.mod`, Node.js 24 with npm, Git for Windows, `golangci-lint` v2.12.2 | `go run ./test/ci` from PowerShell or Command Prompt; Bash and GNU Make are not required |
+| Windows | Go from `go.mod`, Node.js 24 with npm, Git for Windows, `golangci-lint` v2.12.2, 64-bit MinGW-w64 GCC | `go run ./test/ci` from PowerShell or Command Prompt; Bash and GNU Make are not required |
+
+The Windows compiler is required by Go's race detector, not by the CI task
+runner. Install a 64-bit MinGW-w64 GCC with runtime version 8 or newer, put its
+`bin` directory on `PATH`, and set `CC` when the compiler executable is not
+named `gcc`. The portable runner sets `CGO_ENABLED=1` for the race-test step.
+Verify the runtime with `gcc --print-file-name libsynchronization.a`: a
+compatible installation prints the full path to that library rather than the
+bare filename. See Go's
+[race-detector requirements](https://go.dev/doc/articles/race_detector#Requirements).
+No Bash or MSYS shell is required by the gate; tests that specifically
+exercise Unix process and shell semantics are platform-gated on Windows.
 
 ### CI platform matrix
 

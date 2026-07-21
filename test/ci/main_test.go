@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +99,15 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 	if args := strings.Join(got[4].args, " "); !strings.Contains(args, "-o bin/goobers.exe") {
 		t.Fatalf("Windows build args = %q", args)
 	}
+	for _, current := range got {
+		if current.label == "test" {
+			if !slices.Contains(current.env, "CGO_ENABLED=1") {
+				t.Fatalf("Windows test environment = %q, want CGO_ENABLED=1", current.env)
+			}
+			return
+		}
+	}
+	t.Fatal("Windows checks do not include the test step")
 }
 
 func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {

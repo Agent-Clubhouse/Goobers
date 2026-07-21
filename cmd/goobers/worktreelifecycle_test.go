@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -45,6 +46,9 @@ spec:
 `
 
 func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX git shim to inject a worktree removal failure")
+	}
 	root := initAcceptanceDemo(t)
 	setAPIListenAddress(t, root, freeLoopbackAddress(t))
 	l := instance.NewLayout(root)

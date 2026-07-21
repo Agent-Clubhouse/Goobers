@@ -180,17 +180,22 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos str
 		result = append(result, portalPreparationChecks(tools)...)
 	}
 
+	testEnvironment := []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=core.fsync",
+		"GIT_CONFIG_VALUE_0=none",
+		"GOOBERS_DISABLE_FSYNC=1",
+	}
+	if goos == "windows" {
+		testEnvironment = append(testEnvironment, "CGO_ENABLED=1")
+	}
+
 	result = append(result,
 		check{
 			label:   "test",
 			command: tools.goCommand,
 			args:    []string{"test", "-race", "-covermode=atomic", "-coverprofile=coverage.out", "./..."},
-			env: []string{
-				"GIT_CONFIG_COUNT=1",
-				"GIT_CONFIG_KEY_0=core.fsync",
-				"GIT_CONFIG_VALUE_0=none",
-				"GOOBERS_DISABLE_FSYNC=1",
-			},
+			env:     testEnvironment,
 		},
 		check{label: "lint", command: tools.golangciCommand, args: []string{"run"}},
 		check{

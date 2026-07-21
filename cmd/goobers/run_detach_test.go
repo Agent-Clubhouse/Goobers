@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +15,12 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
-const detachedRunWorkerTestRoot = "GOOBERS_TEST_DETACHED_RUN_WORKER_ROOT"
+const (
+	detachedRunWorkerTestRoot = "GOOBERS_TEST_DETACHED_RUN_WORKER_ROOT"
+	detachedRunHelperMode     = "GOOBERS_TEST_DETACHED_RUN_HELPER_MODE"
+	detachedRunHelperMarker   = "GOOBERS_TEST_DETACHED_RUN_HELPER_MARKER"
+	detachedRunHelperExitCode = "GOOBERS_TEST_DETACHED_RUN_HELPER_EXIT_CODE"
+)
 
 func TestDetachedRunWorkerProcess(t *testing.T) {
 	root := os.Getenv(detachedRunWorkerTestRoot)
@@ -22,6 +28,31 @@ func TestDetachedRunWorkerProcess(t *testing.T) {
 		return
 	}
 	os.Exit(run([]string{detachedRunWorkerCommand, "default-implement", root}, os.Stdout, os.Stderr))
+}
+
+func TestRunDetachedTriggerHelperProcess(t *testing.T) {
+	switch os.Getenv(detachedRunHelperMode) {
+	case "":
+		return
+	case "async":
+		_, _ = fmt.Fprintln(os.Stdout, "created run async-1 (workflow=demo gaggle=test)")
+		time.Sleep(time.Second)
+		if err := os.WriteFile(os.Getenv(detachedRunHelperMarker), nil, 0o600); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		os.Exit(0)
+	case "exit":
+		_, _ = fmt.Fprintln(os.Stderr, "error: rejected before dispatch")
+		code, err := strconv.Atoi(os.Getenv(detachedRunHelperExitCode))
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		os.Exit(code)
+	default:
+		os.Exit(2)
+	}
 }
 
 func TestRunDetachedTriggerReturnsAtDispatchWhileChildContinues(t *testing.T) {
@@ -34,9 +65,12 @@ func TestRunDetachedTriggerReturnsAtDispatchWhileChildContinues(t *testing.T) {
 
 	previous := newDetachedRunCommand
 	newDetachedRunCommand = func(_, _ string) (*exec.Cmd, error) {
-		return exec.Command("sh", "-c",
-			`printf 'created run async-1 (workflow=demo gaggle=test)\n'; sleep 1; touch "$1"`,
-			"sh", marker), nil
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRunDetachedTriggerHelperProcess$")
+		cmd.Env = append(os.Environ(),
+			detachedRunHelperMode+"=async",
+			detachedRunHelperMarker+"="+marker,
+		)
+		return cmd, nil
 	}
 	t.Cleanup(func() { newDetachedRunCommand = previous })
 
@@ -76,8 +110,12 @@ func TestRunDetachedTriggerPreservesPredispatchExitCodes(t *testing.T) {
 	t.Cleanup(func() { newDetachedRunCommand = previous })
 	for _, wantCode := range []int{1, 2} {
 		newDetachedRunCommand = func(_, _ string) (*exec.Cmd, error) {
-			return exec.Command("sh", "-c", `printf 'error: rejected before dispatch\n'; exit "$1"`,
-				"sh", strconv.Itoa(wantCode)), nil
+			cmd := exec.Command(os.Args[0], "-test.run=^TestRunDetachedTriggerHelperProcess$")
+			cmd.Env = append(os.Environ(),
+				detachedRunHelperMode+"=exit",
+				detachedRunHelperExitCode+"="+strconv.Itoa(wantCode),
+			)
+			return cmd, nil
 		}
 
 		var stdout, stderr bytes.Buffer

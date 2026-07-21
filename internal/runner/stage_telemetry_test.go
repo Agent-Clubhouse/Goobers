@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -21,6 +22,9 @@ import (
 )
 
 func TestShellStageTelemetryRoundTripsToRollup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test telemetry producer uses POSIX shell syntax")
+	}
 	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "runner-stage-telemetry-test",
