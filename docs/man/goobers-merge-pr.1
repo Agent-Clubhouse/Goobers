@@ -1,0 +1,30 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS MERGE PR" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers merge-pr \- conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers merge-pr\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers merge-pr [path]
+
+Merge a pull request, but only when every independent conjunct holds:
+verdict=pass, CI green, not a draft, and the SHA-pin still matches the
+PR's live head/base (never a bare self-approval). Declared inputs:
+pullNumber, verdict, headSha, baseSha (all required), verdictAuthor
+(required for the default commit message; supplied by apply-verdict), advisoryMode
+(default false — report only, no merge attempted), mergeMethod
+(merge/squash/rebase; default squash), commitMessage (default: PR
+title + review rationale + referenced issues), resultFile (default
+merge-result.json). Successful merges also report headBranch and
+branchCleanup (deleted, skipped-stacked, or failed). Exit codes: 0 = evaluated
+(merged or not — see the result file's "merged" field), 1 = business
+error (missing capability/config, malformed inputs, provider failure),
+2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers merge-pr
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

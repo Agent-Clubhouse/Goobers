@@ -1,0 +1,20 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS BLOCKED" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers blocked \- inspect and clear the learned blocked-item ledger
+.SH SYNOPSIS
+\fBgoobers blocked\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers blocked <command> [flags] [path]
+
+Inspect and clear scheduler/blocked.json, the learned dependency-block
+ledger (#552). Reads and writes go through the same claims.lock the
+daemon holds, so they are safe against a concurrent tick.
+
+Commands:
+  list     print the current blocked-item records
+  clear    remove one blocked-item record by item id
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

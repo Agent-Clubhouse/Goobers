@@ -1,0 +1,46 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS BACKLOG QUERY" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers backlog-query \- query/claim one eligible backlog item (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers backlog-query\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers backlog-query [--claim | --release] [path]
+
+Query the provider for eligible backlog items — labeled with both
+trustLabel (SEC-047: required on public repos, since backlog content is
+untrusted input otherwise) and requireLabels. With --claim, claims
+exactly one via the local claim ledger (source of truth) mirrored to a
+provider-visible marker, and writes it to the declared result file.
+trustLabel is required with --claim (SEC-047 fails closed, not open) —
+a plain list (no --claim) does not require it.
+
+With --release, releases every claim this run holds in the local ledger
+(issue #234: a workflow that only reads/labels an item, never opening a
+PR or closing the issue — e.g. backlog-curation — must release its own
+claim explicitly, since issue-close-out's release is reached only by the
+implementation workflow). Idempotent: releasing claims this run does not
+hold (already released, e.g. re-run after a crash) is a no-op success, not
+an error. --claim and --release are mutually exclusive.
+
+With --claim, contested-file dispatch awareness (#1085) deprioritizes
+claiming an issue whose referenced files are already contested by
+contestedFileMinPRs+ (default 2) open PRs, so new work isn't fed into an
+overlap cluster faster than merge-review can drain it. It only reorders
+candidates (never drops one — an all-contested cycle still claims FIFO)
+and falls back to FIFO on any provider error. Disable with input
+deprioritizeContestedFiles=false.
+
+Exit codes: 0 = eligible item found (and claimed, if --claim) / released
+(--release), 1 = business error (no eligible/claimable item, missing
+trustLabel with --claim, config/credential/provider error), 2 =
+usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers backlog-query
+goobers backlog-query --claim
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

@@ -1,0 +1,29 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS JOURNAL REDACT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers journal redact \- remove a leaked secret from a stored blob (SEC-041)
+.SH SYNOPSIS
+\fBgoobers journal redact\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers journal redact --run <id> --path <blob> --reason <text> [--secret-file <f>] [instance-path]
+
+Registers the leaked secret with the run's scrubber, rewrites the target blob
+with the secret redacted, removes the leaked bytes from rest, and appends a
+redaction event recording old→new digests (ARCHITECTURE.md §4, SEC-041).
+
+The secret's exact bytes are read from stdin (or --secret-file) — never a flag —
+so the value is not exposed in the process table or shell history. It must match
+the leaked bytes exactly (no trailing newline unless the secret has one):
+
+  printf %s "$LEAKED_TOKEN" | goobers journal redact --run <id> \e
+      --path inputs/creds.env --reason 'token pasted into the issue body'
+
+Exit codes: 0 = redacted, 1 = nothing redacted / business error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+printf %s "$LEAKED" | goobers journal redact --run <id> --path inputs/creds.env --reason 'leak'
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

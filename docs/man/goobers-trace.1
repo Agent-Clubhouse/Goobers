@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TRACE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers trace \- show a run's journal events, follow a live run, or show transcripts
+.SH SYNOPSIS
+\fBgoobers trace\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
+
+Show a run's journal events and, if the telemetry rollup has ingested it,
+its trace spans. Use --transcripts to show all recorded agent transcripts,
+or --transcript to select one stage. With --follow, stream a live run's
+events until it finishes; --json --follow emits JSON Lines (default path
+"."). Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO
+error, 130 = interrupted while following.
+.fi
+.SH EXAMPLES
+.nf
+goobers trace <run-id>
+goobers trace --follow <run-id>
+goobers trace --transcripts <run-id>
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

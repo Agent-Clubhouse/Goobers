@@ -1,0 +1,27 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS REBASE PR" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers rebase-pr \- rebase-first, finding-driven remediation routing (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers rebase-pr\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers rebase-pr [path]
+
+Check out the selected PR's branch, attempt a rebase onto its base
+(force-with-lease is mandatory for the eventual push — never a bare
+push), and route on the result: a clean rebase with no substantive
+finding or failing CI force-pushes and clears goobers:needs-remediation;
+anything else (a conflict, substantive finding, or failing CI) needs the
+agentic remediation chain, reported via the needsAgent output for the
+workflow to route on. Requires selectedNumber/head/base
+(Task.InputsFrom gather-pr-context's own outputs) and
+hasSubstantiveFindings/hasFailingCI. Exit codes: 0 = routed, 1 =
+business error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers rebase-pr
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS DOCS CHURN" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers docs-churn \- emit the docs-drift churn digest since the watermark (a connector stage)
+.SH SYNOPSIS
+\fBgoobers docs-churn\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers docs-churn [--repo <dir>] [--workflow <name>] [--gaggle <name>] [--since <duration>] [--buffer-multiplier <float>] [--format churn-digest] [path]
+
+Report the code churn since docs were last refreshed for the docs-updater
+workflow (#1015). Reads and advances a durable per-(gaggle,workflow)
+watermark under the instance's scheduler dir, and writes a versioned
+churn-digest to GOOBERS_INPUT_resultFile when declared, else stdout.
+[path] is the instance root (default $GOOBERS_INSTANCE_ROOT, else ".").
+
+Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
+2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers docs-churn --format churn-digest
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

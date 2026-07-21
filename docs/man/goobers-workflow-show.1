@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS WORKFLOW SHOW" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers workflow show \- show a workflow as a text DAG
+.SH SYNOPSIS
+\fBgoobers workflow show\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers workflow show [--dot] <name> [path]
+
+Load the named workflow from the instance config and show its stages,
+kinds, and transition targets as a text DAG or Graphviz DOT
+(default path ".").
+.fi
+.SH EXAMPLES
+.nf
+goobers workflow show default-implement
+goobers workflow show default-implement --dot
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

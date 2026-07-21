@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS VALIDATE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers validate \- validate an instance or checked-in config source tree
+.SH SYNOPSIS
+\fBgoobers validate\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [path]
+
+Validate an instance's instance.yaml and config/ directory (default
+path "."). --source-tree validates a checked-in config source tree
+using instance.yaml.example and the path itself as config/. --check-harness additionally preflights every agent harness
+referenced by a goober (GBO-011) — installed, signed in, actionable
+guidance otherwise. --check-repos resolves each target repository's
+token and verifies authenticated git access. Exit codes: 0 = valid,
+1 = validation errors, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers validate
+goobers validate --check-harness --check-repos
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

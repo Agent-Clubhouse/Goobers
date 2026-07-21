@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS INIT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers init \- scaffold an instance root
+.SH SYNOPSIS
+\fBgoobers init\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers init [--demo] [path]
+
+Scaffold an instance root at path (default "."): instance.yaml, config/
+(seeded with a starter example), runs/, scheduler/, workcopies/, and a
+telemetry.db placeholder. Re-running is safe — existing pieces are left
+untouched. --demo seeds an offline deterministic tour requiring no repo
+or credentials.
+.fi
+.SH EXAMPLES
+.nf
+goobers init
+goobers init --demo ./demo
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

@@ -1,0 +1,27 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RESET RATE LIMIT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers reset-rate-limit \- clear the hourly run-rate budget without deleting runs/
+.SH SYNOPSIS
+\fBgoobers reset-rate-limit\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers reset-rate-limit [path]
+
+Reset an instance's hourly run-rate budget (maxRunsPerHour) so runs can
+start again immediately, WITHOUT deleting runs/ (the append-only run
+journals — the durable execution record). This is the blessed narrow
+reset: it writes a marker under scheduler/ that moves the rate window's
+floor to now, and never touches runs/ — unlike `rm -rf <instance>`,
+which clears the rate window only by destroying everything with it.
+Takes effect on the next `goobers up`/`goobers run` (stop the daemon
+first if one is running; the reset is applied when the scheduler next
+reconstructs its budget window). Default path ".".
+Exit codes: 0 = reset written, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers reset-rate-limit
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

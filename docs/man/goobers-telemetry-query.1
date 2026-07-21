@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY QUERY" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry-query \- emit versioned candidate findings (a connector stage)
+.SH SYNOPSIS
+\fBgoobers telemetry-query\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings] [path]
+
+Query the instance telemetry rollup for threshold-crossing failure and gate
+patterns. The built-in connector stage writes a versioned candidate-findings
+artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.
+With no --aggregate, all supported aggregates are evaluated. Threshold rates
+are fractions from 0 through 1; count thresholds are positive integers.
+
+Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
+2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry-query --window 24h --format candidate-findings
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

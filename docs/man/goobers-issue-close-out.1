@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ISSUE CLOSE OUT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers issue-close-out \- comment + close out the claimed issue (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers issue-close-out\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers issue-close-out [path]
+
+Comment on the issue this run claimed, linking its PR, and mark it done;
+status=in-review leaves it open for merge-review, while status=needs-human
+parks it by replacing goobers:ready with goobers:needs-human. Release the
+claim ledger lease early rather than waiting for it to expire. Exit codes:
+0 = done, 1 = business error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers issue-close-out
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

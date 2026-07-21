@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS POST MERGE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers post-merge \- post-merge fan-out + close the referenced issue (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers post-merge\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers post-merge [path]
+
+Run the two actions that follow a successful merge: triage every
+other open PR targeting the same base branch and label ONLY the
+conflicted or file-overlapping ones goobers:needs-remediation (issue
+#715 — a clean disjoint sibling is left untouched), and mark each
+issue the merged PR's body references (Fixes/Closes/Resolves #N)
+done. Declared input: pullNumber (required — the just-merged PR).
+Exit codes: 0 = done (even if the PR body references no issue, or
+there are no other open PRs — both are normal outcomes, not
+errors), 1 = business error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers post-merge
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

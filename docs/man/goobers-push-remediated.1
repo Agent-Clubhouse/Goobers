@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS PUSH REMEDIATED" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers push-remediated \- force-push the remediated branch and clear needs-remediation (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers push-remediated\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers push-remediated [path]
+
+Force-push (with lease) the remediated branch to the claimed PR's head
+and clear goobers:needs-remediation so merge-review re-evaluates it.
+Recovers the PR from this run's own claim ledger entry and the lease
+expectation from the head SHA remediation-checkpoint recorded on the
+PR's sticky state comment — neither can be threaded here, since the
+agentic chain sits between this stage and the one that selected the PR.
+Exit codes: 0 = pushed (or an idempotent no-op), 1 = business error,
+2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers push-remediated
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
