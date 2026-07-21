@@ -164,14 +164,11 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	overlappingSiblingsCsv := providerInput("overlappingSiblings", "")
 	overlappingSiblings := parseOverlappingSiblings(overlappingSiblingsCsv)
 
-	// #834: the lander-election policy is workflow-configurable. An unknown
-	// name falls back to the deterministic default (fifo) rather than failing
-	// the pipeline; log the fallback so a config typo is visible, not silent.
+	// #834/#1028/#1029: the lander-election policy is workflow-configurable.
+	// fifo/newest are pure functions; most-blockers/fewest-overlaps score every
+	// cluster member from live cross-PR data and are resolved below, once the
+	// open-PR set is in hand. An unknown name falls back to fifo.
 	policyName := providerInput("electionPolicy", defaultElectionPolicy)
-	policy, resolvedPolicy := resolveElectionPolicy(policyName)
-	if resolvedPolicy != policyName {
-		pf(stderr, "warning: unknown election policy %q — falling back to %q\n", policyName, resolvedPolicy)
-	}
 
 	// writeResult emits the routing decision plus the pass-through outputs the
 	// two possible successor stages resolve their inputsFrom against.
@@ -248,6 +245,20 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, resultFile)
+	}
+
+	// Resolve the election policy now that the open-PR set is available — the
+	// cluster-data policies (#1028/#1029) score every cluster member from it. A
+	// gather failure fails the stage explicitly rather than silently electing a
+	// different winner; apply-verdict resolves the same policy from the same
+	// data, so the two stages agree on the crown.
+	policy, resolvedPolicy, perr := resolveElectionPolicyForCluster(
+		ctx, provider, repo, policyName, selectedNumber, unionBlockingPRs(effectiveFindings), prs)
+	if perr != nil {
+		return failProviderStage(stderr, "resolve election policy "+policyName, perr, resultFile)
+	}
+	if resolvedPolicy != policyName {
+		pf(stderr, "warning: unknown election policy %q — falling back to %q\n", policyName, resolvedPolicy)
 	}
 
 	// #950: fail-safe — an unresolvable demotion state proceeds as an empty set

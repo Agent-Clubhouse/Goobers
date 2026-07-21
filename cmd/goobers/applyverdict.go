@@ -441,9 +441,22 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	effective := posted
 	effective.Findings = withOverlapBackstop(posted.Findings, overlappingSiblings)
 
+	// Resolve the election policy once, gathering cluster data for the
+	// cluster-data policies (#1028/#1029) from the same open-PR list and cluster
+	// elect-lander used — so this stage's re-derived election matches
+	// elect-lander's exactly (both the crown below and the predecessor order in
+	// the parked-record). A gather failure fails the stage explicitly rather
+	// than silently deriving a different winner.
+	policyInput := providerInput("electionPolicy", defaultElectionPolicy)
+	clusterPolicy, resolvedPolicyName, perr := resolveElectionPolicyForCluster(
+		ctx, provider, repo, policyInput, selectedNumber, unionBlockingPRs(effective.Findings), prs)
+	if perr != nil {
+		return failProviderStage(stderr, "resolve election policy "+policyInput, perr, "")
+	}
+
 	// Election resolves an all-ordering verdict into a real pass (#833/#834,
 	// reframed). See electedLanderPassRationale.
-	if elected, rationale := electedLanderPass(selectedNumber, effective, demoted); elected {
+	if elected, rationale := electedLanderPass(selectedNumber, effective, demoted, clusterPolicy, resolvedPolicyName); elected {
 		posted.Decision = apiv1.VerdictPass
 		posted.Rationale = rationale
 	}
@@ -454,9 +467,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// Record only the predecessors this parked PR must wait behind, not the
 		// symmetric union of every overlapping sibling (#991) — otherwise a 3+
 		// cluster deadlocks (each member lists the others, none ever unparks).
-		policy, _ := resolveElectionPolicy(providerInput("electionPolicy", defaultElectionPolicy))
+		// Uses the same cluster-resolved policy as the crown above (#1028/#1029),
+		// so predecessor-order and election-order stay identical.
 		state := blockedOnSiblingState{
-			Blockers:   predecessorBlockers(selectedNumber, unionBlockingPRs(effective.Findings), policy, demoted),
+			Blockers:   predecessorBlockers(selectedNumber, unionBlockingPRs(effective.Findings), clusterPolicy, demoted),
 			Reason:     posted.Rationale,
 			HeadSHA:    posted.HeadSHA,
 			BaseSHA:    posted.BaseSHA,
@@ -643,11 +657,10 @@ func isMergeReviewStatusComment(body string) bool {
 // The findings are deliberately left intact on the published verdict. The
 // ordering asks were real observations and stay visible; only the decision they
 // rolled up to changes, and the rationale states exactly why.
-func electedLanderPass(selectedNumber int, posted apiv1.Verdict, demoted map[int]bool) (bool, string) {
+func electedLanderPass(selectedNumber int, posted apiv1.Verdict, demoted map[int]bool, policy electionPolicyFunc, policyName string) (bool, string) {
 	if posted.Decision != apiv1.VerdictNeedsChanges {
 		return false, ""
 	}
-	policy, policyName := resolveElectionPolicy(providerInput("electionPolicy", defaultElectionPolicy))
 	if !electionDecision(posted.Findings, selectedNumber, policy, demoted) {
 		return false, ""
 	}
