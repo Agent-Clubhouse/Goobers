@@ -74,6 +74,10 @@ const (
 	// diagnostic threshold. Timing, operation, and process details live under
 	// Runner because they are runner-specific and excluded from conformance.
 	EventClaimLockSlow EventType = "claim_lock_slow"
+	// EventClaimLockTimeout records a bounded claims-lock acquisition expiring.
+	// Error.Code carries claims_lock_timeout; retry classification and timing
+	// details live under Runner.
+	EventClaimLockTimeout EventType = "claims_lock_timeout"
 	// EventConfigReloaded records an atomically-applied config directory change.
 	EventConfigReloaded EventType = "config.reloaded"
 	// EventConfigReloadRejected records a changed config directory that failed

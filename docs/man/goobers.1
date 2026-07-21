@@ -62,7 +62,10 @@ generate a fish completion script
 generate a zsh completion script
 .TP
 \fBgoobers config\fR
-inspect the instance's operational configuration
+inspect instance configuration and compare workflow definitions
+.TP
+\fBgoobers config diff\fR
+compare active workflows with canonical definitions
 .TP
 \fBgoobers config show\fR
 render the effective instance config (secrets redacted)
@@ -179,10 +182,13 @@ show the instance lifetime summary card
 validate config, show warnings, list runs, or report daemon health
 .TP
 \fBgoobers telemetry\fR
-success rate/duration or recent-error aggregates
+query aggregates or export journaled OTLP windows
 .TP
 \fBgoobers telemetry errors\fR
 recent errors across runs, by class, with run/stage refs
+.TP
+\fBgoobers telemetry export\fR
+re-emit a span-start-time window from journaled OTLP/JSON
 .TP
 \fBgoobers telemetry stats\fR
 success rate and duration aggregates per workflow and stage
@@ -227,6 +233,7 @@ show a workflow as a text DAG
 \fBgoobers-completion-fish\fR(1),
 \fBgoobers-completion-zsh\fR(1),
 \fBgoobers-config\fR(1),
+\fBgoobers-config-diff\fR(1),
 \fBgoobers-config-show\fR(1),
 \fBgoobers-dashboard\fR(1),
 \fBgoobers-docs-churn\fR(1),
@@ -267,6 +274,7 @@ show a workflow as a text DAG
 \fBgoobers-status\fR(1),
 \fBgoobers-telemetry\fR(1),
 \fBgoobers-telemetry-errors\fR(1),
+\fBgoobers-telemetry-export\fR(1),
 \fBgoobers-telemetry-stats\fR(1),
 \fBgoobers-telemetry-query\fR(1),
 \fBgoobers-trace\fR(1),

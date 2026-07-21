@@ -9,8 +9,8 @@ Usage:
                                 scaffold a goober or workflow in a gaggle
   goobers validate [flags] [path]  validate an instance or checked-in config source tree
   goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)
-  goobers config show [--json] [path]
-                                render the effective instance config (secrets redacted)
+  goobers config show|diff [flags] [path]
+                                inspect instance config or compare workflows with canonical definitions
   goobers up [--quiet] [--notify[=all]] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers dashboard [--port=<port|auto>] [--no-open] [path]
@@ -44,7 +44,8 @@ Usage:
   goobers escalations show [--json] <run-id> [path]
                                 show escalation cause + per-stage artifact timeline
   goobers completion bash|zsh|fish  generate a shell completion script
-  goobers telemetry stats|errors [flags] [path]  success rate/duration or recent-error aggregates
+  goobers telemetry stats|errors|export [flags] [path]
+                                query aggregates or export journaled OTLP windows
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
@@ -99,8 +100,8 @@ Usage:
                                 scaffold a goober or workflow in a gaggle
   goobers validate [flags] [path]  validate an instance or checked-in config source tree
   goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)
-  goobers config show [--json] [path]
-                                render the effective instance config (secrets redacted)
+  goobers config show|diff [flags] [path]
+                                inspect instance config or compare workflows with canonical definitions
   goobers up [--quiet] [--notify[=all]] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers dashboard [--port=<port|auto>] [--no-open] [path]
@@ -134,7 +135,8 @@ Usage:
   goobers escalations show [--json] <run-id> [path]
                                 show escalation cause + per-stage artifact timeline
   goobers completion bash|zsh|fish  generate a shell completion script
-  goobers telemetry stats|errors [flags] [path]  success rate/duration or recent-error aggregates
+  goobers telemetry stats|errors|export [flags] [path]
+                                query aggregates or export journaled OTLP windows
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
@@ -301,12 +303,29 @@ Generate a shell completion script. Source the output in the target shell.
 ### config
 Usage: goobers config <subcommand> [flags] [path]
 
-Inspect the instance's operational configuration (instance.yaml).
+Inspect instance configuration and compare workflow definitions.
 
 Subcommands:
   show   render the effective instance config (secrets redacted)
+  diff   compare active workflows with the shipped canonical workflows
 
-Run `goobers config show -h` for details. Default path is ".".
+Run `goobers config show -h` or `goobers config diff -h` for details.
+Default path is ".".
+
+### config diff
+Usage: goobers config diff [--against <canonical-root>] [instance-root]
+
+Compare the active workflows under <instance-root>/config with a canonical
+config source tree. The canonical root defaults to ./selfhost; use --against
+when running outside the Goobers source checkout or comparing another set.
+
+Schedule, maxConcurrentRuns, maxRunsPerHour, maxRunsPerDay, maxOpenPRs,
+and trigger presence (enablement) are operational tuning: they are printed
+as INFO and do not fail the command. Every other workflow difference is
+structural drift, printed as ERROR with active and canonical values.
+
+Exit codes: 0 = structurally identical (informational tuning is allowed),
+1 = structural drift or invalid config, 2 = usage/IO error.
 
 ### config show
 Usage: goobers config show [--json] [path]
@@ -742,16 +761,26 @@ With --daemon, report daemon health instead.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <stats|errors> [flags] [path]
+Usage: goobers telemetry <stats|errors|export> [flags] [path]
 
 stats:  success rate / durations per workflow + stage
 errors: recent errors across runs, by class, with run/stage refs
+export: re-emit a span-start-time window from journaled OTLP/JSON
 
 ### telemetry errors
 Usage: goobers telemetry errors [--json] [--workflow=name] [--gaggle=name] [--class=name] [--since=RFC3339] [--until=RFC3339] [--limit=N] [--rebuild] [path]
 
 Recent errors across every run, newest first, with run/stage refs
 (default path "."). Exit codes: 0 = OK, 2 = usage/IO error.
+
+### telemetry export
+Usage: goobers telemetry export --since=RFC3339 [--until=RFC3339] [path]
+
+Re-emit journaled OTLP/JSON trace requests to stdout. --since is inclusive;
+--until is exclusive when set. Window membership uses each span's start time.
+Every discovered run journal is validated before output; missing, corrupt, or
+unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
+1 = journal data error, 2 = usage/output error.
 
 ### telemetry stats
 Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
