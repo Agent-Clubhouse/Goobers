@@ -448,6 +448,7 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 			return fmt.Errorf("worktree: read marker for run %s: %w", wt.RunID, markerErr)
 		}
 		mk.Status = statusKept
+		mk.RetainedAt = time.Now()
 		if err := writeMarker(markerPath, mk); err != nil {
 			return fmt.Errorf("worktree: mark run %s kept: %w", wt.RunID, err)
 		}

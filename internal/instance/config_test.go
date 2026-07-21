@@ -32,6 +32,11 @@ runConditions:
   maxParallelRuns: 2
   stalledRunTimeout: 30m
   claimsLockTimeout: 15s
+retention:
+  enabled: true
+  dryRun: true
+  maxRetainedWorktreeBytes: 1048576
+  retainedWorktreeMaxAge: 72h
 notifications: true
 `)
 	cfg, err := LoadConfig(path)
@@ -59,8 +64,35 @@ notifications: true
 	if !cfg.Notifications {
 		t.Fatal("expected notifications to be enabled")
 	}
+	if !cfg.Retention.Enabled || !cfg.Retention.DryRun || cfg.Retention.MaxRetainedWorktreeBytes != 1048576 {
+		t.Fatalf("unexpected retention config: %+v", cfg.Retention)
+	}
+	if got, err := cfg.Retention.RetainedWorktreeMaxAgeDuration(); err != nil || got != 72*time.Hour {
+		t.Fatalf("RetainedWorktreeMaxAgeDuration = %s, %v; want 72h", got, err)
+	}
 	if cfg.APIListenAddress() != DefaultAPIListenAddress {
 		t.Fatalf("APIListenAddress = %q, want %q", cfg.APIListenAddress(), DefaultAPIListenAddress)
+	}
+}
+
+func TestRetentionConfigDefaultsDisabledAndValidatesLimits(t *testing.T) {
+	var zero RetentionConfig
+	if zero.Enabled || zero.DryRun || zero.MaxRetainedWorktreeBytes != 0 {
+		t.Fatalf("zero retention config is not disabled: %+v", zero)
+	}
+	if got, err := zero.RetainedWorktreeMaxAgeDuration(); err != nil || got != 0 {
+		t.Fatalf("default RetainedWorktreeMaxAgeDuration = %s, %v; want 0, nil", got, err)
+	}
+
+	for _, cfg := range []RetentionConfig{
+		{MaxRetainedWorktreeBytes: -1},
+		{RetainedWorktreeMaxAge: "not-a-duration"},
+		{RetainedWorktreeMaxAge: "0s"},
+		{RetainedWorktreeMaxAge: "-1h"},
+	} {
+		if err := (&Config{Retention: cfg}).Validate(); err == nil || !strings.Contains(err.Error(), "retention.") {
+			t.Fatalf("Validate(%+v) error = %v, want retention error", cfg, err)
+		}
 	}
 }
 

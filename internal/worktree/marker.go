@@ -33,7 +33,15 @@ type marker struct {
 	AssetPathGuard bool      `json:"asset_path_guard,omitempty"`
 	PID            int       `json:"pid"`
 	CreatedAt      time.Time `json:"created_at"`
+	RetainedAt     time.Time `json:"retained_at,omitempty"`
 	Status         status    `json:"status"`
+}
+
+func (m marker) retainedAt() time.Time {
+	if !m.RetainedAt.IsZero() {
+		return m.RetainedAt
+	}
+	return m.CreatedAt
 }
 
 func writeMarker(path string, m marker) error {

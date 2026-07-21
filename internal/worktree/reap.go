@@ -139,7 +139,7 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 			}
 			reason = ReapReasonOrphaned
 		case statusKept:
-			if opts.StaleAfter <= 0 || time.Since(mk.CreatedAt) <= opts.StaleAfter {
+			if opts.StaleAfter <= 0 || time.Since(mk.retainedAt()) <= opts.StaleAfter {
 				continue
 			}
 			reason = ReapReasonStale
