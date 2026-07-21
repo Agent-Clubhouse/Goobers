@@ -216,6 +216,7 @@ func stageInvokesProviderBuiltin(command []string) bool {
 		"post-merge",
 		"pr-select",
 		"rebase-pr",
+		"reconcile-post-merge",
 		"remediation-checkpoint",
 		"update-behind-pr":
 		return true

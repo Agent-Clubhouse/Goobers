@@ -145,11 +145,43 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
-	if err != nil {
-		return failProviderStage(stderr, "poll merged pull request", err, "")
-	}
 
+	var poll providers.PullRequestPollResult
+	var pollErr error
+	alreadyCompleted := false
+	err = withPostMergeReconcileLock(root, func(ledgerPath string) error {
+		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+		if err != nil {
+			return err
+		}
+		if postMergeReconciliationCompleted(ledger, repo, pullNumber) {
+			alreadyCompleted = true
+			return nil
+		}
+		poll, pollErr = provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
+		if pollErr != nil {
+			return nil
+		}
+		performPostMerge(ctx, provider, repo, root, pullNumber, poll, stdout, stderr)
+		if completePostMergeReconciliation(&ledger, repo, pullNumber) {
+			return writePostMergeReconcileLedger(ledgerPath, ledger)
+		}
+		return nil
+	})
+	if err != nil {
+		pf(stderr, "error: record post-merge completion: %v\n", err)
+		return 1
+	}
+	if pollErr != nil {
+		return failProviderStage(stderr, "poll merged pull request", pollErr, "")
+	}
+	if alreadyCompleted {
+		pf(stdout, "post-merge: pr #%s was already reconciled\n", pullNumber)
+	}
+	return 0
+}
+
+func performPostMerge(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, root, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) {
 	labeled, skipped, labelErrs := fanOutNeedsRemediation(ctx, provider, repo, root, poll.Number, poll.BaseBranch, stderr)
 	for _, lerr := range labelErrs {
 		pf(stderr, "warning: %v\n", lerr)
@@ -174,10 +206,8 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 	for _, cerr := range closeErrs {
 		pf(stderr, "warning: %v\n", cerr)
 	}
-
 	pf(stdout, "post-merge: labeled %d pr(s) %s (%d clean siblings left untouched), unparked %d blocked-on-sibling pr(s), un-escalated %d self-healed pr(s), un-demoted %d self-healed pr(s), closed %d issue(s)\n",
 		len(labeled), needsRemediationLabel, len(skipped), len(unparked), len(unescalated), len(undemoted), len(closed))
-	return 0
 }
 
 // unparkSelfHealedEscalations removes goobers:merge-escalated from any open PR

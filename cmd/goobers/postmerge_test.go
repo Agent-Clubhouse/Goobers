@@ -25,6 +25,7 @@ type postMergeServerState struct {
 	baseBranch   string
 	body         string
 	mergedFiles  []string // the just-merged PR's own touched files
+	merged       bool
 
 	otherOpenPRs []int // numbers of other open PRs targeting baseBranch
 	// headSHA/mergeable/files are keyed by PR number — every entry in
@@ -45,6 +46,9 @@ type postMergeServerState struct {
 	// assert a warm sibling cache costs zero extra files requests.
 	filesRequests     map[int]int
 	mergeableRequests map[int]int
+	pollRequests      int
+	deleteCalls       int
+	deleteStatus      int
 }
 
 // newPostMergeServerState returns a state with every map initialized and
@@ -54,6 +58,7 @@ type postMergeServerState struct {
 func newPostMergeServerState(mergedNumber int, baseBranch, body string, mergedFiles []string, otherOpenPRs []int) *postMergeServerState {
 	st := &postMergeServerState{
 		mergedNumber: mergedNumber, baseBranch: baseBranch, body: body, mergedFiles: mergedFiles,
+		merged:            true,
 		otherOpenPRs:      otherOpenPRs,
 		headSHA:           map[int]string{},
 		mergeable:         map[int]*bool{},
@@ -105,12 +110,23 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 
 	// The merged PR's own poll.
 	mux.HandleFunc(fmt.Sprintf("%s/pulls/%d", prefix, st.mergedNumber), func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		st.pollRequests++
+		merged := st.merged
+		st.mu.Unlock()
+		state := "open"
+		if merged {
+			state = "closed"
+		}
 		writeFakeJSON(w, map[string]interface{}{
-			"number": st.mergedNumber, "state": "closed", "merged": true,
+			"number": st.mergedNumber, "state": state, "merged": merged,
 			"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, st.mergedNumber),
 			"body":     st.body,
-			"head":     map[string]interface{}{"sha": "mergedsha"},
-			"base":     map[string]interface{}{"sha": "basesha", "ref": st.baseBranch},
+			"head": map[string]interface{}{
+				"ref": "goobers/implementation/run-merged", "sha": "mergedsha",
+				"repo": map[string]interface{}{"name": repo, "html_url": "https://github.com/" + owner + "/" + repo, "owner": map[string]string{"login": owner}},
+			},
+			"base": map[string]interface{}{"sha": "basesha", "ref": st.baseBranch},
 		})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/pulls/%d/reviews", prefix, st.mergedNumber), func(w http.ResponseWriter, r *http.Request) {
@@ -138,8 +154,13 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 
 	// The other-open-PRs listing.
 	mux.HandleFunc(prefix+"/pulls", func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("base"); got != st.baseBranch {
-			t.Fatalf("ListPullRequests base query = %q, want %q", got, st.baseBranch)
+		base := r.URL.Query().Get("base")
+		if base == "goobers/implementation/run-merged" {
+			writeFakeJSON(w, []map[string]interface{}{})
+			return
+		}
+		if base != st.baseBranch {
+			t.Fatalf("ListPullRequests base query = %q, want %q", base, st.baseBranch)
 		}
 		st.mu.Lock()
 		defer st.mu.Unlock()
@@ -152,6 +173,17 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 			})
 		}
 		writeFakeJSON(w, out)
+	})
+	mux.HandleFunc(prefix+"/git/refs/heads/goobers/implementation/run-merged", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		st.deleteCalls++
+		status := st.deleteStatus
+		st.mu.Unlock()
+		if status != 0 {
+			http.Error(w, "delete failed", status)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	// Per-sibling detail (mergeable) + files + labels.

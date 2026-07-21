@@ -44,6 +44,7 @@ _goobers_completion()
             'merge-pr:conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)'
             'record-merge-refusal:record a merge refusal and demote a persistently-stuck lander (a workflow stage)'
             'merge-queue-poll:watch an enqueued PR until merged or evicted (a workflow stage)'
+            'reconcile-post-merge:reconcile late merge-queue merges (a workflow stage)'
             'post-merge:post-merge fan-out + close the referenced issue (a workflow stage)'
             'telemetry-query:emit versioned candidate findings (a connector stage)'
             'docs-churn:emit the docs-drift churn digest since the watermark (a connector stage)'

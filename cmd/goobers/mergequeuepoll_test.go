@@ -527,6 +527,15 @@ func TestMergeQueuePollTimesOutWhenStillPending(t *testing.T) {
 	if st.labelCalls != 0 || st.deleteCalls != 0 {
 		t.Fatalf("label/delete calls = %d/%d, want 0/0 for a timeout (no terminal outcome to act on yet)", st.labelCalls, st.deleteCalls)
 	}
+	ledgerPath := filepath.Join(layoutFor(root).SchedulerDir(), postMergeReconcileLedgerFile)
+	ledger, err := readPostMergeReconcileLedger(ledgerPath)
+	if err != nil {
+		t.Fatalf("read post-merge reconcile ledger: %v", err)
+	}
+	entry := ledger.Entries[postMergeReconcileKey(postMergeTestRepo(), "9")]
+	if entry.State != postMergeReconcilePending {
+		t.Fatalf("reconcile entry = %+v, want pending timeout for PR #9", entry)
+	}
 }
 
 // TestMergeQueuePollBudgetStaysInsideTheStageDeadline is issue #884's unit

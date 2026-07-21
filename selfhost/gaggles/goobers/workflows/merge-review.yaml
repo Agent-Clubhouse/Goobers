@@ -41,8 +41,27 @@ spec:
     # and the issue's own "×3-4 throughput" target.
     maxConcurrentRuns: 4
     maxRunsPerHour: 2
-  start: pr-select
+  start: reconcile-post-merge
   tasks:
+    # A bounded next-run sweep closes the residual queue-watch timeout gap:
+    # queue-watch records a pending entry before reporting timeout, and this
+    # stage runs the normal cleanup/close-out/fan-out path if GitHub merged it
+    # after that run stopped watching. Completed entries are durably skipped.
+    - name: reconcile-post-merge
+      type: deterministic
+      goal: Reconcile merge-queue pull requests that merged after queue-watch timed out.
+      run:
+        command: ["goobers", "reconcile-post-merge"]
+      inputs:
+        maxPullRequests: "10"
+        lookback: "168h"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+        - github:branch:delete
+      continueOnError: true
+      next: pr-select
+
     # Selection (design doc §3's declarative-selection model, applied to
     # PRs): one open, non-draft, green-CI goobers/implementation/* PR not
     # already carrying a merge-review label. The selected PR is leased in the

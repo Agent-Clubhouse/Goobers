@@ -14,8 +14,23 @@ spec:
   readiness:
     maxConcurrentRuns: 1
     maxRunsPerHour: 2
-  start: pr-select
+  start: reconcile-post-merge
   tasks:
+    - name: reconcile-post-merge
+      type: deterministic
+      goal: Reconcile merge-queue pull requests that merged after queue-watch timed out.
+      run:
+        command: ["goobers", "reconcile-post-merge"]
+      inputs:
+        maxPullRequests: "10"
+        lookback: "168h"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+        - github:branch:delete
+      continueOnError: true
+      next: pr-select
+
     - name: pr-select
       type: deterministic
       goal: Select one eligible open PR for holistic review.
