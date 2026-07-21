@@ -75,7 +75,8 @@ const (
 	// invoke.Deterministic) reports structured handoff data a downstream
 	// task's Task.InputsFrom can reference, e.g. `goobers open-pr`'s prNumber
 	// (#132). Not JSON, or not a flat object, is not an error: the artifact/
-	// presence-check contract holds regardless.
+	// presence-check contract holds regardless. Registered provider stages get
+	// their command-specific default when the workflow omits this input.
 	InputResultFile = "resultFile"
 	// InputMaxOutputBytes is a decimal integer overriding the per-stream
 	// output cap.
@@ -224,6 +225,32 @@ func stageInvokesProviderBuiltin(command []string) bool {
 	}
 }
 
+var providerStageResultFiles = map[string]string{
+	"apply-verdict":          "verdict-result.json",
+	"backlog-query":          "claimed-item.json",
+	"elect-lander":           "election.json",
+	"gather-pr-context":      "pr-context.json",
+	"gather-sibling-context": "sibling-context.json",
+	"issue-close-out":        "issue-close-out-result.json",
+	"merge-pr":               "merge-result.json",
+	"merge-queue-poll":       "queue-result.json",
+	"open-pr":                "pr-result.json",
+	"post-merge":             "post-merge-result.json",
+	"pr-select":              "selected-pr.json",
+	"rebase-pr":              "rebase-result.json",
+	"reconcile-post-merge":   "reconcile-post-merge-result.json",
+	"remediation-checkpoint": "checkpoint-result.json",
+}
+
+// ProviderStageResultFile returns the shared result-file default for a
+// provider-backed workflow command. The CLI registry and shell executor both
+// consume this registry so newly introduced commands cannot acquire only half
+// of the command/result-file contract.
+func ProviderStageResultFile(command string) (string, bool) {
+	resultFile, ok := providerStageResultFiles[command]
+	return resultFile, ok
+}
+
 // Run implements invoke.Deterministic. It executes run.Command in
 // env.Workspace with a capability-scoped, non-ambient environment, enforces a
 // timeout by killing the whole process group, captures size-bounded and
@@ -255,6 +282,13 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		return apiv1.ResultEnvelope{}, err
 	}
 	resultFile := stringInput(env, InputResultFile)
+	implicitResultFile := ""
+	if resultFile == "" && stageInvokesGoobersCLI(run.Command) && len(run.Command) > 1 {
+		if defaultResultFile, ok := ProviderStageResultFile(run.Command[1]); ok {
+			resultFile = defaultResultFile
+			implicitResultFile = defaultResultFile
+		}
+	}
 
 	registry, scrubber := journal.DefaultScrubber()
 	// Only a stage whose command IS the goobers CLI receives the run's
@@ -268,6 +302,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, e.InstanceRoot, injectRunContext, env.Inputs, run.Env, e.ExtraEnvAllowlist)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
+	}
+	if implicitResultFile != "" {
+		stageEnv = append(stageEnv, InputEnvVar(InputResultFile)+"="+implicitResultFile)
 	}
 	builtinErrorFile := ""
 	if injectRunContext {

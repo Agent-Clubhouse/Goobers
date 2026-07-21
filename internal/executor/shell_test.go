@@ -147,6 +147,35 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 	}
 }
 
+func TestShellExecutor_ProviderStageUsesImplicitResultFile(t *testing.T) {
+	stub := filepath.Join(t.TempDir(), "goobers")
+	resultEnv := InputEnvVar(InputResultFile)
+	script := "#!/bin/sh\nprintf '{\"reconciled\":true}' > \"$" + resultEnv + "\"\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, rec := newTestExecutor(t, nil)
+	exec.SelfBin = stub
+	env := baseEnvelope(t)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "reconcile-post-merge"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if result.Outputs["reconciled"] != true {
+		t.Fatalf("reconciled = %v, want true", result.Outputs["reconciled"])
+	}
+	if got := string(rec.recorded["task-1/result"]); got != `{"reconciled":true}` {
+		t.Fatalf("result artifact = %q", got)
+	}
+}
+
 func TestShellExecutor_TypedTimeoutOverridesLegacyInput(t *testing.T) {
 	exec, _ := newTestExecutor(t, nil)
 	env := baseEnvelope(t)

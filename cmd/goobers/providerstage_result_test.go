@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/executor"
 )
 
@@ -115,6 +116,39 @@ func TestProviderChainCommandsUseDefaultResultFile(t *testing.T) {
 				t.Fatalf("errorMessage = %q, want it to contain %q", message, tt.errorReason)
 			}
 		})
+	}
+}
+
+func TestProviderStageCommandInheritsResultContract(t *testing.T) {
+	registration := command(
+		"reconcile-post-merge",
+		apicontract.ActionWorkflowExecution,
+		func(_ []string, _, stderr io.Writer) int {
+			pln(stderr, "error: reconciliation failed")
+			return 1
+		},
+	)
+	if !registration.providerStage {
+		t.Fatal("reconcile-post-merge did not inherit the provider-stage guard")
+	}
+	if registration.resultFile != "reconcile-post-merge-result.json" {
+		t.Fatalf("resultFile = %q, want reconcile-post-merge-result.json", registration.resultFile)
+	}
+
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), "")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code := registration.dispatch(nil, io.Discard, io.Discard)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	result := readProviderStageResult(t, filepath.Join(workDir, registration.resultFile))
+	if result[executor.OutputErrorCode] != errorCodeProvider {
+		t.Fatalf("errorCode = %v, want %s", result[executor.OutputErrorCode], errorCodeProvider)
+	}
+	if result[executor.OutputErrorMessage] != "reconciliation failed" {
+		t.Fatalf("errorMessage = %v, want reconciliation failed", result[executor.OutputErrorMessage])
 	}
 }
 
