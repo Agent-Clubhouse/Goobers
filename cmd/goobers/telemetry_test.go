@@ -136,6 +136,8 @@ func TestTelemetryStatsJSON(t *testing.T) {
 	assertJSONObjectKeys(t, document.Stages[0],
 		"stage", "totalAttempts", "succeededAttempts", "failedAttempts",
 		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
+		"durationSamples", "p50DurationMs", "p95DurationMs",
+		"tokenSamples", "costSamples", "retryWasteAttempts",
 	)
 }
 

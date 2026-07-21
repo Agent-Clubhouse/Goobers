@@ -389,6 +389,9 @@ func TestEvaluatorRoutesRepassEscalationThroughControlBranch(t *testing.T) {
 	if got := events[len(events)-1].Target; got != "park-needs-human" {
 		t.Fatalf("last journaled target = %q, want park-needs-human", got)
 	}
+	if !events[len(events)-1].Escalated {
+		t.Fatal("last journaled gate event did not record escalated=true")
+	}
 
 	recovered, ok, err := (&Evaluator{
 		MaxRepasses: 1,
