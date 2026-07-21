@@ -1088,13 +1088,13 @@ func TestRoutedGateEscalationIncludesCause(t *testing.T) {
 	)
 	clock.advance(time.Second)
 	if err := run.Append(journal.Event{
-		Type:    journal.EventGateEvaluated,
-		Gate:    "review",
-		Verdict: string(apiv1.VerdictNeedsChanges),
-		Target:  "park-escalated",
+		Type:      journal.EventGateEvaluated,
+		Gate:      "review",
+		Verdict:   string(apiv1.VerdictNeedsChanges),
+		Target:    "park-escalated",
+		Escalated: true,
 		Runner: map[string]any{
 			"repassAttempt": 4,
-			"escalated":     true,
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -1121,6 +1121,67 @@ func TestRoutedGateEscalationIncludesCause(t *testing.T) {
 		detail.Escalation.RepassCount != 4 ||
 		detail.Escalation.TerminalReason != "repass budget exhausted" {
 		t.Fatalf("routed escalation = %+v", detail.Escalation)
+	}
+	traceEscalation, err := service.RunEscalation(context.Background(), "run-routed-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traceEscalation == nil || traceEscalation.RepassCount != 4 {
+		t.Fatalf("trace escalation = %+v", traceEscalation)
+	}
+	events, err := service.RunEvents(context.Background(), "run-routed-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projectedEscalation bool
+	for _, event := range events.Events {
+		if event.Type == journal.EventGateEvaluated {
+			projectedEscalation = event.Escalated
+		}
+	}
+	if !projectedEscalation {
+		t.Fatal("routed gate event did not expose escalated=true")
+	}
+}
+
+func TestRoutedGateEscalationMarkersIncludeCause(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		legacy bool
+	}{
+		{name: "typed event field"},
+		{name: "legacy runner metadata", legacy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := journal.Event{
+				Schema:    journal.EventSchema,
+				Seq:       7,
+				Type:      journal.EventGateEvaluated,
+				Gate:      "review",
+				Verdict:   string(apiv1.VerdictNeedsChanges),
+				Target:    "park-escalated",
+				Escalated: !tc.legacy,
+				Runner:    map[string]any{"repassAttempt": 4},
+			}
+			if tc.legacy {
+				event.Runner["escalated"] = true
+			}
+			cause, err := escalationCause(
+				RunSummary{Phase: journal.PhaseEscalated},
+				[]journal.EventRecord{{Event: event}},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cause == nil ||
+				cause.Selector != (EscalationSelector{Kind: "gate", Name: "review"}) ||
+				cause.SelectedBranch != string(apiv1.VerdictNeedsChanges) ||
+				cause.RepassCount != 4 ||
+				cause.TerminalReason != "repass budget exhausted" ||
+				cause.CausalEventSeq != 7 {
+				t.Fatalf("escalation cause = %+v", cause)
+			}
+		})
 	}
 }
 

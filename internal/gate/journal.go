@@ -32,13 +32,13 @@ func recordStart(j Journal, gateName string, repassAttempt int) error {
 }
 
 // recordVerdict journals one gate evaluation as a gate.evaluated event: Gate,
-// Verdict (the outcome string), and Target are the flat, conformance-normative
-// fields §4 relies on; the repass attempt count and whether the budget forced
-// an escalation are runner-local annotations (the Runner namespace — always
-// excluded from conformance, ARCHITECTURE.md §4/§3.3). For agentic gates the
-// full Verdict (decision, rationale, evidence, findings) is recorded as an
-// artifact so its detail survives for the Tutor without bloating the flat
-// event stream, and the event's Ref points at it.
+// Verdict (the outcome string), Target, and Escalated are the flat,
+// conformance-normative fields §4 relies on. The repass attempt count and a
+// compatibility copy of the escalation marker remain runner-local annotations
+// (the Runner namespace — always excluded from conformance, ARCHITECTURE.md
+// §4/§3.3). For agentic gates the full Verdict (decision, rationale, evidence,
+// findings) is recorded as an artifact so its detail survives for the Tutor
+// without bloating the flat event stream, and the event's Ref points at it.
 //
 // duplicateDiff (issue #316) is likewise a Runner-namespace annotation. The
 // digest itself is only journaled when non-empty, mirroring repassAttempt's
@@ -78,11 +78,12 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 		runner["diffDigest"] = diffDigest
 	}
 	ev := journal.Event{
-		Type:    journal.EventGateEvaluated,
-		Gate:    r.Gate,
-		Verdict: r.Outcome,
-		Target:  r.Target,
-		Runner:  runner,
+		Type:      journal.EventGateEvaluated,
+		Gate:      r.Gate,
+		Verdict:   r.Outcome,
+		Target:    r.Target,
+		Escalated: r.Escalated,
+		Runner:    runner,
 	}
 	var artifact *apiv1.ArtifactPointer
 	if r.Verdict != nil {

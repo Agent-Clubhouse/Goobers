@@ -343,11 +343,14 @@ against the design they belong to:
 - **L1 — `merge-review` `apply-verdict` fails 100% when a PR is eligible.** The decider
   reaches a correct `decision:pass` (§4 verdict contract works), but `apply-verdict`
   aborts with `selectedNumber is required`: `gather-sibling-context`
-  (`selfhost/gaggles/goobers/workflows/merge-review.yaml:64-66`) emits `selectedNumber`
-  in its result but omits it from `expectedOutputs`, so the runner never threads it to
-  `apply-verdict` (`:74-82`). One-line fix + a poll→select→review→apply integration test
-  (its absence let 100%-broken wiring pass unit tests). Until fixed, **no PR ever
-  receives a merge-review label** — the whole §3 label handoff is inert.
+  emits `selectedNumber` as a number, but downstream `inputsFrom` materialization only
+  exposes string-valued outputs to the next stage's environment, so the value never
+  reaches `apply-verdict`. The fix is string emission in
+  `cmd/goobers/prsiblingcontext.go`, plus a poll→select→review→apply integration test
+  (its absence let 100%-broken wiring pass unit tests). `task.expectedOutputs` is
+  [declared-not-enforced](../versioning-and-compatibility.md#compatibility-registry) at
+  V0 and does not govern this threading. Until fixed, **no PR ever receives a
+  merge-review label** — the whole §3 label handoff is inert.
 - **L7 — no terminal issue state in no-merge mode → false re-eligibility.** §8 says the
   issue sits `in-review` until the merge event closes it. But `goobers:claimed` is
   removed *nowhere* (`providers/github.go:1001-1008` only swaps `goobers/status:`

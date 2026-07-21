@@ -58,7 +58,15 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 			{Workflow: "running", TotalRuns: 1, OtherRuns: 1},
 		},
 		Stages: []rollup.StageStats{
-			{Stage: "done", TotalAttempts: 1, FailedAttempts: 1, HasDuration: true},
+			{
+				Stage: "done", TotalAttempts: 2, FailedAttempts: 1, HasDuration: true,
+				DurationSamples: 2, P50DurationMs: 10, P95DurationMs: 20,
+				TokenSamples: 2, P50Tokens: 100, P95Tokens: 200, HasTokens: true,
+				CostSamples: 2, P50CostUSD: 0.5, P95CostUSD: 1, HasCost: true,
+				RetryWasteAttempts: 1, RetryWasteDurationMs: 10, HasRetryWasteDuration: true,
+				RetryWasteTokens: 100, HasRetryWasteTokens: true,
+				RetryWasteCostUSD: 0.5, HasRetryWasteCost: true,
+			},
 			{Stage: "active", TotalAttempts: 1},
 		},
 	}}
@@ -89,6 +97,15 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	if got.Stages[1].SuccessRate != nil || got.Stages[1].AvgDurationMs != nil {
 		t.Fatalf("active stage metrics = %+v, want unknown metrics absent", got.Stages[1])
 	}
+	done := got.Stages[0]
+	if done.P50DurationMs == nil || *done.P50DurationMs != 10 ||
+		done.P95Tokens == nil || *done.P95Tokens != 200 ||
+		done.P50CostUSD == nil || *done.P50CostUSD != 0.5 ||
+		done.RetryWasteDurationMs == nil || *done.RetryWasteDurationMs != 10 ||
+		done.RetryWasteTokens == nil || *done.RetryWasteTokens != 100 ||
+		done.RetryWasteCostUSD == nil || *done.RetryWasteCostUSD != 0.5 {
+		t.Fatalf("projected stage distributions = %+v", done)
+	}
 
 	data, err := json.Marshal(got.Runs[1])
 	if err != nil {
@@ -101,6 +118,23 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	for _, name := range []string{"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs"} {
 		if _, ok := fields[name]; ok {
 			t.Fatalf("unknown metric %q was serialized: %s", name, data)
+		}
+	}
+
+	data, err = json.Marshal(got.Stages[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
+		"p50DurationMs", "p95DurationMs", "p50Tokens", "p95Tokens",
+		"p50CostUSD", "p95CostUSD", "retryWasteDurationMs", "retryWasteTokens", "retryWasteCostUSD",
+	} {
+		if _, ok := fields[name]; ok {
+			t.Fatalf("unknown stage metric %q was serialized: %s", name, data)
 		}
 	}
 }

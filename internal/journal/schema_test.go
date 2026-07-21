@@ -49,7 +49,7 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 		},
 		{Type: EventGateStarted, Gate: "review", Runner: map[string]any{"repassAttempt": 1}},
 		{Type: EventGatePaused, Gate: "approval"},
-		{Type: EventGateEvaluated, Gate: "review", Verdict: "pass"},
+		{Type: EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Target: "park-escalated", Escalated: true},
 		{Type: EventRefTouched, ExternalRef: &ExternalRef{Provider: "github", Kind: "pr", ID: "9"}},
 		{Type: EventError, Error: &ErrorDetail{Code: "boom", Message: "detail"}},
 		{Type: EventRunFinished, Status: string(PhaseCompleted)},
