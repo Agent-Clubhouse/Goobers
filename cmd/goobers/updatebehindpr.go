@@ -22,19 +22,19 @@ const (
 	updateBehindClearLabel
 )
 
+const updateBehindPRHelp = "Usage: goobers update-behind-pr [path]\n\n" +
+	"Update one behind-base PR through GitHub's update-branch API when it\n" +
+	"is mergeable, CI-clean, and carries no substantive findings. Other\n" +
+	"candidates are routed to full remediation. Exit codes: 0 = updated,\n" +
+	"routed, or no-work; 1 = business error; 2 = usage/IO error.\n"
+
 // runUpdateBehindPR is pr-remediation's API-only preflight. It terminates the
 // workflow after updating a mechanically stale PR, or routes every non-trivial
 // candidate into the existing worktree-backed gather/rebase/agentic path.
 func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("update-behind-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers update-behind-pr [path]\n\n"+
-			"Update one behind-base PR through GitHub's update-branch API when it\n"+
-			"is mergeable, CI-clean, and carries no substantive findings. Other\n"+
-			"candidates are routed to full remediation. Exit codes: 0 = updated,\n"+
-			"routed, or no-work; 1 = business error; 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "update-behind-pr")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

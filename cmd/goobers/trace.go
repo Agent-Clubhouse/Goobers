@@ -50,6 +50,14 @@ func runTraceWithFollowContextAndFactory(
 	)
 }
 
+const traceHelp = "Usage: goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]\n\n" +
+	"Show a run's journal events and, if the telemetry rollup has ingested it,\n" +
+	"its trace spans. Use --transcripts to show all recorded agent transcripts,\n" +
+	"or --transcript to select one stage. With --follow, stream a live run's\n" +
+	"events until it finishes; --json --follow emits JSON Lines (default path\n" +
+	"\".\"). Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO\n" +
+	"error, 130 = interrupted while following.\n"
+
 func runTraceWithFactories(
 	args []string,
 	stdout, stderr io.Writer,
@@ -62,15 +70,7 @@ func runTraceWithFactories(
 	follow := fs.Bool("follow", false, "stream events until the run reaches a terminal phase")
 	showTranscripts := fs.Bool("transcripts", false, "show every recorded agent-stage transcript")
 	transcriptStage := fs.String("transcript", "", "show recorded transcript data for one stage")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]\n\n"+
-			"Show a run's journal events and, if the telemetry rollup has ingested it,\n"+
-			"its trace spans. Use --transcripts to show all recorded agent transcripts,\n"+
-			"or --transcript to select one stage. With --follow, stream a live run's\n"+
-			"events until it finishes; --json --follow emits JSON Lines (default path\n"+
-			"\".\"). Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO\n"+
-			"error, 130 = interrupted while following.\n")
-	}
+	fs.Usage = helpUsage(stderr, "trace")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

@@ -11,13 +11,13 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+const journalHelp = "Usage: goobers journal <redact> [flags]\n\n" +
+	"redact: remove a leaked secret from a run's stored blob and append a\n" +
+	"        redaction event — the one sanctioned edit to the append-only\n" +
+	"        journal (ARCHITECTURE.md §4, SEC-041).\n"
+
 func runJournal(args []string, stdout, stderr io.Writer) int {
-	usage := func(w io.Writer) {
-		pf(w, "Usage: goobers journal <redact> [flags]\n\n"+
-			"redact: remove a leaked secret from a run's stored blob and append a\n"+
-			"        redaction event — the one sanctioned edit to the append-only\n"+
-			"        journal (ARCHITECTURE.md §4, SEC-041).\n")
-	}
+	usage := func(w io.Writer) { pf(w, "%s", journalHelp) }
 	if len(args) == 0 {
 		usage(stderr)
 		return 2
@@ -32,6 +32,17 @@ func runJournal(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 }
+
+const journalRedactHelp = "Usage: goobers journal redact --run <id> --path <blob> --reason <text> [--secret-file <f>] [instance-path]\n\n" +
+	"Registers the leaked secret with the run's scrubber, rewrites the target blob\n" +
+	"with the secret redacted, removes the leaked bytes from rest, and appends a\n" +
+	"redaction event recording old→new digests (ARCHITECTURE.md §4, SEC-041).\n\n" +
+	"The secret's exact bytes are read from stdin (or --secret-file) — never a flag —\n" +
+	"so the value is not exposed in the process table or shell history. It must match\n" +
+	"the leaked bytes exactly (no trailing newline unless the secret has one):\n\n" +
+	"  printf %s \"$LEAKED_TOKEN\" | goobers journal redact --run <id> \\\n" +
+	"      --path inputs/creds.env --reason 'token pasted into the issue body'\n\n" +
+	"Exit codes: 0 = redacted, 1 = nothing redacted / business error, 2 = usage/IO error.\n"
 
 // runJournalRedact implements `goobers journal redact` — the CLI surface for
 // journal.Run.Redact. It registers the now-known leaked secret with the run's
@@ -50,18 +61,7 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 		"or artifacts/sha256/ab/cd… (required)")
 	reason := fs.String("reason", "", "why the redaction was performed, recorded in the redaction event (required)")
 	secretFile := fs.String("secret-file", "", "read the exact leaked secret bytes from this file instead of stdin")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers journal redact --run <id> --path <blob> --reason <text> [--secret-file <f>] [instance-path]\n\n"+
-			"Registers the leaked secret with the run's scrubber, rewrites the target blob\n"+
-			"with the secret redacted, removes the leaked bytes from rest, and appends a\n"+
-			"redaction event recording old→new digests (ARCHITECTURE.md §4, SEC-041).\n\n"+
-			"The secret's exact bytes are read from stdin (or --secret-file) — never a flag —\n"+
-			"so the value is not exposed in the process table or shell history. It must match\n"+
-			"the leaked bytes exactly (no trailing newline unless the secret has one):\n\n"+
-			"  printf %%s \"$LEAKED_TOKEN\" | goobers journal redact --run <id> \\\n"+
-			"      --path inputs/creds.env --reason 'token pasted into the issue body'\n\n"+
-			"Exit codes: 0 = redacted, 1 = nothing redacted / business error, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "journal redact")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

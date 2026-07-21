@@ -96,17 +96,17 @@ func issueCloseOutReason(runsDir, runID, gateName string) (string, error) {
 	return "", fmt.Errorf("no verdict found for gate %q", gateName)
 }
 
+const issueCloseOutHelp = "Usage: goobers issue-close-out [path]\n\n" +
+	"Comment on the issue this run claimed, linking its PR, and mark it done;\n" +
+	"status=in-review leaves it open for merge-review, while status=needs-human\n" +
+	"parks it by replacing goobers:ready with goobers:needs-human. Release the\n" +
+	"claim ledger lease early rather than waiting for it to expire. Exit codes:\n" +
+	"0 = done, 1 = business error, 2 = usage/IO error.\n"
+
 func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("issue-close-out", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers issue-close-out [path]\n\n"+
-			"Comment on the issue this run claimed, linking its PR, and mark it done;\n"+
-			"status=in-review leaves it open for merge-review, while status=needs-human\n"+
-			"parks it by replacing goobers:ready with goobers:needs-human. Release the\n"+
-			"claim ledger lease early rather than waiting for it to expire. Exit codes:\n"+
-			"0 = done, 1 = business error, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "issue-close-out")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

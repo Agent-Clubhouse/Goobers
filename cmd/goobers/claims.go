@@ -53,15 +53,15 @@ type claimAdminResponse struct {
 	Error    string                      `json:"error,omitempty"`
 }
 
+const claimsHelp = "Usage: goobers claims <command> [flags] [path]\n\n" +
+	"Inspect and force-release scheduler/claims.json without racing a live\n" +
+	"daemon. Operations delegate to `goobers up` when it is running.\n\n" +
+	"Commands:\n" +
+	"  list       print current claim leases\n" +
+	"  release    force-release one item by id\n"
+
 func runClaims(args []string, stdout, stderr io.Writer) int {
-	usage := func(w io.Writer) {
-		pf(w, "Usage: goobers claims <command> [flags] [path]\n\n"+
-			"Inspect and force-release scheduler/claims.json without racing a live\n"+
-			"daemon. Operations delegate to `goobers up` when it is running.\n\n"+
-			"Commands:\n"+
-			"  list       print current claim leases\n"+
-			"  release    force-release one item by id\n")
-	}
+	usage := func(w io.Writer) { pf(w, "%s", claimsHelp) }
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
 		usage(stdout)
 		return 0
@@ -73,6 +73,10 @@ func runClaims(args []string, stdout, stderr io.Writer) int {
 	return 2
 }
 
+const claimsListHelp = "Usage: goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]\n\n" +
+	"Print item id, gaggle, provider, run id, workflow, claimed-at, and\n" +
+	"expires-at for each claim. Filters may be combined. Default path is \".\".\n"
+
 func runClaimsList(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("claims list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -80,11 +84,7 @@ func runClaimsList(args []string, stdout, stderr io.Writer) int {
 	staleOnly := fs.Bool("stale", false, "show only claims whose lease has expired")
 	gaggle := fs.String("gaggle", "", "show only claims in this gaggle")
 	provider := fs.String("provider", "", "show only claims from this provider")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]\n\n"+
-			"Print item id, gaggle, provider, run id, workflow, claimed-at, and\n"+
-			"expires-at for each claim. Filters may be combined. Default path is \".\".\n")
-	}
+	fs.Usage = helpUsage(stderr, "claims list")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -157,21 +157,21 @@ func runClaimsList(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+const claimsReleaseHelp = "Usage: goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]\n\n" +
+	"Print the claim holder, age, and expiry, then force-release the item.\n" +
+	"--force is required while the holding run is non-terminal. The override\n" +
+	"is recorded as claim.force_released in the instance journal. Default\n" +
+	"path is \".\". Scope flags are required when the item id exists in more\n" +
+	"than one namespace. Exit codes: 0 = released, 1 = refused/not found/\n" +
+	"ambiguous, 2 = usage/IO error.\n"
+
 func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("claims release", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	gaggle := fs.String("gaggle", "", "gaggle owning the claim")
 	provider := fs.String("provider", "", "provider owning the claim")
 	force := fs.Bool("force", false, "release a claim held by a non-terminal run")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]\n\n"+
-			"Print the claim holder, age, and expiry, then force-release the item.\n"+
-			"--force is required while the holding run is non-terminal. The override\n"+
-			"is recorded as claim.force_released in the instance journal. Default\n"+
-			"path is \".\". Scope flags are required when the item id exists in more\n"+
-			"than one namespace. Exit codes: 0 = released, 1 = refused/not found/\n"+
-			"ambiguous, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "claims release")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

@@ -60,17 +60,17 @@ type statsJSONStageDuration struct {
 	LongestRunID        string  `json:"longestRunId"`
 }
 
+const statsHelp = "Usage: goobers stats [--since <duration>] [--json] [path]\n\n" +
+	"Show the instance's run outcomes, provider mutations, busiest workflow,\n" +
+	"and agentic-stage durations (default path \".\"). Exit codes: 0 = OK,\n" +
+	"2 = usage/IO error.\n"
+
 func runStats(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("stats", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	sinceDuration := fs.Duration("since", 0, "only include activity from the preceding duration")
 	jsonOutput := fs.Bool("json", false, "emit the summary as JSON")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers stats [--since <duration>] [--json] [path]\n\n"+
-			"Show the instance's run outcomes, provider mutations, busiest workflow,\n"+
-			"and agentic-stage durations (default path \".\"). Exit codes: 0 = OK,\n"+
-			"2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "stats")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

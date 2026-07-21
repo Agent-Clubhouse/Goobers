@@ -8,18 +8,18 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
+const initHelp = "Usage: goobers init [--demo] [path]\n\n" +
+	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
+	"(seeded with a starter example), runs/, scheduler/, workcopies/, and a\n" +
+	"telemetry.db placeholder. Re-running is safe — existing pieces are left\n" +
+	"untouched. --demo seeds an offline deterministic tour requiring no repo\n" +
+	"or credentials.\n"
+
 func runInit(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers init [--demo] [path]\n\n"+
-			"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n"+
-			"(seeded with a starter example), runs/, scheduler/, workcopies/, and a\n"+
-			"telemetry.db placeholder. Re-running is safe — existing pieces are left\n"+
-			"untouched. --demo seeds an offline deterministic tour requiring no repo\n"+
-			"or credentials.\n")
-	}
+	fs.Usage = helpUsage(stderr, "init")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

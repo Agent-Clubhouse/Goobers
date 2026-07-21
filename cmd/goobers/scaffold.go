@@ -54,12 +54,14 @@ func runScaffold(args []string, stdout, stderr io.Writer) int {
 	return 2
 }
 
+const scaffoldHelp = "Usage: goobers scaffold goober [--force] <name> [path]\n" +
+	"       goobers scaffold workflow [--force] <name> [path]\n\n" +
+	"Generate a valid goober or workflow in the current gaggle. path may be\n" +
+	"an instance root or a gaggle directory and defaults to \".\". Existing\n" +
+	"files are never replaced unless --force is set.\n"
+
 func scaffoldUsage(w io.Writer) {
-	pf(w, "Usage: goobers scaffold goober [--force] <name> [path]\n"+
-		"       goobers scaffold workflow [--force] <name> [path]\n\n"+
-		"Generate a valid goober or workflow in the current gaggle. path may be\n"+
-		"an instance root or a gaggle directory and defaults to \".\". Existing\n"+
-		"files are never replaced unless --force is set.\n")
+	pf(w, "%s", scaffoldHelp)
 }
 
 func runScaffoldKind(kind string, args []string, stdout, stderr io.Writer) int {

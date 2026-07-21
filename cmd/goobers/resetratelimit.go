@@ -20,22 +20,22 @@ import (
 // then ignores run.started history at or before that floor. It never touches
 // runs/, unlike the `rm -rf <instance>` habit this replaces, which reset the
 // rate window only as a side effect of destroying the whole instance.
+const resetRateLimitHelp = "Usage: goobers reset-rate-limit [path]\n\n" +
+	"Reset an instance's hourly run-rate budget (maxRunsPerHour) so runs can\n" +
+	"start again immediately, WITHOUT deleting runs/ (the append-only run\n" +
+	"journals — the durable execution record). This is the blessed narrow\n" +
+	"reset: it writes a marker under scheduler/ that moves the rate window's\n" +
+	"floor to now, and never touches runs/ — unlike `rm -rf <instance>`,\n" +
+	"which clears the rate window only by destroying everything with it.\n" +
+	"Takes effect on the next `goobers up`/`goobers run` (stop the daemon\n" +
+	"first if one is running; the reset is applied when the scheduler next\n" +
+	"reconstructs its budget window). Default path \".\".\n" +
+	"Exit codes: 0 = reset written, 2 = usage/IO error.\n"
+
 func runResetRateLimit(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("reset-rate-limit", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers reset-rate-limit [path]\n\n"+
-			"Reset an instance's hourly run-rate budget (maxRunsPerHour) so runs can\n"+
-			"start again immediately, WITHOUT deleting runs/ (the append-only run\n"+
-			"journals — the durable execution record). This is the blessed narrow\n"+
-			"reset: it writes a marker under scheduler/ that moves the rate window's\n"+
-			"floor to now, and never touches runs/ — unlike `rm -rf <instance>`,\n"+
-			"which clears the rate window only by destroying everything with it.\n"+
-			"Takes effect on the next `goobers up`/`goobers run` (stop the daemon\n"+
-			"first if one is running; the reset is applied when the scheduler next\n"+
-			"reconstructs its budget window). Default path \".\".\n"+
-			"Exit codes: 0 = reset written, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "reset-rate-limit")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

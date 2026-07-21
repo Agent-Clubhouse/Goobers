@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -45,23 +46,23 @@ var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all
 // hang `goobers validate` or `goobers up`/`run` startup.
 const harnessPreflightTimeout = 90 * time.Second
 
+const validateHelp = "Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [path]\n\n" +
+	"Validate an instance's instance.yaml and config/ directory (default\n" +
+	"path \".\"). --source-tree validates a checked-in config source tree\n" +
+	"using instance.yaml.example and the path itself as config/. " +
+	"--check-harness additionally preflights every agent harness\n" +
+	"referenced by a goober (GBO-011) — installed, signed in, actionable\n" +
+	"guidance otherwise. --check-repos resolves each target repository's\n" +
+	"token and verifies authenticated git access. Exit codes: 0 = valid,\n" +
+	"1 = validation errors, 2 = usage/IO error.\n"
+
 func runValidate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	checkHarness := fs.Bool("check-harness", false, "also verify every referenced agent harness is installed and signed in")
 	checkRepos := fs.Bool("check-repos", false, "also verify every target repository is reachable with its configured credential")
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers validate [--check-harness] [--check-repos] [--source-tree] [path]\n\n"+
-			"Validate an instance's instance.yaml and config/ directory (default\n"+
-			"path \".\"). --source-tree validates a checked-in config source tree\n"+
-			"using instance.yaml.example and the path itself as config/. "+
-			"--check-harness additionally preflights every agent harness\n"+
-			"referenced by a goober (GBO-011) — installed, signed in, actionable\n"+
-			"guidance otherwise. --check-repos resolves each target repository's\n"+
-			"token and verifies authenticated git access. Exit codes: 0 = valid,\n"+
-			"1 = validation errors, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "validate")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -134,6 +135,20 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// #650: a shipped config's deterministic stages invoke the goobers CLI by
+	// name (Task.Run.Command, e.g. `goobers backlog-query --claim`). A verb that
+	// no longer exists — renamed, removed, or a typo — would compile clean here
+	// and only fail once the runner shells out to it mid-run. Cross-check every
+	// such command against the CLI registry now, at validate time, so config
+	// drift from the CLI surface is caught before it reaches a live run.
+	if problems := stageCommandProblems(set); len(problems) > 0 {
+		for _, problem := range problems {
+			pln(stdout, problem)
+		}
+		pf(stdout, "\nconfig references CLI stage commands that do not exist\n")
+		return 1
+	}
+
 	if *checkHarness {
 		if !checkHarnesses(set.Goobers, stdout, stderr) {
 			return 1
@@ -190,6 +205,73 @@ func gitToplevel(dir string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// stageCommandProblems reports every deterministic stage whose `goobers …`
+// Command references a CLI verb — or, for a command group, a subcommand — that
+// the command registry does not define (#650). It is the compile-time guardrail
+// against a shipped config drifting from the actual CLI surface. Non-goobers
+// commands (arbitrary shell) are out of scope; their existence is not something
+// this binary can vouch for.
+func stageCommandProblems(set *instance.ConfigSet) []string {
+	var problems []string
+	for i := range set.Workflows {
+		wf := &set.Workflows[i]
+		for _, task := range wf.Spec.Tasks {
+			if task.Type != apiv1.TaskDeterministic || task.Run == nil {
+				continue
+			}
+			// Only a shell stage actually executes its run.command. A stage that
+			// declares a built-in kind (e.g. kind=ci-poll) is dispatched to a
+			// dedicated executor and its command is an inert placeholder — the
+			// shipped ci-poll stages carry `command: ["goobers", "ci-poll", …]`,
+			// which is not a CLI verb — so it must not be surface-checked here.
+			if kind := strings.TrimSpace(task.Inputs[executor.InputKind]); kind != "" && kind != executor.KindShell {
+				continue
+			}
+			problems = append(problems, stageCommandProblem(wf.Name, task.Name, task.Run.Command)...)
+		}
+	}
+	return problems
+}
+
+// stageCommandProblem resolves one `goobers …` stage command against the
+// registry. It reports an unknown top-level verb, and — for a command group,
+// which has no runnable action of its own — a missing or unknown subcommand.
+// It deliberately does not treat a non-subcommand token after a runnable verb
+// as an error: commands like `run <workflow>` take positional arguments that
+// must not be mistaken for subcommands.
+func stageCommandProblem(workflow, task string, argv []string) []string {
+	if len(argv) == 0 || argv[0] != "goobers" {
+		return nil
+	}
+	if len(argv) < 2 {
+		return []string{fmt.Sprintf(
+			"workflow %q task %q: stage command %q names no goobers subcommand to run",
+			workflow, task, strings.Join(argv, " "))}
+	}
+	verb := argv[1]
+	command, ok := findCLICommand(verb)
+	if !ok {
+		return []string{fmt.Sprintf(
+			"workflow %q task %q: stage command references unknown goobers verb %q (see `goobers help`)",
+			workflow, task, verb)}
+	}
+	// A command group (no action of its own) is not runnable without a
+	// subcommand, so the next token must name a real one.
+	if !command.actionRegistered && len(command.subcommands) > 0 {
+		if len(argv) < 3 || strings.HasPrefix(argv[2], "-") {
+			return []string{fmt.Sprintf(
+				"workflow %q task %q: stage command %q needs a subcommand for the %q command group",
+				workflow, task, strings.Join(argv, " "), verb)}
+		}
+		if _, ok := findCLICommandIn(command.subcommands, argv[2]); !ok {
+			return []string{fmt.Sprintf(
+				"workflow %q task %q: stage command references unknown %q subcommand %q",
+				workflow, task, verb, argv[2])}
+		}
+	}
+	return nil
 }
 
 const (

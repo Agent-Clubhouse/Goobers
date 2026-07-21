@@ -93,6 +93,15 @@ func electionDecision(findings []apiv1.Finding, selectedNumber int, policy elect
 	return policy(selectedNumber, unionBlockingPRs(findings))
 }
 
+const electLanderHelp = "Usage: goobers elect-lander [--gate name] [path]\n\n" +
+	"Read the holistic review gate's Verdict from this run's journal and, when\n" +
+	"it is entirely cross-PR-ordering asks and the selected PR is the elected\n" +
+	"lander of its overlap cluster (lowest PR number), emit elected=true to\n" +
+	"route the PR into merge-pr; otherwise emit elected=false to route it to\n" +
+	"apply-verdict. Requires selectedNumber (inputsFrom gather-sibling-context).\n" +
+	"Exit codes: 0 = decided (elected or not — both normal), 1 = business\n" +
+	"error, 2 = usage/IO error.\n"
+
 // runElectLander implements `goobers elect-lander` (#833): merge-review's
 // deterministic cross-PR winner-election stage, wired on the review gate's
 // needs-changes branch. When the verdict is entirely cross-PR-ordering asks and
@@ -112,16 +121,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("elect-lander", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	gateName := fs.String("gate", "review", "the gate name whose verdict to read")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers elect-lander [--gate name] [path]\n\n"+
-			"Read the holistic review gate's Verdict from this run's journal and, when\n"+
-			"it is entirely cross-PR-ordering asks and the selected PR is the elected\n"+
-			"lander of its overlap cluster (lowest PR number), emit elected=true to\n"+
-			"route the PR into merge-pr; otherwise emit elected=false to route it to\n"+
-			"apply-verdict. Requires selectedNumber (inputsFrom gather-sibling-context).\n"+
-			"Exit codes: 0 = decided (elected or not — both normal), 1 = business\n"+
-			"error, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "elect-lander")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

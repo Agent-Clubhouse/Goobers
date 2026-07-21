@@ -91,20 +91,23 @@ func runDashboard(args []string, stdout, stderr io.Writer) int {
 	return runDashboardContext(ctx, args, stdout, stderr)
 }
 
+const dashboardHelp = "Usage: goobers dashboard [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [path]\n\n" +
+	"Serve the embedded portal against the live daemon when `goobers up` is\n" +
+	"running, or against a standalone read-only service otherwise. The default\n" +
+	"port is %d; --port=auto increments from there until a port is available.\n" +
+	"Blocks until interrupted. Exit codes: 0 = clean shutdown, 1 = service or\n" +
+	"browser failure, 2 = usage/IO error.\n"
+
 func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("dashboard", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	portValue := flags.String("port", strconv.Itoa(defaultDashboardPort), "dashboard port, or \"auto\" to use the first available port from 8081")
 	noOpen := flags.Bool("no-open", false, "print the dashboard URL without opening a browser")
 	devAssets := flags.String("dev-assets", "", "serve a portal build from this directory instead of embedded assets")
-	flags.Usage = func() {
-		pf(stderr, "Usage: goobers dashboard [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [path]\n\n"+
-			"Serve the embedded portal against the live daemon when `goobers up` is\n"+
-			"running, or against a standalone read-only service otherwise. The default\n"+
-			"port is %d; --port=auto increments from there until a port is available.\n"+
-			"Blocks until interrupted. Exit codes: 0 = clean shutdown, 1 = service or\n"+
-			"browser failure, 2 = usage/IO error.\n", defaultDashboardPort)
-	}
+	// dashboardHelp carries a %d for the default port, so it renders here (and
+	// in the registry) through defaultDashboardPort rather than via the plain
+	// helpUsage path — keeping the documented port coupled to the constant.
+	flags.Usage = func() { pf(stderr, dashboardHelp, defaultDashboardPort) }
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}

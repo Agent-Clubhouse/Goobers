@@ -22,17 +22,17 @@ import (
 // REST API), push-branch's target is the worktree's own git remote — the
 // worktree's cwd IS the stage's worktree (ShellExecutor sets cmd.Dir to
 // env.Workspace), so this reads no instance.yaml and needs no RepoRef.
+const pushBranchHelp = "Usage: goobers push-branch [path]\n\n" +
+	"Push the worktree's checked-out branch to origin, authenticated via the\n" +
+	"repo:push credential the runner already resolved for this stage — never\n" +
+	"the host's ambient git credentials, and never persisted to .git/config.\n" +
+	"[path] defaults to the current directory (the stage's worktree).\n" +
+	"Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.\n"
+
 func runPushBranch(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("push-branch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers push-branch [path]\n\n"+
-			"Push the worktree's checked-out branch to origin, authenticated via the\n"+
-			"repo:push credential the runner already resolved for this stage — never\n"+
-			"the host's ambient git credentials, and never persisted to .git/config.\n"+
-			"[path] defaults to the current directory (the stage's worktree).\n"+
-			"Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "push-branch")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

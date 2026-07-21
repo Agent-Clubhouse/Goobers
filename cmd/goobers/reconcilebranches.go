@@ -64,6 +64,18 @@ type branchReconcileProviderError struct {
 func (e *branchReconcileProviderError) Error() string { return e.err.Error() }
 func (e *branchReconcileProviderError) Unwrap() error { return e.err }
 
+const reconcileBranchesHelp = "Usage: goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH] [path]\n\n" +
+	"Inspect a bounded page of remote goobers/* branches. The default is a\n" +
+	"dry-run: no branch is deleted. --delete opts into deletion only for a\n" +
+	"branch whose local run journal proves ownership, has been terminal for\n" +
+	"at least 168h by default, has no remote activity in that window, and has\n" +
+	"no open pull request. Every candidate\n" +
+	"decision and deletion outcome is appended to scheduler/events.jsonl.\n" +
+	"The default batch is 25 and the hard ceiling is 100 candidates. Task inputs deleteBranches,\n" +
+	"maxBranches, minimumAge, and after provide the same workflow-stage\n" +
+	"configuration surface. Exit codes: 0 = sweep completed, 1 = business or\n" +
+	"provider error, 2 = usage/IO error.\n"
+
 func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 	deleteDefault, err := strconv.ParseBool(providerInput("deleteBranches", "false"))
 	if err != nil {
@@ -87,19 +99,7 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 	limit := fs.Int("max", limitDefault, "maximum candidates inspected in one sweep (1-100)")
 	minimumAge := fs.Duration("min-age", ageDefault, "minimum terminal run age required for deletion")
 	after := fs.String("after", providerInput("after", ""), "resume after this branch name in lexical order")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH] [path]\n\n"+
-			"Inspect a bounded page of remote goobers/* branches. The default is a\n"+
-			"dry-run: no branch is deleted. --delete opts into deletion only for a\n"+
-			"branch whose local run journal proves ownership, has been terminal for\n"+
-			"at least 168h by default, has no remote activity in that window, and has\n"+
-			"no open pull request. Every candidate\n"+
-			"decision and deletion outcome is appended to scheduler/events.jsonl.\n"+
-			"The default batch is 25 and the hard ceiling is 100 candidates. Task inputs deleteBranches,\n"+
-			"maxBranches, minimumAge, and after provide the same workflow-stage\n"+
-			"configuration surface. Exit codes: 0 = sweep completed, 1 = business or\n"+
-			"provider error, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "reconcile-branches")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

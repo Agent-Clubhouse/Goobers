@@ -13,12 +13,12 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
+const telemetryHelp = "Usage: goobers telemetry <stats|errors> [flags] [path]\n\n" +
+	"stats:  success rate / durations per workflow + stage\n" +
+	"errors: recent errors across runs, by class, with run/stage refs\n"
+
 func runTelemetry(args []string, stdout, stderr io.Writer) int {
-	usage := func(w io.Writer) {
-		pf(w, "Usage: goobers telemetry <stats|errors> [flags] [path]\n\n"+
-			"stats:  success rate / durations per workflow + stage\n"+
-			"errors: recent errors across runs, by class, with run/stage refs\n")
-	}
+	usage := func(w io.Writer) { pf(w, "%s", telemetryHelp) }
 	if len(args) == 0 {
 		usage(stderr)
 		return 2
@@ -57,6 +57,10 @@ func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
 	return rollup.Open(l.TelemetryDB())
 }
 
+const telemetryStatsHelp = "Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]\n\n" +
+	"Success rate and duration aggregates per workflow and per stage,\n" +
+	"across every run (default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n"
+
 func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("telemetry stats", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -66,11 +70,7 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	sinceValue := fs.String("since", "", "include runs started at or after this RFC3339 timestamp")
 	untilValue := fs.String("until", "", "include runs started at or before this RFC3339 timestamp")
 	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]\n\n"+
-			"Success rate and duration aggregates per workflow and per stage,\n"+
-			"across every run (default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "telemetry stats")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -145,6 +145,10 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+const telemetryErrorsHelp = "Usage: goobers telemetry errors [--json] [--workflow=name] [--gaggle=name] [--class=name] [--since=RFC3339] [--until=RFC3339] [--limit=N] [--rebuild] [path]\n\n" +
+	"Recent errors across every run, newest first, with run/stage refs\n" +
+	"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n"
+
 func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("telemetry errors", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -156,11 +160,7 @@ func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
 	sinceValue := fs.String("since", "", "include errors at or after this RFC3339 timestamp")
 	untilValue := fs.String("until", "", "include errors at or before this RFC3339 timestamp")
 	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers telemetry errors [--json] [--workflow=name] [--gaggle=name] [--class=name] [--since=RFC3339] [--until=RFC3339] [--limit=N] [--rebuild] [path]\n\n"+
-			"Recent errors across every run, newest first, with run/stage refs\n"+
-			"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "telemetry errors")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

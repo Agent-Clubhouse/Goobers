@@ -91,6 +91,16 @@ type docsChurnDigest struct {
 	Note             string              `json:"note,omitempty"`
 }
 
+const docsChurnHelp = "Usage: goobers docs-churn [--repo <dir>] [--workflow <name>] [--gaggle <name>] " +
+	"[--since <duration>] [--buffer-multiplier <float>] [--format churn-digest] [path]\n\n" +
+	"Report the code churn since docs were last refreshed for the docs-updater\n" +
+	"workflow (#1015). Reads and advances a durable per-(gaggle,workflow)\n" +
+	"watermark under the instance's scheduler dir, and writes a versioned\n" +
+	"churn-digest to GOOBERS_INPUT_resultFile when declared, else stdout.\n" +
+	"[path] is the instance root (default $GOOBERS_INSTANCE_ROOT, else \".\").\n\n" +
+	"Exit codes: 0 = OK (including a clean no-work result), 1 = business error,\n" +
+	"2 = usage/IO error.\n"
+
 func runDocsChurn(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("docs-churn", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -101,17 +111,7 @@ func runDocsChurn(args []string, stdout, stderr io.Writer) int {
 	bufferMultiplier := fs.Float64("buffer-multiplier", docsChurnDefaultBuffer,
 		"multiply the time-since-last-run span to extend the window back past the watermark (>= 1)")
 	format := fs.String("format", docsChurnFormat, "artifact format (churn-digest)")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers docs-churn [--repo <dir>] [--workflow <name>] [--gaggle <name>] "+
-			"[--since <duration>] [--buffer-multiplier <float>] [--format churn-digest] [path]\n\n"+
-			"Report the code churn since docs were last refreshed for the docs-updater\n"+
-			"workflow (#1015). Reads and advances a durable per-(gaggle,workflow)\n"+
-			"watermark under the instance's scheduler dir, and writes a versioned\n"+
-			"churn-digest to GOOBERS_INPUT_resultFile when declared, else stdout.\n"+
-			"[path] is the instance root (default $GOOBERS_INSTANCE_ROOT, else \".\").\n\n"+
-			"Exit codes: 0 = OK (including a clean no-work result), 1 = business error,\n"+
-			"2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "docs-churn")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

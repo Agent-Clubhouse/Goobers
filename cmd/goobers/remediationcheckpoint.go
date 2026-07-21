@@ -259,22 +259,22 @@ func latestRemediationState(comments []providers.Comment) (state remediationStat
 // (goobers:merge-escalated, clearing needs-remediation so the machine stops
 // selecting it) on budget exhaustion or a byte-identical repeat, or records
 // the advanced state for next cycle.
+const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budget N] [path]\n\n" +
+	"Re-checkout the PR's own branch (this stage gets its own fresh\n" +
+	"worktree), read pr-remediation's durable per-PR cycle counter + last\n" +
+	"diff digest back from a sticky PR comment, compare this cycle's\n" +
+	"actual diff (git diff base...HEAD) against it, and either\n" +
+	"escalate (goobers:merge-escalated, clearing needs-remediation) on\n" +
+	"budget exhaustion or a byte-identical repeat, or record the advanced\n" +
+	"state as a new sticky comment. Requires selectedNumber (inputsFrom\n" +
+	"gather-pr-context's selectedNumber output). Exit codes: 0 = checkpoint\n" +
+	"recorded (escalated or not — both are normal outcomes), 1 = business\n" +
+	"error, 2 = usage/IO error.\n"
+
 func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("remediation-checkpoint", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers remediation-checkpoint [--budget N] [path]\n\n"+
-			"Re-checkout the PR's own branch (this stage gets its own fresh\n"+
-			"worktree), read pr-remediation's durable per-PR cycle counter + last\n"+
-			"diff digest back from a sticky PR comment, compare this cycle's\n"+
-			"actual diff (git diff base...HEAD) against it, and either\n"+
-			"escalate (goobers:merge-escalated, clearing needs-remediation) on\n"+
-			"budget exhaustion or a byte-identical repeat, or record the advanced\n"+
-			"state as a new sticky comment. Requires selectedNumber (inputsFrom\n"+
-			"gather-pr-context's selectedNumber output). Exit codes: 0 = checkpoint\n"+
-			"recorded (escalated or not — both are normal outcomes), 1 = business\n"+
-			"error, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "remediation-checkpoint")
 	budget := fs.Int("budget", DefaultRemediationBudget, "liberal per-PR repass-cycle budget before escalating (D4)")
 	// --escalate is the reviewer-verdict=fail path (design doc §4 D2: "a
 	// fundamentally wrong approach is not burned on remediation budget"), not

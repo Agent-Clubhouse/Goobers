@@ -38,27 +38,27 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
+const runHelp = "Usage: goobers run <workflow> [--no-wait] [path]\n" +
+	"       goobers run abort <run-id> [path]\n\n" +
+	"Trigger a run of a config/ workflow manually, through the same scheduler\n" +
+	"(run conditions, instance journal, single-instance lock) a live `goobers up`\n" +
+	"daemon uses, then wait for it to reach a terminal state unless\n" +
+	"--no-wait is set (default path \".\"). If a live `goobers up` daemon already\n" +
+	"holds the instance lock,\n" +
+	"delegates the trigger to it instead of failing (#343) — dispatched through\n" +
+	"the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =\n" +
+	"completed, 1 = failed/aborted or business error (unknown workflow, invalid\n" +
+	"config, run conditions rejected the trigger), 2 = usage/IO error, 3 =\n" +
+	"escalated. A successful submission-only mode (such as --no-wait, once\n" +
+	"available) exits 0 because it does not observe a terminal phase.\n" +
+	"`run abort` marks a stuck non-terminal run aborted directly in its own\n" +
+	"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n"
+
 func runRun(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers run <workflow> [--no-wait] [path]\n"+
-			"       goobers run abort <run-id> [path]\n\n"+
-			"Trigger a run of a config/ workflow manually, through the same scheduler\n"+
-			"(run conditions, instance journal, single-instance lock) a live `goobers up`\n"+
-			"daemon uses, then wait for it to reach a terminal state unless\n"+
-			"--no-wait is set (default path \".\"). If a live `goobers up` daemon already\n"+
-			"holds the instance lock,\n"+
-			"delegates the trigger to it instead of failing (#343) — dispatched through\n"+
-			"the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =\n"+
-			"completed, 1 = failed/aborted or business error (unknown workflow, invalid\n"+
-			"config, run conditions rejected the trigger), 2 = usage/IO error, 3 =\n"+
-			"escalated. A successful submission-only mode (such as --no-wait, once\n"+
-			"available) exits 0 because it does not observe a terminal phase.\n"+
-			"`run abort` marks a stuck non-terminal run aborted directly in its own\n"+
-			"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n")
-	}
+	fs.Usage = helpUsage(stderr, "run")
 	if err := fs.Parse(runFlagArgs(args)); err != nil {
 		return 2
 	}
@@ -261,16 +261,17 @@ func runFlagArgs(args []string) []string {
 // erroring at startup). Works on the run's journal alone — it doesn't need
 // the run's workflow to still exist in config, unlike everything else in
 // this file.
+
+const runAbortHelp = "Usage: goobers run abort <run-id> [path]\n\n" +
+	"Mark a stuck non-terminal run aborted by appending a terminal\n" +
+	"run.finished(status=aborted) event to its own journal (default path\n" +
+	"\".\"). Exit codes: 0 = aborted, 1 = business error (run already terminal),\n" +
+	"2 = usage/IO error (unknown run).\n"
+
 func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run abort", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers run abort <run-id> [path]\n\n"+
-			"Mark a stuck non-terminal run aborted by appending a terminal\n"+
-			"run.finished(status=aborted) event to its own journal (default path\n"+
-			"\".\"). Exit codes: 0 = aborted, 1 = business error (run already terminal),\n"+
-			"2 = usage/IO error (unknown run).\n")
-	}
+	fs.Usage = helpUsage(stderr, "run abort")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

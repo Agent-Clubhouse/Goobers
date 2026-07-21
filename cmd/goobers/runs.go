@@ -17,13 +17,13 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+const runsHelp = "Usage: goobers runs <command> [flags] [path]\n\n" +
+	"Commands:\n" +
+	"  list    alias for the goobers status run table (same flags)\n" +
+	"  du      report per-run journal and artifact bytes, largest first\n"
+
 func runRuns(args []string, stdout, stderr io.Writer) int {
-	usage := func(w io.Writer) {
-		pf(w, "Usage: goobers runs <command> [flags] [path]\n\n"+
-			"Commands:\n"+
-			"  list    alias for the goobers status run table (same flags)\n"+
-			"  du      report per-run journal and artifact bytes, largest first\n")
-	}
+	usage := func(w io.Writer) { pf(w, "%s", runsHelp) }
 	if len(args) == 0 {
 		usage(stderr)
 		return 2
@@ -57,16 +57,16 @@ type runsDiskUsage struct {
 	TotalBytes        int64          `json:"totalBytes"`
 }
 
+const runsDuHelp = "Usage: goobers runs du [--json] [path]\n\n" +
+	"Report file bytes used by each run, split between journal/state data\n" +
+	"and artifacts, largest first (default path \".\").\n" +
+	"Exit codes: 0 = OK, 2 = usage/IO error.\n"
+
 func runRunsDU(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("runs du", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit disk usage as JSON")
-	fs.Usage = func() {
-		pf(stderr, "Usage: goobers runs du [--json] [path]\n\n"+
-			"Report file bytes used by each run, split between journal/state data\n"+
-			"and artifacts, largest first (default path \".\").\n"+
-			"Exit codes: 0 = OK, 2 = usage/IO error.\n")
-	}
+	fs.Usage = helpUsage(stderr, "runs du")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
