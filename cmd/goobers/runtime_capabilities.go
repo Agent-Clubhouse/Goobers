@@ -341,6 +341,7 @@ func init() {
 			withHelp("watch an enqueued PR until merged or evicted (a workflow stage)", mergeQueuePollHelp).
 			withExamples("goobers merge-queue-poll"),
 		command("reconcile-post-merge", apicontract.ActionWorkflowExecution, runReconcilePostMerge).
+			withProviderStageResult("reconcile-post-merge-result.json").
 			withSynopsis(synopsisByID["reconcile-post-merge"]).
 			withHelp("reconcile late merge-queue merges (a workflow stage)", reconcilePostMergeHelp).
 			withExamples("goobers reconcile-post-merge"),

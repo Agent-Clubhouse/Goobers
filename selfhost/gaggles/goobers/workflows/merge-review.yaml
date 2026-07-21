@@ -53,6 +53,7 @@ spec:
       run:
         command: ["goobers", "reconcile-post-merge"]
       inputs:
+        resultFile: "reconcile-post-merge-result.json"
         maxPullRequests: "10"
         lookback: "168h"
       capabilities:

@@ -74,6 +74,9 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if reconcile.Run == nil || !reflect.DeepEqual(reconcile.Run.Command, []string{"goobers", "reconcile-post-merge"}) {
 				t.Errorf("reconcile-post-merge command = %+v, want [goobers reconcile-post-merge]", reconcile.Run)
 			}
+			if reconcile.Inputs["resultFile"] != "reconcile-post-merge-result.json" {
+				t.Errorf("reconcile-post-merge resultFile = %q, want reconcile-post-merge-result.json", reconcile.Inputs["resultFile"])
+			}
 			if reconcile.Next != "pr-select" {
 				t.Errorf("reconcile-post-merge.next = %q, want pr-select", reconcile.Next)
 			}
@@ -290,6 +293,9 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			}
 			if postMerge.Run == nil || !reflect.DeepEqual(postMerge.Run.Command, []string{"goobers", "post-merge"}) {
 				t.Errorf("post-merge command = %+v, want [goobers post-merge]", postMerge.Run)
+			}
+			if postMerge.Inputs["resultFile"] != "post-merge-result.json" {
+				t.Errorf("post-merge resultFile = %q, want post-merge-result.json", postMerge.Inputs["resultFile"])
 			}
 			wantPostMergeCapabilities := []string{"github:pr:write", "github:issues:write"}
 			if !reflect.DeepEqual(postMerge.Capabilities, wantPostMergeCapabilities) {
