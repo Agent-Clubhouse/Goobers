@@ -135,6 +135,9 @@ func sweepStalledRuns(
 				sweepErr = errors.Join(sweepErr, fmt.Errorf("running run %q has no journal events", identity.RunID))
 				continue
 			}
+			if events[len(events)-1].Type == journal.EventGatePaused {
+				continue
+			}
 			if !events[len(events)-1].Time.Before(now.Add(-timeout)) {
 				continue
 			}

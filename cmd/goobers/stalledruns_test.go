@@ -304,6 +304,46 @@ func TestSweepStalledRunsEscalatesSilentRunAndPreservesHeartbeat(t *testing.T) {
 	}
 }
 
+func TestSweepStalledRunsPreservesPausedHumanGate(t *testing.T) {
+	now := time.Date(2026, 7, 20, 20, 0, 0, 0, time.UTC)
+	eventTime := now.Add(-2 * time.Hour)
+	layout := instance.NewLayout(t.TempDir())
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: "paused-run", Workflow: "implementation", WorkflowVersion: 1,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil, journal.WithClock(func() time.Time { return eventTime }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.SetMachineState("approval")
+	if err := run.Append(journal.Event{Type: journal.EventGatePaused, Gate: "approval"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	released := false
+	if err := sweepStalledRuns(
+		layout,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		func(string, string) { released = true },
+		now,
+		45*time.Minute,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	assertWatchdogPhase(t, layout.RunsDir(), "paused-run", journal.PhaseRunning)
+	if released {
+		t.Fatal("paused human gate was released by stalled-run sweep")
+	}
+}
+
 func TestStalledRunSweepErrorsReachInstanceJournal(t *testing.T) {
 	now := time.Date(2026, 7, 20, 20, 0, 0, 0, time.UTC)
 	layout := instance.NewLayout(t.TempDir())

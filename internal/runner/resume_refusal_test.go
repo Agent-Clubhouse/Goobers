@@ -240,6 +240,63 @@ func TestRunnerResumeMissingDigestFailsAndFinalizes(t *testing.T) {
 	}
 }
 
+func TestRunnerResumeRefusalClaimsTerminalization(t *testing.T) {
+	machine := fixtureMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "run-refusal-terminal-owner"
+	newRefusalRun(t, runsDir, runID, "sha256:pinned-to-the-old-workflow-shape")
+
+	r, err := New(Config{
+		Automated:    gate.NewAutomatedEvaluator(),
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalizing := make(chan struct{})
+	release := make(chan struct{})
+	r.cfg.FinalizeTerminal = func(string, journal.RunPhase) error {
+		close(finalizing)
+		<-release
+		return nil
+	}
+
+	type resumeOutcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan resumeOutcome, 1)
+	go func() {
+		result, err := r.Resume(context.Background(), ResumeInput{
+			RunID:   runID,
+			Machine: machine,
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		done <- resumeOutcome{result: result, err: err}
+	}()
+
+	<-finalizing
+	active := r.activeRun(runID)
+	if active == nil {
+		close(release)
+		t.Fatal("resume refusal has no active owner")
+	}
+	active.mu.Lock()
+	terminalizing := active.ownerTerminalizing
+	active.mu.Unlock()
+	close(release)
+
+	outcome := <-done
+	if outcome.err != nil || outcome.result.Phase != journal.PhaseFailed {
+		t.Fatalf("Resume() = %+v, %v", outcome.result, outcome.err)
+	}
+	if !terminalizing {
+		t.Fatal("resume refusal did not claim terminalization before final cleanup")
+	}
+}
+
 // TestRunnerResumeAfterRefusalIsTerminalNoop: once a refusal has failed a
 // run, a later Resume of the same run (the daemon restarting again — the
 // exact loop the live leak came from) must short-circuit on the terminal

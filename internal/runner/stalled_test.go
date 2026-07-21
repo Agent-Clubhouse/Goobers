@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,6 +161,43 @@ func TestEscalateStalledRechecksLatestHeartbeat(t *testing.T) {
 	}
 }
 
+func TestEscalateStalledPreservesPausedHumanGate(t *testing.T) {
+	now := time.Date(2026, 7, 20, 20, 0, 0, 0, time.UTC)
+	eventTime := now.Add(-2 * time.Hour)
+	root := t.TempDir()
+	runsDir := filepath.Join(root, "runs")
+	manager, err := worktree.NewManager(filepath.Join(root, "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "paused-run", Workflow: "implementation", WorkflowVersion: 1,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil, journal.WithClock(func() time.Time { return eventTime }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.SetMachineState("approval")
+	if err := run.Append(journal.Event{Type: journal.EventGatePaused, Gate: "approval"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := New(Config{Worktrees: manager, RunsDir: runsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, escalated, err := r.EscalateStalled("paused-run", now, 45*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if escalated || result.Phase != journal.PhaseRunning {
+		t.Fatalf("escalated=%v result=%+v", escalated, result)
+	}
+}
+
 func TestEscalateStalledInterruptsRetryBackoff(t *testing.T) {
 	flaky := &flakyDeterministic{failUntil: 100}
 	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
@@ -296,6 +335,107 @@ func TestEscalateStalledInterruptsPostStageHandler(t *testing.T) {
 	}
 	if prepareCalls != 1 {
 		t.Fatalf("terminal preparation calls = %d, want 1", prepareCalls)
+	}
+}
+
+func TestEscalateStalledDoesNotTakeOverNormalTerminalPreparation(t *testing.T) {
+	const runID = "normal-terminal-preparation"
+	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
+		runID + ":implement": {status: apiv1.ResultSuccess},
+	}, gate.NewAutomatedEvaluator())
+	r.stalledCancelGrace = 20 * time.Millisecond
+	r.stalledTerminalGrace = time.Second
+
+	prepareStarted := make(chan struct{})
+	releasePrepare := make(chan struct{})
+	var prepareOnce sync.Once
+	var releaseOnce sync.Once
+	var prepareCalls atomic.Int32
+	release := func() { releaseOnce.Do(func() { close(releasePrepare) }) }
+	defer release()
+	r.cfg.PrepareTerminal = func(string, journal.RunPhase, *journal.Run) error {
+		prepareCalls.Add(1)
+		prepareOnce.Do(func() { close(prepareStarted) })
+		<-releasePrepare
+		return nil
+	}
+
+	type startOutcome struct {
+		result Result
+		err    error
+	}
+	machine := fixtureMachine(t)
+	startDone := make(chan startOutcome, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID:   runID,
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{
+				Provider: apiv1.ProviderGitHub,
+				Owner:    "acme",
+				Name:     "web",
+				Branch:   "main",
+			},
+		})
+		startDone <- startOutcome{result: result, err: err}
+	}()
+
+	select {
+	case <-prepareStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not enter normal terminal preparation")
+	}
+
+	type escalationOutcome struct {
+		result    Result
+		escalated bool
+		err       error
+	}
+	escalationDone := make(chan escalationOutcome, 1)
+	go func() {
+		result, escalated, err := r.EscalateStalled(runID, time.Now().Add(2*time.Hour), 45*time.Minute)
+		escalationDone <- escalationOutcome{result: result, escalated: escalated, err: err}
+	}()
+
+	time.Sleep(4 * r.stalledCancelGrace)
+	if got := prepareCalls.Load(); got != 1 {
+		t.Fatalf("terminal preparation calls before release = %d, want 1", got)
+	}
+	release()
+
+	started := <-startDone
+	if started.err != nil || started.result.Phase != journal.PhaseCompleted {
+		t.Fatalf("Start() = %+v, %v", started.result, started.err)
+	}
+	escalation := <-escalationDone
+	if escalation.err != nil || escalation.escalated || escalation.result.Phase != journal.PhaseCompleted {
+		t.Fatalf("EscalateStalled() = %+v, escalated=%v, err=%v", escalation.result, escalation.escalated, escalation.err)
+	}
+
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finished int
+	for _, event := range events {
+		if event.Type == journal.EventRunFinished {
+			finished++
+			if event.Status != string(journal.PhaseCompleted) {
+				t.Fatalf("run.finished status = %q, want completed", event.Status)
+			}
+		}
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == RunStalledErrorCode {
+			t.Fatalf("normal terminal path was also escalated: %+v", event)
+		}
+	}
+	if finished != 1 {
+		t.Fatalf("run.finished events = %d, want 1", finished)
 	}
 }
 

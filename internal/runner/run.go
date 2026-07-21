@@ -1529,9 +1529,17 @@ func journalToleratedFailure(jr *journal.Run, stage string) error {
 	})
 }
 
-// finish prepares terminal cleanup, appends run.finished, then performs the
-// configured post-terminal finalization.
+// finish claims terminalization from the watchdog before preparing cleanup.
 func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
+	if outcome, takenOver := r.claimOwnerTerminalization(runID); takenOver {
+		return outcome.result, outcome.err
+	}
+	return r.finishTakeover(runID, jr, phase, finalState, steps)
+}
+
+// finishTakeover performs terminal cleanup for an already-claimed watchdog
+// takeover, or for a recovered run with no live owner.
+func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
 	if err := r.prepareTerminal(runID, phase, jr); err != nil {
 		return Result{}, err
 	}

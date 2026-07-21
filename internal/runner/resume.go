@@ -265,6 +265,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 // makes the daemon's resume scan record the canonical phase as the run's
 // status instead of a raw "error: ..." string.
 func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result, error) {
+	if outcome, takenOver := r.claimOwnerTerminalization(runID); takenOver {
+		return outcome.result, outcome.err
+	}
 	if err := jr.Append(journal.Event{
 		Type:   journal.EventRunFinished,
 		Status: string(journal.PhaseFailed),

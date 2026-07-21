@@ -136,6 +136,14 @@ func (r *Runner) activeRun(runID string) *activeRun {
 	return r.active.runs[runID]
 }
 
+func (r *Runner) claimOwnerTerminalization(runID string) (activeRunResult, bool) {
+	active := r.activeRun(runID)
+	if active == nil {
+		return activeRunResult{}, false
+	}
+	return active.claimOwnerTerminalization()
+}
+
 func (r *activeRun) requestEscalation(now time.Time, timeout time.Duration) (requested, refreshed bool) {
 	stale := r.journal.IfLastActivityBefore(now.Add(-timeout), func(lastActivity time.Time) {
 		r.mu.Lock()
@@ -189,6 +197,22 @@ func (r *activeRun) claimTakeover() (activeRunResult, takeoverClaim) {
 		r.takenOver = true
 		return activeRunResult{}, takeoverClaimed
 	}
+}
+
+func (r *activeRun) claimOwnerTerminalization() (activeRunResult, bool) {
+	r.mu.Lock()
+	if !r.takenOver {
+		r.ownerTerminalizing = true
+		r.mu.Unlock()
+		return activeRunResult{}, false
+	}
+	takeoverDone := r.takeoverDone
+	r.mu.Unlock()
+
+	<-takeoverDone
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.takeoverOutcome, true
 }
 
 func (r *activeRun) completeTakeover(outcome activeRunResult) {
@@ -266,6 +290,9 @@ func inspectStalledCandidate(dir, runID string, now time.Time, timeout time.Dura
 	if len(events) == 0 {
 		return stalledCandidate{}, false, fmt.Errorf("runner: running run %q has no journal events", runID)
 	}
+	if events[len(events)-1].Type == journal.EventGatePaused {
+		return candidate, false, nil
+	}
 	candidate.lastActivity = events[len(events)-1].Time
 	if !candidate.lastActivity.Before(now.Add(-timeout)) {
 		return candidate, false, nil
@@ -322,7 +349,7 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 				}
 				return Result{}, false, fmt.Errorf("runner: stalled run %q did not finish terminalization within %s", runID, grace+terminalGrace)
 			}
-			result, finishErr := r.finishStalled(runID, active.journal, candidate.finalState, 0, stalledRequest{
+			result, finishErr := r.finishStalledTakeover(runID, active.journal, candidate.finalState, 0, stalledRequest{
 				now:          now,
 				timeout:      timeout,
 				lastActivity: candidate.lastActivity,
@@ -355,6 +382,21 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 }
 
 func (r *Runner) finishStalled(runID string, jr *journal.Run, finalState string, steps int, request stalledRequest) (Result, error) {
+	return r.finishStalledWith(runID, jr, finalState, steps, request, r.finish)
+}
+
+func (r *Runner) finishStalledTakeover(runID string, jr *journal.Run, finalState string, steps int, request stalledRequest) (Result, error) {
+	return r.finishStalledWith(runID, jr, finalState, steps, request, r.finishTakeover)
+}
+
+func (r *Runner) finishStalledWith(
+	runID string,
+	jr *journal.Run,
+	finalState string,
+	steps int,
+	request stalledRequest,
+	finish func(string, *journal.Run, journal.RunPhase, string, int) (Result, error),
+) (Result, error) {
 	message := fmt.Sprintf(
 		"run %q made no journal progress for %s (last activity %s; timeout %s)",
 		runID,
@@ -372,7 +414,7 @@ func (r *Runner) finishStalled(runID string, jr *journal.Run, finalState string,
 	}); err != nil {
 		return Result{}, fmt.Errorf("runner: journal stalled run %q: %w", runID, err)
 	}
-	return r.finish(runID, jr, journal.PhaseEscalated, finalState, steps)
+	return finish(runID, jr, journal.PhaseEscalated, finalState, steps)
 }
 
 func (r *Runner) finishStalledRequest(ctx context.Context, runID string, jr *journal.Run, finalState string, steps int) (Result, bool, error) {
@@ -382,18 +424,7 @@ func (r *Runner) finishStalledRequest(ctx context.Context, runID string, jr *jou
 	}
 	active, activeOK := ctx.Value(activeRunContextKey{}).(*activeRun)
 	if activeOK {
-		active.mu.Lock()
-		takenOver := active.takenOver
-		takeoverDone := active.takeoverDone
-		if !takenOver {
-			active.ownerTerminalizing = true
-		}
-		active.mu.Unlock()
-		if takenOver {
-			<-takeoverDone
-			active.mu.Lock()
-			outcome := active.takeoverOutcome
-			active.mu.Unlock()
+		if outcome, takenOver := active.claimOwnerTerminalization(); takenOver {
 			return outcome.result, true, outcome.err
 		}
 	}
