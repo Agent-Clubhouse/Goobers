@@ -27,6 +27,7 @@ type NormativeEvent struct {
 	Gate         string
 	Verdict      string
 	Target       string
+	Escalated    bool
 	Status       string
 	RefDigest    string
 	Name         string
@@ -71,7 +72,8 @@ func projectNormative(e Event) NormativeEvent {
 	ne := NormativeEvent{
 		Schema: e.Schema, Type: e.Type, Branch: e.Branch, Stage: e.Stage,
 		Attempt: e.Attempt, AttemptClass: e.AttemptClass, Gate: e.Gate,
-		Verdict: e.Verdict, Target: e.Target, Status: e.Status, Name: e.Name,
+		Verdict: e.Verdict, Target: e.Target, Escalated: e.Escalated,
+		Status: e.Status, Name: e.Name,
 	}
 	if e.Ref != nil && !isContextManifestArtifact(e) {
 		ne.RefDigest = e.Ref.Digest
@@ -108,9 +110,9 @@ func (ne NormativeEvent) String() string {
 	ext := fmt.Sprintf("%s:%s:%s", ne.ExternalRefProvider, ne.ExternalRefKind, ne.ExternalRefID)
 	redaction := fmt.Sprintf("%s:%s->%s:%s", ne.RedactionTarget, ne.RedactionOldDigest, ne.RedactionNewDigest, ne.RedactionReason)
 	return fmt.Sprintf(
-		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|gate=%s|verdict=%s|target=%s|status=%s|name=%s|ref=%s|ext=%s|err=%s|redact=%s",
+		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|gate=%s|verdict=%s|target=%s|escalated=%t|status=%s|name=%s|ref=%s|ext=%s|err=%s|redact=%s",
 		ne.Schema, ne.Type, ne.Branch, ne.Stage, ne.Attempt, ne.AttemptClass,
-		ne.Gate, ne.Verdict, ne.Target, ne.Status, ne.Name, ne.RefDigest, ext, ne.ErrorCode, redaction,
+		ne.Gate, ne.Verdict, ne.Target, ne.Escalated, ne.Status, ne.Name, ne.RefDigest, ext, ne.ErrorCode, redaction,
 	)
 }
 

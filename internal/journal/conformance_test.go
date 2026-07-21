@@ -24,6 +24,7 @@ func baseNormativeEvent() Event {
 		Gate:         "review",
 		Verdict:      "pass",
 		Target:       "local-ci",
+		Escalated:    true,
 		Status:       "success",
 		Ref:          &Ref{Path: "artifacts/sha256/aa/bb", Digest: "sha256:aaaa", Size: 42, MediaType: "text/plain"},
 		Name:         "plan.txt",
@@ -39,8 +40,9 @@ func baseNormativeEvent() Event {
 // existed, the walking-skeleton seed's test-local formatter
 // (canonicalizeNormative/fmtNormative) only compared Type/Stage/Gate/
 // Verdict/Target/Status/Name/Ref.Digest/Error.Code — a diff purely in
-// Attempt, AttemptClass, ExternalRef, Branch, Schema, or Redaction would have
-// gone undetected (two non-conformant runners would have compared equal).
+// Attempt, AttemptClass, ExternalRef, Branch, Schema, Escalated, or Redaction
+// would have gone undetected (two non-conformant runners would have compared
+// equal).
 // This table mutates the baseline event one normative field at a time and
 // asserts ConformanceView distinguishes every one of them — each subtest
 // below would fail under the old 9-field comparison and passes under this
@@ -60,6 +62,7 @@ func TestConformanceViewCapturesFullNormativeFieldSet(t *testing.T) {
 		{"Gate", func(e Event) Event { e.Gate = "other-gate"; return e }},
 		{"Verdict", func(e Event) Event { e.Verdict = "needs-changes"; return e }},
 		{"Target", func(e Event) Event { e.Target = "implement"; return e }},
+		{"Escalated", func(e Event) Event { e.Escalated = false; return e }},
 		{"Status", func(e Event) Event { e.Status = "failure"; return e }},
 		{"Name", func(e Event) Event { e.Name = "other.txt"; return e }},
 		{"RefDigest", func(e Event) Event { r := *e.Ref; r.Digest = "sha256:cccc"; e.Ref = &r; return e }},

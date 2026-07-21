@@ -379,6 +379,7 @@ export interface RunEvent {
   gate?: string;
   verdict?: string;
   target?: string;
+  escalated?: boolean;
   status?: RunPhase | StageAttemptStatus;
   outputs?: Record<string, JsonValue>;
   artifacts?: ArtifactMetadata[];

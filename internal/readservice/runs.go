@@ -155,6 +155,7 @@ type RunEvent struct {
 	Gate         string                 `json:"gate,omitempty"`
 	Verdict      string                 `json:"verdict,omitempty"`
 	Target       string                 `json:"target,omitempty"`
+	Escalated    bool                   `json:"escalated,omitempty"`
 	Status       string                 `json:"status,omitempty"`
 	Outputs      map[string]any         `json:"outputs,omitempty"`
 	Artifacts    []ArtifactMetadata     `json:"artifacts,omitempty"`
@@ -671,11 +672,10 @@ func (s *Local) RunEscalation(ctx context.Context, runID string) (*TraceEscalati
 		return nil, nil
 	}
 	result := &TraceEscalation{}
+	terminalStage := successfulTerminalStage(run.records)
 	for i := len(run.records) - 1; i >= 0; i-- {
 		event := run.records[i].Event
-		if !event.KnownSchema() ||
-			event.Type != journal.EventGateEvaluated ||
-			event.Target != workflow.TargetEscalate {
+		if !isEscalatingGateEvent(event, terminalStage) {
 			continue
 		}
 		result.RepassCount, err = gateRepassCount(run.records[:i+1], event.Gate)
@@ -917,11 +917,7 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 	terminalStage := successfulTerminalStage(records)
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
-		if event.KnownSchema() &&
-			event.Type == journal.EventGateEvaluated &&
-			(event.Target == workflow.TargetEscalate ||
-				gateMarkedEscalated(event) ||
-				(terminalStage != "" && event.Target == terminalStage)) {
+		if isEscalatingGateEvent(event, terminalStage) {
 			cause.Selector = EscalationSelector{Kind: "gate", Name: event.Gate}
 			cause.SelectedBranch = event.Verdict
 			cause.TerminalReason = gateEscalationReason(event)
@@ -1060,8 +1056,19 @@ func gateEscalationReason(event journal.Event) string {
 }
 
 func gateMarkedEscalated(event journal.Event) bool {
+	if event.Escalated {
+		return true
+	}
 	escalated, _ := event.Runner["escalated"].(bool)
 	return escalated
+}
+
+func isEscalatingGateEvent(event journal.Event, terminalStage string) bool {
+	return event.KnownSchema() &&
+		event.Type == journal.EventGateEvaluated &&
+		(event.Target == workflow.TargetEscalate ||
+			gateMarkedEscalated(event) ||
+			(terminalStage != "" && event.Target == terminalStage))
 }
 
 func stageEscalationReason(event journal.Event, subsequent []journal.EventRecord) string {
@@ -1121,6 +1128,7 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	projected.Gate = event.Gate
 	projected.Verdict = event.Verdict
 	projected.Target = event.Target
+	projected.Escalated = event.Escalated
 	projected.Status = event.Status
 	projected.Outputs = scalarOutputs(event.Outputs)
 	for _, ref := range event.Artifacts {

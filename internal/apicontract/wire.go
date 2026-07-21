@@ -321,6 +321,7 @@ func newWireFixtures() wireFixtures {
 				Gate:         "review",
 				Verdict:      "needs-changes",
 				Target:       "implement",
+				Escalated:    true,
 				Status:       string(apiv1.ResultSuccess),
 				Outputs:      map[string]any{"approved": true, "score": 0.98},
 				Artifacts:    []readservice.ArtifactMetadata{artifact},
