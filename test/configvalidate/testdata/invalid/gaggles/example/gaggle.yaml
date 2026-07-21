@@ -1,0 +1,18 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  displayName: Invalid fixture
+  project:
+    provider: github
+    owner: example
+    name: example
+    branch: main
+    connectionRef: repo-token
+  backlog:
+    provider: github
+    project: example/example
+    connectionRef: repo-token
+  isolation:
+    namespace: gaggle-example
