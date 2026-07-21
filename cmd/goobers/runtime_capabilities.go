@@ -293,6 +293,7 @@ func init() {
 			withHelp("conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)", mergePRHelp).
 			withExamples("goobers merge-pr"),
 		command("record-merge-refusal", apicontract.ActionWorkflowExecution, runRecordMergeRefusal).
+			withSynopsis(synopsisByID["record-merge-refusal"]).
 			withHelp("record a merge refusal and demote a persistently-stuck lander (a workflow stage)", recordMergeRefusalHelp).
 			withExamples("goobers record-merge-refusal"),
 		command("merge-queue-poll", apicontract.ActionWorkflowExecution, runMergeQueuePoll).
