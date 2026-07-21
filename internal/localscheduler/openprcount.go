@@ -38,6 +38,12 @@ type OpenPRRefresher struct {
 	repo          providers.RepositoryRef
 	interval      time.Duration
 	excludeLabels map[string]bool
+	// branchNamespaces maps each gaggle to its configured run-branch namespace
+	// (#1115). OpenPRCount resolves a gaggle's namespace here so a gaggle that
+	// retuned GaggleSpec.BranchNamespace (#965/#1010/#1109) is counted under its
+	// own prefix, not the default "goobers/". A gaggle with no entry falls back
+	// to the default namespace.
+	branchNamespaces map[string]string
 
 	mu    sync.RWMutex
 	prs   []providers.OpenPRSummary
@@ -50,9 +56,12 @@ type OpenPRRefresher struct {
 // escalated — cannot be drained by the daemon, so counting it against the cap
 // only starves new work. needs-remediation and plain-open PRs are deliberately
 // NOT excluded (the daemon is draining them; the cap must still apply
-// backpressure). The count starts "unknown" until the first poll completes
-// (Admit fails open until then).
-func NewOpenPRRefresher(lister OpenPRLister, repo providers.RepositoryRef, interval time.Duration, excludeLabels []string) *OpenPRRefresher {
+// backpressure). branchNamespaces maps each gaggle to its run-branch namespace
+// (#1115) so OpenPRCount matches each gaggle's own prefix; a nil/empty map (or a
+// gaggle absent from it) counts under the default "goobers/" namespace,
+// preserving pre-#1115 behavior. The count starts "unknown" until the first poll
+// completes (Admit fails open until then).
+func NewOpenPRRefresher(lister OpenPRLister, repo providers.RepositoryRef, interval time.Duration, excludeLabels []string, branchNamespaces map[string]string) *OpenPRRefresher {
 	if interval <= 0 {
 		interval = DefaultOpenPRRefreshInterval
 	}
@@ -60,27 +69,27 @@ func NewOpenPRRefresher(lister OpenPRLister, repo providers.RepositoryRef, inter
 	for _, l := range excludeLabels {
 		excluded[l] = true
 	}
-	return &OpenPRRefresher{lister: lister, repo: repo, interval: interval, excludeLabels: excluded}
+	return &OpenPRRefresher{lister: lister, repo: repo, interval: interval, excludeLabels: excluded, branchNamespaces: branchNamespaces}
 }
 
-// OpenPRCount returns the last polled count of open run-branch PRs for workflow
-// — excluding any carrying an excluded (human-parked) label — and whether that
-// count is known yet. Implements OpenPRCounter.
-func (r *OpenPRRefresher) OpenPRCount(workflow string) (int, bool) {
+// OpenPRCount returns the last polled count of the gaggle's own open run-branch
+// PRs for workflow — excluding any carrying an excluded (human-parked) label —
+// and whether that count is known yet. Implements OpenPRCounter.
+func (r *OpenPRRefresher) OpenPRCount(gaggle, workflow string) (int, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if !r.known {
 		return 0, false
 	}
 
-	// This counts run-branch PRs under the DEFAULT namespace only
-	// (providers.BranchName's "goobers/"). A gaggle that retunes its
-	// BranchNamespace (#965/#1010) opens PRs under a different prefix that this
-	// instance-wide cap would not count — its open-PR backpressure would be
-	// ineffective for that gaggle. Not yet biting (no non-default gaggle is
-	// enabled); making this per-gaggle needs the scheduler to thread each
-	// workflow's gaggle namespace in, tracked as #1115.
-	prefix := providers.BranchName(workflow, "")
+	// Match run-branch heads under the gaggle's OWN namespace (#1115). A gaggle
+	// that retunes its BranchNamespace (#965/#1010/#1109) opens PRs under its
+	// configured prefix rather than the default "goobers/"; resolving the
+	// namespace per gaggle here is what makes the cap's backpressure effective
+	// for a non-default gaggle instead of silently counting zero. A gaggle absent
+	// from branchNamespaces (a single-gaggle default) falls back to the default
+	// namespace via BranchNameIn, so its count is unchanged.
+	prefix := providers.BranchNameIn(r.branchNamespaces[gaggle], workflow, "")
 	count := 0
 	for _, pr := range r.prs {
 		if !strings.HasPrefix(pr.Head, prefix) {
