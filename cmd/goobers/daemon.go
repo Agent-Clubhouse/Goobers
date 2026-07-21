@@ -92,6 +92,14 @@ type schedulerDefinitions struct {
 // entry's trackedStarter so a caller (up's daemon loop, or run's single
 // foreground trigger) can track dispatched runs uniformly.
 func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGroup, setupOpts ...schedulerSetupOption) (_ *schedulerSetup, err error) {
+	return buildSchedulerSetupWithConfigPolicy(ctx, l, wg, false, setupOpts...)
+}
+
+func buildSchedulerSetupAllowingInvalidConfig(ctx context.Context, l instance.Layout, wg *sync.WaitGroup, setupOpts ...schedulerSetupOption) (_ *schedulerSetup, err error) {
+	return buildSchedulerSetupWithConfigPolicy(ctx, l, wg, true, setupOpts...)
+}
+
+func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout, wg *sync.WaitGroup, allowInvalidConfig bool, setupOpts ...schedulerSetupOption) (_ *schedulerSetup, err error) {
 	var options schedulerSetupOptions
 	for _, apply := range setupOpts {
 		apply(&options)
@@ -104,12 +112,19 @@ func buildSchedulerSetup(ctx context.Context, l instance.Layout, wg *sync.WaitGr
 	if err != nil {
 		return nil, err
 	}
-	set, report, err := loadConfigDirectory(l.ConfigDir())
+	configLoader := loadConfigDirectory
+	if allowInvalidConfig {
+		configLoader = instance.LoadConfigDirForComparison
+	}
+	set, report, err := configLoader(l.ConfigDir())
 	if err != nil {
-		return nil, &configReportError{
-			report: report,
-			err:    fmt.Errorf("config directory invalid: %w", err),
+		if !allowInvalidConfig || !errors.Is(err, instance.ErrInvalidConfig) || set == nil {
+			return nil, &configReportError{
+				report: report,
+				err:    fmt.Errorf("config directory invalid: %w", err),
+			}
 		}
+		err = nil
 	}
 	defer func() {
 		if err != nil {
