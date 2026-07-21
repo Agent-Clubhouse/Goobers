@@ -187,6 +187,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos str
 		"GOOBERS_DISABLE_FSYNC=1",
 	}
 	if goos == "windows" {
+		// The Windows race detector uses cgo and a compatible MinGW-w64 compiler.
 		testEnvironment = append(testEnvironment, "CGO_ENABLED=1")
 	}
 
