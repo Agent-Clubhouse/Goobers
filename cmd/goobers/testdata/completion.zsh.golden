@@ -34,7 +34,7 @@ _goobers_completion()
             'trace:show a run'\''s journal events, follow a live run, or show transcripts'
             'escalations:list escalated runs newest first'
             'completion:generate a shell completion script'
-            'telemetry:success rate/duration or recent-error aggregates'
+            'telemetry:query aggregates or export journaled OTLP windows'
             'journal:the one sanctioned edit to the append-only journal'
             'backlog-query:query/claim one eligible backlog item (a workflow stage)'
             'reconcile-branches:report bounded stale goobers/* branch candidates (a workflow stage)'
@@ -256,7 +256,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( CURRENT == 3 )); then
-                candidates=(stats errors)
+                candidates=(stats errors export)
                 _describe -V 'command' candidates
                 return
             fi
