@@ -35,6 +35,7 @@ type marker struct {
 	CreatedAt      time.Time `json:"created_at"`
 	RetainedAt     time.Time `json:"retained_at,omitempty"`
 	Status         status    `json:"status"`
+	SizeBytes      *int64    `json:"size_bytes,omitempty"`
 }
 
 func (m marker) retainedAt() time.Time {

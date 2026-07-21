@@ -138,7 +138,12 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	// repo don't race git's internal locking.
 	lock := m.lockFor(key)
 	lock.Lock()
-	defer lock.Unlock()
+	lockHeld := true
+	defer func() {
+		if lockHeld {
+			lock.Unlock()
+		}
+	}()
 
 	path := filepath.Join(m.runsDirForKey(key), opts.RunID)
 	if _, err := os.Stat(path); err == nil {
@@ -239,10 +244,21 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		return nil, fmt.Errorf("worktree: register run %s: %w", opts.RunID, err)
 	}
 
-	return &Worktree{
+	worktreeBytes, worktreeMeasured, measurementErr := m.measureWorktree(path)
+	if worktreeMeasured {
+		mk.SizeBytes = &worktreeBytes
+		if err := writeMarker(m.markerPath(key, opts.RunID), mk); err != nil {
+			measurementErr = errors.Join(measurementErr, fmt.Errorf("worktree: persist usage for run %s: %w", opts.RunID, err))
+		}
+	}
+	wt := &Worktree{
 		RunID: opts.RunID, Path: path, Branch: opts.Branch, Warnings: warnings,
 		manager: m, key: key, startRef: startRef,
-	}, nil
+	}
+	lock.Unlock()
+	lockHeld = false
+	m.observeUsage(ctx, UsageOperationCreate, opts.OwnerRunID, opts.RunID, worktreeBytes, worktreeMeasured, measurementErr)
+	return wt, nil
 }
 
 // ActivateAssetPathGuard persists that this invocation reserves the asset
@@ -431,11 +447,20 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 
 	lock := wt.manager.lockFor(wt.key)
 	lock.Lock()
-	defer lock.Unlock()
+	worktreeBytes, worktreeMeasured, measurementErr := wt.manager.measureWorktree(wt.Path)
+	var ownerRunID string
+	defer func() {
+		lock.Unlock()
+		wt.manager.observeUsage(ctx, UsageOperationTeardown, ownerRunID, wt.RunID, worktreeBytes, worktreeMeasured, measurementErr)
+	}()
 
 	mk, markerErr := readMarker(markerPath)
 	switch {
 	case markerErr == nil:
+		ownerRunID = mk.OwnerRunID
+		if worktreeMeasured {
+			mk.SizeBytes = &worktreeBytes
+		}
 		if err := wt.manager.restoreReservedBranchFromMarker(ctx, wt.key, wt.Path, mk); err != nil {
 			return fmt.Errorf("worktree: restore guarded branch for run %s: %w", wt.RunID, err)
 		}
@@ -456,6 +481,11 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 	}
 
 	if err := runGit(ctx, repoDir, "worktree", "remove", "--force", wt.Path); err != nil {
+		if worktreeMeasured && markerErr == nil {
+			if usageErr := writeMarker(markerPath, mk); usageErr != nil {
+				measurementErr = errors.Join(measurementErr, fmt.Errorf("worktree: persist usage for run %s: %w", wt.RunID, usageErr))
+			}
+		}
 		return fmt.Errorf("worktree: remove for run %s: %w", wt.RunID, err)
 	}
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {

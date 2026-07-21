@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 func TestShellStageTelemetryRoundTripsToRollup(t *testing.T) {
@@ -34,6 +35,10 @@ func TestShellStageTelemetryRoundTripsToRollup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+	wtMgr, err = worktree.NewManager(wtMgr.Root, worktree.WithUsageObserver("acme-web", client.RecordWorkcopyUsage))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// These stages declare no capabilities, so no ref is ever resolved.
 	resolver, err := credentials.NewResolver(nil)
@@ -143,28 +148,42 @@ done >> "$GOOBERS_TELEMETRY_DIR/events.jsonl"`
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 134 {
-		t.Fatalf("span events = %d, want 134", len(events))
+	if len(events) != 138 {
+		t.Fatalf("span events = %d, want 138", len(events))
 	}
-	if events[0].Name != "exitCode" || events[0].Attributes["goobers.metric.value"] != "99" {
-		t.Fatalf("exitCode metric event = %#v", events[0])
+	if events[0].Name != telemetry.EventWorktreeDiskUsage ||
+		events[0].Attributes[telemetry.AttrRunID] != runID ||
+		events[0].Attributes[telemetry.AttrGaggle] != "acme-web" ||
+		events[0].Attributes[telemetry.AttrStorageOperation] != string(worktree.UsageOperationCreate) {
+		t.Fatalf("worktree create metric event = %#v", events[0])
 	}
-	if events[1].Name != "build.items" || events[1].Attributes["goobers.metric.unit"] != "count" {
-		t.Fatalf("build.items metric event = %#v", events[1])
+	if events[1].Name != telemetry.EventWorkcopyDiskUsage {
+		t.Fatalf("workcopy create metric event = %#v", events[1])
 	}
-	if events[2].Name != "scan.complete" || events[2].Attributes["authorization"] != journal.Redacted {
-		t.Fatalf("custom event = %#v", events[2])
+	if events[2].Name != "exitCode" || events[2].Attributes["goobers.metric.value"] != "99" {
+		t.Fatalf("exitCode metric event = %#v", events[2])
 	}
-	if events[3].Name != "batch.000" || events[3].Attributes["index"] != "0" {
-		t.Fatalf("first batch event = %#v", events[3])
+	if events[3].Name != "build.items" || events[3].Attributes["goobers.metric.unit"] != "count" {
+		t.Fatalf("build.items metric event = %#v", events[3])
 	}
-	if events[132].Name != "batch.129" || events[132].Attributes["index"] != "129" {
-		t.Fatalf("last batch event = %#v", events[132])
+	if events[4].Name != "scan.complete" || events[4].Attributes["authorization"] != journal.Redacted {
+		t.Fatalf("custom event = %#v", events[4])
 	}
-	if events[133].Name != "goobers.telemetry.warning" ||
-		events[133].Attributes["goobers.telemetry.file"] != "metrics.jsonl" ||
-		events[133].Attributes["goobers.telemetry.dropped_lines"] != "1" {
-		t.Fatalf("malformed-line warning = %#v", events[133])
+	if events[5].Name != "batch.000" || events[5].Attributes["index"] != "0" {
+		t.Fatalf("first batch event = %#v", events[5])
+	}
+	if events[134].Name != "batch.129" || events[134].Attributes["index"] != "129" {
+		t.Fatalf("last batch event = %#v", events[134])
+	}
+	if events[135].Name != "goobers.telemetry.warning" ||
+		events[135].Attributes["goobers.telemetry.file"] != "metrics.jsonl" ||
+		events[135].Attributes["goobers.telemetry.dropped_lines"] != "1" {
+		t.Fatalf("malformed-line warning = %#v", events[135])
+	}
+	if events[136].Name != telemetry.EventWorktreeDiskUsage ||
+		events[136].Attributes[telemetry.AttrStorageOperation] != string(worktree.UsageOperationTeardown) ||
+		events[137].Name != telemetry.EventWorkcopyDiskUsage {
+		t.Fatalf("teardown metric events = %#v, %#v", events[136], events[137])
 	}
 }
 

@@ -73,6 +73,7 @@ type ReapWarning struct {
 // fatal to the whole pass — a single corrupt marker must never prevent every
 // other repo's genuine orphans from being cleaned up.
 func (m *Manager) Reap(ctx context.Context, opts ReapOptions) ([]ReapResult, []ReapWarning, error) {
+	defer m.observeUsage(ctx, UsageOperationHousekeeping, "", "", 0, false, nil)
 	repoDirs, err := os.ReadDir(m.Root)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -148,9 +149,12 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 		}
 
 		path := filepath.Join(m.runsDirForKey(key), mk.RunID)
+		worktreeBytes, worktreeMeasured, measurementErr := m.measureWorktree(path)
 		if err := m.reapOne(ctx, key, path, markerPath, &mk); err != nil {
+			m.observeUsage(ctx, UsageOperationHousekeeping, mk.OwnerRunID, mk.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 			return results, warnings, fmt.Errorf("worktree: reap run %s: %w", mk.RunID, err)
 		}
+		m.observeUsage(ctx, UsageOperationHousekeeping, mk.OwnerRunID, mk.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 		results = append(results, ReapResult{RunID: mk.RunID, Path: path, Reason: reason})
 	}
 
@@ -202,9 +206,12 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 			}
 		}
 		markerPath := m.markerPath(key, e.Name())
+		worktreeBytes, worktreeMeasured, measurementErr := m.measureWorktree(path)
 		if err := m.reapOne(ctx, key, path, markerPath, nil); err != nil {
+			m.observeUsage(ctx, UsageOperationHousekeeping, "", e.Name(), worktreeBytes, worktreeMeasured, measurementErr)
 			return results, warnings, fmt.Errorf("worktree: reap markerless run %s: %w", e.Name(), err)
 		}
+		m.observeUsage(ctx, UsageOperationHousekeeping, "", e.Name(), worktreeBytes, worktreeMeasured, measurementErr)
 		results = append(results, ReapResult{RunID: e.Name(), Path: path, Reason: ReapReasonMarkerless})
 	}
 	return results, warnings, nil
