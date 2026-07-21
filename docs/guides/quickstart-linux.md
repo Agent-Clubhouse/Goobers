@@ -26,10 +26,22 @@ lifecycle under a real `SIGTERM` — on the GitHub-hosted `ubuntu-latest` runner
 | Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26**) |
 | Git | `git worktree add`/`remove` are the only requirements → **git ≥ 2.17** |
 
-The job records the exact kernel, distro `PRETTY_NAME`, and git/Go versions of
-the run into a `linux-validation-evidence` artifact (`environment.txt` +
-`summary.md` + the demo run's journal), so "supported on Linux" always has a
-concrete, current referent. To reproduce locally on any POSIX host:
+A representative captured run (from the CI evidence artifact): Ubuntu 24.04.4
+LTS, kernel 6.17, git 2.54.0, Go 1.26.0, linux/amd64 — demo run
+`phase=completed`, daemon lifecycle clean. The job records the exact kernel,
+distro `PRETTY_NAME`, and git/Go versions of *each* run into a
+`linux-validation-evidence` artifact (`environment.txt` + `summary.md` + the
+demo run's journal), so "supported on Linux" always has a concrete, current
+referent.
+
+> **Linux delta — deterministic `network: none` stages use user namespaces.** On
+> Linux, a workflow stage that declares `network: none` is isolated with an
+> unprivileged user + network namespace (`CLONE_NEWUSER`), not an external
+> sandbox. This works out of the box on the validated Ubuntu 24.04 runner. Some
+> hardened distros disable unprivileged user namespaces (e.g. a non-default
+> `kernel.apparmor_restrict_unprivileged_userns=1` or
+> `kernel.unprivileged_userns_clone=0`); if a deterministic stage fails to fork
+> there, enable unprivileged user namespaces for the daemon's user. To reproduce locally on any POSIX host:
 
 ```sh
 go build -o bin/goobers ./cmd/goobers
