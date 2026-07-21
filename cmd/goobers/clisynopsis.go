@@ -1,14 +1,19 @@
-// Code generated from the original main.go usage() block. DO NOT edit by hand.
+// Seeded by a one-time migration from the original main.go usage() block
+// (#1095). There is no live generator yet (that is CLI-2's man/reference-gen
+// work), so until then this map is maintained by hand alongside the command
+// registry in runtime_capabilities.go: add a command there, add its synopsis
+// line here. TestCLIVerbCoverage enforces that the two stay in sync.
 package main
 
 // synopsisByID holds each command's verbatim entry in the top-level usage()
 // list, keyed by invocation-path id. usage() assembles these via the command
 // registry so the top-level surface cannot drift from per-command help (#1095).
 var synopsisByID = map[string]string{
-	"version":                "  goobers --version             print build version, commit, and date\n",
+	"version":                "  goobers version [--json]      print build version, commit, and date (--json for structured output)\n",
 	"init":                   "  goobers init [--demo] [path]  scaffold an instance root\n",
 	"scaffold":               "  goobers scaffold goober|workflow [--force] <name> [path]\n                                scaffold a goober or workflow in a gaggle\n",
 	"validate":               "  goobers validate [flags] [path]  validate an instance or checked-in config source tree\n",
+	"config":                 "  goobers config show [--json] [path]\n                                render the effective instance config (secrets redacted)\n",
 	"up":                     "  goobers up [--quiet] [--notify[=all]] [path]\n                                run the daemon (scheduler + runner + loopback HTTP API)\n",
 	"dashboard":              "  goobers dashboard [--port=<port|auto>] [--no-open] [path]\n                                serve and open the local operations portal\n",
 	"run":                    "  goobers run <workflow> [--no-wait] [path]\n                                trigger a run manually (still honors run conditions)\n",
@@ -43,6 +48,7 @@ var synopsisByID = map[string]string{
 	"pr-select":              "  goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)\n",
 	"gather-sibling-context": "  goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)\n",
 	"apply-verdict":          "  goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)\n",
+	"elect-lander":           "  goobers elect-lander                   elect the landing PR among a merge-review cohort (a workflow stage)\n",
 	"update-behind-pr":       "  goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)\n",
 	"gather-pr-context":      "  goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)\n",
 	"rebase-pr":              "  goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)\n",

@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/apicontract"
-	"github.com/goobers/goobers/internal/version"
 )
 
 type cliCommandHandler func([]string, io.Writer, io.Writer) int
@@ -71,14 +70,11 @@ func init() {
 			"version",
 			[]string{"--version", "version"},
 			apicontract.ActionReadOnlyNavigation,
-			func(_ []string, stdout, _ io.Writer) int {
-				pf(stdout, "goobers %s\n", version.Get())
-				return 0
-			},
+			runVersion,
 		).
 			withSynopsis(synopsisByID["version"]).
-			withHelp("print build version, commit, and date", "").
-			withExamples("goobers --version"),
+			withHelp("print build version, commit, and date (--json for structured output)", versionHelp).
+			withExamples("goobers --version", "goobers version --json"),
 		command("init", apicontract.ActionConfigTime, runInit).
 			withSynopsis(synopsisByID["init"]).
 			withHelp("scaffold an instance root", initHelp).
@@ -110,6 +106,16 @@ func init() {
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).
 			withExamples("goobers validate", "goobers validate --check-harness --check-repos"),
+		groupCommand(
+			"config",
+			runConfig,
+			subcommand("config show", "show", apicontract.ActionReadOnlyNavigation, runConfigShow).
+				withHelp("render the effective instance config (secrets redacted)", configShowHelp).
+				withExamples("goobers config show", "goobers config show --json"),
+		).
+			withSynopsis(synopsisByID["config"]).
+			withHelp("inspect the instance's operational configuration", configHelp).
+			withExamples("goobers config show"),
 		command("up", apicontract.ActionDaemonLifecycle, runUp).
 			withSynopsis(synopsisByID["up"]).
 			withHelp("run the daemon (scheduler + runner + loopback HTTP API)", upHelp).
@@ -318,6 +324,7 @@ func init() {
 			withHelp("publish a merge-review verdict as a native review (a workflow stage)", applyVerdictHelp).
 			withExamples("goobers apply-verdict"),
 		command("elect-lander", apicontract.ActionWorkflowExecution, runElectLander).
+			withSynopsis(synopsisByID["elect-lander"]).
 			withHelp("elect the landing PR among a merge-review cohort (a workflow stage)", electLanderHelp).
 			withExamples("goobers elect-lander"),
 		command("update-behind-pr", apicontract.ActionWorkflowExecution, runUpdateBehindPR).
