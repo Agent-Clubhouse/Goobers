@@ -81,6 +81,11 @@ func (f *fixtureAuto) Evaluate(_ context.Context, gate apiv1.AutomatedGate, _ ap
 			return "pass", nil
 		}
 		return "fail", nil
+	case "output-equals":
+		// #947: open-pr-gate (opened=true -> ci-poll, opened=false -> @abort).
+		// These fixtures exercise the still-open-issue happy path, so open-pr
+		// opened its PR and the gate passes through to ci-poll.
+		return "pass", nil
 	default:
 		return "", nil
 	}

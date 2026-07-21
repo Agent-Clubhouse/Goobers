@@ -208,6 +208,17 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		if hasAnyLabel(item.Labels, excludeLabels) {
 			continue
 		}
+		// Defense-in-depth state re-verify (#947): the provider query above
+		// already filters State:"open", but a closed issue that still carries
+		// goobers:ready/goobers:approved (label bookkeeping that did not run on
+		// close — the exact incoherent state #947 documents) must never be
+		// claimable regardless of its labels. Re-check state in code, the same
+		// SEC-047 "don't trust the provider filter alone" discipline the label
+		// re-verify above applies. Empty State (a provider that doesn't report
+		// it) is left to the query's own filter, not treated as ineligible.
+		if item.State != "" && !strings.EqualFold(item.State, "open") {
+			continue
+		}
 		eligible = append(eligible, item)
 	}
 

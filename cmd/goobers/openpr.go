@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
@@ -116,6 +118,37 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	resultFile := providerInput("resultFile", "pr-result.json")
+
+	// Mid-flight staleness re-check (#947). The claimed issue was validated
+	// once, at query-backlog; but implement + review + local-ci can take 30+
+	// minutes, and an issue closed or superseded in that window must NOT still
+	// produce a PR — that burns a full merge-review cycle and one of the
+	// scarcest resources there is (an open-PR slot) on work that is already
+	// moot. Re-check that the claimed issue is still open, immediately before
+	// opening the PR. The gate downstream (open-pr-gate) routes opened=false to
+	// @abort so the run terminates with a clear, distinguishable reason instead
+	// of a stale PR. Fail OPEN on any lookup error — a transient provider
+	// failure must never block a legitimate PR — and gate on haveIssue so
+	// issue-less runs (other workflows, generic PRs) keep exactly today's
+	// behavior.
+	if haveIssue && issueID != "" {
+		ctxCheck, cancelCheck := providerCommandContext()
+		item, checkErr := provider.GetWorkItem(ctxCheck, repo, issueID)
+		cancelCheck()
+		switch {
+		case checkErr != nil:
+			pf(stderr, "warning: could not re-check issue #%s state before opening PR (%v) — proceeding\n", issueID, checkErr)
+		case item.State != "" && !strings.EqualFold(item.State, "open"):
+			pf(stdout, "issue #%s is no longer open (state %q) since it was claimed — aborting without opening a PR (#947)\n", issueID, item.State)
+			if err := writeOpenPRResult(resultFile, false, 0, ""); err != nil {
+				pf(stderr, "error: %v\n", err)
+				return 1
+			}
+			return 0
+		}
+	}
+
 	prReq := providers.PullRequestRequest{Repository: repo, Title: title, Body: body, Head: head, Base: base}
 	if providerInput("runIdFooter", "true") == "true" {
 		prReq.RunID = runID
@@ -128,20 +161,31 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "open pull request", err, "pr-result.json")
 	}
 
-	resultFile := providerInput("resultFile", "pr-result.json")
-	data, err := json.Marshal(map[string]string{
-		"prNumber":         strconv.Itoa(result.Number),
-		"pull-request-url": result.URL,
-	})
-	if err != nil {
-		pf(stderr, "error: marshal pr result: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
+	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL); err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 
 	pf(stdout, "pr #%d: %s\n", result.Number, result.URL)
 	return 0
+}
+
+// writeOpenPRResult writes open-pr's declared result file. It always emits the
+// `opened` flag the open-pr-gate routes on (#947); prNumber/pull-request-url
+// are present only on the opened path (ci-poll reads them via inputsFrom, and
+// ci-poll only runs when opened=true).
+func writeOpenPRResult(resultFile string, opened bool, prNumber int, url string) error {
+	out := map[string]string{"opened": strconv.FormatBool(opened)}
+	if opened {
+		out["prNumber"] = strconv.Itoa(prNumber)
+		out["pull-request-url"] = url
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return fmt.Errorf("marshal pr result: %w", err)
+	}
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", resultFile, err)
+	}
+	return nil
 }
