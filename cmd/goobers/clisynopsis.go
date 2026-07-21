@@ -15,7 +15,7 @@ var synopsisByID = map[string]string{
 	"scaffold":               "  goobers scaffold goober|workflow [--force] <name> [path]\n                                scaffold a goober or workflow in a gaggle\n",
 	"validate":               "  goobers validate [flags] [path]  validate an instance or checked-in config source tree\n",
 	"lint":                   "  goobers lint [flags] [path]   lint config via the single authoritative validation engine (alias for validate)\n",
-	"config":                 "  goobers config show [--json] [path]\n                                render the effective instance config (secrets redacted)\n",
+	"config":                 "  goobers config show|diff [flags] [path]\n                                inspect instance config or compare workflows with canonical definitions\n",
 	"up":                     "  goobers up [--quiet] [--notify[=all]] [path]\n                                run the daemon (scheduler + runner + loopback HTTP API)\n",
 	"dashboard":              "  goobers dashboard [--port=<port|auto>] [--no-open] [path]\n                                serve and open the local operations portal\n",
 	"run":                    "  goobers run <workflow> [--no-wait] [path]\n                                trigger a run manually (still honors run conditions)\n",

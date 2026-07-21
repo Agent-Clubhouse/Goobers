@@ -117,13 +117,16 @@ func init() {
 		groupCommand(
 			"config",
 			runConfig,
+			subcommand("config diff", "diff", apicontract.ActionConfigTime, runConfigDiff).
+				withHelp("compare active workflows with canonical definitions", configDiffHelp).
+				withExamples("goobers config diff ./instance", "goobers config diff --against ./selfhost ./instance"),
 			subcommand("config show", "show", apicontract.ActionReadOnlyNavigation, runConfigShow).
 				withHelp("render the effective instance config (secrets redacted)", configShowHelp).
 				withExamples("goobers config show", "goobers config show --json"),
 		).
 			withSynopsis(synopsisByID["config"]).
-			withHelp("inspect the instance's operational configuration", configHelp).
-			withExamples("goobers config show"),
+			withHelp("inspect instance configuration and compare workflow definitions", configHelp).
+			withExamples("goobers config show", "goobers config diff ./instance"),
 		command("up", apicontract.ActionDaemonLifecycle, runUp).
 			withSynopsis(synopsisByID["up"]).
 			withHelp("run the daemon (scheduler + runner + loopback HTTP API)", upHelp).
