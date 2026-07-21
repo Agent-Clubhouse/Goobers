@@ -152,7 +152,7 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_events_run      ON scheduler_events(run
 	// CREATE TABLE/INDEX IF NOT EXISTS (idempotent under SQLite's own schema
 	// locking, so concurrent first-Opens of a fresh telemetry.db never
 	// collide), ALTER TABLE ADD COLUMN is NOT safe against two such
-	// first-Opens racing the SAME migration — applyMigration's transactional
+	// first-Opens racing the SAME migration — migrateOnce's transactional
 	// pairing only protects a crash between statement and version-bump, not
 	// two separate connections each reading schema_meta.version as
 	// not-yet-migrated before either commits (confirmed live: this exact
