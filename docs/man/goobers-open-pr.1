@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS OPEN PR" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers open-pr \- open or update the run's PR (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers open-pr\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers open-pr [path]
+
+Open the run's PR — or, on a repass through this stage, find and update
+the PR it already opened (idempotent: the run's branch name is stable
+across repasses, providers.BranchName). Writes prNumber/pull-request-url
+to the declared result file for a downstream stage's Task.InputsFrom.
+Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers open-pr
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

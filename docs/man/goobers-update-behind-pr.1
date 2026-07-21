@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS UPDATE BEHIND PR" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers update-behind-pr \- API-update a clean behind-base PR, else route to remediation (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers update-behind-pr\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers update-behind-pr [path]
+
+Update one behind-base PR through GitHub's update-branch API when it
+is mergeable, CI-clean, and carries no substantive findings. Other
+candidates are routed to full remediation. Exit codes: 0 = updated,
+routed, or no-work; 1 = business error; 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers update-behind-pr
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

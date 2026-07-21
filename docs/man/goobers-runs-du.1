@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RUNS DU" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers runs du \- report per-run journal and artifact bytes
+.SH SYNOPSIS
+\fBgoobers runs du\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers runs du [--json] [path]
+
+Report file bytes used by each run, split between journal/state data
+and artifacts, largest first (default path ".").
+Exit codes: 0 = OK, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers runs du
+goobers runs du --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

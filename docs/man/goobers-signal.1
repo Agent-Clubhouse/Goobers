@@ -1,0 +1,28 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SIGNAL" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers signal \- fire an external signal to subscribed workflows
+.SH SYNOPSIS
+\fBgoobers signal\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers signal <name> [path]
+
+Fire an external signal by name, dispatching every workflow with a
+type=signal trigger subscribed to it, through the same scheduler (run
+conditions, instance journal, single-instance lock) a live `goobers up`
+daemon uses (default path "."). A signal may match zero, one, or many
+workflows; waits for every dispatched run to reach a terminal state or
+pause before returning (same blocking UX as `goobers run`).
+Exit codes after waiting: 0 = every admitted run completed (also used when
+none were admitted), 1 = any run failed/aborted or a business error, 2 =
+usage/IO error, 3 = any run escalated. Escalation takes precedence for
+mixed outcomes; successful submission-only modes exit 0 because they do
+not observe a terminal phase.
+.fi
+.SH EXAMPLES
+.nf
+goobers signal deploy-approved
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

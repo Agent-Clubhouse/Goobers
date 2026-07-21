@@ -55,6 +55,13 @@ generate:
 manifests:
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths=./api/v1alpha1/... output:crd:dir=config/crd/bases
 
+## docs: Regenerate the committed CLI reference (docs/cli) + man pages (docs/man)
+## from the command registry. CI's TestCLIDocsUpToDate fails the build if the
+## committed output drifts from this, so run it after any CLI help change.
+.PHONY: docs
+docs:
+	UPDATE_GOLDEN=1 $(GO) test ./cmd/goobers -run TestCLIDocsUpToDate
+
 ## test-envtest: Run tests with envtest binaries provisioned (operator integration).
 .PHONY: test-envtest
 test-envtest:

@@ -1,0 +1,27 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS REMEDIATION CHECKPOINT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers remediation-checkpoint \- durable per-PR repass budget + same-diff escalation (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers remediation-checkpoint\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers remediation-checkpoint [--budget N] [path]
+
+Re-checkout the PR's own branch (this stage gets its own fresh
+worktree), read pr-remediation's durable per-PR cycle counter + last
+diff digest back from a sticky PR comment, compare this cycle's
+actual diff (git diff base...HEAD) against it, and either
+escalate (goobers:merge-escalated, clearing needs-remediation) on
+budget exhaustion or a byte-identical repeat, or record the advanced
+state as a new sticky comment. Requires selectedNumber (inputsFrom
+gather-pr-context's selectedNumber output). Exit codes: 0 = checkpoint
+recorded (escalated or not — both are normal outcomes), 1 = business
+error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers remediation-checkpoint --budget 3
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

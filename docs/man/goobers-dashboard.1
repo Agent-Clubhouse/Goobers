@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS DASHBOARD" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers dashboard \- serve and open the local operations portal
+.SH SYNOPSIS
+\fBgoobers dashboard\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers dashboard [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [path]
+
+Serve the embedded portal against the live daemon when `goobers up` is
+running, or against a standalone read-only service otherwise. The default
+port is 8081; --port=auto increments from there until a port is available.
+Blocks until interrupted. Exit codes: 0 = clean shutdown, 1 = service or
+browser failure, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers dashboard
+goobers dashboard --port=auto --no-open
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

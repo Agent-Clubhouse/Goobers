@@ -1,0 +1,20 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY STATS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry stats \- success rate and duration aggregates per workflow and stage
+.SH SYNOPSIS
+\fBgoobers telemetry stats\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
+
+Success rate and duration aggregates per workflow and per stage,
+across every run (default path "."). Exit codes: 0 = OK, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry stats
+goobers telemetry stats --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

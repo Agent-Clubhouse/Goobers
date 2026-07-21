@@ -1,0 +1,32 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RUN" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers run \- trigger a run manually (still honors run conditions)
+.SH SYNOPSIS
+\fBgoobers run\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers run <workflow> [--no-wait] [path]
+       goobers run abort <run-id> [path]
+
+Trigger a run of a config/ workflow manually, through the same scheduler
+(run conditions, instance journal, single-instance lock) a live `goobers up`
+daemon uses, then wait for it to reach a terminal state unless
+--no-wait is set (default path "."). If a live `goobers up` daemon already
+holds the instance lock,
+delegates the trigger to it instead of failing (#343) — dispatched through
+the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =
+completed, 1 = failed/aborted or business error (unknown workflow, invalid
+config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
+escalated. A successful submission-only mode (such as --no-wait, once
+available) exits 0 because it does not observe a terminal phase.
+`run abort` marks a stuck non-terminal run aborted directly in its own
+journal — recovery for a run resumeInterruptedRuns can't resolve on its own.
+.fi
+.SH EXAMPLES
+.nf
+goobers run default-implement
+goobers run default-implement --no-wait
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

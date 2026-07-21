@@ -1,0 +1,20 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry \- success rate/duration or recent-error aggregates
+.SH SYNOPSIS
+\fBgoobers telemetry\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry <stats|errors> [flags] [path]
+
+stats:  success rate / durations per workflow + stage
+errors: recent errors across runs, by class, with run/stage refs
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry stats
+goobers telemetry errors
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

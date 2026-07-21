@@ -1,0 +1,28 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS APPLY VERDICT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers apply-verdict \- publish a merge-review verdict as a native review (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers apply-verdict\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers apply-verdict [--gate name] [path]
+
+Read the holistic review gate's Verdict from this run's own journal,
+cross-check its optional SHA echo against the deterministic review
+pin, re-check that pin against the PR's current head/base, and — if
+still valid — post the verdict as a native GitHub review and retain
+the PR-comment handoff. Non-pass verdicts also apply a remediation
+label. A
+stale SHA pin voids the verdict: no comment, no label, exit 0 (this
+cycle's work is simply moot, not an error — merge-review re-reviews
+next tick). Requires selectedNumber, selectedHeadSha, and
+selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or
+voided), 1 = business error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers apply-verdict
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

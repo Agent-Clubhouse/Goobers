@@ -1,0 +1,251 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers \- tier 1-2 local instance CLI
+.SH SYNOPSIS
+\fBgoobers\fR \fIcommand\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
+business errors, 2 = usage/IO error. After waiting for a run, run/signal use
+0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
+modes exit 0 before a terminal outcome is known.
+
+backlog-query/reconcile-branches/telemetry-query/push-branch/open-pr/issue-close-out/merge-pr/merge-queue-poll/
+pr-select/gather-sibling-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/
+rebase-pr/remediation-checkpoint/push-remediated are the built-in provider-chain
+and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
+#359/#360/#361/#362/#363/#364/#392): invoked by the runner as a deterministic
+stage's shell command, not
+typically run by hand. They read their run context (instance root, run id,
+workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
+environment variables the runner sets — see internal/executor/env.go —
+falling back to an optional trailing [path] argument (default ".") for
+standalone/manual invocation.
+.fi
+.SH COMMANDS
+.TP
+\fBgoobers apply-verdict\fR
+publish a merge-review verdict as a native review (a workflow stage)
+.TP
+\fBgoobers backlog-query\fR
+query/claim one eligible backlog item (a workflow stage)
+.TP
+\fBgoobers blocked\fR
+inspect and clear the learned blocked-item ledger
+.TP
+\fBgoobers blocked clear\fR
+safely remove one blocked-item record, under claims.lock
+.TP
+\fBgoobers blocked list\fR
+print the learned blocked-item ledger (scheduler/blocked.json)
+.TP
+\fBgoobers claims\fR
+inspect and force-release claim leases
+.TP
+\fBgoobers claims list\fR
+print current claim leases, optionally only expired leases
+.TP
+\fBgoobers claims release\fR
+force-release a claim through the live daemon or claims.lock
+.TP
+\fBgoobers completion\fR
+generate a shell completion script
+.TP
+\fBgoobers completion bash\fR
+generate a bash completion script
+.TP
+\fBgoobers completion fish\fR
+generate a fish completion script
+.TP
+\fBgoobers completion zsh\fR
+generate a zsh completion script
+.TP
+\fBgoobers dashboard\fR
+serve and open the local operations portal
+.TP
+\fBgoobers docs-churn\fR
+emit the docs-drift churn digest since the watermark (a connector stage)
+.TP
+\fBgoobers elect-lander\fR
+elect the landing PR among a merge-review cohort (a workflow stage)
+.TP
+\fBgoobers escalations\fR
+list escalated runs newest first
+.TP
+\fBgoobers escalations show\fR
+show escalation cause + per-stage artifact timeline
+.TP
+\fBgoobers gather-pr-context\fR
+pr-remediation entrypoint: select and load a PR's context (a workflow stage)
+.TP
+\fBgoobers gather-sibling-context\fR
+load other open PRs as review evidence (a workflow stage)
+.TP
+\fBgoobers init\fR
+scaffold an instance root
+.TP
+\fBgoobers issue-close-out\fR
+comment + close out the claimed issue (a workflow stage)
+.TP
+\fBgoobers journal\fR
+the one sanctioned edit to the append-only journal
+.TP
+\fBgoobers journal redact\fR
+remove a leaked secret from a stored blob (SEC-041)
+.TP
+\fBgoobers merge-pr\fR
+conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
+.TP
+\fBgoobers merge-queue-poll\fR
+watch an enqueued PR until merged or evicted (a workflow stage)
+.TP
+\fBgoobers open-pr\fR
+open or update the run's PR (a workflow stage)
+.TP
+\fBgoobers post-merge\fR
+post-merge fan-out + close the referenced issue (a workflow stage)
+.TP
+\fBgoobers pr-select\fR
+select one eligible open PR for merge-review (a workflow stage)
+.TP
+\fBgoobers push-branch\fR
+push the worktree's checked-out branch to origin (a workflow stage)
+.TP
+\fBgoobers push-remediated\fR
+force-push the remediated branch and clear needs-remediation (a workflow stage)
+.TP
+\fBgoobers rebase-pr\fR
+rebase-first, finding-driven remediation routing (a workflow stage)
+.TP
+\fBgoobers reconcile-branches\fR
+report bounded stale goobers/* branch candidates (a workflow stage)
+.TP
+\fBgoobers remediation-checkpoint\fR
+durable per-PR repass budget + same-diff escalation (a workflow stage)
+.TP
+\fBgoobers reset-rate-limit\fR
+clear the hourly run-rate budget without deleting runs/
+.TP
+\fBgoobers run\fR
+trigger a run manually (still honors run conditions)
+.TP
+\fBgoobers run abort\fR
+mark a stuck non-terminal run aborted
+.TP
+\fBgoobers runs\fR
+list runs and report per-run disk usage
+.TP
+\fBgoobers runs du\fR
+report per-run journal and artifact bytes
+.TP
+\fBgoobers runs list\fR
+alias for the status run table (same flags, no --watch)
+.TP
+\fBgoobers scaffold\fR
+scaffold a goober or workflow in a gaggle
+.TP
+\fBgoobers scaffold goober\fR
+scaffold a goober in a gaggle
+.TP
+\fBgoobers scaffold workflow\fR
+scaffold a workflow in a gaggle
+.TP
+\fBgoobers signal\fR
+fire an external signal to subscribed workflows
+.TP
+\fBgoobers stats\fR
+show the instance lifetime summary card
+.TP
+\fBgoobers status\fR
+validate config, show warnings, list runs, or report daemon health
+.TP
+\fBgoobers telemetry\fR
+success rate/duration or recent-error aggregates
+.TP
+\fBgoobers telemetry errors\fR
+recent errors across runs, by class, with run/stage refs
+.TP
+\fBgoobers telemetry stats\fR
+success rate and duration aggregates per workflow and stage
+.TP
+\fBgoobers telemetry-query\fR
+emit versioned candidate findings (a connector stage)
+.TP
+\fBgoobers trace\fR
+show a run's journal events, follow a live run, or show transcripts
+.TP
+\fBgoobers up\fR
+run the daemon (scheduler + runner + loopback HTTP API)
+.TP
+\fBgoobers update-behind-pr\fR
+API-update a clean behind-base PR, else route to remediation (a workflow stage)
+.TP
+\fBgoobers validate\fR
+validate an instance or checked-in config source tree
+.TP
+\fBgoobers version\fR
+print build version, commit, and date
+.TP
+\fBgoobers workflow\fR
+inspect workflows
+.TP
+\fBgoobers workflow show\fR
+show a workflow as a text DAG
+.SH SEE ALSO
+\fBgoobers-apply-verdict\fR(1),
+\fBgoobers-backlog-query\fR(1),
+\fBgoobers-blocked\fR(1),
+\fBgoobers-blocked-clear\fR(1),
+\fBgoobers-blocked-list\fR(1),
+\fBgoobers-claims\fR(1),
+\fBgoobers-claims-list\fR(1),
+\fBgoobers-claims-release\fR(1),
+\fBgoobers-completion\fR(1),
+\fBgoobers-completion-bash\fR(1),
+\fBgoobers-completion-fish\fR(1),
+\fBgoobers-completion-zsh\fR(1),
+\fBgoobers-dashboard\fR(1),
+\fBgoobers-docs-churn\fR(1),
+\fBgoobers-elect-lander\fR(1),
+\fBgoobers-escalations\fR(1),
+\fBgoobers-escalations-show\fR(1),
+\fBgoobers-gather-pr-context\fR(1),
+\fBgoobers-gather-sibling-context\fR(1),
+\fBgoobers-init\fR(1),
+\fBgoobers-issue-close-out\fR(1),
+\fBgoobers-journal\fR(1),
+\fBgoobers-journal-redact\fR(1),
+\fBgoobers-merge-pr\fR(1),
+\fBgoobers-merge-queue-poll\fR(1),
+\fBgoobers-open-pr\fR(1),
+\fBgoobers-post-merge\fR(1),
+\fBgoobers-pr-select\fR(1),
+\fBgoobers-push-branch\fR(1),
+\fBgoobers-push-remediated\fR(1),
+\fBgoobers-rebase-pr\fR(1),
+\fBgoobers-reconcile-branches\fR(1),
+\fBgoobers-remediation-checkpoint\fR(1),
+\fBgoobers-reset-rate-limit\fR(1),
+\fBgoobers-run\fR(1),
+\fBgoobers-run-abort\fR(1),
+\fBgoobers-runs\fR(1),
+\fBgoobers-runs-du\fR(1),
+\fBgoobers-runs-list\fR(1),
+\fBgoobers-scaffold\fR(1),
+\fBgoobers-scaffold-goober\fR(1),
+\fBgoobers-scaffold-workflow\fR(1),
+\fBgoobers-signal\fR(1),
+\fBgoobers-stats\fR(1),
+\fBgoobers-status\fR(1),
+\fBgoobers-telemetry\fR(1),
+\fBgoobers-telemetry-errors\fR(1),
+\fBgoobers-telemetry-stats\fR(1),
+\fBgoobers-telemetry-query\fR(1),
+\fBgoobers-trace\fR(1),
+\fBgoobers-up\fR(1),
+\fBgoobers-update-behind-pr\fR(1),
+\fBgoobers-validate\fR(1),
+\fBgoobers-version\fR(1),
+\fBgoobers-workflow\fR(1),
+\fBgoobers-workflow-show\fR(1)

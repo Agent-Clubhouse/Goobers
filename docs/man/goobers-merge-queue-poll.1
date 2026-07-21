@@ -1,0 +1,30 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS MERGE QUEUE POLL" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers merge-queue-poll \- watch an enqueued PR until merged or evicted (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers merge-queue-poll\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers merge-queue-poll [path]
+
+Watch a pull request already enqueued to its repo's merge queue (issue
+#758's Land, in merge-queue-enqueue policy) until the queue merges or
+evicts it, or this stage's own poll times out. Declared inputs:
+pullNumber (required), pollIntervalSeconds/pollMaxIntervalSeconds/
+pollTimeoutSeconds (time.ParseDuration strings, default to
+internal/executor's ci-poll defaults), resultFile (default
+queue-result.json). An eviction applies goobers:needs-remediation plus
+an explanatory comment before reporting queueOutcome=evicted — that
+labeling is the acceptance criterion, so a failure to apply it is a
+stage failure, not a swallowed warning. Exit codes: 0 = evaluated
+(merged, evicted, or still-pending-timeout — see the result file's
+queueOutcome field), 1 = business error (missing capability/config,
+provider failure), 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers merge-queue-poll
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

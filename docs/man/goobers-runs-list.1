@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RUNS LIST" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers runs list \- alias for the status run table (same flags, no --watch)
+.SH SYNOPSIS
+\fBgoobers runs list\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [path]
+
+Alias for the goobers status run table, with the same flags (minus --daemon/--watch).
+Validate active config, show warnings, and list runs under an instance's
+runs/ directory with their current phase, newest first (default path ".").
+Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers runs list
+goobers runs list --json --limit=20
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

@@ -1,0 +1,28 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RECONCILE BRANCHES" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers reconcile-branches \- report bounded stale goobers/* branch candidates (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers reconcile-branches\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH] [path]
+
+Inspect a bounded page of remote goobers/* branches. The default is a
+dry-run: no branch is deleted. --delete opts into deletion only for a
+branch whose local run journal proves ownership, has been terminal for
+at least 168h by default, has no remote activity in that window, and has
+no open pull request. Every candidate
+decision and deletion outcome is appended to scheduler/events.jsonl.
+The default batch is 25 and the hard ceiling is 100 candidates. Task inputs deleteBranches,
+maxBranches, minimumAge, and after provide the same workflow-stage
+configuration surface. Exit codes: 0 = sweep completed, 1 = business or
+provider error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers reconcile-branches
+goobers reconcile-branches --delete --max 5
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

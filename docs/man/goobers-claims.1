@@ -1,0 +1,19 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CLAIMS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers claims \- inspect and force-release claim leases
+.SH SYNOPSIS
+\fBgoobers claims\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers claims <command> [flags] [path]
+
+Inspect and force-release scheduler/claims.json without racing a live
+daemon. Operations delegate to `goobers up` when it is running.
+
+Commands:
+  list       print current claim leases
+  release    force-release one item by id
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

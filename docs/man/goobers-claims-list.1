@@ -1,0 +1,20 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CLAIMS LIST" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers claims list \- print current claim leases, optionally only expired leases
+.SH SYNOPSIS
+\fBgoobers claims list\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]
+
+Print item id, gaggle, provider, run id, workflow, claimed-at, and
+expires-at for each claim. Filters may be combined. Default path is ".".
+.fi
+.SH EXAMPLES
+.nf
+goobers claims list
+goobers claims list --stale
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

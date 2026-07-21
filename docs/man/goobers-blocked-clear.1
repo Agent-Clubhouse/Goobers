@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS BLOCKED CLEAR" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers blocked clear \- safely remove one blocked-item record, under claims.lock
+.SH SYNOPSIS
+\fBgoobers blocked clear\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers blocked clear <item-id> [path]
+
+Remove one scheduler/blocked.json record by item id (e.g. "955" or
+"pr/955"), or by the repository-scoped key shown by `blocked list`
+when the id is ambiguous. Default path is ".". Exit codes: 0 =
+cleared, 1 = no unique record, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers blocked clear 955
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

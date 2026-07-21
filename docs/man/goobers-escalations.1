@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ESCALATIONS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers escalations \- list escalated runs newest first
+.SH SYNOPSIS
+\fBgoobers escalations\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers escalations [--json] [path]
+       goobers escalations show [--json] <run-id> [path]
+
+List escalated runs newest first. Use `escalations show` to inspect an
+escalation cause and the artifacts available before and after each stage.
+.fi
+.SH EXAMPLES
+.nf
+goobers escalations
+goobers escalations --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

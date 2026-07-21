@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ELECT LANDER" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers elect-lander \- elect the landing PR among a merge-review cohort (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers elect-lander\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers elect-lander [--gate name] [path]
+
+Read the holistic review gate's Verdict from this run's journal and, when
+it is entirely cross-PR-ordering asks and the selected PR is the elected
+lander of its overlap cluster (lowest PR number), emit elected=true to
+route the PR into merge-pr; otherwise emit elected=false to route it to
+apply-verdict. Requires selectedNumber (inputsFrom gather-sibling-context).
+Exit codes: 0 = decided (elected or not — both normal), 1 = business
+error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers elect-lander
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

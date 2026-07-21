@@ -1,0 +1,16 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS JOURNAL" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers journal \- the one sanctioned edit to the append-only journal
+.SH SYNOPSIS
+\fBgoobers journal\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers journal <redact> [flags]
+
+redact: remove a leaked secret from a run's stored blob and append a
+        redaction event — the one sanctioned edit to the append-only
+        journal (ARCHITECTURE.md §4, SEC-041).
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

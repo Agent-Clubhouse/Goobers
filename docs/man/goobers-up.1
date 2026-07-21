@@ -1,0 +1,34 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS UP" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers up \- run the daemon (scheduler + runner + loopback HTTP API)
+.SH SYNOPSIS
+\fBgoobers up\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--cleanup-spans-only-runs] [path]
+
+Run the daemon: the embedded scheduler (cron triggers + run conditions)
+plus the local runner, loopback HTTP API, and configured GitHub webhook
+listener (default path "."). Blocks
+until interrupted (SIGINT/SIGTERM), then drains in-flight runs before
+exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,
+2 = usage/IO error.
+
+Legacy spans-only run directories are reported as cleanup candidates
+and preserved by default. --cleanup-spans-only-runs deletes them at
+startup after reporting each candidate.
+
+--diagnostics turns on deep, opt-in capture for hard hangs: any
+deterministic stage still running past a couple of minutes gets a
+periodic native process sample + process tree + open-fd (lsof)
+snapshot recorded as a run artifact, and stage stdout/stderr are kept
+un-truncated. Verbose and slightly heavier; leave off for normal runs.
+.fi
+.SH EXAMPLES
+.nf
+goobers up
+goobers up --quiet --notify=all
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

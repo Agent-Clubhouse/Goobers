@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RUN ABORT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers run abort \- mark a stuck non-terminal run aborted
+.SH SYNOPSIS
+\fBgoobers run abort\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers run abort <run-id> [path]
+
+Mark a stuck non-terminal run aborted by appending a terminal
+run.finished(status=aborted) event to its own journal (default path
+"."). Exit codes: 0 = aborted, 1 = business error (run already terminal),
+2 = usage/IO error (unknown run).
+.fi
+.SH EXAMPLES
+.nf
+goobers run abort <run-id>
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

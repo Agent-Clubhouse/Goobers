@@ -1,0 +1,31 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS GATHER SIBLING CONTEXT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers gather-sibling-context \- load other open PRs as review evidence (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers gather-sibling-context\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers gather-sibling-context [--no-cache] [--no-verdict-cache] [path]
+
+Load the other open goober-authored PRs' touched files + state as
+evidence for the holistic review (a workflow stage, follows
+pr-select). Requires selectedNumber/selectedHead/selectedBase inputs
+(Task.InputsFrom pr-select's own outputs). Sibling files are memoized
+per head SHA under the instance scheduler dir, while check state is
+always refreshed; --no-cache bypasses the file memo entirely (neither
+read nor written) to force a fully fresh gather. Separately, this stage
+also computes the selected PR's
+reviewDigest and checks the PR's own most recent verdict comment for a
+matching one (issue #523's verdict-level cache) — a match is emitted as
+cachedVerdictJson, letting the runner skip the reviewer gate's LLM call
+entirely; --no-verdict-cache skips that lookup, always forcing a fresh
+review. Exit codes: 0 = context gathered (possibly empty — no siblings
+is not an error), 1 = business error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers gather-sibling-context
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CLAIMS RELEASE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers claims release \- force-release a claim through the live daemon or claims.lock
+.SH SYNOPSIS
+\fBgoobers claims release\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]
+
+Print the claim holder, age, and expiry, then force-release the item.
+--force is required while the holding run is non-terminal. The override
+is recorded as claim.force_released in the instance journal. Default
+path is ".". Scope flags are required when the item id exists in more
+than one namespace. Exit codes: 0 = released, 1 = refused/not found/
+ambiguous, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers claims release 955
+goobers claims release --force 955
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

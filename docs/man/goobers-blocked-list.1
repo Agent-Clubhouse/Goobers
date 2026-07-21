@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS BLOCKED LIST" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers blocked list \- print the learned blocked-item ledger (scheduler/blocked.json)
+.SH SYNOPSIS
+\fBgoobers blocked list\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers blocked list [--json] [path]
+
+Print the current scheduler/blocked.json records (item id, repository,
+record key, blockers, stage, reason, recordedAt), snapshotted under
+claims.lock. Default path is ".". Exit codes: 0 = printed, 2 =
+usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers blocked list
+goobers blocked list --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
