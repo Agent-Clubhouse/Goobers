@@ -52,6 +52,10 @@ type Manager struct {
 	// lstat abstracts os.Lstat so the symlink-flattening scan is testable off
 	// Windows. Defaults to os.Lstat.
 	lstat func(string) (os.FileInfo, error)
+
+	gaggle        string
+	usageObserver UsageObserver
+	diskUsage     func(string) (int64, error)
 }
 
 // defaultRunBranchNamespace mirrors providers.DefaultBranchNamespace. It is
@@ -130,6 +134,7 @@ func NewManager(root string, opts ...ManagerOption) (*Manager, error) {
 		repoLocks:           make(map[string]*sync.Mutex),
 		symlinkFallback:     runtime.GOOS == "windows",
 		lstat:               os.Lstat,
+		diskUsage:           apparentDiskUsage,
 	}
 	for _, opt := range opts {
 		opt(m)

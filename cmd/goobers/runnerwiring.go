@@ -1108,7 +1108,13 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// seeded with just this gaggle's run-branch namespace. A missing/empty
 		// entry leaves the default "goobers/" in place (WithRunBranchNamespaces
 		// drops empties), so a single-gaggle default instance is unchanged.
-		wtMgr, err = worktree.NewManager(l.WorkcopiesDir(), worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]))
+		managerOptions := []worktree.ManagerOption{
+			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
+		}
+		if tel != nil {
+			managerOptions = append(managerOptions, worktree.WithUsageObserver(l.Gaggle(), tel.RecordWorkcopyUsage))
+		}
+		wtMgr, err = worktree.NewManager(l.WorkcopiesDir(), managerOptions...)
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}

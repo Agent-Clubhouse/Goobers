@@ -28,6 +28,10 @@ const (
 	AttrGenAIUsageOutputTokens = string(semconv.GenAIUsageOutputTokensKey)
 	AttrCopilotPremiumRequests = "goobers.usage.copilot_premium_requests"
 	AttrUsageCostUSD           = "goobers.usage.cost_usd"
+	AttrWorktreeID             = "goobers.worktree.id"
+	AttrStorageOperation       = "goobers.storage.operation"
+	AttrUnmeasuredWorktrees    = "goobers.storage.unmeasured_worktrees"
+	AttrErrorMessage           = "goobers.error.message"
 )
 
 // AllAttributes returns every canonical attribute in declaration order.
@@ -54,6 +58,10 @@ func AllAttributes() []Attribute {
 		Attribute(AttrGenAIUsageOutputTokens),
 		AttrCopilotPremiumRequests,
 		AttrUsageCostUSD,
+		AttrWorktreeID,
+		AttrStorageOperation,
+		AttrUnmeasuredWorktrees,
+		AttrErrorMessage,
 	}
 }
 

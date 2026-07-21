@@ -829,6 +829,10 @@ func TestCanonicalAttributeRegistryDoesNotDrift(t *testing.T) {
 		"gen_ai.usage.output_tokens",
 		"goobers.usage.copilot_premium_requests",
 		"goobers.usage.cost_usd",
+		"goobers.worktree.id",
+		"goobers.storage.operation",
+		"goobers.storage.unmeasured_worktrees",
+		"goobers.error.message",
 	}
 	got := AllAttributes()
 	if len(got) != len(want) {

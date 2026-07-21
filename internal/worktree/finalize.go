@@ -112,11 +112,14 @@ func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]Fin
 		}
 
 		path := filepath.Join(m.runsDirForKey(key), worktreeID)
+		worktreeBytes, worktreeMeasured, measurementErr := m.measureWorktree(path)
 		if err := m.forceClear(ctx, key, path); err != nil {
+			m.observeUsage(ctx, UsageOperationTeardown, runID, worktreeID, worktreeBytes, worktreeMeasured, measurementErr)
 			finalizeErr = errors.Join(finalizeErr,
 				fmt.Errorf("worktree: finalize run %s worktree %s: %w", runID, worktreeID, err))
 			continue
 		}
+		m.observeUsage(ctx, UsageOperationTeardown, runID, worktreeID, worktreeBytes, worktreeMeasured, measurementErr)
 		results = append(results, FinalizeResult{WorktreeID: worktreeID, Path: path})
 	}
 	return results, finalizeErr

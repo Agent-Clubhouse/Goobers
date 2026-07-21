@@ -101,6 +101,10 @@ func TestJournalSpanExporterWritesLosslessOTLPJSON(t *testing.T) {
 		attribute.Int(AttrGenAIUsageOutputTokens, 340),
 		attribute.Int(AttrCopilotPremiumRequests, 3),
 		attribute.Float64(AttrUsageCostUSD, 0.42),
+		attribute.String(AttrWorktreeID, runID+"-implement"),
+		attribute.String(AttrStorageOperation, "create"),
+		attribute.Int(AttrUnmeasuredWorktrees, 0),
+		attribute.String(AttrErrorMessage, "fixture error"),
 	}
 	attrs := append(canonical,
 		attribute.Bool("typed.bool", true),

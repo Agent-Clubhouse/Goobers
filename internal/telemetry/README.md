@@ -10,6 +10,9 @@ semantic model is fixed for v1:
   from the canonical registry in `attributes.go` (`goobers.run.id`,
   `goobers.workflow`, `goobers.stage`, `goobers.attempt.n`, and related keys).
 - `NewMemoryExporter` is for unit tests. `ExporterStdout` is the local default.
+- Managed worktree lifecycle measurements are emitted as
+  `goobers.worktree.disk.usage` and `goobers.workcopy.disk.usage` span events.
+  Measurement gaps emit `goobers.workcopy.disk.measurement_failed`.
   `ExporterOTLP` sends spans to an OTLP collector.
 - `JournalSpanExporter` appends run spans to both the legacy
   `spans/spans.jsonl` projection and `spans/otlp.jsonl`.

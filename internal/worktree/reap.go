@@ -73,6 +73,7 @@ type ReapWarning struct {
 // fatal to the whole pass — a single corrupt marker must never prevent every
 // other repo's genuine orphans from being cleaned up.
 func (m *Manager) Reap(ctx context.Context, opts ReapOptions) ([]ReapResult, []ReapWarning, error) {
+	defer m.observeUsage(ctx, UsageOperationHousekeeping, "", "", 0, false, nil)
 	repoDirs, err := os.ReadDir(m.Root)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -211,6 +212,23 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 }
 
 func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk *marker) error {
+	ownerRunID := ""
+	worktreeID := filepath.Base(path)
+	if mk != nil {
+		ownerRunID = mk.OwnerRunID
+		worktreeID = mk.RunID
+	}
+	worktreeBytes, worktreeMeasured, measurementErr := m.measureWorktree(path)
+	defer m.observeUsage(
+		ctx,
+		UsageOperationHousekeeping,
+		ownerRunID,
+		worktreeID,
+		worktreeBytes,
+		worktreeMeasured,
+		measurementErr,
+	)
+
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
