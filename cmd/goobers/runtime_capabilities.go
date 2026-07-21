@@ -221,7 +221,7 @@ func init() {
 				"bash",
 				apicontract.ActionConfigTime,
 				func(args []string, stdout, stderr io.Writer) int {
-					return runCompletionScript(bashCompletion, args, stdout, stderr)
+					return runCompletionScript(bashCompletion(), args, stdout, stderr)
 				},
 			).withHelp("generate a bash completion script", completionHelp),
 			subcommand(
@@ -229,7 +229,7 @@ func init() {
 				"zsh",
 				apicontract.ActionConfigTime,
 				func(args []string, stdout, stderr io.Writer) int {
-					return runCompletionScript(zshCompletion, args, stdout, stderr)
+					return runCompletionScript(zshCompletion(), args, stdout, stderr)
 				},
 			).withHelp("generate a zsh completion script", completionHelp),
 			subcommand(
@@ -237,7 +237,7 @@ func init() {
 				"fish",
 				apicontract.ActionConfigTime,
 				func(args []string, stdout, stderr io.Writer) int {
-					return runCompletionScript(fishCompletion, args, stdout, stderr)
+					return runCompletionScript(fishCompletion(), args, stdout, stderr)
 				},
 			).withHelp("generate a fish completion script", completionHelp),
 		).

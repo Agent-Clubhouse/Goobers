@@ -5,12 +5,78 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
+
+// completionModelIDs returns every command/subcommand id in the built
+// completion model, excluding the version/help word forms (which the registry
+// walk in helpGoldenCommands intentionally omits).
+func completionModelIDs(m completionModel) map[string]bool {
+	ids := map[string]bool{}
+	var walk func([]completionCommand)
+	walk = func(cmds []completionCommand) {
+		for _, c := range cmds {
+			if c.id != "version" && c.id != "help" {
+				ids[c.id] = true
+			}
+			walk(c.subs)
+		}
+	}
+	walk(m.commands)
+	return ids
+}
+
+func registryCommandIDs() map[string]bool {
+	ids := map[string]bool{}
+	for _, path := range helpGoldenCommands(cliCommands, nil) {
+		ids[strings.Join(path, " ")] = true
+	}
+	return ids
+}
+
+// TestCompletionModelCoversRegistry is the CI parity guard (#1097): the
+// completion command surface is derived from the cliCommand registry, so every
+// registry command must appear in the completion model. A command added to the
+// registry that fails to surface in completion — e.g. if the derivation is ever
+// replaced with a hand-maintained list — fails here.
+func TestCompletionModelCoversRegistry(t *testing.T) {
+	model := completionModelIDs(buildCompletionModel())
+	registry := registryCommandIDs()
+
+	for id := range registry {
+		if !model[id] {
+			t.Errorf("registry command %q is missing from the shell completion model", id)
+		}
+	}
+	for id := range model {
+		if !registry[id] {
+			t.Errorf("completion model command %q is not a registry command (drifted from the registry)", id)
+		}
+	}
+}
+
+// TestCompletionAnnotationsAreRegistryCommands guards the flag and
+// argument-kind annotation tables against drift: every key must name a real
+// registry command, so a command renamed or removed in the registry cannot
+// leave a stale completion annotation behind.
+func TestCompletionAnnotationsAreRegistryCommands(t *testing.T) {
+	registry := registryCommandIDs()
+	for id := range completionFlagSpecs {
+		if !registry[id] {
+			t.Errorf("completionFlagSpecs key %q is not a registry command id", id)
+		}
+	}
+	for id := range completionPositionalArgKinds {
+		if !registry[id] {
+			t.Errorf("completionPositionalArgKinds key %q is not a registry command id", id)
+		}
+	}
+}
 
 func TestCompletionScriptsGolden(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh", "fish"} {

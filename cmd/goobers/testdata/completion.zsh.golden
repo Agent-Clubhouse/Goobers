@@ -12,41 +12,48 @@ _goobers_completion()
 
     if (( CURRENT == 2 )); then
         commands=(
+            'version:print build version, commit, and date (--json for structured output)'
             'init:scaffold an instance root'
             'scaffold:scaffold a goober or workflow in a gaggle'
-            'validate:validate instance configuration'
-            'up:run the scheduler and runner daemon'
+            'validate:validate an instance or checked-in config source tree'
+            'config:inspect the instance'\''s operational configuration'
+            'up:run the daemon (scheduler + runner + loopback HTTP API)'
             'dashboard:serve and open the local operations portal'
-            'run:trigger or abort a run'
-            'signal:fire an external signal'
+            'run:trigger a run manually (still honors run conditions)'
+            'signal:fire an external signal to subscribed workflows'
             'workflow:inspect workflows'
-            'runs:list runs'
-            'status:show run status'
-            'stats:show the instance lifetime summary'
-            'trace:show a run journal'
-            'escalations:inspect escalated runs'
-            'telemetry:query telemetry'
-            'telemetry-query:emit candidate findings'
-            'journal:manage run journals'
-            'claims:inspect or force-release claims'
-            'backlog-query:query or claim backlog work'
-            'push-branch:push the current run branch'
-            'open-pr:open or update the current run pull request'
-            'issue-close-out:close the claimed issue'
-            'reset-rate-limit:reset the run rate limit'
-            'merge-pr:merge an eligible pull request'
-            'merge-queue-poll:watch an enqueued pull request until the merge queue resolves it'
-            'pr-select:select a pull request'
-            'gather-sibling-context:gather sibling pull request context'
-            'apply-verdict:apply a review verdict'
-            'post-merge:perform post-merge updates'
-            'update-behind-pr:update a clean behind pull request'
-            'gather-pr-context:gather pull request context'
-            'rebase-pr:rebase a pull request'
-            'remediation-checkpoint:record a remediation checkpoint'
-            'completion:generate shell completion'
-            'version:print the version'
-            'help:show help'
+            'runs:list runs and report per-run disk usage'
+            'status:validate config, show warnings, list runs, or report daemon health'
+            'stats:show the instance lifetime summary card'
+            'reset-rate-limit:clear the hourly run-rate budget without deleting runs/'
+            'blocked:inspect and clear the learned blocked-item ledger'
+            'claims:inspect and force-release claim leases'
+            'trace:show a run'\''s journal events, follow a live run, or show transcripts'
+            'escalations:list escalated runs newest first'
+            'completion:generate a shell completion script'
+            'telemetry:success rate/duration or recent-error aggregates'
+            'journal:the one sanctioned edit to the append-only journal'
+            'backlog-query:query/claim one eligible backlog item (a workflow stage)'
+            'reconcile-branches:report bounded stale goobers/* branch candidates (a workflow stage)'
+            'push-branch:push the worktree'\''s checked-out branch to origin (a workflow stage)'
+            'open-pr:open or update the run'\''s PR (a workflow stage)'
+            'issue-close-out:comment + close out the claimed issue (a workflow stage)'
+            'merge-pr:conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)'
+            'record-merge-refusal:record a merge refusal and demote a persistently-stuck lander (a workflow stage)'
+            'merge-queue-poll:watch an enqueued PR until merged or evicted (a workflow stage)'
+            'post-merge:post-merge fan-out + close the referenced issue (a workflow stage)'
+            'telemetry-query:emit versioned candidate findings (a connector stage)'
+            'docs-churn:emit the docs-drift churn digest since the watermark (a connector stage)'
+            'pr-select:select one eligible open PR for merge-review (a workflow stage)'
+            'gather-sibling-context:load other open PRs as review evidence (a workflow stage)'
+            'apply-verdict:publish a merge-review verdict as a native review (a workflow stage)'
+            'elect-lander:elect the landing PR among a merge-review cohort (a workflow stage)'
+            'update-behind-pr:API-update a clean behind-base PR, else route to remediation (a workflow stage)'
+            'gather-pr-context:pr-remediation entrypoint\: select and load a PR'\''s context (a workflow stage)'
+            'rebase-pr:rebase-first, finding-driven remediation routing (a workflow stage)'
+            'remediation-checkpoint:durable per-PR repass budget + same-diff escalation (a workflow stage)'
+            'push-remediated:force-push the remediated branch and clear needs-remediation (a workflow stage)'
+            'help'
             '--version:print the version'
             '-h:show help'
             '--help:show help'
@@ -58,45 +65,100 @@ _goobers_completion()
     command="${words[2]}"
     flags=(-h --help)
     case "${command}" in
-        validate) flags+=(--check-harness --source-tree) ;;
-        up) flags+=(--quiet --cleanup-spans-only-runs) ;;
-        dashboard) flags+=(--port --no-open --dev-assets) ;;
-        run) flags+=(--no-wait) ;;
+        init)
+            flags+=(--demo)
+            ;;
+        scaffold)
+            case "${words[3]:-}" in
+                goober) flags+=(--force) ;;
+                workflow) flags+=(--force) ;;
+            esac
+            ;;
+        validate)
+            flags+=(--check-harness --check-repos --source-tree)
+            ;;
+        config)
+            case "${words[3]:-}" in
+                show) flags+=(--json) ;;
+            esac
+            ;;
+        up)
+            flags+=(--quiet --diagnostics --notify --watch-config --cleanup-spans-only-runs)
+            ;;
+        dashboard)
+            flags+=(--port --no-open --dev-assets)
+            ;;
+        run)
+            flags+=(--no-wait)
+            ;;
         workflow)
-            [[ "${words[3]:-}" == "show" ]] && flags+=(--dot)
+            case "${words[3]:-}" in
+                show) flags+=(--dot) ;;
+            esac
             ;;
         runs)
             case "${words[3]:-}" in
-                list) flags+=(--json --limit) ;;
+                list) flags+=(--json --phase --workflow --limit) ;;
                 du) flags+=(--json) ;;
             esac
             ;;
-        status) flags+=(--daemon --json --phase --workflow --limit --watch --interval) ;;
-        stats) flags+=(--since --json) ;;
-        trace) flags+=(--json --follow --transcripts --transcript) ;;
-        escalations) flags+=(--json) ;;
+        status)
+            flags+=(--daemon --json --phase --workflow --limit --watch --interval)
+            ;;
+        stats)
+            flags+=(--since --json)
+            ;;
+        blocked)
+            case "${words[3]:-}" in
+                list) flags+=(--json) ;;
+            esac
+            ;;
+        claims)
+            case "${words[3]:-}" in
+                list) flags+=(--json --stale --gaggle --provider) ;;
+                release) flags+=(--gaggle --provider --force) ;;
+            esac
+            ;;
+        trace)
+            flags+=(--json --follow --transcripts --transcript)
+            ;;
+        escalations)
+            flags+=(--json)
+            ;;
         telemetry)
             case "${words[3]:-}" in
-                stats) flags+=(--workflow --gaggle --rebuild) ;;
-                errors) flags+=(--workflow --gaggle --class --limit --rebuild) ;;
+                stats) flags+=(--json --workflow --gaggle --since --until --rebuild) ;;
+                errors) flags+=(--json --workflow --gaggle --class --limit --since --until --rebuild) ;;
             esac
             ;;
         journal)
-            [[ "${words[3]:-}" == "redact" ]] && flags+=(--run --path --reason --secret-file)
+            case "${words[3]:-}" in
+                redact) flags+=(--run --path --reason --secret-file) ;;
+            esac
             ;;
-        claims)
-            if [[ "${words[3]:-}" == "list" ]]; then
-                flags+=(--json --stale)
-            elif [[ "${words[3]:-}" == "release" ]]; then
-                flags+=(--force)
-            fi
+        backlog-query)
+            flags+=(--claim --release)
             ;;
-        backlog-query) flags+=(--claim --release) ;;
-        apply-verdict) flags+=(--gate) ;;
-        telemetry-query) flags+=(--window --aggregate --threshold --format) ;;
-        remediation-checkpoint) flags+=(--budget) ;;
-        scaffold)
-            [[ "${words[3]:-}" == "goober" || "${words[3]:-}" == "workflow" ]] && flags+=(--force)
+        reconcile-branches)
+            flags+=(--delete --max --min-age --after)
+            ;;
+        telemetry-query)
+            flags+=(--window --aggregate --threshold --format)
+            ;;
+        docs-churn)
+            flags+=(--repo --workflow --gaggle --since --buffer-multiplier --format)
+            ;;
+        gather-sibling-context)
+            flags+=(--no-cache --no-verdict-cache)
+            ;;
+        apply-verdict)
+            flags+=(--gate)
+            ;;
+        elect-lander)
+            flags+=(--gate)
+            ;;
+        remediation-checkpoint)
+            flags+=(--budget --escalate)
             ;;
     esac
     if [[ "${PREFIX}" == -* ]]; then
@@ -105,17 +167,17 @@ _goobers_completion()
     fi
 
     case "${command}" in
-        completion)
-            if (( CURRENT == 3 )); then
-                candidates=(bash zsh fish)
-                _describe 'shell' candidates
-                return
-            fi
-            ;;
         scaffold)
             if (( CURRENT == 3 )); then
                 candidates=(goober workflow)
-                _describe 'command' candidates
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        config)
+            if (( CURRENT == 3 )); then
+                candidates=(show)
+                _describe -V 'command' candidates
                 return
             fi
             ;;
@@ -131,9 +193,42 @@ _goobers_completion()
                 return
             fi
             ;;
+        workflow)
+            if (( CURRENT == 3 )); then
+                candidates=(show)
+                _describe -V 'command' candidates
+                return
+            elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then
+                candidates=("${(@f)$(command goobers __complete workflows 2>/dev/null)}")
+                _describe -V 'workflow' candidates
+                return
+            fi
+            ;;
+        runs)
+            if (( CURRENT == 3 )); then
+                candidates=(list du)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        blocked)
+            if (( CURRENT == 3 )); then
+                candidates=(list clear)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        claims)
+            if (( CURRENT == 3 )); then
+                candidates=(list release)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
         trace)
             if (( CURRENT == 3 )); then
-                candidates=("${(@f)$(command goobers __complete runs 2>/dev/null)}")
+                candidates=()
+                candidates+=("${(@f)$(command goobers __complete runs 2>/dev/null)}")
                 _describe -V 'run id' candidates
                 return
             fi
@@ -141,7 +236,7 @@ _goobers_completion()
         escalations)
             if (( CURRENT == 3 )); then
                 candidates=(show)
-                _describe 'command' candidates
+                _describe -V 'command' candidates
                 return
             elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then
                 candidates=("${(@f)$(command goobers __complete escalations 2>/dev/null)}")
@@ -149,42 +244,24 @@ _goobers_completion()
                 return
             fi
             ;;
-        workflow)
+        completion)
             if (( CURRENT == 3 )); then
-                candidates=(show)
-                _describe 'command' candidates
-                return
-            elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then
-                candidates=("${(@f)$(command goobers __complete workflows 2>/dev/null)}")
-                _describe 'workflow' candidates
-                return
-            fi
-            ;;
-        runs)
-            if (( CURRENT == 3 )); then
-                candidates=(list du)
-                _describe 'command' candidates
+                candidates=(bash zsh fish)
+                _describe -V 'command' candidates
                 return
             fi
             ;;
         telemetry)
             if (( CURRENT == 3 )); then
                 candidates=(stats errors)
-                _describe 'command' candidates
+                _describe -V 'command' candidates
                 return
             fi
             ;;
         journal)
             if (( CURRENT == 3 )); then
                 candidates=(redact)
-                _describe 'command' candidates
-                return
-            fi
-            ;;
-        claims)
-            if (( CURRENT == 3 )); then
-                candidates=(list release)
-                _describe 'command' candidates
+                _describe -V 'command' candidates
                 return
             fi
             ;;
