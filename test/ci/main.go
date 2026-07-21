@@ -257,6 +257,22 @@ func portalPreparationChecks(tools toolchain) []check {
 			args:         []string{"--prefix", "portal", "run", "build"},
 			windowsBatch: true,
 		},
+		// portal-build writes the production bundle into cmd/goobers/portal-dist,
+		// the //go:embed-ed and committed directory the daemon serves. Nothing
+		// diffed the rebuild against what's committed, so a stale bundle could
+		// ship silently (a source change merged without re-running the build).
+		// This guards it exactly like portal-contract-diff guards the generated
+		// wire types: a fresh build that differs from the committed bundle fails
+		// the gate. It runs immediately after the build (before the multi-minute
+		// test step) so drift fails fast. vite cleans the outDir on build, so a
+		// content change deletes the old content-hashed asset — a tracked
+		// deletion git diff --exit-code reports — in addition to rewriting
+		// index.html, so real drift never slips through. #1110.
+		{
+			label:   "portal-dist-diff",
+			command: tools.gitCommand,
+			args:    []string{"diff", "--exit-code", "--", "cmd/goobers/portal-dist"},
+		},
 	}
 }
 
