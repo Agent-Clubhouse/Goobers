@@ -392,6 +392,12 @@ func buildSchedulerDefinitions(
 				}
 			}
 		}
+		// RRQ-1/#1101: the runner capabilities a single run of this workflow
+		// needs (its gaggle's + its stages'). The scheduler matches them at
+		// dispatch against the runner's advertised set (schedule-time), and the
+		// runner preflight-verifies the probeable toolchains among them on the
+		// host before any stage runs (#735).
+		requiredCaps := instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf)
 		entries = append(entries, localscheduler.WorkflowEntry{
 			Workflow:        wf.Name,
 			WorkflowVersion: machine.Def.Version,
@@ -401,12 +407,10 @@ func buildSchedulerDefinitions(
 			Schedules:       scheds,
 			Signals:         sigs,
 			BacklogCounter:  buildBacklogCounter(cfg, wf, repoRefs[identity], credResolver, sharedReg),
-			Starter:         &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
+			Starter:         &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
 			RepoRef:         repoRefs[identity],
-			// RRQ-1/#1101: the runner capabilities a single run of this workflow
-			// needs (its gaggle's + its stages'), matched at dispatch against the
-			// runner's advertised set.
-			RequiredCapabilities: instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf),
+			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
+			RequiredCapabilities: requiredCaps,
 		})
 	}
 
@@ -579,14 +583,15 @@ func (s *schedulerSetup) Shutdown(ctx context.Context) {
 // sched.Trigger call, now that #134 routes it through the same scheduler —
 // incrementally ingests into rollupDB on completion (issue #127).
 type trackedStarter struct {
-	r        *runner.Runner
-	machine  *workflow.Machine
-	wg       *sync.WaitGroup
-	l        instance.Layout
-	tel      *telemetry.Client
-	rollupDB *rollup.DB
-	log      *journal.InstanceLog
-	runners  *daemonRunnerRegistry
+	r            *runner.Runner
+	machine      *workflow.Machine
+	requiredCaps []string
+	wg           *sync.WaitGroup
+	l            instance.Layout
+	tel          *telemetry.Client
+	rollupDB     *rollup.DB
+	log          *journal.InstanceLog
+	runners      *daemonRunnerRegistry
 }
 
 func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
@@ -595,12 +600,13 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 	untrack := s.runners.Track(req.RunID, s.r)
 	defer untrack()
 	res, err := s.r.Start(ctx, runner.StartInput{
-		RunID:   req.RunID,
-		Machine: s.machine,
-		Gaggle:  req.Gaggle,
-		Trigger: req.Trigger,
-		RepoRef: req.RepoRef,
-		Item:    req.Item,
+		RunID:                req.RunID,
+		Machine:              s.machine,
+		Gaggle:               req.Gaggle,
+		Trigger:              req.Trigger,
+		RepoRef:              req.RepoRef,
+		Item:                 req.Item,
+		RequiredCapabilities: s.requiredCaps,
 	})
 	ingestRunTelemetry(s.tel, s.rollupDB, s.l, req.RunID, s.log)
 	return localscheduler.StartResult{
