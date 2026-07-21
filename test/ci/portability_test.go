@@ -99,9 +99,8 @@ func TestNoShellScriptsOnToolchainPath(t *testing.T) {
 	}
 }
 
-// TestMakefileGatesDelegateToGo locks the two quality gates to their Go
-// implementations: the merge gate and the coverage gate must run via `go run`,
-// and no recipe may invoke a project shell script.
+// TestMakefileGatesDelegateToGo locks the quality gates to their Go
+// implementations and prevents recipes from invoking project shell scripts.
 func TestMakefileGatesDelegateToGo(t *testing.T) {
 	t.Parallel()
 	root := moduleRoot(t)
@@ -114,6 +113,7 @@ func TestMakefileGatesDelegateToGo(t *testing.T) {
 	for _, want := range []string{
 		"run ./test/ci",           // ci: -> the Go merge-gate orchestrator
 		"run ./test/coveragegate", // cover-check: -> the Go coverage gate
+		"run ./test/configvalidate",
 	} {
 		if !strings.Contains(makefile, want) {
 			t.Errorf("Makefile no longer delegates to `%s`; the gate must stay in Go, not move into a shell script", want)

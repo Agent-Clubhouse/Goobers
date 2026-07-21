@@ -384,32 +384,14 @@ func TestStalledRunSweepErrorsReachInstanceJournal(t *testing.T) {
 	t.Fatalf("instance journal has no stalled_run_sweep_failed event: %+v", events)
 }
 
-func TestStalledRunSweepReportsMissingRunIdentity(t *testing.T) {
+func TestSweepStalledRunsSkipsSpansOnlyRunDirectory(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
-	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
-	if err != nil {
+	if err := os.MkdirAll(filepath.Join(layout.RunsDir(), "legacy-run", "spans"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = log.Close() })
-
-	if err := os.MkdirAll(filepath.Join(layout.RunsDir(), "missing-identity"), 0o755); err != nil {
-		t.Fatal(err)
+	if err := sweepStalledRuns(layout, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute); err != nil {
+		t.Fatalf("sweep spans-only run directory: %v", err)
 	}
-	reporter := newSweepErrorReporter(log, "stalled_run_sweep_failed")
-	reporter.report(sweepStalledRuns(layout, nil, nil, log, nil, nil, nil, time.Now(), 45*time.Minute))
-
-	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, event := range events {
-		if event.Type == journal.EventError && event.Error != nil &&
-			event.Error.Code == "stalled_run_sweep_failed" &&
-			strings.Contains(event.Error.Message, "missing-identity") {
-			return
-		}
-	}
-	t.Fatalf("instance journal has no missing run.yaml sweep failure: %+v", events)
 }
 
 func TestSweepStalledRunsReportsRunOpenFailure(t *testing.T) {

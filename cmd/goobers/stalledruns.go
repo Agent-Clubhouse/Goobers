@@ -110,6 +110,9 @@ func sweepStalledRuns(
 			runDir := filepath.Join(runsDir, entry.Name())
 			reader, err := journal.OpenRead(runDir)
 			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
 				sweepErr = errors.Join(sweepErr, fmt.Errorf("inspect run directory %q: %w", entry.Name(), err))
 				continue
 			}
