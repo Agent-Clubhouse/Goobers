@@ -57,12 +57,22 @@ const validateHelp = "Usage: goobers validate [--check-harness] [--check-repos] 
 	"1 = validation errors, 2 = usage/IO error.\n"
 
 func runValidate(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
+	return runValidateAs("validate", args, stdout, stderr)
+}
+
+// runValidateAs is the single authoritative config-validation engine shared by
+// `goobers validate` and its `goobers lint` alias (#439/AUTH-2). name selects
+// which verb's flag-parse label and registered `-h` help surface are used so
+// each command keeps its own identity, but both run byte-for-byte the same
+// checks and exit codes — there is exactly one validation path, never a weaker
+// second one that could disagree (the #252 footgun this closes for good).
+func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	checkHarness := fs.Bool("check-harness", false, "also verify every referenced agent harness is installed and signed in")
 	checkRepos := fs.Bool("check-repos", false, "also verify every target repository is reachable with its configured credential")
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
-	fs.Usage = helpUsage(stderr, "validate")
+	fs.Usage = helpUsage(stderr, name)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

@@ -34,6 +34,7 @@
 | [`goobers issue-close-out`](#goobers-issue-close-out) | comment + close out the claimed issue (a workflow stage) |
 | [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
+| [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
 | [`goobers merge-pr`](#goobers-merge-pr) | conjunctive auto-merge via direct-merge or merge-queue (a workflow stage) |
 | [`goobers merge-queue-poll`](#goobers-merge-queue-poll) | watch an enqueued PR until merged or evicted (a workflow stage) |
 | [`goobers open-pr`](#goobers-open-pr) | open or update the run's PR (a workflow stage) |
@@ -605,6 +606,32 @@ Exit codes: 0 = redacted, 1 = nothing redacted / business error, 2 = usage/IO er
 
 ~~~console
 $ printf %s "$LEAKED" | goobers journal redact --run <id> --path inputs/creds.env --reason 'leak'
+~~~
+
+## `goobers lint`
+
+lint config via the single authoritative validation engine (alias for validate)
+
+~~~text
+Usage: goobers lint [--check-harness] [--check-repos] [--source-tree] [path]
+
+Lint an instance's instance.yaml and config/ directory (default path
+".") against the single authoritative validation engine. This is an
+alias for `goobers validate`: identical flags, identical checks, and
+identical exit codes, so CI and local development share one validation
+path instead of drifting between ad-hoc checks. --source-tree lints a
+checked-in config source tree using instance.yaml.example and the path
+itself as config/. --check-harness additionally preflights every agent
+harness referenced by a goober (GBO-011). --check-repos resolves each
+target repository's token and verifies authenticated git access. Exit
+codes: 0 = clean, 1 = findings, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers lint
+$ goobers lint --check-harness --check-repos
 ~~~
 
 ## `goobers merge-pr`

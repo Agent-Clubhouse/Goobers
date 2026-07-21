@@ -1,0 +1,28 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS LINT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers lint \- lint config via the single authoritative validation engine (alias for validate)
+.SH SYNOPSIS
+\fBgoobers lint\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers lint [--check-harness] [--check-repos] [--source-tree] [path]
+
+Lint an instance's instance.yaml and config/ directory (default path
+".") against the single authoritative validation engine. This is an
+alias for `goobers validate`: identical flags, identical checks, and
+identical exit codes, so CI and local development share one validation
+path instead of drifting between ad-hoc checks. --source-tree lints a
+checked-in config source tree using instance.yaml.example and the path
+itself as config/. --check-harness additionally preflights every agent
+harness referenced by a goober (GBO-011). --check-repos resolves each
+target repository's token and verifies authenticated git access. Exit
+codes: 0 = clean, 1 = findings, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers lint
+goobers lint --check-harness --check-repos
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
