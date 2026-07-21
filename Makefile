@@ -1,6 +1,22 @@
 # Goobers control-plane Makefile.
 # Owns the Go build/test/lint toolchain for the monorepo (module github.com/goobers/goobers).
 
+# ---- Portability posture (#630) ---------------------------------------------
+# The merge gate (`make ci` -> `go run ./test/ci`) and the coverage gate
+# (`make cover-check` -> `go run ./test/coveragegate`) are pure Go. They shell
+# out only to real toolchain binaries (go, gofmt, git, npm, golangci-lint) and
+# never to bash/sh or a project shell script, so CI reproduces on any OS with a
+# Go toolchain — Windows included: test/ci handles the .exe suffix, the cgo race
+# detector, and wrapping npm through cmd.exe. There are no build/CI shell
+# scripts in the tree, and a guard test enforces that (test/ci: no shell on the
+# toolchain path; the two gates stay Go-delegated).
+#
+# The convenience recipes below (build, clean, help, cover, test-envtest) use a
+# POSIX shell for `$(shell …)`, `rm`, `grep`/`sed`/`expand`, etc. They are
+# developer ergonomics, not required checks. On a shell-less platform (e.g.
+# Windows cmd without git-bash) build a binary directly with
+# `go build ./cmd/<name>`, or reproduce the full gate with `go run ./test/ci`.
+
 .DEFAULT_GOAL := help
 
 # ---- Build metadata (injected into internal/version via -ldflags) -----------
