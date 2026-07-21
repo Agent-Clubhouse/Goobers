@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -362,6 +364,47 @@ func TestTelemetryRejectsInvalidTimeWindow(t *testing.T) {
 	)
 	if code != 2 || !strings.Contains(stderr, "--since must not be after --until") {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+}
+
+func TestTelemetryExportRequiresSince(t *testing.T) {
+	code, stdout, stderr := runArgs(t, "telemetry", "export")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "--since is required") {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+}
+
+func TestTelemetryExportEmitsWindowAndDoesNotEmitPartialOutputOnCorruptJournal(t *testing.T) {
+	root := t.TempDir()
+	runsDir := instance.NewLayout(root).RunsDir()
+	validPath := filepath.Join(runsDir, "a-valid", "spans", "otlp.jsonl")
+	corruptPath := filepath.Join(runsDir, "b-corrupt", "spans", "otlp.jsonl")
+	if err := os.MkdirAll(filepath.Dir(validPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	valid := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"11111111111111111111111111111111","spanId":"2222222222222222","name":"valid","startTimeUnixNano":"1784656800000000000","endTimeUnixNano":"1784656801000000000"}]}]}]}` + "\n"
+	if err := os.WriteFile(validPath, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "telemetry", "export", "--since=2026-07-21T00:00:00Z", root)
+	if code != 0 || stdout != valid || stderr != "" {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(corruptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(corruptPath, []byte("{\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr = runArgs(t, "telemetry", "export", "--since=2026-07-21T00:00:00Z", root)
+	if code != 1 || stdout != "" {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, `run "b-corrupt"`) || !strings.Contains(stderr, "corrupt OTLP journal record 1") {
+		t.Fatalf("stderr = %q", stderr)
 	}
 }
 
