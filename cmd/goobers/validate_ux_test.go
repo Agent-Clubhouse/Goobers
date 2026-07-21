@@ -188,9 +188,22 @@ func TestGitRepositoryReachableTimeoutBoundedWhenEscapedDescendantHoldsOutputPip
 	}
 }
 
+// waitForFileTimeout bounds how long waitForFile waits for the hanging-git
+// fixture's descendant to fork/exec and write its pid file. This is a SETUP
+// precondition — the behavior under test is the subsequent cancel-and-kill,
+// bounded separately by the `elapsed` assertions — so the ceiling is
+// deliberately generous: waitForFile returns the instant the file appears
+// (typically well under 100ms), so a large ceiling costs the happy path
+// nothing, while a tight one (the previous 2s) intermittently timed out purely
+// because spawning an external bash process gets starved under the full
+// `-race` suite's CPU contention (#1145). Not a retry band-aid — it fixes an
+// assumption (2s is always enough to schedule a subprocess) that is false under
+// load.
+const waitForFileTimeout = 30 * time.Second
+
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(waitForFileTimeout)
 	for {
 		if _, err := os.Stat(path); err == nil {
 			return
@@ -198,7 +211,7 @@ func waitForFile(t *testing.T, path string) {
 			t.Fatalf("wait for %s: %v", path, err)
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s was not created before timeout", path)
+			t.Fatalf("%s was not created within %s (fixture descendant never spawned)", path, waitForFileTimeout)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
