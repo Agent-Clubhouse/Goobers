@@ -20,7 +20,8 @@
 | [`goobers completion bash`](#goobers-completion-bash) | generate a bash completion script |
 | [`goobers completion fish`](#goobers-completion-fish) | generate a fish completion script |
 | [`goobers completion zsh`](#goobers-completion-zsh) | generate a zsh completion script |
-| [`goobers config`](#goobers-config) | inspect the instance's operational configuration |
+| [`goobers config`](#goobers-config) | inspect instance configuration and compare workflow definitions |
+| [`goobers config diff`](#goobers-config-diff) | compare active workflows with canonical definitions |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers dashboard`](#goobers-dashboard) | serve and open the local operations portal |
 | [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
@@ -302,23 +303,53 @@ Generate a shell completion script. Source the output in the target shell.
 
 ## `goobers config`
 
-inspect the instance's operational configuration
+inspect instance configuration and compare workflow definitions
 
 ~~~text
 Usage: goobers config <subcommand> [flags] [path]
 
-Inspect the instance's operational configuration (instance.yaml).
+Inspect instance configuration and compare workflow definitions.
 
 Subcommands:
   show   render the effective instance config (secrets redacted)
+  diff   compare active workflows with the shipped canonical workflows
 
-Run `goobers config show -h` for details. Default path is ".".
+Run `goobers config show -h` or `goobers config diff -h` for details.
+Default path is ".".
 ~~~
 
 **Examples**
 
 ~~~console
 $ goobers config show
+$ goobers config diff ./instance
+~~~
+
+## `goobers config diff`
+
+compare active workflows with canonical definitions
+
+~~~text
+Usage: goobers config diff [--against <canonical-root>] [instance-root]
+
+Compare the active workflows under <instance-root>/config with a canonical
+config source tree. The canonical root defaults to ./selfhost; use --against
+when running outside the Goobers source checkout or comparing another set.
+
+Schedule, maxConcurrentRuns, maxRunsPerHour, maxRunsPerDay, maxOpenPRs,
+and trigger presence (enablement) are operational tuning: they are printed
+as INFO and do not fail the command. Every other workflow difference is
+structural drift, printed as ERROR with active and canonical values.
+
+Exit codes: 0 = structurally identical (informational tuning is allowed),
+1 = structural drift or invalid config, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers config diff ./instance
+$ goobers config diff --against ./selfhost ./instance
 ~~~
 
 ## `goobers config show`

@@ -123,6 +123,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"config show": {
 		{name: "json", desc: "Render the config as JSON instead of YAML"},
 	},
+	"config diff": {
+		{name: "against", takesArg: true, desc: "Canonical config source root"},
+	},
 	"claims list": {
 		{name: "json", desc: "Emit JSON"},
 		{name: "stale", desc: "Show only expired claims"},

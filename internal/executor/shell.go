@@ -166,6 +166,12 @@ type ShellExecutor struct {
 	ExtraEnvAllowlist []string
 }
 
+type builtinErrorReport struct {
+	Code      string `json:"errorCode"`
+	Message   string `json:"errorMessage"`
+	Retryable bool   `json:"errorRetryable"`
+}
+
 // NewShellExecutor builds a ShellExecutor. injector and journal must not be
 // nil: a nil injector could silently skip capability admission, and a nil
 // journal would leave captured output unrecorded — both fail closed here
@@ -262,6 +268,20 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, e.InstanceRoot, injectRunContext, env.Inputs, run.Env, e.ExtraEnvAllowlist)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
+	}
+	builtinErrorFile := ""
+	if injectRunContext {
+		file, createErr := os.CreateTemp("", "goobers-builtin-error-*")
+		if createErr != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: create built-in error file: %w", createErr)
+		}
+		builtinErrorFile = file.Name()
+		if closeErr := file.Close(); closeErr != nil {
+			_ = os.Remove(builtinErrorFile)
+			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: close built-in error file: %w", closeErr)
+		}
+		defer func() { _ = os.Remove(builtinErrorFile) }()
+		stageEnv = append(stageEnv, BuiltinErrorFileEnvVar+"="+builtinErrorFile)
 	}
 	telemetryDir := telemetry.PrepareStageTelemetryDir(env.Workspace)
 	if telemetryDir != "" {
@@ -459,6 +479,32 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	exitCode := exitCodeOf(waitErr)
 	result.Metrics["exitCode"] = float64(exitCode)
 
+	if builtinErrorFile != "" {
+		report, reportErr := readBuiltinErrorReport(builtinErrorFile)
+		if reportErr != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: read built-in error report: %w", reportErr)
+		}
+		if report != nil {
+			message := report.Message
+			if message == "" {
+				message = fmt.Sprintf("command exited %d", exitCode)
+			}
+			stageName := run.Command[0]
+			if len(run.Command) > 1 {
+				stageName = run.Command[1]
+			}
+			if report.Retryable {
+				return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+					"executor: goobers stage %q reported %s: %s", stageName, report.Code, message,
+				))
+			}
+			result.Status = apiv1.ResultFailure
+			result.Error = &apiv1.ErrorInfo{Code: report.Code, Message: message, Retryable: false}
+			result.Summary = message
+			return result, nil
+		}
+	}
+
 	if exitCode != 0 && stageInvokesProviderBuiltin(run.Command) {
 		// #control precedence ruling (2026-07-17, the #613/#711/#712
 		// chokepoint): a provider-builtin stage that got far enough to
@@ -617,6 +663,24 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	result.Summary = fmt.Sprintf("command exited %d", exitCode)
 	return result, nil
+}
+
+func readBuiltinErrorReport(path string) (*builtinErrorReport, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, nil
+	}
+	var report builtinErrorReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", path, err)
+	}
+	if report.Code == "" {
+		return nil, fmt.Errorf("decode %s: errorCode is required", path)
+	}
+	return &report, nil
 }
 
 func lastNonEmptyLine(data []byte) string {

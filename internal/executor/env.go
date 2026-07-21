@@ -32,14 +32,21 @@ func InputEnvVar(key string) string {
 	return "GOOBERS_INPUT_" + strings.ToUpper(sanitized)
 }
 
-// BranchNamespaceEnvVar is the env var a goobers-CLI stage reads to learn its
-// gaggle's configured run-branch namespace root (GaggleSpec.BranchNamespace,
-// providers.DefaultBranchNamespace when unset). PR-selector defaults
-// (headPrefix) and run-branch head derivation resolve it via this var so a
-// gaggle that retunes its namespace selects, opens, and remediates PRs under
-// the same prefix its branches use and the mirror-fetch exclusion preserves
-// (#965/#1010). Injected only under injectRunContext, alongside GOOBERS_GAGGLE.
-const BranchNamespaceEnvVar = "GOOBERS_BRANCH_NAMESPACE"
+const (
+	// BranchNamespaceEnvVar is the env var a goobers-CLI stage reads to learn its
+	// gaggle's configured run-branch namespace root (GaggleSpec.BranchNamespace,
+	// providers.DefaultBranchNamespace when unset). PR-selector defaults
+	// (headPrefix) and run-branch head derivation resolve it via this var so a
+	// gaggle that retunes its namespace selects, opens, and remediates PRs under
+	// the same prefix its branches use and the mirror-fetch exclusion preserves
+	// (#965/#1010). Injected only under injectRunContext, alongside GOOBERS_GAGGLE.
+	BranchNamespaceEnvVar = "GOOBERS_BRANCH_NAMESPACE"
+
+	// BuiltinErrorFileEnvVar carries an executor-owned file path through which
+	// goobers CLI stages report typed failures even when the stage declares no
+	// resultFile. It is an internal subprocess protocol, not a DSL input.
+	BuiltinErrorFileEnvVar = "GOOBERS_BUILTIN_ERROR_FILE"
+)
 
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
@@ -59,7 +66,8 @@ func baseEnv(extra []string) []string {
 // plus — only when injectRunContext is set — GOOBERS_RUN_ID/GOOBERS_GAGGLE/
 // GOOBERS_WORKFLOW/GOOBERS_BRANCH_NAMESPACE/GOOBERS_INSTANCE_ROOT (both
 // branchNamespace and instanceRoot may be empty — see ShellExecutor.InstanceRoot),
-// and one GOOBERS_INPUT_* var per entry in inputs.
+// and one GOOBERS_INPUT_* var per entry in inputs. ShellExecutor appends its
+// executor-owned GOOBERS_BUILTIN_ERROR_FILE after this function returns.
 // Every resolved token is also registered with registrar so it can be scrubbed
 // from anything the stage's process writes.
 //

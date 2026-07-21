@@ -320,33 +320,22 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
 	}
-	// Claim-lease recovery (#131): released once now (recovers leases
-	// orphaned by a prior crash) and periodically thereafter (catches a live
-	// run that overran its lease without crashing) — before the scheduler
-	// starts admitting new ticks, same ordering rationale as crash-resume
-	// below. withClaimLock serializes this against a concurrent
+	// Claim recovery (#131/#793): released once now and periodically thereafter
+	// to recover expired leases and claim cleanup deferred by a terminal
+	// finalizer's bounded lock timeout — before the scheduler starts admitting
+	// new ticks, same ordering rationale as crash-resume below. withClaimLock
+	// serializes this against a concurrent
 	// `goobers backlog-query` subprocess claiming/releasing on the same
 	// ledger file (providercmd.go's doc). recoverExpiredClaims itself never
 	// touches stdout/stderr — it returns the released entries so ONLY the
 	// synchronous startup call site below prints; the periodic goroutine
 	// below deliberately does not (see its own comment).
-	claimLedgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
-	claimLockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-		var released []localscheduler.ClaimEntry
-		err := withClaimLock(claimLockPath, claimLockOperationRecovery, func() error {
-			ledger, err := localscheduler.OpenClaimLedger(claimLedgerPath, localscheduler.WithInstanceLog(setup.InstanceLog))
-			if err != nil {
-				return err
-			}
-			released, err = ledger.RecoverExpired(now)
-			return err
-		})
-		return released, err
+		return recoverClaims(l, setup.InstanceLog, now)
 	}
 	startupReleased := append([]localscheduler.ClaimEntry(nil), setup.RecoveredClaims...)
 	newlyReleased, err := recoverExpiredClaims(time.Now())
-	if err != nil {
+	if err != nil && !isJournaledClaimsLockTimeout(err) {
 		pf(stderr, "error: recover expired claims: %v\n", err)
 		return 1
 	}
@@ -549,7 +538,11 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 				return
 			case now := <-claimTicker.C:
 				released, err := recoverExpiredClaims(now)
-				claimSweepErrors.report(err)
+				if isJournaledClaimsLockTimeout(err) {
+					claimSweepErrors.report(nil)
+				} else {
+					claimSweepErrors.report(err)
+				}
 				if err == nil && len(released) > 0 {
 					_ = setup.InstanceLog.Append(journal.Event{
 						Type:   journal.EventClaimReleased,
