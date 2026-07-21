@@ -81,7 +81,8 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 				Name: "shell-repo", Type: apiv1.TaskDeterministic, Goal: "shell",
 				Run: &apiv1.DeterministicRun{
 					Command: []string{"true"}, Image: "example/image",
-					Env: map[string]string{"CI": "true"}, Network: apiv1.NetworkNone, Workspace: apiv1.WorkspaceRepo,
+					Env: map[string]string{"CI": "true"}, Network: apiv1.NetworkNone,
+					Workspace: apiv1.WorkspaceRepo, SyncBase: true,
 				},
 				Inputs:     map[string]string{"kind": "shell", "resultFile": "result.json"},
 				InputsFrom: map[string]string{"input": "output"}, Next: "shell-scratch",
@@ -344,6 +345,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"stage.run.env",
 		"stage.run.image",
 		"stage.run.network.none",
+		"stage.run.syncBase",
 		"stage.run.workspace.repo",
 		"stage.run.workspace.scratch",
 		"stage.resultFile",

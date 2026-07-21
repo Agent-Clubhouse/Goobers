@@ -296,6 +296,43 @@ func TestManager_Create_Branch(t *testing.T) {
 	}
 }
 
+func TestManager_Create_SyncsExistingBranchWithFetchedBase(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/wf/run-1"
+
+	first, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1-stage-1", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(first.Path, "implementation.txt"), "run change\n")
+	runTestGit(t, first.Path, "add", "implementation.txt")
+	runTestGit(t, first.Path, "commit", "-m", "implement")
+	if err := first.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("remove first worktree: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(repo, "build-fix.txt"), "latest build behavior\n")
+	runTestGit(t, repo, "add", "build-fix.txt")
+	runTestGit(t, repo, "commit", "-m", "fix build behavior")
+
+	synced, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1-local-ci", BaseRef: "main", Branch: branch, SyncBase: true,
+	})
+	if err != nil {
+		t.Fatalf("synced Create: %v", err)
+	}
+	for _, name := range []string{"implementation.txt", "build-fix.txt"} {
+		if _, err := os.Stat(filepath.Join(synced.Path, name)); err != nil {
+			t.Fatalf("synced branch missing %s: %v", name, err)
+		}
+	}
+	runTestGit(t, synced.Path, "merge-base", "--is-ancestor", "main", "HEAD")
+}
+
 // TestManager_Create_ResolvesRelativeRootToAbsolute is #282's regression: a
 // Manager constructed with a relative Root (the common case — cmd/goobers
 // wires it off a "."-rooted instance) must not let git resolve a worktree's

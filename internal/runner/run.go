@@ -1858,7 +1858,8 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		workspaceMode = t.Run.Workspace
 	}
 	taskInputs := workflow.TaskInvocationInputs(in.Machine, t)
-	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, taskInputs, t.Capabilities, workflow.TaskLimits(t), upstream, workspaceMode, workspaceBranch)
+	syncBase := t.Run != nil && t.Run.SyncBase
+	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, taskInputs, t.Capabilities, workflow.TaskLimits(t), upstream, workspaceMode, syncBase, workspaceBranch)
 	if err != nil {
 		prepErr := fmt.Errorf("prepare stage %q: %w", t.Name, err)
 		// #572: a transient network/remote failure provisioning the stage's
@@ -2194,7 +2195,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 		if g.Evaluator == apiv1.EvaluatorAgentic {
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
-		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, workflow.GateLimits(g), upstream, apiv1.WorkspaceRepo, workspaceBranch)
+		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, workflow.GateLimits(g), upstream, apiv1.WorkspaceRepo, false, workspaceBranch)
 		if err != nil {
 			err = fmt.Errorf("runner: prepare gate %q: %w", g.Name, err)
 			span.Fail(err)
@@ -2414,8 +2415,8 @@ func (w *stageWorkspace) Remove(ctx context.Context) error {
 
 // buildEnvelope provisions an isolated repository worktree or empty scratch
 // directory and builds one stage attempt's invocation envelope.
-func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, goal string, taskInputs map[string]string, capabilities []string, limits apiv1.Limits, upstream []apiv1.ContextPointer, workspaceMode apiv1.WorkspaceMode, workspaceBranch string) (apiv1.InvocationEnvelope, *stageWorkspace, error) {
-	workspace, err := r.createStageWorkspace(ctx, in, stageName, workspaceMode, workspaceBranch)
+func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, goal string, taskInputs map[string]string, capabilities []string, limits apiv1.Limits, upstream []apiv1.ContextPointer, workspaceMode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (apiv1.InvocationEnvelope, *stageWorkspace, error) {
+	workspace, err := r.createStageWorkspace(ctx, in, stageName, workspaceMode, syncBase, workspaceBranch)
 	if err != nil {
 		return apiv1.InvocationEnvelope{}, nil, err
 	}
@@ -2444,9 +2445,12 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 // createStageWorkspace provisions this stage attempt's workspace. workspaceBranch
 // is the run-scoped branch rebinding (WorkspaceBranchOutput, #392): empty — the
 // normal case — means the run's own branch, providers.BranchName.
-func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, workspaceBranch string) (*stageWorkspace, error) {
+func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (*stageWorkspace, error) {
 	switch mode {
 	case apiv1.WorkspaceScratch:
+		if syncBase {
+			return nil, fmt.Errorf("create scratch workspace: syncBase requires a repo workspace")
+		}
 		if r.cfg.ScratchDir == "" {
 			return nil, fmt.Errorf("create scratch workspace: runner ScratchDir is required")
 		}
@@ -2477,6 +2481,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			OwnerRunID: in.RunID,
 			BaseRef:    baseRef,
 			Branch:     branch,
+			SyncBase:   syncBase,
 			// A rebound branch names work that already exists; creating it
 			// from base instead would hand the stage a pristine checkout
 			// wearing the PR's branch name. Fail loudly instead.

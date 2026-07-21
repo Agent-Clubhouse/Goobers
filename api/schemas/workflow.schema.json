@@ -104,7 +104,8 @@
             "env": { "type": "object", "additionalProperties": { "type": "string" } },
             "image": { "type": "string" },
             "network": { "type": "string", "enum": ["none"] },
-            "workspace": { "type": "string", "enum": ["repo", "scratch"] }
+            "workspace": { "type": "string", "enum": ["repo", "scratch"] },
+            "syncBase": { "type": "boolean" }
           }
         },
         "inputs": { "type": "object", "additionalProperties": { "type": "string" } },

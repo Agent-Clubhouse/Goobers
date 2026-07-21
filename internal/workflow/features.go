@@ -170,6 +170,7 @@ const (
 	featureStageNetworkNone               FeatureID = "stage.run.network.none"
 	featureStageWorkspaceRepo             FeatureID = "stage.run.workspace.repo"
 	featureStageWorkspaceScratch          FeatureID = "stage.run.workspace.scratch"
+	featureStageSyncBase                  FeatureID = "stage.run.syncBase"
 	featureStageResultFile                FeatureID = "stage.resultFile"
 	featureGateName                       FeatureID = "gate.name"
 	featureGateBranches                   FeatureID = "gate.branches"
@@ -286,6 +287,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureStageNetworkNone,
 		featureStageWorkspaceRepo,
 		featureStageWorkspaceScratch,
+		featureStageSyncBase,
 		featureStageResultFile,
 		featureGateName,
 		featureGateBranches,
@@ -571,6 +573,9 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 		used.add(featureStageWorkspaceRepo)
 	case apiv1.WorkspaceScratch:
 		used.add(featureStageWorkspaceScratch)
+	}
+	if task.Run.SyncBase {
+		used.add(featureStageSyncBase)
 	}
 }
 

@@ -115,7 +115,7 @@ func TestWorkflowRoundTrip(t *testing.T) {
 				},
 				{
 					Name: "tests", Type: TaskDeterministic,
-					Run:  &DeterministicRun{Command: []string{"make", "test"}, Env: map[string]string{"CI": "true"}},
+					Run:  &DeterministicRun{Command: []string{"make", "test"}, Env: map[string]string{"CI": "true"}, SyncBase: true},
 					Goal: "Run the test suite.", ContinueOnError: true, Next: "ci-gate",
 				},
 			},

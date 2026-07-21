@@ -326,6 +326,11 @@ spec:
                           enum:
                           - none
                           type: string
+                        syncBase:
+                          description: |-
+                            SyncBase merges the freshly fetched base ref into an existing run branch
+                            before the command executes. It is valid only with a repository workspace.
+                          type: boolean
                         workspace:
                           description: |-
                             Workspace selects where the command runs. Empty or "repo" provisions the

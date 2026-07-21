@@ -455,6 +455,22 @@ func TestCompileRejectsUnknownWorkspace(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsSyncBaseInScratchWorkspace(t *testing.T) {
+	spec := linearSpec()
+	spec.Tasks[0] = apiv1.Task{
+		Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+		Run: &apiv1.DeterministicRun{
+			Command:   []string{"true"},
+			Workspace: apiv1.WorkspaceScratch,
+			SyncBase:  true,
+		},
+	}
+	_, err := Compile(Definition{Name: "bad-sync-base", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "syncBase requires a repo workspace") {
+		t.Fatalf("Compile error = %v, want syncBase repo-workspace requirement", err)
+	}
+}
+
 func TestCompileRejectsUnknownNetworkMode(t *testing.T) {
 	spec := linearSpec()
 	spec.Tasks[0] = apiv1.Task{

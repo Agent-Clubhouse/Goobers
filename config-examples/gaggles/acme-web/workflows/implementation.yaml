@@ -91,12 +91,14 @@ spec:
       # review's escalate control branch below to park the issue first.
       next: review
 
-    # `make ci`-equivalent, run in the same worktree the implementer used.
+    # `make ci`-equivalent, run on the implementation branch after syncing base.
     - name: local-ci
       type: deterministic
       goal: Run the project's local CI-equivalent (build, lint, tests) in the worktree.
       run:
         command: ["make", "ci"]
+        # Pull in build/test behavior fixes that landed after this run branched.
+        syncBase: true
       retry:
         maxAttempts: 1
       next: local-gate

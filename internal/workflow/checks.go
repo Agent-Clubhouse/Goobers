@@ -144,6 +144,9 @@ func workspaceProblems(def Definition) []string {
 		default:
 			problems = append(problems, fmt.Sprintf("task %q: unknown workspace %q (want repo or scratch)", task.Name, task.Run.Workspace))
 		}
+		if task.Run.SyncBase && task.Run.Workspace == apiv1.WorkspaceScratch {
+			problems = append(problems, fmt.Sprintf("task %q: syncBase requires a repo workspace", task.Name))
+		}
 		switch task.Run.Network {
 		case "", apiv1.NetworkNone:
 		default:
