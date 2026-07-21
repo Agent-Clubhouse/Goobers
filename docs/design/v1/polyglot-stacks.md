@@ -42,10 +42,19 @@ substrate. **No target-repo Go assumptions are hardcoded in Go source** (verifie
 
 ## 2. Scope
 
-- **First-class this sprint: C#/.NET.** A .NET gaggle builds, tests, and ships green — on
-  Linux/macOS and, per the Windows breadth goal, on **Windows CI** (pairs with milestone #17).
-  "First-class" = declared CI command + toolchain env passthrough + a provisioning story +
-  a shipped reference gaggle + a Windows CI leg that keeps it green.
+- **First-class this sprint: C#/.NET — as a *generic, version-parameterized* capability, not a
+  single pinned version.** "First-class" = the **generic mechanism**: a gaggle declares its
+  runtime (`dotnet@<ver>`) + CI command, the runner claims that version, it builds/tests/ships
+  green — **version-agnostic by construction** (.NET 8, 10, N differ only by the
+  declared/claimed capability string, matched at schedule per RRQ-1). The mechanism is the
+  deliverable; the **reference gaggle pins *a* current version (e.g. .NET 10) purely as a
+  disposable smoke test — the version is incidental.** Over time many versions coexist; different
+  repos move at different speeds.
+  - **.NET Framework (4.x) is a *distinct runtime*** — Windows-only, `msbuild`/`nuget.exe`, **not**
+    the `dotnet` CLI. The same generic model accommodates it as just **another capability token**
+    (`netfx@4.8`) **+ another CI command** — *designed-for, not special-cased*, and **not built
+    this sprint** (whoever needs it declares it). The design must not bake "modern .NET / `dotnet`
+    CLI" assumptions into the mechanism.
 - **Laddered, designed, one validated target each (not full support this sprint):**
   - **Apple — Swift/Obj-C:** one validated build target on a macOS host; **simulator
     automation designed** (#740, iOS Simulator/XCUITest). Xcode cannot be containerized, so
@@ -178,7 +187,11 @@ PLY-7 (Apple)** — one mechanism serves `dotnet`, `xcode`, and `os=windows`. Pl
 - **Prepopulated container stages** — container stages seeded with the right branch/code/runtime
   (composes #734 image execution + #737 kind registry + #735 declarations). Filed as a Future
   exploration issue; the durable answer to hermetic, version-pinned toolchains beyond preinstall.
-- **OQ (still open) — reference .NET target:** minimal ASP.NET service vs console/library?
-  *(Recommend a small service with unit tests — exercises `dotnet build && dotnet test` + NuGet restore.)*
+- **Reference .NET target — RESOLVED (don't over-invest):** version is **incidental** (pin *a*
+  current one, e.g. .NET 10; PO doesn't care) — the reference is a disposable smoke test, the
+  generic version-parameterized mechanism (§2) is the deliverable. Shape: a small service with
+  unit tests (exercises `dotnet build && dotnet test` + NuGet restore). **AC must assert the
+  mechanism is version-generic** (swapping the declared/claimed version needs no code change), and
+  must **not** hardcode a single version or the `dotnet` CLI (leave room for `netfx@4.8`/`msbuild`).
 </content>
 </invoke>
