@@ -131,6 +131,27 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 		t.Errorf("park-needs-human inputs = %v, want status=needs-human", park.Inputs)
 	}
 
+	// #947: open-pr re-checks the claimed issue is still open before opening,
+	// routing through open-pr-gate (opened=true -> ci-poll, opened=false ->
+	// @abort) so an issue closed mid-flight never produces a stale PR.
+	openPR, ok := m.Task("open-pr")
+	if !ok {
+		t.Fatal("open-pr task not found")
+	}
+	if openPR.Next != "open-pr-gate" {
+		t.Errorf("open-pr.next = %q, want open-pr-gate", openPR.Next)
+	}
+	openPRGate, ok := m.Gate("open-pr-gate")
+	if !ok {
+		t.Fatal("open-pr-gate not found")
+	}
+	if target, ok := BranchTarget(openPRGate, "pass"); !ok || target != "ci-poll" {
+		t.Errorf("open-pr-gate pass branch = %q,%v; want ci-poll,true", target, ok)
+	}
+	if target, ok := BranchTarget(openPRGate, "fail"); !ok || target != TargetAbort {
+		t.Errorf("open-pr-gate fail branch = %q,%v; want %q,true", target, ok, TargetAbort)
+	}
+
 	// Capability grants match issue #27's scope, split by least privilege:
 	// implementer=[repo:push], reviewer=[] (pure evaluation, no write).
 	if len(goobers["implementer"].Capabilities) != 1 || goobers["implementer"].Capabilities[0] != "repo:push" {
@@ -163,7 +184,11 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// the issue-side bookkeeping (clear ready, release claimed, apply
 	// needs-human) only runs if that stage does — see
 	// TestImplementationEscalatingBranchesRunIssueBookkeeping.
-	const wantDigest = "sha256:f1ed4a53023a69e90afff16c14d849d6a8f108093149c2c9977129c2164c0ddd"
+	// #947: open-pr now emits an `opened` output and routes through the new
+	// open-pr-gate (opened=false -> @abort) so an issue closed after it was
+	// claimed does not still produce a PR — a re-check immediately before
+	// opening, since the claim was only validated once at query-backlog.
+	const wantDigest = "sha256:298620b237fcbda625e825a70a5af13a0175e5cdd9c77ff43fc7daf98c5c0058"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

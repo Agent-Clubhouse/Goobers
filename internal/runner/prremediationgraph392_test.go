@@ -399,7 +399,9 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 	machine, err := workflow.Compile(
 		workflow.Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		workflow.WithGoobers(goobers),
-		workflow.WithKnownChecks([]string{"status-equals", "ci-status"}),
+		// #947: open-pr-gate uses output-equals(opened) to abort on a
+		// mid-flight-closed issue.
+		workflow.WithKnownChecks([]string{"status-equals", "ci-status", "output-equals"}),
 	)
 	if err != nil {
 		t.Fatalf("compile shipped implementation: %v", err)
@@ -424,7 +426,9 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 		runID + ":local-ci":      {status: apiv1.ResultSuccess},
 		runID + ":push-branch":   {status: apiv1.ResultSuccess},
 		runID + ":open-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
-			"prNumber": "101", "pull-request-url": "https://example.test/pr/101",
+			// #947: open-pr emits opened=true on the happy path (claimed issue
+			// still open); open-pr-gate routes that to ci-poll.
+			"prNumber": "101", "pull-request-url": "https://example.test/pr/101", "opened": "true",
 		}},
 		runID + ":ci-poll":   {status: apiv1.ResultSuccess, outputs: map[string]interface{}{"ciStatus": "passing"}},
 		runID + ":close-out": {status: apiv1.ResultSuccess},

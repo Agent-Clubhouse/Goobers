@@ -142,7 +142,11 @@ spec:
         - pull-request-url
         # Well-known handoff key for ci-poll's inputsFrom below.
         - prNumber
-      next: ci-poll
+        # #947: opened=false when the claimed issue closed mid-flight, so
+        # open-pr-gate can abort the run instead of proceeding to ci-poll on a
+        # PR it deliberately did not open.
+        - opened
+      next: open-pr-gate
 
     - name: ci-poll
       type: deterministic
@@ -250,6 +254,24 @@ spec:
         pass: push-branch
         fail: implement
         escalate: park-escalated
+
+    # #947: open-pr re-checks the claimed issue's state immediately before
+    # opening (the claim was validated once, at query-backlog, but implement +
+    # review + local-ci can take 30+ minutes). When the issue closed or was
+    # superseded in that window, open-pr emits opened=false and opens no PR;
+    # this gate routes that straight to @abort so the run terminates with a
+    # clear, distinguishable reason instead of producing a PR for moot work.
+    # opened=true proceeds to ci-poll exactly as before.
+    - name: open-pr-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: opened
+          equals: "true"
+      branches:
+        pass: ci-poll
+        fail: "@abort"
 
     # ci-poll sets Outputs[ciStatus] to the normalized providers.CheckState
     # value ("passing"/"failing"/"pending" — providers/model.go); the
