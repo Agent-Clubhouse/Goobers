@@ -5,14 +5,12 @@ import "os/exec"
 // Tree is a handle to a started command and the descendant process tree it
 // leads. Obtain one from Start; use Kill to terminate the whole tree at once.
 //
-// Its internals are platform-specific: on unix the process-group id (equal to
-// the session-leader pid) is sufficient, so only pid is stored. The windows
-// implementation (#623 follow-up) extends this with its Job Object handle,
-// which is why every operation is a method on *Tree — a windows build fills in
-// the method bodies without any call site changing.
-type Tree struct {
-	pid int
-}
+// Its internals are platform-specific, so the struct itself is defined in each
+// platform file rather than here: on unix the process-group id (equal to the
+// session-leader pid) is the whole handle, while windows also carries the Job
+// Object the tree is killed through. Every operation is a method on *Tree, so a
+// windows build supplies both the fields and the method bodies with no call
+// site changing.
 
 // Configure arranges for cmd, once started, to lead its own controllable
 // process tree — on unix a new session (Setsid), on windows a Job Object. It

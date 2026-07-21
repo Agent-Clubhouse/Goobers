@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"golang.org/x/sys/unix"
 )
 
 func newV(t *testing.T) *Validator {
@@ -146,7 +144,7 @@ func TestGooberAssetStructureIsValidated(t *testing.T) {
 			if err := os.Mkdir(assets, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := unix.Mkfifo(filepath.Join(assets, "stream"), 0o600); err != nil {
+			if err := mkfifoAsset(filepath.Join(assets, "stream")); err != nil {
 				t.Skipf("FIFO unsupported: %v", err)
 			}
 		},
