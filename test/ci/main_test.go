@@ -56,6 +56,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"portal-build",
 		"portal-dist-diff",
 		"build-goobers",
+		"validate-configs",
 		"build-scheduler",
 		"test",
 		"lint",
@@ -69,7 +70,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		t.Fatalf("check order = %q, want %q", got, want)
 	}
 
-	testCheck := gotChecks[8]
+	testCheck := gotChecks[9]
 	wantEnv := []string{
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=core.fsync",
@@ -87,6 +88,10 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	if got := strings.Join(buildCheck.args, " "); !strings.Contains(got, versionPackage+".Version=v1.2.3") {
 		t.Fatalf("goobers build args missing metadata: %q", got)
 	}
+	validateCheck := gotChecks[7]
+	if got := strings.Join(validateCheck.args, " "); got != "run ./test/configvalidate bin/goobers" {
+		t.Fatalf("validate-configs args = %q", got)
+	}
 }
 
 func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
@@ -99,6 +104,9 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 	)
 	if args := strings.Join(got[5].args, " "); !strings.Contains(args, "-o bin/goobers.exe") {
 		t.Fatalf("Windows build args = %q", args)
+	}
+	if args := strings.Join(got[6].args, " "); args != "run ./test/configvalidate bin/goobers.exe" {
+		t.Fatalf("Windows validate-configs args = %q", args)
 	}
 	for _, current := range got {
 		if current.label == "test" {
