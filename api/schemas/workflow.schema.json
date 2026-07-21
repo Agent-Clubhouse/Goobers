@@ -106,7 +106,18 @@
             "network": { "type": "string", "enum": ["none"] },
             "workspace": { "type": "string", "enum": ["repo", "scratch"] },
             "syncBase": { "type": "boolean" }
-          }
+          },
+          "allOf": [
+            {
+              "not": {
+                "properties": {
+                  "workspace": { "const": "scratch" },
+                  "syncBase": { "const": true }
+                },
+                "required": ["workspace", "syncBase"]
+              }
+            }
+          ]
         },
         "inputs": { "type": "object", "additionalProperties": { "type": "string" } },
         "inputsFrom": { "type": "object", "additionalProperties": { "type": "string" } },

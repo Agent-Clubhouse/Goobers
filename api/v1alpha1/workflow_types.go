@@ -221,6 +221,7 @@ type RetryPolicy struct {
 }
 
 // DeterministicRun describes the code a deterministic task runs.
+// +kubebuilder:validation:XValidation:rule="!has(self.syncBase) || !self.syncBase || !has(self.workspace) || self.workspace != 'scratch'",message="syncBase requires a repo workspace"
 type DeterministicRun struct {
 	// Command is the command + args to execute.
 	// +kubebuilder:validation:Required

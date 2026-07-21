@@ -201,7 +201,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
 	if opts.SyncBase && existingBranch {
-		if err := runGit(ctx, path, "merge", "--no-edit", opts.BaseRef); err != nil {
+		if err := runGit(ctx, path, "merge", "--ff", "--no-edit", opts.BaseRef); err != nil {
 			_ = runGit(ctx, repoDir, "worktree", "remove", "--force", path)
 			return nil, fmt.Errorf("worktree: sync branch %q with base %q for run %s: %w", opts.Branch, opts.BaseRef, opts.RunID, err)
 		}

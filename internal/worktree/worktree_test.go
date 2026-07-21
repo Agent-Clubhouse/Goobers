@@ -296,8 +296,13 @@ func TestManager_Create_Branch(t *testing.T) {
 	}
 }
 
-func TestManager_Create_SyncsExistingBranchWithFetchedBase(t *testing.T) {
+func TestManager_Create_SyncsExistingBranchWithFetchedBaseDespiteAmbientFFOnly(t *testing.T) {
 	ctx := context.Background()
+	globalConfig := filepath.Join(t.TempDir(), ".gitconfig")
+	mustWriteFile(t, globalConfig, "[merge]\n\tff = only\n")
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
 	repo := newSourceRepo(t)
 	m := newTestManager(t)
 	const branch = "goobers/wf/run-1"
