@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows/svc"
+
+	"github.com/goobers/goobers/internal/platform/shutdown"
 )
 
 // stopWaitHintMS is the WaitHint (in milliseconds) the handler reports to the
@@ -39,11 +41,15 @@ func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<-
 
 	changes <- svc.Status{State: svc.StartPending}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// #625 seam: the SCM STOP/SHUTDOWN control drives the same shutdown trigger
+	// as a unix signal by routing through shutdown.RequestStop(ReasonService),
+	// instead of this handler owning a bare context.CancelFunc. One trigger
+	// abstraction, one downstream drain path across platforms.
+	notifier := shutdown.NewExternal()
+	defer notifier.Stop()
 
 	done := make(chan int, 1)
-	go func() { done <- h.fn(ctx) }()
+	go func() { done <- h.fn(notifier.Context()) }()
 
 	changes <- svc.Status{State: svc.Running, Accepts: accepted}
 
@@ -59,7 +65,7 @@ func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<-
 			case svc.Interrogate:
 				changes <- c.CurrentStatus
 			case svc.Stop, svc.Shutdown:
-				h.code = h.drain(cancel, done, changes)
+				h.code = h.drain(notifier, done, changes)
 				return false, uint32(h.code)
 			default:
 				// Ignore controls we did not advertise via Accepts.
@@ -68,11 +74,11 @@ func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<-
 	}
 }
 
-// drain cancels the daemon context and waits for fn to return, advancing the
-// SCM checkpoint so a long-but-legitimate drain is not force-killed. It answers
-// Interrogate during the wait so `sc query` stays responsive.
-func (h *handler) drain(cancel context.CancelFunc, done <-chan int, changes chan<- svc.Status) int {
-	cancel()
+// drain triggers the service-stop shutdown and waits for fn to return, advancing
+// the SCM checkpoint so a long-but-legitimate drain is not force-killed. It
+// answers Interrogate during the wait so `sc query` stays responsive.
+func (h *handler) drain(notifier *shutdown.Notifier, done <-chan int, changes chan<- svc.Status) int {
+	notifier.RequestStop(shutdown.ReasonService)
 
 	checkPoint := uint32(1)
 	status := svc.Status{State: svc.StopPending, CheckPoint: checkPoint, WaitHint: stopWaitHintMS}
