@@ -154,5 +154,14 @@ These are seam contracts, satisfied by both runners; the pod wording is the tier
 - **DEP-Q5:** ~~Build-vs-buy reconciliation tooling~~ **Resolved:** ArgoCD + Goobers
   operator (CRDs) as the tier-3 config delivery; at tiers 1–2 delivery is the daemon
   watching `config/` (`ARCHITECTURE.md §10`). See `DEP-012`, `DEP-025`.
-- **DEP-Q6:** *(build-time design)* Daemon supervision at tiers 1–2 (systemd/launchd/
-  service wrapper), packaging and install channels (V1 packaging story).
+- **DEP-Q6:** ~~Daemon supervision at tiers 1–2~~ **Resolved (2026-07-20):** supervision
+  units ship per platform — **systemd** user service (Linux,
+  `packaging/systemd/goobers.service`), **launchd** LaunchAgent (macOS,
+  `packaging/launchd/com.agent-clubhouse.goobers.plist`), and a **Windows Service**
+  wrapper (`internal/winsvc`, build-tag-gated `//go:build windows`) that maps
+  `SERVICE_CONTROL_STOP` onto the daemon's unix `SIGTERM` graceful-drain path, so stop
+  semantics are identical across platforms. Install/start/stop/status/logs/upgrade docs:
+  [`docs/guides/supervision.md`](../guides/supervision.md). Stage 2 — a native
+  `goobers service install|uninstall|status` subcommand — is a deferred follow-up (#639).
+  The V1 packaging/install-channel story (scoop/winget/Homebrew) remains P12 (#639's
+  cousin) — out of this resolution's scope.

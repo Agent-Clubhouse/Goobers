@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Goobers daemon — launchd LaunchAgent template (macOS).
+
+  A per-user LaunchAgent (loaded into your GUI login session) so the daemon runs
+  as your login user and inherits per-user credentials — the macOS analog of the
+  systemd *user* service. See docs/guides/supervision.md for
+  install/start/stop/status/logs/upgrade.
+
+  Before installing, replace the placeholders:
+    %GOOBERS_BIN%    absolute path to the goobers binary (e.g. /usr/local/bin/goobers)
+    %INSTANCE_ROOT%  absolute path to the instance root created by `goobers init`
+    %LOG_DIR%        absolute path to a writable directory for stdout/stderr logs
+
+  Install:
+    cp packaging/launchd/com.agent-clubhouse.goobers.plist \
+       ~/Library/LaunchAgents/com.agent-clubhouse.goobers.plist
+    $EDITOR ~/Library/LaunchAgents/com.agent-clubhouse.goobers.plist   # fill placeholders
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agent-clubhouse.goobers.plist
+    launchctl enable  gui/$(id -u)/com.agent-clubhouse.goobers
+    launchctl kickstart -k gui/$(id -u)/com.agent-clubhouse.goobers
+
+  Stop (launchd sends SIGTERM, so the daemon drains gracefully):
+    launchctl bootout gui/$(id -u)/com.agent-clubhouse.goobers
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agent-clubhouse.goobers</string>
+
+    <!--
+      `goobers up <instance-root>` runs the daemon in the foreground and blocks;
+      KeepAlive + RunAtLoad make launchd supervise and restart it.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>%GOOBERS_BIN%</string>
+        <string>up</string>
+        <string>%INSTANCE_ROOT%</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>%INSTANCE_ROOT%</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!--
+      Restart on unexpected exit, but do not fight an operator who stops it and
+      do not hot-loop on a config error that exits immediately.
+    -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <!--
+      launchd stops a job by sending SIGTERM (then SIGKILL after ExitTimeOut).
+      The daemon drains in-flight runs on SIGTERM (drainGrace 30s + HTTP grace
+      5s in cmd/goobers/up.go); allow a margin beyond that before the hard kill.
+    -->
+    <key>ExitTimeOut</key>
+    <integer>45</integer>
+
+    <key>StandardOutPath</key>
+    <string>%LOG_DIR%/goobers.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>%LOG_DIR%/goobers.err.log</string>
+
+    <!--
+      Provider credentials + toolchain PATH for the daemon's subprocess stages.
+      The `local-ci` stage inherits this PATH, not your interactive shell's, so
+      golangci-lint and the Go toolchain must be reachable here. Never inline
+      secret values — reference a token file/env your instance.yaml points at.
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
+	"github.com/goobers/goobers/internal/winsvc"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -127,6 +128,21 @@ func (r *sweepErrorReporter) report(err error) {
 }
 
 func runUp(args []string, stdout, stderr io.Writer) int {
+	// When the process was launched by the Windows Service Control Manager, run
+	// under the SCM so SERVICE_CONTROL_STOP cancels the daemon context — the
+	// same graceful-drain path SIGTERM drives on unix (issue #639). Off Windows
+	// IsWindowsService is always false, so the unix signal path below is
+	// unchanged.
+	if isService, err := winsvc.IsWindowsService(); err == nil && isService {
+		code, runErr := winsvc.Run("goobers", func(ctx context.Context) int {
+			return runUpContext(ctx, args, stdout, stderr)
+		})
+		if runErr != nil {
+			pf(stderr, "error: run as Windows service: %v\n", runErr)
+			return 1
+		}
+		return code
+	}
 	ctx, stop := signals.SetupSignalContext()
 	defer stop()
 	return runUpContext(ctx, args, stdout, stderr)

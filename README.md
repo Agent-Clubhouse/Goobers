@@ -83,7 +83,10 @@ any run interrupted by a prior crash via `Runner.Resume`, then drives
 scheduled workflows until interrupted, draining in-flight runs gracefully on
 SIGINT/SIGTERM. `run` remains the way to trigger one workflow manually
 without a daemon running. Full walkthrough:
-[`docs/guides/quickstart.md`](docs/guides/quickstart.md).
+[`docs/guides/quickstart.md`](docs/guides/quickstart.md). Platform-specific
+setup: [Linux quickstart](docs/guides/quickstart-linux.md); run the daemon as a
+supervised service via [Daemon supervision](docs/guides/supervision.md)
+(systemd · launchd · Windows Service).
 
 ## Authoring workflow DSL with an agent
 
