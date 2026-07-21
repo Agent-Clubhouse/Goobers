@@ -103,6 +103,15 @@ const issueCloseOutHelp = "Usage: goobers issue-close-out [path]\n\n" +
 	"claim ledger lease early rather than waiting for it to expire. Exit codes:\n" +
 	"0 = done, 1 = business error, 2 = usage/IO error.\n"
 
+const (
+	implementationInReviewCommentPrefix = "Implementation complete: "
+	implementationInReviewCommentSuffix = " is open for merge-review."
+)
+
+func implementationInReviewComment(prURL string) string {
+	return implementationInReviewCommentPrefix + prURL + implementationInReviewCommentSuffix
+}
+
 func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("issue-close-out", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -217,7 +226,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 			case !found:
 				comment = "Implementation complete."
 			case status == providers.WorkItemStatusInReview:
-				comment = fmt.Sprintf("Implementation complete: %s is open for merge-review.", pr.URL)
+				comment = implementationInReviewComment(pr.URL)
 			default:
 				comment = fmt.Sprintf("Implemented in %s.", pr.URL)
 			}

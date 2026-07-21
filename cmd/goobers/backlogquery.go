@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -48,6 +49,8 @@ const DefaultClaimLease = 6 * time.Hour
 const backlogScanCeiling = 250
 
 const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
+
+const inReviewStatusLabel = "goobers/status:in-review"
 
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
@@ -120,7 +123,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+	issueProvider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
 
 	trustLabel := providerInput("trustLabel", "")
 	requireLabels := splitLabelList(providerInput("requireLabels", ""))
@@ -171,12 +174,30 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+
+	var (
+		prProvider *providers.GitHubProvider
+		openIssues map[string]bool
+	)
+	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil {
+		prProvider = newGitHubProvider(prToken)
+		openIssues, err = openPRIssueNumbers(ctx, prProvider, repo)
+		if err != nil {
+			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")
+		}
+		if *claim {
+			if err := reconcileClosedUnmergedInReview(ctx, issueProvider, prProvider, repo); err != nil {
+				return failProviderStage(stderr, "reconcile closed pull requests", err, "claimed-item.json")
+			}
+		}
+	}
+
 	labels := make([]string, 0, 1+len(requireLabels))
 	if trustLabel != "" {
 		labels = append(labels, trustLabel)
 	}
 	labels = append(labels, requireLabels...)
-	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository:  repo,
 		Labels:      labels,
 		State:       "open",
@@ -233,11 +254,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// and backlog-curation.yaml both do); a stage that hasn't opted in gets
 	// exactly the pre-#414 label-only behavior, not a hard failure — this is
 	// a backstop on top of the label check above, not a replacement for it.
-	if _, err := providerToken(capability.GitHubPRWrite); err == nil {
-		openIssues, err := openPRIssueNumbers(ctx, provider, repo)
-		if err != nil {
-			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")
-		}
+	if openIssues != nil {
 		backstopped := eligible[:0]
 		for _, item := range eligible {
 			if openIssues[item.ID] {
@@ -262,7 +279,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	}
 	_, observedSkips, _, blockedWarnings := filterBlockedEligibility(
 		ctx,
-		provider,
+		issueProvider,
 		repo,
 		append([]providers.WorkItem(nil), eligible...),
 		remainingRecords,
@@ -329,7 +346,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// Gated on github:pr:write, exactly like the open-PR backstop above, since
 	// it lists open PRs and their files.
 	if len(eligible) > 1 && providerInput("deprioritizeContestedFiles", "true") == "true" {
-		if _, err := providerToken(capability.GitHubPRWrite); err == nil {
+		if prProvider != nil {
 			minPRs := 2
 			if s := providerInput("contestedFileMinPRs", ""); s != "" {
 				if n, perr := strconv.Atoi(s); perr == nil && n >= 1 {
@@ -338,7 +355,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 					pf(stderr, "warning: invalid contestedFileMinPRs %q; using %d\n", s, minPRs)
 				}
 			}
-			if touches, terr := openPRTouches(ctx, provider, repo); terr != nil {
+			if touches, terr := openPRTouches(ctx, prProvider, repo); terr != nil {
 				pf(stderr, "warning: contested-file dispatch awareness unavailable (%v); using FIFO order\n", terr)
 			} else {
 				reordered, deprioritized := partitionByContention(eligible, touches, minPRs)
@@ -497,7 +514,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// decision, for human visibility on the provider. A failure here does not
 	// undo the ledger claim — the ledger, not this marker, is the source of truth.
 	for i := range claimed {
-		if _, err := provider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: claimed[i].ID, RunID: runID}); err != nil {
+		if _, err := issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: claimed[i].ID, RunID: runID}); err != nil {
 			pf(stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", claimed[i].ID, err)
 		}
 	}
@@ -558,6 +575,118 @@ func openPRIssueNumbers(ctx context.Context, provider *providers.GitHubProvider,
 		}
 	}
 	return out, nil
+}
+
+// reconcileClosedUnmergedInReview restores backlog eligibility for issues whose
+// linked implementation PRs all closed without merging. The bot-authored issue
+// breadcrumb is durable association evidence even if mutable PR metadata changes.
+func reconcileClosedUnmergedInReview(
+	ctx context.Context,
+	issueProvider *providers.GitHubProvider,
+	prProvider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+) error {
+	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+		Repository: repo,
+		Labels:     []string{inReviewStatusLabel},
+		State:      "open",
+	})
+	if err != nil {
+		return fmt.Errorf("list in-review work items: %w", err)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	associationAuthor, err := issueProvider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve issue association author: %w", err)
+	}
+
+	for _, item := range items {
+		if !item.HasLabel(inReviewStatusLabel) ||
+			(item.State != "" && !strings.EqualFold(item.State, "open")) {
+			continue
+		}
+
+		comments, err := issueProvider.ListComments(ctx, repo, item.ID)
+		if err != nil {
+			return fmt.Errorf("list issue #%s comments: %w", item.ID, err)
+		}
+		pullIDs := linkedImplementationPullIDs(repo, associationAuthor, comments)
+		if len(pullIDs) == 0 {
+			continue
+		}
+
+		closedUnmerged := false
+		protected := false
+		for _, pullID := range pullIDs {
+			pr, err := prProvider.GetPullRequest(ctx, repo, pullID)
+			if err != nil {
+				return fmt.Errorf("read linked pull request #%s for issue #%s: %w", pullID, item.ID, err)
+			}
+			if pr.Merged {
+				protected = true
+			} else if strings.EqualFold(pr.State, "closed") {
+				closedUnmerged = true
+			} else {
+				protected = true
+			}
+		}
+		if !closedUnmerged || protected {
+			continue
+		}
+		if _, err := issueProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository:   repo,
+			ID:           item.ID,
+			RemoveLabels: []string{inReviewStatusLabel},
+		}); err != nil {
+			return fmt.Errorf("requeue issue #%s: %w", item.ID, err)
+		}
+	}
+	return nil
+}
+
+func linkedImplementationPullIDs(repo providers.RepositoryRef, author string, comments []providers.Comment) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, comment := range comments {
+		if !strings.EqualFold(comment.Author, author) {
+			continue
+		}
+		body := strings.TrimSpace(comment.Body)
+		if !strings.HasPrefix(body, implementationInReviewCommentPrefix) ||
+			!strings.HasSuffix(body, implementationInReviewCommentSuffix) {
+			continue
+		}
+		rawURL := strings.TrimSuffix(
+			strings.TrimPrefix(body, implementationInReviewCommentPrefix),
+			implementationInReviewCommentSuffix,
+		)
+		u, err := url.ParseRequestURI(rawURL)
+		if err != nil || u.Scheme == "" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+			continue
+		}
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) < 4 {
+			continue
+		}
+		parts = parts[len(parts)-4:]
+		if !strings.EqualFold(parts[0], repo.Owner) ||
+			!strings.EqualFold(parts[1], repo.Name) ||
+			parts[2] != "pull" {
+			continue
+		}
+		n, err := strconv.ParseUint(parts[3], 10, 64)
+		if err != nil || n == 0 {
+			continue
+		}
+		pullID := strconv.FormatUint(n, 10)
+		if !seen[pullID] {
+			seen[pullID] = true
+			out = append(out, pullID)
+		}
+	}
+	return out
 }
 
 // sortEligibleFIFO orders items ascending by numeric ID in place — both
