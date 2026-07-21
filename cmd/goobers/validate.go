@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -218,6 +219,14 @@ func stageCommandProblems(set *instance.ConfigSet) []string {
 		wf := &set.Workflows[i]
 		for _, task := range wf.Spec.Tasks {
 			if task.Type != apiv1.TaskDeterministic || task.Run == nil {
+				continue
+			}
+			// Only a shell stage actually executes its run.command. A stage that
+			// declares a built-in kind (e.g. kind=ci-poll) is dispatched to a
+			// dedicated executor and its command is an inert placeholder — the
+			// shipped ci-poll stages carry `command: ["goobers", "ci-poll", …]`,
+			// which is not a CLI verb — so it must not be surface-checked here.
+			if kind := strings.TrimSpace(task.Inputs[executor.InputKind]); kind != "" && kind != executor.KindShell {
 				continue
 			}
 			problems = append(problems, stageCommandProblem(wf.Name, task.Name, task.Run.Command)...)
