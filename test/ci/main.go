@@ -175,6 +175,13 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos str
 				"./cmd/" + command,
 			},
 		})
+		if command == "goobers" {
+			result = append(result, check{
+				label:   "validate-configs",
+				command: tools.goCommand,
+				args:    []string{"run", "./test/configvalidate", output},
+			})
+		}
 	}
 	if !portalPrepared {
 		result = append(result, portalPreparationChecks(tools)...)
