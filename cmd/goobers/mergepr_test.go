@@ -22,8 +22,17 @@ import (
 // and has no /merge endpoint) so every conjunct (CI state, draft, head/base
 // SHA) is independently controllable per test case.
 type mergePRServerState struct {
-	draft           bool
-	checkState      string // "success" or "failure" — maps to CheckStatePassing/Failing
+	draft      bool
+	checkState string // "success" or "failure" — maps to CheckStatePassing/Failing
+	// advisoryCheckFails adds a second, red check-run ("windows-smoke") alongside
+	// the green required "make-ci" so the combined CheckState is Failing while the
+	// only red check is advisory — the #961 case. mergeableState should be set to
+	// "unstable" to mirror GitHub's own advisory-aware verdict for it.
+	advisoryCheckFails bool
+	// mergeableState is GitHub's mergeable_state enum for the PR detail
+	// ("unstable" = mergeable, only advisory checks red; "blocked" = required
+	// checks failing/pending). Empty omits the field (the pre-#961 shape).
+	mergeableState  string
 	headSHA         string
 	headBranch      string
 	headOwner       string
@@ -120,7 +129,8 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 					"owner": map[string]string{"login": st.headOwner},
 				},
 			},
-			"base": map[string]interface{}{"ref": st.baseBranch, "sha": st.baseSHA},
+			"base":            map[string]interface{}{"ref": st.baseBranch, "sha": st.baseSHA},
+			"mergeable_state": st.mergeableState,
 		})
 	})
 	// GraphQL is the only surface that can enqueue a pull request into a
@@ -206,9 +216,16 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		if st.checkState == "failure" {
 			conclusion = "failure"
 		}
-		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{
+		runs := []map[string]interface{}{
 			{"name": "make-ci", "status": "completed", "conclusion": conclusion, "html_url": "https://ci/make-ci"},
-		}})
+		}
+		if st.advisoryCheckFails {
+			// A red NON-required check alongside the green required one — the
+			// #961 case: CheckState aggregates to Failing, but GitHub's
+			// mergeable_state (set to "unstable") marks it advisory-only.
+			runs = append(runs, map[string]interface{}{"name": "windows-smoke", "status": "completed", "conclusion": "failure", "html_url": "https://ci/windows-smoke"})
+		}
+		writeFakeJSON(w, map[string]interface{}{"check_runs": runs})
 	})
 	mux.HandleFunc(prefix+"/issues/9/comments", func(w http.ResponseWriter, r *http.Request) {
 		st.commentCalls++
@@ -906,6 +923,87 @@ func TestMergePRRefusesOnUnmetConjunct(t *testing.T) {
 			}
 			if result["selectedNumber"] != "9" {
 				t.Fatalf("result = %+v, want selectedNumber=%q", result, "9")
+			}
+		})
+	}
+}
+
+// TestMergePRAdvisoryCheckGating is #961: the merge gate must ignore a red
+// ADVISORY (continue-on-error / non-required) check while still blocking on a
+// red REQUIRED check. GitHub's mergeable_state is the authoritative signal —
+// "unstable" means the only red/pending checks are non-required.
+func TestMergePRAdvisoryCheckGating(t *testing.T) {
+	cases := []struct {
+		name       string
+		mutate     func(st *mergePRServerState)
+		wantMerged bool
+		wantReason string // substring expected on a refusal; empty when merging
+	}{
+		{
+			// Required make-ci green + advisory windows-smoke red, and GitHub
+			// reports the PR as mergeable-but-unstable → the advisory failure
+			// must NOT block: the merge proceeds.
+			name: "red advisory only, all required green -> merges",
+			mutate: func(st *mergePRServerState) {
+				st.checkState = "success"
+				st.advisoryCheckFails = true
+				st.mergeableState = "unstable"
+			},
+			wantMerged: true,
+		},
+		{
+			// A red REQUIRED check (make-ci) with GitHub reporting "blocked"
+			// still refuses, unchanged.
+			name: "red required check -> refuses",
+			mutate: func(st *mergePRServerState) {
+				st.checkState = "failure"
+				st.mergeableState = "blocked"
+			},
+			wantMerged: false,
+			wantReason: "CI is",
+		},
+		{
+			// Conservative fallback: a red check with NO mergeable_state
+			// supplied (the pre-#961 shape / a provider that gives none) still
+			// blocks — advisory-ignoring only ever relaxes on a positive
+			// "unstable" signal.
+			name: "red check, no mergeable_state -> refuses",
+			mutate: func(st *mergePRServerState) {
+				st.checkState = "failure"
+			},
+			wantMerged: false,
+			wantReason: "CI is",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &mergePRServerState{draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456"}
+			tc.mutate(st)
+			server := newMergePRServer(t, "your-org", "your-repo", st)
+			root, dir := mergePREnv(t, server.URL, false, map[string]string{
+				"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+			})
+
+			code, _, stderr := runArgs(t, "merge-pr", root)
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			result := readMergeResult(t, dir)
+			merged, _ := result["merged"].(bool)
+			if merged != tc.wantMerged {
+				t.Fatalf("merged = %v, want %v (result=%+v)", merged, tc.wantMerged, result)
+			}
+			wantMergeCalls := 0
+			if tc.wantMerged {
+				wantMergeCalls = 1
+			}
+			if st.mergeCalls != wantMergeCalls {
+				t.Fatalf("merge endpoint called %d times, want %d", st.mergeCalls, wantMergeCalls)
+			}
+			if tc.wantReason != "" {
+				if reason, _ := result["reason"].(string); !strings.Contains(reason, tc.wantReason) {
+					t.Fatalf("reason = %q, want it to mention %q", reason, tc.wantReason)
+				}
 			}
 		})
 	}

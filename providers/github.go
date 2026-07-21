@@ -670,6 +670,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		State:            pr.State,
 		Merged:           pr.Merged,
 		Mergeable:        pr.Mergeable,
+		MergeableState:   pr.MergeableState,
 		Draft:            pr.Draft,
 		HeadBranch:       pr.Head.Ref,
 		HeadRepository:   githubRepositoryRef(pr.Head.Repo),
@@ -2213,20 +2214,21 @@ type githubPullRequest struct {
 }
 
 type githubPullRequestDetail struct {
-	ID        int64         `json:"id"`
-	Number    int           `json:"number"`
-	Title     string        `json:"title"`
-	State     string        `json:"state"`
-	Merged    bool          `json:"merged"`
-	MergedAt  *time.Time    `json:"merged_at"`
-	ClosedAt  *time.Time    `json:"closed_at"`
-	Mergeable *bool         `json:"mergeable"`
-	Draft     bool          `json:"draft"`
-	Body      string        `json:"body"`
-	HTMLURL   string        `json:"html_url"`
-	Labels    []githubLabel `json:"labels"`
-	UpdatedAt time.Time     `json:"updated_at"`
-	Head      struct {
+	ID             int64         `json:"id"`
+	Number         int           `json:"number"`
+	Title          string        `json:"title"`
+	State          string        `json:"state"`
+	Merged         bool          `json:"merged"`
+	MergedAt       *time.Time    `json:"merged_at"`
+	ClosedAt       *time.Time    `json:"closed_at"`
+	Mergeable      *bool         `json:"mergeable"`
+	MergeableState string        `json:"mergeable_state"`
+	Draft          bool          `json:"draft"`
+	Body           string        `json:"body"`
+	HTMLURL        string        `json:"html_url"`
+	Labels         []githubLabel `json:"labels"`
+	UpdatedAt      time.Time     `json:"updated_at"`
+	Head           struct {
 		Ref  string            `json:"ref"`
 		SHA  string            `json:"sha"`
 		Repo *githubRepository `json:"repo"`

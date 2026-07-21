@@ -273,6 +273,13 @@ const (
 	CheckStateFailing CheckState = "failing"
 )
 
+// MergeableStateUnstable is GitHub's mergeable_state value meaning the PR is
+// mergeable and the only failing or pending checks are NON-required (advisory /
+// continue-on-error). The merge gate treats it as CI-ready so a red advisory
+// check never blocks a merge (#961); every other state falls through to the
+// conservative check-state gate.
+const MergeableStateUnstable = "unstable"
+
 // CheckDetail references a single check/status run for repass-gate drill-down.
 type CheckDetail struct {
 	Name    string     `json:"name"`
@@ -327,13 +334,22 @@ type PullRequestPollResult struct {
 	// parses it for a GitHub closing keyword ("Fixes #N"/"Closes #N"/
 	// "Resolves #N", the same convention `goobers open-pr` writes) to find
 	// the backlog issue a merged PR belongs to.
-	Body             string               `json:"body,omitempty"`
-	ReviewDecision   ReviewDecision       `json:"reviewDecision"`
-	RequestedChanges int                  `json:"requestedChanges"`
-	CheckState       CheckState           `json:"checkState"`
-	Checks           []CheckDetail        `json:"checks,omitempty"`
-	CommentsSince    []PullRequestComment `json:"commentsSince,omitempty"`
-	URL              string               `json:"url,omitempty"`
+	Body             string         `json:"body,omitempty"`
+	ReviewDecision   ReviewDecision `json:"reviewDecision"`
+	RequestedChanges int            `json:"requestedChanges"`
+	CheckState       CheckState     `json:"checkState"`
+	Checks           []CheckDetail  `json:"checks,omitempty"`
+	// MergeableState is the provider's own advisory-aware mergeability verdict,
+	// where it supplies one (GitHub's mergeable_state enum; empty otherwise).
+	// Unlike CheckState — which this codebase derives from raw check-runs and so
+	// cannot tell a required check from an advisory/continue-on-error one —
+	// MergeableStateUnstable specifically means the PR is mergeable and every
+	// failing/pending check is NON-required, so a red advisory check must not
+	// gate a merge (#961). The provider's determination (rulesets + branch
+	// protection) is authoritative for that distinction.
+	MergeableState string               `json:"mergeableState,omitempty"`
+	CommentsSince  []PullRequestComment `json:"commentsSince,omitempty"`
+	URL            string               `json:"url,omitempty"`
 }
 
 // ClosePullRequestRequest describes closing a pull request, optionally leaving a comment.
