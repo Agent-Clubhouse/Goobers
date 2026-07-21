@@ -452,6 +452,8 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 		return
 	}
 	switch {
+	case len(parts) == 1 && r.Method == http.MethodGet:
+		writeFakeJSON(w, prDetailJSON(pr))
 	case len(parts) == 2 && parts[1] == "reviews" && r.Method == http.MethodGet:
 		out := make([]map[string]interface{}, 0, len(pr.reviews))
 		for _, review := range pr.reviews {

@@ -1164,12 +1164,24 @@ func (p *GitHubProvider) ListPullRequests(ctx context.Context, req ListPullReque
 	return p.listPullRequests(ctx, req, "open", time.Time{})
 }
 
-// ListClosedPullRequests lists all closed or merged pull requests matching req.
-// Callers should use this only after narrowing to work that needs terminal-state
-// reconciliation; mature repositories can have a large closed history.
-func (p *GitHubProvider) ListClosedPullRequests(ctx context.Context, req ListPullRequestsRequest) ([]PullRequestSummary, error) {
-	req.SkipCheckState = true
-	return p.listPullRequests(ctx, req, "closed", time.Time{})
+// GetPullRequest returns one pull request's current state and metadata without
+// resolving reviews, comments, or check runs.
+func (p *GitHubProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, pullID string) (PullRequestSummary, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return PullRequestSummary{}, err
+	}
+	if pullID == "" {
+		return PullRequestSummary{}, fmt.Errorf("pull id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID)
+	if err != nil {
+		return PullRequestSummary{}, err
+	}
+	var pr githubPullRequestDetail
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
+		return PullRequestSummary{}, err
+	}
+	return summarizePullRequest(pr, ""), nil
 }
 
 // ListRecentlyClosedPullRequests lists pull requests closed or merged since
@@ -1240,28 +1252,32 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 				return nil, err
 			}
 		}
-		labels := make([]string, 0, len(pr.Labels))
-		for _, l := range pr.Labels {
-			labels = append(labels, l.Name)
-		}
-		out = append(out, PullRequestSummary{
-			ID:         strconv.Itoa(pr.Number),
-			Number:     pr.Number,
-			URL:        pr.HTMLURL,
-			State:      pr.State,
-			Merged:     pr.Merged || pr.MergedAt != nil,
-			Head:       pr.Head.Ref,
-			Base:       pr.Base.Ref,
-			HeadSHA:    pr.Head.SHA,
-			BaseSHA:    pr.Base.SHA,
-			Draft:      pr.Draft,
-			Labels:     labels,
-			CheckState: checkState,
-			UpdatedAt:  pr.UpdatedAt,
-			Body:       pr.Body,
-		})
+		out = append(out, summarizePullRequest(pr, checkState))
 	}
 	return out, nil
+}
+
+func summarizePullRequest(pr githubPullRequestDetail, checkState CheckState) PullRequestSummary {
+	labels := make([]string, 0, len(pr.Labels))
+	for _, l := range pr.Labels {
+		labels = append(labels, l.Name)
+	}
+	return PullRequestSummary{
+		ID:         strconv.Itoa(pr.Number),
+		Number:     pr.Number,
+		URL:        pr.HTMLURL,
+		State:      pr.State,
+		Merged:     pr.Merged || pr.MergedAt != nil,
+		Head:       pr.Head.Ref,
+		Base:       pr.Base.Ref,
+		HeadSHA:    pr.Head.SHA,
+		BaseSHA:    pr.Base.SHA,
+		Draft:      pr.Draft,
+		Labels:     labels,
+		CheckState: checkState,
+		UpdatedAt:  pr.UpdatedAt,
+		Body:       pr.Body,
+	}
 }
 
 // PullRequestFiles lists the files pullID touches — merge-review's
