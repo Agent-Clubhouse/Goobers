@@ -43,6 +43,7 @@ type fakePR struct {
 	files      []fakePRFile
 	reviews    []fakeReview
 	state      string
+	merged     bool
 	// selfReview, when set, makes POST /pulls/{n}/reviews return GitHub's
 	// categorical self-review 422 — the #870 single-identity case where the
 	// reviewing token is also the PR author.
@@ -332,8 +333,8 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		decodeFakeJSON(r, &body)
 		issue.labels = append(issue.labels, body.Labels...)
 		writeFakeJSON(w, []map[string]string{})
-	case len(parts) == 3 && parts[1] == "labels" && r.Method == http.MethodDelete:
-		label := parts[2]
+	case len(parts) >= 3 && parts[1] == "labels" && r.Method == http.MethodDelete:
+		label := strings.Join(parts[2:], "/")
 		kept := issue.labels[:0]
 		for _, l := range issue.labels {
 			if l != label {
@@ -404,12 +405,16 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 		}
 		// No head filter: the ListPullRequests shape (issue #359) — the
 		// provider applies its own client-side head-prefix filter, so this
-		// fake just returns every open PR's full detail (draft/labels/
-		// head+base sha), base-filtered.
+		// fake returns PRs in the requested state with full detail (draft/
+		// labels/head+base sha), base-filtered.
+		state := r.URL.Query().Get("state")
+		if state == "" {
+			state = "open"
+		}
 		out := []map[string]interface{}{}
 		for _, num := range sortedPRKeys(s.prs) {
 			pr := s.prs[num]
-			if pr.state == "open" && (base == "" || pr.base == base) {
+			if (state == "all" || pr.state == state) && (base == "" || pr.base == base) {
 				out = append(out, prDetailJSON(pr))
 			}
 		}
@@ -447,6 +452,8 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 		return
 	}
 	switch {
+	case len(parts) == 1 && r.Method == http.MethodGet:
+		writeFakeJSON(w, prDetailJSON(pr))
 	case len(parts) == 2 && parts[1] == "reviews" && r.Method == http.MethodGet:
 		out := make([]map[string]interface{}, 0, len(pr.reviews))
 		for _, review := range pr.reviews {
@@ -590,7 +597,7 @@ func issueJSON(issue *fakeIssue) map[string]interface{} {
 func prJSON(pr *fakePR) map[string]interface{} {
 	return map[string]interface{}{
 		"id": pr.number, "number": pr.number, "title": pr.title, "body": pr.body,
-		"state": pr.state, "merged": false,
+		"state": pr.state, "merged": pr.merged,
 		"html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
 	}
 }
@@ -604,7 +611,8 @@ func prDetailJSON(pr *fakePR) map[string]interface{} {
 	}
 	return map[string]interface{}{
 		"number": pr.number, "html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
-		"draft": pr.draft, "updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
+		"state": pr.state, "merged": pr.merged, "draft": pr.draft,
+		"updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
 		"head":   map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
 		"base":   map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA},
 		"labels": labels,
@@ -681,12 +689,18 @@ func (s *fakeGitHubServer) setPRCheckState(number int, state string) {
 	s.prs[number].checkState = state
 }
 
-// setPRClosed models a fixture PR closing/merging between runs (#523's
-// cache-pruning test).
+// setPRClosed models a fixture PR closing without merging between runs.
 func (s *fakeGitHubServer) setPRClosed(number int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prs[number].state = "closed"
+}
+
+func (s *fakeGitHubServer) setPRMerged(number int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].state = "closed"
+	s.prs[number].merged = true
 }
 
 // addComment seeds a comment directly on issue/PR number's thread, bypassing

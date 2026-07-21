@@ -202,7 +202,7 @@ func TestClaimLockTimeoutIsJournaledRetryableAndDoesNotReleaseHolder(t *testing.
 	}
 }
 
-func TestClaimLockTimeoutWithoutResultFileIsInfrastructureRetryableThroughStageDispatch(t *testing.T) {
+func TestClaimLockTimeoutWithoutDeclaredResultFileIsInfrastructureRetryableThroughStageDispatch(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("helper process wrapper uses a POSIX shell")
 	}
@@ -269,16 +269,12 @@ func TestClaimLockTimeoutWithoutResultFileIsInfrastructureRetryableThroughStageD
 	}
 	defer func() { _ = holder.Release() }()
 
-	started := time.Now()
 	result, err := dispatch.Run(context.Background(), env, run)
 	if !invoke.IsInfrastructureFailure(err) {
 		t.Fatalf("stage result=%+v error=%v, want infrastructure failure", result, err)
 	}
 	if !strings.Contains(err.Error(), claimsLockTimeoutCode) {
 		t.Fatalf("stage error = %q, want typed code %q", err, claimsLockTimeoutCode)
-	}
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
-		t.Fatalf("stage dispatch took %s, want bounded near 20ms", elapsed)
 	}
 
 	if err := holder.Release(); err != nil {

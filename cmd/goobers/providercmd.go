@@ -337,8 +337,9 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 
 // runProviderStageCommand is the command-boundary result contract for provider
 // stages. Handlers still write their domain outputs and typed provider errors;
-// this guard fills only a missing result, preserving the actual stderr reason
-// from early business failures that returned before reaching those writers.
+// this exposes the resolved result path to those writers, then fills only a
+// missing result while preserving the actual stderr reason from early business
+// failures that returned before reaching them.
 func runProviderStageCommand(name, resultFileDefault string, handler cliCommandHandler, args []string, stdout, stderr io.Writer) int {
 	resultFile := providerInput("resultFile", resultFileDefault)
 	if resultFile != "" {
@@ -359,6 +360,21 @@ func runProviderStageCommand(name, resultFileDefault string, handler cliCommandH
 			}
 			return 1
 		}
+	}
+
+	resultFileEnv := executor.InputEnvVar(executor.InputResultFile)
+	originalResultFile, hadOriginalResultFile := os.LookupEnv(resultFileEnv)
+	if resultFile != "" {
+		if err := os.Setenv(resultFileEnv, resultFile); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("expose provider-stage result %s", resultFile), err, resultFile)
+		}
+		defer func() {
+			if hadOriginalResultFile {
+				_ = os.Setenv(resultFileEnv, originalResultFile)
+			} else {
+				_ = os.Unsetenv(resultFileEnv)
+			}
+		}()
 	}
 
 	var captured bytes.Buffer

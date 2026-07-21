@@ -1138,6 +1138,34 @@ func TestGitHubProviderClosePullRequestDetectsMergedVsClosed(t *testing.T) {
 	}
 }
 
+func TestGitHubProviderGetPullRequestReadsExactPRWithoutChecks(t *testing.T) {
+	mergedAt := time.Now().UTC()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/10", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{
+			"number": 10, "state": "closed", "merged_at": mergedAt.Format(time.RFC3339),
+			"html_url": "https://github.com/acme/app/pull/10", "body": "Fixes #7",
+			"head": map[string]interface{}{"ref": "goobers/implementation/run-1", "sha": "aaa111"},
+			"base": map[string]interface{}{"ref": "main", "sha": "base111"},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("exact PR read must not resolve check state, got %s", r.URL.Path)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("pr-token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	pr, err := provider.GetPullRequest(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "10")
+	if err != nil {
+		t.Fatalf("GetPullRequest: %v", err)
+	}
+	if pr.Number != 10 || pr.State != "closed" || !pr.Merged || pr.Body != "Fixes #7" {
+		t.Fatalf("GetPullRequest = %+v, want exact merged PR state and body", pr)
+	}
+}
+
 // TestGitHubProviderListPullRequestsFiltersByHeadPrefixAndReportsCheckState
 // is issue #359's selection-stage acceptance: the pulls-list endpoint has no
 // server-side head-prefix filter, so the provider must apply it client-side,

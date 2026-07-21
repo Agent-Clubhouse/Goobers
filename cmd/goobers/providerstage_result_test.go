@@ -7,8 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/providers"
 )
 
 func TestProviderChainCommandsWriteEarlyFailureResult(t *testing.T) {
@@ -30,6 +33,7 @@ func TestProviderChainCommandsWriteEarlyFailureResult(t *testing.T) {
 		{command: "rebase-pr", errorReason: "selectedNumber and head are required"},
 		{command: "reconcile-post-merge", errorReason: "instance.yaml"},
 		{command: "remediation-checkpoint", errorReason: "GOOBERS_RUN_ID is not set"},
+		{command: "update-behind-pr", errorReason: "instance.yaml"},
 	}
 
 	for _, tt := range tests {
@@ -82,23 +86,13 @@ func TestProviderChainCommandsUseDefaultResultFile(t *testing.T) {
 		{command: "post-merge", resultFile: "post-merge-result.json", errorReason: "instance.yaml"},
 		{command: "reconcile-post-merge", resultFile: "reconcile-post-merge-result.json", errorReason: "instance.yaml"},
 		{command: "remediation-checkpoint", resultFile: "checkpoint-result.json", errorReason: "GOOBERS_RUN_ID is not set"},
+		{command: "update-behind-pr", resultFile: "update-behind-result.json", errorReason: "instance.yaml"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.command, func(t *testing.T) {
 			unsetRunContext(t)
-			resultEnv := executor.InputEnvVar(executor.InputResultFile)
-			original, hadOriginal := os.LookupEnv(resultEnv)
-			if err := os.Unsetenv(resultEnv); err != nil {
-				t.Fatalf("unset %s: %v", resultEnv, err)
-			}
-			t.Cleanup(func() {
-				if hadOriginal {
-					_ = os.Setenv(resultEnv, original)
-				} else {
-					_ = os.Unsetenv(resultEnv)
-				}
-			})
+			unsetProviderResultFile(t)
 
 			workDir := t.TempDir()
 			t.Chdir(workDir)
@@ -117,6 +111,92 @@ func TestProviderChainCommandsUseDefaultResultFile(t *testing.T) {
 				t.Fatalf("errorMessage = %q, want it to contain %q", message, tt.errorReason)
 			}
 		})
+	}
+}
+
+func TestProviderStageCommandInheritsResultContract(t *testing.T) {
+	registration := command(
+		"reconcile-post-merge",
+		apicontract.ActionWorkflowExecution,
+		func(_ []string, _, stderr io.Writer) int {
+			pln(stderr, "error: reconciliation failed")
+			return 1
+		},
+	)
+	if !registration.providerStage {
+		t.Fatal("reconcile-post-merge did not inherit the provider-stage guard")
+	}
+	if registration.resultFile != "reconcile-post-merge-result.json" {
+		t.Fatalf("resultFile = %q, want reconcile-post-merge-result.json", registration.resultFile)
+	}
+
+	unsetProviderResultFile(t)
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code := registration.dispatch(nil, io.Discard, io.Discard)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	result := readProviderStageResult(t, filepath.Join(workDir, registration.resultFile))
+	if result[executor.OutputErrorCode] != errorCodeProvider {
+		t.Fatalf("errorCode = %v, want %s", result[executor.OutputErrorCode], errorCodeProvider)
+	}
+	if result[executor.OutputErrorMessage] != "reconciliation failed" {
+		t.Fatalf("errorMessage = %v, want reconciliation failed", result[executor.OutputErrorMessage])
+	}
+}
+
+func TestProviderStageCommandPropagatesDefaultResultFileToNoWorkHandler(t *testing.T) {
+	unsetProviderResultFile(t)
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	registration := command(
+		"pr-select",
+		apicontract.ActionWorkflowExecution,
+		func(_ []string, stdout, stderr io.Writer) int {
+			return writeNoWorkResult(stdout, stderr, "no eligible PR")
+		},
+	)
+	code := registration.dispatch(nil, io.Discard, io.Discard)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	assertNoWorkProviderStageResult(t, filepath.Join(workDir, "selected-pr.json"))
+}
+
+func TestProviderStageCommandPropagatesDefaultResultFileToTypedFailure(t *testing.T) {
+	unsetProviderResultFile(t)
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	reset := time.Date(2026, time.July, 21, 22, 0, 0, 0, time.UTC)
+
+	registration := command(
+		"pr-select",
+		apicontract.ActionWorkflowExecution,
+		func(_ []string, _, stderr io.Writer) int {
+			return failProviderStage(stderr, "list pull requests", &providers.RateLimitError{
+				Endpoint:  "/pulls",
+				Status:    403,
+				Remaining: 0,
+				Reset:     reset,
+			}, "")
+		},
+	)
+	code := registration.dispatch(nil, io.Discard, io.Discard)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	result := readProviderStageResult(t, filepath.Join(workDir, "selected-pr.json"))
+	if result[executor.OutputErrorCode] != providers.ErrorCodeRateLimited {
+		t.Fatalf("errorCode = %v, want %s", result[executor.OutputErrorCode], providers.ErrorCodeRateLimited)
+	}
+	if result[executor.OutputErrorRetryable] != true {
+		t.Fatalf("errorRetryable = %v, want true", result[executor.OutputErrorRetryable])
+	}
+	if result["rateLimitReset"] != reset.Format(time.RFC3339) {
+		t.Fatalf("rateLimitReset = %v, want %s", result["rateLimitReset"], reset.Format(time.RFC3339))
 	}
 }
 
@@ -190,4 +270,20 @@ func assertNoWorkProviderStageResult(t *testing.T, path string) {
 	if result[executor.OutputNoWork] != true {
 		t.Fatalf("provider-stage result = %v, want noWork=true", result)
 	}
+}
+
+func unsetProviderResultFile(t *testing.T) {
+	t.Helper()
+	key := executor.InputEnvVar(executor.InputResultFile)
+	original, hadOriginal := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if hadOriginal {
+			_ = os.Setenv(key, original)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
 }

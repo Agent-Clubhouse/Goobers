@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/executor"
 )
 
 type cliCommandHandler func([]string, io.Writer, io.Writer) int
@@ -51,17 +52,6 @@ func (c cliCommand) withSynopsis(synopsis string) cliCommand {
 // docs/man pages, CLI-2).
 func (c cliCommand) withExamples(examples ...string) cliCommand {
 	c.examples = examples
-	return c
-}
-
-// withProviderStageResult marks a provider-chain stage command as owning a
-// fresh result file on every non-usage exit. The default must match the shipped
-// workflow's result filename so standalone invocations retain the same
-// contract. dispatch enforces it, so new stages opt in through one registry
-// entry.
-func (c cliCommand) withProviderStageResult(resultFile string) cliCommand {
-	c.providerStage = true
-	c.resultFile = resultFile
 	return c
 }
 
@@ -304,7 +294,6 @@ func init() {
 				withExamples("printf %s \"$LEAKED\" | goobers journal redact --run <id> --path inputs/creds.env --reason 'leak'"),
 		).withHelp("the one sanctioned edit to the append-only journal", journalHelp),
 		command("backlog-query", apicontract.ActionWorkflowExecution, runBacklogQuery).
-			withProviderStageResult("claimed-item.json").
 			withSynopsis(synopsisByID["backlog-query"]).
 			withHelp("query/claim one eligible backlog item (a workflow stage)", backlogQueryHelp).
 			withExamples("goobers backlog-query", "goobers backlog-query --claim"),
@@ -317,17 +306,14 @@ func init() {
 			withHelp("push the worktree's checked-out branch to origin (a workflow stage)", pushBranchHelp).
 			withExamples("goobers push-branch"),
 		command("open-pr", apicontract.ActionWorkflowExecution, runOpenPR).
-			withProviderStageResult("pr-result.json").
 			withSynopsis(synopsisByID["open-pr"]).
 			withHelp("open or update the run's PR (a workflow stage)", openPRHelp).
 			withExamples("goobers open-pr"),
 		command("issue-close-out", apicontract.ActionWorkflowExecution, runIssueCloseOut).
-			withProviderStageResult("issue-close-out-result.json").
 			withSynopsis(synopsisByID["issue-close-out"]).
 			withHelp("comment + close out the claimed issue (a workflow stage)", issueCloseOutHelp).
 			withExamples("goobers issue-close-out"),
 		command("merge-pr", apicontract.ActionWorkflowExecution, runMergePR).
-			withProviderStageResult("merge-result.json").
 			withSynopsis(synopsisByID["merge-pr"]).
 			withHelp("conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)", mergePRHelp).
 			withExamples("goobers merge-pr"),
@@ -336,17 +322,14 @@ func init() {
 			withHelp("record a merge refusal and demote a persistently-stuck lander (a workflow stage)", recordMergeRefusalHelp).
 			withExamples("goobers record-merge-refusal"),
 		command("merge-queue-poll", apicontract.ActionWorkflowExecution, runMergeQueuePoll).
-			withProviderStageResult("queue-result.json").
 			withSynopsis(synopsisByID["merge-queue-poll"]).
 			withHelp("watch an enqueued PR until merged or evicted (a workflow stage)", mergeQueuePollHelp).
 			withExamples("goobers merge-queue-poll"),
 		command("reconcile-post-merge", apicontract.ActionWorkflowExecution, runReconcilePostMerge).
-			withProviderStageResult("reconcile-post-merge-result.json").
 			withSynopsis(synopsisByID["reconcile-post-merge"]).
 			withHelp("reconcile late merge-queue merges (a workflow stage)", reconcilePostMergeHelp).
 			withExamples("goobers reconcile-post-merge"),
 		command("post-merge", apicontract.ActionWorkflowExecution, runPostMerge).
-			withProviderStageResult("post-merge-result.json").
 			withSynopsis(synopsisByID["post-merge"]).
 			withHelp("post-merge fan-out + close the referenced issue (a workflow stage)", postMergeHelp).
 			withExamples("goobers post-merge"),
@@ -359,22 +342,18 @@ func init() {
 			withHelp("emit the docs-drift churn digest since the watermark (a connector stage)", docsChurnHelp).
 			withExamples("goobers docs-churn --format churn-digest"),
 		command("pr-select", apicontract.ActionWorkflowExecution, runPRSelect).
-			withProviderStageResult("selected-pr.json").
 			withSynopsis(synopsisByID["pr-select"]).
 			withHelp("select one eligible open PR for merge-review (a workflow stage)", prSelectHelp).
 			withExamples("goobers pr-select"),
 		command("gather-sibling-context", apicontract.ActionWorkflowExecution, runGatherSiblingContext).
-			withProviderStageResult("sibling-context.json").
 			withSynopsis(synopsisByID["gather-sibling-context"]).
 			withHelp("load other open PRs as review evidence (a workflow stage)", gatherSiblingContextHelp).
 			withExamples("goobers gather-sibling-context"),
 		command("apply-verdict", apicontract.ActionWorkflowExecution, runApplyVerdict).
-			withProviderStageResult("verdict-result.json").
 			withSynopsis(synopsisByID["apply-verdict"]).
 			withHelp("publish a merge-review verdict as a native review (a workflow stage)", applyVerdictHelp).
 			withExamples("goobers apply-verdict"),
 		command("elect-lander", apicontract.ActionWorkflowExecution, runElectLander).
-			withProviderStageResult("election.json").
 			withSynopsis(synopsisByID["elect-lander"]).
 			withHelp("elect the landing PR among a merge-review cohort (a workflow stage)", electLanderHelp).
 			withExamples("goobers elect-lander"),
@@ -383,17 +362,14 @@ func init() {
 			withHelp("API-update a clean behind-base PR, else route to remediation (a workflow stage)", updateBehindPRHelp).
 			withExamples("goobers update-behind-pr"),
 		command("gather-pr-context", apicontract.ActionWorkflowExecution, runGatherPRContext).
-			withProviderStageResult("pr-context.json").
 			withSynopsis(synopsisByID["gather-pr-context"]).
 			withHelp("pr-remediation entrypoint: select and load a PR's context (a workflow stage)", gatherPRContextHelp).
 			withExamples("goobers gather-pr-context"),
 		command("rebase-pr", apicontract.ActionWorkflowExecution, runRebasePR).
-			withProviderStageResult("rebase-result.json").
 			withSynopsis(synopsisByID["rebase-pr"]).
 			withHelp("rebase-first, finding-driven remediation routing (a workflow stage)", rebasePRHelp).
 			withExamples("goobers rebase-pr"),
 		command("remediation-checkpoint", apicontract.ActionWorkflowExecution, runRemediationCheckpoint).
-			withProviderStageResult("checkpoint-result.json").
 			withSynopsis(synopsisByID["remediation-checkpoint"]).
 			withHelp("durable per-PR repass budget + same-diff escalation (a workflow stage)", remediationCheckpointHelp).
 			withExamples("goobers remediation-checkpoint --budget 3"),
@@ -418,7 +394,12 @@ func command(
 	class apicontract.ActionClass,
 	handler cliCommandHandler,
 ) cliCommand {
-	return aliasCommand(name, []string{name}, class, handler)
+	registration := aliasCommand(name, []string{name}, class, handler)
+	if resultFile, ok := executor.ProviderStageResultFile(name); ok {
+		registration.providerStage = true
+		registration.resultFile = resultFile
+	}
+	return registration
 }
 
 func commandWithSubcommands(
