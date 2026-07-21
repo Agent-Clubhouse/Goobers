@@ -84,9 +84,12 @@ scheduled workflows until interrupted, draining in-flight runs gracefully on
 SIGINT/SIGTERM. `run` remains the way to trigger one workflow manually
 without a daemon running. Full walkthrough:
 [`docs/guides/quickstart.md`](docs/guides/quickstart.md). Platform-specific
-setup: [Linux quickstart](docs/guides/quickstart-linux.md); run the daemon as a
-supervised service via [Daemon supervision](docs/guides/supervision.md)
-(systemd · launchd · Windows Service).
+setup: [Linux quickstart](docs/guides/quickstart-linux.md),
+[Windows quickstart](docs/guides/quickstart-windows.md) (install & verify); run
+the daemon as a supervised service via
+[Daemon supervision](docs/guides/supervision.md)
+(systemd · launchd · Windows Service). How binaries are built, packaged, and
+verified for distribution: [Releases & packaging](docs/guides/releases.md).
 
 ## Authoring workflow DSL with an agent
 
