@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
@@ -276,20 +277,13 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	cmd := exec.Command(name, run.Command[1:]...)
 	cmd.Dir = env.Workspace
 	cmd.Env = stageEnv
-	// Setsid, not Setpgid: put the stage in a NEW SESSION with no controlling
-	// terminal. When `goobers up` runs in the foreground of an interactive
-	// terminal, a bare Setpgid child is a *background process group on that
-	// controlling terminal* — and a stage that touches terminal state (e.g. the
-	// nested-daemon tests under `make ci` doing a tcsetattr/tcsetpgrp ioctl, or
-	// opening /dev/tty) then takes SIGTTOU/SIGTTIN and the kernel STOPS the whole
-	// group. It sits frozen (state T, zero CPU) until the stage timeout SIGKILLs
-	// it — the real "local-ci hang": not fsync, not disk, not a deadlock (a
-	// stopped group ignores SIGQUIT, which is why no goroutine dump ever
-	// appeared). Setsid detaches the controlling terminal entirely, matching how
-	// CI (and the copilot-spawned stages that never hung) run, so job control
-	// can't touch it. The session leader's pgid == pid, so the timeout path's
-	// process-group kill (syscall.Kill(-pid, ...)) is unchanged.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Configure tree ownership before the network isolation below layers its
+	// own SysProcAttr fields on: on unix proc puts the stage in a NEW SESSION
+	// (Setsid, not Setpgid) with no controlling terminal, so a stage that
+	// touches terminal state can't be STOPPED by job control (the "local-ci
+	// hang", #846) and the whole tree can be killed as a unit on timeout. See
+	// internal/platform/proc for the full rationale.
+	proc.Configure(cmd)
 	if err := configureCommandNetwork(cmd, run.Network); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
@@ -300,7 +294,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	if err := cmd.Start(); err != nil {
+	tree, err := proc.Start(cmd)
+	if err != nil {
 		return apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
 			Error:   &apiv1.ErrorInfo{Code: "exec_start", Message: err.Error(), Retryable: false},
@@ -353,17 +348,22 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		// goes straight to SIGKILL — nothing to diagnose there.
 		dumped := false
 		if timedOut {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGQUIT)
-			select {
-			case waitErr = <-waitDone:
-				dumped = true // goroutine traces are now in the captured output
-			case <-time.After(timeoutDumpGrace):
+			// SIGQUIT the whole tree so every Go process in it dumps its full
+			// goroutine trace and exits before the force-kill below. A platform
+			// that can't signal tree members (windows Job Objects) reports the
+			// request unsupported, and we fall straight through to Kill.
+			if supported, _ := tree.RequestDump(); supported {
+				select {
+				case waitErr = <-waitDone:
+					dumped = true // goroutine traces are now in the captured output
+				case <-time.After(timeoutDumpGrace):
+				}
 			}
 		}
 		if !dumped {
-			// Kill the whole process group (negative pid), not just the direct
-			// child, so a runaway subprocess tree can't outlive the stage.
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			// Kill the whole tree, not just the direct child, so a runaway
+			// subprocess tree can't outlive the stage.
+			_ = tree.Kill()
 			select {
 			case waitErr = <-waitDone:
 			case <-time.After(groupKillWaitDelay):

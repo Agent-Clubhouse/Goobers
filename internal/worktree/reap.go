@@ -8,8 +8,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/goobers/goobers/internal/platform/proc"
 )
 
 // ReapOptions configures orphan detection for Manager.Reap.
@@ -282,19 +283,8 @@ func worktreeRegistered(ctx context.Context, repoDir, path string) (bool, error)
 // instead of depending on a real OS PID belonging to no live process — a
 // genuinely-dead PID from a reaped subprocess is inherently racy against PID
 // recycling on a busy machine (issue #142, a real QA-gate stress-test flake).
-var processAlive = processAliveUnix
-
-// processAliveUnix probes pid with signal 0, which checks liveness without
-// actually signaling it. Best-effort: PID reuse after a reboot can in
-// principle produce a false "alive" for an unrelated process, an accepted
-// limitation at V0.
-func processAliveUnix(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
-}
+//
+// proc.Alive fails toward alive on an ambiguous probe, which is the safe
+// direction here: a false "dead" would reap a live run's worktree, while a
+// false "alive" only defers a reap.
+var processAlive = proc.Alive

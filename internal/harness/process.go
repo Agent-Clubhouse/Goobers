@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/platform/proc"
 )
 
 // DefaultTimeout bounds an agentic harness session when the Executor has no
@@ -179,21 +179,14 @@ type ExecProcessRunner struct{}
 // alongside an error (including on timeout) so the caller can still record a
 // partial transcript as a journal span even when the harness fails.
 //
-// The command runs in its own SESSION (Setsid) so a timeout kills the whole
-// subprocess tree, not just the direct child (#119) — an agent-spawned
-// grandchild (a dev server, a test watcher) would otherwise survive the
-// direct child's death and keep holding the stage's stdout/stderr pipes
-// open, which would in turn keep cmd.Wait() from ever returning.
-//
-// Setsid, not Setpgid: a bare Setpgid child of a `goobers up` running in the
-// foreground of an interactive terminal is a *background process group on
-// that controlling terminal*, which the kernel STOPS (SIGTTOU/SIGTTIN, state
-// T, zero CPU) the moment it touches terminal state — the "local-ci hang"
-// #846 fixed in the executor's stage spawn (internal/executor/shell.go). This
-// is the twin agentic-harness spawn path (the one that launches copilot);
-// Setsid detaches the controlling terminal entirely so job control can't
-// freeze it. The session leader's pgid == pid, so the timeout path's
-// process-group kill (syscall.Kill(-cmd.Process.Pid, ...)) below is unchanged.
+// The command is spawned through internal/platform/proc, which owns the whole
+// subprocess tree (on unix, its own session via Setsid) so a timeout kills the
+// tree, not just the direct child (#119) — an agent-spawned grandchild (a dev
+// server, a test watcher) would otherwise survive the direct child's death and
+// keep holding the stage's stdout/stderr pipes open, which would in turn keep
+// cmd.Wait() from ever returning. This is the twin of the executor's stage
+// spawn (internal/executor/shell.go); proc documents why it uses a session
+// rather than a bare process group (the "local-ci hang", #846).
 func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
 	if len(req.Command) == 0 {
 		return ProcessResult{}, fmt.Errorf("harness: empty command")
@@ -216,14 +209,16 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 		env = []string{}
 	}
 	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	buf := newTranscriptBuffer(req.MaxTranscriptBytes)
 	buf.progress = func() { invoke.ReportProgress(runCtx) }
 	cmd.Stdout = buf
 	cmd.Stderr = buf
 
-	if err := cmd.Start(); err != nil {
+	// proc.Start puts the command in its own session (Setsid) so the tree can
+	// be killed as a unit on timeout/cancel below — see internal/platform/proc.
+	tree, err := proc.Start(cmd)
+	if err != nil {
 		return ProcessResult{ExitCode: -1}, fmt.Errorf("harness: start %v: %w", req.Command, err)
 	}
 
@@ -231,7 +226,6 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	go func() { waitDone <- cmd.Wait() }()
 
 	var timedOut, canceled bool
-	var err error
 	select {
 	case err = <-waitDone:
 	case <-runCtx.Done():
@@ -246,9 +240,9 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 		} else {
 			canceled = true
 		}
-		// Kill the whole process group (negative pid), not just the direct
-		// child, so a runaway subprocess tree can't outlive the stage.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		// Kill the whole tree, not just the direct child, so a runaway
+		// subprocess tree can't outlive the stage.
+		_ = tree.Kill()
 		select {
 		case err = <-waitDone:
 		case <-time.After(groupKillWaitDelay):
