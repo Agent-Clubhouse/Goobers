@@ -15,12 +15,40 @@ import (
 // RunStalledErrorCode identifies watchdog terminalizations in run journals.
 const RunStalledErrorCode = "run_stalled"
 
-var errStalledRun = errors.New("runner: stalled run escalation requested")
+// RunCanceledErrorCode identifies operator-requested live cancellations
+// (`goobers run cancel`, #831) in run journals, distinct from the watchdog's
+// stall terminalizations (RunStalledErrorCode).
+const RunCanceledErrorCode = "run_canceled"
 
+var (
+	errStalledRun  = errors.New("runner: stalled run escalation requested")
+	errCanceledRun = errors.New("runner: run cancellation requested")
+)
+
+// interruptKind distinguishes why a live run's active attempt was interrupted,
+// which selects the terminal phase and journal note the owner records when it
+// unwinds. Both kinds share the one activeRun handshake (withActiveRun) so a
+// manual cancel and the stall watchdog can never race into two terminalizations
+// of the same run.
+type interruptKind int
+
+const (
+	interruptStalled interruptKind = iota
+	interruptCancel
+)
+
+// stalledRequest is a pending interrupt of a live run's active attempt. now is
+// always set; timeout/lastActivity are the stall-watchdog diagnostics and are
+// zero for a cancel. phase is the terminal phase the owner records (escalated
+// for a stall, aborted for a cancel) and cause is the context cancellation
+// cause propagated to the running stage.
 type stalledRequest struct {
+	kind         interruptKind
 	now          time.Time
 	timeout      time.Duration
 	lastActivity time.Time
+	phase        journal.RunPhase
+	cause        error
 }
 
 type activeRunResult struct {
@@ -152,7 +180,14 @@ func (r *activeRun) requestEscalation(now time.Time, timeout time.Duration) (req
 			return
 		}
 		if r.request == nil {
-			r.request = &stalledRequest{now: now, timeout: timeout, lastActivity: lastActivity}
+			r.request = &stalledRequest{
+				kind:         interruptStalled,
+				now:          now,
+				timeout:      timeout,
+				lastActivity: lastActivity,
+				phase:        journal.PhaseEscalated,
+				cause:        errStalledRun,
+			}
 			r.cancel(errStalledRun)
 		}
 		requested = true
@@ -161,6 +196,29 @@ func (r *activeRun) requestEscalation(now time.Time, timeout time.Duration) (req
 		return false, true
 	}
 	return requested, false
+}
+
+// requestCancel interrupts a live run's active attempt at operator request
+// (#831), recording terminal phase aborted. Unlike requestEscalation it applies
+// unconditionally to a still-running run — a cancel is an explicit instruction,
+// not a silence heuristic — but is a no-op once the run has completed or another
+// interrupt (a concurrent stall escalation) already owns the request slot.
+func (r *activeRun) requestCancel(now time.Time) (requested bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.completed {
+		return false
+	}
+	if r.request == nil {
+		r.request = &stalledRequest{
+			kind:  interruptCancel,
+			now:   now,
+			phase: journal.PhaseAborted,
+			cause: errCanceledRun,
+		}
+		r.cancel(errCanceledRun)
+	}
+	return r.request.kind == interruptCancel
 }
 
 func (r *activeRun) waitFor(timeout time.Duration) (activeRunResult, bool) {
@@ -255,12 +313,15 @@ func setStalledAttemptContext(ctx context.Context) {
 	previousCancel := active.cancel
 	active.attemptCtx = attemptCtx
 	active.cancel = cancel
-	requested := active.request != nil
+	var cause error
+	if active.request != nil {
+		cause = active.request.cause
+	}
 	active.mu.Unlock()
 
 	previousCancel(nil)
-	if requested {
-		cancel(errStalledRun)
+	if cause != nil {
+		cancel(cause)
 	}
 }
 
@@ -350,9 +411,12 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 				return Result{}, false, fmt.Errorf("runner: stalled run %q did not finish terminalization within %s", runID, grace+terminalGrace)
 			}
 			result, finishErr := r.finishStalledTakeover(runID, active.journal, candidate.finalState, 0, stalledRequest{
+				kind:         interruptStalled,
 				now:          now,
 				timeout:      timeout,
 				lastActivity: candidate.lastActivity,
+				phase:        journal.PhaseEscalated,
+				cause:        errStalledRun,
 			})
 			active.completeTakeover(activeRunResult{result: result, err: finishErr})
 			return result, result.Phase == journal.PhaseEscalated, finishErr
@@ -374,11 +438,103 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 		return Result{Phase: candidate.phase}, false, nil
 	}
 	result, err := r.finishStalled(runID, jr, candidate.finalState, 0, stalledRequest{
+		kind:         interruptStalled,
 		now:          now,
 		timeout:      timeout,
 		lastActivity: candidate.lastActivity,
+		phase:        journal.PhaseEscalated,
+		cause:        errStalledRun,
 	})
 	return result, result.Phase == journal.PhaseEscalated, err
+}
+
+// CancelRun stops a specific in-flight run this Runner owns at operator request
+// (`goobers run cancel`, #831): it interrupts the run's active attempt, lets the
+// owner unwind, and finalizes the run terminal phase aborted — tearing down the
+// worktree and releasing the backlog claim through the same terminal path a
+// stall escalation or a normal finish uses (Config.FinalizeTerminal). It routes
+// through the same activeRun handshake as EscalateStalled, so a manual cancel
+// and the stall watchdog arbitrate to a single terminalization rather than
+// racing.
+//
+// The returned bool reports whether this call cancelled a live run:
+//   - false, nil error, no live owner here (r.activeRun(runID) == nil) — the
+//     caller distinguishes "not running by this daemon" from a real cancel;
+//   - false, nil error, run already terminal (Result.Phase carries the phase);
+//   - true — the run reached a terminal phase because of this cancel (aborted,
+//     or escalated if a stall interrupt had already claimed the request slot).
+func (r *Runner) CancelRun(runID string, now time.Time) (Result, bool, error) {
+	if !apiv1.ValidRunID(runID) {
+		return Result{}, false, fmt.Errorf("runner: invalid run id %q", runID)
+	}
+	active := r.activeRun(runID)
+	if active == nil {
+		// No live attempt here: either this daemon does not own the run, or it
+		// finished between the request and this call. Not our run to cancel.
+		return Result{}, false, nil
+	}
+
+	dir := filepath.Join(r.cfg.RunsDir, runID)
+	phase, finalState, err := runPhaseAndState(dir)
+	if err != nil {
+		return Result{}, false, fmt.Errorf("runner: inspect run %q for cancel: %w", runID, err)
+	}
+	if phase != journal.PhaseRunning {
+		// Terminalized between resolving the owner and here — report the phase,
+		// nothing to cancel.
+		return Result{Phase: phase}, false, nil
+	}
+
+	active.requestCancel(now)
+
+	grace := r.stalledCancelGrace
+	if grace <= 0 {
+		grace = StalledCancellationGrace
+	}
+	if outcome, ok := active.waitFor(grace); ok {
+		return outcome.result, outcome.result.Phase == journal.PhaseAborted, outcome.err
+	}
+	outcome, claim := active.claimTakeover()
+	switch claim {
+	case takeoverReady:
+		return outcome.result, outcome.result.Phase == journal.PhaseAborted, outcome.err
+	case takeoverOwnerTerminalizing, takeoverAlreadyClaimed:
+		terminalGrace := r.stalledTerminalGrace
+		if terminalGrace <= 0 {
+			terminalGrace = StalledTerminalizationGrace
+		}
+		if outcome, ok := active.waitFor(terminalGrace); ok {
+			return outcome.result, outcome.result.Phase == journal.PhaseAborted, outcome.err
+		}
+		return Result{}, false, fmt.Errorf("runner: cancelled run %q did not finish terminalization within %s", runID, grace+terminalGrace)
+	}
+	result, finishErr := r.finishStalledTakeover(runID, active.journal, finalState, 0, stalledRequest{
+		kind:  interruptCancel,
+		now:   now,
+		phase: journal.PhaseAborted,
+		cause: errCanceledRun,
+	})
+	active.completeTakeover(activeRunResult{result: result, err: finishErr})
+	return result, result.Phase == journal.PhaseAborted, finishErr
+}
+
+// runPhaseAndState reads a run's reconstructed terminal phase and its last
+// machine state (the stage the run was in) in one open, for the cancel path's
+// still-running guard and takeover finalState.
+func runPhaseAndState(dir string) (journal.RunPhase, string, error) {
+	reader, err := journal.OpenRead(dir)
+	if err != nil {
+		return "", "", err
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		return "", "", err
+	}
+	finalState := ""
+	if state, stateErr := reader.State(); stateErr == nil {
+		finalState = state.MachineState
+	}
+	return phase, finalState, nil
 }
 
 func (r *Runner) finishStalled(runID string, jr *journal.Run, finalState string, steps int, request stalledRequest) (Result, error) {
@@ -397,6 +553,30 @@ func (r *Runner) finishStalledWith(
 	request stalledRequest,
 	finish func(string, *journal.Run, journal.RunPhase, string, int) (Result, error),
 ) (Result, error) {
+	phase := request.phase
+	if phase == "" {
+		phase = journal.PhaseEscalated
+	}
+	if err := jr.Append(interruptEvent(runID, request)); err != nil {
+		return Result{}, fmt.Errorf("runner: journal interrupted run %q: %w", runID, err)
+	}
+	return finish(runID, jr, phase, finalState, steps)
+}
+
+// interruptEvent is the diagnostic error event recorded before a live run's
+// terminal run.finished when a stall or a cancel interrupted its active
+// attempt. The two kinds carry distinct codes so run history can tell an
+// operator cancellation apart from a watchdog stall terminalization.
+func interruptEvent(runID string, request stalledRequest) journal.Event {
+	if request.kind == interruptCancel {
+		return journal.Event{
+			Type:  journal.EventError,
+			Error: &journal.ErrorDetail{Code: RunCanceledErrorCode, Message: fmt.Sprintf("run %q canceled by operator request", runID)},
+			Runner: map[string]any{
+				"canceledAt": request.now.UTC().Format(time.RFC3339Nano),
+			},
+		}
+	}
 	message := fmt.Sprintf(
 		"run %q made no journal progress for %s (last activity %s; timeout %s)",
 		runID,
@@ -404,17 +584,14 @@ func (r *Runner) finishStalledWith(
 		request.lastActivity.UTC().Format(time.RFC3339),
 		request.timeout,
 	)
-	if err := jr.Append(journal.Event{
+	return journal.Event{
 		Type:  journal.EventError,
 		Error: &journal.ErrorDetail{Code: RunStalledErrorCode, Message: message},
 		Runner: map[string]any{
 			"lastActivityAt":    request.lastActivity.UTC().Format(time.RFC3339Nano),
 			"stalledRunTimeout": request.timeout.String(),
 		},
-	}); err != nil {
-		return Result{}, fmt.Errorf("runner: journal stalled run %q: %w", runID, err)
 	}
-	return finish(runID, jr, journal.PhaseEscalated, finalState, steps)
 }
 
 func (r *Runner) finishStalledRequest(ctx context.Context, runID string, jr *journal.Run, finalState string, steps int) (Result, bool, error) {

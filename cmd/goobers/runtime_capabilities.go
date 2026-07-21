@@ -132,6 +132,10 @@ func init() {
 				withSynopsis(synopsisByID["run abort"]).
 				withHelp("mark a stuck non-terminal run aborted", runAbortHelp).
 				withExamples("goobers run abort <run-id>"),
+			subcommand("run cancel", "cancel", apicontract.ActionMaintenance, runRunCancel).
+				withSynopsis(synopsisByID["run cancel"]).
+				withHelp("cancel a live in-flight run via the daemon", runCancelHelp).
+				withExamples("goobers run cancel <run-id>"),
 		).
 			withSynopsis(synopsisByID["run"]).
 			withHelp("trigger a run manually (still honors run conditions)", runHelp).

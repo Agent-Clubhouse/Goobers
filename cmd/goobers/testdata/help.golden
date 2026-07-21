@@ -16,6 +16,7 @@ Usage:
   goobers run <workflow> [--no-wait] [path]
                                 trigger a run manually (still honors run conditions)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
+  goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
   goobers workflow show <name> [path]  show a workflow as a text DAG
@@ -103,6 +104,7 @@ Usage:
   goobers run <workflow> [--no-wait] [path]
                                 trigger a run manually (still honors run conditions)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
+  goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
   goobers workflow show <name> [path]  show a workflow as a text DAG
@@ -603,6 +605,7 @@ Exit codes: 0 = reset written, 2 = usage/IO error.
 ### run
 Usage: goobers run <workflow> [--no-wait] [path]
        goobers run abort <run-id> [path]
+       goobers run cancel <run-id> [path]
 
 Trigger a run of a config/ workflow manually, through the same scheduler
 (run conditions, instance journal, single-instance lock) a live `goobers up`
@@ -617,6 +620,9 @@ escalated. A successful submission-only mode (such as --no-wait, once
 available) exits 0 because it does not observe a terminal phase.
 `run abort` marks a stuck non-terminal run aborted directly in its own
 journal — recovery for a run resumeInterruptedRuns can't resolve on its own.
+`run cancel` instead asks a live daemon to stop a run it is actively
+executing (active-stage cancel + worktree/claim teardown + aborted) — the
+live counterpart to `run abort`'s daemon-down journal repair.
 
 ### run abort
 Usage: goobers run abort <run-id> [path]
@@ -625,6 +631,18 @@ Mark a stuck non-terminal run aborted by appending a terminal
 run.finished(status=aborted) event to its own journal (default path
 "."). Exit codes: 0 = aborted, 1 = business error (run already terminal),
 2 = usage/IO error (unknown run).
+
+### run cancel
+Usage: goobers run cancel <run-id> [path]
+
+Ask the live `goobers up` daemon to stop a run it is actively executing
+(default path "."): it cancels the active stage, tears down the run
+worktree, releases the backlog claim so the item can be re-queued, and
+records terminal phase aborted — without stopping the daemon or editing a
+journal behind its back. Use `run abort` instead when no daemon is running
+(that path finalizes a stuck run's journal directly). Exit codes: 0 =
+cancelled, 1 = business error (already terminal, not currently running, or
+no daemon to cancel it), 2 = usage/IO error (unknown run).
 
 ### runs
 Usage: goobers runs <command> [flags] [path]

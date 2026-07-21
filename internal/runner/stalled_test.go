@@ -273,6 +273,165 @@ func TestEscalateStalledInterruptsRetryBackoff(t *testing.T) {
 	}
 }
 
+// TestCancelRunAbortsLiveRun is #831's core: an operator cancel of a live run
+// interrupts its active attempt, unwinds the owner, and finalizes terminal
+// phase aborted — recording a run_canceled note and driving FinalizeTerminal
+// (worktree teardown + claim release) with phase aborted, all through the same
+// activeRun handshake the stall watchdog uses.
+func TestCancelRunAbortsLiveRun(t *testing.T) {
+	flaky := &flakyDeterministic{failUntil: 100}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return flaky, nil
+	}, gate.NewAutomatedEvaluator())
+	machine := retryFixtureMachineWithBackoff(t, 3, 10*time.Second)
+
+	var finalizedPhase journal.RunPhase
+	var finalizeCalls int32
+	r.cfg.FinalizeTerminal = func(runID string, phase journal.RunPhase) error {
+		if runID == "cancel-live" {
+			finalizedPhase = phase
+			atomic.AddInt32(&finalizeCalls, 1)
+		}
+		return nil
+	}
+
+	type startOutcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan startOutcome, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID:   "cancel-live",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		done <- startOutcome{result: result, err: err}
+	}()
+
+	runDir := filepath.Join(runsDir, "cancel-live")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		reader, err := journal.OpenRead(runDir)
+		if err == nil {
+			events, readErr := reader.Events()
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			found := false
+			for _, event := range events {
+				if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("run did not enter retry backoff")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	start := time.Now()
+	result, cancelled, err := r.CancelRun("cancel-live", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cancelled || result.Phase != journal.PhaseAborted {
+		t.Fatalf("cancelled=%v result=%+v, want aborted", cancelled, result)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("cancel took %s to stop the run", elapsed)
+	}
+
+	outcome := <-done
+	if outcome.err != nil || outcome.result.Phase != journal.PhaseAborted {
+		t.Fatalf("Start() = %+v, %v, want aborted", outcome.result, outcome.err)
+	}
+	if atomic.LoadInt32(&finalizeCalls) == 0 || finalizedPhase != journal.PhaseAborted {
+		t.Fatalf("FinalizeTerminal calls=%d phase=%s, want aborted teardown", finalizeCalls, finalizedPhase)
+	}
+
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 ||
+		events[len(events)-2].Error == nil ||
+		events[len(events)-2].Error.Code != RunCanceledErrorCode ||
+		events[len(events)-1].Type != journal.EventRunFinished ||
+		events[len(events)-1].Status != string(journal.PhaseAborted) {
+		t.Fatalf("terminal events = %+v, want run_canceled + run.finished(aborted)", events)
+	}
+}
+
+// TestCancelRunReportsNoLiveOwner covers the daemon-sweep discriminator: a
+// running run this Runner does not actively own is not cancelled here (the
+// caller reports "not currently running by this daemon" rather than editing the
+// journal behind a would-be owner's back).
+func TestCancelRunReportsNoLiveOwner(t *testing.T) {
+	now := time.Date(2026, 7, 20, 20, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	runsDir := filepath.Join(root, "runs")
+	manager, err := worktree.NewManager(filepath.Join(root, "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "unowned-run", Workflow: "implementation", WorkflowVersion: 1, Gaggle: "example",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil, journal.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.SetMachineState("implement")
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var finalized bool
+	r, err := New(Config{
+		Worktrees: manager,
+		RunsDir:   runsDir,
+		FinalizeTerminal: func(string, journal.RunPhase) error {
+			finalized = true
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, cancelled, err := r.CancelRun("unowned-run", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled || finalized {
+		t.Fatalf("cancelled=%v finalized=%v, want no-op for an unowned run", cancelled, finalized)
+	}
+	if result.Phase != "" {
+		t.Fatalf("result.Phase = %q, want empty (no live owner)", result.Phase)
+	}
+	reader, err := journal.OpenRead(filepath.Join(runsDir, "unowned-run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase, err := reader.Phase(); err != nil || phase != journal.PhaseRunning {
+		t.Fatalf("phase=%s err=%v, want still running", phase, err)
+	}
+}
+
 func TestEscalateStalledInterruptsPostStageHandler(t *testing.T) {
 	const runID = "stalled-handler"
 	r, _ := newTestRunner(t, map[string]stubTaskResult{

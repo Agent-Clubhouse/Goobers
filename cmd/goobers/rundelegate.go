@@ -60,28 +60,50 @@ const (
 
 // writeTriggerRequest drops a new delegation request file under
 // schedulerDir/pending-triggers and returns its request id (derived from the
-// unique temp file os.CreateTemp mints, so concurrent `goobers run`
+// unique temp name os.CreateTemp mints, so concurrent `goobers run`
 // invocations against the same instance never collide without needing any
-// extra locking of their own).
+// extra locking of their own). The request is published atomically — written
+// to a hidden temp that does NOT match requestSuffix, then renamed into place —
+// so the daemon's sweep can never observe (and reject as malformed) a
+// half-written request, the same torn-read guard claims.go and runcancel.go
+// use. Before this was atomic, os.CreateTemp minted the request file already
+// named *.request.json, so a sweep landing between create and write read empty
+// bytes and failed the delegation.
 func writeTriggerRequest(schedulerDir, workflow string) (requestID string, err error) {
 	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
 	if err := os.MkdirAll(reqDir, 0o755); err != nil {
 		return "", fmt.Errorf("delegate: create pending-triggers dir: %w", err)
 	}
-	f, err := os.CreateTemp(reqDir, "*"+requestSuffix)
+	f, err := os.CreateTemp(reqDir, ".pending-*")
 	if err != nil {
 		return "", fmt.Errorf("delegate: create trigger request: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	tmpPath := f.Name()
+	cleanup := func() {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+	}
 
 	data, err := json.Marshal(triggerRequest{Workflow: workflow, CreatedAt: time.Now().UTC()})
 	if err != nil {
+		cleanup()
 		return "", err
 	}
 	if _, err := f.Write(data); err != nil {
+		cleanup()
 		return "", fmt.Errorf("delegate: write trigger request: %w", err)
 	}
-	return strings.TrimSuffix(filepath.Base(f.Name()), requestSuffix), nil
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("delegate: close trigger request: %w", err)
+	}
+	requestID = strings.TrimPrefix(filepath.Base(tmpPath), ".pending-")
+	finalPath := filepath.Join(reqDir, requestID+requestSuffix)
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("delegate: publish trigger request: %w", err)
+	}
+	return requestID, nil
 }
 
 // pollTriggerResponse waits for schedulerDir/pending-triggers/<requestID>

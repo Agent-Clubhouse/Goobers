@@ -18,6 +18,7 @@ var synopsisByID = map[string]string{
 	"dashboard":              "  goobers dashboard [--port=<port|auto>] [--no-open] [path]\n                                serve and open the local operations portal\n",
 	"run":                    "  goobers run <workflow> [--no-wait] [path]\n                                trigger a run manually (still honors run conditions)\n",
 	"run abort":              "  goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted\n",
+	"run cancel":             "  goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon\n",
 	"signal":                 "  goobers signal <name> [path]  fire an external signal, dispatching every\n                                subscribed type=signal-trigger workflow\n",
 	"workflow show":          "  goobers workflow show <name> [path]  show a workflow as a text DAG\n",
 	"runs list":              "  goobers runs list [--json] [--phase=...] [--workflow=...] [--limit=N] [path]\n                                alias for the status run table (same flags, no --watch)\n",

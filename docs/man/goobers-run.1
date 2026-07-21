@@ -8,6 +8,7 @@ goobers run \- trigger a run manually (still honors run conditions)
 .nf
 Usage: goobers run <workflow> [--no-wait] [path]
        goobers run abort <run-id> [path]
+       goobers run cancel <run-id> [path]
 
 Trigger a run of a config/ workflow manually, through the same scheduler
 (run conditions, instance journal, single-instance lock) a live `goobers up`
@@ -22,6 +23,9 @@ escalated. A successful submission-only mode (such as --no-wait, once
 available) exits 0 because it does not observe a terminal phase.
 `run abort` marks a stuck non-terminal run aborted directly in its own
 journal — recovery for a run resumeInterruptedRuns can't resolve on its own.
+`run cancel` instead asks a live daemon to stop a run it is actively
+executing (active-stage cancel + worktree/claim teardown + aborted) — the
+live counterpart to `run abort`'s daemon-down journal repair.
 .fi
 .SH EXAMPLES
 .nf

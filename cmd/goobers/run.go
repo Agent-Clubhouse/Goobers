@@ -39,7 +39,8 @@ func exitForPhase(phase journal.RunPhase) int {
 }
 
 const runHelp = "Usage: goobers run <workflow> [--no-wait] [path]\n" +
-	"       goobers run abort <run-id> [path]\n\n" +
+	"       goobers run abort <run-id> [path]\n" +
+	"       goobers run cancel <run-id> [path]\n\n" +
 	"Trigger a run of a config/ workflow manually, through the same scheduler\n" +
 	"(run conditions, instance journal, single-instance lock) a live `goobers up`\n" +
 	"daemon uses, then wait for it to reach a terminal state unless\n" +
@@ -52,7 +53,10 @@ const runHelp = "Usage: goobers run <workflow> [--no-wait] [path]\n" +
 	"escalated. A successful submission-only mode (such as --no-wait, once\n" +
 	"available) exits 0 because it does not observe a terminal phase.\n" +
 	"`run abort` marks a stuck non-terminal run aborted directly in its own\n" +
-	"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n"
+	"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n" +
+	"`run cancel` instead asks a live daemon to stop a run it is actively\n" +
+	"executing (active-stage cancel + worktree/claim teardown + aborted) — the\n" +
+	"live counterpart to `run abort`'s daemon-down journal repair.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -353,6 +357,112 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "aborted run %s\n", runID)
 	return 0
+}
+
+const runCancelHelp = "Usage: goobers run cancel <run-id> [path]\n\n" +
+	"Ask the live `goobers up` daemon to stop a run it is actively executing\n" +
+	"(default path \".\"): it cancels the active stage, tears down the run\n" +
+	"worktree, releases the backlog claim so the item can be re-queued, and\n" +
+	"records terminal phase aborted — without stopping the daemon or editing a\n" +
+	"journal behind its back. Use `run abort` instead when no daemon is running\n" +
+	"(that path finalizes a stuck run's journal directly). Exit codes: 0 =\n" +
+	"cancelled, 1 = business error (already terminal, not currently running, or\n" +
+	"no daemon to cancel it), 2 = usage/IO error (unknown run).\n"
+
+func runRunCancel(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("run cancel", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = helpUsage(stderr, "run cancel")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() < 1 || fs.NArg() > 2 {
+		fs.Usage()
+		return 2
+	}
+	runID := fs.Arg(0)
+	root := "."
+	if fs.NArg() == 2 {
+		root = fs.Arg(1)
+	}
+
+	l := instance.NewLayout(root)
+	runID, err := resolveRunID(l, runID)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	dir, err := l.FindRunDir(runID)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	reader, err := journal.OpenRead(dir)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	// Event-log-first terminal guard (#242), matching `run abort`: a run that
+	// already finished has nothing live to cancel.
+	if phase, err := reader.Phase(); err == nil {
+		switch phase {
+		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+			pf(stderr, "error: run %s is already terminal (phase=%s)\n", runID, phase)
+			return 1
+		}
+	}
+
+	// A cancel is inherently a live operation: without a running daemon there is
+	// no in-flight run to stop. Point the operator at the offline repair path
+	// rather than silently doing nothing (or racing a daemon that just exited).
+	running, _, err := inspectDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if !running {
+		pf(stderr, "error: no `goobers up` daemon is running, so run %s is not executing; "+
+			"use `goobers run abort %s` to finalize a stuck run's journal\n", runID, runID)
+		return 1
+	}
+
+	requestID, err := writeCancelRequest(l.SchedulerDir(), cancelRequest{
+		RunID:    runID,
+		Workflow: identity.Workflow,
+		Gaggle:   identity.Gaggle,
+		Actor:    "cli",
+	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	resp, err := pollCancelResponse(context.Background(), l.SchedulerDir(), requestID, cancelDelegationTimeout)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	switch {
+	case resp.Error != "":
+		pf(stderr, "error: %s\n", resp.Error)
+		return 1
+	case resp.Code == cancelCodeAborted:
+		pf(stdout, "cancelled run %s (aborted)\n", runID)
+		return 0
+	case resp.Code == cancelCodeTerminal:
+		pf(stderr, "error: run %s finished before it could be cancelled (phase=%s)\n", runID, resp.Phase)
+		return 1
+	case resp.Code == cancelCodeNotRunning:
+		pf(stderr, "error: run %s is not currently running under the daemon\n", runID)
+		return 1
+	default:
+		pf(stderr, "error: unexpected cancel response for run %s\n", runID)
+		return 1
+	}
 }
 
 // waitForRunTerminal polls runID's journal until it reaches a terminal phase

@@ -130,7 +130,7 @@ _goobers_completion()
         run)
             if (( COMP_CWORD == 2 )); then
                 dynamic=1
-                candidates="abort $(command goobers __complete workflows 2>/dev/null)"
+                candidates="abort cancel $(command goobers __complete workflows 2>/dev/null)"
             elif [[ "${COMP_WORDS[2]:-}" == "abort" ]] && (( COMP_CWORD == 3 )); then
                 dynamic=1
                 candidates="$(command goobers __complete runs 2>/dev/null)"
