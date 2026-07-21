@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -180,9 +179,6 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 	}
 	if pollErr != nil {
 		return failProviderStage(stderr, "poll merged pull request", pollErr, "")
-	}
-	if len(postMergeErrs) > 0 {
-		return failProviderStage(stderr, "complete post-merge bookkeeping", errors.Join(postMergeErrs...), "")
 	}
 	if alreadyCompleted {
 		pf(stdout, "post-merge: pr #%s was already reconciled\n", pullNumber)

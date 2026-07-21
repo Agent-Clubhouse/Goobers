@@ -387,6 +387,22 @@ func TestPostMergeFansOutAndClosesReferencedIssue(t *testing.T) {
 	}
 }
 
+func TestPostMergeBookkeepingWarningIsBestEffort(t *testing.T) {
+	st := newPostMergeServerState(20, "main", "fix", []string{"cmd/a.go"}, []int{21})
+	st.setConflicted(21)
+	st.labelStatus = http.StatusUnprocessableEntity
+	server := newPostMergeServer(t, "your-org", "your-repo", st)
+	root, _ := postMergeEnv(t, server.URL, false, map[string]string{"pullNumber": "20"})
+
+	code, _, stderr := runArgs(t, "post-merge", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q, want successful in-band merge despite bookkeeping warning", code, stderr)
+	}
+	if !strings.Contains(stderr, "warning: label pr #21") {
+		t.Fatalf("stderr = %q, want sibling-label warning", stderr)
+	}
+}
+
 // TestPostMergeCleanDisjointSiblingsAreNotLabeled is #715's core acceptance
 // criterion: merging a PR against a stack of 3 fully clean (mergeable, no
 // file overlap) siblings labels NONE of them — 0 remediation runs, 0 CI
