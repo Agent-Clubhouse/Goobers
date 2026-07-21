@@ -11,7 +11,6 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configdiff"
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -143,13 +142,13 @@ func runConfigDiff(args []string, stdout, stderr io.Writer) int {
 	}
 	canonicalDir := canonicalConfigDir(*against)
 
-	activeSet, activeReport, err := instance.LoadConfigDir(layout.ConfigDir())
-	if err != nil {
-		return printConfigDiffLoadError("active", layout.ConfigDir(), activeReport, err, stdout, stderr)
+	activeSet, activeInvalid, code := loadConfigDiffSet("active", layout.ConfigDir(), stdout, stderr)
+	if code != 0 {
+		return code
 	}
-	canonicalSet, canonicalReport, err := instance.LoadConfigDir(canonicalDir)
-	if err != nil {
-		return printConfigDiffLoadError("canonical", canonicalDir, canonicalReport, err, stdout, stderr)
+	canonicalSet, canonicalInvalid, code := loadConfigDiffSet("canonical", canonicalDir, stdout, stderr)
+	if code != 0 {
+		return code
 	}
 
 	differences, err := configdiff.Compare(activeSet.Workflows, canonicalSet.Workflows)
@@ -178,6 +177,10 @@ func runConfigDiff(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "DRIFT: %d structural difference(s), %d informational difference(s)\n", structural, informational)
 		return 1
 	}
+	if activeInvalid || canonicalInvalid {
+		pf(stdout, "INVALID: workflow comparison completed with validation errors (%d informational difference(s))\n", informational)
+		return 1
+	}
 	pf(stdout, "OK: workflow structure matches canonical (%d informational difference(s))\n", informational)
 	return 0
 }
@@ -189,14 +192,21 @@ func canonicalConfigDir(root string) string {
 	return root
 }
 
-func printConfigDiffLoadError(label, dir string, report *validate.Report, err error, stdout, stderr io.Writer) int {
+func loadConfigDiffSet(label, dir string, stdout, stderr io.Writer) (*instance.ConfigSet, bool, int) {
+	set, report, err := instance.LoadConfigDirForComparison(dir)
+	if err == nil {
+		return set, false, 0
+	}
 	if errors.Is(err, instance.ErrInvalidConfig) {
 		if report != nil {
 			printValidationIssues(stdout, report)
 		}
 		pf(stdout, "INVALID %s config %s\n", label, dir)
-		return 1
+		if set != nil {
+			return set, true, 0
+		}
+		return nil, true, 1
 	}
 	pf(stderr, "error: load %s config %s: %v\n", label, dir, err)
-	return 2
+	return nil, false, 2
 }

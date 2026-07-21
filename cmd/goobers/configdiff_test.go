@@ -55,6 +55,29 @@ func TestConfigDiffMissingResultFileIsStructural(t *testing.T) {
 	}
 }
 
+func TestConfigDiffInvalidBranchTargetStillReportsStructuralDrift(t *testing.T) {
+	root, canonical := configDiffFixture(t)
+	workflow := filepath.Join(root, "config", "gaggles", "acme-web", "workflows", "implementation.yaml")
+	replaceConfigDiffFixture(t, workflow, "        pass: local-ci", "        pass: ghost-state")
+
+	code, stdout, stderr := runArgs(t, "config", "diff", "--against", canonical, root)
+	if code != 1 {
+		t.Fatalf("config diff: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"ghost-state",
+		"INVALID active config",
+		`ERROR workflow="acme-web/implementation" gate="review"`,
+		`field="branches.pass"`,
+		`active="ghost-state"`,
+		`canonical="local-ci"`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("config diff output missing %q: %s", want, stdout)
+		}
+	}
+}
+
 func TestConfigDiffOutputIsDeterministic(t *testing.T) {
 	root, canonical := configDiffFixture(t)
 	workflow := filepath.Join(root, "config", "gaggles", "acme-web", "workflows", "implementation.yaml")
