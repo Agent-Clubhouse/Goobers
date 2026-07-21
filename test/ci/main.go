@@ -195,8 +195,16 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos str
 		check{
 			label:   "test",
 			command: tools.goCommand,
-			args:    []string{"test", "-race", "-covermode=atomic", "-coverprofile=coverage.out", "./..."},
-			env:     testEnvironment,
+			// -timeout 20m raises the per-package ceiling above Go's 10m default
+			// purely as headroom against macOS hosted-runner contention (#1124):
+			// the cmd/goobers integration package legitimately runs long under a
+			// loaded runner, and a timeout there panics the whole suite. This is
+			// not masking a hang — the affected tests pass locally at high
+			// -count and the OTLP-flush blocking that compounded it is fixed in
+			// this change (telemetry soft-fails an unreachable collector). Normal
+			// runs finish in ~2m, so the higher ceiling never slows a green run.
+			args: []string{"test", "-race", "-timeout", "20m", "-covermode=atomic", "-coverprofile=coverage.out", "./..."},
+			env:  testEnvironment,
 		},
 		check{label: "lint", command: tools.golangciCommand, args: []string{"run"}},
 		check{
