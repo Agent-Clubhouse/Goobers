@@ -31,6 +31,7 @@ repos:
 runConditions:
   maxParallelRuns: 2
   stalledRunTimeout: 30m
+  claimsLockTimeout: 15s
 notifications: true
 `)
 	cfg, err := LoadConfig(path)
@@ -52,6 +53,9 @@ notifications: true
 	if got, err := cfg.RunConditions.StalledRunTimeoutDuration(); err != nil || got != 30*time.Minute {
 		t.Fatalf("StalledRunTimeoutDuration = %s, %v; want 30m", got, err)
 	}
+	if got, err := cfg.RunConditions.ClaimsLockTimeoutDuration(); err != nil || got != 15*time.Second {
+		t.Fatalf("ClaimsLockTimeoutDuration = %s, %v; want 15s", got, err)
+	}
 	if !cfg.Notifications {
 		t.Fatal("expected notifications to be enabled")
 	}
@@ -72,6 +76,23 @@ func TestStalledRunTimeout(t *testing.T) {
 			cfg := Config{RunConditions: RunConditions{StalledRunTimeout: value}}
 			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "stalledRunTimeout") {
 				t.Fatalf("Validate() error = %v, want stalledRunTimeout error", err)
+			}
+		})
+	}
+}
+
+func TestClaimsLockTimeout(t *testing.T) {
+	if got, err := (RunConditions{}).ClaimsLockTimeoutDuration(); err != nil || got != DefaultClaimsLockTimeout {
+		t.Fatalf("default ClaimsLockTimeoutDuration = %s, %v; want %s", got, err, DefaultClaimsLockTimeout)
+	}
+	if got, err := (RunConditions{ClaimsLockTimeout: "1ns"}).ClaimsLockTimeoutDuration(); err != nil || got != time.Nanosecond {
+		t.Fatalf("shortest ClaimsLockTimeoutDuration = %s, %v; want 1ns", got, err)
+	}
+	for _, value := range []string{"not-a-duration", "0s", "-1m"} {
+		t.Run(value, func(t *testing.T) {
+			cfg := Config{RunConditions: RunConditions{ClaimsLockTimeout: value}}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "claimsLockTimeout") {
+				t.Fatalf("Validate() error = %v, want claimsLockTimeout error", err)
 			}
 		})
 	}

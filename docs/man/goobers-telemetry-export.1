@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY EXPORT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry export \- re-emit a span-start-time window from journaled OTLP/JSON
+.SH SYNOPSIS
+\fBgoobers telemetry export\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry export --since=RFC3339 [--until=RFC3339] [path]
+
+Re-emit journaled OTLP/JSON trace requests to stdout. --since is inclusive;
+--until is exclusive when set. Window membership uses each span's start time.
+Every discovered run journal is validated before output; missing, corrupt, or
+unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
+1 = journal data error, 2 = usage/output error.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry export --since=2026-07-01T00:00:00Z
+goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

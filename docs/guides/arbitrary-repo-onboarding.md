@@ -130,12 +130,15 @@ timezone: America/Los_Angeles
 runConditions:
   maxParallelRuns: 1
   stalledRunTimeout: 45m
+  claimsLockTimeout: 30s
 ```
 
 `timezone` is an IANA location used for every workflow schedule; omit it for
 UTC. Token references may use `token.file` instead of `token.env`, but never an
 inline token value. `stalledRunTimeout` defaults to 45 minutes and escalates a
 running journal that has received no event or stage heartbeat for that period.
+`claimsLockTimeout` defaults to 30 seconds and bounds cross-process claim-ledger
+lock acquisition.
 
 ## 4. Make the workforce repository-specific
 
@@ -439,6 +442,7 @@ timezone: America/Los_Angeles
 runConditions:
   maxParallelRuns: 2
   stalledRunTimeout: 45m
+  claimsLockTimeout: 30s
   workflowDailyBudgets:
     widget-implementation: 2
     widget-docs-implementation: 2

@@ -56,6 +56,9 @@ func finalizeTerminalRun(l instance.Layout, log *journal.InstanceLog, wtMgr *wor
 	}
 
 	claimErr := releaseClaimsForRun(l, log, runID)
+	if isJournaledClaimsLockTimeout(claimErr) {
+		claimErr = nil
+	}
 	return errors.Join(worktreeErr, annotationErr, claimErr)
 }
 

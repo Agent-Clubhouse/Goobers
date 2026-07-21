@@ -20,7 +20,8 @@
 | [`goobers completion bash`](#goobers-completion-bash) | generate a bash completion script |
 | [`goobers completion fish`](#goobers-completion-fish) | generate a fish completion script |
 | [`goobers completion zsh`](#goobers-completion-zsh) | generate a zsh completion script |
-| [`goobers config`](#goobers-config) | inspect the instance's operational configuration |
+| [`goobers config`](#goobers-config) | inspect instance configuration and compare workflow definitions |
+| [`goobers config diff`](#goobers-config-diff) | compare active workflows with canonical definitions |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers dashboard`](#goobers-dashboard) | serve and open the local operations portal |
 | [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
@@ -59,8 +60,9 @@
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
 | [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
-| [`goobers telemetry`](#goobers-telemetry) | success rate/duration or recent-error aggregates |
+| [`goobers telemetry`](#goobers-telemetry) | query aggregates or export journaled OTLP windows |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
+| [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
 | [`goobers telemetry-query`](#goobers-telemetry-query) | emit versioned candidate findings (a connector stage) |
 | [`goobers trace`](#goobers-trace) | show a run's journal events, follow a live run, or show transcripts |
@@ -301,23 +303,53 @@ Generate a shell completion script. Source the output in the target shell.
 
 ## `goobers config`
 
-inspect the instance's operational configuration
+inspect instance configuration and compare workflow definitions
 
 ~~~text
 Usage: goobers config <subcommand> [flags] [path]
 
-Inspect the instance's operational configuration (instance.yaml).
+Inspect instance configuration and compare workflow definitions.
 
 Subcommands:
   show   render the effective instance config (secrets redacted)
+  diff   compare active workflows with the shipped canonical workflows
 
-Run `goobers config show -h` for details. Default path is ".".
+Run `goobers config show -h` or `goobers config diff -h` for details.
+Default path is ".".
 ~~~
 
 **Examples**
 
 ~~~console
 $ goobers config show
+$ goobers config diff ./instance
+~~~
+
+## `goobers config diff`
+
+compare active workflows with canonical definitions
+
+~~~text
+Usage: goobers config diff [--against <canonical-root>] [instance-root]
+
+Compare the active workflows under <instance-root>/config with a canonical
+config source tree. The canonical root defaults to ./selfhost; use --against
+when running outside the Goobers source checkout or comparing another set.
+
+Schedule, maxConcurrentRuns, maxRunsPerHour, maxRunsPerDay, maxOpenPRs,
+and trigger presence (enablement) are operational tuning: they are printed
+as INFO and do not fail the command. Every other workflow difference is
+structural drift, printed as ERROR with active and canonical values.
+
+Exit codes: 0 = structurally identical (informational tuning is allowed),
+1 = structural drift or invalid config, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers config diff ./instance
+$ goobers config diff --against ./selfhost ./instance
 ~~~
 
 ## `goobers config show`
@@ -1161,13 +1193,14 @@ $ goobers status --watch
 
 ## `goobers telemetry`
 
-success rate/duration or recent-error aggregates
+query aggregates or export journaled OTLP windows
 
 ~~~text
-Usage: goobers telemetry <stats|errors> [flags] [path]
+Usage: goobers telemetry <stats|errors|export> [flags] [path]
 
 stats:  success rate / durations per workflow + stage
 errors: recent errors across runs, by class, with run/stage refs
+export: re-emit a span-start-time window from journaled OTLP/JSON
 ~~~
 
 **Examples**
@@ -1175,6 +1208,7 @@ errors: recent errors across runs, by class, with run/stage refs
 ~~~console
 $ goobers telemetry stats
 $ goobers telemetry errors
+$ goobers telemetry export --since=2026-07-01T00:00:00Z
 ~~~
 
 ## `goobers telemetry errors`
@@ -1193,6 +1227,27 @@ Recent errors across every run, newest first, with run/stage refs
 ~~~console
 $ goobers telemetry errors
 $ goobers telemetry errors --limit=50
+~~~
+
+## `goobers telemetry export`
+
+re-emit a span-start-time window from journaled OTLP/JSON
+
+~~~text
+Usage: goobers telemetry export --since=RFC3339 [--until=RFC3339] [path]
+
+Re-emit journaled OTLP/JSON trace requests to stdout. --since is inclusive;
+--until is exclusive when set. Window membership uses each span's start time.
+Every discovered run journal is validated before output; missing, corrupt, or
+unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
+1 = journal data error, 2 = usage/output error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry export --since=2026-07-01T00:00:00Z
+$ goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z
 ~~~
 
 ## `goobers telemetry stats`
