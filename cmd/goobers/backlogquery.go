@@ -68,6 +68,13 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 			"implementation workflow). Idempotent: releasing claims this run does not\n"+
 			"hold (already released, e.g. re-run after a crash) is a no-op success, not\n"+
 			"an error. --claim and --release are mutually exclusive.\n\n"+
+			"With --claim, contested-file dispatch awareness (#1085) deprioritizes\n"+
+			"claiming an issue whose referenced files are already contested by\n"+
+			"contestedFileMinPRs+ (default 2) open PRs, so new work isn't fed into an\n"+
+			"overlap cluster faster than merge-review can drain it. It only reorders\n"+
+			"candidates (never drops one — an all-contested cycle still claims FIFO)\n"+
+			"and falls back to FIFO on any provider error. Disable with input\n"+
+			"deprioritizeContestedFiles=false.\n\n"+
 			"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n"+
 			"(--release), 1 = business error (no eligible/claimable item, missing\n"+
 			"trustLabel with --claim, config/credential/provider error), 2 =\n"+
@@ -281,6 +288,39 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 			pf(stdout, "%s\t%s\n", item.ID, item.Title)
 		}
 		return 0
+	}
+
+	// Contested-file dispatch awareness (#1085): with more than one candidate
+	// in hand, deprioritize claiming an issue whose referenced files are
+	// already contested by contestedFileMinPRs+ open PRs, so `implementation`
+	// stops feeding new work into an overlap cluster faster than merge-review
+	// can drain it. Soft + best-effort by construction (contestedfiles.go):
+	// it only REORDERS the FIFO'd candidates (never drops one, so a cycle where
+	// every candidate is contested still claims FIFO — no starvation), and any
+	// provider error falls back to plain FIFO rather than stalling dispatch.
+	// Gated on github:pr:write, exactly like the open-PR backstop above, since
+	// it lists open PRs and their files.
+	if len(eligible) > 1 && providerInput("deprioritizeContestedFiles", "true") == "true" {
+		if _, err := providerToken(capability.GitHubPRWrite); err == nil {
+			minPRs := 2
+			if s := providerInput("contestedFileMinPRs", ""); s != "" {
+				if n, perr := strconv.Atoi(s); perr == nil && n >= 1 {
+					minPRs = n
+				} else {
+					pf(stderr, "warning: invalid contestedFileMinPRs %q; using %d\n", s, minPRs)
+				}
+			}
+			if touches, terr := openPRTouches(ctx, provider, repo); terr != nil {
+				pf(stderr, "warning: contested-file dispatch awareness unavailable (%v); using FIFO order\n", terr)
+			} else {
+				reordered, deprioritized := partitionByContention(eligible, touches, minPRs)
+				if n := len(deprioritized); n > 0 && n < len(reordered) {
+					pf(stderr, "contested-file dispatch: deprioritized %d contested issue(s) [%s] behind %d disjoint one(s)\n",
+						n, strings.Join(deprioritized, ","), len(reordered)-n)
+				}
+				eligible = reordered
+			}
+		}
 	}
 
 	if len(eligible) == 0 {
