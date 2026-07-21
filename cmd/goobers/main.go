@@ -61,6 +61,9 @@ func writeSynopses(w io.Writer, commands []cliCommand) {
 	}
 }
 
+const usageHeader = `goobers — tier 1-2 local instance CLI
+
+Usage:
 `
 
 const usageFooter = `
