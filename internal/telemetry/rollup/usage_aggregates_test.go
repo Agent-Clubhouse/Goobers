@@ -180,6 +180,101 @@ func TestUsageRollupDoesNotShiftAcrossMissingRepassSpan(t *testing.T) {
 	}
 }
 
+func TestUsageRollupIgnoresAttemptlessTerminalFailureDiagnostic(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "runs", fixtureRunID)
+	mustMkdirAll(t, filepath.Join(dir, dirSpans))
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), minimalRunYAML(fixtureRunID, fixtureStart))
+
+	started := fixtureStart.Add(time.Millisecond)
+	finished := started.Add(10 * time.Millisecond)
+	events := []string{
+		eventLine(1, fixtureStart, `"type":"run.started"`),
+		eventLine(2, started, `"type":"stage.started","stage":"agent","attempt":1`),
+		eventLine(3, finished, `"type":"stage.finished","stage":"agent","attempt":1,"status":"failure","error":{"code":"executor_error","message":"session timed out"}`),
+		eventLine(4, finished.Add(time.Millisecond), `"type":"error","stage":"agent","error":{"code":"run_failed","message":"executor_error: session timed out"}`),
+		eventLine(5, finished.Add(2*time.Millisecond), `"type":"run.finished","status":"failed"`),
+	}
+	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(events, "\n")+"\n")
+	mustWriteFile(t, filepath.Join(dir, dirSpans, fileSpans), "")
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(dir); err != nil {
+		t.Fatalf("IngestRun terminal stage failure: %v", err)
+	}
+
+	attempts, err := db.StageAttempts(fixtureRunID)
+	if err != nil {
+		t.Fatalf("StageAttempts: %v", err)
+	}
+	if len(attempts) != 1 || attempts[0].Traversal != 1 || attempts[0].Attempt != 1 {
+		t.Fatalf("terminal stage attempts = %#v, want one real traversal", attempts)
+	}
+	stats, err := db.Stats(StatsRequest{})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if len(stats.Stages) != 1 || stats.Stages[0].RetryWasteAttempts != 0 {
+		t.Fatalf("terminal failure retry waste = %#v, want none", stats.Stages)
+	}
+	errs, err := db.RunErrors(fixtureRunID)
+	if err != nil {
+		t.Fatalf("RunErrors: %v", err)
+	}
+	if len(errs) != 2 || errs[1].Code != "run_failed" || errs[1].Attempt != 0 {
+		t.Fatalf("terminal run errors = %#v, want attemptless run_failed retained", errs)
+	}
+}
+
+func TestUsageRollupDerivesRetryDurationFromExecutorError(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "runs", fixtureRunID)
+	mustMkdirAll(t, filepath.Join(dir, dirSpans))
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), minimalRunYAML(fixtureRunID, fixtureStart))
+
+	firstStarted := fixtureStart.Add(time.Millisecond)
+	firstFailed := firstStarted.Add(10 * time.Millisecond)
+	secondStarted := firstFailed.Add(time.Millisecond)
+	secondFinished := secondStarted.Add(20 * time.Millisecond)
+	events := []string{
+		eventLine(1, fixtureStart, `"type":"run.started"`),
+		eventLine(2, firstStarted, `"type":"stage.started","stage":"agent","attempt":1`),
+		eventLine(3, firstFailed, `"type":"error","stage":"agent","attempt":1,"error":{"code":"executor_error","message":"provider unavailable"}`),
+		eventLine(4, secondStarted, `"type":"stage.started","stage":"agent","attempt":2,"attemptClass":"policy"`),
+		eventLine(5, secondFinished, `"type":"stage.finished","stage":"agent","attempt":2,"attemptClass":"policy","status":"success"`),
+		eventLine(6, secondFinished.Add(time.Millisecond), `"type":"run.finished","status":"completed"`),
+	}
+	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(events, "\n")+"\n")
+	mustWriteFile(t, filepath.Join(dir, dirSpans, fileSpans), "")
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(dir); err != nil {
+		t.Fatalf("IngestRun executor retry: %v", err)
+	}
+
+	attempts, err := db.StageAttempts(fixtureRunID)
+	if err != nil {
+		t.Fatalf("StageAttempts: %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("stage attempts = %#v, want two", attempts)
+	}
+	if attempts[0].Status != stageStatusFailure || attempts[0].DurationMs != 10 || !attempts[0].FinishedAt.Equal(firstFailed) {
+		t.Fatalf("failed retry attempt = %#v, want executor-error boundary and 10ms duration", attempts[0])
+	}
+	stats, err := db.Stats(StatsRequest{})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if len(stats.Stages) != 1 {
+		t.Fatalf("stage stats = %#v, want one stage", stats.Stages)
+	}
+	got := stats.Stages[0]
+	if got.RetryWasteAttempts != 1 || !got.HasRetryWasteDuration || got.RetryWasteDurationMs != 10 {
+		t.Fatalf("executor retry waste = %#v, want one attempt and 10ms", got)
+	}
+}
+
 func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")

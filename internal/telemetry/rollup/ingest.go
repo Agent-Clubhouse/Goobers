@@ -134,7 +134,18 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 		switch ev.Type {
 		case eventStageStarted:
 			eventStageKeys[i] = newAccum(ev.Stage, ev.Attempt)
-		case eventStageFinished, eventError:
+		case eventStageFinished:
+			k, ok := current[attemptKey]
+			if !ok {
+				k = newAccum(ev.Stage, ev.Attempt)
+			}
+			eventStageKeys[i] = k
+		case eventError:
+			// Stage-scoped terminal diagnostics such as run_failed do not
+			// identify an attempt and must not create a synthetic traversal.
+			if ev.Attempt == 0 {
+				continue
+			}
 			k, ok := current[attemptKey]
 			if !ok {
 				k = newAccum(ev.Stage, ev.Attempt)
@@ -152,7 +163,7 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 	// shows up both ways for the same attempt, it must count once.
 	standaloneErrorCodes := map[stageKey]map[string]bool{}
 	for i, ev := range events {
-		if ev.Type == eventError && ev.Error != nil && ev.Stage != "" {
+		if ev.Type == eventError && ev.Error != nil && ev.Stage != "" && ev.Attempt != 0 {
 			k := eventStageKeys[i]
 			if standaloneErrorCodes[k] == nil {
 				standaloneErrorCodes[k] = map[string]bool{}
@@ -219,10 +230,16 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 				nullIfEmpty(class), nullIfEmpty(telemetry.Redact(ev.Error.Message)), formatTime(ev.Time)); err != nil {
 				return fmt.Errorf("rollup: insert run_error seq %d: %w", ev.Seq, err)
 			}
-			if ev.Stage != "" {
-				a := stages[eventStageKeys[i]]
+			if a := stages[eventStageKeys[i]]; a != nil {
 				a.errorCode = ev.Error.Code
 				a.errorClass = class
+				// Dispatch failures are followed directly by the next
+				// stage.started event, without a stage.finished event. The
+				// error event is therefore the journal's attempt boundary.
+				if ev.Error.Code == "executor_error" && a.finishedAt.IsZero() {
+					a.status = stageStatusFailure
+					a.finishedAt = ev.Time
+				}
 			}
 
 		case eventGateEvaluated:
