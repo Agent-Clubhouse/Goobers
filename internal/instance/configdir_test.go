@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -66,6 +67,33 @@ func TestLoadConfigDirInvalid(t *testing.T) {
 	}
 	if set != nil {
 		t.Fatalf("expected a nil ConfigSet on invalid config, got %+v", set)
+	}
+	if report == nil || !report.HasErrors() {
+		t.Fatalf("expected a report with errors, got %+v", report)
+	}
+}
+
+func TestLoadConfigDirForComparisonReturnsParseableInvalidSet(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(validConfigDir)); err != nil {
+		t.Fatal(err)
+	}
+	workflow := filepath.Join(root, "gaggles", "acme-web", "workflows", "implementation.yaml")
+	data, err := os.ReadFile(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), "        pass: local-ci", "        pass: ghost-state", 1))
+	if err := os.WriteFile(workflow, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	set, report, err := LoadConfigDirForComparison(root)
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
+	}
+	if set == nil || len(set.Workflows) == 0 {
+		t.Fatalf("expected parseable workflows with validation error, got %+v", set)
 	}
 	if report == nil || !report.HasErrors() {
 		t.Fatalf("expected a report with errors, got %+v", report)
