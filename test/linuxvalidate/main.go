@@ -1,5 +1,10 @@
+//go:build unix
+
 // Command linuxvalidate exercises the real `goobers` binary end to end on a
 // POSIX host — the executable form of issue #636's "Linux node validation".
+// It is a POSIX-only orchestrator (it sets syscall.SysProcAttr.Setpgid to run
+// the binary in its own process group), so it is constrained to unix to keep
+// `GOOS=windows go build ./...` green — it never needs to compile on Windows.
 //
 // It proves, against the shipped binary rather than in-process test seams:
 //
