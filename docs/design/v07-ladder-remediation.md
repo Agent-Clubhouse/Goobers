@@ -32,7 +32,7 @@ split into a **frontload set that must land before the next ladder** (§3) and a
 | ID | Finding | Fix altitude | Anchor | Bucket |
 |---|---|---|---|---|
 | **L3** | Repass `implement` never receives the reviewer verdict → byte-identical diff → escalate | runner context-assembly | `internal/runner/run.go:479-480`, `internal/harness/context.go:137` | **Frontload** |
-| **L1** | `merge-review` `apply-verdict` fails 100% — `selectedNumber` emitted but not in `expectedOutputs` | workflow YAML | `selfhost/gaggles/goobers/workflows/merge-review.yaml:64-66` | **Frontload** |
+| **L1** | `merge-review` `apply-verdict` fails 100% — numeric `selectedNumber` is dropped during downstream input materialization | command result emission + workflow integration | `cmd/goobers/prsiblingcontext.go`, `internal/executor/env.go` | **Frontload** |
 | **L7** | `goobers:claimed` never removed on completion + no open-PR eligibility backstop → false re-eligibility | provider + query | `providers/github.go:1001-1008`, `cmd/goobers/backlogquery.go` | **Frontload** |
 | **L6** | Implement `failure` has no non-retryable/escalate disposition — re-enters repass loop, terminates `aborted` not `escalated` | runner task-outcome | `internal/runner/run.go:531-537` | **Frontload** |
 | **L2** | PR bodies are static boilerplate despite rich material existing in-run | open-pr stage | `cmd/goobers/openpr.go:76-82` | Fast-follow (V0.8) |
@@ -99,13 +99,12 @@ correct `decision:pass` but `apply-verdict` aborts with `selectedNumber is requi
 Prerequisite for every label-gated path (L7, L5, pr-remediation).
 
 **Root cause (corrected 2026-07-15, per Dev-3's trace on #413 — this doc's first draft
-mis-ranked it).** The **load-bearing fix is stringifying `selectedNumber` end-to-end**,
-*not* the `expectedOutputs` declaration:
+mis-ranked it).** The **load-bearing fix is stringifying `selectedNumber` end-to-end**:
 
-- `ExpectedOutputs` is **inert for threading** — it is declared only as a
-  gate-validatable postcondition (`api/v1alpha1/workflow_types.go:131`, TSK-003); no
-  runner path consumes it for the result-file→`Outputs` merge. Adding `selectedNumber`
-  to it alone would **not** fix L1.
+- [`task.expectedOutputs` is declared-not-enforced at V0](versioning-and-compatibility.md#compatibility-registry):
+  no runner path consumes it for the result-file→`Outputs` merge, input threading, or
+  postcondition validation. Enforcing it would be a future contract change, not an L1
+  fix.
 - `internal/executor`'s `InputResultFile` convention only threads **string-valued**
   top-level result-file keys into a downstream stage's `GOOBERS_INPUT_*` env var — a
   numeric value survives into the run's `Outputs` map but is **silently dropped** at
@@ -116,14 +115,13 @@ mis-ranked it).** The **load-bearing fix is stringifying `selectedNumber` end-to
   (`cmd/goobers/gatherprcontext.go:164-171`); `gather-sibling-context`'s failure to do
   so is the asymmetry that is the bug.
 
-**Fix (three parts):** (1) emit `selectedNumber` as a **string** in
+**Fix (two parts):** (1) emit `selectedNumber` as a **string** in
 `gather-sibling-context` (matching `pr-select`'s `strconv.Itoa` + `apply-verdict`'s
-`Atoi`) — the actual fix; (2) add it to `gather-sibling-context.expectedOutputs`
-(`merge-review.yaml:64-66`) as postcondition hygiene / AC; (3) add the
-poll→select→gather→review→apply **integration test** asserting a label is *actually
-applied*. **Test debt this exposed:** V0.5 had no such end-to-end test — unit tests that
-stub stage IO passed while the wired workflow was 100% broken. General gotcha: **any**
-non-string value threaded through `Task.InputsFrom` hits this same silent drop.
+`Atoi`) — the runtime fix; (2) add the poll→select→gather→review→apply **integration
+test** asserting a label is *actually applied*. **Test debt this exposed:** V0.5 had no
+such end-to-end test — unit tests that stub stage IO passed while the wired workflow
+was 100% broken. General gotcha: **any** non-string value threaded through
+`Task.InputsFrom` hits this same silent drop.
 
 ### 3.3 L7 — one eligibility lifecycle the selection query trusts
 
@@ -246,8 +244,7 @@ designed but deferred here:
 **V0.7 (frontload — approved + ready now):**
 1. **[epic]** V0.7 — ladder frontload.
 2. **L3** — thread reviewer verdict into repass `implement` context (§3.1).
-3. **L1** — add `selectedNumber` to `gather-sibling-context.expectedOutputs` +
-   normalize type + poll→apply integration test (§3.2).
+3. **L1** — emit `selectedNumber` as a string + poll→apply integration test (§3.2).
 4. **L7** — release `goobers:claimed` on close-out + open-PR eligibility backstop +
    ledger-authoritative eligibility (§3.3).
 5. **L6** — non-retryable `@escalate` disposition (`retryable:false` + escalate code) +
