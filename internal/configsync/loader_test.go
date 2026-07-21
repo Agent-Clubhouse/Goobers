@@ -43,11 +43,11 @@ func TestLoad_ValidExampleRepo(t *testing.T) {
 		t.Errorf("namespace = %q, want %q", set.Namespace, DefaultNamespace)
 	}
 
-	// config-examples ships one Manifest/Gaggle, five Goobers (coder,
-	// curator, implementer, nominator — #26, reviewer), and six Workflows
-	// (default-implement, backlog-curation — #25, implementation — #27,
-	// work-nomination — #26, merge-review — #568, todo-check — #577).
-	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 1, "Goober": 5, "Workflow": 6}
+	// config-examples ships two Gaggles (acme-web + the dotnet-service polyglot
+	// reference, #1093), seven Goobers (acme-web: coder, curator, implementer,
+	// nominator, reviewer; dotnet-service: dotnet-implementer, dotnet-reviewer),
+	// and seven Workflows (acme-web's six + dotnet-implementation).
+	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 2, "Goober": 7, "Workflow": 7}
 	by := objectsByKind(set.Objects)
 	for kind, want := range wantByKind {
 		if len(by[kind]) != want {
@@ -119,7 +119,7 @@ func TestLoad_IgnoresAssetDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v (report: %+v)", err, report)
 	}
-	if got := len(objectsByKind(set.Objects)["Goober"]); got != 5 {
+	if got := len(objectsByKind(set.Objects)["Goober"]); got != 7 {
 		t.Fatalf("asset definition leaked into render set: got %d goobers", got)
 	}
 }

@@ -78,12 +78,28 @@ func TestExampleConfigPasses(t *testing.T) {
 	if report.HasErrors() {
 		t.Fatalf("expected /config-examples to be valid, got issues:\n%s", joinIssues(report))
 	}
+	// The only expected warnings are the manual-only advisories on the two
+	// example workflows that carry no schedule trigger: acme-web's
+	// default-implement and the dotnet-service polyglot reference (#1093), which
+	// is deliberately a `goobers run`-only build/test-gate demonstration.
 	warnings := report.Warnings()
-	if len(warnings) != 1 ||
-		warnings[0].Code != WarningCompatibility ||
-		warnings[0].Severity != Warning ||
-		!strings.Contains(warnings[0].Explanation, "goobers run default-implement") {
-		t.Fatalf("expected one actionable manual-only warning, got %+v", warnings)
+	if len(warnings) != 2 {
+		t.Fatalf("expected two actionable manual-only warnings, got %+v", warnings)
+	}
+	var sawDefaultImplement, sawDotnetImplementation bool
+	for _, w := range warnings {
+		if w.Code != WarningCompatibility || w.Severity != Warning {
+			t.Fatalf("unexpected warning (want only manual-only compatibility advisories): %+v", w)
+		}
+		if strings.Contains(w.Explanation, "goobers run default-implement") {
+			sawDefaultImplement = true
+		}
+		if strings.Contains(w.Explanation, "goobers run dotnet-implementation") {
+			sawDotnetImplementation = true
+		}
+	}
+	if !sawDefaultImplement || !sawDotnetImplementation {
+		t.Fatalf("expected manual-only warnings for both default-implement and the dotnet-service implementation, got %+v", warnings)
 	}
 	if report.Objects < 4 {
 		t.Errorf("expected at least 4 objects, got %d", report.Objects)

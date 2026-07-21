@@ -1,0 +1,42 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: dotnet-service
+spec:
+  displayName: .NET Service (polyglot reference)
+  # The reference C#/.NET gaggle (PLY-4 / #1093): proves a non-Go stack builds
+  # and tests green through the SAME shipped workflow machinery as a Go gaggle,
+  # differing only in this gaggle's declared CI command + runtime requirement.
+  # The target version is incidental (a disposable smoke target, design §8) —
+  # nothing in Goobers' code hardcodes it; swapping `dotnet@9` for `dotnet@10`
+  # (+ the matching TargetFramework in the service repo) needs no code change.
+  project:
+    provider: github
+    owner: acme
+    name: dotnet-service
+    branch: main
+    connectionRef: github-main
+  backlog:
+    provider: github
+    project: acme/dotnet-service
+    labels:
+      - goobers
+    connectionRef: github-backlog
+  isolation:
+    namespace: gaggle-dotnet-service
+    identityRef: dotnet-service-identity
+  # Per-gaggle CI command (MGV-1 / #1009): the deterministic `local-ci` stage
+  # runs this in place of the Go default (`["make","ci"]`) its workflow
+  # declares. `dotnet test` builds then runs the test suite, so this single
+  # invocation covers `dotnet build && dotnet test`. A non-zero exit fails the
+  # gate exactly as `make ci` does, and only ever fails this gaggle's own PRs.
+  ciCommand: ["dotnet", "test"]
+  # Runtime requirement (RRQ-1 / #1101): every run of this gaggle needs a runner
+  # that claims the .NET toolchain. Toolchains are assumed PREINSTALLED (no
+  # install step); the scheduler refuses to place a run on a runner that does
+  # not claim `dotnet@9` — failing at SCHEDULE time with a diagnostic naming the
+  # missing capability, never a cryptic runtime "command not found". (When #735
+  # lands, this can also be expressed as the `requires.runtime: {dotnet: "9"}`
+  # sugar that compiles down to this same token.)
+  requiredCapabilities:
+    - dotnet@9
