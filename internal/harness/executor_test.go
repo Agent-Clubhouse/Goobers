@@ -78,7 +78,7 @@ func (f *fakeRecorder) RecordSpanWithSchema(stage, name, dataSchema string, data
 		return journal.Ref{}, f.err
 	}
 	f.spans = append(f.spans, recordedSpan{stage: stage, name: name, schema: dataSchema, data: append([]byte(nil), data...)})
-	return journal.Ref{Digest: journal.Digest(data)}, nil
+	return journal.Ref{Path: "spans/fake/" + name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
 }
 
 func (f *fakeRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
@@ -323,6 +323,115 @@ func TestExecutorMaterializationFailureEmitsNoAgentTelemetry(t *testing.T) {
 		if string(attr.Key) == telemetry.AttrGenAIUsageInputTokens {
 			t.Fatalf("materialization failure recorded usage attribute %v", attr)
 		}
+	}
+	// Asset materialization fails before the adapter runs, so no transcript is
+	// captured — the result must carry no transcript pointer.
+	if result.Transcript != nil {
+		t.Fatalf("Transcript = %+v, want nil (no adapter ran)", result.Transcript)
+	}
+}
+
+func TestExecutorLinksEveryTaskOutcomeToCapturedTranscript(t *testing.T) {
+	transcript := []byte("{\"role\":\"assistant\",\"content\":\"captured\"}\n")
+	tests := []struct {
+		name        string
+		result      apiv1.ResultEnvelope
+		crash       error
+		artifactDir bool
+		wantErr     bool
+	}{
+		{name: "success", result: apiv1.ResultEnvelope{
+			Status: apiv1.ResultSuccess,
+			Transcript: &apiv1.ArtifactPointer{
+				Path:   "spans/forged",
+				Digest: apiv1.Digest([]byte("not the captured transcript")),
+			},
+		}},
+		{name: "failure", result: apiv1.ResultEnvelope{
+			Status: apiv1.ResultFailure,
+			Error:  &apiv1.ErrorInfo{Code: "implementation_failed", Message: "could not finish"},
+		}},
+		{name: "harness crash", crash: errors.New("process exited unexpectedly"), wantErr: true},
+		{
+			name:        "hard artifact lift failure",
+			result:      apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+			artifactDir: true,
+			wantErr:     true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runsDir := t.TempDir()
+			jr, err := journal.Create(runsDir, journal.RunIdentity{
+				RunID:           "run-1",
+				Workflow:        "default-implement",
+				WorkflowVersion: 1,
+				Gaggle:          "example",
+				Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+			}, nil)
+			if err != nil {
+				t.Fatalf("journal.Create: %v", err)
+			}
+			t.Cleanup(func() { _ = jr.Close() })
+
+			adapter := &FakeAdapter{
+				Transcript: transcript,
+				Act: func(_ context.Context, req RunRequest) error {
+					if tc.crash != nil {
+						return tc.crash
+					}
+					return WriteCompletion(req.Workspace, req.CompletionPath, tc.result)
+				},
+			}
+			exec, err := NewExecutor(
+				adapter,
+				testInjector(t, "", "", noopRegistrar{}),
+				jr,
+				jr,
+				NewContextResolver(jr, runsDir),
+				journal.NewPatternScrubber(),
+				"",
+			)
+			if err != nil {
+				t.Fatalf("NewExecutor: %v", err)
+			}
+
+			env := testEnvelope(t.TempDir())
+			if tc.artifactDir {
+				const artifactDir = "artifact-dir"
+				if err := os.Mkdir(filepath.Join(env.Workspace, artifactDir), 0o755); err != nil {
+					t.Fatalf("mkdir declared artifact directory: %v", err)
+				}
+				env.Inputs = map[string]interface{}{InputArtifactFile: artifactDir}
+			}
+			result, invokeErr := exec.Invoke(context.Background(), env)
+			if (invokeErr != nil) != tc.wantErr {
+				t.Fatalf("Invoke error = %v, wantErr %v", invokeErr, tc.wantErr)
+			}
+			if result.Transcript == nil {
+				t.Fatal("Transcript = nil, want captured transcript pointer")
+			}
+			// The runner-authored pointer must replace any harness-forged one.
+			if result.Transcript.Path == "spans/forged" {
+				t.Fatal("Transcript retained the harness-forged pointer")
+			}
+			got, err := result.Transcript.Resolve(jr.Dir())
+			if err != nil {
+				t.Fatalf("resolve Transcript: %v", err)
+			}
+			// The captured transcript is canonicalized (composed into GenAI events,
+			// then bounded) before recording, so it is not byte-identical to the
+			// adapter's raw transcript — but it embeds the captured content and its
+			// digest matches the recorded artifact (runner-authored, never the
+			// digest a harness might self-report).
+			if !bytes.Contains(got, []byte("captured")) {
+				t.Fatalf("resolved transcript = %q, want it to embed the captured content", got)
+			}
+			if result.Transcript.Digest != journal.Digest(got) {
+				t.Fatalf("Transcript.Digest = %q, want digest of recorded artifact %q", result.Transcript.Digest, journal.Digest(got))
+			}
+		})
 	}
 }
 

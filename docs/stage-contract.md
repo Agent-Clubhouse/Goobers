@@ -104,6 +104,10 @@ The stage returns a `ResultEnvelope`:
 - `artifacts[]` — its produced outputs. The stage writes bytes into the run
   journal (`api/v1alpha1.WriteArtifact`) and returns an `ArtifactPointer` for
   each. Downstream stages receive these as `contextPointers`.
+- `transcript` — an optional runner-authored `ArtifactPointer` to the scrubbed,
+  digested transcript captured for this agentic attempt. It points at the
+  existing journal span and is diagnostic only; it is not added to
+  `artifacts[]` or passed to downstream stages. Legacy results omit it.
 - `outputs` — small declared **scalar** values only.
 - `error` — structured failure detail (`code`, `message`, `retryable`); **required
   when `status == failure`**.
