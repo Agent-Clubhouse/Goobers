@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/term"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -29,6 +30,11 @@ const (
 	statusHighlight            = "\x1b[1m"
 	statusReset                = "\x1b[0m"
 	statusWatchRowFormat       = "%-14.14s  %-18.18s  %-8.8s  %-9.9s  %-20.20s"
+	statusFleetRowFormat       = "%-19.19s %-6.6s %-15.15s %-10.10s %s"
+	statusSuccessRateWindow    = 10
+	statusNextFireScheduled    = "scheduled"
+	statusNextFireManual       = "manual"
+	statusNextFireEvent        = "event"
 )
 
 func providerQuotaStatusLine(status readservice.SchedulerStatus, now time.Time) string {
@@ -63,7 +69,31 @@ type statusJSONSummary struct {
 
 type statusJSONOutput struct {
 	Warnings []validate.CodedWarning `json:"warnings"`
+	Summary  *statusFleetSummary     `json:"summary,omitempty"`
 	Runs     []statusJSONSummary     `json:"runs"`
+}
+
+type statusFleetSummary struct {
+	SuccessRateWindow int                     `json:"successRateWindow"`
+	Workflows         []statusWorkflowSummary `json:"workflows"`
+}
+
+type statusWorkflowSummary struct {
+	Workflow          string           `json:"workflow"`
+	Gaggle            string           `json:"gaggle"`
+	InFlight          int              `json:"inFlight"`
+	MaxConcurrentRuns int              `json:"maxConcurrentRuns"`
+	LastOutcome       journal.RunPhase `json:"lastOutcome,omitempty"`
+	LastOutcomeAt     *time.Time       `json:"lastOutcomeAt,omitempty"`
+	TerminalRuns      int              `json:"terminalRuns"`
+	SuccessfulRuns    int              `json:"successfulRuns"`
+	SuccessRate       *float64         `json:"successRate"`
+	NextFire          statusNextFire   `json:"nextFire"`
+}
+
+type statusNextFire struct {
+	Kind string     `json:"kind"`
+	At   *time.Time `json:"at,omitempty"`
 }
 
 func statusJSONSummaries(runs []runSummary) []statusJSONSummary {
@@ -79,6 +109,201 @@ func statusJSONSummaries(runs []runSummary) []statusJSONSummary {
 		}
 	}
 	return summaries
+}
+
+type statusWorkflowKey struct {
+	gaggle   string
+	workflow string
+}
+
+func buildStatusFleetSummary(
+	workflows []apiv1.Workflow,
+	runs []runSummary,
+	lastEvals map[localscheduler.WorkflowIdentity]time.Time,
+	now time.Time,
+	loc *time.Location,
+) (statusFleetSummary, error) {
+	runsByWorkflow := make(map[statusWorkflowKey][]runSummary)
+	for _, run := range runs {
+		key := statusWorkflowKey{gaggle: run.Gaggle, workflow: run.Workflow}
+		runsByWorkflow[key] = append(runsByWorkflow[key], run)
+	}
+
+	sortedWorkflows := append([]apiv1.Workflow(nil), workflows...)
+	sort.Slice(sortedWorkflows, func(i, j int) bool {
+		if sortedWorkflows[i].Spec.Gaggle == sortedWorkflows[j].Spec.Gaggle {
+			return sortedWorkflows[i].Name < sortedWorkflows[j].Name
+		}
+		return sortedWorkflows[i].Spec.Gaggle < sortedWorkflows[j].Spec.Gaggle
+	})
+
+	summary := statusFleetSummary{
+		SuccessRateWindow: statusSuccessRateWindow,
+		Workflows:         make([]statusWorkflowSummary, 0, len(sortedWorkflows)),
+	}
+	for i := range sortedWorkflows {
+		def := &sortedWorkflows[i]
+		identity := localscheduler.WorkflowIdentity{Gaggle: def.Spec.Gaggle, Workflow: def.Name}
+		lastEval := lastEvals[identity]
+		if lastEval.IsZero() {
+			lastEval = now
+		}
+		nextFire, err := statusWorkflowNextFire(def, lastEval, loc)
+		if err != nil {
+			return statusFleetSummary{}, fmt.Errorf("workflow %q: %w", def.Name, err)
+		}
+		maxConcurrent := int(def.Spec.Readiness.MaxConcurrentRuns)
+		if maxConcurrent <= 0 {
+			maxConcurrent = 1
+		}
+		workflowSummary := statusWorkflowSummary{
+			Workflow:          def.Name,
+			Gaggle:            def.Spec.Gaggle,
+			MaxConcurrentRuns: maxConcurrent,
+			NextFire:          nextFire,
+		}
+
+		var terminal []runSummary
+		for _, run := range runsByWorkflow[statusWorkflowKey{gaggle: def.Spec.Gaggle, workflow: def.Name}] {
+			if run.Phase == journal.PhaseRunning {
+				workflowSummary.InFlight++
+				continue
+			}
+			if statusPhaseIsTerminal(run.Phase) {
+				terminal = append(terminal, run)
+			}
+		}
+		sort.Slice(terminal, func(i, j int) bool {
+			left := statusRunOutcomeTime(terminal[i])
+			right := statusRunOutcomeTime(terminal[j])
+			if left.Equal(right) {
+				if terminal[i].StartedAt.Equal(terminal[j].StartedAt) {
+					return terminal[i].RunID < terminal[j].RunID
+				}
+				return terminal[i].StartedAt.After(terminal[j].StartedAt)
+			}
+			return left.After(right)
+		})
+		if len(terminal) > 0 {
+			lastOutcomeAt := statusRunOutcomeTime(terminal[0])
+			workflowSummary.LastOutcome = terminal[0].Phase
+			workflowSummary.LastOutcomeAt = &lastOutcomeAt
+		}
+		if len(terminal) > statusSuccessRateWindow {
+			terminal = terminal[:statusSuccessRateWindow]
+		}
+		workflowSummary.TerminalRuns = len(terminal)
+		for _, run := range terminal {
+			if run.Phase == journal.PhaseCompleted {
+				workflowSummary.SuccessfulRuns++
+			}
+		}
+		if workflowSummary.TerminalRuns > 0 {
+			rate := float64(workflowSummary.SuccessfulRuns) / float64(workflowSummary.TerminalRuns)
+			workflowSummary.SuccessRate = &rate
+		}
+		summary.Workflows = append(summary.Workflows, workflowSummary)
+	}
+	return summary, nil
+}
+
+func statusWorkflowLastEvals(
+	layout instance.Layout,
+) (map[localscheduler.WorkflowIdentity]time.Time, error) {
+	evaluations, err := localscheduler.ReadTriggerEvaluations(layout.SchedulerDir())
+	if err != nil {
+		return nil, fmt.Errorf("read scheduler trigger state: %w", err)
+	}
+	return evaluations, nil
+}
+
+func statusWorkflowNextFire(workflow *apiv1.Workflow, lastEval time.Time, loc *time.Location) (statusNextFire, error) {
+	schedules := make([]localscheduler.Schedule, 0, len(workflow.Spec.Triggers))
+	for _, trigger := range workflow.Spec.Triggers {
+		if trigger.Type != apiv1.TriggerSchedule || trigger.Schedule == "" {
+			continue
+		}
+		schedule, err := localscheduler.ParseSchedule(trigger.Schedule)
+		if err != nil {
+			return statusNextFire{}, err
+		}
+		schedules = append(schedules, localscheduler.InLocation(schedule, loc))
+	}
+	if next, ok := localscheduler.NextScheduledFire(schedules, lastEval); ok {
+		return statusNextFire{Kind: statusNextFireScheduled, At: &next}, nil
+	}
+	if len(workflow.Spec.Triggers) == 1 && workflow.Spec.Triggers[0].Type == apiv1.TriggerManual {
+		return statusNextFire{Kind: statusNextFireManual}, nil
+	}
+	return statusNextFire{Kind: statusNextFireEvent}, nil
+}
+
+func statusPhaseIsTerminal(phase journal.RunPhase) bool {
+	switch phase {
+	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+		return true
+	default:
+		return false
+	}
+}
+
+func statusRunOutcomeTime(run runSummary) time.Time {
+	if !run.LastActivityAt.IsZero() {
+		return run.LastActivityAt
+	}
+	return run.StartedAt
+}
+
+func renderStatusFleetSummary(stdout io.Writer, summary statusFleetSummary, now time.Time) {
+	pf(stdout, "Workflow summary (success rate over last %d terminal runs):\n", summary.SuccessRateWindow)
+	pf(stdout, statusFleetRowFormat+"\n", "WORKFLOW", "ACTIVE", "LAST (AGO)", "SUCCESS", "NEXT")
+	nameCounts := make(map[string]int, len(summary.Workflows))
+	for _, workflow := range summary.Workflows {
+		nameCounts[workflow.Workflow]++
+	}
+	for _, workflow := range summary.Workflows {
+		name := workflow.Workflow
+		if nameCounts[name] > 1 {
+			name = workflow.Gaggle + "/" + name
+		}
+		last := "-"
+		if workflow.LastOutcomeAt != nil {
+			last = fmt.Sprintf("%s %s", workflow.LastOutcome, formatSummaryAge(now, *workflow.LastOutcomeAt))
+		}
+		success := "-"
+		if workflow.SuccessRate != nil {
+			success = fmt.Sprintf("%d/%d %.0f%%", workflow.SuccessfulRuns, workflow.TerminalRuns, *workflow.SuccessRate*100)
+		}
+		next := workflow.NextFire.Kind
+		if workflow.NextFire.At != nil {
+			next = workflow.NextFire.At.Format(time.RFC3339)
+		}
+		pf(stdout, statusFleetRowFormat+"\n",
+			name,
+			fmt.Sprintf("%d/%d", workflow.InFlight, workflow.MaxConcurrentRuns),
+			last,
+			success,
+			next,
+		)
+	}
+	pf(stdout, "\n")
+}
+
+func formatSummaryAge(now, activity time.Time) string {
+	age := now.Sub(activity)
+	if age < 0 {
+		age = 0
+	}
+	switch {
+	case age < time.Minute:
+		return fmt.Sprintf("%ds", int(age/time.Second))
+	case age < time.Hour:
+		return fmt.Sprintf("%dm", int(age/time.Minute))
+	case age < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(age/time.Hour))
+	default:
+		return fmt.Sprintf("%dd", int(age/(24*time.Hour)))
+	}
 }
 
 type statusOptions struct {
@@ -113,7 +338,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	jsonOutput := fs.Bool("json", false, "emit config warnings and run summaries as JSON")
+	jsonOutput := fs.Bool("json", false, "emit config warnings, workflow summary, and runs as JSON")
 	phaseFilter := fs.String("phase", "", "filter by comma-separated run phases")
 	workflowFilter := fs.String("workflow", "", "filter by workflow name")
 	limit := fs.Int("limit", 0, "maximum number of runs to show (default: all)")
@@ -233,6 +458,14 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: initialize read service: %v\n", err)
 		return 2
 	}
+	var statusLocation *time.Location
+	if supportsWatch {
+		statusLocation, err = cfg.Location()
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
+	}
 
 	options := statusOptions{
 		phases:   phases,
@@ -243,16 +476,28 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	loadRuns := func() ([]runSummary, error) {
 		return listStatusRuns(context.Background(), reads)
 	}
+	loadFleetSummary := func(runs []runSummary, now time.Time) (statusFleetSummary, error) {
+		lastEvals, err := statusWorkflowLastEvals(l)
+		if err != nil {
+			return statusFleetSummary{}, err
+		}
+		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, now, statusLocation)
+	}
 	// Scheduler state is loaded per redraw so watch reflects both quota
 	// transitions and backlog-query's learned-dependency refresh.
-	loadStatusText := func() (string, error) {
+	loadStatusText := func(runs []runSummary, now time.Time) (string, error) {
 		if !supportsWatch {
 			return "", nil
 		}
 		var text strings.Builder
+		summary, err := loadFleetSummary(runs, now)
+		if err != nil {
+			return "", err
+		}
+		renderStatusFleetSummary(&text, summary, now)
 		status, err := reads.SchedulerStatus(context.Background())
 		if err == nil {
-			text.WriteString(providerQuotaStatusLine(status, time.Now()))
+			text.WriteString(providerQuotaStatusLine(status, now))
 		}
 		parked, err := listParkedDependencies(l)
 		if err != nil {
@@ -280,10 +525,22 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	runs = selectStatusRuns(runs, options)
+	allRuns := runs
+	now := time.Now()
+	var fleetSummary *statusFleetSummary
+	if supportsWatch {
+		summary, err := loadFleetSummary(allRuns, now)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
+		fleetSummary = &summary
+	}
+	runs = selectStatusRuns(allRuns, options)
 	if *jsonOutput {
 		output := statusJSONOutput{
 			Warnings: warnings,
+			Summary:  fleetSummary,
 			Runs:     statusJSONSummaries(runs),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
@@ -293,17 +550,16 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 0
 	}
 
-	// Skipped in --json mode (handled above, this point is unreached for
-	// it) since the JSON output's shape is a warnings+runs object, not an
-	// array with room for a plain-text side channel.
+	// Skipped in --json mode since the structured summary has no plain-text
+	// side channel.
 	printValidationWarnings(stdout, warnings)
-	statusText, err := loadStatusText()
+	statusText, err := loadStatusText(allRuns, now)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	pf(stdout, "%s", statusText)
-	renderStatus(stdout, runs, time.Now())
+	renderStatus(stdout, runs, now)
 	return 0
 }
 
@@ -363,7 +619,7 @@ func watchStatus(
 	options statusOptions,
 	stdout io.Writer,
 	loadRuns func() ([]runSummary, error),
-	loadStatusText func() (string, error),
+	loadStatusText func([]runSummary, time.Time) (string, error),
 ) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -381,11 +637,12 @@ func watchStatus(
 			return err
 		}
 		current := statusRunPhases(allRuns)
-		statusText, err := loadStatusText()
+		now := time.Now()
+		statusText, err := loadStatusText(allRuns, now)
 		if err != nil {
 			return err
 		}
-		renderStatusWatchFrame(stdout, statusText, selectStatusRuns(allRuns, options), changedStatusRuns(previous, current), time.Now())
+		renderStatusWatchFrame(stdout, statusText, selectStatusRuns(allRuns, options), changedStatusRuns(previous, current), now)
 		previous = current
 
 		select {

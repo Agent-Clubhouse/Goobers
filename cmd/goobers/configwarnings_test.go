@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,9 +99,19 @@ func TestStatusJSONIncludesStableWarningShape(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status --json code = %d, stderr = %q", code, stderr)
 	}
-	want := `{"warnings":[{"code":"MODEL002","severity":"warning","scope":"Goober/coder","explanation":"requested model is unavailable; using the harness default"}],"runs":[]}` + "\n"
-	if stdout != want {
-		t.Fatalf("stdout = %q, want %q", stdout, want)
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if len(got.Warnings) != 1 ||
+		got.Warnings[0].Code != "MODEL002" ||
+		got.Warnings[0].Severity != "warning" ||
+		got.Warnings[0].Scope != "Goober/coder" ||
+		got.Warnings[0].Explanation != "requested model is unavailable; using the harness default" {
+		t.Fatalf("warnings = %+v", got.Warnings)
+	}
+	if got.Summary == nil || len(got.Runs) != 0 {
+		t.Fatalf("summary/runs = %+v / %+v", got.Summary, got.Runs)
 	}
 }
 
