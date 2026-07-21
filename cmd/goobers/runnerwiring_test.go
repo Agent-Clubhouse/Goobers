@@ -192,7 +192,11 @@ func TestBuildCredentialsDefault(t *testing.T) {
 }
 
 func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
-	workflowDefinition := func(gaggle, command string) apiv1.Workflow {
+	testBin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowDefinition := func(gaggle string) apiv1.Workflow {
 		return apiv1.Workflow{
 			ObjectMeta: metav1.ObjectMeta{Name: "deploy"},
 			Spec: apiv1.WorkflowSpec{
@@ -203,7 +207,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 					Name: "deploy",
 					Type: apiv1.TaskDeterministic,
 					Goal: "Deploy.",
-					Run:  &apiv1.DeterministicRun{Command: []string{"sh", "-c", "printf " + command}, Workspace: apiv1.WorkspaceScratch},
+					Run:  &apiv1.DeterministicRun{Command: []string{testBin, "-test.run=^$"}, Workspace: apiv1.WorkspaceScratch},
 				}},
 			},
 		}
@@ -214,8 +218,8 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 			{ObjectMeta: metav1.ObjectMeta{Name: "beta"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "beta"}}},
 		},
 		Workflows: []apiv1.Workflow{
-			workflowDefinition("alpha", "alpha-deploy"),
-			workflowDefinition("beta", "beta-deploy"),
+			workflowDefinition("alpha"),
+			workflowDefinition("beta"),
 		},
 	}
 

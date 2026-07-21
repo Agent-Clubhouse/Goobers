@@ -109,13 +109,15 @@ goobers completion fish | source  # fish
 ## Developing
 
 ```sh
-make help        # list targets
+go run ./test/ci # portable full local gate (Go + portal)
+make ci          # optional Unix compatibility alias
+make help        # list Unix convenience targets
 make build       # build all cmd/* into bin/
 make test        # unit tests with race detector + coverage
-make ci          # full local gate: fmt-check, vet, build, test, lint
 ```
 
-CI runs the same gate on every PR to `main`.
+CI runs the same portable gate on every PR to `main`. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for per-platform prerequisites.
 
 ## Contributing
 

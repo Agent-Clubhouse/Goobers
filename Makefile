@@ -1,7 +1,6 @@
 # Goobers control-plane Makefile.
 # Owns the Go build/test/lint toolchain for the monorepo (module github.com/goobers/goobers).
 
-SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
 # ---- Build metadata (injected into internal/version via -ldflags) -----------
@@ -168,9 +167,10 @@ cover: test
 cover-check: test
 	COVERAGE_PROFILE=coverage.out $(GO) run ./test/coveragegate $(COVERAGE_THRESHOLD)
 
-## ci: Full Go and portal gate run locally (matches the pipeline).
+## ci: Run the portable full Go and portal gate (matches the pipeline).
 .PHONY: ci
-ci: fmt-check vet build test lint portal-ci
+ci:
+	$(GO) run ./test/ci
 
 ## clean: Remove build artifacts.
 .PHONY: clean

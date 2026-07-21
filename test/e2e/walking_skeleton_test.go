@@ -47,6 +47,39 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
+const (
+	e2eCommandHelperMode = "GOOBERS_TEST_E2E_COMMAND_HELPER_MODE"
+	e2eCommandHelperPath = "GOOBERS_TEST_E2E_COMMAND_HELPER_PATH"
+)
+
+func TestE2ECommandHelper(t *testing.T) {
+	switch os.Getenv(e2eCommandHelperMode) {
+	case "":
+		return
+	case "success":
+		os.Exit(0)
+	case "read-file":
+		data, err := os.ReadFile(os.Getenv(e2eCommandHelperPath))
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		_, _ = os.Stdout.Write(data)
+		os.Exit(0)
+	default:
+		os.Exit(2)
+	}
+}
+
+func e2eTestCommand(t *testing.T) []string {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	return []string{executable, "-test.run=^TestE2ECommandHelper$"}
+}
+
 // --- fixture repo: a local bare git repo, so the walking skeleton needs no
 // network access (issue #29 acceptance: "green in CI on a runner with no
 // network access"). ---
@@ -104,7 +137,13 @@ func skeletonMachine(t *testing.T) *workflow.Machine {
 				Retry: &apiv1.RetryPolicy{MaxAttempts: 2},
 				Next:  "review",
 			},
-			{Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "run the local CI-equivalent", Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+			{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "run the local CI-equivalent",
+				Run: &apiv1.DeterministicRun{
+					Command: e2eTestCommand(t),
+					Env:     map[string]string{e2eCommandHelperMode: "success"},
+				},
+			},
 		},
 		Gates: []apiv1.Gate{
 			{

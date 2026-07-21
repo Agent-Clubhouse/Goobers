@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -79,6 +80,9 @@ func customStageWorkspace(t *testing.T, fixture string) string {
 }
 
 func TestCustomStageExampleDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("example task intentionally exercises a POSIX shell script")
+	}
 	spec := loadCustomStageWorkflow(t)
 	machine, err := wf.Compile(wf.Definition{Name: "todo-check", Version: 1, Spec: spec})
 	if err != nil {
