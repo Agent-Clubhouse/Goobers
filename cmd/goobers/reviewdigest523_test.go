@@ -292,9 +292,14 @@ func TestGatherSiblingContextSameHeadStateChangeMissesCache(t *testing.T) {
 			change: func(server *fakeGitHubServer) { server.setPRLabels(11, []string{"blocked"}) },
 		},
 		{
-			name:   "check state",
+			name:   "check state pending to passing",
 			before: func(server *fakeGitHubServer) { server.setPRCheckState(11, "pending") },
 			change: func(server *fakeGitHubServer) { server.setPRCheckState(11, "success") },
+		},
+		{
+			name:   "check state passing to failing",
+			before: func(*fakeGitHubServer) {},
+			change: func(server *fakeGitHubServer) { server.setPRCheckState(11, "failure") },
 		},
 	}
 	for _, tt := range tests {

@@ -9,10 +9,9 @@ import (
 )
 
 // #523's CLI-level tests for gather-sibling-context's cross-run sibling
-// memo (siblingcache.go): the per-sibling API cost — one files request plus
-// two check-state requests — must drop to zero for a sibling whose head SHA
-// is unchanged since the last gather, while any change (push/rebase, new PR,
-// closed PR) is picked up fresh via the always-fresh list probe.
+// memo (siblingcache.go): file-list requests are eliminated for a sibling
+// whose head SHA is unchanged, while check state remains live so same-head CI
+// reruns and open-set changes are picked up.
 
 // gatherSiblingContext runs one `goobers gather-sibling-context` invocation
 // in its own fresh working dir (mirroring the live runner: each stage
@@ -57,11 +56,10 @@ func seedSiblingFixture(t *testing.T) (root string, server *fakeGitHubServer) {
 	return root, server
 }
 
-// TestGatherSiblingContextUnchangedSiblingsCostZeroCalls is #523's core
-// acceptance criterion: a second gather with no sibling changes makes zero
-// new per-sibling provider calls — files AND check state both come from the
-// memo, so the run's whole API cost is the single list probe.
-func TestGatherSiblingContextUnchangedSiblingsCostZeroCalls(t *testing.T) {
+// TestGatherSiblingContextUnchangedSiblingsReuseFilesAndRefreshChecks verifies
+// that a second gather reuses immutable file lists while refreshing check
+// state, which can change after a same-head CI rerun.
+func TestGatherSiblingContextUnchangedSiblingsReuseFilesAndRefreshChecks(t *testing.T) {
 	root, server := seedSiblingFixture(t)
 
 	first, _ := gatherSiblingContext(t, root)
@@ -78,27 +76,26 @@ func TestGatherSiblingContextUnchangedSiblingsCostZeroCalls(t *testing.T) {
 	server.resetRequestCounts()
 	second, stdout := gatherSiblingContext(t, root)
 	filesN, checksN = server.requestCounts()
-	if filesN != 0 || checksN != 0 {
-		t.Fatalf("unchanged second gather cost = %d files + %d check-state requests, want 0 + 0", filesN, checksN)
+	if filesN != 0 || checksN != 4 {
+		t.Fatalf("unchanged second gather cost = %d files + %d check-state requests, want 0 + 4", filesN, checksN)
 	}
 	if !strings.Contains(stdout, "2 reused from cache") {
 		t.Fatalf("stdout = %q, want it to report 2 reused from cache", stdout)
 	}
-	// The memoized result must be byte-equivalent evidence, not just cheap:
-	// same siblings, same files, same terminal check state.
+	// The result remains byte-equivalent when the live state is unchanged.
 	firstJSON, _ := json.Marshal(first)
 	secondJSON, _ := json.Marshal(second)
 	if string(firstJSON) != string(secondJSON) {
 		t.Fatalf("cached gather = %s, want identical to fresh gather %s", secondJSON, firstJSON)
 	}
 	if second[0].CheckState != "passing" {
-		t.Fatalf("cached sibling checkState = %q, want the terminal state recorded on the first gather (passing)", second[0].CheckState)
+		t.Fatalf("refreshed sibling checkState = %q, want passing", second[0].CheckState)
 	}
 }
 
 // TestGatherSiblingContextChangedHeadInvalidatesOnlyThatSibling: a sibling
-// that was pushed/rebased (new head SHA) is re-fetched; its unchanged
-// neighbor still costs nothing.
+// that was pushed/rebased (new head SHA) has its files re-fetched; its
+// unchanged neighbor's files remain memoized and both check states are live.
 func TestGatherSiblingContextChangedHeadInvalidatesOnlyThatSibling(t *testing.T) {
 	root, server := seedSiblingFixture(t)
 	gatherSiblingContext(t, root)
@@ -111,8 +108,8 @@ func TestGatherSiblingContextChangedHeadInvalidatesOnlyThatSibling(t *testing.T)
 
 	siblings, _ := gatherSiblingContext(t, root)
 	filesN, checksN := server.requestCounts()
-	if filesN != 1 || checksN != 2 {
-		t.Fatalf("post-push gather cost = %d files + %d check-state requests, want 1 + 2 (only #11 re-fetched)", filesN, checksN)
+	if filesN != 1 || checksN != 4 {
+		t.Fatalf("post-push gather cost = %d files + %d check-state requests, want 1 + 4", filesN, checksN)
 	}
 	for _, s := range siblings {
 		if s.Number == 11 {
@@ -123,10 +120,9 @@ func TestGatherSiblingContextChangedHeadInvalidatesOnlyThatSibling(t *testing.T)
 	}
 }
 
-// TestGatherSiblingContextRepollsNonTerminalCheckState: files stay memoized
-// on an unchanged head, but a pending check state is never reused — it is
-// re-polled each run until it settles, then the settled state is reused.
-func TestGatherSiblingContextRepollsNonTerminalCheckState(t *testing.T) {
+// TestGatherSiblingContextRefreshesCheckStateOnSameHead verifies both CI
+// completion and a terminal-state rerun are observed without refetching files.
+func TestGatherSiblingContextRefreshesCheckStateOnSameHead(t *testing.T) {
 	root, server := seedSiblingFixture(t)
 	server.setPRCheckState(11, "pending")
 	gatherSiblingContext(t, root)
@@ -136,8 +132,8 @@ func TestGatherSiblingContextRepollsNonTerminalCheckState(t *testing.T) {
 	server.resetRequestCounts()
 	siblings, _ := gatherSiblingContext(t, root)
 	filesN, checksN := server.requestCounts()
-	if filesN != 0 || checksN != 2 {
-		t.Fatalf("pending-sibling gather cost = %d files + %d check-state requests, want 0 + 2 (#11 re-polled, #12 reused)", filesN, checksN)
+	if filesN != 0 || checksN != 4 {
+		t.Fatalf("pending-sibling gather cost = %d files + %d check-state requests, want 0 + 4", filesN, checksN)
 	}
 	for _, s := range siblings {
 		if s.Number == 11 && s.CheckState != "passing" {
@@ -145,12 +141,18 @@ func TestGatherSiblingContextRepollsNonTerminalCheckState(t *testing.T) {
 		}
 	}
 
-	// Now terminal — the third run reuses it like any other settled sibling.
+	// A same-head rerun can replace one terminal result with another.
+	server.setPRCheckState(11, "failure")
 	server.resetRequestCounts()
-	gatherSiblingContext(t, root)
+	siblings, _ = gatherSiblingContext(t, root)
 	filesN, checksN = server.requestCounts()
-	if filesN != 0 || checksN != 0 {
-		t.Fatalf("settled third gather cost = %d files + %d check-state requests, want 0 + 0", filesN, checksN)
+	if filesN != 0 || checksN != 4 {
+		t.Fatalf("rerun third gather cost = %d files + %d check-state requests, want 0 + 4", filesN, checksN)
+	}
+	for _, s := range siblings {
+		if s.Number == 11 && s.CheckState != "failing" {
+			t.Fatalf("sibling #11 checkState = %q, want the freshly-polled failing", s.CheckState)
+		}
 	}
 }
 
@@ -202,8 +204,8 @@ func TestGatherSiblingContextCorruptCacheDegradesToFreshGather(t *testing.T) {
 	server.resetRequestCounts()
 	gatherSiblingContext(t, root)
 	filesN, checksN := server.requestCounts()
-	if filesN != 0 || checksN != 0 {
-		t.Fatalf("post-repair gather cost = %d files + %d check-state requests, want 0 + 0", filesN, checksN)
+	if filesN != 0 || checksN != 4 {
+		t.Fatalf("post-repair gather cost = %d files + %d check-state requests, want 0 + 4", filesN, checksN)
 	}
 }
 
@@ -222,8 +224,8 @@ func TestGatherSiblingContextMemoSurvivesSelectionRotation(t *testing.T) {
 	server.resetRequestCounts()
 	gatherSiblingContext(t, root)
 	filesN, checksN := server.requestCounts()
-	if filesN != 0 || checksN != 0 {
-		t.Fatalf("post-rotation gather cost = %d files + %d check-state requests, want 0 + 0 (every open PR already memoized)", filesN, checksN)
+	if filesN != 0 || checksN != 4 {
+		t.Fatalf("post-rotation gather cost = %d files + %d check-state requests, want 0 + 4 (every open PR file list already memoized)", filesN, checksN)
 	}
 }
 
@@ -245,8 +247,8 @@ func TestGatherSiblingContextPrunesClosedSiblings(t *testing.T) {
 		t.Fatalf("siblings = %+v, want #11 (cached) and #13 (new)", siblings)
 	}
 	filesN, checksN := server.requestCounts()
-	if filesN != 1 || checksN != 2 {
-		t.Fatalf("gather cost = %d files + %d check-state requests, want 1 + 2 (only new #13 fetched)", filesN, checksN)
+	if filesN != 1 || checksN != 4 {
+		t.Fatalf("gather cost = %d files + %d check-state requests, want 1 + 4 (only new #13 files fetched)", filesN, checksN)
 	}
 
 	data, err := os.ReadFile(filepath.Join(layoutFor(root).SchedulerDir(), siblingCacheFileName))

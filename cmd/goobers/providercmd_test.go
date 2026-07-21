@@ -92,9 +92,8 @@ type fakeGitHubServer struct {
 	nextCommentID int64
 	server        *httptest.Server
 	// filesRequests/checkStateRequests count GET /pulls/{n}/files and
-	// /commits/{sha}/{status,check-runs} hits — the per-sibling API cost
-	// #523's cache exists to eliminate, so its tests can assert "an
-	// unchanged sibling costs zero requests on the next gather".
+	// /commits/{sha}/{status,check-runs} hits so cache tests can distinguish
+	// memoized file lists from check states that must remain fresh.
 	filesRequests      int
 	checkStateRequests int
 	authenticatedLogin string
@@ -674,8 +673,7 @@ func (s *fakeGitHubServer) setPRLabels(number int, labels []string) {
 	s.prs[number].labels = append([]string(nil), labels...)
 }
 
-// setPRCheckState models CI advancing on an unchanged head (pending →
-// success/failure) between runs (#523's terminal-state reuse tests).
+// setPRCheckState models CI advancing or rerunning on an unchanged head.
 func (s *fakeGitHubServer) setPRCheckState(number int, state string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

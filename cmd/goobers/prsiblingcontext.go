@@ -71,8 +71,8 @@ type siblingPR struct {
 // siblingcache.go): the open-PR list itself is always queried fresh — it is
 // the freshness probe, one request regardless of PR count, and the source
 // of every volatile field (draft/labels/head SHA) — but a sibling whose
-// head SHA is unchanged since the last gather reuses its cached files and
-// terminal check state instead of costing three more requests per run.
+// head SHA is unchanged since the last gather reuses its cached files.
+// Check state is always refreshed because CI can be rerun on the same SHA.
 func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("gather-sibling-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -81,10 +81,11 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			"Load the other open goober-authored PRs' touched files + state as\n"+
 			"evidence for the holistic review (a workflow stage, follows\n"+
 			"pr-select). Requires selectedNumber/selectedHead/selectedBase inputs\n"+
-			"(Task.InputsFrom pr-select's own outputs). Sibling files/check state\n"+
-			"are memoized per head SHA under the instance scheduler dir; --no-cache\n"+
-			"bypasses that memo entirely (neither read nor written) to force a fully\n"+
-			"fresh gather. Separately, this stage also computes the selected PR's\n"+
+			"(Task.InputsFrom pr-select's own outputs). Sibling files are memoized\n"+
+			"per head SHA under the instance scheduler dir, while check state is\n"+
+			"always refreshed; --no-cache bypasses the file memo entirely (neither\n"+
+			"read nor written) to force a fully fresh gather. Separately, this stage\n"+
+			"also computes the selected PR's\n"+
 			"reviewDigest and checks the PR's own most recent verdict comment for a\n"+
 			"matching one (issue #523's verdict-level cache) — a match is emitted as\n"+
 			"cachedVerdictJson, letting the runner skip the reviewer gate's LLM call\n"+
@@ -135,8 +136,9 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	// SkipCheckState: the list is the always-fresh probe (one request), but
-	// per-candidate check-state resolution is two more requests per PR —
-	// resolved below only for siblings whose cached state isn't reusable.
+	// per-candidate check-state resolution is two more requests per PR. It is
+	// resolved below after file-list memoization so same-head CI reruns are
+	// reflected in the verdict-cache key.
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
 	})
@@ -210,12 +212,9 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		} else {
 			reused++
 		}
-		checkState := prior.CheckState
-		if !hit || !checkStateTerminal(checkState) {
-			checkState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
-			if err != nil {
-				return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", pr.Number), err, "sibling-context.json")
-			}
+		checkState, err := provider.RefCheckState(ctx, repo, pr.HeadSHA)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", pr.Number), err, "sibling-context.json")
 		}
 		next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: checkState, Files: paths}
 		siblings = append(siblings, siblingPR{
