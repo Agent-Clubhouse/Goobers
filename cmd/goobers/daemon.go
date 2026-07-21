@@ -332,10 +332,18 @@ func buildSchedulerDefinitions(
 		wtManagers = make(map[string]*worktree.Manager)
 	}
 	branchNamespaces := branchNamespacesByGaggle(set)
+	// Each gaggle's project repo drives its runner's per-gaggle credential
+	// scoping (MGV-5, #1012): its stages are granted that repo's own token. A
+	// gaggle with no configured Gaggle object (a single-gaggle default) has no
+	// entry here, so its runner falls back to the first repo's token unchanged.
+	gaggleProjects := make(map[string]apiv1.RepoRef, len(set.Gaggles))
+	for i := range set.Gaggles {
+		gaggleProjects[set.Gaggles[i].Name] = set.Gaggles[i].Spec.Project
+	}
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
 		scoped := l.ForGaggle(gaggle)
-		rn, manager, err := buildRuntimeRunner(scoped, cfg, goobers, tel, instanceLog, sharedReg, wtManagers[gaggle], providerQuota, terminalNotifier, branchNamespaces)
+		rn, manager, err := buildRuntimeRunner(scoped, cfg, goobers, tel, instanceLog, sharedReg, wtManagers[gaggle], providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle])
 		if err != nil {
 			return nil, err
 		}
@@ -351,7 +359,7 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	credResolver, _, err := buildCredentials(cfg)
+	credResolver, _, err := buildCredentials(cfg, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -449,7 +457,9 @@ func buildRetainedLegacyRunner(
 	if err != nil || !retained {
 		return nil, nil, err
 	}
-	return buildRuntimeRunner(l, cfg, goobersByName(set), tel, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, branchNamespacesByGaggle(set))
+	// Legacy retained runtime: no per-gaggle project scoping — a zero project
+	// repo leaves credentials on the first-repo default (unchanged behavior).
+	return buildRuntimeRunner(l, cfg, goobersByName(set), tel, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{})
 }
 
 func retainedLegacyRuntimeExists(l instance.Layout) (bool, error) {
@@ -479,8 +489,9 @@ func buildRuntimeRunner(
 	providerQuota *localscheduler.ProviderQuotaState,
 	terminalNotifier runner.TerminalNotifier,
 	branchNamespaces map[string]string,
+	gaggleProject apiv1.RepoRef,
 ) (*runner.Runner, *worktree.Manager, error) {
-	runnerCfg, manager, err := buildRunnerConfig(l, cfg, goobers, tel, sharedReg, manager, branchNamespaces)
+	runnerCfg, manager, err := buildRunnerConfig(l, cfg, goobers, tel, sharedReg, manager, branchNamespaces, gaggleProject)
 	if err != nil {
 		return nil, nil, err
 	}

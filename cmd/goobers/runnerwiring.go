@@ -281,14 +281,22 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string) (*
 // The returned Grants are runner-owned (empty Goober); buildGooberCredentialGrants
 // binds these sources to each goober's own declared capabilities before an
 // agentic injector can use them.
-func buildCredentials(cfg *instance.Config) (credentials.Resolver, []credentials.Grant, error) {
+// buildCredentials builds the resolver and runner-owned grants for one gaggle,
+// whose project repo is (gaggleOwner, gaggleName). Repo capabilities are granted
+// that gaggle's OWN repo token (per-repo credential scoping, MGV-5 #1012) rather
+// than an instance-wide default, so a gaggle's stages only ever hold a token for
+// that gaggle's repo. An empty (gaggleOwner, gaggleName) — an instance-level
+// caller, or a single-repo/legacy instance — falls back to the first repo's
+// token, byte-identical to the prior instance-global behavior. agent:model and
+// other cfg.Credentials entries stay unqualified (the shared token every gaggle
+// uses), overriding the repo-default grant for their capability (#287).
+func buildCredentials(cfg *instance.Config, gaggleOwner, gaggleName string) (credentials.Resolver, []credentials.Grant, error) {
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
+	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
 	for _, r := range cfg.Repos {
-		refs = append(refs, credentials.TokenRef{
-			Name: r.Owner + "/" + r.Name,
-			Env:  r.Token.Env,
-			File: r.Token.File,
-		})
+		ref := r.Owner + "/" + r.Name
+		refs = append(refs, credentials.TokenRef{Name: ref, Env: r.Token.Env, File: r.Token.File})
+		bindings = append(bindings, credentials.RepoBinding{Owner: r.Owner, Name: r.Name, TokenRef: ref})
 	}
 	// Per-capability credential refs (#287): each sources one capability from
 	// its own token, named distinctly so it never collides with a repo ref.
@@ -304,30 +312,15 @@ func buildCredentials(cfg *instance.Config) (credentials.Resolver, []credentials
 		return nil, nil, fmt.Errorf("build credential resolver: %w", err)
 	}
 
-	// Default: the first repo's token backs every credentialed capability.
-	grantRef := make(map[string]string, len(credentialedCapabilities)+len(cfg.Credentials))
-	var order []string // deterministic grant order: defaults first, then extras
-	if len(cfg.Repos) > 0 {
-		repoRef := cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name
-		for _, c := range credentialedCapabilities {
-			grantRef[string(c)] = repoRef
-			order = append(order, string(c))
-		}
+	caps := make([]string, len(credentialedCapabilities))
+	for i, c := range credentialedCapabilities {
+		caps[i] = string(c)
 	}
-	// instance.yaml credentials: entries source a capability from its own token
-	// (#287) — a new capability (e.g. agent:model) is added, and a capability
-	// the repo token already backs is OVERRIDDEN to point at its distinct ref.
+	overrides := make([]credentials.Grant, 0, len(cfg.Credentials))
 	for _, cg := range cfg.Credentials {
-		if _, exists := grantRef[cg.Capability]; !exists {
-			order = append(order, cg.Capability)
-		}
-		grantRef[cg.Capability] = credentialRefName(cg.Capability)
+		overrides = append(overrides, credentials.Grant{Capability: cg.Capability, Ref: credentialRefName(cg.Capability)})
 	}
-
-	grants := make([]credentials.Grant, 0, len(order))
-	for _, cap := range order {
-		grants = append(grants, credentials.Grant{Capability: cap, Ref: grantRef[cap]})
-	}
+	grants := credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, caps, overrides)
 	return resolver, grants, nil
 }
 
@@ -987,7 +980,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg 
 	if !capped {
 		return nil, nil
 	}
-	resolver, _, err := buildCredentials(cfg)
+	resolver, _, err := buildCredentials(cfg, "", "")
 	if err != nil {
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
 	}
@@ -1107,7 +1100,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef) (runner.Config, *worktree.Manager, error) {
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1120,7 +1113,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
 	}
-	resolver, grants, err := buildCredentials(cfg)
+	// Per-gaggle credential scoping (MGV-5, #1012): this runner serves one
+	// gaggle, so its stages are granted that gaggle's own project-repo token —
+	// not an instance-wide default. gaggleProject is zero for a single-gaggle /
+	// legacy instance, which falls back to the first repo's token unchanged.
+	resolver, grants, err := buildCredentials(cfg, gaggleProject.Owner, gaggleProject.Name)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
