@@ -523,6 +523,25 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "runner.capabilities[1]",
 		},
 		{
+			name: "runner env passthrough valid names",
+			cfg:  Config{Runner: RunnerConfig{EnvPassthrough: []string{"DOTNET_ROOT", "MY_TOOL_HOME", "npm_config_cache"}}},
+		},
+		{
+			name:    "runner env passthrough with assignment rejected",
+			cfg:     Config{Runner: RunnerConfig{EnvPassthrough: []string{"FOO=BAR"}}},
+			wantErr: "runner.envPassthrough[0]",
+		},
+		{
+			name:    "runner env passthrough empty rejected",
+			cfg:     Config{Runner: RunnerConfig{EnvPassthrough: []string{"DOTNET_ROOT", ""}}},
+			wantErr: "runner.envPassthrough[1]",
+		},
+		{
+			name:    "runner env passthrough leading digit rejected",
+			cfg:     Config{Runner: RunnerConfig{EnvPassthrough: []string{"1BAD"}}},
+			wantErr: "runner.envPassthrough[0]",
+		},
+		{
 			name: "OTLP secure endpoint",
 			cfg: Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{
 				Endpoint: "https://collector.example.com:4317",

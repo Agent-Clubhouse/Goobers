@@ -17,7 +17,7 @@ func TestBaseEnvMatchesProcenv(t *testing.T) {
 	t.Setenv("GOPROXY", "https://proxy.example.internal")
 	t.Setenv("LC_ALL", "C")
 
-	got := append([]string(nil), baseEnv()...)
+	got := append([]string(nil), baseEnv(nil)...)
 	want := append([]string(nil), procenv.BaseEnv()...)
 	sort.Strings(got)
 	sort.Strings(want)
@@ -45,7 +45,7 @@ func TestBaseEnvPassesThroughExtendedAllowlist(t *testing.T) {
 		t.Setenv(name, value)
 	}
 
-	env := baseEnv()
+	env := baseEnv(nil)
 	for name, value := range extended {
 		want := name + "=" + value
 		found := false
@@ -75,7 +75,7 @@ func TestBaseEnvStillBlocksSecretShapedVars(t *testing.T) {
 	}
 	t.Setenv("LANG", "en_US.UTF-8")
 
-	env := baseEnv()
+	env := baseEnv(nil)
 	for name := range blocked {
 		for _, kv := range env {
 			if strings.HasPrefix(kv, name+"=") {
@@ -106,7 +106,7 @@ func TestBaseEnvStillBlocksSecretShapedVars(t *testing.T) {
 func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 	inputs := map[string]interface{}{"trustLabel": "goobers:approved"}
 
-	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "/instances/demo", true, inputs, map[string]string{"FEATURE_FLAG": "enabled"})
+	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "/instances/demo", true, inputs, map[string]string{"FEATURE_FLAG": "enabled"}, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=true): %v", err)
 	}
@@ -124,7 +124,7 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 		}
 	}
 
-	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "/instances/demo", false, inputs, nil)
+	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "/instances/demo", false, inputs, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=false): %v", err)
 	}
@@ -140,7 +140,7 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 
 	// Even when requested, GOOBERS_INSTANCE_ROOT is omitted if unset (empty
 	// instanceRoot — see ShellExecutor.InstanceRoot), preserving prior behavior.
-	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "", "", true, nil, nil)
+	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "", "", true, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(empty instanceRoot): %v", err)
 	}
@@ -153,6 +153,26 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 	// (providers.DefaultBranchNamespace) then applies.
 	if hasEnvPrefix(emptyRoot, "GOOBERS_BRANCH_NAMESPACE") {
 		t.Errorf("empty branchNamespace should omit GOOBERS_BRANCH_NAMESPACE, got %v", emptyRoot)
+	}
+}
+
+// TestBuildStageEnvPassesExtraAllowlist is #736's executor path: an
+// instance-declared passthrough name (ShellExecutor.ExtraEnvAllowlist →
+// buildStageEnv) reaches the stage env additively, while an undeclared ambient
+// var stays absent — default-deny preserved.
+func TestBuildStageEnvPassesExtraAllowlist(t *testing.T) {
+	t.Setenv("MY_TOOLCHAIN_HOME", "/opt/toolchain")
+	t.Setenv("MY_UNDECLARED_SECRET", "should-not-pass")
+
+	env, err := buildStageEnv(context.Background(), nil, nil, nil, "", "", "", "", "", false, nil, nil, []string{"MY_TOOLCHAIN_HOME"})
+	if err != nil {
+		t.Fatalf("buildStageEnv: %v", err)
+	}
+	if !hasEnv(env, "MY_TOOLCHAIN_HOME=/opt/toolchain") {
+		t.Errorf("extra-allowlisted var missing from stage env: %v", env)
+	}
+	if hasEnvPrefix(env, "MY_UNDECLARED_SECRET") {
+		t.Errorf("undeclared ambient var leaked into stage env: %v", env)
 	}
 }
 
@@ -170,6 +190,7 @@ func TestBuildStageEnvIncludesDeclaredEnvironment(t *testing.T) {
 		false,
 		nil,
 		map[string]string{"FEATURE_FLAG": "enabled", "EMPTY_VALUE": ""},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildStageEnv: %v", err)

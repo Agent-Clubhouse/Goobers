@@ -49,3 +49,15 @@ telemetry:
 # maxConcurrentRuns/maxRunsPerHour guardrails these ceilings sit on top of.
 runConditions:
   maxParallelRuns: 2
+# Optional runner block. `capabilities` are the toolchains/platform properties
+# this runner advertises as preinstalled (RRQ-1); a gaggle/stage requiring one
+# the runner does not claim fails to schedule. `envPassthrough` names extra
+# ambient env vars carried into every stage and harness subprocess on top of
+# the built-in default-deny allowlist (internal/procenv) — the escape hatch for
+# a custom toolchain whose env var the built-in list (which already covers the
+# Go/.NET/Python/Node/Rust families) does not. It stays default-deny: an
+# explicit opt-in list of NAMES, never a value and never os.Environ()
+# passthrough; a name whose var is unset is a harmless no-op.
+# runner:
+#   capabilities: [dotnet@8]
+#   envPassthrough: [NUGET_CONFIG_FILE, MSBUILDDISABLENODEREUSE]

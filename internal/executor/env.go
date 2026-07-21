@@ -44,11 +44,13 @@ const BranchNamespaceEnvVar = "GOOBERS_BRANCH_NAMESPACE"
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
 // baseEnv returns the minimal, explicit env every stage process starts with
-// — internal/procenv.BaseEnv(), the allowlist internal/harness's baseEnv()
+// — internal/procenv.BaseEnvWith, the allowlist internal/harness's baseEnv()
 // shares (#248, closing the #98/#122 drift for good: one definition instead
 // of two hand-kept-in-sync copies). No os.Environ() passthrough (SEC-045).
-func baseEnv() []string {
-	return procenv.BaseEnv()
+// extra carries the instance-config-declared passthrough names
+// (RunnerConfig.EnvPassthrough, #736), additively and still default-deny.
+func baseEnv(extra []string) []string {
+	return procenv.BaseEnvWith(extra)
 }
 
 // buildStageEnv resolves credentials for declared, and returns the full
@@ -82,8 +84,8 @@ func baseEnv() []string {
 // (credentials.Injector's own contract — not every capability is
 // credentialed); resolution failure for a capability that IS granted fails
 // closed.
-func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string) ([]string, error) {
-	env := baseEnv()
+func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string, extraEnvAllowlist []string) ([]string, error) {
+	env := baseEnv(extraEnvAllowlist)
 	keys := make([]string, 0, len(declaredEnv))
 	for key := range declaredEnv {
 		keys = append(keys, key)

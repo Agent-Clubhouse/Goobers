@@ -254,12 +254,13 @@ func buildEnvCapabilities() map[string]string {
 // buildHarnessRegistry is the production harness composition point. Registry
 // keys are goober spec.harness values; adapter names remain their diagnostic
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
-func buildHarnessRegistry(envCaps map[string]string) (*harness.Registry, error) {
+func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
 	adapter := &harness.CopilotAdapter{
-		Command:         []string{"copilot"},
-		AuthCheckArgs:   copilotAuthCheckArgs,
-		EnvCapabilities: envCaps,
+		Command:           []string{"copilot"},
+		AuthCheckArgs:     copilotAuthCheckArgs,
+		EnvCapabilities:   envCaps,
+		ExtraEnvAllowlist: envPassthrough,
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), adapter); err != nil {
 		return nil, fmt.Errorf("register Copilot harness: %w", err)
@@ -1137,7 +1138,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	}
 
 	envCaps := buildEnvCapabilities()
-	adapterRegistry, err := buildHarnessRegistry(envCaps)
+	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -1187,6 +1188,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// worktree, not the instance root) locates instance.yaml/config/
 			// scheduler (#131/#132's backlog-query/open-pr/issue-close-out).
 			shell.InstanceRoot = instanceRoot
+			// Additional ambient env vars this instance opts into passing through
+			// to every deterministic stage, on top of the built-in procenv
+			// allowlist (#736) — the executor twin of the harness adapter's
+			// ExtraEnvAllowlist, from the same cfg value so the two never drift.
+			shell.ExtraEnvAllowlist = cfg.Runner.EnvPassthrough
 			// Resolve a bare "goobers" command token to the running daemon's own
 			// binary, so a deterministic stage execs it from its fresh worktree
 			// clone (which never contains the binary) rather than failing (#229).
@@ -1347,7 +1353,7 @@ func knownAutomatedCheckNames() []string {
 func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[localscheduler.WorkflowIdentity]*workflow.Machine, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
-	adapterRegistry, err := buildHarnessRegistry(nil)
+	adapterRegistry, err := buildHarnessRegistry(nil, nil)
 	if err != nil {
 		return nil, err
 	}

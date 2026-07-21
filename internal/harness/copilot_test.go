@@ -565,12 +565,34 @@ func TestBaseEnvMatchesProcenv(t *testing.T) {
 	t.Setenv("GOMODCACHE", "/custom/gomodcache")
 	t.Setenv("LC_ALL", "C")
 
-	got := append([]string(nil), baseEnv()...)
+	got := append([]string(nil), baseEnv(nil)...)
 	want := append([]string(nil), procenv.BaseEnv()...)
 	sort.Strings(got)
 	sort.Strings(want)
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("harness baseEnv() diverged from procenv.BaseEnv():\n got:  %v\n want: %v", got, want)
+	}
+}
+
+// TestBaseEnvAppliesExtraAllowlist is #736's harness path: the adapter's
+// ExtraEnvAllowlist (RunnerConfig.EnvPassthrough) reaches the harness
+// subprocess env additively, staying default-deny for undeclared vars.
+func TestBaseEnvAppliesExtraAllowlist(t *testing.T) {
+	t.Setenv("MY_HARNESS_TOOLCHAIN", "/opt/harness-tool")
+	t.Setenv("MY_HARNESS_UNDECLARED", "should-not-pass")
+
+	env := baseEnv([]string{"MY_HARNESS_TOOLCHAIN"})
+	found := false
+	for _, kv := range env {
+		if kv == "MY_HARNESS_TOOLCHAIN=/opt/harness-tool" {
+			found = true
+		}
+		if strings.HasPrefix(kv, "MY_HARNESS_UNDECLARED=") {
+			t.Fatalf("undeclared ambient var leaked into harness baseEnv: %v", env)
+		}
+	}
+	if !found {
+		t.Fatalf("extra-allowlisted var missing from harness baseEnv: %v", env)
 	}
 }
 
