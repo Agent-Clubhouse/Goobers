@@ -517,6 +517,16 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
 	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
 	claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now))
+	// #831's daemon-side half: cancel one live in-flight run on operator request
+	// by resolving its owning Runner and calling CancelRun. Its own ticker (below)
+	// keeps a worst-case wedged-stage cancellation — which blocks in CancelRun for
+	// the cancellation + terminalization grace — from stalling the trigger/claim
+	// sweeps that share the delegation ticker.
+	cancelSweepErrors := newSweepErrorReporter(setup.InstanceLog, "cancel_sweep_failed")
+	cancelSweep := func() error {
+		return sweepPendingCancelRequests(l.SchedulerDir(), setup.RunnerRegistry, setup.InstanceLog, sched.ReleaseRun, time.Now)
+	}
+	cancelSweepErrors.report(cancelSweep())
 
 	// The periodic sweep runs on its own goroutine for the daemon's entire
 	// lifetime, concurrently with the main goroutine's own stdout/stderr
@@ -587,6 +597,23 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 			case <-delegationTicker.C:
 				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
 				claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now))
+			}
+		}
+	}()
+
+	// #831's cancel sweep runs on its own ticker so a slow (wedged-stage)
+	// cancellation never delays the trigger/claim delegation sweeps above.
+	cancelTicker := time.NewTicker(delegationSweepInterval)
+	cancelTickerDone := make(chan struct{})
+	go func() {
+		defer close(cancelTickerDone)
+		defer cancelTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-cancelTicker.C:
+				cancelSweepErrors.report(cancelSweep())
 			}
 		}
 	}()
@@ -726,6 +753,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	<-claimTickerDone
 	<-stalledTickerDone
 	<-delegationTickerDone
+	<-cancelTickerDone
 	if heartbeatDone != nil {
 		<-heartbeatDone
 	}
