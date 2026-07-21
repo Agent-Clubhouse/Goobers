@@ -1,10 +1,11 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/executor"
 )
 
 func TestPRSelectDefaultExcludesTutorBranches(t *testing.T) {
@@ -16,12 +17,12 @@ func TestPRSelectDefaultExcludesTutorBranches(t *testing.T) {
 	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
 
 	code, stdout, stderr := runArgs(t, "pr-select", root)
 	if code != 0 || !strings.Contains(stdout, "no work") {
 		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want no work", code, stdout, stderr)
 	}
-	if _, err := os.Stat(filepath.Join(workDir, "selected-pr.json")); !os.IsNotExist(err) {
-		t.Fatalf("selected-pr.json stat error = %v, want not exist", err)
-	}
+	assertNoWorkProviderStageResult(t, resultFile)
 }
