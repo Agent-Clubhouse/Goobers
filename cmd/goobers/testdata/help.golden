@@ -52,6 +52,8 @@ Usage:
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
   goobers telemetry-query [--window <d>] [--aggregate <name>] [--threshold <k=v>] [--format candidate-findings]
                                 emit versioned candidate findings (a connector stage)
+  goobers docs-churn [--repo <dir>] [--since <d>] [--buffer-multiplier <f>] [--format churn-digest]
+                                emit the docs-drift churn digest since the watermark (a connector stage)
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
   goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)
@@ -132,6 +134,8 @@ Usage:
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
   goobers telemetry-query [--window <d>] [--aggregate <name>] [--threshold <k=v>] [--format candidate-findings]
                                 emit versioned candidate findings (a connector stage)
+  goobers docs-churn [--repo <dir>] [--since <d>] [--buffer-multiplier <f>] [--format churn-digest]
+                                emit the docs-drift churn digest since the watermark (a connector stage)
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
   goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)
@@ -286,6 +290,18 @@ running, or against a standalone read-only service otherwise. The default
 port is 8081; --port=auto increments from there until a port is available.
 Blocks until interrupted. Exit codes: 0 = clean shutdown, 1 = service or
 browser failure, 2 = usage/IO error.
+
+### docs-churn
+Usage: goobers docs-churn [--repo <dir>] [--workflow <name>] [--gaggle <name>] [--since <duration>] [--buffer-multiplier <float>] [--format churn-digest] [path]
+
+Report the code churn since docs were last refreshed for the docs-updater
+workflow (#1015). Reads and advances a durable per-(gaggle,workflow)
+watermark under the instance's scheduler dir, and writes a versioned
+churn-digest to GOOBERS_INPUT_resultFile when declared, else stdout.
+[path] is the instance root (default $GOOBERS_INSTANCE_ROOT, else ".").
+
+Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
+2 = usage/IO error.
 
 ### elect-lander
 Usage: goobers elect-lander [--gate name] [path]
