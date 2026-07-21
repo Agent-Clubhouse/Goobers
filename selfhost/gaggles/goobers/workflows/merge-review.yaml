@@ -226,6 +226,11 @@ spec:
         # review:pass to apply-verdict; merge-pr refuses to run without the
         # grant rather than silently acquiring merge authority.
         - github:pr:merge
+        # github:branch:delete lets merge-pr's post-merge cleanupMergedBranch
+        # actually delete the merged head branch. #581 listed this grant as a
+        # satisfied acceptance criterion but never wired it, so cleanup failed
+        # closed on every merge and run branches accumulated (#1075, feeds #553).
+        - github:branch:delete
       expectedOutputs:
         # landOutcome ("merged"/"enqueued", issue #758) is deliberately NOT
         # listed here — like gather-sibling-context's cachedVerdictJson, it
@@ -269,6 +274,10 @@ spec:
         # (mergequeuepoll.go's mergeQueuePollEvicted).
         - github:pr:merge
         - github:issues:write
+        # github:branch:delete: when the native queue reports merged,
+        # queue-watch runs the same post-merge cleanupMergedBranch as merge-pr
+        # and must be able to delete the merged head branch (#1075).
+        - github:branch:delete
       expectedOutputs:
         - selectedNumber
         # queueOutcome ("merged"/"evicted"/"timeout") is always present —
