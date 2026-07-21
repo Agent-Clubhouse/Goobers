@@ -169,6 +169,16 @@ jobs:
           GOOS=windows go build ./internal/winsvc/...
           GOOS=windows go vet ./internal/winsvc/...
 
+      # Lock the #1090 compile guarantee: the symlink-safe open seam and its
+      # only consumer must build/vet under GOOS=windows even though the full
+      # tree cannot cross-compile until the remaining POSIX abstractions land.
+      # The windows no-follow impl (CreateFile + FILE_FLAG_OPEN_REPARSE_POINT)
+      # is compile-only until the Windows CI job exercises it at runtime.
+      - name: Cross-compile Windows symlink-safe asset open (#1090)
+        run: |
+          GOOS=windows go build ./internal/platform/safeopen/... ./internal/gooberassets/...
+          GOOS=windows go vet ./internal/platform/safeopen/... ./internal/gooberassets/...
+
       - name: Upload Linux validation evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5

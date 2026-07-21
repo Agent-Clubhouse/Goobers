@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"golang.org/x/sys/unix"
+	"github.com/goobers/goobers/internal/platform/safeopen"
 )
 
 const (
@@ -146,28 +146,33 @@ func scanEntry(parent *os.File, source, relative string, bundle *Bundle, readCon
 	}
 }
 
-const assetOpenFlags = unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK
-
+// openAsset and openAssetAt read the asset tree through the symlink-safe,
+// cross-platform safeopen seam (internal/platform/safeopen) rather than reaching
+// for platform syscalls here: an asset directory holds untrusted content, so a
+// symlink must be rejected, never followed off the tree. The no-follow rejection
+// surfaces as safeopen.ErrSymlink, which these wrap with the same messages the
+// direct-unix implementation used (byte-identical unix behavior); every other
+// error, including a not-exist that resolves to fs.ErrNotExist, passes through.
 func openAsset(path string) (*os.File, error) {
-	fd, err := unix.Open(path, assetOpenFlags, 0)
+	file, err := safeopen.Open(path)
 	if err != nil {
-		if errors.Is(err, unix.ELOOP) {
+		if errors.Is(err, safeopen.ErrSymlink) {
 			return nil, fmt.Errorf("asset %q must not be a symlink: %w", path, err)
 		}
 		return nil, err
 	}
-	return os.NewFile(uintptr(fd), path), nil
+	return file, nil
 }
 
 func openAssetAt(parent *os.File, name string) (*os.File, error) {
-	fd, err := unix.Openat(int(parent.Fd()), name, assetOpenFlags, 0)
+	file, err := safeopen.OpenAt(parent, name)
 	if err != nil {
-		if errors.Is(err, unix.ELOOP) {
+		if errors.Is(err, safeopen.ErrSymlink) {
 			return nil, fmt.Errorf("must not be a symlink: %w", err)
 		}
 		return nil, err
 	}
-	return os.NewFile(uintptr(fd), name), nil
+	return file, nil
 }
 
 // Fingerprint returns a stable digest of the bundle's paths, modes, and bytes.
