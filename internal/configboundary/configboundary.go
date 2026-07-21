@@ -27,6 +27,36 @@ import (
 // config root. Callers fail the cycle closed on it.
 var ErrOutsideConfigRoot = errors.New("configboundary: path escapes configured config root")
 
+// ErrInvalidDocsRoot marks a declared docs root that is not a usable
+// repo-relative containment root. Config-load validation reports it as an error
+// (#1016) rather than silently normalizing a bogus root to whole-repo the way
+// the runtime boundary does.
+var ErrInvalidDocsRoot = errors.New("configboundary: invalid docs root")
+
+// ValidateDocsRoot reports whether a declared docs root is a usable containment
+// root (#1016): non-empty, repo-relative (not absolute), naming a real subtree
+// or file (not "." — the whole repo, which would defeat confinement), and not
+// escaping the repository via "..". This is the config-load lexical check; a
+// root's existence in the repository is a separate, filesystem check `goobers
+// validate` layers on top.
+func ValidateDocsRoot(root string) error {
+	trimmed := strings.TrimSpace(root)
+	if trimmed == "" {
+		return fmt.Errorf("%w: empty", ErrInvalidDocsRoot)
+	}
+	if filepath.IsAbs(trimmed) {
+		return fmt.Errorf("%w: %q is absolute (roots are repo-relative)", ErrInvalidDocsRoot, root)
+	}
+	clean := filepath.Clean(strings.Trim(trimmed, "/"))
+	if clean == "." {
+		return fmt.Errorf("%w: %q names the whole repository, which would defeat confinement", ErrInvalidDocsRoot, root)
+	}
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%w: %q escapes the repository", ErrInvalidDocsRoot, root)
+	}
+	return nil
+}
+
 // Confine returns nil only when every path in changed is contained within
 // configRoot. configRoot is the instance-configured, repo-relative config root
 // (e.g. "selfhost" on the dogfood instance) — not a hardcoded "config/".
@@ -48,6 +78,61 @@ func Confine(configRoot string, changed []string) error {
 		}
 	}
 	return nil
+}
+
+// ErrNoDocsRoots marks a docs-roots confinement asked for with an empty root
+// set. Unlike Confine's empty configRoot (which means "the whole repo is
+// config"), an empty docs-roots list can only be a misconfiguration: a
+// docs-updater run that declares no roots has no legitimate place to write, so
+// this fails closed rather than silently allowing the whole tree.
+var ErrNoDocsRoots = errors.New("configboundary: no docs roots declared")
+
+// ConfineToAny returns nil only when every path in changed is contained within
+// at least one of roots. It is the multi-root analog of Confine, for the
+// docs-updater write boundary (#1016): a docs-updater run may write to any of
+// its several declared documentation roots (e.g. "docs", "README.md"), but a
+// path outside all of them — code, CI, credentials — is refused, exactly as
+// Confine refuses a path outside the single config root.
+//
+// roots must be non-empty; each root that normalizes to "" (empty, absolute, or
+// escaping — a bogus root) is dropped rather than widened to whole-repo, so a
+// malformed root can never silently open the boundary. If every root is bogus,
+// the effective set is empty and every change is refused (ErrNoDocsRoots),
+// failing closed. An empty changed set is not an error.
+func ConfineToAny(roots []string, changed []string) error {
+	normalized := make([]string, 0, len(roots))
+	for _, r := range roots {
+		if n := normalizeConfigRoot(r); n != "" {
+			normalized = append(normalized, n)
+		}
+	}
+	if len(normalized) == 0 {
+		return ErrNoDocsRoots
+	}
+	for _, p := range changed {
+		if err := pathWithinAnyRoot(normalized, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pathWithinAnyRoot returns nil when p is inside any of roots (all normalized,
+// none empty). It reports the last containment error when p is outside every
+// root — enough to name the offending path in the failure.
+func pathWithinAnyRoot(roots []string, p string) error {
+	var last error
+	for _, root := range roots {
+		if err := pathWithinRoot(root, p); err == nil {
+			return nil
+		} else {
+			last = err
+		}
+	}
+	if last == nil {
+		return fmt.Errorf("%w: %q", ErrOutsideConfigRoot, p)
+	}
+	return last
 }
 
 // normalizeConfigRoot cleans a configured root to a comparable, repo-relative

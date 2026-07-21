@@ -108,6 +108,7 @@ var cliCommands = []cliCommand{
 		subcommand("telemetry errors", "errors", apicontract.ActionReadOnlyNavigation, runTelemetryErrors),
 	),
 	command("telemetry-query", apicontract.ActionWorkflowExecution, runTelemetryQuery),
+	command("docs-churn", apicontract.ActionWorkflowExecution, runDocsChurn),
 	groupCommand(
 		"journal",
 		runJournal,

@@ -92,6 +92,8 @@ Usage:
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
   goobers telemetry-query [--window <d>] [--aggregate <name>] [--threshold <k=v>] [--format candidate-findings]
                                 emit versioned candidate findings (a connector stage)
+  goobers docs-churn [--repo <dir>] [--since <d>] [--buffer-multiplier <f>] [--format churn-digest]
+                                emit the docs-drift churn digest since the watermark (a connector stage)
   goobers pr-select                      select one eligible open PR for merge-review (a workflow stage)
   goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)
   goobers apply-verdict                  publish a merge-review verdict as a native review (a workflow stage)

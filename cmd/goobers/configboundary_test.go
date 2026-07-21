@@ -110,6 +110,96 @@ func TestOpenPRWriteBoundaryAllowsConfigOnlyChange(t *testing.T) {
 	}
 }
 
+// TestOpenPRDocsBoundaryRejectsOutOfRootChange: with the docs write-boundary on
+// (#1016) and docs roots "docs"/"README.md", a run branch that touches a code
+// path is refused — the docs run fails closed and opens NO PR, exactly as the
+// config boundary refuses a platform path.
+func TestOpenPRDocsBoundaryRejectsOutOfRootChange(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("confineToDocsRoots"), "true")
+	t.Setenv(executor.InputEnvVar("docsRoots"), "docs,README.md")
+
+	wt := gitRepoWithRunBranchChanges(t, map[string]string{
+		"docs/guide.md":          "# guide\n",
+		"internal/runner/run.go": "// smuggled code edit\n",
+	})
+	t.Chdir(wt)
+
+	code, _, stderr := runArgs(t, "open-pr", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (docs boundary rejects out-of-root change); stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "docs write-boundary") {
+		t.Fatalf("stderr = %q, want a docs write-boundary error", stderr)
+	}
+	server.mu.Lock()
+	n := len(server.prs)
+	server.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("opened %d PR(s); a docs boundary breach must open none", n)
+	}
+}
+
+// TestOpenPRDocsBoundaryAllowsDocsOnlyChange: the mirror positive — a change
+// confined to the declared docs roots passes and the PR is opened.
+func TestOpenPRDocsBoundaryAllowsDocsOnlyChange(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("confineToDocsRoots"), "true")
+	t.Setenv(executor.InputEnvVar("docsRoots"), "docs\nREADME.md")
+
+	wt := gitRepoWithRunBranchChanges(t, map[string]string{
+		"docs/guide.md": "# guide\n",
+		"README.md":     "base\nupdated\n",
+	})
+	t.Chdir(wt)
+
+	code, stdout, stderr := runArgs(t, "open-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (docs-only change allowed); stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "pr #") {
+		t.Fatalf("stdout = %q, want an opened PR", stdout)
+	}
+	server.mu.Lock()
+	n := len(server.prs)
+	server.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("opened %d PR(s); want exactly 1", n)
+	}
+}
+
+// TestOpenPRDocsBoundaryFailsClosedOnEmptyRoots: confinement requested but no
+// docs roots declared is a misconfiguration — it refuses rather than silently
+// allowing the whole tree.
+func TestOpenPRDocsBoundaryFailsClosedOnEmptyRoots(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("confineToDocsRoots"), "true")
+	// no docsRoots input
+
+	wt := gitRepoWithRunBranchChanges(t, map[string]string{"docs/guide.md": "# guide\n"})
+	t.Chdir(wt)
+
+	code, _, stderr := runArgs(t, "open-pr", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (empty roots fails closed); stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "docs write-boundary") {
+		t.Fatalf("stderr = %q, want a docs write-boundary error", stderr)
+	}
+	server.mu.Lock()
+	n := len(server.prs)
+	server.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("opened %d PR(s); empty roots must open none", n)
+	}
+}
+
 // TestOpenPRWriteBoundaryFailsClosedOnUnverifiableDiff: when confinement is
 // requested but the diff can't be computed (CWD is not a git repo), the stage
 // refuses rather than opening the PR unverified.

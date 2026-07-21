@@ -38,10 +38,56 @@ and the JSON Schemas in `/api/schemas`.
 | `Manifest` | Top-level instance desired state | `instance`, `connections[]`, `gaggles[]` |
 | `Gaggle` | Siloed workforce; targets a repo + singleton backlog | `project`, `backlog`, `isolation` |
 | `Goober` | Role-specialized AI worker | `gaggle`, `role`, `instructions`, `scaleFactor`, `workflows[]` |
-| `Workflow` | State machine of tasks + gates | `triggers[]`, `start`, `tasks[]`, `gates[]` |
+| `Workflow` | State machine of tasks + gates | `triggers[]`, `start`, `tasks[]`, `gates[]`, `docsRoots[]` |
 
 `Task` and `Gate` are **states within a `Workflow`** (not standalone objects),
 matching the spec model ("a Task/Gate is a state in a workflow").
+
+### Documentation roots (`spec.docsRoots`)
+
+The docs-updater workflow (epic #472) keeps a project's in-repo documentation
+current as the code moves. `spec.docsRoots` declares **which repo-relative paths
+are documentation** — the ordered set of files/directories that workflow is
+responsible for, and the only paths its run may write to:
+
+```yaml
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: docs-updater
+spec:
+  gaggle: acme-web
+  triggers:
+    - type: schedule
+      schedule: "30 5 * * *"
+  start: gather-churn
+  # In-repo documentation roots this workflow keeps current. Ordered,
+  # repo-relative, files or directories. The signal-gather stage groups code
+  # churn by whether it touched a declared root, and the write boundary confines
+  # the run's PR to these roots — a docs run can never touch code.
+  docsRoots:
+    - docs
+    - docs/design
+    - README.md
+    - ARCHITECTURE.md
+  tasks:
+    - name: gather-churn
+      type: deterministic
+      goal: Report code churn since docs were last refreshed.
+      run:
+        command: ["goobers", "docs-churn", "--since", "168h", "--buffer-multiplier", "3"]
+      inputs:
+        resultFile: "docs-churn.json"
+      # ... an agentic docs stage + open-pr (with confineToDocsRoots:"true",
+      # docsRoots wired from spec.docsRoots) follow — the capstone (#1018).
+```
+
+Each root must be **non-empty, repo-relative, and inside the repository** —
+`goobers validate` rejects an empty, absolute, escaping, or non-existent root
+with a clear message. Roots are validated but have **no default**: a workflow
+without `docsRoots` simply declares no documentation surface (only the
+docs-updater workflow needs them). The signal-gather stage's own knobs default
+to a `168h` first-run/floor window and a `3×` buffer multiplier.
 
 ## Goober instruction format
 

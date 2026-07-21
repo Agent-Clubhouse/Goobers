@@ -385,6 +385,21 @@ type WorkflowSpec struct {
 	// Start is the name of the first state (task or gate) of the machine.
 	// +kubebuilder:validation:Required
 	Start string `json:"start" yaml:"start"`
+	// DocsRoots declares the in-repo documentation roots this workflow is
+	// responsible for keeping current (docs-updater, epic #472/#1016). It is an
+	// ordered list of repo-relative paths — files or directories, e.g. "docs",
+	// "docs/design", "README.md", "ARCHITECTURE.md". When set it does two things:
+	// the docs-drift signal-gather stage (docs-churn, #1015) groups the churn it
+	// reports by whether a change landed under a declared root, and the write
+	// boundary confines the run's PR to these roots (mirrors the
+	// confineToConfigRoot/configRoot boundary open-pr already honors), so a docs
+	// run can never touch code. Same-repo, in-repo roots only in Phase 1;
+	// separate-repo / wiki sinks are their own gated children (#1019/#1020/#1021).
+	// A declared root must be non-empty, repo-relative, and must not escape the
+	// repository (validated at config-load); `goobers validate` additionally
+	// rejects a root that does not exist in the repository.
+	// +optional
+	DocsRoots []string `json:"docsRoots,omitempty" yaml:"docsRoots,omitempty"`
 	// Tasks are the work states of the machine.
 	// +optional
 	Tasks []Task `json:"tasks,omitempty" yaml:"tasks,omitempty"`
