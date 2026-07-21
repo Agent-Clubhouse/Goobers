@@ -190,6 +190,10 @@ func (*telemetryEmittingReviewer) Review(_ context.Context, env apiv1.Invocation
 }
 
 func TestAgenticGateTelemetryRoundTripsToRollup(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
 	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "runner-gate-telemetry-test",
@@ -238,7 +242,7 @@ func TestAgenticGateTelemetryRoundTripsToRollup(t *testing.T) {
 			Start:  "prepare",
 			Tasks: []apiv1.Task{{
 				Name: "prepare", Type: apiv1.TaskDeterministic, Goal: "prepare review",
-				Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+				Run:  &apiv1.DeterministicRun{Command: []string{testExecutable, "-test.run=^$"}},
 				Next: "review",
 			}},
 			Gates: []apiv1.Gate{{

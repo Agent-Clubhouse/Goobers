@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -748,6 +749,9 @@ func TestManager_FinalizeRunContinuesPastCorruptOwnedMarker(t *testing.T) {
 }
 
 func TestWorktreeRegistered_SupportsGitBefore236(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX git shim to emulate Git before 2.36")
+	}
 	binDir := t.TempDir()
 	fakeGit := filepath.Join(binDir, "git")
 	script := `#!/bin/sh
@@ -813,7 +817,11 @@ func TestManager_SafeBareRepositoryExplicit_StillWorks(t *testing.T) {
 // the lifetime of a test.
 func deadPID(t *testing.T) int {
 	t.Helper()
-	cmd := exec.Command("true")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	cmd := exec.Command(executable, "-test.run=^$")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("spawn short-lived process: %v", err)
 	}

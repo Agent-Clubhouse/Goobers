@@ -33,9 +33,9 @@ import (
 const continuityFile = "IMPLEMENTED"
 
 // continuityMachine is #29's skeleton shape, except local-ci reads the file the
-// implement stage committed (`cat IMPLEMENTED`, run in the stage's worktree) —
-// so the deterministic stage fails unless its worktree carries the implement
-// stage's commit. implement (agentic) -> review (agentic gate, passes) ->
+// implement stage committed from the stage's worktree, so the deterministic
+// stage fails unless its worktree carries the implement stage's commit.
+// implement (agentic) -> review (agentic gate, passes) ->
 // local-ci (deterministic, reads the file) -> terminal.
 func continuityMachine(t *testing.T) *workflow.Machine {
 	t.Helper()
@@ -45,7 +45,16 @@ func continuityMachine(t *testing.T) *workflow.Machine {
 		Start:    "implement",
 		Tasks: []apiv1.Task{
 			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "implement the item", Retry: &apiv1.RetryPolicy{MaxAttempts: 2}, Next: "review"},
-			{Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "verify the implement stage's change is present", Run: &apiv1.DeterministicRun{Command: []string{"cat", continuityFile}}},
+			{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "verify the implement stage's change is present",
+				Run: &apiv1.DeterministicRun{
+					Command: e2eTestCommand(t),
+					Env: map[string]string{
+						e2eCommandHelperMode: "read-file",
+						e2eCommandHelperPath: continuityFile,
+					},
+				},
+			},
 		},
 		Gates: []apiv1.Gate{
 			{
@@ -137,7 +146,7 @@ func newContinuityRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, runsD
 // TestRunBranchContinuityLocalCISeesImplementDiff is #133's headline
 // regression: local-ci reads a file the implement stage committed, and the run
 // completes only because local-ci's worktree checked out the run branch (not a
-// pristine main). On the pre-#133 detach-at-main behavior local-ci's `cat`
+// pristine main). On the pre-#133 detach-at-main behavior local-ci's file read
 // would fail and the run would not reach completed.
 func TestRunBranchContinuityLocalCISeesImplementDiff(t *testing.T) {
 	instanceRoot := t.TempDir()
@@ -162,7 +171,7 @@ func TestRunBranchContinuityLocalCISeesImplementDiff(t *testing.T) {
 		t.Fatalf("finalState = %q, want local-ci", res.FinalState)
 	}
 
-	// local-ci ran and finished success (its `cat IMPLEMENTED` found the file):
+	// local-ci ran and finished success (its IMPLEMENTED read found the file):
 	// the deterministic stage evaluated the run's actual diff.
 	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
 	if err != nil {
