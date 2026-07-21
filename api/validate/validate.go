@@ -463,6 +463,7 @@ type index struct {
 	manifestFile map[string]string
 	gooberFile   map[string]string
 	gooberDir    map[string]string // goober name -> source dir (for instruction path checks)
+	gaggleFile   map[string]string // gaggle name -> source file (for connection-ref checks)
 
 	// manifestDocsSeen counts documents with kind=Manifest regardless of whether
 	// they passed schema validation, so we don't double-report "no Manifest" for
@@ -478,6 +479,7 @@ func newIndex() *index {
 		manifestFile: map[string]string{},
 		gooberFile:   map[string]string{},
 		gooberDir:    map[string]string{},
+		gaggleFile:   map[string]string{},
 	}
 }
 
@@ -499,6 +501,7 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 		}
 		ix.dupCheck(r, doc, "Gaggle", g.Name, func() bool { _, ok := ix.gaggles[g.Name]; return ok })
 		ix.gaggles[g.Name] = g
+		ix.gaggleFile[g.Name] = doc.file
 	case "Goober":
 		var g apiv1.Goober
 		if err := yaml.Unmarshal(doc.json, &g); err != nil {
@@ -556,6 +559,19 @@ func (ix *index) crossCheck(r *Report) {
 			}
 		}
 	}
+	// Gaggle -> Connection references resolve (MGV-4, #1011). A foreign gaggle
+	// routes its repo/backlog credentials through a named Manifest Connection;
+	// a connectionRef that names no declared Connection is a half-configured
+	// gaggle that fails confusingly at runtime (an unresolved credential),
+	// so catch it here with a message naming the gaggle, the field, and the
+	// missing connection. An empty connectionRef is left alone: at local tiers
+	// a gaggle legitimately binds its repo token per-repo in instance.yaml
+	// rather than through a Manifest Connection.
+	ix.checkGaggleConnections(r)
+	// Gaggle CI-command coherence (MGV-4) over #1009's ciCommand surface.
+	ix.checkGaggleCICommand(r)
+	// Gaggle branch-prefix coherence (MGV-4) over #965/#1010's branchNamespace surface.
+	ix.checkGaggleBranchNamespace(r)
 	// Goober -> gaggle / workflow references resolve; instruction file exists.
 	for _, g := range ix.goobers {
 		file := ix.gooberFile[g.Name]
@@ -602,6 +618,94 @@ func (ix *index) crossCheck(r *Report) {
 	// Workflow state machine integrity.
 	for _, indexed := range ix.workflows {
 		ix.checkWorkflow(r, indexed.definition, indexed.file)
+	}
+}
+
+// checkGaggleConnections enforces MGV-4's repo-token-ref coherence (#1011):
+// every non-empty connectionRef a gaggle uses — on its project repo, any
+// additionalRepos entry, or its backlog — must name a Connection declared in
+// the Manifest. A dangling reference is reported as an error that names the
+// gaggle, the exact field, and the missing connection, so a half-configured
+// foreign gaggle fails closed at `validate` time instead of at runtime with an
+// opaque credential-resolution failure.
+// checkGaggleCICommand enforces MGV-4's CI-command coherence (#1011) over the
+// per-gaggle ciCommand (#1009). The schema already rejects an empty command and
+// empty elements; the one exec-fatal shape it cannot express is a program
+// (argv[0]) that carries whitespace. ciCommand is run directly as argv by the
+// local-ci stage (internal/executor exec.Command(name, args...)), never through
+// a shell, so a whole-command-as-one-string ["npm run ci"] tries to exec a
+// program literally named "npm run ci" and fails to start. Catch it at validate
+// time with a message that shows the fix.
+func (ix *index) checkGaggleCICommand(r *Report) {
+	for name, g := range ix.gaggles {
+		if len(g.Spec.CICommand) == 0 {
+			continue
+		}
+		program := g.Spec.CICommand[0]
+		if strings.ContainsAny(program, " \t\r\n") {
+			r.add(Error, ix.gaggleFile[name], "Gaggle", name,
+				"spec.ciCommand program %q contains whitespace; ciCommand is run directly (not through a shell), so the program and each argument must be separate array elements \u2014 e.g. [\"npm\", \"run\", \"ci\"], not [\"npm run ci\"]", program)
+		}
+	}
+}
+
+// checkGaggleBranchNamespace enforces MGV-4's branch-prefix coherence (#1011)
+// over the per-gaggle branchNamespace (#965/#1010). The schema pattern already
+// enforces the ref-path structure; the gap it cannot express is a value that is
+// structurally valid yet produces an INVALID git branch name at runtime, since
+// branchNamespace becomes a live run branch "<namespace><workflow>/<run>". git
+// rejects a ref with a slash-separated component ending in ".lock" or one that
+// contains consecutive dots ".." \u2014 either fails run-branch creation with an
+// opaque git error mid-run, exactly the confusing failure MGV-4 pre-empts.
+// (Verified against git check-ref-format: a trailing-dot component such as
+// "team." IS accepted mid-ref, so it is deliberately not flagged.)
+func (ix *index) checkGaggleBranchNamespace(r *Report) {
+	for name, g := range ix.gaggles {
+		ns := g.Spec.BranchNamespace
+		if ns == "" {
+			continue
+		}
+		bad := ""
+		if strings.Contains(ns, "..") {
+			bad = `contains ".."`
+		} else {
+			for _, comp := range strings.Split(strings.TrimSuffix(ns, "/"), "/") {
+				if strings.HasSuffix(comp, ".lock") {
+					bad = fmt.Sprintf("has a component %q ending in \".lock\"", comp)
+					break
+				}
+			}
+		}
+		if bad != "" {
+			r.add(Error, ix.gaggleFile[name], "Gaggle", name,
+				"spec.branchNamespace %q %s, which would produce an invalid git run-branch name at runtime", ns, bad)
+		}
+	}
+}
+
+func (ix *index) checkGaggleConnections(r *Report) {
+	declared := map[string]bool{}
+	for _, m := range ix.manifests {
+		for _, c := range m.Spec.Connections {
+			if c.Name != "" {
+				declared[c.Name] = true
+			}
+		}
+	}
+	for name, g := range ix.gaggles {
+		file := ix.gaggleFile[name]
+		check := func(ref, field string) {
+			if ref == "" || declared[ref] {
+				return
+			}
+			r.add(Error, file, "Gaggle", name,
+				"%s names connection %q, but no Connection/%s is declared in the Manifest", field, ref, ref)
+		}
+		check(g.Spec.Project.ConnectionRef, "spec.project.connectionRef")
+		check(g.Spec.Backlog.ConnectionRef, "spec.backlog.connectionRef")
+		for i, repo := range g.Spec.AdditionalRepos {
+			check(repo.ConnectionRef, fmt.Sprintf("spec.additionalRepos[%d].connectionRef", i))
+		}
 	}
 }
 
