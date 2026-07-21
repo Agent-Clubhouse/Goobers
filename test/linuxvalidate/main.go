@@ -1,5 +1,10 @@
+//go:build unix
+
 // Command linuxvalidate exercises the real `goobers` binary end to end on a
 // POSIX host — the executable form of issue #636's "Linux node validation".
+// It is a POSIX-only orchestrator (it sets syscall.SysProcAttr.Setpgid to run
+// the binary in its own process group), so it is constrained to unix to keep
+// `GOOS=windows go build ./...` green — it never needs to compile on Windows.
 //
 // It proves, against the shipped binary rather than in-process test seams:
 //
@@ -60,11 +65,10 @@ func main() {
 }
 
 func defaultBin() string {
-	name := "goobers"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	return filepath.Join("bin", name)
+	// This orchestrator is unix-only (//go:build unix), so the built binary is
+	// always plain "bin/goobers" — no ".exe" branch, which staticcheck would
+	// (correctly) flag as unreachable dead code under the build constraint.
+	return filepath.Join("bin", "goobers")
 }
 
 func run(bin, outDir string) error {
