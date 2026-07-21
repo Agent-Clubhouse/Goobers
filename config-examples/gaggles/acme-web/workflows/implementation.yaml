@@ -186,6 +186,7 @@ spec:
         command: ["goobers", "issue-close-out"]
       inputs:
         status: "in-review"
+        resultFile: "issue-close-out-result.json"
       capabilities:
         - github:issues:write
       # Terminal: no `next`. The core loop's product — issue in, PR out — is
@@ -198,6 +199,7 @@ spec:
         command: ["goobers", "issue-close-out"]
       inputs:
         status: "needs-human"
+        resultFile: "issue-close-out-result.json"
       capabilities:
         - github:issues:write
       # Terminal @escalate, NOT @abort. The issue still has to leave
@@ -217,6 +219,7 @@ spec:
         command: ["goobers", "issue-close-out"]
       inputs:
         status: "needs-human"
+        resultFile: "issue-close-out-result.json"
       capabilities:
         - github:issues:write
       next: "@abort"

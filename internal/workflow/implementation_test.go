@@ -188,7 +188,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// open-pr-gate (opened=false -> @abort) so an issue closed after it was
 	// claimed does not still produce a PR — a re-check immediately before
 	// opening, since the claim was only validated once at query-backlog.
-	const wantDigest = "sha256:298620b237fcbda625e825a70a5af13a0175e5cdd9c77ff43fc7daf98c5c0058"
+	const wantDigest = "sha256:9649a98cc9a58d673cf124d72d128dcf8c669459bde08a5a5ec00aa4c4ab1b4b"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

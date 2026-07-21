@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/providers"
 )
@@ -1131,8 +1132,12 @@ func TestMergePRRefusesWithoutCapability(t *testing.T) {
 	if st.mergeCalls != 0 {
 		t.Fatalf("merge endpoint called %d times, want 0 — never even attempted without the capability", st.mergeCalls)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "merge-result.json")); !os.IsNotExist(err) {
-		t.Fatalf("expected no result file to be written when refused for missing capability")
+	result := readMergeResult(t, dir)
+	if result[executor.OutputErrorCode] != errorCodeProvider {
+		t.Fatalf("errorCode = %v, want %s", result[executor.OutputErrorCode], errorCodeProvider)
+	}
+	if msg, _ := result[executor.OutputErrorMessage].(string); !strings.Contains(msg, "no credential") {
+		t.Fatalf("errorMessage = %q, want the missing capability reason", msg)
 	}
 }
 

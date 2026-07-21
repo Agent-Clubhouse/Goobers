@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -454,6 +454,8 @@ func TestGatherPRContextDigestShortCircuitsOnClearedLabel(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
 	t.Chdir(wt2.Path)
+	resultFile := filepath.Join(wt2.Path, "pr-context.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
 	if code != 0 {
@@ -462,7 +464,5 @@ func TestGatherPRContextDigestShortCircuitsOnClearedLabel(t *testing.T) {
 	if !strings.Contains(stdout, "no work") {
 		t.Fatalf("stdout = %q, want no-work — diff is unchanged since the recorded escalation despite the label being cleared", stdout)
 	}
-	if _, err := os.Stat(filepath.Join(wt2.Path, "pr-context.json")); err == nil {
-		t.Fatal("pr-context.json was written, want the digest short-circuit to bail before producing downstream context")
-	}
+	assertNoWorkProviderStageResult(t, resultFile)
 }
