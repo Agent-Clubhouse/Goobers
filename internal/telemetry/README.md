@@ -11,6 +11,13 @@ semantic model is fixed for v1:
   `goobers.workflow`, `goobers.stage`, `goobers.attempt.n`, and related keys).
 - `NewMemoryExporter` is for unit tests. `ExporterStdout` is the local default.
   `ExporterOTLP` sends spans to an OTLP collector.
+- `JournalSpanExporter` appends run spans to both the legacy
+  `spans/spans.jsonl` projection and `spans/otlp.jsonl`.
+  `NewPerGaggleJournalSpanExporter` routes scheduler spans to the
+  instance-level `scheduler/spans/spans.jsonl` instead of creating run
+  directories. The OTLP file uses
+  `application/x-ndjson` framing; each line is the OTLP/JSON encoding of
+  one `opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest`.
 
 The workflow engine should call `StartRun` once per workflow run, then use the
 returned context for task-attempt and gate-evaluation spans. Within-stage

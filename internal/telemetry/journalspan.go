@@ -24,6 +24,15 @@ import (
 const (
 	spansDirName = "spans"
 	spanFileName = "spans.jsonl"
+	otlpFileName = "otlp.jsonl"
+)
+
+// OTLPJSONContentType and OTLPJSONMessageType define the framing of
+// spans/otlp.jsonl: newline-delimited OTLP/JSON, one v1 export request per
+// line.
+const (
+	OTLPJSONContentType = "application/x-ndjson"
+	OTLPJSONMessageType = "opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest"
 )
 
 // JournalSpanExporter is an OpenTelemetry sdktrace.SpanExporter that writes
@@ -107,14 +116,22 @@ func (e *JournalSpanExporter) writeGroup(traceID string, spans []sdktrace.ReadOn
 		}
 	}
 	dir := filepath.Join(runsDir, traceID, spansDirName)
-	return e.writeSpans(dir, "run "+traceID, spans)
+	otlpRecord, err := e.marshalOTLP(spans)
+	if err != nil {
+		return fmt.Errorf("telemetry: encode OTLP spans for run %s: %w", traceID, err)
+	}
+
+	if err := e.writeSpans(dir, "run "+traceID, spans); err != nil {
+		return err
+	}
+
+	return e.writeOTLP(filepath.Join(dir, otlpFileName), otlpRecord)
 }
 
 func (e *JournalSpanExporter) writeSpans(dir, owner string, spans []sdktrace.ReadOnlySpan) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("telemetry: create spans dir for %s: %w", owner, err)
 	}
-
 	path := filepath.Join(dir, spanFileName)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -128,7 +145,26 @@ func (e *JournalSpanExporter) writeSpans(dir, owner string, spans []sdktrace.Rea
 			return fmt.Errorf("telemetry: encode span for %s: %w", owner, err)
 		}
 	}
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("telemetry: sync %s: %w", path, err)
+	}
+	return nil
+}
+
+func (e *JournalSpanExporter) writeOTLP(path string, record []byte) error {
+	otlp, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("telemetry: open %s: %w", path, err)
+	}
+	defer func() { _ = otlp.Close() }()
+
+	if _, err := otlp.Write(append(record, '\n')); err != nil {
+		return fmt.Errorf("telemetry: append %s: %w", path, err)
+	}
+	if err := otlp.Sync(); err != nil {
+		return fmt.Errorf("telemetry: sync %s: %w", path, err)
+	}
+	return nil
 }
 
 func spanGaggle(spans []sdktrace.ReadOnlySpan) (string, error) {
