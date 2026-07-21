@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func TestValidateCheckedInTreesRunsEveryTree(t *testing.T) {
+func TestValidateCheckedInTreesRunsEveryTreeWithoutPollutingRepository(t *testing.T) {
 	t.Setenv("GO_WANT_CONFIGVALIDATE_HELPER", "1")
 	root := t.TempDir()
 	for _, tree := range checkedInTrees {
@@ -25,6 +25,16 @@ func TestValidateCheckedInTreesRunsEveryTree(t *testing.T) {
 			}
 		}
 	}
+	script := filepath.Join(root, "config-examples", "scripts", "check-todos.sh")
+	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepository(t, root)
+	t.Setenv("GO_CONFIGVALIDATE_SCAN_ROOT", root)
+
 	var stdout, stderr bytes.Buffer
 	code := validateCheckedInTrees(
 		root,
@@ -54,10 +64,7 @@ func TestValidateCheckedInTreesFailsOnMissingDocsRoot(t *testing.T) {
 	if err := os.CopyFS(source, os.DirFS(fixture)); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("git", "init", "-q", root)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("initialize fixture repository: %v\n%s", err, output)
-	}
+	initGitRepository(t, root)
 
 	var stdout, stderr bytes.Buffer
 	code := validateTrees(
@@ -114,8 +121,34 @@ func TestValidatorHelperProcess(t *testing.T) {
 			}
 		}
 	}
+	if root := os.Getenv("GO_CONFIGVALIDATE_SCAN_ROOT"); root != "" {
+		if err := scanToolchainShellScripts(root); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+	}
 	_, _ = fmt.Fprintf(os.Stdout, "VALIDATED %s\n", target)
 	os.Exit(0)
+}
+
+func scanToolchainShellScripts(root string) error {
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if entry.IsDir() && (rel == ".git" || rel == "config-examples") {
+			return filepath.SkipDir
+		}
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sh") {
+			return fmt.Errorf("shell script copied onto toolchain path: %s", rel)
+		}
+		return nil
+	})
 }
 
 func argsAfterSeparator(args []string) []string {
@@ -134,6 +167,14 @@ func moduleRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func initGitRepository(t *testing.T, root string) {
+	t.Helper()
+	cmd := exec.Command("git", "init", "-q", root)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("initialize fixture repository: %v\n%s", err, output)
+	}
 }
 
 func buildValidator(t *testing.T, root string) string {

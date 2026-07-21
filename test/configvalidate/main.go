@@ -69,7 +69,13 @@ func validateCheckedInTrees(root string, validator validatorCommand, stdout, std
 }
 
 func validateTrees(root string, trees []checkedInTree, validator validatorCommand, stdout, stderr io.Writer) int {
-	tempDir, err := os.MkdirTemp(root, ".validate-configs-")
+	gitEnv, err := gitWorktreeEnv(root)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "validate-configs: resolve repository context: %v\n", err)
+		return 2
+	}
+
+	tempDir, err := os.MkdirTemp("", "goobers-validate-configs-")
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "validate-configs: create temporary instance roots: %v\n", err)
 		return 2
@@ -88,6 +94,7 @@ func validateTrees(root string, trees []checkedInTree, validator validatorComman
 		commandArgs := append(append([]string(nil), validator.prefixArgs...), args...)
 		cmd := exec.Command(validator.path, commandArgs...)
 		cmd.Dir = root
+		cmd.Env = gitEnv
 		cmd.Stdout = stdout
 		cmd.Stderr = stderr
 		if err := cmd.Run(); err != nil {
@@ -99,6 +106,28 @@ func validateTrees(root string, trees []checkedInTree, validator validatorComman
 		return 1
 	}
 	return 0
+}
+
+func gitWorktreeEnv(root string) ([]string, error) {
+	cmd := exec.Command("git", "-C", root, "rev-parse", "--absolute-git-dir", "--show-toplevel")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git rev-parse: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	lines := strings.Split(strings.ReplaceAll(strings.TrimSpace(string(output)), "\r\n", "\n"), "\n")
+	if len(lines) != 2 {
+		return nil, fmt.Errorf("git rev-parse returned %d lines, want 2", len(lines))
+	}
+
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(key, "GIT_DIR") || strings.EqualFold(key, "GIT_WORK_TREE") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, "GIT_DIR="+strings.TrimSpace(lines[0]), "GIT_WORK_TREE="+strings.TrimSpace(lines[1])), nil
 }
 
 func validationArgs(root, tempDir string, tree checkedInTree) ([]string, error) {
