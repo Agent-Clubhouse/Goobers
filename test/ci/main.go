@@ -1,4 +1,4 @@
-// Command ci runs the repository's portable merge gate.
+// Command ci runs the repository's portable fast and merge validation tiers.
 package main
 
 import (
@@ -53,8 +53,13 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/ci")
+	fast := false
+	switch {
+	case len(args) == 0:
+	case len(args) == 1 && args[0] == "fast":
+		fast = true
+	default:
+		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/ci [fast]")
 		return 2
 	}
 
@@ -67,7 +72,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	tools := configuredToolchain(os.Getenv)
 	exec := processExecutor{stdout: stdout, stderr: stderr}
 	metadata := resolveBuildMetadata(exec, tools, time.Now, os.Getenv)
-	if err := executeChecks(exec, checks(commands, tools, metadata, runtime.GOOS), stdout, stderr); err != nil {
+	validationChecks := checks(commands, tools, metadata, runtime.GOOS)
+	if fast {
+		validationChecks = fastChecks(validationChecks)
+	}
+	if err := executeChecks(exec, validationChecks, stdout, stderr); err != nil {
 		_, _ = fmt.Fprintf(stderr, "ci: %v\n", err)
 		return 1
 	}
@@ -247,6 +256,18 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos str
 			windowsBatch: true,
 		},
 	)
+	return result
+}
+
+func fastChecks(mergeChecks []check) []check {
+	result := make([]check, 0, len(mergeChecks))
+	for _, current := range mergeChecks {
+		if current.label == "fmt-check" ||
+			current.label == "vet" ||
+			strings.HasPrefix(current.label, "build-") {
+			result = append(result, current)
+		}
+	}
 	return result
 }
 

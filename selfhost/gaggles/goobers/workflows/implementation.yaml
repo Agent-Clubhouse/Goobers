@@ -11,9 +11,10 @@ spec:
   displayName: Implementation (issue -> PR, reviewer gate, CI-poll repass)
   # The flagship V0 workflow (ARCHITECTURE.md §12, issue #27): claim a
   # goobers:ready issue, implement it in a worktree, pass it through a
-  # reviewer gate and a local `make ci`-style gate, open a PR, then poll CI
-  # with a bounded repass loop back to implementation on failure. When this
-  # closes, the core loop exists: feed issues in, PRs come out.
+  # reviewer gate and the documented `make ci` merge tier, open a PR, then poll
+  # CI with a bounded repass loop back to implementation on failure. See
+  # CONTRIBUTING.md's "Validation tier contract". When this closes, the core
+  # loop exists: feed issues in, PRs come out.
   #
   # DOGFOOD GUARDRAIL: fires twice daily (08:17/20:17 local) with
   # maxRunsPerHour 1 — cadence x hourly-cap together give a hard ceiling of
@@ -123,7 +124,8 @@ spec:
       # review's escalate control branch below to park the issue first.
       next: review
 
-    # `make ci`-equivalent, run on the implementation branch after syncing base.
+    # The merge tier from CONTRIBUTING.md's "Validation tier contract", run on
+    # the implementation branch after syncing base.
     - name: local-ci
       type: deterministic
       goal: Run the project's local CI-equivalent (build, lint, tests) in the worktree.

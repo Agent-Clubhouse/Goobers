@@ -238,7 +238,8 @@ spec:
       # guard.)
       next: review
 
-    # `make ci`-equivalent, on the PR's branch carrying the rework.
+    # The merge tier from CONTRIBUTING.md's "Validation tier contract", run on
+    # the PR's branch carrying the rework.
     - name: local-ci
       type: deterministic
       goal: Run the project's local CI-equivalent (build, lint, tests) in the worktree.

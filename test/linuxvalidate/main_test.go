@@ -2,7 +2,12 @@
 
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+
+	"github.com/goobers/goobers/internal/instance"
+)
 
 func TestRunIDPattern(t *testing.T) {
 	out := "created run a671b69fe766595e550677b91658726a (workflow=demo gaggle=demo)\nfinished: phase=completed\n"
@@ -30,5 +35,27 @@ func TestFirstLine(t *testing.T) {
 		if got := firstLine(tc.in); got != tc.want {
 			t.Fatalf("firstLine(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestConfigureEphemeralAPI(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "instance.yaml")
+	if err := instance.WriteConfig(path, &instance.Config{
+		APIVersion: instance.ConfigAPIVersion,
+		Kind:       instance.ConfigKind,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := configureEphemeralAPI(root); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := instance.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.API.Listen != ephemeralAPIListenAddress {
+		t.Fatalf("API listen = %q, want %q", cfg.API.Listen, ephemeralAPIListenAddress)
 	}
 }

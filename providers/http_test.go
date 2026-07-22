@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestBasicAuth(t *testing.T) {
 	const want = "Basic YnVpbGQtYWdlbnQ6YWRvLXBhdC0wMTIzNDU2Nzg5"
@@ -48,20 +53,17 @@ func TestDefaultProviderHTTPClientHasTimeout(t *testing.T) {
 
 func TestProviderHTTPClientBoundsStalledEndpointRetries(t *testing.T) {
 	requests := make(chan struct{}, 3)
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	client := newProviderHTTPClient(20 * time.Millisecond)
+	client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		requests <- struct{}{}
 		<-r.Context().Done()
-	}))
-	t.Cleanup(server.Close)
+		return nil, r.Context().Err()
+	})
 
-	const (
-		clientTimeout = 20 * time.Millisecond
-		retries       = 2
-	)
+	const retries = 2
 	provider := NewGitHubProvider("token",
 		func(p *GitHubProvider) {
-			p.BaseURL = server.URL
-			p.Client = newProviderHTTPClient(clientTimeout)
+			p.Client = client
 			p.sleep = func(context.Context, time.Duration) error { return nil }
 		},
 		WithMaxRateLimitRetries(retries),
