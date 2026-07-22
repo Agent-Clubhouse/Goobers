@@ -370,3 +370,254 @@ until its blockers are complete.
 - Generic infrastructure/Temporal internals.
 - Prior-version graph diff.
 - Mobile feature parity with the desktop diagnostic workspace.
+
+---
+
+# Addendum: V1.1 - diagnostic depth, insight, and visualization
+
+> Status: **Approved for staged implementation** (2026-07-21)
+> Area prefixes: `API`, `DASH`
+> Milestone: **Dashboard / Portal - calm live operations workbench** (#14) follow-on
+> Supersedes nothing above; extends sections 4-10 after the V1 slices shipped.
+
+## 11. Why this pass exists
+
+The V1 slices (DASH-1 - DASH-15, epic #440) shipped the foundation: a shared read
+service, a versioned API, SSE freshness, an attention-first Overview, workflow
+inventory, run detail with an event ledger, and accessibility/theming baselines.
+Living with it against a real instance surfaced a consistent gap - the workbench
+answers *"what exists"* and *"what is running"* well, but is weak at the two
+questions operators actually open it for: **"why did this run reach this state?"**
+and **"how is my instance doing over time?"**
+
+Three structural facts drive this pass. They are stated plainly because they
+change the shape of the work from "build new" to mostly "connect and promote what
+already exists."
+
+1. **A capable diagnostic layer was built against fixtures and never mounted.**
+   `AttemptInspector`, `ArtifactViewer`, `EscalationPanel`, and the replay engine
+   (`portal/src/replay.ts`) all exist, but each imports the prototype fixture
+   model (`prototypeData.ts`) and has **zero render sites** in any app page. The
+   live `RunPage` shows only a node list and a one-line-per-row event ledger. The
+   daemon already returns `run.escalation` (structured cause), per-event
+   `outputs`/`artifacts`, and per-attempt records via `listStageAttempts` /
+   `getArtifact` - none of which the run page reads. The remediation is to wire
+   these components to the live contract, not to invent them.
+
+2. **A real topology graph exists, but only on the wrong surface.**
+   `WorkflowTopologyGraph` is a genuine 2D SVG graph - topological layout, drawn
+   edges with arrow markers, zoom/pan/fit. It renders on the workflow *definition*
+   page. The *run* page renders a downgraded vertical `<ol>` list with `->` text
+   edges. Runs deserve the real graph, overlaid with live per-node state.
+
+3. **The analytics data already exists; the portal renders none of it.**
+   `telemetry.db` durably holds run outcomes, per-stage attempt status and
+   duration, and per-stage token/cost usage. `GET /api/v1/telemetry/stats` already
+   returns per-workflow/stage success rate, P50/P95 duration, and P50/P95
+   token/cost; `GET /api/v1/telemetry/errors` returns coded failure records. The
+   portal has no insight destination and never calls these endpoints.
+
+The product framing is unchanged: **workbench, not command center. Ledger, not
+chat. Signal, not spectacle.** This pass deepens signal; it does not add
+spectacle.
+
+## 12. Run detail becomes the real diagnostic surface
+
+Run detail keeps the section 5 model - the graph explains structure, the ledger
+explains time, and they stay coordinated but separate. What changes is depth.
+
+### 12.1 The run graph is the canvas graph, with live state overlay
+
+Promote `WorkflowTopologyGraph` to the run surface. The pinned run graph renders
+as the 2D topological canvas, and per-node run state (`pending`, `running`,
+`completed`, `failed`, `escalated`, `skipped`) is overlaid on the same nodes,
+computed "as of" the selected sequence exactly as `deriveNodeStates` does today.
+Traversed edges are emphasized; the actual path taken through the graph is
+visually distinct from declared-but-untraversed branches. State is never carried
+by color alone (section 6.4 holds): node shape/icon and a text state label
+continue to encode state for colorblind and screen-reader users, and the graph
+retains full keyboard navigation and an equivalent list view under the
+reduced-motion / narrow-viewport paths.
+
+### 12.2 Selecting a node opens an inspector, not just a highlight
+
+Today a node click sets `aria-pressed` and nothing else. It must open a
+progressive-disclosure inspector for the selected stage's **current attempt in the
+selected traversal**, backed by the live contract:
+
+- Attempt number and class (`initial`, `policy`, `infra`), status, duration.
+- Scalar `outputs` for the attempt.
+- Artifacts with type, size, digest/provenance, and safe content access through
+  the existing artifact-read rules (the `ArtifactViewer` already does this against
+  fixtures; point it at `getArtifact`).
+- Static definition and raw YAML behind disclosure.
+
+This is the section 5.3 "Attempt inspector" contract, finally mounted against live
+data. Artifacts and structured outcomes remain the first-class review units; raw
+logs/transcripts stay secondary.
+
+### 12.3 Escalation has one authoritative cause and one causal path
+
+Escalation is currently ambiguous in two ways, both observed on a real run:
+
+- **Double-surface.** The run header badge (`run.phase`) and per-node
+  `run-node-state-escalated` are derived by two independent code paths with no
+  reconciliation, so a run can show several "Escalated" markers with no indication
+  of which is authoritative.
+- **Two terminal park nodes read alike.** Workflows commonly declare both a
+  `park-escalated` (-> `@escalate`) and a `park-needs-human` (-> `@abort`) sink.
+  Both look terminal-and-human-ish in the graph, and nothing marks which one the
+  run actually reached or which gate selected it.
+
+The fix surfaces the daemon's structured `run.escalation` (`EscalationCause`:
+selector, selected branch, repass/retry budget consumed, terminal reason, causal
+event sequence) as a single authoritative "why" summary on run detail, and
+highlights exactly one causal path: the triggering gate -> the selected branch ->
+the terminal sink actually reached. The other declared sinks render as
+untraversed. `EscalationPanel` is repurposed for this, rewritten against the live
+`EscalationCause` shape (the fixture shape's `summary`/`budget` fields do not
+exist on the contract and must not be reintroduced). The "why" is often a
+reviewer verdict artifact (e.g. `verdict/review-N.json`); the panel links to it
+through the same artifact inspector rather than restating it.
+
+This milestone stays **view-only**. Acknowledging, re-queuing, or overriding an
+escalation remains Human-in-the-Loop and calls the same runtime API as the CLI.
+
+### 12.4 Replay is a real scrubber over live events
+
+Section 5.2 specified replay; DASH-7 landed the engine but it was never mounted
+and is written against the fixture event shape (which has a string `.elapsed`
+field the live `RunEvent` lacks). Rebuild replay against the live ordered event
+stream and mount it on run detail: a progress bar with play/pause, direct
+scrubbing, previous/next event, selectable speed, and compressed/skip-idle time
+for long waits. Replay drives the same `selectedSeq` that already recomputes graph
+node state, so pressing play animates the state machine forward - node activation
+and traversed-edge emphasis advance event by event. It is ordered by durable
+sequence, not wall-clock or OTel timing, and honors `prefers-reduced-motion` with
+an equivalent stepped presentation.
+
+## 13. Insight - a new primary destination
+
+The V1 Overview deliberately avoided "vanity KPI cards," and that stance holds for
+Overview. But operators have standing questions that are not vanity and are not
+answerable today:
+
+- What is the success/failure rate of my instance, a gaggle, a workflow, a stage?
+- For the stages that fail or escalate, what are the main reasons?
+- Which stages are the slowest?
+- Which goober/agentic stages consume the most AI credits?
+
+These are diagnostic, not decorative. Add an **Insight** destination (fourth
+primary alongside Overview / Workflows / Runs) that answers them. The distinction
+from "vanity KPIs" is strict: every number is a question an operator asked,
+filterable by scope (instance / gaggle / workflow / stage) and time window, and
+each row drills through to the runs behind it. No lone hero metrics, no
+gradient-for-its-own-sake tiles.
+
+### 13.1 What is already backed by data
+
+Most of Insight is a surfacing job over existing rollups:
+
+| Insight view | Backing data | Status |
+|---|---|---|
+| Success/failure rate by workflow & stage | `/api/v1/telemetry/stats` (`successRate`, counts) | Exists, exposed |
+| Slowest stages (P50/P95/min/max/avg duration) | `/api/v1/telemetry/stats` (stage rows) | Exists, exposed |
+| AI credit/cost & tokens by stage/workflow | `stage_usage` (P50/P95 tokens, cost, retry-waste) via stats | Exists, exposed |
+| Failure-reason breakdown | `run_errors` + `TopErrorSignatures` rollup | Exists, **rollup unexposed** |
+| Success/failure rate **per gaggle** (all gaggles at once) | `runs.gaggle` column | Exists, needs a thin `GROUP BY gaggle` query |
+
+Visualization follows the section 6 system and the repo's dataviz conventions:
+dense, honest, colorblind-safe, light/dark-tuned; distributions shown as
+distributions (P50/P95), not as single averages that hide the tail.
+
+### 13.2 What needs new capture
+
+Two questions cannot be answered from existing columns and require durable
+capture before they can be surfaced:
+
+- **Structured escalation cause.** Runs escalate, but there is no escalation-cause
+  code - only run `status='escalated'`, a gate `escalated:true` flag, and free-text
+  `state.Reason`. "Top reasons runs escalated," as a category, needs a coded cause
+  on the escalation event and a telemetry column. This also sharpens 12.3.
+- **Per-model token/cost attribution.** `stage_usage` records tokens and cost but
+  the harness transcript **sums across models and discards model identity**, and
+  there is no model column. "Which model/goober burned credits" needs the model
+  dimension captured at ingest. Note also that usage today is sourced from the
+  Copilot harness transcript; non-Copilot runners leave usage null, which the
+  Insight views must show as "unmeasured," never as zero.
+
+## 14. Read-path performance - lists must not rescan the journal
+
+The slow, worsening-with-history loading is not a client problem - the client is
+already keyset-paginated over `limit`/`cursor`. The read service is the
+bottleneck: `ListRuns` calls `runSummaries`, which `ReadDir`s every run directory
+and fully parses each `events.jsonl` on **every** request, then filters and
+paginates *after* materializing all of it. Cost is O(total_runs x events_per_run)
+regardless of the page size requested, and the Overview fans this out into ~5
+concurrent full scans per refresh (one per phase). On a young self-hosting
+instance this is already ~20k runs / ~900MB of journals; it degrades linearly and
+will hit every operator, not just large ones.
+
+The durable fix is an indexed summary read path. The telemetry rollup already
+holds exactly the columns a run list needs - `runs(run_id, workflow,
+workflow_version, gaggle, trigger_*, status, started_at, finished_at,
+duration_ms)`. Back list/summary reads (Runs page, Overview groups, `status`)
+with that index (or an equivalent maintained run-summary store) so a bounded,
+filtered, sorted page is a bounded query, not a full-history parse. Run *detail*
+continues to read the authoritative journal for the one run in view. The journal
+remains the source of truth (section 2); the index is a derived, rebuildable
+projection, consistent with the shared-read-service architecture.
+
+## 15. Smaller corrections carried in this pass
+
+- **The loading spinner never animates.** `.loading-mark` is a border-ring with a
+  tinted top arc but no `animation` property, and no `@keyframes` rotation is
+  defined anywhere - so it paints frozen at the top of a rotation that never runs.
+  Add the keyframe and animation; it is then correctly clamped by the existing
+  `prefers-reduced-motion` block.
+- **Attention shows every stale escalation forever.** Escalation is a permanent
+  terminal phase with no lifecycle beyond the five canonical phases, and the
+  attention list filters purely on that phase with no recency window - so an old
+  escalation reappears until 20 newer ones push it off. Add a recency window and a
+  session-scoped dismiss (the config-warnings dismiss is the existing precedent) so
+  the list reflects what currently needs a human. A **durable, cross-session
+  acknowledgement** is deliberately deferred: it is a persisted-state mutation and
+  therefore belongs with Human-in-the-Loop, not this view-only pass.
+
+## 16. Delivery order and issue map (V1.1)
+
+Independently reviewable, each stating its blockers. Surfacing work (existing data)
+is separated from capture work (new data) so the capture gaps never block the
+views that already have data.
+
+| Slice | Issue | Depends on | Merge boundary |
+|---|---|---|---|
+| Animate loading spinner | DASH-16 | - | CSS fix |
+| Attention recency window + session dismiss | DASH-17 | - | Portal view slice |
+| Index-backed run list/summary reads | DASH-18 | - | Go read service |
+| Canvas run graph with live state overlay | DASH-19 | - | Portal graph slice |
+| Live stage/attempt/artifact inspector on node click | DASH-20 | DASH-19 | Portal component slice |
+| Authoritative escalation cause + causal-path highlight | DASH-21 | DASH-19, DASH-20 | Portal view slice |
+| Deterministic replay scrubber over live events | DASH-22 | DASH-19 | Portal interaction slice |
+| Insight destination: success/failure rate + slowest stages | DASH-23 | - | Portal page slice |
+| Failure-reason breakdown (surface `TopErrorSignatures`) | DASH-24 | DASH-23 | Go telemetry route + portal |
+| AI credit/cost & token analytics by stage/workflow | DASH-25 | DASH-23 | Portal page slice |
+| Capture: per-model token/cost attribution | DASH-26 | - | Go telemetry capture |
+| Capture: structured escalation-cause code | DASH-27 | - | Go journal/telemetry capture |
+
+DASH-24's escalation-reason categorization and DASH-21's cause summary become
+fully complete once DASH-27 lands, but both ship useful behavior on existing data
+first (coded run/stage errors, and the existing `EscalationCause` fields) and are
+not blocked on it.
+
+## 17. Non-goals for this pass
+
+- Durable, cross-session escalation acknowledgement or any run mutation (still
+  Human-in-the-Loop).
+- Alerting, budgets, or cost caps - Insight reports; it does not enforce.
+- Custom/user-defined dashboards or saved queries.
+- Billing-grade cost accounting - usage is best-effort from runner transcripts and
+  is labeled "unmeasured" where a runner does not report it.
+- Cross-instance / fleet aggregation (single local instance stays the scope).
+- Replacing the ledger with the graph, or vice versa - they stay coordinated but
+  separate.
