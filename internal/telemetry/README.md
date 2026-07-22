@@ -9,6 +9,9 @@ semantic model is fixed for v1:
   attempts, gate evaluations, and scheduler decisions. Their attributes come
   from the canonical registry in `attributes.go` (`goobers.run.id`,
   `goobers.workflow`, `goobers.stage`, `goobers.attempt.n`, and related keys).
+  Agentic task and reviewer spans also carry `goobers.model` and
+  `goobers.harness.version`; the SQLite rollup indexes both in
+  `agent_invocations`, and `goobers telemetry stats` filters/groups on them.
 - `NewMemoryExporter` is for unit tests. `ExporterStdout` is the local default.
 - Managed worktree lifecycle measurements are emitted as
   `goobers.worktree.disk.usage` and `goobers.workcopy.disk.usage` span events.

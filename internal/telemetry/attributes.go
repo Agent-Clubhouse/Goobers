@@ -13,6 +13,8 @@ const (
 	AttrWorkflowVersion        = "goobers.workflow.version"
 	AttrWorkflowDigest         = "goobers.workflow.digest"
 	AttrGoober                 = "goobers.goober"
+	AttrModel                  = "goobers.model"
+	AttrHarnessVersion         = "goobers.harness.version"
 	AttrStage                  = "goobers.stage"
 	AttrStageType              = "goobers.stage.type"
 	AttrAttemptNumber          = "goobers.attempt.n"
@@ -43,6 +45,8 @@ func AllAttributes() []Attribute {
 		AttrWorkflowVersion,
 		AttrWorkflowDigest,
 		AttrGoober,
+		AttrModel,
+		AttrHarnessVersion,
 		AttrStage,
 		AttrStageType,
 		AttrAttemptNumber,
@@ -122,6 +126,8 @@ type TaskAttributes struct {
 	TaskID          string
 	TaskType        string
 	GooberID        string
+	Model           string
+	HarnessVersion  string
 	Attempt         int
 	AttemptKind     string
 	ItemID          string
@@ -139,6 +145,9 @@ type GateAttributes struct {
 	Decision        string
 	RepassNumber    int
 	GooberID        string
+	Agentic         bool
+	Model           string
+	HarnessVersion  string
 	ItemID          string
 	ItemURL         string
 }

@@ -822,10 +822,12 @@ unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 1 = journal data error, 2 = usage/output error.
 
 ### telemetry stats
-Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
+Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--model=id] [--harness-version=version] [--group-by=model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
 
 Success rate and duration aggregates per workflow and per stage,
-across every run (default path "."). Exit codes: 0 = OK, 2 = usage/IO error.
+across every run (default path "."). Agent filters retain matching agentic
+stage attempts; a run that used multiple grouped cohorts appears in each.
+Exit codes: 0 = OK, 2 = usage/IO error.
 
 ### telemetry-query
 Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings] [path]

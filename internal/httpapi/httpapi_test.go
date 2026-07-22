@@ -475,17 +475,21 @@ func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 	}
 
 	statsResponse := httptest.NewRecorder()
-	statsURL := TelemetryStatsPath + "?workflow=implement&gaggle=core&since=" +
+	statsURL := TelemetryStatsPath + "?workflow=implement&gaggle=core&model=gpt-5.6-sol&harnessVersion=1.2.3&groupBy=model,harness-version&since=" +
 		since.Format(time.RFC3339) + "&until=" + until.Format(time.RFC3339)
 	handler.ServeHTTP(statsResponse, httptest.NewRequest(http.MethodGet, statsURL, nil))
 	if statsResponse.Code != http.StatusOK {
 		t.Fatalf("stats status = %d, body = %s", statsResponse.Code, statsResponse.Body)
 	}
 	wantStatsReq := readservice.TelemetryStatsRequest{
-		Workflow: "implement",
-		Gaggle:   "core",
-		Since:    since,
-		Until:    until,
+		Workflow:              "implement",
+		Gaggle:                "core",
+		Model:                 "gpt-5.6-sol",
+		HarnessVersion:        "1.2.3",
+		GroupByModel:          true,
+		GroupByHarnessVersion: true,
+		Since:                 since,
+		Until:                 until,
 	}
 	if reader.statsReq != wantStatsReq {
 		t.Fatalf("stats request = %+v, want %+v", reader.statsReq, wantStatsReq)

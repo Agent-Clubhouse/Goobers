@@ -62,8 +62,10 @@ func TestRegistryRegisterAsPreservesAdapterIdentity(t *testing.T) {
 // through the same Registry + Executor, with zero changes to either type.
 type thirdAdapter struct{ ran bool }
 
-func (a *thirdAdapter) Name() string                        { return "third-harness" }
-func (a *thirdAdapter) Preflight(ctx context.Context) error { return nil }
+func (a *thirdAdapter) Name() string { return "third-harness" }
+func (a *thirdAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
+	return PreflightInfo{Version: "third-v1"}, nil
+}
 func (a *thirdAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
 	a.ran = true
 	if err := WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}); err != nil {

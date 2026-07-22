@@ -178,6 +178,63 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExecutorAnnotatesAgentProvenance(t *testing.T) {
+	exporter := telemetry.NewMemoryExporter()
+	client, err := telemetry.New(context.Background(), telemetry.Config{
+		ServiceName:  "harness-provenance-test",
+		SpanExporter: exporter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	runID := "0af7651916cd43dd8448eb211c80319c"
+	ctx, span, err := client.StartTask(context.Background(), telemetry.TaskAttributes{
+		Gaggle: "example", WorkflowID: "default-implement", RunID: runID,
+		TaskID: "implement", TaskType: telemetry.StageTypeAgentic,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &fakeRecorder{}
+	adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+		return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	}}
+	executor, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec, rec, rec,
+		journal.NewPatternScrubber(),
+		"",
+		WithHarnessConfig("gpt-5.6-sol", nil),
+		WithHarnessVersion("copilot version 1.2.3"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.Invoke(ctx, testEnvelope(t.TempDir())); err != nil {
+		t.Fatal(err)
+	}
+	span.Succeed("done")
+	if err := client.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	spans := exporter.Spans()
+	if len(spans) != 1 {
+		t.Fatalf("spans = %d, want 1", len(spans))
+	}
+	attrs := make(map[string]string)
+	for _, attr := range spans[0].Attributes() {
+		attrs[string(attr.Key)] = attr.Value.Emit()
+	}
+	if attrs[telemetry.AttrModel] != "gpt-5.6-sol" ||
+		attrs[telemetry.AttrHarnessVersion] != "copilot version 1.2.3" {
+		t.Fatalf("agent provenance = %#v", attrs)
+	}
+}
+
 func TestExecutorMaterializesAssetsBeforeInvocation(t *testing.T) {
 	source := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(source, "templates"), 0o755); err != nil {

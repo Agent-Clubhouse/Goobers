@@ -21,10 +21,12 @@ type stageDistributionAccum struct {
 	wasteCostUSD           float64
 }
 
-type stageIdentity struct {
-	gaggle   string
-	workflow string
-	stage    string
+type stageDistributionKey struct {
+	gaggle         string
+	workflow       string
+	stage          string
+	model          string
+	harnessVersion string
 }
 
 // populateStageDistributions adds nearest-rank p50/p95 measurements and retry
@@ -35,9 +37,20 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 	if len(stages) == 0 {
 		return nil
 	}
-	where, args := statsWhere("r.workflow", "r.gaggle", "r.started_at", req)
+	clauses, args := statsClauses("r.workflow", "r.gaggle", "r.started_at", req)
+	join := ""
+	if agentStatsActive(req) {
+		join = `JOIN agent_invocations ai
+			ON ai.run_id = sa.run_id AND ai.stage = sa.stage AND ai.traversal = sa.traversal
+			AND ai.kind = 'task'`
+		agentClauses, agentArgs := agentFilterClauses("ai", req)
+		clauses = append(clauses, agentClauses...)
+		args = append(args, agentArgs...)
+	}
+	where := whereClause(clauses)
+	dimensions := agentDimensionColumns(req, "ai")
 	query := fmt.Sprintf(`
-		SELECT r.gaggle, r.workflow, sa.stage,
+		SELECT r.gaggle, r.workflow, sa.stage%s,
 		       sa.traversal < latest.final_traversal,
 		       sa.duration_ms,
 		       su.input_tokens,
@@ -45,6 +58,7 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 		       su.cost_usd
 		FROM stage_attempts sa
 		JOIN runs r ON r.run_id = sa.run_id
+		%s
 		LEFT JOIN stage_usage su
 			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.traversal = sa.traversal
 		JOIN (
@@ -53,39 +67,33 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 			GROUP BY run_id, stage
 		) latest ON latest.run_id = sa.run_id AND latest.stage = sa.stage
 		%s
-		ORDER BY r.gaggle, r.workflow, sa.stage, sa.run_id, sa.traversal`, where)
+		ORDER BY r.gaggle, r.workflow, sa.stage%s, sa.run_id, sa.traversal`, prefixedColumns(dimensions), join, where, groupedColumns(dimensions))
 	rows, err := db.sql.Query(query, args...)
 	if err != nil {
 		return fmt.Errorf("rollup: query stage distributions: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	accums := make(map[stageIdentity]*stageDistributionAccum, len(stages))
+	accums := make(map[stageDistributionKey]*stageDistributionAccum, len(stages))
 	for rows.Next() {
-		var identity stageIdentity
+		var key stageDistributionKey
 		var wasted bool
 		var durationMs, inputTokens, outputTokens sql.NullInt64
 		var costUSD sql.NullFloat64
-		if err := rows.Scan(
-			&identity.gaggle,
-			&identity.workflow,
-			&identity.stage,
-			&wasted,
-			&durationMs,
-			&inputTokens,
-			&outputTokens,
-			&costUSD,
-		); err != nil {
+		scan := []any{&key.gaggle, &key.workflow, &key.stage}
+		scan = appendAgentDimensionScan(scan, req, &key.model, &key.harnessVersion)
+		scan = append(scan, &wasted, &durationMs, &inputTokens, &outputTokens, &costUSD)
+		if err := rows.Scan(scan...); err != nil {
 			return fmt.Errorf("rollup: scan stage distribution: %w", err)
 		}
-		accum := accums[identity]
+		accum := accums[key]
 		if accum == nil {
 			accum = &stageDistributionAccum{}
-			accums[identity] = accum
+			accums[key] = accum
 		}
 		if durationMs.Valid {
 			if durationMs.Int64 < 0 {
-				return fmt.Errorf("rollup: stage %s has negative duration %d", identity.stage, durationMs.Int64)
+				return fmt.Errorf("rollup: stage %s has negative duration %d", key.stage, durationMs.Int64)
 			}
 			accum.durations = append(accum.durations, durationMs.Int64)
 		}
@@ -93,17 +101,17 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 		hasTokens := inputTokens.Valid && outputTokens.Valid
 		if hasTokens {
 			if inputTokens.Int64 < 0 || outputTokens.Int64 < 0 {
-				return fmt.Errorf("rollup: stage %s has negative token usage", identity.stage)
+				return fmt.Errorf("rollup: stage %s has negative token usage", key.stage)
 			}
 			tokens, err = addNonnegativeInt64(inputTokens.Int64, outputTokens.Int64)
 			if err != nil {
-				return fmt.Errorf("rollup: sum token usage for stage %s: %w", identity.stage, err)
+				return fmt.Errorf("rollup: sum token usage for stage %s: %w", key.stage, err)
 			}
 			accum.tokens = append(accum.tokens, tokens)
 		}
 		if costUSD.Valid {
 			if costUSD.Float64 < 0 || math.IsNaN(costUSD.Float64) || math.IsInf(costUSD.Float64, 0) {
-				return fmt.Errorf("rollup: stage %s has invalid cost %v", identity.stage, costUSD.Float64)
+				return fmt.Errorf("rollup: stage %s has invalid cost %v", key.stage, costUSD.Float64)
 			}
 			accum.costs = append(accum.costs, costUSD.Float64)
 		}
@@ -116,7 +124,7 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 			var err error
 			accum.wasteDurationMs, err = addNonnegativeInt64(accum.wasteDurationMs, durationMs.Int64)
 			if err != nil {
-				return fmt.Errorf("rollup: sum retry-waste duration for stage %s: %w", identity.stage, err)
+				return fmt.Errorf("rollup: sum retry-waste duration for stage %s: %w", key.stage, err)
 			}
 		}
 		if hasTokens {
@@ -124,14 +132,14 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 			var err error
 			accum.wasteTokens, err = addNonnegativeInt64(accum.wasteTokens, tokens)
 			if err != nil {
-				return fmt.Errorf("rollup: sum retry-waste tokens for stage %s: %w", identity.stage, err)
+				return fmt.Errorf("rollup: sum retry-waste tokens for stage %s: %w", key.stage, err)
 			}
 		}
 		if costUSD.Valid {
 			accum.wasteCostsObserved++
 			accum.wasteCostUSD += costUSD.Float64
 			if math.IsInf(accum.wasteCostUSD, 0) {
-				return fmt.Errorf("rollup: retry-waste cost overflow for stage %s", identity.stage)
+				return fmt.Errorf("rollup: retry-waste cost overflow for stage %s", key.stage)
 			}
 		}
 	}
@@ -140,11 +148,14 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 	}
 
 	for i := range stages {
-		accum := accums[stageIdentity{
-			gaggle:   stages[i].Gaggle,
-			workflow: stages[i].Workflow,
-			stage:    stages[i].Stage,
-		}]
+		key := stageDistributionKey{
+			gaggle:         stages[i].Gaggle,
+			workflow:       stages[i].Workflow,
+			stage:          stages[i].Stage,
+			model:          stages[i].Model,
+			harnessVersion: stages[i].HarnessVersion,
+		}
+		accum := accums[key]
 		if accum == nil {
 			continue
 		}

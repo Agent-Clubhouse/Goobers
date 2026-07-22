@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
@@ -46,7 +47,7 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 }
 
 func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequest, error) {
-	if err := validateQueryValues(values, "workflow", "gaggle", "since", "until"); err != nil {
+	if err := validateQueryValues(values, "workflow", "gaggle", "model", "harnessVersion", "groupBy", "since", "until"); err != nil {
 		return readservice.TelemetryStatsRequest{}, err
 	}
 	since, err := parseOptionalTime(values.Get("since"), "since")
@@ -60,12 +61,37 @@ func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequ
 	if !since.IsZero() && !until.IsZero() && since.After(until) {
 		return readservice.TelemetryStatsRequest{}, errors.New("since must not be after until")
 	}
+	groupByModel, groupByHarnessVersion, err := parseTelemetryGroupBy(values.Get("groupBy"))
+	if err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
 	return readservice.TelemetryStatsRequest{
-		Workflow: values.Get("workflow"),
-		Gaggle:   values.Get("gaggle"),
-		Since:    since,
-		Until:    until,
+		Workflow:              values.Get("workflow"),
+		Gaggle:                values.Get("gaggle"),
+		Model:                 values.Get("model"),
+		HarnessVersion:        values.Get("harnessVersion"),
+		GroupByModel:          groupByModel,
+		GroupByHarnessVersion: groupByHarnessVersion,
+		Since:                 since,
+		Until:                 until,
 	}, nil
+}
+
+func parseTelemetryGroupBy(value string) (model, harnessVersion bool, err error) {
+	if value == "" {
+		return false, false, nil
+	}
+	for _, dimension := range strings.Split(value, ",") {
+		switch dimension {
+		case "model":
+			model = true
+		case "harness-version", "harnessVersion":
+			harnessVersion = true
+		default:
+			return false, false, fmt.Errorf("groupBy contains unknown dimension %q", dimension)
+		}
+	}
+	return model, harnessVersion, nil
 }
 
 func parseTelemetryErrorsQuery(values url.Values) (readservice.TelemetryErrorsRequest, error) {

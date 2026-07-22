@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -150,6 +152,70 @@ func TestTelemetryStatsJSON(t *testing.T) {
 		"durationSamples", "p50DurationMs", "p95DurationMs",
 		"tokenSamples", "costSamples", "retryWasteAttempts",
 	)
+}
+
+func TestTelemetryStatsFiltersAndGroupsAgentProvenance(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	db, err := rollup.Open(l.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", l.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	started := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	for i, fixture := range []struct {
+		runID, model, version string
+	}{
+		{"agent-run-1", "gpt-5.6-sol", "copilot version 1.2.3"},
+		{"agent-run-2", "claude-sonnet-5", "copilot version 1.2.3"},
+	} {
+		if _, err := raw.Exec(`
+			INSERT INTO runs (
+				run_id, workflow, workflow_version, gaggle, status, started_at, finished_at, duration_ms
+			) VALUES (?, 'implement', 1, 'example', 'completed', ?, ?, 10)`,
+			fixture.runID, started, started); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.Exec(`
+			INSERT INTO stage_attempts (
+				run_id, stage, traversal, attempt, status, started_at, finished_at, duration_ms
+			) VALUES (?, 'implement', 1, 1, 'success', ?, ?, 10)`,
+			fixture.runID, started, started); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.Exec(`
+			INSERT INTO agent_invocations (
+				run_id, span_id, kind, stage, traversal, attempt, model, harness_version
+			) VALUES (?, ?, 'task', 'implement', 1, 1, ?, ?)`,
+			fixture.runID, fmt.Sprintf("span-%d", i), fixture.model, fixture.version); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	code, stdout, stderr := runArgs(
+		t, "telemetry", "stats", "--json",
+		"--model=gpt-5.6-sol", "--harness-version=copilot version 1.2.3",
+		"--group-by=model", "--group-by=harness-version", root,
+	)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	var result readservice.TelemetryStatsResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Runs) != 1 || result.Runs[0].Model != "gpt-5.6-sol" ||
+		result.Runs[0].HarnessVersion != "copilot version 1.2.3" ||
+		len(result.Stages) != 1 || result.Stages[0].Model != "gpt-5.6-sol" {
+		t.Fatalf("provenance stats = %#v", result)
+	}
 }
 
 func TestTelemetryErrorsJSON(t *testing.T) {
