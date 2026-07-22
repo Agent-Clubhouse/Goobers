@@ -44,7 +44,7 @@ func TestChecksInvokeOnlyAllowlistedToolBinaries(t *testing.T) {
 	commands := []string{"config-sync", "goobers", "operator", "scheduler"}
 
 	for _, goos := range []string{"linux", "darwin", "windows"} {
-		for _, current := range checks(commands, tools, metadata, goos) {
+		for _, current := range checks(commands, tools, metadata, goos, "test-timings/unit.json") {
 			binary, _ := commandInvocation(current, goos, func(string) string { return "" })
 			base := strings.ToLower(filepath.Base(binary))
 			if isShellInterpreter(base) {

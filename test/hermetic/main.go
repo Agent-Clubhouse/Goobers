@@ -3,6 +3,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"go/ast"
 	"go/build"
@@ -36,6 +37,13 @@ type violation struct {
 	tool     string
 }
 
+type invocation struct {
+	goCommand    string
+	timingJob    string
+	timingOutput string
+	testArgs     []string
+}
+
 type diagnosticCollector struct {
 	mu      sync.Mutex
 	allowed map[string]struct{}
@@ -54,10 +62,10 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	goCommand, args, err := parseInvocation(args)
+	invocation, err := parseInvocation(args)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
-		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/hermetic [--go-command <go>] -- <go test arguments>")
+		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/hermetic [--go-command <go>] [--timing-job <job> --timing-output <file>] -- <go test arguments>")
 		return 2
 	}
 
@@ -67,7 +75,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	tools, compilerName, err := resolveTools(goCommand)
+	tools, compilerName, err := resolveTools(invocation.goCommand)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
 		return 1
@@ -95,7 +103,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	goArgs := append([]string{"test"}, args...)
+	goArgs := goCommandArgs(invocation)
 	command := exec.Command(filepath.Join(toolDir, executableName("go")), goArgs...)
 	command.Dir = root
 	command.Env = hermeticEnvironment(os.Environ(), toolDir, compilerName)
@@ -117,22 +125,43 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 1
 }
 
-func parseInvocation(args []string) (string, []string, error) {
-	goCommand := "go"
-	if len(args) > 0 && args[0] == "--go-command" {
-		if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
-			return "", nil, errors.New("--go-command requires an executable")
-		}
-		goCommand = args[1]
-		args = args[2:]
+func parseInvocation(args []string) (invocation, error) {
+	flags := flag.NewFlagSet("hermetic", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	goCommand := flags.String("go-command", "go", "Go executable")
+	timingJob := flags.String("timing-job", "", "stable timing job name")
+	timingOutput := flags.String("timing-output", "", "timing artifact path")
+	if err := flags.Parse(args); err != nil {
+		return invocation{}, err
 	}
-	if len(args) > 0 && args[0] == "--" {
-		args = args[1:]
+	if strings.TrimSpace(*goCommand) == "" {
+		return invocation{}, errors.New("--go-command requires an executable")
 	}
-	if len(args) == 0 {
-		return "", nil, errors.New("go test arguments are required")
+	if (*timingJob == "") != (*timingOutput == "") {
+		return invocation{}, errors.New("--timing-job and --timing-output must be provided together")
 	}
-	return goCommand, args, nil
+	if len(flags.Args()) == 0 {
+		return invocation{}, errors.New("go test arguments are required")
+	}
+	return invocation{
+		goCommand:    *goCommand,
+		timingJob:    *timingJob,
+		timingOutput: *timingOutput,
+		testArgs:     flags.Args(),
+	}, nil
+}
+
+func goCommandArgs(invocation invocation) []string {
+	if invocation.timingOutput == "" {
+		return append([]string{"test"}, invocation.testArgs...)
+	}
+	args := []string{
+		"run", "./test/testtiming", "capture",
+		"-job", invocation.timingJob,
+		"-out", invocation.timingOutput,
+		"--",
+	}
+	return append(args, invocation.testArgs...)
 }
 
 func findModuleRoot() (string, error) {
@@ -290,6 +319,7 @@ func executableName(name string) string {
 func hermeticEnvironment(base []string, toolPath, compilerName string) []string {
 	overrides := map[string]string{
 		"CC":          compilerName,
+		"GO":          executableName("go"),
 		"GOENV":       "off",
 		"GOFLAGS":     "-mod=readonly",
 		"GONOPROXY":   "none",

@@ -43,7 +43,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	metadata := buildMetadata{version: "v1.2.3", commit: "abcdef0", date: "2026-07-20T12:00:00Z"}
 
-	gotChecks := checks([]string{"config-sync", "goobers", "scheduler"}, tools, metadata, "linux")
+	gotChecks := checks([]string{"config-sync", "goobers", "scheduler"}, tools, metadata, "linux", "")
 	var got []string
 	for _, current := range gotChecks {
 		got = append(got, current.label)
@@ -123,6 +123,7 @@ func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 		},
 		buildMetadata{},
 		"linux",
+		"",
 	)
 	fast := fastChecks(mergeChecks)
 
@@ -162,6 +163,7 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
 		buildMetadata{},
 		"windows",
+		"",
 	)
 	if args := strings.Join(got[5].args, " "); !strings.Contains(args, "-o bin/goobers.exe") {
 		t.Fatalf("Windows build args = %q", args)
@@ -187,6 +189,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
 		buildMetadata{},
 		"linux",
+		"",
 	)
 	var labels []string
 	for _, current := range got {
@@ -208,6 +211,7 @@ func TestPortalDistDriftGuardRunsGitDiff(t *testing.T) {
 		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
 		buildMetadata{},
 		"linux",
+		"",
 	)
 
 	var diffIdx, buildIdx = -1, -1
@@ -348,6 +352,58 @@ func TestExecuteChecksRunsAllSuccessfulChecks(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestChecksWrapUnitTestWhenTimingOutputIsConfigured(t *testing.T) {
+	t.Parallel()
+	got := checks(
+		nil,
+		toolchain{goCommand: "go", npmCommand: "npm", gitCommand: "git"},
+		buildMetadata{},
+		"linux",
+		"test-timings/unit-Linux.json",
+	)
+	for _, current := range got {
+		if current.label != "test" {
+			continue
+		}
+		want := "run ./test/hermetic --go-command go --timing-job unit --timing-output test-timings/unit-Linux.json -- -race -timeout 20m -covermode=atomic -coverprofile=coverage.out ./..."
+		if args := strings.Join(current.args, " "); args != want {
+			t.Fatalf("timed test args = %q, want %q", args, want)
+		}
+		return
+	}
+	t.Fatal("checks do not include the test step")
+}
+
+func TestExecuteChecksPrintsElapsedPerTarget(t *testing.T) {
+	t.Parallel()
+	times := []time.Time{
+		time.Unix(0, 0),
+		time.Unix(1, 250_000_000),
+		time.Unix(2, 0),
+		time.Unix(4, 500_000_000),
+	}
+	next := 0
+	now := func() time.Time {
+		value := times[next]
+		next++
+		return value
+	}
+	var stdout, stderr bytes.Buffer
+	if err := executeChecksAt(
+		&fakeExecutor{},
+		[]check{{label: "fmt-check"}, {label: "vet"}},
+		&stdout,
+		&stderr,
+		now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "<== fmt-check (elapsed 1.25s)") ||
+		!strings.Contains(stdout.String(), "<== vet (elapsed 2.5s)") {
+		t.Fatalf("stdout missing elapsed targets:\n%s", &stdout)
 	}
 }
 

@@ -41,6 +41,9 @@ The subset relationship is executable rather than documentary:
 `verify-full` has `ci` and the additional gates as serialized Make
 prerequisites. Tests in `test/ci` compare the complete tier recipes and
 prerequisite graph, so extra or missing commands fail the contract check.
+Each local gate target prints its elapsed time; CI also publishes structured
+unit-test timing and soft-budget comparisons — see
+[`docs/guides/test-timing.md`](docs/guides/test-timing.md).
 
 Tests that intentionally execute tools outside the Go test process belong in
 `//go:build integration` files and must declare each executable with

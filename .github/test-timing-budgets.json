@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "jobs": {
+    "unit": {
+      "baselineSeconds": 120,
+      "budgetSeconds": 300,
+      "baseline": "Approximately 120 seconds on the Linux and macOS main-branch platform gates, measured 2026-07-21; the 300-second budget allows hosted-runner contention headroom."
+    }
+  }
+}

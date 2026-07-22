@@ -72,7 +72,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	tools := configuredToolchain(os.Getenv)
 	exec := processExecutor{stdout: stdout, stderr: stderr}
 	metadata := resolveBuildMetadata(exec, tools, time.Now, os.Getenv)
-	validationChecks := checks(commands, tools, metadata, runtime.GOOS)
+	validationChecks := checks(commands, tools, metadata, runtime.GOOS, os.Getenv("GOOBERS_TEST_TIMING_FILE"))
 	if fast {
 		validationChecks = fastChecks(validationChecks)
 	}
@@ -144,7 +144,7 @@ func commandPackages(directory string) ([]string, error) {
 	return commands, nil
 }
 
-func checks(commands []string, tools toolchain, metadata buildMetadata, goos string) []check {
+func checks(commands []string, tools toolchain, metadata buildMetadata, goos, timingOutput string) []check {
 	ldflags := fmt.Sprintf(
 		"-X %s.Version=%s -X %s.Commit=%s -X %s.Date=%s",
 		versionPackage, metadata.version,
@@ -216,21 +216,38 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos str
 		testEnvironment = append(testEnvironment, "CGO_ENABLED=1")
 	}
 
+	testArgs := []string{
+		"run", "./test/hermetic",
+		"--go-command", tools.goCommand,
+	}
+	if timingOutput != "" {
+		testArgs = append(testArgs, "--timing-job", "unit", "--timing-output", timingOutput)
+	}
+	testArgs = append(testArgs,
+		"--",
+		"-race",
+		"-timeout", "20m",
+		"-covermode=atomic",
+		"-coverprofile=coverage.out",
+		"./...",
+	)
+	testCheck := check{
+		label:   "test",
+		command: tools.goCommand,
+		// -timeout 20m raises the per-package ceiling above Go's 10m default
+		// purely as headroom against macOS hosted-runner contention (#1124):
+		// the cmd/goobers integration package legitimately runs long under a
+		// loaded runner, and a timeout there panics the whole suite. This is
+		// not masking a hang — the affected tests pass locally at high
+		// -count and the OTLP-flush blocking that compounded it is fixed in
+		// this change (telemetry soft-fails an unreachable collector). Normal
+		// runs finish in ~2m, so the higher ceiling never slows a green run.
+		args: testArgs,
+		env:  testEnvironment,
+	}
+
 	result = append(result,
-		check{
-			label:   "test",
-			command: tools.goCommand,
-			// -timeout 20m raises the per-package ceiling above Go's 10m default
-			// purely as headroom against macOS hosted-runner contention (#1124):
-			// the cmd/goobers integration package legitimately runs long under a
-			// loaded runner, and a timeout there panics the whole suite. This is
-			// not masking a hang — the affected tests pass locally at high
-			// -count and the OTLP-flush blocking that compounded it is fixed in
-			// this change (telemetry soft-fails an unreachable collector). Normal
-			// runs finish in ~2m, so the higher ceiling never slows a green run.
-			args: []string{"run", "./test/hermetic", "--go-command", tools.goCommand, "--", "-race", "-timeout", "20m", "-covermode=atomic", "-coverprofile=coverage.out", "./..."},
-			env:  testEnvironment,
-		},
+		testCheck,
 		check{label: "lint", command: tools.golangciCommand, args: []string{"run"}},
 		check{
 			label:        "portal-test",
@@ -314,9 +331,20 @@ func portalPreparationChecks(tools toolchain) []check {
 }
 
 func executeChecks(exec executor, checks []check, stdout, stderr io.Writer) error {
+	return executeChecksAt(exec, checks, stdout, stderr, time.Now)
+}
+
+func executeChecksAt(
+	exec executor,
+	checks []check,
+	stdout, stderr io.Writer,
+	now func() time.Time,
+) error {
 	for _, current := range checks {
 		_, _ = fmt.Fprintf(stdout, "==> %s\n", current.label)
+		started := now()
 		output, err := exec.run(current)
+		_, _ = fmt.Fprintf(stdout, "<== %s (elapsed %s)\n", current.label, now().Sub(started).Round(time.Millisecond))
 		if err != nil {
 			if len(output) > 0 {
 				_, _ = stderr.Write(output)
