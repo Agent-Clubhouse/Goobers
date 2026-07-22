@@ -8,15 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testdep"
 )
 
-func TestNativeSandboxCopilotLive(t *testing.T) {
-	if os.Getenv("GOOBERS_SANDBOX_COPILOT_LIVE") != "1" {
-		t.Skip("set GOOBERS_SANDBOX_COPILOT_LIVE=1 to run the signed-in Copilot sandbox probe")
-	}
-	if _, err := exec.LookPath("copilot"); err != nil {
-		t.Skip("copilot CLI not found on PATH")
-	}
+func TestIntegrationNativeSandboxCopilotLive(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_SANDBOX_COPILOT_LIVE")
+	testdep.Require(t, "copilot")
 
 	s := requiredNativeSandbox(t)
 	workspace := t.TempDir()

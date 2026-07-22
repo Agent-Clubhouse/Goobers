@@ -93,7 +93,9 @@ func TestDependenciesAreSorted(t *testing.T) {
 	want := []Dependency{
 		{Name: "bash", InstallHint: "install Bash (Debian/Ubuntu: apt-get install bash)"},
 		{Name: "bwrap", InstallHint: "install bubblewrap (Debian/Ubuntu: apt-get install bubblewrap)"},
+		{Name: "copilot", InstallHint: "install and sign in to the GitHub Copilot CLI (https://docs.github.com/copilot/using-github-copilot/using-github-copilot-in-the-command-line)"},
 		{Name: "dirname", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
+		{Name: "dotnet", InstallHint: "install the .NET SDK (https://dotnet.microsoft.com/download)"},
 		{Name: "head", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "mkdir", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "sh", InstallHint: "install a POSIX shell (Debian/Ubuntu: apt-get install dash)"},
@@ -102,6 +104,43 @@ func TestDependenciesAreSorted(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Dependencies() = %#v, want %#v", got, want)
+	}
+}
+
+func TestRequireEnvSkipsWhenAllUnset(t *testing.T) {
+	tb := &fakeTB{}
+	RequireEnv(tb, "GOOBERS_TESTDEP_UNSET_A", "GOOBERS_TESTDEP_UNSET_B")
+
+	for _, want := range []string{"GOOBERS_TESTDEP_UNSET_A", "GOOBERS_TESTDEP_UNSET_B", "opt in"} {
+		if !strings.Contains(tb.skip, want) {
+			t.Errorf("skip message %q does not contain %q", tb.skip, want)
+		}
+	}
+	if tb.fatal != "" {
+		t.Fatalf("fatal=%q, want lenient skip", tb.fatal)
+	}
+}
+
+func TestRequireEnvPassesWhenSet(t *testing.T) {
+	t.Setenv("GOOBERS_TESTDEP_SET", "1")
+	tb := &fakeTB{}
+	RequireEnv(tb, "GOOBERS_TESTDEP_SET")
+
+	if tb.fatal != "" || tb.skip != "" {
+		t.Fatalf("fatal=%q skip=%q, want neither", tb.fatal, tb.skip)
+	}
+	if tb.helpers == 0 {
+		t.Fatal("RequireEnv did not mark itself as a test helper")
+	}
+}
+
+func TestRequireEnvPassesOnFallbackName(t *testing.T) {
+	t.Setenv("GOOBERS_TESTDEP_FALLBACK", "value")
+	tb := &fakeTB{}
+	RequireEnv(tb, "GOOBERS_TESTDEP_PRIMARY_UNSET", "GOOBERS_TESTDEP_FALLBACK")
+
+	if tb.fatal != "" || tb.skip != "" {
+		t.Fatalf("fatal=%q skip=%q, want neither", tb.fatal, tb.skip)
 	}
 }
 
