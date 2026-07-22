@@ -208,11 +208,12 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 				CopilotTokenEnv:      "MODEL_TOKEN",
 				Workflows:            []string{workflow},
 			}
-			if workflow == GuidedWorkflowImplementation {
+			switch workflow {
+			case GuidedWorkflowImplementation:
 				opts.CICommand = []string{"go", "test", "./..."}
 				opts.PullRequestTokenEnv = "PR_TOKEN"
 				opts.RepoPushTokenEnv = "PUSH_TOKEN"
-			} else if workflow == GuidedWorkflowBacklogCuration {
+			case GuidedWorkflowBacklogCuration:
 				opts.PullRequestTokenEnv = "PR_TOKEN"
 			}
 			root := filepath.Join(t.TempDir(), "guided")
