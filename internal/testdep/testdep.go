@@ -27,9 +27,17 @@ var declared = map[string]Dependency{
 		Name:        "bwrap",
 		InstallHint: "install bubblewrap (Debian/Ubuntu: apt-get install bubblewrap)",
 	},
+	"copilot": {
+		Name:        "copilot",
+		InstallHint: "install and sign in to the GitHub Copilot CLI (https://docs.github.com/copilot/using-github-copilot/using-github-copilot-in-the-command-line)",
+	},
 	"dirname": {
 		Name:        "dirname",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
+	},
+	"dotnet": {
+		Name:        "dotnet",
+		InstallHint: "install the .NET SDK (https://dotnet.microsoft.com/download)",
 	},
 	"head": {
 		Name:        "head",
@@ -76,6 +84,21 @@ func Dependencies() []Dependency {
 func Require(t TB, tools ...string) {
 	t.Helper()
 	require(t, exec.LookPath, os.Getenv(StrictEnv) == "1", tools...)
+}
+
+// RequireEnv gates a test behind an explicit environment opt-in: if none of the
+// named variables holds a non-empty value, the test is skipped. This is the
+// second half of the live-smoke double-gate (tool presence via Require, AND an
+// explicit human opt-in via RequireEnv) so live/billable calls never fire in
+// ordinary CI, even in TESTDEP_STRICT mode.
+func RequireEnv(t TB, vars ...string) {
+	t.Helper()
+	for _, name := range vars {
+		if os.Getenv(name) != "" {
+			return
+		}
+	}
+	t.Skipf("integration test skipped: set %s to opt in", strings.Join(vars, " or "))
 }
 
 type lookupFunc func(string) (string, error)

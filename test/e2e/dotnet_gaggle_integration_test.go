@@ -15,7 +15,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -28,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/testdep"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -169,7 +169,7 @@ func newDotnetGaggleRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, run
 // builds and tests through the same machinery, gated only by the per-gaggle CI
 // command (#1009) and, at schedule time, the dotnet@9 runner capability
 // (#1101).
-func TestDotnetServiceGaggleRunsLocalCIGreen(t *testing.T) {
+func TestIntegrationDotnetServiceGaggleRunsLocalCIGreen(t *testing.T) {
 	// Opt-in only. This test runs a real `dotnet test`, which restores NuGet
 	// packages over the network and builds the SDK — a dependency deliberately
 	// kept OUT of the shared `make ci` gate: cloud CI pinning is soft/stretch
@@ -177,12 +177,8 @@ func TestDotnetServiceGaggleRunsLocalCIGreen(t *testing.T) {
 	// zero-tolerance flake budget. It is validated locally on a host that has
 	// the SDK — set GOOBERS_DOTNET_E2E=1 to run it. An evergreen CI leg pinning
 	// the reference gaggle is the tracked stretch follow-up.
-	if os.Getenv("GOOBERS_DOTNET_E2E") == "" {
-		t.Skip("set GOOBERS_DOTNET_E2E=1 to run the .NET gaggle e2e (opt-in; needs the SDK + network)")
-	}
-	if _, err := exec.LookPath("dotnet"); err != nil {
-		t.Skip("dotnet SDK not available")
-	}
+	testdep.RequireEnv(t, "GOOBERS_DOTNET_E2E")
+	testdep.Require(t, "dotnet")
 
 	instanceRoot := t.TempDir()
 	mgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))

@@ -5,21 +5,17 @@ package harness
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/testdep"
 )
 
-func TestCopilotAdapterLiveSmoke(t *testing.T) {
-	if os.Getenv("GOOBERS_COPILOT_LIVE_SMOKE") != "1" {
-		t.Skip("set GOOBERS_COPILOT_LIVE_SMOKE=1 to run against a real, signed-in Copilot CLI")
-	}
-	if _, err := exec.LookPath("copilot"); err != nil {
-		t.Skip("copilot CLI not found on PATH")
-	}
+func TestIntegrationCopilotAdapterLiveSmoke(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_COPILOT_LIVE_SMOKE")
+	testdep.Require(t, "copilot")
 
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "GREETING.txt"), []byte("hello\n"), 0o644); err != nil {
