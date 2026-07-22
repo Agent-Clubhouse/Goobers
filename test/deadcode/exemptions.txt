@@ -62,8 +62,11 @@ github.com/goobers/goobers/internal/telemetry.MemoryExporter.Spans # In-memory t
 github.com/goobers/goobers/internal/telemetry.MemoryExporter.Reset # In-memory telemetry exporter reset retained for cross-package assertions.
 github.com/goobers/goobers/internal/testdep.Require # Test-only dependency guard called from integration-tagged test files.
 github.com/goobers/goobers/internal/testdep.require # Test-only dependency guard helper called from integration-tagged test files.
+github.com/goobers/goobers/internal/testdep.RequireEnv # Test-only environment-variable guard called from integration-tagged live-smoke and envtest files.
 
 # Test seams retained to exercise fail-closed and lifecycle behavior.
+github.com/goobers/goobers/internal/workflow.newFeatureRegistryAgainstReleased # Feature-registry evolution guard (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
+github.com/goobers/goobers/internal/workflow.validateFeatureRegistryEvolution # Feature-registry evolution validator (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
 github.com/goobers/goobers/cmd/goober-runtime.run # Superseded runtime wrapper retained to test the tier-3 reference binary.
 github.com/goobers/goobers/cmd/goobers.reconcileMergeReviewStatusComment # Merge-review reconciliation seam retained for command tests.
 github.com/goobers/goobers/cmd/goobers.refreshBlockedEligibility # Blocked-record refresh seam retained for command tests.
@@ -96,6 +99,7 @@ github.com/goobers/goobers/internal/sandbox.resolveDirectory # Sandbox directory
 # Quarantined, reserved, and extension seams required by the architecture.
 github.com/goobers/goobers/internal/bootstrap.RegisterEngine # Quarantined Temporal V2 worker seam retained per docs/ARCHITECTURE.md section 11.
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
+github.com/goobers/goobers/internal/engine.NewRegistry # Temporal engine registry constructor retained for tier 3, exercised by scheduler and registry package tests.
 github.com/goobers/goobers/internal/engine.Registry.Get # Version-pinned Temporal engine registry seam retained for tier 3.
 github.com/goobers/goobers/internal/engine.Registry.StartInput # Temporal engine run-start seam retained for tier 3.
 github.com/goobers/goobers/internal/engine.Registry.StartInputVersion # Version-pinned Temporal engine run-start seam retained for tier 3.
