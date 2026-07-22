@@ -97,11 +97,25 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("checkpoint-gate not found — loop control cannot route into the agentic chain")
 	}
-	if got := checkpointGate.Branches["pass"]; got != "implement" {
-		t.Errorf("checkpoint-gate pass -> %q, want implement (the whole point of #392)", got)
+	if got := checkpointGate.Branches["pass"]; got != "gather-sibling-context" {
+		t.Errorf("checkpoint-gate pass -> %q, want gather-sibling-context", got)
 	}
 	if got, ok := checkpointGate.Branches["fail"]; !ok || got != "" {
 		t.Errorf("checkpoint-gate fail -> %q, want terminal: an escalated PR must stop, not loop", got)
+	}
+
+	siblings, ok := m.Task("gather-sibling-context")
+	if !ok {
+		t.Fatal("gather-sibling-context stage not found")
+	}
+	if got := siblings.InputsFrom["selectedNumber"]; got != "selectedNumber" {
+		t.Errorf("gather-sibling-context selectedNumber input = %q, want checkpoint's selectedNumber output", got)
+	}
+	if got := siblings.Inputs["resultFile"]; got != "sibling-context.json" {
+		t.Errorf("gather-sibling-context resultFile = %q, want sibling-context.json", got)
+	}
+	if got := siblings.Next; got != "implement" {
+		t.Errorf("gather-sibling-context next = %q, want implement", got)
 	}
 
 	implement, ok := m.Task("implement")

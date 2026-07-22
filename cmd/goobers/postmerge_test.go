@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/goobers/goobers/providers"
 )
 
 // postMergeServerState is a small stateful fake GitHub server purpose-built
@@ -40,6 +43,8 @@ type postMergeServerState struct {
 	issueLabels   map[int][]string
 	issueState    map[int]string
 	issueComments map[int][]string
+	commentIDs    map[int][]int
+	nextCommentID int
 
 	// filesRequests/mergeableRequests count GET /pulls/{n}/files and
 	// /pulls/{n} (mergeable) hits per PR number — #715's cache-reuse tests
@@ -68,6 +73,8 @@ func newPostMergeServerState(mergedNumber int, baseBranch, body string, mergedFi
 		issueLabels:       map[int][]string{},
 		issueState:        map[int]string{},
 		issueComments:     map[int][]string{},
+		commentIDs:        map[int][]int{},
+		nextCommentID:     1,
 		filesRequests:     map[int]int{},
 		mergeableRequests: map[int]int{},
 	}
@@ -109,6 +116,9 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 	t.Helper()
 	prefix := "/repos/" + owner + "/" + repo
 	mux := http.NewServeMux()
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]string{"login": "goobers"})
+	})
 
 	// The merged PR's own poll.
 	mux.HandleFunc(fmt.Sprintf("%s/pulls/%d", prefix, st.mergedNumber), func(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +197,33 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc(prefix+"/issues/comments/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, prefix+"/issues/comments/"))
+		if err != nil {
+			http.Error(w, "bad comment id", http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Body string `json:"body"`
+		}
+		decodeFakeJSON(r, &body)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		for number, ids := range st.commentIDs {
+			for i, commentID := range ids {
+				if commentID == id {
+					st.issueComments[number][i] = body.Body
+					writeFakeJSON(w, map[string]interface{}{"id": id, "body": body.Body})
+					return
+				}
+			}
+		}
+		http.Error(w, "comment not found", http.StatusNotFound)
 	})
 
 	// Per-sibling detail (mergeable) + files + labels.
@@ -277,13 +314,20 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 				Body string `json:"body"`
 			}
 			decodeFakeJSON(r, &body)
+			id := st.nextCommentID
+			st.nextCommentID++
 			st.issueComments[num] = append(st.issueComments[num], body.Body)
-			writeFakeJSON(w, map[string]interface{}{"id": len(st.issueComments[num])})
+			st.commentIDs[num] = append(st.commentIDs[num], id)
+			writeFakeJSON(w, map[string]interface{}{"id": id})
 		case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
 			comments := make([]map[string]interface{}, 0, len(st.issueComments[num]))
+			for len(st.commentIDs[num]) < len(st.issueComments[num]) {
+				st.commentIDs[num] = append(st.commentIDs[num], st.nextCommentID)
+				st.nextCommentID++
+			}
 			for i, comment := range st.issueComments[num] {
 				comments = append(comments, map[string]interface{}{
-					"id": i + 1, "body": comment, "user": map[string]string{"login": "goobers"},
+					"id": st.commentIDs[num][i], "body": comment, "user": map[string]string{"login": "goobers"},
 				})
 			}
 			writeFakeJSON(w, comments)
@@ -359,9 +403,9 @@ func assertLabeledExactly(t *testing.T, got []int, want ...int) {
 // closes issue #42, not on PR-open, on the merge event.
 func TestPostMergeFansOutAndClosesReferencedIssue(t *testing.T) {
 	st := newPostMergeServerState(20, "main", "Implements the thing.\n\nFixes #42",
-		[]string{"shared/pkg.go"}, []int{21, 22})
+		[]string{"portal/src/App.tsx", "shared/pkg.go"}, []int{21, 22})
 	st.setConflicted(21)
-	st.setFiles(22, "shared/pkg.go", "cmd/other.go")
+	st.setFiles(22, "shared/pkg.go", "cmd/other.go", "portal/src/App.tsx")
 	server := newPostMergeServer(t, "your-org", "your-repo", st)
 	root, _ := postMergeEnv(t, server.URL, false, map[string]string{"pullNumber": "20"})
 
@@ -375,6 +419,8 @@ func TestPostMergeFansOutAndClosesReferencedIssue(t *testing.T) {
 	st.mu.Lock()
 	issueState := st.issueState[42]
 	issueComments := append([]string(nil), st.issueComments[42]...)
+	conflictComments := append([]string(nil), st.issueComments[21]...)
+	overlapComments := append([]string(nil), st.issueComments[22]...)
 	st.mu.Unlock()
 	if issueState != "closed" {
 		t.Fatalf("issue #42 state = %q, want closed", issueState)
@@ -384,6 +430,21 @@ func TestPostMergeFansOutAndClosesReferencedIssue(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "labeled 2 pr(s)") {
 		t.Fatalf("stdout = %q, want it to report 2 labeled", stdout)
+	}
+	if len(conflictComments) != 1 {
+		t.Fatalf("PR #21 comments = %v, want one persisted conflict handoff", conflictComments)
+	}
+	conflict, ok := parsePostMergeRemediationHandoff(conflictComments[0])
+	if !ok || conflict.DisplacingPullNumber != 20 || conflict.Reason != "conflicted" {
+		t.Fatalf("PR #21 handoff = %+v, ok=%v; want displacing PR #20 and conflicted reason", conflict, ok)
+	}
+	if len(overlapComments) != 1 {
+		t.Fatalf("PR #22 comments = %v, want one persisted overlap handoff", overlapComments)
+	}
+	overlap, ok := parsePostMergeRemediationHandoff(overlapComments[0])
+	if !ok || overlap.DisplacingPullNumber != 20 ||
+		strings.Join(overlap.OverlappingFiles, ",") != "portal/src/App.tsx,shared/pkg.go" {
+		t.Fatalf("PR #22 handoff = %+v, ok=%v; want displacing PR #20 and both overlapping paths", overlap, ok)
 	}
 }
 
@@ -400,6 +461,53 @@ func TestPostMergeBookkeepingWarningIsBestEffort(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "warning: label pr #21") {
 		t.Fatalf("stderr = %q, want sibling-label warning", stderr)
+	}
+}
+
+func TestPostMergeDoesNotLabelWithoutPersistedHandoff(t *testing.T) {
+	st := newPostMergeServerState(20, "main", "fix", []string{"cmd/a.go"}, []int{21})
+	st.setConflicted(21)
+	st.commentStatus = http.StatusInternalServerError
+	server := newPostMergeServer(t, "your-org", "your-repo", st)
+	root, _ := postMergeEnv(t, server.URL, false, map[string]string{"pullNumber": "20"})
+
+	code, _, stderr := runArgs(t, "post-merge", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q, want successful in-band merge despite bookkeeping warning", code, stderr)
+	}
+	if labeled := st.labeledSnapshot(); len(labeled) != 0 {
+		t.Fatalf("labeled PRs = %v, want none when the remediation handoff could not be persisted", labeled)
+	}
+	if !strings.Contains(stderr, "persist remediation handoff on pr #21") {
+		t.Fatalf("stderr = %q, want handoff persistence warning", stderr)
+	}
+}
+
+func TestPostMergeHandoffIsIdempotentPerDisplacingPR(t *testing.T) {
+	st := newPostMergeServerState(20, "main", "fix", nil, []int{21})
+	server := newPostMergeServer(t, "your-org", "your-repo", st)
+	provider := mergePRTestServer{url: server.URL}.newGitHubProvider("test-token")
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+
+	handoff := postMergeRemediationHandoff{DisplacingPullNumber: 20, Reason: "conflicted"}
+	if err := persistPostMergeRemediationHandoff(context.Background(), provider, repo, 21, "goobers", handoff); err != nil {
+		t.Fatalf("persist first handoff: %v", err)
+	}
+	handoff.Reason = "file-overlap:portal/src/App.tsx"
+	handoff.OverlappingFiles = []string{"portal/src/App.tsx"}
+	if err := persistPostMergeRemediationHandoff(context.Background(), provider, repo, 21, "goobers", handoff); err != nil {
+		t.Fatalf("update handoff: %v", err)
+	}
+
+	st.mu.Lock()
+	comments := append([]string(nil), st.issueComments[21]...)
+	st.mu.Unlock()
+	if len(comments) != 1 {
+		t.Fatalf("PR #21 comments = %v, want one handoff updated in place", comments)
+	}
+	got, ok := parsePostMergeRemediationHandoff(comments[0])
+	if !ok || got.Reason != handoff.Reason || strings.Join(got.OverlappingFiles, ",") != "portal/src/App.tsx" {
+		t.Fatalf("updated handoff = %+v, ok=%v; want latest overlap diagnosis", got, ok)
 	}
 }
 

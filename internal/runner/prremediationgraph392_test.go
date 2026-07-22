@@ -28,10 +28,11 @@ import (
 // that committed nothing would make this test pass through a path the live
 // workflow never takes.
 type remediationGoober struct {
-	t        *testing.T
-	mu       sync.Mutex
-	verdicts []apiv1.VerdictDecision
-	reviewed int
+	t                 *testing.T
+	mu                sync.Mutex
+	verdicts          []apiv1.VerdictDecision
+	reviewed          int
+	sawSiblingContext bool
 	// visitMu/visited are the SHARED dispatch log the deterministic stub also
 	// appends to — an agentic stage goes through a different executor, so
 	// recording only deterministic dispatches would silently omit `implement`,
@@ -48,6 +49,11 @@ func (g *remediationGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelo
 	g.visitMu.Unlock()
 	g.mu.Lock()
 	n := g.reviewed
+	for _, pointer := range env.ContextPointers {
+		if pointer.Name == "gather-sibling-context.artifact[0]" && pointer.Artifact != nil {
+			g.sawSiblingContext = true
+		}
+	}
 	g.mu.Unlock()
 	// A distinct change per pass, so a repass produces a genuinely different
 	// diff (#316's same-diff short-circuit would otherwise escalate).
@@ -170,6 +176,12 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			"continueRemediation": "true", "selectedNumber": "77",
 			"head": rebindBranch, "headSha": "deadbeef",
 		}},
+		runID + ":gather-sibling-context": {
+			status:       apiv1.ResultSuccess,
+			outputs:      map[string]interface{}{"selectedNumber": "77"},
+			artifactName: "sibling-context.json", artifactData: []byte(`{"siblings":[]}`),
+			artifactMediaType: "application/json",
+		},
 		runID + ":local-ci":        {status: apiv1.ResultSuccess},
 		runID + ":push-remediated": {status: apiv1.ResultSuccess},
 		runID + ":park-escalated":  {status: apiv1.ResultSuccess},
@@ -214,9 +226,9 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 // It compiles the real shipped YAML and walks it through the real runner with
 // real git worktrees. A PR with a substantive finding must travel
 // gather-pr-context → rebase-pr → [needs agent] → remediation-checkpoint →
-// [continue] → implement → [review pass] → local-ci → [ci pass] →
-// push-remediated, and complete. Before #392 this run dead-ended at
-// remediation-checkpoint.
+// [continue] → gather-sibling-context → implement → [review pass] → local-ci
+// → [ci pass] → push-remediated, and complete. Before #392 this run dead-ended
+// at remediation-checkpoint.
 func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	goober := &remediationGoober{t: t}
 	res, visited, _ := walkShippedPRRemediation(t, "prr-full", goober)
@@ -229,6 +241,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"gather-pr-context",
 		"rebase-pr",
 		"remediation-checkpoint",
+		"gather-sibling-context",
 		"implement",
 		"local-ci",
 		"push-remediated",
@@ -238,6 +251,9 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	}
 	if goober.reviewed != 1 {
 		t.Errorf("reviewer invoked %d times, want 1 — the agentic review gate must actually run", goober.reviewed)
+	}
+	if !goober.sawSiblingContext {
+		t.Error("implementer context is missing gather-sibling-context.artifact[0]")
 	}
 }
 

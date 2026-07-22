@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -66,6 +68,87 @@ func distinctIssueRefs(pattern *regexp.Regexp, body string) []string {
 
 const needsRemediationLabel = "goobers:needs-remediation"
 
+type siblingTriage struct {
+	Reason           string
+	OverlappingFiles []string
+}
+
+type postMergeRemediationHandoff struct {
+	DisplacingPullNumber int      `json:"displacingPullNumber"`
+	Reason               string   `json:"reason"`
+	OverlappingFiles     []string `json:"overlappingFiles,omitempty"`
+}
+
+var postMergeRemediationPattern = regexp.MustCompile(`(?s)<!-- post-merge-remediation: (.*?) -->`)
+
+func renderPostMergeRemediationHandoff(handoff postMergeRemediationHandoff) (string, error) {
+	data, err := json.Marshal(handoff)
+	if err != nil {
+		return "", fmt.Errorf("marshal post-merge remediation handoff: %w", err)
+	}
+
+	prose := fmt.Sprintf(
+		"**Post-merge remediation handoff**\n\nPull request #%d merged and displaced this PR (`%s`).",
+		handoff.DisplacingPullNumber, handoff.Reason,
+	)
+	if len(handoff.OverlappingFiles) > 0 {
+		prose += "\n\nOverlapping files:"
+		for _, path := range handoff.OverlappingFiles {
+			prose += fmt.Sprintf("\n- `%s`", path)
+		}
+	}
+	return fmt.Sprintf("%s\n\n<!-- post-merge-remediation: %s -->", prose, data), nil
+}
+
+func parsePostMergeRemediationHandoff(body string) (postMergeRemediationHandoff, bool) {
+	match := postMergeRemediationPattern.FindStringSubmatch(body)
+	if match == nil {
+		return postMergeRemediationHandoff{}, false
+	}
+	var handoff postMergeRemediationHandoff
+	if err := json.Unmarshal([]byte(match[1]), &handoff); err != nil {
+		return postMergeRemediationHandoff{}, false
+	}
+	return handoff, true
+}
+
+func persistPostMergeRemediationHandoff(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	prNumber int,
+	author string,
+	handoff postMergeRemediationHandoff,
+) error {
+	body, err := renderPostMergeRemediationHandoff(handoff)
+	if err != nil {
+		return err
+	}
+	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(prNumber))
+	if err != nil {
+		return fmt.Errorf("list existing handoff comments: %w", err)
+	}
+	for _, comment := range comments {
+		existing, ok := parsePostMergeRemediationHandoff(comment.Body)
+		if !isTrustedMergeReviewAuthor(comment.Author, author) || !ok ||
+			existing.DisplacingPullNumber != handoff.DisplacingPullNumber {
+			continue
+		}
+		if err := provider.UpdateComment(ctx, repo, comment.ID, body); err != nil {
+			return fmt.Errorf("update existing handoff comment: %w", err)
+		}
+		return nil
+	}
+	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository: repo,
+		ID:         strconv.Itoa(prNumber),
+		Comment:    body,
+	}); err != nil {
+		return fmt.Errorf("post handoff comment: %w", err)
+	}
+	return nil
+}
+
 // runPostMerge implements the `goobers post-merge` built-in stage kind
 // (issue #361): the two actions that follow a successful merge-review merge.
 //
@@ -90,7 +173,8 @@ const needsRemediationLabel = "goobers:needs-remediation"
 const postMergeHelp = "Usage: goobers post-merge [path]\n\n" +
 	"Run the two actions that follow a successful merge: triage every\n" +
 	"other open PR targeting the same base branch and label ONLY the\n" +
-	"conflicted or file-overlapping ones goobers:needs-remediation (issue\n" +
+	"conflicted or file-overlapping ones goobers:needs-remediation, recording\n" +
+	"the merged PR and overlapping paths on each affected PR (issue\n" +
 	"#715 — a clean disjoint sibling is left untouched), and mark each\n" +
 	"issue the merged PR's body references (Fixes/Closes/Resolves #N)\n" +
 	"done. Declared input: pullNumber (required — the just-merged PR).\n" +
@@ -419,22 +503,44 @@ func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvi
 	// triageSibling treats as an unconditional cache miss — never a failure.
 	cached := loadSiblingCache(layoutFor(root).SchedulerDir(), stderr)
 
+	var handoffAuthor string
+	var handoffAuthorErr error
+	handoffAuthorResolved := false
 	for _, pr := range others {
 		if pr.Number == mergedNumber {
+			continue
+		}
+		triage, shouldLabel := triageSibling(ctx, provider, repo, pr, mergedPaths, cached, stderr)
+		if !shouldLabel {
+			skipped = append(skipped, pr.Number)
+			continue
+		}
+		if !handoffAuthorResolved {
+			handoffAuthor, handoffAuthorErr = provider.AuthenticatedLogin(ctx)
+			handoffAuthorResolved = true
+			if handoffAuthorErr != nil {
+				errs = append(errs, fmt.Errorf("resolve post-merge handoff author: %w", handoffAuthorErr))
+			}
+		}
+		if handoffAuthorErr != nil {
+			continue
+		}
+		handoff := postMergeRemediationHandoff{
+			DisplacingPullNumber: mergedNumber,
+			Reason:               triage.Reason,
+			OverlappingFiles:     triage.OverlappingFiles,
+		}
+		if err := persistPostMergeRemediationHandoff(ctx, provider, repo, pr.Number, handoffAuthor, handoff); err != nil {
+			errs = append(errs, fmt.Errorf("persist remediation handoff on pr #%d (triage: %s): %w", pr.Number, triage.Reason, err))
 			continue
 		}
 		if hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) {
 			continue
 		}
-		reason, shouldLabel := triageSibling(ctx, provider, repo, pr, mergedPaths, cached, stderr)
-		if !shouldLabel {
-			skipped = append(skipped, pr.Number)
-			continue
-		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo, ID: strconv.Itoa(pr.Number), AddLabels: []string{needsRemediationLabel},
 		}); err != nil {
-			errs = append(errs, fmt.Errorf("label pr #%d %s (triage: %s): %w", pr.Number, needsRemediationLabel, reason, err))
+			errs = append(errs, fmt.Errorf("label pr #%d %s (triage: %s): %w", pr.Number, needsRemediationLabel, triage.Reason, err))
 			continue
 		}
 		labeled = append(labeled, pr.Number)
@@ -443,9 +549,9 @@ func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvi
 }
 
 // triageSibling decides whether pr needs the needs-remediation label,
-// returning a short reason string for the caller's error/log context.
-// Checked in order — mergeable first, since a real conflict is reason
-// enough regardless of file overlap:
+// returning the diagnosis and every overlapping path. Mergeability still
+// determines the reason first, but files are gathered too so a conflicted
+// PR's durable handoff does not lose known overlap evidence:
 //
 //  1. Conflicted: GitHub's own computed mergeable=false. A nil (still
 //     computing — normal right after a merge just changed the base)
@@ -462,27 +568,41 @@ func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvi
 // actually conflicts) risks exactly the "two textually-clean-looking PRs
 // break main" failure mode post-merge main CI is the last backstop for, not
 // the first.
-func triageSibling(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, mergedPaths map[string]bool, cached map[string]siblingCacheEntry, stderr io.Writer) (reason string, shouldLabel bool) {
+func triageSibling(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, mergedPaths map[string]bool, cached map[string]siblingCacheEntry, stderr io.Writer) (siblingTriage, bool) {
 	mergeable, merr := provider.PullRequestMergeable(ctx, repo, strconv.Itoa(pr.Number))
 	if merr != nil {
 		pf(stderr, "warning: check mergeable state for pr #%d: %v — conservatively labeling needs-remediation\n", pr.Number, merr)
-		return "mergeable-check-failed", true
-	}
-	if mergeable != nil && !*mergeable {
-		return "conflicted", true
 	}
 
 	files, ferr := siblingFilesForTriage(ctx, provider, repo, pr, cached)
 	if ferr != nil {
 		pf(stderr, "warning: list files for pr #%d: %v — conservatively labeling needs-remediation\n", pr.Number, ferr)
-		return "files-check-failed", true
 	}
+	var overlappingFiles []string
+	overlapSeen := make(map[string]bool)
 	for _, f := range files {
-		if mergedPaths[f] {
-			return fmt.Sprintf("file-overlap:%s", f), true
+		if mergedPaths[f] && !overlapSeen[f] {
+			overlapSeen[f] = true
+			overlappingFiles = append(overlappingFiles, f)
 		}
 	}
-	return "", false
+	sort.Strings(overlappingFiles)
+
+	switch {
+	case merr != nil:
+		return siblingTriage{Reason: "mergeable-check-failed", OverlappingFiles: overlappingFiles}, true
+	case mergeable != nil && !*mergeable:
+		return siblingTriage{Reason: "conflicted", OverlappingFiles: overlappingFiles}, true
+	case ferr != nil:
+		return siblingTriage{Reason: "files-check-failed"}, true
+	case len(overlappingFiles) > 0:
+		return siblingTriage{
+			Reason:           "file-overlap:" + strings.Join(overlappingFiles, ","),
+			OverlappingFiles: overlappingFiles,
+		}, true
+	default:
+		return siblingTriage{}, false
+	}
 }
 
 // siblingFilesForTriage returns pr's touched files, reusing cached's entry
