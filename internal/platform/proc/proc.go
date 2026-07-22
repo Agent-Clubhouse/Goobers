@@ -31,10 +31,17 @@ func Configure(cmd *exec.Cmd) {
 // own error wrapping around this call.
 func Start(cmd *exec.Cmd) (*Tree, error) {
 	Configure(cmd)
+	prepareStart(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return newTree(cmd)
+	tree, err := newTree(cmd)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, err
+	}
+	return tree, nil
 }
 
 // Kill hard-terminates every process in the tree — on unix SIGKILL to the

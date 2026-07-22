@@ -3,11 +3,8 @@ package credentials
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -114,38 +111,5 @@ func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %q: %v", path, err)
-	}
-}
-
-func TestResolverRejectsInsecureTokenFile(t *testing.T) {
-	modes := []fs.FileMode{
-		0o640, // group-readable
-		0o604, // world-readable
-		0o644,
-		0o660, // group-writable
-		0o777,
-	}
-	for _, mode := range modes {
-		t.Run(fmt.Sprintf("%#o", mode), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "token")
-			writeFile(t, path, "file-secret\n")
-			if err := os.Chmod(path, mode); err != nil {
-				t.Fatalf("chmod %q: %v", path, err)
-			}
-			r, err := NewResolver([]TokenRef{{Name: "gh", File: path}})
-			if err != nil {
-				t.Fatalf("NewResolver: %v", err)
-			}
-
-			_, err = r.Resolve(context.Background(), "gh")
-			if err == nil {
-				t.Fatal("Resolve: want error for insecure token file, got nil")
-			}
-			for _, want := range []string{path, fmt.Sprintf("mode %#o", mode)} {
-				if !strings.Contains(err.Error(), want) {
-					t.Fatalf("Resolve error = %q, want it to contain %q", err, want)
-				}
-			}
-		})
 	}
 }

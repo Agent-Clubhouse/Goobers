@@ -117,20 +117,19 @@ jobs:
       - name: Run strict integration tier
         run: make test-integration-strict
 
-  # Windows joins CI as a REQUIRED, GREEN compile smoke (#633) — deliberately not
+  # Windows joins CI as a REQUIRED, GREEN runtime smoke (#633) — deliberately not
   # the old advisory `continue-on-error` `windows-smoke` job (#928) that #960 had
   # to remove: that one published a red check the Goobers merge flow (which has no
   # notion of an advisory check, see #961) read as a hard block. This one is
   # different in kind — it actually passes. It cross-checks that the whole tree
-  # BUILDS and VETS for Windows (native windows/amd64 on a real runner), which is
+  # builds and vets for Windows, then runs focused native-runtime regressions,
   # green as of #623's proc Job-Object impl + the build-tags on the unix-only
   # commands/tests. That makes it safe to gate on: it only reds on a real,
-  # fixable Windows compile break — the drift #1091 exists to stop — never as an
-  # expected-red. It is compile-only (build + vet, no tests): upgrading it to the
-  # full `make ci` (running the suite on Windows) is gated on #630 and tracked in
-  # #633's definition of done.
+  # fixable Windows regression — never as an expected-red. The complete suite
+  # remains a later step; these tests exercise the platform seams and Windows
+  # runtime paths that compile-only coverage previously missed.
   windows-smoke:
-    name: windows compile smoke (go build · go vet)
+    name: windows gate (build · vet · runtime smoke)
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -156,6 +155,27 @@ jobs:
 
       - name: go vet (windows/amd64)
         run: go vet ./...
+
+      - name: Windows platform runtime
+        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
+
+      - name: Windows credential files
+        run: go test ./internal/credentials -run 'TestResolverResolvesFromOwnerOnlyFile'
+
+      - name: Windows containment and journals
+        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
+
+      - name: Windows worktree and event stream
+        env:
+          GIT_CONFIG_COUNT: "2"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+          GIT_CONFIG_KEY_1: core.safecrlf
+          GIT_CONFIG_VALUE_1: "false"
+        run: go test ./internal/worktree ./internal/httpapi -run 'TestManager_Create_ExcludesHarnessScratch|TestDefinitionInvalidationFollowsExplicitReadModelCommit|TestSyncObservedFileDoesNotBlockAtomicReplacement'
+
+      - name: Windows CLI runtime
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile'
 
   shipped-workflows:
     name: shipped workflow contracts
@@ -193,7 +213,7 @@ jobs:
             exit 1
           fi
           if [ "$WINDOWS_RESULT" != "success" ]; then
-            echo "The windows compile smoke (go build + go vet) did not pass."
+            echo "The Windows build/vet/runtime gate did not pass."
             exit 1
           fi
           if [ "$SHIPPED_WORKFLOWS_RESULT" != "success" ]; then

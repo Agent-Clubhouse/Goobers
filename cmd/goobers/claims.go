@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 const (
@@ -462,7 +463,7 @@ func writeClaimAdminRequest(schedulerDir string, req claimAdminRequest) (string,
 	}
 	requestID := strings.TrimPrefix(filepath.Base(tmpPath), ".pending-")
 	finalPath := filepath.Join(reqDir, requestID+claimAdminRequestSuffix)
-	if err := os.Rename(tmpPath, finalPath); err != nil {
+	if err := durability.ReplaceFile(tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("claims delegate: publish request: %w", err)
 	}
@@ -498,8 +499,8 @@ func pollClaimAdminResponse(ctx context.Context, schedulerDir, requestID string,
 
 func sweepPendingClaimAdminRequests(schedulerDir string, log *journal.InstanceLog, now func() time.Time) error {
 	reqDir := filepath.Join(schedulerDir, pendingClaimsDir)
-	entries, err := os.ReadDir(reqDir)
-	if os.IsNotExist(err) {
+	entries, exists, err := readDirectory(reqDir)
+	if !exists {
 		return nil
 	}
 	if err != nil {

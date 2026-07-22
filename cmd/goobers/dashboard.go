@@ -22,7 +22,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/goobers/goobers/internal/httpapi"
@@ -243,7 +242,7 @@ func listenDashboard(port dashboardPort) (net.Listener, error) {
 		if !port.auto {
 			return nil, fmt.Errorf("dashboard port %d is unavailable: %w; use --port=auto to try the next available port", number, err)
 		}
-		if !errors.Is(err, syscall.EADDRINUSE) {
+		if !dashboardAddressInUse(err) {
 			return nil, fmt.Errorf("listen for dashboard on %s: %w", address, err)
 		}
 	}

@@ -267,8 +267,8 @@ func containedPath(root, rel string) (string, error) {
 	if rel == "" {
 		return "", fmt.Errorf("%w: empty path", ErrPathEscape)
 	}
-	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("%w: %q is absolute", ErrPathEscape, rel)
+	if rootedOrVolumeBound(rel) {
+		return "", fmt.Errorf("%w: %q is absolute or volume-bound", ErrPathEscape, rel)
 	}
 	clean := filepath.Clean(rel)
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
@@ -278,4 +278,13 @@ func containedPath(root, rel string) (string, error) {
 		return clean, nil
 	}
 	return filepath.Join(root, clean), nil
+}
+
+func rootedOrVolumeBound(path string) bool {
+	return filepath.IsAbs(path) ||
+		filepath.VolumeName(path) != "" ||
+		strings.HasPrefix(path, "/") ||
+		strings.HasPrefix(path, `\`) ||
+		(len(path) >= 2 && path[1] == ':' &&
+			((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z')))
 }

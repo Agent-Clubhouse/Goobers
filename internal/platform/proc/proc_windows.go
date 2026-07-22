@@ -42,17 +42,22 @@ func configure(cmd *exec.Cmd) {
 	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP
 }
 
+// prepareStart suspends the child at creation so it cannot spawn descendants
+// before newTree assigns it to the Job Object. Configure-only detached callers
+// intentionally do not receive these flags.
+func prepareStart(cmd *exec.Cmd) {
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW
+}
+
 // newTree creates a Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, assigns
 // the just-started child to it, and returns a Tree that terminates the whole
 // job on kill. KILL_ON_JOB_CLOSE is the crash-safety guarantee the unix session
 // gives for free: if the daemon dies, the OS closes the job handle and reaps
 // every process still in the tree.
 //
-// Assignment happens immediately after Start rather than via a suspended
-// create-then-resume (Go's exec does not expose the child's thread handle to
-// resume). A grandchild spawned in the microseconds before assignment could
-// escape the job — the same best-effort caveat the unix impl notes for a child
-// that calls setsid itself.
+// Start creates the child suspended. Assignment therefore completes before the
+// primary thread runs and can spawn descendants; resumeProcess releases it only
+// after the Job Object owns the process.
 func newTree(cmd *exec.Cmd) (*Tree, error) {
 	t := &Tree{pid: cmd.Process.Pid}
 
@@ -80,12 +85,17 @@ func newTree(cmd *exec.Cmd) (*Tree, error) {
 		_ = windows.CloseHandle(job)
 		return nil, fmt.Errorf("proc: open child %d: %w", t.pid, err)
 	}
-	defer windows.CloseHandle(proc)
+	defer func() { _ = windows.CloseHandle(proc) }()
 	if err := windows.AssignProcessToJobObject(job, proc); err != nil {
 		_ = windows.CloseHandle(job)
 		return nil, fmt.Errorf("proc: assign child %d to job: %w", t.pid, err)
 	}
 	t.job = job
+	if err := resumeProcess(t.pid); err != nil {
+		_ = windows.CloseHandle(job)
+		t.job = 0
+		return nil, err
+	}
 
 	// The seam has no explicit Close (a unix tree owns no resource), so release
 	// the job handle when the Tree is dropped rather than leaking one handle per
@@ -94,6 +104,46 @@ func newTree(cmd *exec.Cmd) (*Tree, error) {
 	// already exited.
 	runtime.SetFinalizer(t, func(t *Tree) { _ = windows.CloseHandle(t.job) })
 	return t, nil
+}
+
+func resumeProcess(pid int) error {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return fmt.Errorf("proc: snapshot child threads: %w", err)
+	}
+	defer func() { _ = windows.CloseHandle(snapshot) }()
+
+	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
+	found := false
+	resumed := false
+	for err = windows.Thread32First(snapshot, &entry); err == nil; err = windows.Thread32Next(snapshot, &entry) {
+		if entry.OwnerProcessID != uint32(pid) {
+			continue
+		}
+		found = true
+		thread, openErr := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, entry.ThreadID)
+		if openErr != nil {
+			return fmt.Errorf("proc: open child thread: %w", openErr)
+		}
+		previousSuspendCount, resumeErr := windows.ResumeThread(thread)
+		_ = windows.CloseHandle(thread)
+		if resumeErr != nil {
+			return fmt.Errorf("proc: resume child thread: %w", resumeErr)
+		}
+		if previousSuspendCount > 0 {
+			resumed = true
+		}
+	}
+	if err != nil && !errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+		return fmt.Errorf("proc: enumerate child threads: %w", err)
+	}
+	if !found {
+		return fmt.Errorf("proc: child process %d has no thread", pid)
+	}
+	if !resumed {
+		return fmt.Errorf("proc: child process %d has no suspended thread", pid)
+	}
+	return nil
 }
 
 // kill hard-terminates every process in the tree via TerminateJobObject, then
@@ -121,7 +171,7 @@ func terminatePID(pid int) error {
 	if err != nil {
 		return fmt.Errorf("proc: open %d for terminate: %w", pid, err)
 	}
-	defer windows.CloseHandle(h)
+	defer func() { _ = windows.CloseHandle(h) }()
 	if err := windows.TerminateProcess(h, 1); err != nil {
 		return fmt.Errorf("proc: terminate %d: %w", pid, err)
 	}
@@ -155,7 +205,7 @@ func alive(pid int) bool {
 		}
 		return true
 	}
-	defer windows.CloseHandle(h)
+	defer func() { _ = windows.CloseHandle(h) }()
 	var code uint32
 	if err := windows.GetExitCodeProcess(h, &code); err != nil {
 		return true

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sync"
 	"time"
@@ -176,7 +177,7 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	// the scrubbed digests.
 	id.Inputs = id.Inputs[:0:0]
 	for _, name := range sortedKeys(inputs) {
-		ref, err := writeContent(dir, filepath.Join(dirInputs, name), inputs[name], cfg.scrubber)
+		ref, err := writeContent(dir, path.Join(dirInputs, name), inputs[name], cfg.scrubber)
 		if err != nil {
 			releaseRunLock(lock)
 			return nil, fmt.Errorf("journal: snapshot input %q: %w", name, err)

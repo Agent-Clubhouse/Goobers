@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // runcancel.go implements #831's live `goobers run cancel <id>`. Unlike
@@ -101,7 +102,7 @@ func writeCancelRequest(schedulerDir string, req cancelRequest) (string, error) 
 	}
 	requestID := strings.TrimPrefix(filepath.Base(tmpPath), ".pending-")
 	finalPath := filepath.Join(reqDir, requestID+cancelRequestSuffix)
-	if err := os.Rename(tmpPath, finalPath); err != nil {
+	if err := durability.ReplaceFile(tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("cancel delegate: publish request: %w", err)
 	}

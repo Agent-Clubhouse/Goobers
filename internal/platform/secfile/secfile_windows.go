@@ -12,8 +12,8 @@ import (
 )
 
 // verifyPrivate reads the file's security descriptor and rejects the file
-// unless its DACL grants access only to the owner and the tolerated system
-// principals SYSTEM and Administrators (see the package doc for the rationale).
+// unless its DACL grants access only to the owner, current user, and tolerated
+// system principals SYSTEM and Administrators (see the package doc).
 // Unix mode bits are never consulted — on NTFS they are synthesized from the
 // read-only attribute and cannot express real access. Fails closed on any
 // error reading or parsing the descriptor.
@@ -79,9 +79,15 @@ func verifyPrivate(path string) error {
 }
 
 // toleratedSIDs is the set of trustees permitted in a private file's DACL: the
-// file's owner plus the always-privileged local principals NT AUTHORITY\SYSTEM
-// and BUILTIN\Administrators.
+// file's owner and current user plus the always-privileged local principals
+// NT AUTHORITY\SYSTEM and BUILTIN\Administrators. Corporate Windows policy can
+// make Administrators the owner while granting the creating user an explicit
+// ACE, so owner alone does not reliably identify the user who must read it.
 func toleratedSIDs(owner *windows.SID) ([]*windows.SID, error) {
+	currentUser, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, err
+	}
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
 		return nil, err
@@ -90,7 +96,7 @@ func toleratedSIDs(owner *windows.SID) ([]*windows.SID, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []*windows.SID{owner, system, admins}, nil
+	return []*windows.SID{owner, currentUser.User.Sid, system, admins}, nil
 }
 
 func sidIn(sid *windows.SID, set []*windows.SID) bool {

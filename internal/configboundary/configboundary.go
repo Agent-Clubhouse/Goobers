@@ -44,7 +44,7 @@ func ValidateDocsRoot(root string) error {
 	if trimmed == "" {
 		return fmt.Errorf("%w: empty", ErrInvalidDocsRoot)
 	}
-	if filepath.IsAbs(trimmed) {
+	if rootedOrVolumeBound(trimmed) {
 		return fmt.Errorf("%w: %q is absolute (roots are repo-relative)", ErrInvalidDocsRoot, root)
 	}
 	clean := filepath.Clean(strings.Trim(trimmed, "/"))
@@ -72,6 +72,9 @@ func ValidateDocsRoot(root string) error {
 // has nothing to confine.
 func Confine(configRoot string, changed []string) error {
 	root := normalizeConfigRoot(configRoot)
+	if root == "" && !wholeRepoConfigRoot(configRoot) {
+		return fmt.Errorf("%w: invalid configured root %q", ErrOutsideConfigRoot, configRoot)
+	}
 	for _, p := range changed {
 		if err := pathWithinRoot(root, p); err != nil {
 			return err
@@ -136,13 +139,12 @@ func pathWithinAnyRoot(roots []string, p string) error {
 }
 
 // normalizeConfigRoot cleans a configured root to a comparable, repo-relative
-// form. Empty / slash-only normalizes to "" (whole-repo). A root that itself
-// escapes (absolute, ".", or "..") also normalizes to "" so a bogus root can
-// never be treated as a real subtree — callers get whole-repo containment, the
-// safe floor, rather than a widened boundary.
+// form. Empty / slash-only normalizes to "" (whole-repo). Invalid roots also
+// normalize to "", but Confine distinguishes them with wholeRepoConfigRoot and
+// fails closed rather than widening the boundary.
 func normalizeConfigRoot(configRoot string) string {
 	spaced := strings.TrimSpace(configRoot)
-	if filepath.IsAbs(spaced) {
+	if rootedOrVolumeBound(spaced) {
 		return ""
 	}
 	trimmed := strings.Trim(spaced, "/")
@@ -157,6 +159,11 @@ func normalizeConfigRoot(configRoot string) string {
 	return clean
 }
 
+func wholeRepoConfigRoot(configRoot string) bool {
+	spaced := strings.TrimSpace(configRoot)
+	return strings.Trim(spaced, "/") == ""
+}
+
 // pathWithinRoot returns nil only when the repo-relative path p is inside root.
 // root is assumed normalized ("" = whole repo). p is refused when empty,
 // absolute, or resolving outside root via "..".
@@ -164,8 +171,8 @@ func pathWithinRoot(root, p string) error {
 	if strings.TrimSpace(p) == "" {
 		return fmt.Errorf("%w: empty path", ErrOutsideConfigRoot)
 	}
-	if filepath.IsAbs(p) {
-		return fmt.Errorf("%w: %q is absolute", ErrOutsideConfigRoot, p)
+	if rootedOrVolumeBound(p) {
+		return fmt.Errorf("%w: %q is absolute or volume-bound", ErrOutsideConfigRoot, p)
 	}
 	clean := filepath.Clean(p)
 	// Reject escape above the repo regardless of root.
@@ -180,4 +187,13 @@ func pathWithinRoot(root, p string) error {
 		return fmt.Errorf("%w: %q is outside config root %q", ErrOutsideConfigRoot, p, root)
 	}
 	return nil
+}
+
+func rootedOrVolumeBound(path string) bool {
+	return filepath.IsAbs(path) ||
+		filepath.VolumeName(path) != "" ||
+		strings.HasPrefix(path, "/") ||
+		strings.HasPrefix(path, `\`) ||
+		(len(path) >= 2 && path[1] == ':' &&
+			((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z')))
 }

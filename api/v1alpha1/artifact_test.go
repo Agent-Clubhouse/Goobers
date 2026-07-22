@@ -52,7 +52,7 @@ func TestResolveDetectsTampering(t *testing.T) {
 
 func TestArtifactPathContainment(t *testing.T) {
 	root := t.TempDir()
-	for _, bad := range []string{"../escape.txt", "/etc/passwd", "a/../../b", ""} {
+	for _, bad := range []string{"../escape.txt", "/etc/passwd", `\Windows\system.ini`, `C:\Windows\system.ini`, `\\server\share\file`, "a/../../b", ""} {
 		if _, err := WriteArtifact(root, bad, []byte("x"), ""); !errors.Is(err, ErrPathEscape) {
 			t.Errorf("WriteArtifact(%q): got %v, want ErrPathEscape", bad, err)
 		}

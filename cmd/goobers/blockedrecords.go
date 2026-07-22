@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -373,7 +374,7 @@ func saveBlockedRecords(path string, recs map[string]blockedRecord) error {
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := durability.ReplaceFile(tmp, path); err != nil {
 		return fmt.Errorf("rename %s: %w", tmp, err)
 	}
 	return nil

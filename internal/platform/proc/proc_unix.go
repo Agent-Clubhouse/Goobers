@@ -33,6 +33,8 @@ func configure(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setsid = true
 }
 
+func prepareStart(*exec.Cmd) {}
+
 // newTree captures the started process's pid, which — because configure made it
 // a session leader — is also its process-group id.
 func newTree(cmd *exec.Cmd) (*Tree, error) {

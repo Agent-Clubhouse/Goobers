@@ -105,6 +105,7 @@ var transientMessageFragments = []string{
 	"connection refused",
 	"connection reset",
 	"connection timed out",
+	"actively refused",
 	"i/o timeout",
 	"network is unreachable",
 	"no such host",

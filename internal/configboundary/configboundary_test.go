@@ -59,6 +59,9 @@ func TestConfineRejectsEscapesRegardlessOfRoot(t *testing.T) {
 		{"", "manifest.yaml", false},
 		{"", "../outside.yaml", true},
 		{"", "/etc/passwd", true},
+		{"", `\root-relative`, true},
+		{"", `C:\absolute`, true},
+		{"", `\\server\share`, true},
 		{"", "", true},
 		{"selfhost", "", true},
 		{"selfhost", "../x", true},
@@ -105,6 +108,17 @@ func TestNormalizeConfigRootRefusesBogusRoots(t *testing.T) {
 	}
 	if got := normalizeConfigRoot("selfhost/"); got != "selfhost" {
 		t.Errorf("normalizeConfigRoot(%q) = %q; want %q", "selfhost/", got, "selfhost")
+	}
+}
+
+func TestConfineRejectsInvalidNonemptyRoot(t *testing.T) {
+	for _, root := range []string{".", "..", "../up", "/abs/root", `\rooted`, `C:\rooted`, `\\server\share`} {
+		if err := Confine(root, []string{"internal/runner/run.go"}); !errors.Is(err, ErrOutsideConfigRoot) {
+			t.Errorf("Confine(%q) = %v; want ErrOutsideConfigRoot", root, err)
+		}
+	}
+	if err := Confine("/", []string{"manifest.yaml"}); err != nil {
+		t.Fatalf("slash-only whole-repo root = %v", err)
 	}
 }
 
