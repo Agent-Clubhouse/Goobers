@@ -229,7 +229,7 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 			t.Errorf("CI workflow must invoke make %s so the job is locally reproducible", target)
 		}
 	}
-	if !strings.Contains(workflow, "needs: [ci, windows-smoke, vulnerability-scan]") {
+	if !strings.Contains(workflow, "needs: [ci, windows-smoke, shipped-workflows, vulnerability-scan]") {
 		t.Error("required CI aggregate must fail when the vulnerability scan fails")
 	}
 }
