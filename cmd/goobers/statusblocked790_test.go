@@ -43,6 +43,22 @@ func TestStatusReportsIssuesParkedOnLearnedDependencies(t *testing.T) {
 				"#511 blocked by #445",
 			},
 		},
+		{
+			name: "scoped pull request key",
+			records: func() map[string]blockedRecord {
+				repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+				return map[string]blockedRecord{
+					blockedRecordKey(repo, "pr/1058"): {
+						Repository: repo,
+						Blockers:   []string{"1076", "1044"},
+					},
+				}
+			}(),
+			want: []string{
+				"Issues parked on learned dependencies: 1",
+				"PR #1058 blocked by #1044, #1076",
+			},
+		},
 	}
 
 	for _, tt := range tests {
