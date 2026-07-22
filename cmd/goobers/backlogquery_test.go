@@ -505,38 +505,54 @@ func TestBacklogQueryRejectsNonPositiveLeaseDuration(t *testing.T) {
 	}
 }
 
-// TestBacklogQueryReleaseUnblocksAFollowUpClaim is issue #234's core
-// acceptance criterion at the CLI level: immediately after a curation run
-// releases its claim, an implementation run can claim the same item — no
-// residual lease survives, and no provider/credential access is needed for
-// --release (a pure ledger operation, unlike --claim).
+// TestBacklogQueryReleaseUnblocksAFollowUpClaim covers #234 and #1003 together:
+// a real curation claim adds both the authoritative ledger lease and its
+// provider mirror; release removes both while preserving curation's ready label,
+// and an implementation run can immediately claim the item.
 func TestBacklogQueryReleaseUnblocksAFollowUpClaim(t *testing.T) {
 	root := initDemo(t)
 	schedulerDir := filepath.Join(root, "scheduler")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Fix the bug", "goobers:approved")
 
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Seed the claim curation's own query-backlog stage would have made.
-	if ok, _, err := ledger.Claim("7", "curation-run", "backlog-curation", DefaultClaimLease); err != nil || !ok {
-		t.Fatalf("seed curation claim: ok=%v err=%v", ok, err)
-	}
-
-	t.Setenv("GOOBERS_RUN_ID", "curation-run")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
 	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", "goobers:ready,goobers:needs-human")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", "20")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")
 	t.Chdir(t.TempDir())
 
-	code, stdout, stderr := runArgs(t, "backlog-query", "--release", root)
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	server.mu.Lock()
+	server.issues[7].labels = append(server.issues[7].labels, "goobers:ready")
+	claimedLabels := append([]string(nil), server.issues[7].labels...)
+	server.mu.Unlock()
+	if !hasAnyLabel(claimedLabels, []string{"goobers:claimed"}) {
+		t.Fatalf("labels after claim = %v, want goobers:claimed", claimedLabels)
+	}
+
+	code, stdout, stderr = runArgs(t, "backlog-query", "--release", root)
 	if code != 0 {
 		t.Fatalf("release: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "released 7") {
 		t.Fatalf("stdout = %q, want a mention of the released item", stdout)
 	}
+	server.mu.Lock()
+	releasedLabels := append([]string(nil), server.issues[7].labels...)
+	server.mu.Unlock()
+	if hasAnyLabel(releasedLabels, []string{"goobers:claimed"}) {
+		t.Fatalf("labels after release = %v, want goobers:claimed removed", releasedLabels)
+	}
+	if !hasAnyLabel(releasedLabels, []string{"goobers:ready"}) {
+		t.Fatalf("labels after release = %v, want curator's goobers:ready preserved", releasedLabels)
+	}
 
-	// No residual lease: ForRun finds nothing for the curation run, and an
-	// implementation run can now claim the exact item curation just readied.
+	// No residual lease: ForRun finds nothing for the curation run.
 	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
 	if err != nil {
 		t.Fatal(err)
@@ -544,14 +560,93 @@ func TestBacklogQueryReleaseUnblocksAFollowUpClaim(t *testing.T) {
 	if _, held := reopened.ForRun("curation-run"); held {
 		t.Fatal("curation run should hold no claim after release")
 	}
-	ok, holder, err := reopened.Claim("7", "impl-run", "implementation", DefaultClaimLease)
-	if err != nil || !ok || holder != "impl-run" {
-		t.Fatalf("implementation run should be able to claim the released item: ok=%v holder=%s err=%v", ok, holder, err)
+
+	// Exercise the real follow-up claim so the provider breadcrumb protocol is
+	// covered as well as the ledger. The implementation selector requires the
+	// ready label that curation added above.
+	t.Setenv("GOOBERS_RUN_ID", "impl-run")
+	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", "goobers/status:in-review")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", "1")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-item.json")
+	t.Chdir(t.TempDir())
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("implementation claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	reopened, err = localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, held := reopened.Lookup("7")
+	if !held || entry.RunID != "impl-run" {
+		t.Fatalf("implementation ledger claim = %+v, held=%v; want impl-run", entry, held)
+	}
+	server.mu.Lock()
+	implementationLabels := append([]string(nil), server.issues[7].labels...)
+	server.mu.Unlock()
+	if !hasAnyLabel(implementationLabels, []string{"goobers:claimed"}) {
+		t.Fatalf("labels after implementation claim = %v, want goobers:claimed restored", implementationLabels)
+	}
+}
+
+func TestBacklogQueryReleaseReconcilesHistoricalProviderClaim(t *testing.T) {
+	root := initDemo(t)
+	schedulerDir := filepath.Join(root, "scheduler")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Fix the bug", "goobers:approved", "goobers:claimed")
+	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier Goobers version.")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", "goobers:ready,goobers:needs-human")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", "20")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("claim over historical marker: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, held := ledger.ForRun("curation-run")
+	if !held || entry.ItemID != "7" {
+		t.Fatalf("curation ledger claim = %+v, held=%v; want item 7", entry, held)
+	}
+
+	code, stdout, stderr = runArgs(t, "backlog-query", "--release", root)
+	if code != 0 {
+		t.Fatalf("release historical marker: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := reopened.ForRun("curation-run"); held {
+		t.Fatal("curation run should hold no claim after reconciling release")
+	}
+	server.mu.Lock()
+	labels := append([]string(nil), server.issues[7].labels...)
+	server.mu.Unlock()
+	if hasAnyLabel(labels, []string{"goobers:claimed"}) {
+		t.Fatalf("labels after historical release = %v, want goobers:claimed removed", labels)
 	}
 }
 
 func TestBacklogQueryReleaseReleasesAllClaims(t *testing.T) {
 	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	for _, itemID := range []int{7, 8, 9, 10} {
+		server.addIssue(itemID, "Claimed item", "goobers:claimed")
+	}
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+
 	ledgerPath := filepath.Join(root, "scheduler", claimLedgerFileName)
 	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
 	if err != nil {
@@ -566,8 +661,6 @@ func TestBacklogQueryReleaseReleasesAllClaims(t *testing.T) {
 		t.Fatalf("seed other run claim: ok=%v err=%v", ok, err)
 	}
 
-	t.Setenv("GOOBERS_RUN_ID", "curation-run")
-	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
 	t.Chdir(t.TempDir())
 
 	code, stdout, stderr := runArgs(t, "backlog-query", "--release", root)
@@ -593,6 +686,47 @@ func TestBacklogQueryReleaseReleasesAllClaims(t *testing.T) {
 	}
 	if len(entries) != 1 || entries["10"].RunID != "other-run" {
 		t.Fatalf("claim ledger = %+v, want only item 10 held by other-run", entries)
+	}
+	server.mu.Lock()
+	for _, itemID := range []int{7, 8, 9} {
+		if hasAnyLabel(server.issues[itemID].labels, []string{"goobers:claimed"}) {
+			t.Errorf("issue %d labels = %v, want goobers:claimed removed", itemID, server.issues[itemID].labels)
+		}
+	}
+	otherLabels := append([]string(nil), server.issues[10].labels...)
+	server.mu.Unlock()
+	if !hasAnyLabel(otherLabels, []string{"goobers:claimed"}) {
+		t.Fatalf("other run's issue labels = %v, want goobers:claimed preserved", otherLabels)
+	}
+}
+
+func TestBacklogQueryReleaseRetainsClaimWhenProviderCleanupFails(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+
+	ledgerPath := filepath.Join(root, "scheduler", claimLedgerFileName)
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.Claim("7", "curation-run", "backlog-curation", DefaultClaimLease); err != nil || !ok {
+		t.Fatalf("seed curation claim: ok=%v err=%v", ok, err)
+	}
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "backlog-query", "--release", root)
+	if code != 1 || !strings.Contains(stderr, "release provider claim marker for 7") {
+		t.Fatalf("release: code = %d, stderr = %q, want provider cleanup failure", code, stderr)
+	}
+	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, held := reopened.Lookup("7")
+	if !held || entry.RunID != "curation-run" {
+		t.Fatalf("claim after failed cleanup = %+v, held=%v; want retained for retry", entry, held)
 	}
 }
 

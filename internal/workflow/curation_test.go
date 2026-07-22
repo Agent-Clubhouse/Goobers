@@ -84,6 +84,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if release.Type != apiv1.TaskDeterministic {
 		t.Errorf("release-claim.type = %q, want deterministic", release.Type)
 	}
+	if len(release.Capabilities) != 1 || release.Capabilities[0] != "github:issues:write" {
+		t.Errorf("release-claim capabilities = %v, want exactly [github:issues:write]", release.Capabilities)
+	}
 
 	// Capability grant is issues-only (issue #25 scope: "no repo access").
 	if len(curator.Spec.Capabilities) != 1 || curator.Spec.Capabilities[0] != "github:issues:write" {
@@ -91,7 +94,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
-	const wantDigest = "sha256:3bddb18b564a7a5c59f5d08af8751d1530c39f2301f092ef83fb4a6507fc8613"
+	const wantDigest = "sha256:1b89582386b7f275632b16934b7bc46320267b5e8c8942f81683d4a45ce4350f"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
