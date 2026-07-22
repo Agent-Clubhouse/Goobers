@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 // FeatureID is the stable, author-facing name of one DSL capability.
@@ -28,9 +29,17 @@ const (
 // Feature records a DSL feature's current support level and the app version in
 // which it entered that level.
 type Feature struct {
-	ID           FeatureID    `json:"id"`
-	Level        SupportLevel `json:"level"`
-	SinceVersion string       `json:"sinceVersion"`
+	ID           FeatureID           `json:"id"`
+	Level        SupportLevel        `json:"level"`
+	SinceVersion string              `json:"sinceVersion"`
+	DSLVersions  []DSLFeatureSupport `json:"dslVersions,omitempty"`
+}
+
+// DSLFeatureSupport records a feature's support level in one DSL version.
+// Absence means that version does not contain the feature.
+type DSLFeatureSupport struct {
+	Version string       `json:"version"`
+	Level   SupportLevel `json:"level"`
 }
 
 // FeatureRegistry is an immutable lookup table of DSL feature support.
@@ -53,10 +62,25 @@ func NewFeatureRegistry(features []Feature) (FeatureRegistry, error) {
 		if strings.TrimSpace(feature.SinceVersion) == "" {
 			return FeatureRegistry{}, fmt.Errorf("DSL feature %q has an empty since-version", feature.ID)
 		}
+		seenVersions := make(map[string]struct{}, len(feature.DSLVersions))
+		for _, version := range feature.DSLVersions {
+			if _, ok := supportmatrix.GetDSL().Lookup(version.Version); !ok {
+				return FeatureRegistry{}, fmt.Errorf("DSL feature %q references unknown DSL version %q", feature.ID, version.Version)
+			}
+			switch version.Level {
+			case SupportPreview, SupportGA, SupportDeprecated, SupportRemoved:
+			default:
+				return FeatureRegistry{}, fmt.Errorf("DSL feature %q has unknown support level %q for DSL version %q", feature.ID, version.Level, version.Version)
+			}
+			if _, exists := seenVersions[version.Version]; exists {
+				return FeatureRegistry{}, fmt.Errorf("DSL feature %q has duplicate DSL version %q", feature.ID, version.Version)
+			}
+			seenVersions[version.Version] = struct{}{}
+		}
 		if _, exists := entries[feature.ID]; exists {
 			return FeatureRegistry{}, fmt.Errorf("duplicate DSL feature %q", feature.ID)
 		}
-		entries[feature.ID] = feature
+		entries[feature.ID] = cloneFeature(feature)
 	}
 	return FeatureRegistry{entries: entries}, nil
 }
@@ -64,19 +88,24 @@ func NewFeatureRegistry(features []Feature) (FeatureRegistry, error) {
 // Lookup returns the support metadata for id.
 func (r FeatureRegistry) Lookup(id FeatureID) (Feature, bool) {
 	feature, ok := r.entries[id]
-	return feature, ok
+	return cloneFeature(feature), ok
 }
 
 // All returns every feature in stable ID order.
 func (r FeatureRegistry) All() []Feature {
 	features := make([]Feature, 0, len(r.entries))
 	for _, feature := range r.entries {
-		features = append(features, feature)
+		features = append(features, cloneFeature(feature))
 	}
 	sort.Slice(features, func(i, j int) bool {
 		return features[i].ID < features[j].ID
 	})
 	return features
+}
+
+func cloneFeature(feature Feature) Feature {
+	feature.DSLVersions = append([]DSLFeatureSupport(nil), feature.DSLVersions...)
+	return feature
 }
 
 func (r FeatureRegistry) resolve(ids []FeatureID) ([]Feature, error) {
@@ -104,6 +133,35 @@ func LookupFeature(id FeatureID) (Feature, bool) {
 // AllFeatures returns a stable snapshot of the current DSL registry.
 func AllFeatures() []Feature {
 	return currentFeatureRegistry.All()
+}
+
+// FeaturesForDSLVersion returns the registry entries contained in one declared
+// DSL version, with each feature's level projected to that version.
+func FeaturesForDSLVersion(version string) ([]Feature, error) {
+	if _, ok := supportmatrix.GetDSL().Lookup(version); !ok {
+		return nil, fmt.Errorf("unknown DSL version %q", version)
+	}
+	return FeaturesAtDSLVersion(AllFeatures(), version)
+}
+
+// FeaturesAtDSLVersion filters a feature snapshot to one DSL version.
+func FeaturesAtDSLVersion(features []Feature, version string) ([]Feature, error) {
+	filtered := make([]Feature, 0, len(features))
+	for _, feature := range features {
+		for _, versionSupport := range feature.DSLVersions {
+			if versionSupport.Version != version {
+				continue
+			}
+			projected := cloneFeature(feature)
+			projected.Level = versionSupport.Level
+			filtered = append(filtered, projected)
+			break
+		}
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].ID < filtered[j].ID
+	})
+	return filtered, nil
 }
 
 const (
@@ -329,6 +387,10 @@ func currentFeatures(sinceVersion string) []Feature {
 			ID:           id,
 			Level:        SupportPreview,
 			SinceVersion: sinceVersion,
+			DSLVersions: []DSLFeatureSupport{{
+				Version: supportmatrix.CurrentDSLVersion,
+				Level:   SupportPreview,
+			}},
 		})
 	}
 	return features

@@ -6,11 +6,12 @@ goobers features \- list the workflow-DSL features this build supports
 \fBgoobers features\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers features [--used] [path]
+Usage: goobers features [--dsl-version <version>] [--used] [path]
 
-List the workflow-DSL features this build understands, with each
-feature's support level (preview/ga/deprecated/removed) and the version
-it entered that level. This reads the same registry the committed
+List the workflow-DSL features this build understands by DSL version,
+including each feature's support level (preview/ga/deprecated/removed).
+Use --dsl-version to scope the matrix to one declared version. This reads
+the same registry and SupportMatrix the committed
 docs/feature-matrix.md is generated from, so the two never disagree.
 
 With --used, list only the features the instance at path (default ".")
@@ -21,6 +22,7 @@ config, 2 = usage/IO error.
 .SH EXAMPLES
 .nf
 goobers features
+goobers features --dsl-version 1.4
 goobers features --used
 .fi
 .SH SEE ALSO

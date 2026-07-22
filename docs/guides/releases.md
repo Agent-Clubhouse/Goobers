@@ -19,14 +19,16 @@ shape) added by [#655](https://github.com/Agent-Clubhouse/Goobers/issues/655).
 
 `go run ./release` cross-compiles `./cmd/goobers` for the release matrix,
 packages each target into a platform-conventional archive, and writes a shared
-`SHA256SUMS` manifest into `dist/` (override with `-output`). It is a standalone
-Go tool — matching `test/ci` and `test/coveragegate` — so it runs identically on
-any release runner without a shell dependency.
+`SHA256SUMS` manifest plus DSL support metadata into `dist/` (override with
+`-output`). It is a standalone Go tool — matching `test/ci` and
+`test/coveragegate` — so it runs identically on any release runner without a
+shell dependency.
 
 ```sh
 go run ./release                              # full matrix into ./dist
 go run ./release -targets windows/amd64       # just the Windows artifact
 go run ./release -version v1.2.3 -output dist # explicit version + output dir
+go run ./release -previous-support-matrix previous/dsl-support-matrix.json
 go run ./release -skip-unbuildable            # package what compiles, skip the rest
 ```
 
@@ -36,6 +38,20 @@ released binary's `goobers --version` is byte-for-byte consistent with a local
 `make build`. Version defaults to `git describe --tags --always --dirty`; the
 build date defaults to the commit's committer date, so re-running the engine on
 the same commit is reproducible (`-trimpath` is always on).
+
+### DSL support metadata
+
+Each non-empty release build writes two generated files alongside the archives:
+
+- `dsl-support-matrix.json` records the compiled-in DSL `SupportMatrix`.
+- `RELEASE_NOTES.md` contains the support-matrix delta from the previous
+  snapshot: DSL versions newly marked `deprecated` or `unsupported`, their
+  replacement, and the corresponding `goobers fix --to <version>` command.
+
+Pass the previous release's snapshot with `-previous-support-matrix`. Omitting
+the flag records the release as the first snapshot. Generation fails when a
+newly deprecated or unsupported version has no replacement, so release notes
+cannot announce a support break without a migration path.
 
 ### Artifact shape
 

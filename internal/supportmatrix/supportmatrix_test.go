@@ -5,9 +5,62 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestDSLMatrixLookupAndOrder(t *testing.T) {
+	matrix := SupportMatrix{
+		"1.10": {Level: LevelPreview},
+		"1.2":  {Level: LevelSupported},
+		"2.0":  {Level: LevelDeprecated, UnsupportedAfter: "v3.0.0", Replacement: "2.1"},
+	}
+	support, ok := matrix.Lookup("2.0")
+	if !ok {
+		t.Fatal("Lookup(2.0) returns not found")
+	}
+	if support.Level != LevelDeprecated || support.Replacement != "2.1" {
+		t.Fatalf("Lookup(2.0) = %+v", support)
+	}
+	if _, ok := matrix.Lookup("9.9"); ok {
+		t.Fatal("Lookup(9.9) unexpectedly succeeded")
+	}
+
+	var got []string
+	for _, version := range matrix.Versions() {
+		got = append(got, version.Version)
+	}
+	if want := []string{"1.2", "1.10", "2.0"}; !slices.Equal(got, want) {
+		t.Fatalf("Versions() = %v, want %v", got, want)
+	}
+}
+
+func TestGetDSLDeclaresCurrentVersion(t *testing.T) {
+	matrix := GetDSL()
+	support, ok := matrix.Lookup(CurrentDSLVersion)
+	if !ok {
+		t.Fatalf("current DSL version %q is missing", CurrentDSLVersion)
+	}
+	if support.Level != LevelSupported {
+		t.Fatalf("current DSL version level = %q, want %q", support.Level, LevelSupported)
+	}
+	for version, support := range matrix {
+		if _, _, ok := parseDSLVersion(version); !ok {
+			t.Errorf("invalid DSL version %q", version)
+		}
+		switch support.Level {
+		case LevelPreview, LevelSupported, LevelDeprecated, LevelUnsupported:
+		default:
+			t.Errorf("DSL version %q has invalid level %q", version, support.Level)
+		}
+	}
+
+	matrix[CurrentDSLVersion] = VersionSupport{Level: LevelUnsupported}
+	if GetDSL()[CurrentDSLVersion].Level != LevelSupported {
+		t.Fatal("GetDSL exposed the package's backing map")
+	}
+}
 
 func TestGetDeclaresPlatformsAndMinGo(t *testing.T) {
 	m := Get()
@@ -86,6 +139,9 @@ func TestNewReportComposesMatrixAndHost(t *testing.T) {
 	}
 	if len(r.Platforms) != len(Get().Platforms) {
 		t.Errorf("report platforms = %d, want %d", len(r.Platforms), len(Get().Platforms))
+	}
+	if len(r.DSLVersions) != len(GetDSL()) {
+		t.Errorf("report DSL versions = %d, want %d", len(r.DSLVersions), len(GetDSL()))
 	}
 	if r.Host != CurrentHost() {
 		t.Errorf("report host = %+v, want %+v", r.Host, CurrentHost())

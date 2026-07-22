@@ -25,13 +25,14 @@ func main() {
 }
 
 type options struct {
-	version         string
-	commit          string
-	date            string
-	outDir          string
-	targets         []Target
-	checksums       bool
-	skipUnbuildable bool
+	version               string
+	commit                string
+	date                  string
+	outDir                string
+	targets               []Target
+	checksums             bool
+	skipUnbuildable       bool
+	previousSupportMatrix string
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
@@ -70,6 +71,18 @@ func run(args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintf(stdout, "build %-14s -> %s\n", t, filepath.Base(archivePath))
 	}
 
+	if len(archives) > 0 {
+		notesPath, snapshotPath, err := writeSupportReleaseMetadata(
+			opts.version,
+			opts.previousSupportMatrix,
+			opts.outDir,
+		)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "wrote %s and %s\n", filepath.Base(notesPath), filepath.Base(snapshotPath))
+	}
+
 	if opts.checksums && len(archives) > 0 {
 		manifest, err := checksumsManifest(archives)
 		if err != nil {
@@ -95,22 +108,24 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("release", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		version   = fs.String("version", "", "release version (default: git describe --tags --always --dirty)")
-		commit    = fs.String("commit", "", "build commit (default: git rev-parse --short HEAD)")
-		date      = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
-		outDir    = fs.String("output", "dist", "output directory for archives + SHA256SUMS")
-		targetCSV = fs.String("targets", "", "comma-separated os/arch list (default: the full release matrix)")
-		checksums = fs.Bool("checksums", true, "write a SHA256SUMS manifest over the archives")
-		skip      = fs.Bool("skip-unbuildable", false, "package only targets that compile, skipping (not failing on) the rest")
+		version         = fs.String("version", "", "release version (default: git describe --tags --always --dirty)")
+		commit          = fs.String("commit", "", "build commit (default: git rev-parse --short HEAD)")
+		date            = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
+		outDir          = fs.String("output", "dist", "output directory for archives + SHA256SUMS")
+		targetCSV       = fs.String("targets", "", "comma-separated os/arch list (default: the full release matrix)")
+		checksums       = fs.Bool("checksums", true, "write a SHA256SUMS manifest over the archives")
+		skip            = fs.Bool("skip-unbuildable", false, "package only targets that compile, skipping (not failing on) the rest")
+		previousSupport = fs.String("previous-support-matrix", "", "previous release's dsl-support-matrix.json")
 	)
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
 
 	opts := options{
-		outDir:          *outDir,
-		checksums:       *checksums,
-		skipUnbuildable: *skip,
+		outDir:                *outDir,
+		checksums:             *checksums,
+		skipUnbuildable:       *skip,
+		previousSupportMatrix: *previousSupport,
 	}
 
 	opts.version = firstNonEmpty(*version, os.Getenv("GOOBERS_VERSION"), gitOutput("describe", "--tags", "--always", "--dirty"), "dev")

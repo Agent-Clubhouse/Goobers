@@ -23,6 +23,7 @@ func TestParseFlagsExplicit(t *testing.T) {
 	opts, err := parseFlags([]string{
 		"-version", "v9.9.9", "-commit", "abc123", "-date", "2026-01-02T03:04:05Z",
 		"-targets", "windows/amd64", "-output", "out",
+		"-previous-support-matrix", "previous.json",
 	}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
@@ -32,6 +33,9 @@ func TestParseFlagsExplicit(t *testing.T) {
 	}
 	if opts.outDir != "out" || len(opts.targets) != 1 || opts.targets[0].String() != "windows/amd64" {
 		t.Errorf("targets/output not honored: %+v", opts)
+	}
+	if opts.previousSupportMatrix != "previous.json" {
+		t.Errorf("previous support matrix = %q", opts.previousSupportMatrix)
 	}
 	if !opts.checksums {
 		t.Error("checksums should default true")
@@ -84,14 +88,29 @@ func TestRunEndToEnd(t *testing.T) {
 	if !strings.Contains(string(sums), "goobers_v1.2.3_windows_amd64.zip") {
 		t.Errorf("SHA256SUMS missing the archive:\n%s", sums)
 	}
-	// The intermediate binary was cleaned up, leaving only the archive + sums.
+	notes, err := os.ReadFile(filepath.Join(out, releaseNotesFile))
+	if err != nil {
+		t.Fatalf("%s: %v", releaseNotesFile, err)
+	}
+	if !strings.Contains(string(notes), "## DSL support-matrix delta") {
+		t.Errorf("release notes missing support delta:\n%s", notes)
+	}
+	snapshot, err := readSupportSnapshot(filepath.Join(out, supportSnapshotFile))
+	if err != nil {
+		t.Fatalf("%s: %v", supportSnapshotFile, err)
+	}
+	if snapshot.Release != "v1.2.3" {
+		t.Errorf("support snapshot release = %q", snapshot.Release)
+	}
+
+	// The intermediate binary was cleaned up, leaving only release artifacts.
 	entries, _ := os.ReadDir(out)
-	if len(entries) != 2 {
+	if len(entries) != 4 {
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-		t.Errorf("dist has %v, want exactly the archive + SHA256SUMS", names)
+		t.Errorf("dist has %v, want archive, checksums, notes, and support snapshot", names)
 	}
 }
 

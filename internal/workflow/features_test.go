@@ -8,6 +8,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 func TestFeatureRegistryLookup(t *testing.T) {
@@ -43,6 +44,28 @@ func TestCurrentFeaturesArePreviewAtInitialVersion(t *testing.T) {
 		if feature.SinceVersion != initialFeatureSinceVersion {
 			t.Errorf("feature %q since-version = %q, want initial app version %q", feature.ID, feature.SinceVersion, initialFeatureSinceVersion)
 		}
+		if len(feature.DSLVersions) != 1 ||
+			feature.DSLVersions[0] != (DSLFeatureSupport{Version: supportmatrix.CurrentDSLVersion, Level: SupportPreview}) {
+			t.Errorf("feature %q DSL versions = %+v", feature.ID, feature.DSLVersions)
+		}
+	}
+}
+
+func TestFeaturesForDSLVersion(t *testing.T) {
+	for _, version := range supportmatrix.GetDSL().Versions() {
+		features, err := FeaturesForDSLVersion(version.Version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(features) == 0 {
+			t.Errorf("DSL version %q has no feature-registry coverage", version.Version)
+		}
+		if version.Version == supportmatrix.CurrentDSLVersion && len(features) != len(AllFeatures()) {
+			t.Fatalf("features for current DSL version = %d, want %d", len(features), len(AllFeatures()))
+		}
+	}
+	if _, err := FeaturesForDSLVersion("9.9"); err == nil || !strings.Contains(err.Error(), "unknown DSL version") {
+		t.Fatalf("FeaturesForDSLVersion(9.9) error = %v", err)
 	}
 }
 
