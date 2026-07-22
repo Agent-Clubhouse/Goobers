@@ -458,10 +458,20 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// the parked-record). A gather failure fails the stage explicitly rather
 	// than silently deriving a different winner.
 	policyInput := providerInput("electionPolicy", defaultElectionPolicy)
+	clusterBlockers := electionClusterBlockers(effective.Findings, overlappingSiblings)
 	clusterPolicy, resolvedPolicyName, perr := resolveElectionPolicyForCluster(
-		ctx, provider, repo, policyInput, selectedNumber, unionBlockingPRs(effective.Findings), prs)
+		ctx, provider, repo, policyInput, selectedNumber, clusterBlockers, prs)
 	if perr != nil {
 		return failProviderStage(stderr, "resolve election policy "+policyInput, perr, "")
+	}
+
+	// A deterministic winner with a real defect cannot safely land, and every
+	// sibling will defer to it. Publish that zero-winner state as a distinct
+	// human escalation instead of silently splitting the cluster between
+	// blocked-on-sibling and needs-remediation.
+	if reason := noLanderEscalationReason(posted.Decision, effective.Findings, selectedNumber, overlappingSiblings, clusterPolicy, demoted, resolvedPolicyName); reason != "" {
+		posted.Decision = apiv1.VerdictFail
+		posted.Rationale = reason
 	}
 
 	// Election resolves an all-ordering verdict into a real pass (#833/#834,
@@ -552,7 +562,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 	}
 
-	pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, verdict.Decision)
+	pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, posted.Decision)
 	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, stderr)
 }
 

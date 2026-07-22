@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
@@ -17,14 +19,11 @@ import (
 // on. The V0.5 policy (#833) is lowest-PR-number: thisPR is the lander iff its
 // number is lower than every PR it is blocked on.
 //
-// Under the symmetric findings the reviewer produces for file overlap (X
-// overlaps Y iff Y overlaps X), every member of a clique independently computes
-// the same global-minimum winner — no central coordination — so exactly one
-// member is crowned and the rest park blocked-on-sibling. An empty blocker set
-// (a cross-pr-blocked finding that named no sibling) trivially elects thisPR:
-// there is no identified PR to defer to. #834 makes this policy pluggable; the
-// merge queue's per-PR re-test backstops any asymmetric-finding edge case that
-// briefly crowns two.
+// The deterministic overlap set makes every member of a clique independently
+// compute the same global-minimum winner — no central coordination — so exactly
+// one member is crowned and the rest park blocked-on-sibling. An empty blocker
+// set (a cross-pr-blocked finding that named no sibling) trivially elects thisPR:
+// there is no identified PR to defer to. #834 makes this policy pluggable.
 func electedLander(thisPR int, blockers []int) bool {
 	for _, b := range blockers {
 		if b < thisPR {
@@ -84,8 +83,7 @@ func resolveElectionPolicy(name string) (electionPolicyFunc, string) {
 // cross-PR-ordering asks (allCrossPRBlocked — the PR is individually fine and
 // merely waiting on a sibling) AND this PR wins its cluster's election under
 // the configured policy. Any verdict carrying a real defect (a substantive/
-// conflict/rebase-needed finding) is never electable — it routes to
-// apply-verdict / pr-remediation unchanged.
+// conflict/rebase-needed finding) is never electable.
 func electionDecision(findings []apiv1.Finding, selectedNumber int, policy electionPolicyFunc, demoted map[int]bool) bool {
 	// #950: a demoted lander (one that repeatedly could not merge at an
 	// unchanged head) is never crowned — that is exactly the re-election that
@@ -100,6 +98,38 @@ func electionDecision(findings []apiv1.Finding, selectedNumber int, policy elect
 		return false
 	}
 	return policy(selectedNumber, withoutDemoted(unionBlockingPRs(findings), demoted))
+}
+
+// electionClusterBlockers combines reviewer-named blockers with the
+// deterministic overlap set. The latter remains available when a non-ordering
+// finding makes withOverlapBackstop leave the reviewer's findings unchanged.
+func electionClusterBlockers(findings []apiv1.Finding, overlappingSiblings []int) []int {
+	combined := append([]apiv1.Finding(nil), findings...)
+	combined = append(combined, apiv1.Finding{BlockingPRs: overlappingSiblings})
+	return unionBlockingPRs(combined)
+}
+
+// noLanderEscalationReason detects the asymmetric zero-winner case: the
+// deterministic policy winner cannot be crowned because its own review contains
+// a real defect, while every otherwise-green sibling will defer to that winner.
+// Escalating is safer than laundering the defect into a pass and more explicit
+// than silently parking the rest of the cluster.
+func noLanderEscalationReason(decision apiv1.VerdictDecision, findings []apiv1.Finding, selectedNumber int, overlappingSiblings []int, policy electionPolicyFunc, demoted map[int]bool, policyName string) string {
+	if decision != apiv1.VerdictNeedsChanges || len(overlappingSiblings) == 0 ||
+		demoted[selectedNumber] || allCrossPRBlocked(findings) {
+		return ""
+	}
+	clusterBlockers := electionClusterBlockers(findings, overlappingSiblings)
+	if !policy(selectedNumber, withoutDemoted(clusterBlockers, demoted)) {
+		return ""
+	}
+	siblings := make([]string, 0, len(clusterBlockers))
+	for _, blocker := range clusterBlockers {
+		siblings = append(siblings, fmt.Sprintf("#%d", blocker))
+	}
+	return fmt.Sprintf(
+		"Cluster has no lander under policy %q: PR #%d is the deterministic winner over cluster sibling PRs %s, but its review contains non-ordering findings and it cannot be safely crowned; every other eligible sibling defers to that winner. Human intervention is required to resolve the winner's findings or choose a different landing order.",
+		policyName, selectedNumber, strings.Join(siblings, ", "))
 }
 
 const electLanderHelp = "Usage: goobers elect-lander [--gate name] [path]\n\n" +
@@ -252,8 +282,9 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	// gather failure fails the stage explicitly rather than silently electing a
 	// different winner; apply-verdict resolves the same policy from the same
 	// data, so the two stages agree on the crown.
+	clusterBlockers := electionClusterBlockers(effectiveFindings, overlappingSiblings)
 	policy, resolvedPolicy, perr := resolveElectionPolicyForCluster(
-		ctx, provider, repo, policyName, selectedNumber, unionBlockingPRs(effectiveFindings), prs)
+		ctx, provider, repo, policyName, selectedNumber, clusterBlockers, prs)
 	if perr != nil {
 		return failProviderStage(stderr, "resolve election policy "+policyName, perr, resultFile)
 	}
@@ -267,6 +298,11 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	if derr != nil {
 		pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
 		demoted = nil
+	}
+
+	if reason := noLanderEscalationReason(verdict.Decision, effectiveFindings, selectedNumber, overlappingSiblings, policy, demoted, resolvedPolicy); reason != "" {
+		pf(stdout, "%s — routing to apply-verdict for explicit escalation\n", reason)
+		return writeResult(false)
 	}
 
 	if !electionDecision(effectiveFindings, selectedNumber, policy, demoted) {
