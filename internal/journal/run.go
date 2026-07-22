@@ -226,10 +226,15 @@ func (r *Run) Append(ev Event) error {
 	if err := r.append(ev); err != nil {
 		return err
 	}
-	// Track terminal phase so Close/Checkpoint reflect the last run.finished.
-	// Reason mirrors the terminal event's own Error.Message, if any (#520) —
-	// empty for an ordinary business-outcome terminal that carries no error.
+	// Track lifecycle transitions so Close/Checkpoint reflect the last durable
+	// run.finished or run.resumed event. Reason mirrors the terminal event's own
+	// Error.Message, if any (#520) — empty for an ordinary business-outcome
+	// terminal that carries no error, and cleared when a run resumes.
 	switch ev.Type {
+	case EventRunResumed:
+		r.phase = PhaseRunning
+		r.machineState = ev.Target
+		r.reason = ""
 	case EventRunFinished:
 		r.phase = phaseFromStatus(ev.Status)
 		r.machineState = ""

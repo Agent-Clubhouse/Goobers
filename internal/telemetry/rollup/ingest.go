@@ -74,7 +74,11 @@ func insertRun(tx *sql.Tx, id runIdentity, events []journalEvent) error {
 	var status string
 	var finishedAt time.Time
 	for _, ev := range events {
-		if ev.Type == eventRunFinished {
+		switch ev.Type {
+		case eventRunResumed:
+			status = ""
+			finishedAt = time.Time{}
+		case eventRunFinished:
 			status = ev.Status
 			finishedAt = ev.Time
 		}

@@ -514,6 +514,70 @@ func TestTraceFollowStreamsLiveEventsOnceInOrder(t *testing.T) {
 	}
 }
 
+func TestTraceFollowContinuesThroughResumedLifecycle(t *testing.T) {
+	root := t.TempDir()
+	const runID = "follow-resumed-run"
+	run := newTraceTestRun(t, root, runID)
+	t.Cleanup(func() { _ = run.Close() })
+
+	for _, event := range []journal.Event{
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+		{
+			Type:            journal.EventRunResumed,
+			Status:          string(journal.PhaseEscalated),
+			Actor:           "operator@example.test",
+			Target:          "implement",
+			WorkflowVersion: 1,
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+	} {
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stdout := newTraceFollowBuffer()
+	var stderr bytes.Buffer
+	result := make(chan int, 1)
+	go func() {
+		result <- runTraceWithFollowContext(
+			context.Background(),
+			[]string{"--follow", runID, root},
+			stdout,
+			&stderr,
+		)
+	}()
+	stdout.waitForWrite(t)
+
+	for _, event := range []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)},
+	} {
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := waitForTraceFollow(t, result); code != 0 {
+		t.Fatalf("trace --follow: code = %d, stderr = %q", code, stderr.String())
+	}
+	want := strings.Join([]string{
+		"[1] run.started status=running",
+		"[2] run.finished status=escalated",
+		"[3] run.resumed actor=operator@example.test target=implement from=escalated workflowVersion=1 workflowDigest=",
+		"[4] stage.started stage=implement attempt=1",
+		"[5] stage.finished stage=implement attempt=1 status=success",
+		"[6] run.finished status=completed",
+		"",
+	}, "\n")
+	if got := stdout.String(); got != want {
+		t.Fatalf("trace --follow stdout = %q, want %q", got, want)
+	}
+}
+
 func TestTraceJSONFollowEmitsExistingEventShapeAsJSONLines(t *testing.T) {
 	root := t.TempDir()
 	const runID = "follow-json-lines-run"
@@ -1160,6 +1224,15 @@ func TestFormatEvent(t *testing.T) {
 			want:  "[2] run.finished status=completed",
 		},
 		{
+			name: "run resumed",
+			event: journal.Event{
+				Seq: 2, Type: journal.EventRunResumed, Status: "escalated",
+				Actor: "operator@example.test", Target: "implement", WorkflowVersion: 3,
+				WorkflowDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			},
+			want: "[2] run.resumed actor=operator@example.test target=implement from=escalated workflowVersion=3 workflowDigest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+		{
 			name: "stage started initial attempt",
 			event: journal.Event{
 				Seq: 3, Type: journal.EventStageStarted, Stage: "implement", Attempt: 1,
@@ -1288,6 +1361,21 @@ func TestFormatEvent(t *testing.T) {
 				t.Errorf("formatEvent() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestTraceEventsTerminalUsesLatestLifecycleEvent(t *testing.T) {
+	events := []readservice.RunEvent{
+		{Type: journal.EventRunStarted},
+		{Type: journal.EventRunFinished},
+		{Type: journal.EventRunResumed},
+	}
+	if traceEventsTerminal(events) {
+		t.Fatal("traceEventsTerminal = true after run.resumed, want false")
+	}
+	events = append(events, readservice.RunEvent{Type: journal.EventRunFinished})
+	if !traceEventsTerminal(events) {
+		t.Fatal("traceEventsTerminal = false after the next run.finished, want true")
 	}
 }
 
