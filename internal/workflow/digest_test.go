@@ -44,7 +44,7 @@ func loadShippedWorkflow(t *testing.T, file string) Definition {
 	if err := yaml.Unmarshal(raw, &w); err != nil {
 		t.Fatalf("unmarshal %s: %v", file, err)
 	}
-	return Definition{Name: w.Name, Version: 1, Spec: w.Spec}
+	return Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}
 }
 
 // goldenDigests pins the compiled content digest of each shipped workflow. A
@@ -130,5 +130,22 @@ func TestDigestChangesWithContent(t *testing.T) {
 	}
 	if m1.Digest() == m2.Digest() {
 		t.Error("expected digest to change when task goal changes")
+	}
+}
+
+func TestDigestIncludesDSLVersionWhenPresent(t *testing.T) {
+	unversioned := Definition{Name: "x", Version: 1, Spec: linearSpec()}
+	m1, err := compileAcknowledged(unversioned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versioned := unversioned
+	versioned.DSLVersion = "1.4"
+	m2, err := compileAcknowledged(versioned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m1.Digest() == m2.Digest() {
+		t.Fatal("expected dslVersion to be retained in the compiled definition digest")
 	}
 }

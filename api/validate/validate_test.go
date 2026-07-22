@@ -9,6 +9,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	wf "github.com/goobers/goobers/internal/workflow"
+
+	"sigs.k8s.io/yaml"
 )
 
 func newV(t *testing.T) *Validator {
@@ -278,6 +280,62 @@ func TestWorkflowSchemaAcceptsExplicitManualOnlyTrigger(t *testing.T) {
 				t.Fatalf("expected schema validation to pass, got %v", err)
 			}
 		})
+	}
+}
+
+func TestWorkflowSchemaValidatesDSLVersion(t *testing.T) {
+	v := newV(t)
+	workflow := `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: DSL_VERSION
+metadata: {name: versioned-flow}
+spec:
+  gaggle: example
+  triggers: [{type: manual}]
+  start: act
+  tasks:
+    - name: act
+      type: deterministic
+      goal: Act.
+      run: {command: ["true"]}
+`
+	for _, tc := range []struct {
+		version string
+		wantErr bool
+	}{
+		{version: `"1.4"`},
+		{version: `"1"`, wantErr: true},
+		{version: `"v1"`, wantErr: true},
+		{version: `"1.4.0"`, wantErr: true},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			jsonBytes, err := yaml.YAMLToJSON([]byte(strings.Replace(workflow, "DSL_VERSION", tc.version, 1)))
+			if err != nil {
+				t.Fatalf("convert YAML: %v", err)
+			}
+			err = v.ValidateJSON("workflow.schema.json", jsonBytes)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected schema validation to fail")
+				}
+				if !strings.Contains(err.Error(), "/dslVersion") {
+					t.Fatalf("schema error %q does not name dslVersion", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected schema validation to pass, got %v", err)
+			}
+		})
+	}
+
+	withoutVersion := strings.Replace(workflow, "dslVersion: DSL_VERSION\n", "", 1)
+	jsonBytes, err := yaml.YAMLToJSON([]byte(withoutVersion))
+	if err != nil {
+		t.Fatalf("convert YAML without dslVersion: %v", err)
+	}
+	if err := v.ValidateJSON("workflow.schema.json", jsonBytes); err != nil {
+		t.Fatalf("missing dslVersion changed validation behavior: %v", err)
 	}
 }
 

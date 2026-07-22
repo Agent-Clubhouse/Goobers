@@ -95,6 +95,7 @@ func TestWorkflowRoundTrip(t *testing.T) {
 	w := Workflow{
 		TypeMeta:   metav1.TypeMeta{APIVersion: GroupVersion.String(), Kind: "Workflow"},
 		ObjectMeta: metav1.ObjectMeta{Name: "review-flow"},
+		DSLVersion: "1.4",
 		Spec: WorkflowSpec{
 			Gaggle:      "acme-web",
 			DisplayName: "Implement then review",

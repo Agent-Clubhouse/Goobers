@@ -77,7 +77,7 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
 		if wf.Name == name {
 			if *dot {
 				machine, err := workflow.Compile(workflow.Definition{
-					Name: wf.Name, Version: 1, Spec: wf.Spec,
+					Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
 				}, workflow.WithPreviewFeatures(
 					set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations),
 				))

@@ -34,6 +34,7 @@ type RunInput struct {
 	Gaggle                 string             `json:"gaggle"`
 	WorkflowName           string             `json:"workflowName"`
 	Version                int                `json:"version"`
+	DSLVersion             string             `json:"dslVersion,omitempty"`
 	WorkflowDigest         string             `json:"workflowDigest"`
 	PreviewFeaturesEnabled *bool              `json:"previewFeaturesEnabled,omitempty"`
 	Spec                   apiv1.WorkflowSpec `json:"spec"`
@@ -71,7 +72,7 @@ func HumanGateSignal(gateName string) string {
 func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	logger := workflow.GetLogger(ctx)
 	m, err := wf.Compile(
-		wf.Definition{Name: in.WorkflowName, Version: in.Version, Spec: in.Spec},
+		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},
 		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
 	)
 	if err != nil {

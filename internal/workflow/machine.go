@@ -46,9 +46,10 @@ func isTerminal(target string) bool {
 // these for its entire life (WF-016). Version is the registry-assigned monotonic
 // version; the content digest (Machine.Digest) is the tamper-evident pin.
 type Definition struct {
-	Name    string
-	Version int
-	Spec    apiv1.WorkflowSpec
+	Name       string
+	Version    int
+	DSLVersion string `json:"dslVersion,omitempty"`
+	Spec       apiv1.WorkflowSpec
 }
 
 // Machine is a compiled, validated view of a Definition with O(1) state lookup
