@@ -153,16 +153,36 @@ jobs:
       - name: go vet (windows/amd64)
         run: go vet ./...
 
+  shipped-workflows:
+    name: shipped workflow contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Exercise shipped workflows through the local runner
+        run: make test-shipped-workflows
+
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() }}
-    needs: [ci, windows-smoke]
+    needs: [ci, windows-smoke, shipped-workflows]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required platform gates
         env:
           MATRIX_RESULT: ${{ needs.ci.result }}
           WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
+          SHIPPED_WORKFLOWS_RESULT: ${{ needs.shipped-workflows.result }}
         run: |
           if [ "$MATRIX_RESULT" != "success" ]; then
             echo "A required platform gate (ubuntu/macos make ci) did not pass."
@@ -170,6 +190,10 @@ jobs:
           fi
           if [ "$WINDOWS_RESULT" != "success" ]; then
             echo "The windows compile smoke (go build + go vet) did not pass."
+            exit 1
+          fi
+          if [ "$SHIPPED_WORKFLOWS_RESULT" != "success" ]; then
+            echo "The shipped workflow contract suite did not pass."
             exit 1
           fi
 
