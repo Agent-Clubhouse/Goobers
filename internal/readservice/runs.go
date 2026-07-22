@@ -143,33 +143,36 @@ type EventList struct {
 // populated for the schema this build owns; Raw retains an unknown event's
 // complete scrubbed JSON for forward-compatible inspection.
 type RunEvent struct {
-	Schema       string                 `json:"schema"`
-	Seq          uint64                 `json:"seq"`
-	Type         journal.EventType      `json:"type"`
-	Branch       int                    `json:"branch"`
-	Time         time.Time              `json:"time"`
-	KnownSchema  bool                   `json:"knownSchema"`
-	Stage        string                 `json:"stage,omitempty"`
-	Attempt      int                    `json:"attempt,omitempty"`
-	AttemptClass string                 `json:"attemptClass,omitempty"`
-	Gate         string                 `json:"gate,omitempty"`
-	Verdict      string                 `json:"verdict,omitempty"`
-	Target       string                 `json:"target,omitempty"`
-	Escalated    bool                   `json:"escalated,omitempty"`
-	Status       string                 `json:"status,omitempty"`
-	Outputs      map[string]any         `json:"outputs,omitempty"`
-	Artifacts    []ArtifactMetadata     `json:"artifacts,omitempty"`
-	Artifact     *ArtifactMetadata      `json:"artifact,omitempty"`
-	Name         string                 `json:"name,omitempty"`
-	ExternalRef  *journal.ExternalRef   `json:"externalRef,omitempty"`
-	Error        *journal.ErrorDetail   `json:"error,omitempty"`
-	Redaction    *journal.RedactionInfo `json:"redaction,omitempty"`
-	Runner       map[string]any         `json:"runner,omitempty"`
-	Workflow     string                 `json:"workflow,omitempty"`
-	RunID        string                 `json:"runId,omitempty"`
-	Reason       string                 `json:"reason,omitempty"`
-	Raw          json.RawMessage        `json:"raw,omitempty"`
-	JournalEvent *journal.Event         `json:"-"`
+	Schema          string                 `json:"schema"`
+	Seq             uint64                 `json:"seq"`
+	Type            journal.EventType      `json:"type"`
+	Branch          int                    `json:"branch"`
+	Time            time.Time              `json:"time"`
+	KnownSchema     bool                   `json:"knownSchema"`
+	Stage           string                 `json:"stage,omitempty"`
+	Attempt         int                    `json:"attempt,omitempty"`
+	AttemptClass    string                 `json:"attemptClass,omitempty"`
+	Gate            string                 `json:"gate,omitempty"`
+	Verdict         string                 `json:"verdict,omitempty"`
+	Target          string                 `json:"target,omitempty"`
+	Escalated       bool                   `json:"escalated,omitempty"`
+	Status          string                 `json:"status,omitempty"`
+	Actor           string                 `json:"actor,omitempty"`
+	WorkflowVersion int                    `json:"workflowVersion,omitempty"`
+	WorkflowDigest  string                 `json:"workflowDigest,omitempty"`
+	Outputs         map[string]any         `json:"outputs,omitempty"`
+	Artifacts       []ArtifactMetadata     `json:"artifacts,omitempty"`
+	Artifact        *ArtifactMetadata      `json:"artifact,omitempty"`
+	Name            string                 `json:"name,omitempty"`
+	ExternalRef     *journal.ExternalRef   `json:"externalRef,omitempty"`
+	Error           *journal.ErrorDetail   `json:"error,omitempty"`
+	Redaction       *journal.RedactionInfo `json:"redaction,omitempty"`
+	Runner          map[string]any         `json:"runner,omitempty"`
+	Workflow        string                 `json:"workflow,omitempty"`
+	RunID           string                 `json:"runId,omitempty"`
+	Reason          string                 `json:"reason,omitempty"`
+	Raw             json.RawMessage        `json:"raw,omitempty"`
+	JournalEvent    *journal.Event         `json:"-"`
 }
 
 // ArtifactMetadata deliberately omits journal-relative paths. Content is
@@ -671,18 +674,19 @@ func (s *Local) RunEscalation(ctx context.Context, runID string) (*TraceEscalati
 	if summary.Phase != journal.PhaseEscalated {
 		return nil, nil
 	}
+	records := currentLifecycleRecords(run.records)
 	result := &TraceEscalation{}
-	terminalStage := successfulTerminalStage(run.records)
-	for i := len(run.records) - 1; i >= 0; i-- {
-		event := run.records[i].Event
+	terminalStage := successfulTerminalStage(records)
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
 		if !isEscalatingGateEvent(event, terminalStage) {
 			continue
 		}
-		result.RepassCount, err = gateRepassCount(run.records[:i+1], event.Gate)
+		result.RepassCount, err = gateRepassCount(records[:i+1], event.Gate)
 		if err != nil {
 			return nil, err
 		}
-		result.LastNeedsChangesReason, err = lastNeedsChangesReason(run.reader, run.records[:i+1], event.Gate)
+		result.LastNeedsChangesReason, err = lastNeedsChangesReason(run.reader, records[:i+1], event.Gate)
 		if err != nil {
 			return nil, err
 		}
@@ -775,8 +779,7 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	var lastSeq uint64
 	var lastActivityAt time.Time
 	currentStage := ""
-	seenInitial := make(map[string]bool)
-	repasses, retries, policyRetries, infraRetries := 0, 0, 0, 0
+	repasses, retries, policyRetries, infraRetries := countStageAttempts(run.records)
 
 	for _, record := range run.records {
 		event := record.Event
@@ -788,24 +791,12 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 			continue
 		}
 		switch event.Type {
+		case journal.EventRunResumed:
+			phase = journal.PhaseRunning
+			finishedAt = nil
+			currentStage = event.Target
 		case journal.EventStageStarted:
 			currentStage = event.Stage
-			switch event.AttemptClass {
-			case journal.AttemptPolicy:
-				retries++
-				policyRetries++
-			case journal.AttemptInfra:
-				retries++
-				infraRetries++
-			case journal.AttemptHuman:
-				// An explicit operator rerun is neither a policy/infra retry
-				// nor an automatic gate repass.
-			default:
-				if seenInitial[event.Stage] {
-					repasses++
-				}
-				seenInitial[event.Stage] = true
-			}
 		case journal.EventStageFinished:
 			if currentStage == event.Stage {
 				currentStage = ""
@@ -867,6 +858,33 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	}, nil
 }
 
+func countStageAttempts(records []journal.EventRecord) (repasses, retries, policyRetries, infraRetries int) {
+	seenInitial := make(map[string]bool)
+	for _, record := range records {
+		event := record.Event
+		if !event.KnownSchema() || event.Type != journal.EventStageStarted {
+			continue
+		}
+		switch event.AttemptClass {
+		case journal.AttemptPolicy:
+			retries++
+			policyRetries++
+		case journal.AttemptInfra:
+			retries++
+			infraRetries++
+		case journal.AttemptHuman:
+			// An explicit operator rerun is neither a policy/infra retry
+			// nor an automatic gate repass.
+		default:
+			if seenInitial[event.Stage] {
+				repasses++
+			}
+			seenInitial[event.Stage] = true
+		}
+	}
+	return repasses, retries, policyRetries, infraRetries
+}
+
 func pinnedGraph(run runRead) (*workflow.Graph, string, error) {
 	var ref *journal.Ref
 	for _, input := range run.identity.Inputs {
@@ -917,9 +935,11 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 	if summary.Phase != journal.PhaseEscalated {
 		return nil, nil
 	}
+	records = currentLifecycleRecords(records)
+	repasses, retries, _, _ := countStageAttempts(records)
 	cause := &EscalationCause{
-		RepassCount: summary.RepassCount,
-		RetryCount:  summary.RetryCount,
+		RepassCount: repasses,
+		RetryCount:  retries,
 	}
 	terminalStage := successfulTerminalStage(records)
 	for i := len(records) - 1; i >= 0; i-- {
@@ -965,6 +985,16 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		break
 	}
 	return cause, nil
+}
+
+func currentLifecycleRecords(records []journal.EventRecord) []journal.EventRecord {
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if event.KnownSchema() && event.Type == journal.EventRunResumed {
+			return records[i+1:]
+		}
+	}
+	return records
 }
 
 func successfulTerminalStage(records []journal.EventRecord) string {
@@ -1137,6 +1167,9 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	projected.Target = event.Target
 	projected.Escalated = event.Escalated
 	projected.Status = event.Status
+	projected.Actor = event.Actor
+	projected.WorkflowVersion = event.WorkflowVersion
+	projected.WorkflowDigest = event.WorkflowDigest
 	projected.Outputs = scalarOutputs(event.Outputs)
 	for _, ref := range event.Artifacts {
 		if metadata, ok := artifacts.match(

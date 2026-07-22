@@ -113,6 +113,51 @@ func finishFixtureRun(t *testing.T, run *journal.Run, clock *fixtureClock, phase
 	}
 }
 
+func TestRunSummaryReflectsHumanTerminalResume(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	started := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-human-resumed", machine.Def.Name, machine.Def.Spec.Gaggle,
+		started, journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunResumed, Status: string(journal.PhaseEscalated), Target: "implement",
+		Actor: "operator@example.test", WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := service.GetRun(context.Background(), "run-human-resumed")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if detail.Phase != journal.PhaseRunning || detail.Terminal ||
+		detail.CurrentStage != "implement" || detail.FinishedAt != nil {
+		t.Fatalf("resumed detail = %+v, want active run at implement with no finish time", detail.RunSummary)
+	}
+
+	ledger, err := service.RunEvents(context.Background(), "run-human-resumed")
+	if err != nil {
+		t.Fatalf("RunEvents: %v", err)
+	}
+	resumed := ledger.Events[len(ledger.Events)-1]
+	if resumed.Type != journal.EventRunResumed ||
+		resumed.Actor != "operator@example.test" ||
+		resumed.WorkflowVersion != machine.Def.Version ||
+		resumed.WorkflowDigest != machine.Digest() {
+		t.Fatalf("projected run.resumed = %+v", resumed)
+	}
+}
+
 func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	base := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
@@ -993,6 +1038,94 @@ func TestDirectStageEscalationIncludesCause(t *testing.T) {
 	}
 	if detail.Escalation.CausalEventSeq != stageSeq || detail.Escalation.CausalEventSeq == cleanupSeq {
 		t.Fatalf("causal event = %d, stage = %d, cleanup = %d", detail.Escalation.CausalEventSeq, stageSeq, cleanupSeq)
+	}
+}
+
+func TestEscalationAttributionUsesCurrentLifecycleSegment(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-resumed-escalation",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 21, 16, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	for _, event := range []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 3, AttemptClass: journal.AttemptPolicy},
+	} {
+		clock.advance(time.Second)
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventGateEvaluated,
+		Gate:    "review",
+		Verdict: string(apiv1.VerdictFail),
+		Target:  workflow.TargetEscalate,
+		Runner:  map[string]any{"repassAttempt": 4},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:   journal.EventRunFinished,
+		Status: string(journal.PhaseEscalated),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:            journal.EventRunResumed,
+		Status:          string(journal.PhaseEscalated),
+		Target:          "implement",
+		Actor:           "operator@example.test",
+		WorkflowVersion: machine.Def.Version,
+		WorkflowDigest:  machine.Digest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "implement",
+		Attempt: 1,
+		Status:  string(apiv1.ResultFailure),
+		Error:   &journal.ErrorDetail{Code: "new_failure", Message: "resumed segment failed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseEscalated)
+
+	detail, err := service.GetRun(context.Background(), "run-resumed-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Escalation == nil ||
+		detail.Escalation.Selector != (EscalationSelector{Kind: "stage", Name: "implement"}) ||
+		detail.Escalation.TerminalReason != "resumed segment failed" ||
+		detail.Escalation.RepassCount != 0 ||
+		detail.Escalation.RetryCount != 0 {
+		t.Fatalf("resumed escalation = %+v", detail.Escalation)
+	}
+	if detail.RepassCount != 1 || detail.RetryCount != 1 {
+		t.Fatalf("whole-run attempt counts = repasses %d retries %d, want 1 each", detail.RepassCount, detail.RetryCount)
+	}
+	traceEscalation, err := service.RunEscalation(context.Background(), "run-resumed-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traceEscalation == nil ||
+		traceEscalation.RepassCount != 0 ||
+		traceEscalation.LastNeedsChangesReason != "" {
+		t.Fatalf("trace escalation leaked prior segment = %+v", traceEscalation)
 	}
 }
 

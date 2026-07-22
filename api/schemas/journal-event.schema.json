@@ -23,6 +23,7 @@
       "type": "string",
       "enum": [
         "run.started",
+        "run.resumed",
         "run.finished",
         "stage.started",
         "stage.heartbeat",
@@ -80,7 +81,7 @@
       "x-conformance": "conditional: excluded for stage.heartbeat and when 'infra'"
     },
     "actor": {
-      "description": "Operator identity for an auditable intervention such as stage.rerun.requested.",
+      "description": "Operator identity for an auditable intervention such as stage.rerun.requested or run.resumed.",
       "type": "string",
       "minLength": 1,
       "x-conformance": "normative"
@@ -102,7 +103,7 @@
       "x-conformance": "normative"
     },
     "target": {
-      "description": "Branch/state the gate selected.",
+      "description": "Branch/state selected by a gate or chosen by run.resumed.",
       "type": "string",
       "x-conformance": "normative"
     },
@@ -112,8 +113,20 @@
       "x-conformance": "normative"
     },
     "status": {
-      "description": "Terminal status for run.finished / stage.finished.",
+      "description": "Terminal status for run.finished / stage.finished, or the prior terminal phase for run.resumed.",
       "type": "string",
+      "x-conformance": "normative"
+    },
+    "workflowVersion": {
+      "description": "Immutable workflow version re-asserted by run.resumed.",
+      "type": "integer",
+      "minimum": 1,
+      "x-conformance": "normative"
+    },
+    "workflowDigest": {
+      "description": "Immutable workflow digest re-asserted by run.resumed.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
       "x-conformance": "normative"
     },
     "outputs": {
