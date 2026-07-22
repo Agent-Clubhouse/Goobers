@@ -221,7 +221,8 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) error {
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
 	if len(c.AuthCheckArgs) > 0 {
-		res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, c.AuthCheckArgs...), Env: baseEnv(c.ExtraEnvAllowlist)})
+		command := resolveCopilotCommand(c.Command)
+		res, err := c.runner().Run(ctx, ProcessRequest{Command: append(command, c.AuthCheckArgs...), Env: baseEnv(c.ExtraEnvAllowlist)})
 		if err != nil {
 			return fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) failed: %w — run the Copilot CLI and sign in", bin, c.AuthCheckArgs, err)
 		}
@@ -278,7 +279,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if extra == nil {
 		extra = defaultExtraArgs
 	}
-	argv := append(append([]string{}, c.Command...), flag, prompt)
+	argv := append(resolveCopilotCommand(c.Command), flag, prompt)
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)
 	}
