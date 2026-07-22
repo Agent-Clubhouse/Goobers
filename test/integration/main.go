@@ -120,9 +120,6 @@ func scanIntegration(root string) (scanResult, error) {
 		if !strings.HasSuffix(entry.Name(), "_test.go") {
 			return nil
 		}
-		if strings.HasSuffix(entry.Name(), "_live_test.go") {
-			return nil
-		}
 
 		data, err := os.ReadFile(filePath)
 		if err != nil {
