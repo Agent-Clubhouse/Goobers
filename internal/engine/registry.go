@@ -15,20 +15,20 @@ import (
 // function), so its mutex does not affect workflow determinism.
 type Registry struct {
 	mu                   sync.RWMutex
-	defs                 map[string][]apiv1.WorkflowSpec // name -> versions; index+1 == version
+	defs                 map[string][]wf.Definition // name -> versions; index+1 == version
 	allowPreviewFeatures bool
 }
 
 // NewRegistry returns an empty Registry.
 func NewRegistry() *Registry {
-	return &Registry{defs: make(map[string][]apiv1.WorkflowSpec)}
+	return &Registry{defs: make(map[string][]wf.Definition)}
 }
 
 // NewRegistryWithPreviewFeatures returns an empty Registry with the instance's
 // explicit preview-feature acknowledgement.
 func NewRegistryWithPreviewFeatures(enabled bool) *Registry {
 	return &Registry{
-		defs:                 make(map[string][]apiv1.WorkflowSpec),
+		defs:                 make(map[string][]wf.Definition),
 		allowPreviewFeatures: enabled,
 	}
 }
@@ -37,14 +37,20 @@ func NewRegistryWithPreviewFeatures(enabled bool) *Registry {
 // new version number (1-based). It validates the definition compiles before
 // accepting it, so a broken definition can never be started.
 func (r *Registry) Register(name string, spec apiv1.WorkflowSpec) (int, error) {
-	version := len(r.peek(name)) + 1
-	if _, err := r.Compile(wf.Definition{Name: name, Version: version, Spec: spec}); err != nil {
+	return r.RegisterDefinition(wf.Definition{Name: name, Spec: spec})
+}
+
+// RegisterDefinition appends a parsed workflow definition, assigning its
+// registry run-pin version while retaining its independent DSL version.
+func (r *Registry) RegisterDefinition(def wf.Definition) (int, error) {
+	def.Version = len(r.peek(def.Name)) + 1
+	if _, err := r.Compile(def); err != nil {
 		return 0, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.defs[name] = append(r.defs[name], spec)
-	return len(r.defs[name]), nil
+	r.defs[def.Name] = append(r.defs[def.Name], def)
+	return len(r.defs[def.Name]), nil
 }
 
 // Compile validates def with the same preview policy used for registration.
@@ -57,7 +63,7 @@ func (r *Registry) PreviewFeaturesEnabled() bool {
 	return r.allowPreviewFeatures
 }
 
-func (r *Registry) peek(name string) []apiv1.WorkflowSpec {
+func (r *Registry) peek(name string) []wf.Definition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.defs[name]
@@ -71,7 +77,7 @@ func (r *Registry) Get(name string, version int) (wf.Definition, bool) {
 	if version < 1 || version > len(versions) {
 		return wf.Definition{}, false
 	}
-	return wf.Definition{Name: name, Version: version, Spec: versions[version-1]}, true
+	return versions[version-1], true
 }
 
 // Latest returns the most recently registered version of a workflow.
@@ -82,7 +88,7 @@ func (r *Registry) Latest(name string) (wf.Definition, bool) {
 	if len(versions) == 0 {
 		return wf.Definition{}, false
 	}
-	return wf.Definition{Name: name, Version: len(versions), Spec: versions[len(versions)-1]}, true
+	return versions[len(versions)-1], true
 }
 
 // StartSpec describes a run to start; it is the non-pinned part of a RunInput.
@@ -116,6 +122,7 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 		Gaggle:                 s.Gaggle,
 		WorkflowName:           name,
 		Version:                def.Version,
+		DSLVersion:             def.DSLVersion,
 		PreviewFeaturesEnabled: &allowPreviewFeatures,
 		Spec:                   def.Spec,
 		RepoRef:                s.RepoRef,

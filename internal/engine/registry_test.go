@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 func TestVersionPinning(t *testing.T) {
@@ -88,6 +89,29 @@ func TestRegisterInvalidRejected(t *testing.T) {
 	}
 	if _, ok := r.Latest("bad"); ok {
 		t.Error("invalid workflow should not be registered")
+	}
+}
+
+func TestRegisterDefinitionRetainsDSLVersion(t *testing.T) {
+	r := NewRegistryWithPreviewFeatures(true)
+	if _, err := r.RegisterDefinition(wf.Definition{
+		Name: "flow", DSLVersion: "1.4", Spec: linearSpec(),
+	}); err != nil {
+		t.Fatalf("RegisterDefinition: %v", err)
+	}
+	def, ok := r.Latest("flow")
+	if !ok {
+		t.Fatal("registered definition not found")
+	}
+	if def.DSLVersion != "1.4" {
+		t.Fatalf("definition dslVersion = %q, want 1.4", def.DSLVersion)
+	}
+	in, err := r.StartInput("flow", StartSpec{RunID: "run-1", Gaggle: "web"})
+	if err != nil {
+		t.Fatalf("StartInput: %v", err)
+	}
+	if in.DSLVersion != "1.4" {
+		t.Fatalf("run input dslVersion = %q, want 1.4", in.DSLVersion)
 	}
 }
 

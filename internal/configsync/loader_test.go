@@ -94,6 +94,36 @@ func TestLoad_InvalidConfigRejected(t *testing.T) {
 	}
 }
 
+func TestLoadRetainsWorkflowDSLVersion(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "manifest.yaml", `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata: {name: inst, annotations: {goobers.dev/allow-preview-features: "true"}}
+spec:
+  instance: {name: acme, environment: dev}
+  gaggles: [web]
+`)
+	writeFile(t, filepath.Join(dir, "gaggles", "web"), "gaggle.yaml", gaggleYAML("web"))
+	workflow := strings.Replace(workflowYAML("web", "deploy"), "kind: Workflow\n", "kind: Workflow\ndslVersion: \"1.4\"\n", 1)
+	writeFile(t, filepath.Join(dir, "gaggles", "web"), "workflow.yaml", workflow)
+
+	l, err := NewLoader("")
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	set, report, err := l.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v (report: %+v)", err, report.Issues)
+	}
+	workflows := objectsByKind(set.Objects)["Workflow"]
+	if len(workflows) != 1 {
+		t.Fatalf("rendered workflows = %d, want 1", len(workflows))
+	}
+	if got := workflows[0].(*v1alpha1.Workflow).DSLVersion; got != "1.4" {
+		t.Fatalf("dslVersion = %q, want 1.4", got)
+	}
+}
+
 func TestLoad_IgnoresAssetDefinitions(t *testing.T) {
 	root := t.TempDir()
 	if err := os.CopyFS(root, os.DirFS(validConfigRepo)); err != nil {

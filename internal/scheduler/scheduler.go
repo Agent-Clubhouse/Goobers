@@ -157,6 +157,7 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 		Gaggle:                 s.cfg.Gaggle,
 		WorkflowName:           def.Name,
 		Version:                def.Version,
+		DSLVersion:             def.DSLVersion,
 		WorkflowDigest:         machine.Digest(),
 		PreviewFeaturesEnabled: &allowPreviewFeatures,
 		Spec:                   def.Spec,

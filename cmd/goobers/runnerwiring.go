@@ -1391,7 +1391,9 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
 		m, err := workflow.Compile(
-			workflow.Definition{Name: wf.Name, Version: workflowVersion, Spec: wf.Spec},
+			workflow.Definition{
+				Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
+			},
 			workflow.WithGoobers(goobers),
 			workflow.WithKnownChecks(knownChecks),
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),

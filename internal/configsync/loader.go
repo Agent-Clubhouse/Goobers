@@ -194,14 +194,16 @@ func stageSource(root string, ignoreDirs []string) (string, func(), error) {
 
 // rawDoc is one parsed YAML document with its kind/name.
 type rawDoc struct {
-	kind string
-	name string
-	yaml []byte
+	kind       string
+	name       string
+	dslVersion string
+	yaml       []byte
 }
 
 type docMeta struct {
-	Kind     string `json:"kind"`
-	Metadata struct {
+	Kind       string `json:"kind"`
+	DSLVersion string `json:"dslVersion"`
+	Metadata   struct {
 		Name string `json:"name"`
 	} `json:"metadata"`
 }
@@ -236,7 +238,9 @@ func readDocs(root string) ([]rawDoc, error) {
 				// Validation already reported malformed docs; skip here.
 				continue
 			}
-			docs = append(docs, rawDoc{kind: meta.Kind, name: meta.Metadata.Name, yaml: []byte(seg)})
+			docs = append(docs, rawDoc{
+				kind: meta.Kind, name: meta.Metadata.Name, dslVersion: meta.DSLVersion, yaml: []byte(seg),
+			})
 		}
 		return nil
 	})
@@ -283,6 +287,7 @@ func (l *Loader) assemble(docs []rawDoc) (*RenderSet, error) {
 			if err := yaml.Unmarshal(d.yaml, &w); err != nil {
 				return nil, fmt.Errorf("parse Workflow %s: %w", d.name, err)
 			}
+			w.DSLVersion = d.dslVersion
 			flows = append(flows, w)
 		}
 	}

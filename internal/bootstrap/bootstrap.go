@@ -63,7 +63,9 @@ func LoadAndRegister(root, namespace string) (*Loaded, error) {
 			out.Goobers = append(out.Goobers, *o)
 		case *apiv1.Workflow:
 			out.Workflows = append(out.Workflows, *o)
-			if _, err := out.Registry.Register(o.Name, o.Spec); err != nil {
+			if _, err := out.Registry.RegisterDefinition(workflow.Definition{
+				Name: o.Name, DSLVersion: o.DSLVersion, Spec: o.Spec,
+			}); err != nil {
 				return nil, fmt.Errorf("bootstrap: register workflow %q: %w", o.Name, err)
 			}
 		}
