@@ -105,6 +105,9 @@ func TestTriggerFiresStartsRun(t *testing.T) {
 	if st.lastInput.WorkflowDigest == "" {
 		t.Error("started input missing pinned workflow digest")
 	}
+	if st.lastInput.PreviewFeaturesEnabled == nil || !*st.lastInput.PreviewFeaturesEnabled {
+		t.Error("started input missing explicit preview-feature policy")
+	}
 	if st.lastInput.Item == nil || st.lastInput.Item.ID != "42" {
 		t.Errorf("started input missing the backlog item: %+v", st.lastInput.Item)
 	}

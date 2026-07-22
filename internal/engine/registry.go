@@ -110,12 +110,13 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 	if !ok {
 		return RunInput{}, fmt.Errorf("workflow %q version %d is not registered", name, version)
 	}
+	allowPreviewFeatures := r.allowPreviewFeatures
 	return RunInput{
 		RunID:                  s.RunID,
 		Gaggle:                 s.Gaggle,
 		WorkflowName:           name,
 		Version:                def.Version,
-		PreviewFeaturesEnabled: r.allowPreviewFeatures,
+		PreviewFeaturesEnabled: &allowPreviewFeatures,
 		Spec:                   def.Spec,
 		RepoRef:                s.RepoRef,
 		Item:                   s.Item,

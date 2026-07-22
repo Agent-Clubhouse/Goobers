@@ -25,7 +25,7 @@ func TestVersionPinning(t *testing.T) {
 	if in1.Version != 1 {
 		t.Errorf("pinned version = %d, want 1", in1.Version)
 	}
-	if !in1.PreviewFeaturesEnabled {
+	if in1.PreviewFeaturesEnabled == nil || !*in1.PreviewFeaturesEnabled {
 		t.Error("pinned input did not carry the registry preview-feature policy")
 	}
 	if len(in1.Spec.Gates) != 0 {

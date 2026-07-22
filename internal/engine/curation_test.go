@@ -48,7 +48,7 @@ func curationRunInput(spec apiv1.WorkflowSpec) RunInput {
 		Gaggle:                 "acme-web",
 		WorkflowName:           "backlog-curation",
 		Version:                1,
-		PreviewFeaturesEnabled: true,
+		PreviewFeaturesEnabled: boolPointer(true),
 		Spec:                   spec,
 		RepoRef:                apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
 	}
