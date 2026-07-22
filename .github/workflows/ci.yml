@@ -85,6 +85,34 @@ jobs:
           path: coverage.out
           if-no-files-found: ignore
 
+  integration:
+    name: declared-dependency integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      # Keep this list aligned with the inventory printed by
+      # `make test-integration`. Strict mode makes an absent executable red.
+      - name: Provision declared dependencies (bash, bwrap, dirname, head, mkdir, sh, sleep, yes)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bash bubblewrap coreutils dash
+          # Ubuntu 24.04 restricts the user namespace needed by bubblewrap.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Run strict integration tier
+        run: make test-integration-strict
+
   # Windows joins CI as a REQUIRED, GREEN compile smoke (#633) — deliberately not
   # the old advisory `continue-on-error` `windows-smoke` job (#928) that #960 had
   # to remove: that one published a red check the Goobers merge flow (which has no

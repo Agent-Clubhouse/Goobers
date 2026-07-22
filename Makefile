@@ -81,6 +81,16 @@ manifests:
 docs:
 	UPDATE_GOLDEN=1 $(GO) test ./cmd/goobers -run 'TestCLIDocsUpToDate|TestFeatureMatrixDocUpToDate'
 
+## test-integration: Run declared-dependency integration tests (missing tools skip locally).
+.PHONY: test-integration
+test-integration:
+	$(GO) run ./test/integration -go $(GO)
+
+## test-integration-strict: Run integration tests with missing-tool skips forbidden.
+.PHONY: test-integration-strict
+test-integration-strict:
+	TESTDEP_STRICT=1 $(GO) run ./test/integration -go $(GO)
+
 ## test-envtest: Run tests with envtest binaries provisioned (operator integration).
 .PHONY: test-envtest
 test-envtest:
@@ -227,7 +237,7 @@ ci:
 ## verify-full: Run all merge, integration, platform, and coverage gates.
 .PHONY: verify-full
 .NOTPARALLEL: verify-full
-verify-full: ci test-e2e test-envtest cover-check sandbox-check linux-node-validation
+verify-full: ci test-integration-strict test-e2e test-envtest cover-check sandbox-check linux-node-validation
 
 ## clean: Remove build artifacts.
 .PHONY: clean
