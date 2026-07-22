@@ -9,12 +9,13 @@ import (
 
 func TestInvocationEnvelopeRoundTrip(t *testing.T) {
 	in := InvocationEnvelope{
-		TaskID:     "implement-001",
-		WorkflowID: "default-implement",
-		RunID:      "0af7651916cd43dd8448eb211c80319c",
-		Gaggle:     "acme-web",
-		Goal:       "Implement the backlog item and open a PR.",
-		Workspace:  "/var/goobers/runs/0af7/worktrees/implement-001",
+		TaskID:              "implement-001",
+		WorkflowID:          "default-implement",
+		RunID:               "0af7651916cd43dd8448eb211c80319c",
+		Gaggle:              "acme-web",
+		Goal:                "Implement the backlog item and open a PR.",
+		InstructionAddendum: "Use the existing rate limiter instead of adding a new dependency.",
+		Workspace:           "/var/goobers/runs/0af7/worktrees/implement-001",
 		Item: &BacklogItem{
 			ID: "1421", Provider: ProviderGitHub, Title: "Add rate limiting",
 			URL: "https://github.com/acme/web/issues/1421", Labels: []string{"goobers"},

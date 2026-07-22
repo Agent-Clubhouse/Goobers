@@ -92,6 +92,9 @@ The runner hands the stage an `InvocationEnvelope`:
 - `capabilities[]` — the capability grants the stage's definition declares (e.g.
   `github:issues:write`). **Capability admission fails closed**: credentials for a
   capability not listed here are never materialized (§5).
+- `instructionAddendum` — an optional operator-supplied instruction appended to
+  the agent's configured instructions for one explicit rerun invocation. It is
+  journaled with the intervention and never written to the workflow definition.
 - `inputs` — the stage's own static config from its definition.
 - `item`, `repoRef`, `limits` — the triggering backlog item, target repo, and
   execution bounds.

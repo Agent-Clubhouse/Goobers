@@ -153,16 +153,23 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: read events for run %q: %w", in.RunID, err)
 	}
+	rerun, seedEvents, err := pendingRerun(events, in.Machine)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: restore pending stage rerun for run %q: %w", in.RunID, err)
+	}
+	if rerun == nil {
+		seedEvents = events
+	}
 
 	// Reconstruct the walk-local state a live run only ever holds in memory —
 	// pointers accumulated so far (#107) and the last finished stage's result
 	// (#108), the subject a resumed gate needs. Both are exactly what a live
 	// walk carries forward call-to-call within one process; a crash loses
 	// that memory, so Resume rebuilds it from the journal every time.
-	seed := walkSeed{pointers: reconstructPointers(events)}
-	lastStage, lastResult, hasLast := lastFinishedSubject(events)
+	seed := walkSeed{pointers: reconstructPointers(seedEvents)}
+	lastStage, lastResult, hasLast := lastFinishedSubject(seedEvents)
 	seed.lastStage, seed.lastResult = lastStage, lastResult
-	seed.workspaceBranch = lastWorkspaceBranch(events, in.Machine, r.branchNamespaceFor(id.Gaggle))
+	seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
 
 	// state.json's MachineState is a checked hint, not a requirement
 	// (#242): read it when available, but a missing/corrupt checkpoint no
@@ -175,7 +182,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	// stage.finished (hasLast false) falls back to the machine's own
 	// declared start state — the same state Start() itself begins at.
 	var startState string
-	if st, serr := rd.State(); serr == nil {
+	if rerun != nil {
+		startState = rerun.stage
+	} else if st, serr := rd.State(); serr == nil {
 		startState = st.MachineState
 	}
 	if startState == "" {
@@ -200,8 +209,12 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	var resume *resumeContext
 	if t, isTask := in.Machine.Task(startState); isTask {
 		if attempt := interruptedAttempt(events, startState); attempt > 0 {
-			resume = &resumeContext{stage: startState, attempt: attempt}
-		} else if hasLast && lastStage == startState {
+			resume = &resumeContext{
+				stage:   startState,
+				attempt: attempt,
+				class:   startedAttemptClass(events, startState, attempt),
+			}
+		} else if rerun == nil && hasLast && lastStage == startState {
 			// state.json's machineState still names this task (walk's
 			// SetMachineState timing: it's set BEFORE dispatch and not
 			// reassigned until the transition decision after runTask
@@ -236,7 +249,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	defer span.End()
 	setStalledAttemptContext(ctx)
 
-	result, err := r.walk(ctx, jr, startIn, startState, resume, gateRepassSeed(events), gateDiffSeed(events), registrar, seed)
+	gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)
+	gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
+	result, err := r.walk(ctx, jr, startIn, startState, resume, rerun, gateAttempts, gateDiffDigests, registrar, seed)
 	if err != nil {
 		span.Fail(err)
 		return result, err
@@ -408,10 +423,8 @@ func RestoredWorkspaceBranch(events []journal.Event, machine *workflow.Machine, 
 }
 
 func isInterruptedAttemptMarker(e journal.Event) bool {
-	return e.Type == journal.EventStageFinished &&
-		e.AttemptClass == journal.AttemptInfra &&
-		e.Error != nil &&
-		e.Error.Code == interruptedAttemptErrorCode
+	marker, ok := e.Runner[interruptedAttemptMarkerKey].(bool)
+	return e.Type == journal.EventStageFinished && ok && marker
 }
 
 // gateRepassSeed reconstructs internal/gate.Evaluator.Attempts from the
@@ -496,6 +509,16 @@ func interruptedAttempt(events []journal.Event, stageName string) int {
 		return started
 	}
 	return 0
+}
+
+func startedAttemptClass(events []journal.Event, stageName string, attempt int) journal.AttemptClass {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type == journal.EventStageStarted && event.Stage == stageName && event.Attempt == attempt {
+			return event.AttemptClass
+		}
+	}
+	return ""
 }
 
 // resumeItem reconstructs the originating backlog item from its immutable

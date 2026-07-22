@@ -46,12 +46,35 @@ func TestRenderPromptFallsBackToBareNameWithoutResolvedPath(t *testing.T) {
 		},
 		CompletionPath: DefaultResultPath,
 	}
+
 	prompt := renderPrompt(req)
 	if !strings.Contains(prompt, "issue-42") {
 		t.Fatalf("prompt missing context pointer name: %q", prompt)
 	}
 	if strings.Contains(prompt, "available at") {
 		t.Fatalf("prompt fabricated a resolved path for an unresolved pointer: %q", prompt)
+	}
+}
+
+func TestRenderPromptAppendsOneOffInstructionAddendum(t *testing.T) {
+	req := RunRequest{
+		Envelope: apiv1.InvocationEnvelope{
+			Goal:                "implement the change",
+			InstructionAddendum: "Reuse the existing parser.",
+		},
+		Instructions:   "You are the implementer.",
+		CompletionPath: DefaultResultPath,
+	}
+
+	prompt := renderPrompt(req)
+	instructions := strings.Index(prompt, "You are the implementer.")
+	addendum := strings.Index(prompt, "## One-off instruction addendum\n\nReuse the existing parser.")
+	task := strings.Index(prompt, "## Task\n\nimplement the change")
+	if instructions < 0 || addendum <= instructions || task <= addendum {
+		t.Fatalf("prompt does not append the one-off addendum to the agent instructions: %q", prompt)
+	}
+	if !strings.Contains(prompt, "applies only to this invocation and does not modify the workflow definition") {
+		t.Fatalf("prompt does not scope the addendum to one invocation: %q", prompt)
 	}
 }
 

@@ -16,6 +16,16 @@ func renderPrompt(req RunRequest) string {
 	var b strings.Builder
 	if req.Instructions != "" {
 		b.WriteString(strings.TrimSpace(req.Instructions))
+	}
+	if req.Envelope.InstructionAddendum != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("## One-off instruction addendum\n\n")
+		b.WriteString(strings.TrimSpace(req.Envelope.InstructionAddendum))
+		b.WriteString("\n\nThis addendum applies only to this invocation and does not modify the workflow definition.")
+	}
+	if b.Len() > 0 {
 		b.WriteString("\n\n---\n\n")
 	}
 	fmt.Fprintf(&b, "## Task\n\n%s\n\n", req.Envelope.Goal)
