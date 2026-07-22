@@ -29,6 +29,7 @@ const (
 // Level is the lifecycle support level carried by a DSL version.
 type Level string
 
+// DSL version lifecycle levels.
 const (
 	LevelPreview     Level = "preview"
 	LevelSupported   Level = "supported"
