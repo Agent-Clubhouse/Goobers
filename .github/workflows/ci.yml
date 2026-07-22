@@ -3,7 +3,8 @@ name: CI
 # Goobers control-plane and portal CI — the enforced merge gate.
 # Runs the portable Go CI entrypoint (Go fmt/vet/build/test/lint + portal
 # build/test) on Ubuntu and macOS on every PR to main, push to main, and
-# merge-group build. See test/ci for the authoritative full-gate step list.
+# merge-group build. See CONTRIBUTING.md's validation tier contract and test/ci
+# for the authoritative full-gate step list.
 #
 # Windows is gated too, as a required compile smoke (go build + go vet for
 # windows/amd64) — not the full suite yet (#633; full `make ci` on Windows is
@@ -68,13 +69,14 @@ jobs:
             | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      # Single faithful reproduction of the local gate. `make ci` delegates to
-      # this command on Unix without introducing a second implementation.
+      # Portable implementation of the documented `make ci` merge tier. The
+      # Make target delegates here on Unix without a second implementation.
       - name: Portable CI
         run: go run ./test/ci
 
       # Parity with the ADO pipeline's coverage publish (informational; the
-      # coverage *gate* is `make cover-check`, intentionally separate from `ci`).
+      # coverage *gate* is `make cover-check`, part of `verify-full` but
+      # intentionally separate from the merge-tier `ci` target).
       - name: Upload coverage profile
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5
@@ -174,9 +176,7 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Exercise native sandbox
-        env:
-          GOOBERS_REQUIRE_SANDBOX_TEST: "1"
-        run: go test -race ./internal/sandbox
+        run: make sandbox-check
 
   # Linux node validation (#636): prove the shipped binary end to end on Linux —
   # an offline demo run to completion plus the full daemon start/status/stop
@@ -195,35 +195,14 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build goobers
-        run: go build -o bin/goobers ./cmd/goobers
-
-      - name: Validate daemon lifecycle + offline demo run on Linux
-        run: go run ./test/linuxvalidate -bin bin/goobers -out linux-validation-evidence
-
-      # Lock the #639 supervision handler's compile guarantee: the Windows
-      # Service wrapper must build/vet under GOOS=windows even though the full
-      # tree cannot cross-compile until the POSIX abstractions (#620-627) land.
-      # internal/winsvc is self-contained precisely so this stays green today.
-      - name: Cross-compile Windows supervision handler
-        run: |
-          GOOS=windows go build ./internal/winsvc/...
-          GOOS=windows go vet ./internal/winsvc/...
-
-      # Lock the #1090 compile guarantee: the symlink-safe open seam and its
-      # only consumer must build/vet under GOOS=windows even though the full
-      # tree cannot cross-compile until the remaining POSIX abstractions land.
-      # The windows no-follow impl (CreateFile + FILE_FLAG_OPEN_REPARSE_POINT)
-      # is compile-only until the Windows CI job exercises it at runtime.
-      - name: Cross-compile Windows symlink-safe asset open (#1090)
-        run: |
-          GOOS=windows go build ./internal/platform/safeopen/... ./internal/gooberassets/...
-          GOOS=windows go vet ./internal/platform/safeopen/... ./internal/gooberassets/...
+      # Reproduce this full-tier platform gate locally with the same target.
+      - name: Validate Linux node and Windows platform seams
+        run: make linux-node-validation
 
       - name: Upload Linux validation evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5
         with:
           name: linux-validation-evidence
-          path: linux-validation-evidence/
+          path: bin/linux-validation-evidence/
           if-no-files-found: warn
