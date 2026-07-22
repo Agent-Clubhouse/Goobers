@@ -263,16 +263,24 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 	// tail. A terminal reconstructed phase always implies MachineState
 	// should be empty (State's own documented invariant), so healing here
 	// clears it too, and Reason is compared too (#520) so a crash-stranded
-	// refusal's WF-016 text still reaches state.json on the next open. Only
-	// the terminal direction is healed: a non-terminal reconstructed phase
-	// can't tell us the correct MachineState (that requires the workflow
-	// Machine, which this package doesn't have), so a missing/corrupt
-	// checkpoint for a still-running run is left for the caller (Resume) to
-	// fall back on, not fabricated here.
+	// refusal's WF-016 text still reaches state.json on the next open. The
+	// terminal direction is always healed. A run.resumed event is the one
+	// non-terminal case the journal can heal exactly because it durably names
+	// the chosen MachineState; other running checkpoints still require the
+	// workflow Machine and remain the caller's responsibility.
 	needsCheckpoint := tornBytes > 0
 	if r.phase != PhaseRunning {
 		if diskErr != nil || diskSt.Phase != r.phase || diskSt.MachineState != "" || diskSt.Reason != r.reason {
 			r.machineState = ""
+			needsCheckpoint = true
+		}
+	} else if resumed, ok := latestActiveResume(events); ok {
+		// The resume target is exact only while the checkpoint has not advanced
+		// beyond run.resumed. Once later stage/gate events exist, reconstructing
+		// the current node requires the workflow Machine and stays Runner work.
+		if diskErr == nil && diskSt.LastSeq <= resumed.Seq &&
+			(diskSt.Phase != PhaseRunning || diskSt.MachineState != resumed.Target) {
+			r.machineState = resumed.Target
 			needsCheckpoint = true
 		}
 	}
@@ -302,7 +310,10 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 // truth — rather than trusting the derived state.json checkpoint.
 func reconstructPhase(events []Event) RunPhase {
 	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == EventRunFinished {
+		switch events[i].Type {
+		case EventRunResumed:
+			return PhaseRunning
+		case EventRunFinished:
 			return phaseFromStatus(events[i].Status)
 		}
 	}
@@ -316,7 +327,10 @@ func reconstructPhase(events []Event) RunPhase {
 // mirroring Run.Append's own reason tracking.
 func reconstructReason(events []Event) string {
 	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == EventRunFinished {
+		switch events[i].Type {
+		case EventRunResumed:
+			return ""
+		case EventRunFinished:
 			if events[i].Error != nil {
 				return events[i].Error.Message
 			}
@@ -324,6 +338,18 @@ func reconstructReason(events []Event) string {
 		}
 	}
 	return ""
+}
+
+func latestActiveResume(events []Event) (Event, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		switch events[i].Type {
+		case EventRunResumed:
+			return events[i], true
+		case EventRunFinished:
+			return Event{}, false
+		}
+	}
+	return Event{}, false
 }
 
 // readEvents parses events.jsonl, returning the durably-committed events and the

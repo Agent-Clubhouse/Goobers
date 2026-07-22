@@ -158,6 +158,27 @@ func TestRunWaitReporterRetainsTerminalEventAcrossPolls(t *testing.T) {
 	}
 }
 
+func TestRunWaitReporterReopensAfterRunResumed(t *testing.T) {
+	var progress synchronizedBuffer
+	reporter := newRunWaitReporter("run-resumed", &progress)
+	started := reporter.lastHeartbeat
+	reporter.observe([]journal.Event{
+		{Seq: 1, Type: journal.EventRunStarted, Time: started},
+		{Seq: 2, Type: journal.EventRunFinished, Time: started.Add(time.Second), Status: string(journal.PhaseEscalated)},
+		{
+			Seq: 3, Type: journal.EventRunResumed, Time: started.Add(2 * time.Second),
+			Actor: "operator@example.test", Target: "implement",
+		},
+	}, started.Add(2*time.Second))
+
+	if reporter.terminal {
+		t.Fatal("reporter remained terminal after run.resumed")
+	}
+	if got := progress.String(); !strings.Contains(got, "resumed by operator@example.test at implement") {
+		t.Fatalf("progress = %q, want human resume transition", got)
+	}
+}
+
 func waitForProgress(t *testing.T, progress *synchronizedBuffer, want string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * runPollInterval)

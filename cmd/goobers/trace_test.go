@@ -1160,6 +1160,15 @@ func TestFormatEvent(t *testing.T) {
 			want:  "[2] run.finished status=completed",
 		},
 		{
+			name: "run resumed",
+			event: journal.Event{
+				Seq: 2, Type: journal.EventRunResumed, Status: "escalated",
+				Actor: "operator@example.test", Target: "implement", WorkflowVersion: 3,
+				WorkflowDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			},
+			want: "[2] run.resumed actor=operator@example.test target=implement from=escalated workflowVersion=3 workflowDigest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+		{
 			name: "stage started initial attempt",
 			event: journal.Event{
 				Seq: 3, Type: journal.EventStageStarted, Stage: "implement", Attempt: 1,
@@ -1288,6 +1297,21 @@ func TestFormatEvent(t *testing.T) {
 				t.Errorf("formatEvent() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestTraceEventsTerminalUsesLatestLifecycleEvent(t *testing.T) {
+	events := []readservice.RunEvent{
+		{Type: journal.EventRunStarted},
+		{Type: journal.EventRunFinished},
+		{Type: journal.EventRunResumed},
+	}
+	if traceEventsTerminal(events) {
+		t.Fatal("traceEventsTerminal = true after run.resumed, want false")
+	}
+	events = append(events, readservice.RunEvent{Type: journal.EventRunFinished})
+	if !traceEventsTerminal(events) {
+		t.Fatal("traceEventsTerminal = false after the next run.finished, want true")
 	}
 }
 

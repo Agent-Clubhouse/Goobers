@@ -143,33 +143,36 @@ type EventList struct {
 // populated for the schema this build owns; Raw retains an unknown event's
 // complete scrubbed JSON for forward-compatible inspection.
 type RunEvent struct {
-	Schema       string                 `json:"schema"`
-	Seq          uint64                 `json:"seq"`
-	Type         journal.EventType      `json:"type"`
-	Branch       int                    `json:"branch"`
-	Time         time.Time              `json:"time"`
-	KnownSchema  bool                   `json:"knownSchema"`
-	Stage        string                 `json:"stage,omitempty"`
-	Attempt      int                    `json:"attempt,omitempty"`
-	AttemptClass string                 `json:"attemptClass,omitempty"`
-	Gate         string                 `json:"gate,omitempty"`
-	Verdict      string                 `json:"verdict,omitempty"`
-	Target       string                 `json:"target,omitempty"`
-	Escalated    bool                   `json:"escalated,omitempty"`
-	Status       string                 `json:"status,omitempty"`
-	Outputs      map[string]any         `json:"outputs,omitempty"`
-	Artifacts    []ArtifactMetadata     `json:"artifacts,omitempty"`
-	Artifact     *ArtifactMetadata      `json:"artifact,omitempty"`
-	Name         string                 `json:"name,omitempty"`
-	ExternalRef  *journal.ExternalRef   `json:"externalRef,omitempty"`
-	Error        *journal.ErrorDetail   `json:"error,omitempty"`
-	Redaction    *journal.RedactionInfo `json:"redaction,omitempty"`
-	Runner       map[string]any         `json:"runner,omitempty"`
-	Workflow     string                 `json:"workflow,omitempty"`
-	RunID        string                 `json:"runId,omitempty"`
-	Reason       string                 `json:"reason,omitempty"`
-	Raw          json.RawMessage        `json:"raw,omitempty"`
-	JournalEvent *journal.Event         `json:"-"`
+	Schema          string                 `json:"schema"`
+	Seq             uint64                 `json:"seq"`
+	Type            journal.EventType      `json:"type"`
+	Branch          int                    `json:"branch"`
+	Time            time.Time              `json:"time"`
+	KnownSchema     bool                   `json:"knownSchema"`
+	Stage           string                 `json:"stage,omitempty"`
+	Attempt         int                    `json:"attempt,omitempty"`
+	AttemptClass    string                 `json:"attemptClass,omitempty"`
+	Gate            string                 `json:"gate,omitempty"`
+	Verdict         string                 `json:"verdict,omitempty"`
+	Target          string                 `json:"target,omitempty"`
+	Escalated       bool                   `json:"escalated,omitempty"`
+	Status          string                 `json:"status,omitempty"`
+	Actor           string                 `json:"actor,omitempty"`
+	WorkflowVersion int                    `json:"workflowVersion,omitempty"`
+	WorkflowDigest  string                 `json:"workflowDigest,omitempty"`
+	Outputs         map[string]any         `json:"outputs,omitempty"`
+	Artifacts       []ArtifactMetadata     `json:"artifacts,omitempty"`
+	Artifact        *ArtifactMetadata      `json:"artifact,omitempty"`
+	Name            string                 `json:"name,omitempty"`
+	ExternalRef     *journal.ExternalRef   `json:"externalRef,omitempty"`
+	Error           *journal.ErrorDetail   `json:"error,omitempty"`
+	Redaction       *journal.RedactionInfo `json:"redaction,omitempty"`
+	Runner          map[string]any         `json:"runner,omitempty"`
+	Workflow        string                 `json:"workflow,omitempty"`
+	RunID           string                 `json:"runId,omitempty"`
+	Reason          string                 `json:"reason,omitempty"`
+	Raw             json.RawMessage        `json:"raw,omitempty"`
+	JournalEvent    *journal.Event         `json:"-"`
 }
 
 // ArtifactMetadata deliberately omits journal-relative paths. Content is
@@ -788,6 +791,10 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 			continue
 		}
 		switch event.Type {
+		case journal.EventRunResumed:
+			phase = journal.PhaseRunning
+			finishedAt = nil
+			currentStage = event.Target
 		case journal.EventStageStarted:
 			currentStage = event.Stage
 			switch event.AttemptClass {
@@ -1130,6 +1137,9 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	projected.Target = event.Target
 	projected.Escalated = event.Escalated
 	projected.Status = event.Status
+	projected.Actor = event.Actor
+	projected.WorkflowVersion = event.WorkflowVersion
+	projected.WorkflowDigest = event.WorkflowDigest
 	projected.Outputs = scalarOutputs(event.Outputs)
 	for _, ref := range event.Artifacts {
 		if metadata, ok := artifacts.match(

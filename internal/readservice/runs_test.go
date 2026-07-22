@@ -113,6 +113,51 @@ func finishFixtureRun(t *testing.T, run *journal.Run, clock *fixtureClock, phase
 	}
 }
 
+func TestRunSummaryReflectsHumanTerminalResume(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	started := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-human-resumed", machine.Def.Name, machine.Def.Spec.Gaggle,
+		started, journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunResumed, Status: string(journal.PhaseEscalated), Target: "implement",
+		Actor: "operator@example.test", WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := service.GetRun(context.Background(), "run-human-resumed")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if detail.Phase != journal.PhaseRunning || detail.Terminal ||
+		detail.CurrentStage != "implement" || detail.FinishedAt != nil {
+		t.Fatalf("resumed detail = %+v, want active run at implement with no finish time", detail.RunSummary)
+	}
+
+	ledger, err := service.RunEvents(context.Background(), "run-human-resumed")
+	if err != nil {
+		t.Fatalf("RunEvents: %v", err)
+	}
+	resumed := ledger.Events[len(ledger.Events)-1]
+	if resumed.Type != journal.EventRunResumed ||
+		resumed.Actor != "operator@example.test" ||
+		resumed.WorkflowVersion != machine.Def.Version ||
+		resumed.WorkflowDigest != machine.Digest() {
+		t.Fatalf("projected run.resumed = %+v", resumed)
+	}
+}
+
 func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	base := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)

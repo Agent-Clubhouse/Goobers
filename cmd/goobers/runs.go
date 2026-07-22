@@ -264,27 +264,15 @@ func runEntryError(name string, err error) error {
 	return fmt.Errorf("inspect run entry %q: %w", name, err)
 }
 
-// runPhase prefers the state.json checkpoint (the fast path); if it's missing —
-// e.g. a run whose first checkpoint hasn't landed yet — it falls back to the
-// terminal run.finished event's Status, the same source of truth
-// journal.Recover reconstructs the phase from. A run with neither is still
-// running.
+// runPhase reads the event log first because it is the source of truth for both
+// run.finished and run.resumed lifecycle transitions. state.json is only a
+// fallback for a temporarily unreadable log.
 func runPhase(reader *journal.Reader) journal.RunPhase {
+	if phase, err := reader.Phase(); err == nil {
+		return phase
+	}
 	if st, err := reader.State(); err == nil {
 		return st.Phase
-	}
-	events, err := reader.Events()
-	if err != nil {
-		return journal.PhaseRunning
-	}
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type != journal.EventRunFinished {
-			continue
-		}
-		switch phase := journal.RunPhase(events[i].Status); phase {
-		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-			return phase
-		}
 	}
 	return journal.PhaseRunning
 }

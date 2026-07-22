@@ -143,6 +143,70 @@ func TestReaderPhaseReconstructsFromLogNotCheckpoint(t *testing.T) {
 	}
 }
 
+func TestRunResumedReopensTerminalPhaseAndRecoversTarget(t *testing.T) {
+	root := t.TempDir()
+	run, err := Create(root, testIdentity(), nil, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := run.Append(Event{
+		Type: EventRunFinished, Status: string(PhaseEscalated),
+		Error: &ErrorDetail{Code: "needs_human", Message: "review exhausted"},
+	}); err != nil {
+		t.Fatalf("Append run.finished: %v", err)
+	}
+	if err := run.Append(Event{
+		Type: EventRunResumed, Status: string(PhaseEscalated), Target: "implement",
+		Actor: "operator@example.test", WorkflowVersion: testIdentity().WorkflowVersion,
+		WorkflowDigest: testIdentity().WorkflowDigest,
+	}); err != nil {
+		t.Fatalf("Append run.resumed: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	dir := filepath.Join(root, testIdentity().RunID)
+	stale := State{
+		Schema: StateSchema, RunID: testIdentity().RunID, Phase: PhaseEscalated,
+		Reason: "review exhausted", LastSeq: 2, UpdatedAt: fixedClock()(),
+	}
+	data, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatalf("marshal stale checkpoint: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, fileState), data, 0o644); err != nil {
+		t.Fatalf("write stale checkpoint: %v", err)
+	}
+
+	reader, err := OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		t.Fatalf("Phase: %v", err)
+	}
+	if phase != PhaseRunning {
+		t.Fatalf("Phase() = %q, want running from the last lifecycle event", phase)
+	}
+
+	recovered, _, err := Recover(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if err := recovered.Close(); err != nil {
+		t.Fatalf("Close recovered: %v", err)
+	}
+	state, err := reader.State()
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if state.Phase != PhaseRunning || state.MachineState != "implement" || state.Reason != "" {
+		t.Fatalf("recovered state = %+v, want running at implement with no terminal reason", state)
+	}
+}
+
 // TestRecoverDoesNotHealNonTerminalMissingCheckpoint confirms Recover's
 // healing is one-directional: when the reconstructed phase is still
 // PhaseRunning, an unreadable state.json is left alone rather than

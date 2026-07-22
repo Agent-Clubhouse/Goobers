@@ -11,6 +11,9 @@ type EventType string
 const (
 	// EventRunStarted opens a run; carries the pinned identity echoed from run.yaml.
 	EventRunStarted EventType = "run.started"
+	// EventRunResumed records an explicit human intervention that reopens an
+	// escalated or failed run at a chosen workflow state.
+	EventRunResumed EventType = "run.resumed"
 	// EventRunFinished closes a run with a terminal status.
 	EventRunFinished EventType = "run.finished"
 	// EventStageStarted marks a stage attempt beginning.
@@ -136,13 +139,24 @@ type Event struct {
 	Gate string `json:"gate,omitempty"`
 	// Verdict is the gate decision for gate.evaluated. Normative.
 	Verdict string `json:"verdict,omitempty"`
-	// Target is the branch/state the gate selected. Normative.
+	// Target is the branch/state a gate selected or a run.resumed action chose.
+	// Normative.
 	Target string `json:"target,omitempty"`
 	// Escalated reports that gate evaluation selected its escalation control
 	// branch. Normative.
 	Escalated bool `json:"escalated,omitempty"`
-	// Status is the terminal status for run.finished / stage.finished. Normative.
+	// Status is the terminal status for run.finished / stage.finished, or the
+	// prior terminal phase for run.resumed. Normative.
 	Status string `json:"status,omitempty"`
+	// Actor identifies the human principal that requested a run.resumed action.
+	// Normative.
+	Actor string `json:"actor,omitempty"`
+	// WorkflowVersion is the immutable workflow version re-asserted by a
+	// run.resumed action. Normative.
+	WorkflowVersion int `json:"workflowVersion,omitempty"`
+	// WorkflowDigest is the immutable workflow digest re-asserted by a
+	// run.resumed action. Normative.
+	WorkflowDigest string `json:"workflowDigest,omitempty"`
 	// Outputs mirrors a stage.finished ResultEnvelope's small, scalar-only
 	// Outputs (docs/stage-contract.md) — journaled so a resumed run can
 	// reconstruct a finished stage's result without it (walk's lastStage/

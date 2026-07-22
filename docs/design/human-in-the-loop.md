@@ -26,13 +26,14 @@ Goal ladder (PO):
 - **Automated/agentic escalation works:** bounded repass budget (`DefaultMaxRepasses = 3`) → on exceed,
   the gate branch is overridden to `@escalate` (`internal/gate/evaluate.go`), and `EscalationNotifier`
   posts a **comment on the driving issue/PR** (`internal/gate/escalate.go`) — that's the *entire* surface.
-- **Terminal is terminal.** Phases: `running/completed/failed/aborted/escalated`
-  (`internal/journal/state.go`). `@escalate` → `PhaseEscalated`, retries-exhausted → `PhaseFailed`; both
-  treated as "nothing to resume" (`daemon.go:90`, `runs.go:78`). Crash-`resume.go` only restarts
-  *interrupted still-running* runs — it is **not** a human-triggered rerun/override.
-- **No intervention primitives exist:** no `goobers approve`/`approvals` (#170), no rerun-stage,
-  no gate-verdict override, no checkout/drive, no access-control seam (#172). The failure *cause* is
-  journaled as an `EventError` but there's no summarized "why it escalated" surface (#309).
+- Phases are `running/completed/failed/aborted/escalated` (`internal/journal/state.go`).
+  `@escalate` → `PhaseEscalated`, retries-exhausted → `PhaseFailed`. The runner exposes a durable,
+  human-triggered `ResumeFromTerminal` primitive for those two phases; the CLI/API action surface that
+  invokes it remains separate work. Crash-`Resume` still only restarts interrupted running segments.
+- The higher-level intervention actions remain unimplemented: no `goobers approve`/`approvals` (#170),
+  no instruction addendum, no gate-verdict override, no checkout/drive, no access-control seam (#172).
+  The failure *cause* is journaled as an `EventError` but there's no summarized "why it escalated"
+  surface (#309).
 - The journal **does** already carry what tier-1 needs: per-stage `Attempt`/`AttemptClass`, gate
   `repassAttempt`, artifact pointers per stage, phase, and timing.
 

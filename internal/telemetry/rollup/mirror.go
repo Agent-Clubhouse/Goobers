@@ -27,29 +27,32 @@ import "time"
 // its directory (internal/journal/event.go's own doc comment on those three
 // fields).
 type journalEvent struct {
-	Schema       string              `json:"schema"`
-	Seq          uint64              `json:"seq"`
-	Type         string              `json:"type"`
-	Branch       int                 `json:"branch"`
-	Time         time.Time           `json:"time"`
-	Stage        string              `json:"stage,omitempty"`
-	Attempt      int                 `json:"attempt,omitempty"`
-	AttemptClass string              `json:"attemptClass,omitempty"`
-	Gate         string              `json:"gate,omitempty"`
-	Verdict      string              `json:"verdict,omitempty"`
-	Target       string              `json:"target,omitempty"`
-	Escalated    bool                `json:"escalated,omitempty"`
-	Status       string              `json:"status,omitempty"`
-	Ref          *journalRef         `json:"ref,omitempty"`
-	Name         string              `json:"name,omitempty"`
-	DataSchema   string              `json:"dataSchema,omitempty"`
-	ExternalRef  *journalExternalRef `json:"externalRef,omitempty"`
-	Error        *journalErrorDetail `json:"error,omitempty"`
-	Redaction    *journalRedaction   `json:"redaction,omitempty"`
-	Runner       map[string]any      `json:"runner,omitempty"`
-	Workflow     string              `json:"workflow,omitempty"`
-	RunID        string              `json:"runId,omitempty"`
-	Reason       string              `json:"reason,omitempty"`
+	Schema          string              `json:"schema"`
+	Seq             uint64              `json:"seq"`
+	Type            string              `json:"type"`
+	Branch          int                 `json:"branch"`
+	Time            time.Time           `json:"time"`
+	Stage           string              `json:"stage,omitempty"`
+	Attempt         int                 `json:"attempt,omitempty"`
+	AttemptClass    string              `json:"attemptClass,omitempty"`
+	Gate            string              `json:"gate,omitempty"`
+	Verdict         string              `json:"verdict,omitempty"`
+	Target          string              `json:"target,omitempty"`
+	Escalated       bool                `json:"escalated,omitempty"`
+	Status          string              `json:"status,omitempty"`
+	Actor           string              `json:"actor,omitempty"`
+	WorkflowVersion int                 `json:"workflowVersion,omitempty"`
+	WorkflowDigest  string              `json:"workflowDigest,omitempty"`
+	Ref             *journalRef         `json:"ref,omitempty"`
+	Name            string              `json:"name,omitempty"`
+	DataSchema      string              `json:"dataSchema,omitempty"`
+	ExternalRef     *journalExternalRef `json:"externalRef,omitempty"`
+	Error           *journalErrorDetail `json:"error,omitempty"`
+	Redaction       *journalRedaction   `json:"redaction,omitempty"`
+	Runner          map[string]any      `json:"runner,omitempty"`
+	Workflow        string              `json:"workflow,omitempty"`
+	RunID           string              `json:"runId,omitempty"`
+	Reason          string              `json:"reason,omitempty"`
 }
 
 // Event type values accepted from run and instance journals.
@@ -60,6 +63,7 @@ const (
 	eventRefTouched         = "ref.touched"
 	eventError              = "error"
 	eventRunStarted         = "run.started"
+	eventRunResumed         = "run.resumed"
 	eventRunFinished        = "run.finished"
 	eventSpanRecorded       = "span.recorded"
 	eventTriggerFired       = "trigger.fired"
