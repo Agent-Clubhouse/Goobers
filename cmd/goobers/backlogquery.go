@@ -754,15 +754,15 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 		defer cancel()
 
 		for _, entry := range entries {
-			// Clear the mirror while the claim lock still prevents a new owner
-			// from claiming this item. Keep the ledger entry if provider cleanup
-			// fails so a stage retry retains the item ID needed to try again.
-			if _, rerr := issueProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-				Repository:   repo,
-				ID:           entry.ItemID,
-				RemoveLabels: []string{providers.LabelClaimed},
+			// End the provider claim epoch while the claim lock still prevents a
+			// new local owner from claiming this item. Keep the ledger entry if
+			// provider cleanup fails so a retry retains the item ID.
+			if _, rerr := issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
+				Repository: repo,
+				ID:         entry.ItemID,
+				RunID:      runID,
 			}); rerr != nil {
-				return fmt.Errorf("remove provider claim marker for %s: %w", entry.ItemID, rerr)
+				return fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, rerr)
 			}
 			if rerr := ledger.ReleaseEntry(entry, runID); rerr != nil {
 				return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)

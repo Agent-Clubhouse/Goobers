@@ -469,6 +469,40 @@ func TestGitHubClaimIdempotentAndAlreadyClaimed(t *testing.T) {
 	}
 }
 
+func TestGitHubClaimCanBeReacquiredAfterRelease(t *testing.T) {
+	m := newIssueMock()
+	p, repo := newIssueProvider(t, m)
+	ctx := context.Background()
+
+	first, err := p.ClaimWorkItem(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-A"})
+	if err != nil || !first.Claimed {
+		t.Fatalf("first claim = %+v, %v", first, err)
+	}
+	// Preserve a losing racer breadcrumb from the old epoch. Releasing run-A
+	// must retire this too rather than promote it to the next winner.
+	if err := p.postComment(ctx, repo, "7", claimBreadcrumb("run-racer")); err != nil {
+		t.Fatalf("post losing racer breadcrumb: %v", err)
+	}
+	released, err := p.ReleaseWorkItemClaim(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-A"})
+	if err != nil {
+		t.Fatalf("release claim: %v", err)
+	}
+	if released.HasLabel(LabelClaimed) {
+		t.Fatalf("released item still has %q: %v", LabelClaimed, released.Labels)
+	}
+
+	next, err := p.ClaimWorkItem(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-B"})
+	if err != nil {
+		t.Fatalf("follow-up claim: %v", err)
+	}
+	if !next.Claimed || next.ClaimedBy != "run-B" {
+		t.Fatalf("follow-up claim = %+v, want run-B to own the new epoch", next)
+	}
+	if !next.Item.HasLabel(LabelClaimed) {
+		t.Fatalf("follow-up item labels = %v, want %q restored", next.Item.Labels, LabelClaimed)
+	}
+}
+
 func TestGitHubRateLimitBackoffAndTelemetry(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0

@@ -552,8 +552,7 @@ func TestBacklogQueryReleaseUnblocksAFollowUpClaim(t *testing.T) {
 		t.Fatalf("labels after release = %v, want curator's goobers:ready preserved", releasedLabels)
 	}
 
-	// No residual lease: ForRun finds nothing for the curation run, and an
-	// implementation run can now claim the exact item curation just readied.
+	// No residual lease: ForRun finds nothing for the curation run.
 	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
 	if err != nil {
 		t.Fatal(err)
@@ -561,9 +560,34 @@ func TestBacklogQueryReleaseUnblocksAFollowUpClaim(t *testing.T) {
 	if _, held := reopened.ForRun("curation-run"); held {
 		t.Fatal("curation run should hold no claim after release")
 	}
-	ok, holder, err := reopened.Claim("7", "impl-run", "implementation", DefaultClaimLease)
-	if err != nil || !ok || holder != "impl-run" {
-		t.Fatalf("implementation run should be able to claim the released item: ok=%v holder=%s err=%v", ok, holder, err)
+
+	// Exercise the real follow-up claim so the provider breadcrumb protocol is
+	// covered as well as the ledger. The implementation selector requires the
+	// ready label that curation added above.
+	t.Setenv("GOOBERS_RUN_ID", "impl-run")
+	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", "goobers/status:in-review")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", "1")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-item.json")
+	t.Chdir(t.TempDir())
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("implementation claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	reopened, err = localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, held := reopened.Lookup("7")
+	if !held || entry.RunID != "impl-run" {
+		t.Fatalf("implementation ledger claim = %+v, held=%v; want impl-run", entry, held)
+	}
+	server.mu.Lock()
+	implementationLabels := append([]string(nil), server.issues[7].labels...)
+	server.mu.Unlock()
+	if !hasAnyLabel(implementationLabels, []string{"goobers:claimed"}) {
+		t.Fatalf("labels after implementation claim = %v, want goobers:claimed restored", implementationLabels)
 	}
 }
 
@@ -646,7 +670,7 @@ func TestBacklogQueryReleaseRetainsClaimWhenProviderCleanupFails(t *testing.T) {
 	t.Chdir(t.TempDir())
 
 	code, _, stderr := runArgs(t, "backlog-query", "--release", root)
-	if code != 1 || !strings.Contains(stderr, "remove provider claim marker for 7") {
+	if code != 1 || !strings.Contains(stderr, "release provider claim marker for 7") {
 		t.Fatalf("release: code = %d, stderr = %q, want provider cleanup failure", code, stderr)
 	}
 	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
