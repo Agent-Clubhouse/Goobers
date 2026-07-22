@@ -43,7 +43,8 @@ type StageAttempt struct {
 }
 
 // AgentInvocation is model and harness provenance indexed from an agentic task
-// or reviewer-gate span. Traversal and Attempt are nil for reviewer gates.
+// or reviewer-gate span. Traversal is nil when a task span cannot be associated
+// with a stage attempt; both Traversal and Attempt are nil for reviewer gates.
 type AgentInvocation struct {
 	SpanID         string
 	Kind           string

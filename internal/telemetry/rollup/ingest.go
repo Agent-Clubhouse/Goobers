@@ -513,11 +513,13 @@ func insertAgentInvocation(tx *sql.Tx, runID string, span telemetry.SpanRecord) 
 		if err != nil || attemptNumber < 1 {
 			return fmt.Errorf("rollup: agent span %s has invalid %s attribute %q", span.SpanID, telemetry.AttrAttemptNumber, span.Attributes[telemetry.AttrAttemptNumber])
 		}
-		traversalNumber, err := traversalForUsageSpan(tx, runID, stage, attemptNumber, span)
+		traversalNumber, matched, err := matchingTraversalForSpan(tx, runID, stage, attemptNumber, span)
 		if err != nil {
 			return err
 		}
-		traversal = sql.NullInt64{Int64: int64(traversalNumber), Valid: true}
+		if matched {
+			traversal = sql.NullInt64{Int64: int64(traversalNumber), Valid: true}
+		}
 		attempt = sql.NullInt64{Int64: int64(attemptNumber), Valid: true}
 	}
 
@@ -598,8 +600,19 @@ func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord) error
 }
 
 func traversalForUsageSpan(tx *sql.Tx, runID, stage string, attempt int, span telemetry.SpanRecord) (int, error) {
+	traversal, matched, err := matchingTraversalForSpan(tx, runID, stage, attempt, span)
+	if err != nil {
+		return 0, err
+	}
+	if !matched {
+		return 0, fmt.Errorf("rollup: usage span %s has no matching stage attempt %s/%d", span.SpanID, stage, attempt)
+	}
+	return traversal, nil
+}
+
+func matchingTraversalForSpan(tx *sql.Tx, runID, stage string, attempt int, span telemetry.SpanRecord) (int, bool, error) {
 	if span.StartTime.IsZero() || span.EndTime.IsZero() || span.EndTime.Before(span.StartTime) {
-		return 0, fmt.Errorf("rollup: usage span %s has invalid time window", span.SpanID)
+		return 0, false, fmt.Errorf("rollup: span %s has invalid time window", span.SpanID)
 	}
 	rows, err := tx.Query(`
 		SELECT traversal, started_at
@@ -607,7 +620,7 @@ func traversalForUsageSpan(tx *sql.Tx, runID, stage string, attempt int, span te
 		WHERE run_id = ? AND stage = ? AND attempt = ?
 		ORDER BY traversal`, runID, stage, attempt)
 	if err != nil {
-		return 0, fmt.Errorf("rollup: query traversal for usage span %s: %w", span.SpanID, err)
+		return 0, false, fmt.Errorf("rollup: query traversal for span %s: %w", span.SpanID, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -616,27 +629,24 @@ func traversalForUsageSpan(tx *sql.Tx, runID, stage string, attempt int, span te
 		var candidate int
 		var startedAtText sql.NullString
 		if err := rows.Scan(&candidate, &startedAtText); err != nil {
-			return 0, fmt.Errorf("rollup: scan traversal for usage span %s: %w", span.SpanID, err)
+			return 0, false, fmt.Errorf("rollup: scan traversal for span %s: %w", span.SpanID, err)
 		}
 		startedAt, err := parseTime(startedAtText)
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
 		if startedAt.Before(span.StartTime) || startedAt.After(span.EndTime) {
 			continue
 		}
 		if traversal != 0 {
-			return 0, fmt.Errorf("rollup: usage span %s matches multiple traversals for stage attempt %s/%d", span.SpanID, stage, attempt)
+			return 0, false, fmt.Errorf("rollup: span %s matches multiple traversals for stage attempt %s/%d", span.SpanID, stage, attempt)
 		}
 		traversal = candidate
 	}
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("rollup: iterate traversals for usage span %s: %w", span.SpanID, err)
+		return 0, false, fmt.Errorf("rollup: iterate traversals for span %s: %w", span.SpanID, err)
 	}
-	if traversal == 0 {
-		return 0, fmt.Errorf("rollup: usage span %s has no matching stage attempt %s/%d", span.SpanID, stage, attempt)
-	}
-	return traversal, nil
+	return traversal, traversal != 0, nil
 }
 
 func usageInt64(span telemetry.SpanRecord, name string) (int64, bool, error) {

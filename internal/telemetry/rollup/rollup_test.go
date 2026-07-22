@@ -517,6 +517,15 @@ func TestWithinStageSpanEventsSurviveRollup(t *testing.T) {
 	if events[1].Name != "harness.model_response" || events[1].Attributes["tokens"] != "128" {
 		t.Fatalf("unexpected span event 1: %#v", events[1])
 	}
+
+	invocations, err := db.AgentInvocations(runID)
+	if err != nil {
+		t.Fatalf("AgentInvocations: %v", err)
+	}
+	if len(invocations) != 1 || invocations[0].Stage != "scan" ||
+		invocations[0].Traversal != nil || invocations[0].Attempt == nil || *invocations[0].Attempt != 1 {
+		t.Fatalf("unexpected unmatched agent invocation: %#v", invocations)
+	}
 }
 
 func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
