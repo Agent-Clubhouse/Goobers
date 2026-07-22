@@ -28,29 +28,73 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Generate release notes
+      - name: Resolve feature baseline
+        id: feature-baseline
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: go run ./release/notes -tag "$TAG" -output release-notes.md
+        run: |
+          previous_tag=""
+          release_commit="$(git rev-list --parents -n 1 "$TAG")"
+          if [[ "$release_commit" == *" "* ]]; then
+            previous_tag="$(
+              git tag --merged "$TAG^" --sort=-version:refname --list "v*" |
+                grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' |
+                head -n 1 || true
+            )"
+          fi
+
+          if [[ -z "$previous_tag" ]]; then
+            echo "first=true" >> "$GITHUB_OUTPUT"
+            echo "path=" >> "$GITHUB_OUTPUT"
+          else
+            mkdir -p .release-baseline
+            gh release download "$previous_tag" \
+              --pattern feature-registry.json \
+              --dir .release-baseline
+            test -s .release-baseline/feature-registry.json
+            echo "first=false" >> "$GITHUB_OUTPUT"
+            echo "path=.release-baseline/feature-registry.json" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build release artifacts
         env:
           COMMIT_SHA: ${{ github.sha }}
+          FIRST_FEATURE_SNAPSHOT: ${{ steps.feature-baseline.outputs.first }}
+          PREVIOUS_FEATURES: ${{ steps.feature-baseline.outputs.path }}
           TAG: ${{ github.ref_name }}
         run: |
+          if [[ "$FIRST_FEATURE_SNAPSHOT" == "true" ]]; then
+            baseline=(-first-feature-snapshot)
+          else
+            baseline=(-previous-features "$PREVIOUS_FEATURES")
+          fi
           commit="$(git rev-parse --short=12 "$COMMIT_SHA")"
           date="$(git show -s --format=%cI "$COMMIT_SHA")"
           go run ./release \
             -version "$TAG" \
             -commit "$commit" \
             -date "$date" \
-            -output dist
+            -output dist \
+            "${baseline[@]}"
+
+      - name: Generate release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          go run ./release/notes \
+            -tag "$TAG" \
+            -feature-notes dist/RELEASE_NOTES.md \
+            -output dist/RELEASE_NOTES.md
 
       - name: Verify release artifacts
         env:
           TAG: ${{ github.ref_name }}
         run: |
           (cd dist && sha256sum --check SHA256SUMS)
+          grep --fixed-strings "## Changelog" dist/RELEASE_NOTES.md
+          grep --fixed-strings "## DSL feature-support delta" dist/RELEASE_NOTES.md
+          grep --fixed-strings "## Support policy for external consumers" dist/RELEASE_NOTES.md
           mkdir smoke
           tar -xzf "dist/goobers_${TAG}_linux_amd64.tar.gz" -C smoke
           smoke/goobers --version | grep --fixed-strings "$TAG"
@@ -61,11 +105,11 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TAG" --notes-file release-notes.md
+            gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md
             gh release upload "$TAG" dist/* --clobber
           else
             gh release create "$TAG" dist/* \
               --verify-tag \
               --title "$TAG" \
-              --notes-file release-notes.md
+              --notes-file dist/RELEASE_NOTES.md
           fi

@@ -68,6 +68,7 @@ func run(
 	fs := flag.NewFlagSet("notes", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	tag := fs.String("tag", "", "stable release tag (vMAJOR.MINOR.PATCH)")
+	featureNotes := fs.String("feature-notes", "", "generated feature-policy notes to append")
 	output := fs.String("output", "", "write notes to this file instead of stdout")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -80,6 +81,16 @@ func run(
 	if err != nil {
 		return err
 	}
+	if *featureNotes != "" {
+		generated, err := readFile(*featureNotes)
+		if err != nil {
+			return fmt.Errorf("read feature notes %s: %w", *featureNotes, err)
+		}
+		notes, err = combineFeatureNotes(notes, string(generated))
+		if err != nil {
+			return fmt.Errorf("combine feature notes %s: %w", *featureNotes, err)
+		}
+	}
 	if *output == "" {
 		_, err = io.WriteString(stdout, notes)
 		return err
@@ -88,6 +99,16 @@ func run(
 		return fmt.Errorf("write %s: %w", *output, err)
 	}
 	return nil
+}
+
+func combineFeatureNotes(changelog, generated string) (string, error) {
+	const featureSection = "## DSL feature-support delta"
+	start := strings.Index(generated, featureSection)
+	if start < 0 {
+		return "", fmt.Errorf("missing %q section", featureSection)
+	}
+	return strings.TrimRight(changelog, "\n") + "\n\n" +
+		strings.TrimSpace(generated[start:]) + "\n", nil
 }
 
 func generate(tag string, git gitClient, readFile func(string) ([]byte, error)) (string, error) {

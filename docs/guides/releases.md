@@ -9,9 +9,12 @@ shape) added by [#655](https://github.com/Agent-Clubhouse/Goobers/issues/655).
 Pushing a stable semantic-version tag (`vMAJOR.MINOR.PATCH`) runs
 `.github/workflows/release.yml`. The workflow builds the packaging engine's
 complete matrix, verifies its shared checksum manifest and Linux binary, and
-creates a GitHub Release containing the archives, `SHA256SUMS`, and generated
-release notes. Re-running the workflow updates the existing release and replaces
-its assets, so a partially failed publication can be recovered safely.
+creates a GitHub Release containing the archives, `SHA256SUMS`,
+`feature-registry.json`, and `RELEASE_NOTES.md`. The release body and attached
+notes are the same document: curated highlights and the commit changelog followed
+by the DSL feature-support delta and external-consumer policy. Re-running the
+workflow updates the existing release and replaces its assets, so a partially
+failed publication can be recovered safely.
 
 Release notes combine a curated overview with the first-parent commit history
 since the previous stable tag. Conventional-Commit messages are grouped by type,
@@ -19,7 +22,9 @@ including `BREAKING CHANGE:` and `BREAKING-CHANGE:` footers; non-conforming
 subjects remain visible under **Other changes**. A non-empty curated overview is
 required. Add it at `.github/release-notes/<tag>.md` in the tagged commit, or use
 a non-empty annotated-tag message. A lightweight tag without the matching file
-fails before publication.
+fails before publication. The first stable release explicitly starts an empty
+feature baseline. Later releases download `feature-registry.json` from the
+previous stable GitHub Release; a missing prior snapshot stops publication.
 
 ```sh
 mkdir -p .github/release-notes
@@ -64,8 +69,9 @@ Every non-empty release build writes two metadata assets alongside the binaries:
 - `RELEASE_NOTES.md` is rendered from
   [`release/release-notes.tmpl.md`](../../release/release-notes.tmpl.md). It
   includes newly GA, newly deprecated, and removed features plus the external
-  consumer support policy. Replace the generated highlight placeholder with the
-  curated release summary before publishing.
+  consumer support policy. The tagged workflow combines those sections with its
+  required curated overview and generated commit changelog, then uses the result
+  as both the attached file and the GitHub Release body.
 
 For every release after the first, download `feature-registry.json` from the
 previous GitHub Release and pass it with `-previous-features`. The generator
