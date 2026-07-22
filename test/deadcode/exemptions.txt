@@ -1,9 +1,137 @@
 # Exact analyzer identities only. Every entry requires a concrete reason;
 # test/deadcode rejects broad matching, duplicate entries, and stale exemptions.
 
+# Public API and compatibility surfaces.
+github.com/goobers/goobers/api/v1alpha1.WriteArtifact # Documented stage-contract helper retained for external stage implementations.
 github.com/goobers/goobers/api/v1alpha1.Resource # Conventional Kubernetes API helper retained for external CRD consumers.
 github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory retained for config and tooling consumers.
-github.com/goobers/goobers/internal/bootstrap.RegisterEngine # Quarantined Temporal V2 worker seam retained per docs/ARCHITECTURE.md section 11.
-github.com/goobers/goobers/internal/scheduler.EventTrigger.Name # Provider-event scheduling is a reserved V1 trigger exercised by its package tests.
-github.com/goobers/goobers/internal/testdep.Require # Test-only dependency guard called from integration-tagged test files.
+github.com/goobers/goobers/internal/configdiff.OperationalFields # Public config-drift inventory retained for audit and tooling consumers.
+github.com/goobers/goobers/internal/credentials.WriteAskpassScript # Credential helper retained for isolated Git consumers.
+github.com/goobers/goobers/internal/credentials.GitEnv # Credential environment helper retained for isolated Git consumers.
+github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper retained for config tooling consumers.
+github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory retained for cross-surface parity checks.
+github.com/goobers/goobers/internal/httpapi.PrincipalFromRequest # Authenticated-principal accessor retained for API handler extensions.
+github.com/goobers/goobers/internal/httpapi.WithAuthenticator # Authentication option retained for secured team deployments.
+github.com/goobers/goobers/internal/telemetry.AllAttributes # Telemetry schema inventory retained for exporter and audit consumers.
+github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema validator retained for exporter and audit consumers.
+github.com/goobers/goobers/internal/telemetry/query.HasCapability # Query capability helper retained for external query integrations.
+github.com/goobers/goobers/internal/telemetry/query.MaterializeArtifact # Query artifact helper retained for external query integrations.
+github.com/goobers/goobers/internal/telemetry/query.NotConfiguredSource.Query # Explicit unconfigured project-query implementation retained for optional integrations.
+github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Rollup repair entrypoint retained for maintenance tooling.
+github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper retained for provider webhook integrations.
+github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature lookup retained for validation and tooling consumers.
+github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory API retained for validation tooling.
+github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
+github.com/goobers/goobers/providers.BranchName # Public provider branch helper retained for external provider consumers.
+
+# Build-time generators exercised by drift tests and make docs.
+github.com/goobers/goobers/cmd/goobers.docsRootLong # CLI documentation generator helper invoked by the checked-in drift test.
+github.com/goobers/goobers/cmd/goobers.renderCLIDocs # CLI documentation generator entrypoint invoked by the checked-in drift test.
+github.com/goobers/goobers/cmd/goobers.collectDocCommands # CLI documentation generator helper invoked by the checked-in drift test.
+github.com/goobers/goobers/cmd/goobers.docDisplayName # CLI documentation generator helper invoked by the checked-in drift test.
+github.com/goobers/goobers/cmd/goobers.writeCLIDocs # CLI documentation writer invoked by make docs through the drift test.
+github.com/goobers/goobers/cmd/goobers.isGeneratedDocFile # CLI documentation pruning helper invoked by the checked-in drift test.
+github.com/goobers/goobers/cmd/goobers.docSlugsUnique # CLI documentation collision guard invoked by the checked-in drift test.
+github.com/goobers/goobers/cmd/goobers.renderFeatureMatrix # Feature-matrix generator invoked by the checked-in drift test.
+github.com/goobers/goobers/cmd/goobers.writeFeatureMatrix # Feature-matrix writer invoked by make docs through the drift test.
+github.com/goobers/goobers/internal/apicontract.ValidateRuntimeParity # Contract generator invariant retained for cross-surface drift tests.
+github.com/goobers/goobers/internal/apicontract.validSurface # Contract generator helper reachable through the drift-test invariant.
+github.com/goobers/goobers/internal/clidocs.Command.Name # CLI documentation rendering API retained for the build-time generator.
+github.com/goobers/goobers/internal/clidocs.Command.FullName # CLI documentation rendering API retained for the build-time generator.
+github.com/goobers/goobers/internal/clidocs.Command.Slug # CLI documentation rendering API retained for the build-time generator.
+github.com/goobers/goobers/internal/clidocs.Command.ManFile # CLI documentation rendering API retained for the build-time generator.
+github.com/goobers/goobers/internal/clidocs.Sort # CLI documentation rendering API retained for the build-time generator.
+github.com/goobers/goobers/internal/clidocs.ManPage # CLI documentation rendering API retained for the build-time generator.
+github.com/goobers/goobers/internal/clidocs.ManIndex # CLI documentation rendering API retained for the build-time generator.
+github.com/goobers/goobers/internal/clidocs.Reference # CLI documentation rendering API retained for the build-time generator.
+github.com/goobers/goobers/internal/clidocs.anchor # CLI documentation rendering helper reachable through generator tests.
+github.com/goobers/goobers/internal/clidocs.roffEscapeInline # CLI documentation rendering helper reachable through generator tests.
+github.com/goobers/goobers/internal/clidocs.roffPreformatted # CLI documentation rendering helper reachable through generator tests.
+github.com/goobers/goobers/internal/clidocs.mdEscapeCell # CLI documentation rendering helper reachable through generator tests.
+
+# Test and fixture support intentionally shared across package boundaries.
+github.com/goobers/goobers/internal/harness.FakeAdapter.Name # Scripted conformance harness method retained for deterministic fixtures.
+github.com/goobers/goobers/internal/harness.FakeAdapter.Preflight # Scripted conformance harness method retained for deterministic fixtures.
+github.com/goobers/goobers/internal/harness.FakeAdapter.Run # Scripted conformance harness method retained for deterministic fixtures.
+github.com/goobers/goobers/internal/harness.WriteCompletion # Scripted harness completion helper retained for deterministic fixtures.
+github.com/goobers/goobers/internal/telemetry.NewMemoryExporter # In-memory telemetry exporter retained for cross-package assertions.
+github.com/goobers/goobers/internal/telemetry.MemoryExporter.ExportSpans # In-memory telemetry exporter method retained for cross-package assertions.
+github.com/goobers/goobers/internal/telemetry.MemoryExporter.Shutdown # In-memory telemetry exporter method retained for cross-package assertions.
+github.com/goobers/goobers/internal/telemetry.MemoryExporter.Spans # In-memory telemetry exporter accessor retained for cross-package assertions.
+github.com/goobers/goobers/internal/telemetry.MemoryExporter.Reset # In-memory telemetry exporter reset retained for cross-package assertions.
+github.com/goobers/goobers/internal/testdep.Require # Test-only dependency guard called from integration-tagged test files.
+github.com/goobers/goobers/internal/testdep.require # Test-only dependency guard helper called from integration-tagged test files.
+
+# Test seams retained to exercise fail-closed and lifecycle behavior.
+github.com/goobers/goobers/cmd/goober-runtime.run # Superseded runtime wrapper retained to test the tier-3 reference binary.
+github.com/goobers/goobers/cmd/goobers.reconcileMergeReviewStatusComment # Merge-review reconciliation seam retained for command tests.
+github.com/goobers/goobers/cmd/goobers.refreshBlockedEligibility # Blocked-record refresh seam retained for command tests.
+github.com/goobers/goobers/cmd/goobers.resumeInterruptedRuns # Crash-recovery seam retained for daemon tests.
+github.com/goobers/goobers/cmd/goobers.waitForRunTerminal # Run-wait seam retained for command tests with controlled contexts.
+github.com/goobers/goobers/cmd/goobers.listRuns # Run-list seam retained for command tests with controlled output.
+github.com/goobers/goobers/cmd/goobers.runtimeCommand # Runtime-capability registry seam retained for parity tests.
+github.com/goobers/goobers/cmd/goobers.runtimeSubcommand # Runtime-capability registry seam retained for parity tests.
+github.com/goobers/goobers/cmd/goobers.withRuntimeCapability # Runtime-capability registry seam retained for parity tests.
+github.com/goobers/goobers/cmd/goobers.cliSurfaceActions # Runtime-capability registry seam retained for parity tests.
+github.com/goobers/goobers/cmd/goobers.cliSurfaceActionsFrom # Runtime-capability registry seam retained for parity tests.
+github.com/goobers/goobers/cmd/goobers.runTraceWithFollowContext # Trace follow seam retained for cancellation tests.
+github.com/goobers/goobers/cmd/goobers.runTraceWithFollowContextAndFactory # Trace follow seam retained for cancellation tests.
+github.com/goobers/goobers/internal/harness.WithTranscriptLimit # Harness transcript-boundary option retained for executor tests.
+github.com/goobers/goobers/internal/httpapi.withEventPollInterval # Event-stream timing option retained for deterministic handler tests.
+github.com/goobers/goobers/internal/httpapi.withHeartbeatInterval # Event-stream timing option retained for deterministic handler tests.
+github.com/goobers/goobers/internal/httpapi.withEventHistoryLimit # Event-stream history option retained for deterministic handler tests.
+github.com/goobers/goobers/internal/httpapi.withSubscriberBuffer # Event-stream buffer option retained for deterministic handler tests.
+github.com/goobers/goobers/internal/httpapi.withEventSession # Event-stream session option retained for deterministic handler tests.
+github.com/goobers/goobers/internal/journal.WithClock # Journal clock option retained for deterministic persistence tests.
+github.com/goobers/goobers/internal/localscheduler.WithLedgerClock # Claim-ledger clock option retained for deterministic expiry tests.
+github.com/goobers/goobers/internal/localscheduler.WithClock # Scheduler clock option retained for deterministic trigger tests.
+github.com/goobers/goobers/internal/platform/shutdown.DrainWithEscalation # Shutdown drain helper retained for bounded lifecycle tests.
+github.com/goobers/goobers/internal/sandbox.newNative # Native sandbox constructor retained for platform policy tests.
+github.com/goobers/goobers/internal/sandbox.nativeSandbox.Wrap # Native sandbox wrapper retained for platform policy tests.
+github.com/goobers/goobers/internal/sandbox.New # Sandbox constructor retained for platform policy tests pending runtime wiring.
+github.com/goobers/goobers/internal/sandbox.validate # Sandbox policy validator retained for fail-closed tests.
+github.com/goobers/goobers/internal/sandbox.resolveDirectory # Sandbox directory resolver retained for boundary tests.
+
+# Quarantined, reserved, and extension seams required by the architecture.
+github.com/goobers/goobers/internal/bootstrap.RegisterEngine # Quarantined Temporal V2 worker seam retained per docs/ARCHITECTURE.md section 11.
+github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
+github.com/goobers/goobers/internal/engine.Registry.Get # Version-pinned Temporal engine registry seam retained for tier 3.
+github.com/goobers/goobers/internal/engine.Registry.StartInput # Temporal engine run-start seam retained for tier 3.
+github.com/goobers/goobers/internal/engine.Registry.StartInputVersion # Version-pinned Temporal engine run-start seam retained for tier 3.
+github.com/goobers/goobers/internal/gooberruntime.StaticProviderResolver.RepoProvider # Quarantined runtime provider seam retained for tier 3.
+github.com/goobers/goobers/internal/gooberruntime.KubernetesPreparer.Prepare # Quarantined Kubernetes workspace seam retained for tier 3.
+github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
+github.com/goobers/goobers/internal/instance.NewGitSource # Git-backed config source constructor retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.GitSource.Resolve # Git-backed config source implementation retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.GitSource.materializeRevision # Git-backed config source helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.normalizeGitSourceRef # Git-backed config source helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.GitSource.refreshMirror # Git-backed config source helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.GitSource.cloneMirror # Git-backed config source helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.GitSource.extractRevision # Git-backed config source helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.parseGitTreeEntry # Git-backed config source helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.GitSource.writeBlob # Git-backed config source helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.treeTarget # Git-backed config source helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.validateGitSymlink # Git-backed config source boundary guard retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.GitSource.gitOutput # Git-backed config source command helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.gitSourceEnv # Git-backed config source environment helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/instance.GitSource.commandError # Git-backed config source diagnostic helper retained for team-tier configuration.
+github.com/goobers/goobers/internal/journal.ConformanceView # Cross-runner conformance projection retained for the tier-3 harness.
+github.com/goobers/goobers/internal/journal.projectNormative # Cross-runner conformance helper retained for the tier-3 harness.
+github.com/goobers/goobers/internal/journal.isContextManifestArtifact # Cross-runner conformance helper retained for the tier-3 harness.
+github.com/goobers/goobers/internal/journal.NormativeEvent.String # Cross-runner conformance formatter retained for the tier-3 harness.
+github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
+github.com/goobers/goobers/internal/journal.Reader.Dir # Journal reader accessor retained for external journal tooling.
+github.com/goobers/goobers/internal/localscheduler.ClaimLedger.MigrateLegacyNamespace # Claim-ledger migration seam retained for upgrades from legacy instances.
+github.com/goobers/goobers/internal/localscheduler.ClaimLedger.ForceRelease # Claim-ledger operator seam retained for explicit recovery tooling.
+github.com/goobers/goobers/internal/localscheduler.ActiveRunCounts # Scheduler readiness helper retained for alternate trigger integrations.
+github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration.
+github.com/goobers/goobers/internal/platform/shutdown.Notifier.Reason # Shutdown reason accessor retained for service and diagnostics integrations.
+github.com/goobers/goobers/internal/scheduler.ReadinessFunc.Name # Scheduler readiness adapter retained for pluggable policy checks.
+github.com/goobers/goobers/internal/scheduler.ReadinessFunc.Ready # Scheduler readiness adapter retained for pluggable policy checks.
+github.com/goobers/goobers/internal/scheduler.ConcurrencyLimiter.Name # Scheduler concurrency policy retained for alternate scheduler composition.
+github.com/goobers/goobers/internal/scheduler.ConcurrencyLimiter.Ready # Scheduler concurrency policy retained for alternate scheduler composition.
+github.com/goobers/goobers/internal/scheduler.ScheduleTrigger.Name # Schedule trigger adapter retained for alternate scheduler composition.
+github.com/goobers/goobers/internal/scheduler.ScheduleTrigger.Watch # Schedule trigger adapter retained for alternate scheduler composition.
+github.com/goobers/goobers/internal/scheduler.EventTrigger.Name # Provider-event scheduling is a reserved V1 trigger exercised by its package tests.
+github.com/goobers/goobers/internal/scheduler.EventTrigger.Watch # Provider-event scheduling is a reserved V1 trigger exercised by its package tests.

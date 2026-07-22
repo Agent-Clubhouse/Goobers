@@ -74,3 +74,12 @@ func TestDecodeReportsMatchesDeadcodeSchema(t *testing.T) {
 		t.Fatalf("decoded function = %#v", got)
 	}
 }
+
+func TestAnalyzerArgsUseProductionRoots(t *testing.T) {
+	t.Parallel()
+	got := analyzerArgs([]string{"./cmd/...", "./internal/..."})
+	want := []string{"tool", "deadcode", "-json", "./cmd/...", "./internal/..."}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("analyzer args = %q, want %q", got, want)
+	}
+}

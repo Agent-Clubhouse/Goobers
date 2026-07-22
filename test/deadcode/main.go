@@ -82,8 +82,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func analyze(goCommand string, patterns []string, stderr io.Writer) ([]reportPackage, error) {
-	args := []string{"tool", "deadcode", "-json", "-test"}
-	args = append(args, patterns...)
+	args := analyzerArgs(patterns)
 	command := exec.Command(goCommand, args...)
 	command.Stderr = stderr
 	output, err := command.Output()
@@ -91,6 +90,11 @@ func analyze(goCommand string, patterns []string, stderr io.Writer) ([]reportPac
 		return nil, err
 	}
 	return decodeReports(output)
+}
+
+func analyzerArgs(patterns []string) []string {
+	args := []string{"tool", "deadcode", "-json"}
+	return append(args, patterns...)
 }
 
 func parseExemptions(r io.Reader) (map[string]string, error) {
