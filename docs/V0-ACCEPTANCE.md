@@ -39,7 +39,7 @@ against the responsible issue, per issue #30's scope.
 
 ## Prerequisites
 
-- Go 1.26+ (matches `go.mod`).
+- Go 1.26.5+ (matches `go.mod`).
 - `golangci-lint` on the daemon's `PATH`; the `local-ci` gate inherits the
   daemon's environment, not your interactive shell's (see
   `docs/guides/quickstart.md`).

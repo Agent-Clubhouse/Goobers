@@ -119,6 +119,7 @@ func TestMakefileGatesDelegateToGo(t *testing.T) {
 		"run ./test/configvalidate",
 		"run ./test/integration",
 		"run ./test/hermetic", // test: -> the hermetic Go unit-test wrapper
+		"run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)",
 	} {
 		if !strings.Contains(makefile, want) {
 			t.Errorf("Makefile no longer delegates to `%s`; the gate must stay in Go, not move into a shell script", want)
@@ -168,6 +169,12 @@ func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
 			},
 		},
 		{
+			target: "vulncheck",
+			want: makeTarget{
+				recipes: []string{"$(GOVULNCHECK) ./..."},
+			},
+		},
+		{
 			target: "verify-full",
 			want: makeTarget{
 				recipes: []string{`$(GO) run ./test/ci full "$(MAKE)"`},
@@ -197,9 +204,28 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, target := range []string{"test-integration-strict", "sandbox-check", "linux-node-validation"} {
+	for _, target := range []string{"vulncheck", "test-integration-strict", "sandbox-check", "linux-node-validation"} {
 		if !strings.Contains(workflow, "run: make "+target) {
 			t.Errorf("CI workflow must invoke make %s so the job is locally reproducible", target)
+		}
+	}
+	if !strings.Contains(workflow, "needs: [ci, windows-smoke, shipped-workflows, vulnerability-scan]") {
+		t.Error("required CI aggregate must fail when the vulnerability scan fails")
+	}
+}
+
+func TestScheduledVulnerabilityWorkflowUsesMakeTarget(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "vulnerability-scan.yml"))
+	if err != nil {
+		t.Fatalf("read vulnerability workflow: %v", err)
+	}
+	workflow := string(data)
+
+	for _, want := range []string{"schedule:", "workflow_dispatch:", "run: make vulncheck"} {
+		if !strings.Contains(workflow, want) {
+			t.Errorf("scheduled vulnerability workflow must contain %q", want)
 		}
 	}
 }

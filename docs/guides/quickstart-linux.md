@@ -23,7 +23,7 @@ lifecycle under a real `SIGTERM` — on the GitHub-hosted `ubuntu-latest` runner
 |---|---|
 | Distribution | Ubuntu 24.04 LTS (`ubuntu-latest`) |
 | Architecture | linux/amd64 |
-| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26**) |
+| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.5**) |
 | Git | `git worktree add`/`remove` are the only requirements → **git ≥ 2.17** |
 
 A representative captured run (from the CI evidence artifact): Ubuntu 24.04.4
@@ -52,9 +52,9 @@ cat ./linux-validation-evidence/summary.md
 ## 1. Install prerequisites
 
 ```sh
-# Go — install the toolchain matching go.mod (1.26). Distro packages often lag;
+# Go — install the toolchain matching go.mod (1.26.5). Distro packages often lag;
 # prefer the official tarball:
-curl -sSfL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
+curl -sSfL https://go.dev/dl/go1.26.5.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
 export PATH="/usr/local/go/bin:$(go env GOPATH)/bin:$PATH"
 
 # Git (>= 2.17 — any supported Ubuntu/Debian is newer):
