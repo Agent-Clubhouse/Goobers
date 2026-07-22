@@ -3,6 +3,7 @@ package instance
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,173 @@ notifications: true
 	}
 	if cfg.APIListenAddress() != DefaultAPIListenAddress {
 		t.Fatalf("APIListenAddress = %q, want %q", cfg.APIListenAddress(), DefaultAPIListenAddress)
+	}
+}
+
+func TestLoadConfigWorkflowSource(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourceYAML string
+		want       WorkflowSource
+		wantRef    string
+	}{
+		{
+			name: "local directory",
+			sourceYAML: `
+  kind: local-dir
+  path: ../workflow-config
+`,
+			want:    WorkflowSource{Kind: "local-dir", Path: "../workflow-config"},
+			wantRef: "",
+		},
+		{
+			name: "local git repository",
+			sourceYAML: `
+  kind: git
+  path: ../workflow-config
+  ref: release
+`,
+			want:    WorkflowSource{Kind: "git", Path: "../workflow-config", Ref: "release"},
+			wantRef: "release",
+		},
+		{
+			name: "remote git repository defaults to main",
+			sourceYAML: `
+  kind: git
+  url: https://github.com/acme/workflows.git
+  token:
+    env: WORKFLOW_CONFIG_TOKEN
+`,
+			want: WorkflowSource{
+				Kind:  "git",
+				URL:   "https://github.com/acme/workflows.git",
+				Token: &TokenRef{Env: "WORKFLOW_CONFIG_TOKEN"},
+			},
+			wantRef: "main",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: application
+    token:
+      env: CODE_REPO_TOKEN
+workflowSource:
+`+tt.sourceYAML)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.WorkflowSource == nil {
+				t.Fatal("WorkflowSource is nil")
+			}
+			if got := *cfg.WorkflowSource; !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("WorkflowSource = %+v, want %+v", got, tt.want)
+			}
+			if got := cfg.WorkflowSource.TrackedRef(); got != tt.wantRef {
+				t.Fatalf("TrackedRef = %q, want %q", got, tt.wantRef)
+			}
+			if len(cfg.Repos) != 1 || cfg.Repos[0].Token.Env != "CODE_REPO_TOKEN" {
+				t.Fatalf("workflow source changed target repos: %+v", cfg.Repos)
+			}
+		})
+	}
+}
+
+func TestWorkflowSourceValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		source  WorkflowSource
+		wantErr string
+	}{
+		{
+			name:    "unknown kind",
+			source:  WorkflowSource{Kind: "filesystem", Path: "config"},
+			wantErr: "unsupported kind",
+		},
+		{
+			name:    "local directory missing path",
+			source:  WorkflowSource{Kind: "local-dir"},
+			wantErr: "path is required",
+		},
+		{
+			name:    "local directory with git field",
+			source:  WorkflowSource{Kind: "local-dir", Path: "config", Ref: "main"},
+			wantErr: "accepts only path",
+		},
+		{
+			name:    "git missing location",
+			source:  WorkflowSource{Kind: "git"},
+			wantErr: "exactly one of path or url",
+		},
+		{
+			name:    "git has path and url",
+			source:  WorkflowSource{Kind: "git", Path: "config", URL: "https://example.com/config.git"},
+			wantErr: "exactly one of path or url",
+		},
+		{
+			name: "remote git missing token",
+			source: WorkflowSource{
+				Kind: "git",
+				URL:  "https://example.com/config.git",
+			},
+			wantErr: "remote git token must reference exactly one",
+		},
+		{
+			name: "remote git token has env and file",
+			source: WorkflowSource{
+				Kind:  "git",
+				URL:   "https://example.com/config.git",
+				Token: &TokenRef{Env: "CONFIG_TOKEN", File: "/run/secrets/config-token"},
+			},
+			wantErr: "remote git token must reference exactly one",
+		},
+		{
+			name: "local git with token",
+			source: WorkflowSource{
+				Kind:  "git",
+				Path:  "config",
+				Token: &TokenRef{Env: "CONFIG_TOKEN"},
+			},
+			wantErr: "token is only valid for a remote git url",
+		},
+		{
+			name:    "location with surrounding whitespace",
+			source:  WorkflowSource{Kind: "local-dir", Path: " config"},
+			wantErr: "path must not contain leading or trailing whitespace",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{WorkflowSource: &tt.source}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRejectsInlineWorkflowSourceToken(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+workflowSource:
+  kind: git
+  url: https://github.com/acme/workflows.git
+  token:
+    value: ghp_inlinesecrettoken
+`)
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("expected inline workflow source token to be rejected, got %v", err)
 	}
 }
 

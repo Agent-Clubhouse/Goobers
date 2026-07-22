@@ -28,6 +28,9 @@ const (
 	DefaultWebhookListenAddress = "127.0.0.1:8081"
 	OTLPEndpointEnv             = "GOOBERS_OTLP_ENDPOINT"
 	OTLPInsecureEnv             = "GOOBERS_OTLP_INSECURE"
+	DefaultWorkflowSourceRef    = "main"
+	WorkflowSourceKindLocalDir  = "local-dir"
+	WorkflowSourceKindGit       = "git"
 	DefaultStalledRunTimeout    = 45 * time.Minute
 	DefaultClaimsLockTimeout    = 30 * time.Second
 )
@@ -39,14 +42,18 @@ const (
 // anywhere, so every schedule silently ran in whatever the host process's
 // local zone happened to be).
 type Config struct {
-	APIVersion    string          `json:"apiVersion" yaml:"apiVersion"`
-	Kind          string          `json:"kind" yaml:"kind"`
-	Repos         []RepoRef       `json:"repos" yaml:"repos"`
-	API           APIConfig       `json:"api,omitempty" yaml:"api,omitempty"`
-	Webhook       WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
-	Telemetry     TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
-	RunConditions RunConditions   `json:"runConditions,omitempty" yaml:"runConditions,omitempty"`
-	Retention     RetentionConfig `json:"retention,omitempty" yaml:"retention,omitempty"`
+	APIVersion string    `json:"apiVersion" yaml:"apiVersion"`
+	Kind       string    `json:"kind" yaml:"kind"`
+	Repos      []RepoRef `json:"repos" yaml:"repos"`
+	// WorkflowSource locates the definitions-as-code tree independently of the
+	// target code repositories. Nil keeps the local <instance-root>/config
+	// default.
+	WorkflowSource *WorkflowSource `json:"workflowSource,omitempty" yaml:"workflowSource,omitempty"`
+	API            APIConfig       `json:"api,omitempty" yaml:"api,omitempty"`
+	Webhook        WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
+	Telemetry      TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	RunConditions  RunConditions   `json:"runConditions,omitempty" yaml:"runConditions,omitempty"`
+	Retention      RetentionConfig `json:"retention,omitempty" yaml:"retention,omitempty"`
 	// Notifications opts `goobers up` into native desktop notifications for
 	// escalated and failed runs. It defaults to false.
 	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
@@ -70,6 +77,29 @@ type Config struct {
 	// naming it (docs/design/v1/polyglot-stacks.md §5). Empty claims nothing, so
 	// a Go-only instance that declares no requirements is unaffected.
 	Runner RunnerConfig `json:"runner,omitempty" yaml:"runner,omitempty"`
+}
+
+// WorkflowSource locates the workflow configuration independently of Repos.
+// A local-dir source reads Path directly. A git source reads a committed Ref
+// from either a local repository Path or a remote URL; remote sources require
+// their own token reference.
+type WorkflowSource struct {
+	Kind  string    `json:"kind" yaml:"kind"`
+	Path  string    `json:"path,omitempty" yaml:"path,omitempty"`
+	URL   string    `json:"url,omitempty" yaml:"url,omitempty"`
+	Ref   string    `json:"ref,omitempty" yaml:"ref,omitempty"`
+	Token *TokenRef `json:"token,omitempty" yaml:"token,omitempty"`
+}
+
+// TrackedRef returns the configured git ref, defaulting to main.
+func (s WorkflowSource) TrackedRef() string {
+	if s.Kind != WorkflowSourceKindGit {
+		return ""
+	}
+	if s.Ref == "" {
+		return DefaultWorkflowSourceRef
+	}
+	return s.Ref
 }
 
 // RunnerConfig declares the local runner's static, advertised capability set
@@ -391,6 +421,11 @@ func (c *Config) Validate() error {
 	if err := validateAPIListenAddress(c.APIListenAddress()); err != nil {
 		return fmt.Errorf("api.listen: %w", err)
 	}
+	if c.WorkflowSource != nil {
+		if err := c.WorkflowSource.Validate(); err != nil {
+			return fmt.Errorf("workflowSource: %w", err)
+		}
+	}
 	if err := validateLoopbackListenAddress(c.WebhookListenAddress()); err != nil {
 		return fmt.Errorf("webhook.listen: %w", err)
 	}
@@ -473,6 +508,55 @@ func (c *Config) Validate() error {
 	for i, name := range c.Runner.EnvPassthrough {
 		if !procenv.ValidName(name) {
 			return fmt.Errorf("runner.envPassthrough[%d]: %q is not a valid environment variable name", i, name)
+		}
+	}
+	return nil
+}
+
+// Validate checks workflow-source shape without resolving credentials or
+// accessing the source.
+func (s WorkflowSource) Validate() error {
+	hasPath := s.Path != ""
+	hasURL := s.URL != ""
+
+	switch s.Kind {
+	case WorkflowSourceKindLocalDir:
+		if !hasPath {
+			return fmt.Errorf("path is required for kind %q", s.Kind)
+		}
+		if hasURL || s.Ref != "" || s.Token != nil {
+			return fmt.Errorf("kind %q accepts only path", s.Kind)
+		}
+	case WorkflowSourceKindGit:
+		if hasPath == hasURL {
+			return fmt.Errorf("kind %q must set exactly one of path or url", s.Kind)
+		}
+		if hasURL {
+			if s.Token == nil {
+				return fmt.Errorf("remote git token must reference exactly one of env or file — inline secret values are never permitted (CFG-009, SEC-010)")
+			}
+			hasTokenEnv := s.Token.Env != ""
+			hasTokenFile := s.Token.File != ""
+			if hasTokenEnv == hasTokenFile {
+				return fmt.Errorf("remote git token must reference exactly one of env or file — inline secret values are never permitted (CFG-009, SEC-010)")
+			}
+		} else if s.Token != nil {
+			return fmt.Errorf("token is only valid for a remote git url")
+		}
+	default:
+		return fmt.Errorf("unsupported kind %q (supported: \"local-dir\", \"git\")", s.Kind)
+	}
+
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "path", value: s.Path},
+		{name: "url", value: s.URL},
+		{name: "ref", value: s.Ref},
+	} {
+		if field.value != "" && strings.TrimSpace(field.value) != field.value {
+			return fmt.Errorf("%s must not contain leading or trailing whitespace", field.name)
 		}
 	}
 	return nil
