@@ -1,4 +1,4 @@
-// Package config_acceptance is the M5 config-validation acceptance suite. It is an
+// Package configacceptance is the M5 config-validation acceptance suite. It is an
 // ADVERSARIAL stress layer on top of Dev-1's in-package validator tests: it throws
 // configs that violate distinct state-machine / gate invariants at validate.ValidateDir
 // and asserts each is rejected with a relevant error. These target rules the single
@@ -7,7 +7,7 @@
 //
 // Deliberately broader than the cmd/goobers validation tests, which cover the
 // supported CLI's happy path and exit codes.
-package config_acceptance
+package configacceptance
 
 import (
 	"os"
