@@ -63,6 +63,16 @@ func TestIntegrationTool(t *testing.T) {
 	deps.Require(t, "bwrap")
 }
 `)
+	writeFixture(t, root, "gamma/tool_live_test.go", `//go:build integration
+
+package gamma
+
+import "testing"
+
+func TestToolLive(t *testing.T) {
+	t.Skip("opt-in live test")
+}
+`)
 
 	got, err := scanIntegration(root)
 	if err != nil {
@@ -73,6 +83,33 @@ func TestIntegrationTool(t *testing.T) {
 	}
 	if want := map[string]bool{"bwrap": true, "sh": true, "sleep": true}; !reflect.DeepEqual(got.dependencies, want) {
 		t.Fatalf("dependencies = %v, want %v", got.dependencies, want)
+	}
+}
+
+func TestScanIntegrationDoesNotInferLiveTierFromMissingDeclarations(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "broken/tool_integration_test.go", `//go:build integration
+
+package broken
+
+import "testing"
+
+func TestTool(t *testing.T) {
+	t.Log("missing declared-dependency contract")
+}
+`)
+
+	_, err := scanIntegration(root)
+	if err == nil {
+		t.Fatal("scanIntegration accepted malformed declared-dependency test")
+	}
+	for _, want := range []string{
+		"integration tests must use the TestIntegration prefix",
+		"integration-tagged file has no testdep.Require declaration",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
 	}
 }
 
