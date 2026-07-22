@@ -1,8 +1,8 @@
-# Design: Tutor v2 — version-aware, workflow-scoped self-improvement
+# Design: Tutor v2 — version-aware, instance-scoped process self-improvement
 
 > Status: **Draft for review — not implemented** · Area prefix: `TUT` · Milestone: _proposed_ **Tutor v2**
-> Supersedes the config-only framing of the shipped tutor (`selfhost/gaggles/goobers/workflows/tutor.yaml`).
-> Related issues: #36 (tutor epic), #102 (cross-run detection queries), #104 (config-only write-boundary), #507 (who owns test-suite quality), #150 (`Goober.spec.model`), #417 (first-class agent signal), #776 (usage in envelopes/spans), #769 (journal/telemetry schema migration).
+> Scope: the tutor edits a gaggle's **instance config** (`goobers-instances/<name>/`), never product code (§1.1). Its loop closes through **Workflow CD** (§4.6, M15).
+> Related issues: #36 (tutor epic), #102 (cross-run detection queries), #104 (config-only write-boundary), #453 (Workflow CD / GitOps — the promotion half), #507 (who owns test-suite quality), #150 (`Goober.spec.model`), #417 (first-class agent signal), #776 (usage in envelopes/spans), #769 (journal/telemetry schema migration).
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 
 ## 1. Why this exists
@@ -11,15 +11,33 @@ The **tutor** is Goobers' offline self-improvement workflow: between live tasks 
 journal + telemetry rollup and opens PRs that make the *next* runs better. It already ships and works
 on a narrow slice. The PO asked for two changes that, together, amount to a redesign:
 
-1. **Grounded self-improvement, not just config tuning.** The tutor should be able to improve the
-   **workflow itself** — add/adjust stages, gates, **skills**, and **tests** — not only edit a goober's
-   persona prompt.
+1. **Grounded self-improvement, not just persona tuning.** The tutor should be able to improve the
+   **workflow itself** — add/adjust stages, gates, **skills**, and workflow-level **test / validation
+   stages** — not only edit a goober's persona prompt. (These are all *process* changes; see §1.1 for what
+   that scope explicitly excludes.)
 2. **Version-aware diagnosis.** The tutor must know *which version of which thing* produced an outcome,
    so it does not conflate behaviourally-different versions when it compares "before vs after."
 
 Both are backed by findings from an audit of our own code + run history (§2, §6) and by external prior
 art on offline agent self-improvement (§3). This document proposes the target shape, the governance it
 requires, and a staged backlog.
+
+### 1.1 Scope — the tutor edits the *instance config*, never the product code
+
+The tutor's write target is the **instance's own config namespace** — the deployed gaggle/workflow/goober
+definitions the running daemon reconciles from. For our local self-hosting setup that is
+`~/source/goobers-instances/goobers/*` (a hand-maintained fork of the sample config, see memory:
+instance-config-is-drifted-fork), **not** the Goobers product repo (`selfhost/`, `internal/`, `cmd/`,
+`api/schemas`). For a customer it is *their* instance — the workflows/goobers/skills unique to their code and
+area. Two hard consequences:
+
+- **The tutor is a *process*-improvement agent** (how a gaggle *works*): workflow structure, gates, goober
+  instructions, skills, workflow-level validation. It is **not** a product-code agent.
+- **Product-code learnings belong to a different actor.** Fixing a flaky Go test, `internal/gate.Evaluate`,
+  or telemetry code is *"goobers working on goobers"* — the normal **implementation / remediation** workflows
+  operating on the product repo, driven by issues. That is orthogonal to, and never performed by, the tutor.
+  (This is why the loop closes through GitOps CD, §4.6 — the tutor changes config, CD promotes config; neither
+  touches product code.)
 
 ### The two load-bearing findings
 
@@ -34,12 +52,16 @@ requires, and a staged backlog.
   prompt or model produces **no new digest**, and `AssessEfficacy`'s before/after comparison **silently
   mixes runs whose agent behaviour changed**. That is exactly the version-conflation the PO flagged.
 
-- **The reachability gap (action-space).** The tutor's *stated* ambition (its `analyst`/`config-author`
-  instructions, TUT-011) is broad, but the *enforced* boundary is a single directory: `confineToConfigRoot`
-  with `configRoot: selfhost` (`cmd/goobers/openpr.go` → `cmd/goobers/configboundary.go`), which aborts
-  **fail-closed** before opening a PR if any changed path is outside `selfhost/`. Against our real learnings
-  (§6) that boundary reaches only **~¼–⅓** of what we actually learn — and even some of that only by
-  prompt-patching around a root cause that lives in code.
+- **The reachability gap (action-space, within the process domain).** The tutor's *stated* ambition (its
+  `analyst`/`config-author` instructions, TUT-011) is broad, but its *enforced* boundary is a single directory
+  (`confineToConfigRoot`, `cmd/goobers/openpr.go` → `cmd/goobers/configboundary.go`), which aborts
+  **fail-closed** if any changed path is outside the config root. Even restricting attention to *process*
+  learnings the tutor legitimately owns (§1.1), that single-root boundary is narrower than it needs to be: it
+  cannot author **skill bodies** (skills live outside the config root) and treats the two coverage-gap finding
+  kinds as second-class inputs. (The larger-looking "reaches only ~¼–⅓ of learnings" figure in early analysis
+  counted *product-code* learnings too — but those are the implementation workflows' job, not the tutor's, so
+  the honest gap is: *within the process domain, the tutor can't yet reach skills and full workflow-level
+  test/validation structure.*)
 
 ## 2. What the tutor is today (precise)
 
@@ -50,17 +72,19 @@ requires, and a staged backlog.
 flag only names the first three families, so the two coverage-gap kinds are second-class inputs today.
 
 **Enforced action space (corrected).** The tutor is **not** "instructions + skills only." Its real,
-enforced write scope is *anything expressible as a file under `selfhost/`*: workflow YAML (stages, gates,
+enforced write scope is *anything expressible as a file under its config root*: workflow YAML (stages, gates,
 `next:`/branch routing, capability lists, readiness caps), goober `instructions.md`, goober `goober.yaml`
-(skills-list; `model` once #150 lands), and deterministic shell "test stages." What it **structurally
-cannot touch**: Go tests (`cmd/`, `internal/`), production code, `.github/` CI, `api/schemas/`, CRD
-manifests, and **skill *body* content** (the only skill tree is repo-root `./skills/`, outside `selfhost/`
-— so it can edit a goober's skills-*list* but cannot author a *new skill's* content).
+(skills-list; `model` once #150 lands), and deterministic shell "test stages." Within the *process* domain
+(§1.1) the notable thing it **cannot** author is **skill *body* content** — skills live in a separate skills
+tree outside the config root, so it can edit a goober's skills-*list* but not a *new skill's* content. Product
+code (`internal/`, `cmd/`, `api/schemas`, Go tests, CI) is out of scope **by design**, not by accident (§1.1).
 
-**The self-defeat.** Even the tutor's *in-reach* YAML topology edits cannot land cleanly: editing
-`merge-review.yaml` turns the structural golden `internal/workflow/merge_review_test.go` red, and the tutor
-cannot touch that test to regenerate it. A topology-writing tutor that cannot regenerate goldens ships
-CI-red by construction.
+_Sample-vs-deployed caveat._ The shipped sample `tutor.yaml` sets `configRoot: selfhost`, i.e. it edits the
+Goobers product repo's *own* sample config. That is a self-hosting artifact. A **deployed** tutor's config root
+is the instance directory (`goobers-instances/<name>/`), a repo distinct from the product code — which is why
+the general model has no "product golden" coupling: instance-config edits are validated by the instance's own
+`goobers validate`, not by a product Go golden like `internal/workflow/merge_review_test.go`. (The golden
+coupling only bites the *sample* arrangement; §4.5 keeps a guard for that case.)
 
 ## 3. Prior art (what the field already knows)
 
@@ -145,44 +169,50 @@ Concretely:
 Without this tier the expanded tutor "improves" against a signal that silently mixes versions — so **P1–P3
 gate everything else**.
 
-### 4.2 Action space (expanded, per-target sub-boundaries)
+### 4.2 Action space (expanded, per-target sub-boundaries — all within the instance config)
 
-Replace the single `selfhost/` allow-root with **per-action-class allow-roots, each fail-closed** like today's
-`configboundary.Confine`:
+Replace the single config-root with **per-action-class allow-roots, each fail-closed** like today's
+`configboundary.Confine`. Every root below is **inside the instance config namespace** (§1.1); nothing here is
+product code.
 
-| Action class | Allowed root | Notes |
+| Action class | Allowed root (in the instance config) | Notes |
 |---|---|---|
-| Persona / prompt | goober `instructions.md` under `selfhost/` | today's home turf; keep light-touch |
-| Workflow topology | `selfhost/**/workflows/*.yaml` | already in-reach; **must** co-regenerate goldens (§4.5) |
+| Persona / prompt | goober `instructions.md` | today's home turf; keep light-touch |
+| Workflow topology | `**/workflows/*.yaml` (stages, gates, routing, capabilities, caps) | already in-reach |
 | Gate calibration | gate `check`/threshold/`next` in workflow YAML | subject to the metric-gaming guard (§5) |
-| **Skill body** | the skills root (`./skills/`, see open decision D3) | new — lets the tutor *author* skills, not just list them |
-| **Tests** | a whitelisted `*_test.go` set for the package a finding names | new — the single biggest unlock; **fail-first** required (§5) |
-| Production `.go`, CI, `api/schemas`, CRD | **none** | out of scope for the tutor; stays human/other-workflow |
+| **Skill body** | the instance's skills tree (see open decision D3) | new — lets the tutor *author* skills, not just list them |
+| **Workflow-level test / validation** | test/validation **stages** + `goobers validate`-gated config | new — process regression guards *for the workflows*, expressed as config; **fail-first** required (§5). NOT Go unit tests. |
+| Product code (`internal/`, `cmd/`, `api/schemas`, Go tests, CI) | **none** | out of scope **by design** (§1.1) — the implementation workflows' domain, not the tutor's |
 
-A test-writing action is confined to *test files*; it must not be able to also edit production `.go`. This is
-the disciplined version of "the tutor can touch the workflow, skills, and tests" — bounded per target, not a
-blanket root.
+Each action is confined to its own sub-root; a skill-authoring action cannot also rewrite a workflow, a
+validation-stage action cannot reach outside the config namespace. This is the disciplined version of "the
+tutor can touch the workflow, skills, and validation" — bounded per target, all inside the instance config.
 
-### 4.3 Topology — hybrid two-tier
+### 4.3 Topology — per-workflow → per-gaggle, hard-siloed at the gaggle
 
-Our learnings split cleanly (§6, part D):
+**The gaggle is the tutor's outer boundary, inside a single instance. There is no global/cross-gaggle tutor.**
+Gaggles are intentionally namespaced and siloed — the daemon already builds a Manager + Runner **per gaggle**,
+run-branch namespace is per-gaggle (#965/#1010), and telemetry is already `--gaggle`-filterable. Cross-gaggle
+analysis is **rare-or-impossible by design** (a privileged, explicit exception at most, never the default). A
+consumer gaggle (`acme-web`) is bounded to *its* namespace and *its* instance config; it never sees another
+gaggle's runs — and, per §1.1, it never edits product code either, only its own process config.
+
+Our learnings split cleanly *within a gaggle* (§6, part D):
 
 - **Per-workflow, cheap, frequent, low-blast:** persona gaps, gate calibration, stage wiring — these need
   *local* context (one workflow's own runs and reviewer verdicts).
-- **Cross-cutting, expensive, rare, high-blast:** flaky shared tests, missing regression tests, telemetry
-  integrity, harness/preflight, flow ceilings, shared-evaluator (`internal/gate.Evaluate` touches **every**
-  agentic gate), shared `api/schemas` contracts.
+- **Cross-workflow within the gaggle, higher-blast:** the gaggle's shared skills, its workflow-level test /
+  validation stages, workflow structure, capability declarations, and the gaggle's shared gate calibration.
 
-⇒ **A two-tier hybrid:**
+⇒ **A two-tier hybrid, both tiers confined to one gaggle's instance config:**
 
 1. a **per-workflow tutor** confined to that workflow's own config subtree (persona / gate / wiring), and
-2. a single **global platform tutor** that owns cross-cutting learnings (tests, shared stages, skills,
-   schema) — and is precisely the tier that crosses `selfhost/` and therefore carries the strongest
-   governance (§5).
+2. a **per-gaggle tutor** that owns the gaggle's cross-workflow *process* learnings (the gaggle's shared
+   skills, workflow-level tests, workflow structure). This is the tier that crosses the single-workflow subtree
+   and therefore carries the stronger governance (§5).
 
-A single global-only tutor drowns per-workflow nuance in cross-run aggregates; per-workflow-only tutors are
-each blind to the shared-code/test/flaky class that is the *majority* of hard learnings. (This is a
-recommendation — see open decision D1.)
+A per-gaggle top tier (not global) respects the silo; a per-workflow-only design would be blind to the
+shared-within-gaggle skill/validation/structure class. (Recommendation — see open decision D1.)
 
 ### 4.4 Learning method (adopting the Self-Harness loop)
 
@@ -195,25 +225,79 @@ For each tutor tier, one offline pass:
 3. **Validate before proposing** — held-in/held-out: the change must improve one split without degrading the
    other, evals repeated to defeat single-lucky-run promotion (Self-Harness).
 4. **Human review gate**, differentiated by target (§5).
-5. **Verify live** — after merge, a mandatory holdout re-run on *post-change* telemetry confirms the predicted
-   improvement materialised (closes the propose→validate→verify loop; open decision D4).
+5. **Promote** — the merged change reaches the *running* daemon via GitOps CD (§4.6), not by hand.
+6. **Verify live** — after promotion, a mandatory holdout re-run on *post-change* telemetry (segmented by the
+   new `EffectiveVersion`) confirms the predicted improvement materialised (closes the
+   propose→validate→promote→verify loop; open decision D4). The stronger, future form of this step is shadow /
+   A-B evaluation (§4.7).
 
-### 4.5 Fixing the golden self-defeat
+### 4.5 Validity guard (and the self-hosting-sample golden caveat)
 
-A workflow-structure or shared-stage edit **must** run the dual-assert (`internal/workflow` + `cmd/goobers`,
-across `selfhost` **and** the `config-examples/acme-web` copy) and **regenerate the affected structural
-goldens/manifests** as part of the same PR, or it ships CI-red (see memory: shipped-workflow-yaml-dual-assert,
-new-subcommand-needs-manpage-docsgen, crd-manifests-drifted-not-gated). Golden regeneration is itself a bounded
-crossing into `internal/` test artifacts and must be a scoped, audited capability — not a blanket grant.
+In the general model the tutor edits an instance config repo distinct from the product code, so its edits are
+gated by the instance's own **`goobers validate`** — the required post-edit step is simply "the changed config
+still validates," with no product-code coupling.
+
+The one exception is the **self-hosting sample**, where `configRoot: selfhost` means the tutor is editing the
+product repo's *own* sample config. There, a topology edit to `merge-review.yaml` breaks the product golden
+`internal/workflow/merge_review_test.go` (and the `acme-web` copy; see memory: shipped-workflow-yaml-dual-assert,
+crd-manifests-drifted-not-gated), which the tutor cannot touch — so a topology-writing sample tutor ships CI-red.
+Fix for the sample case only: either grant a **scoped, audited golden-regeneration** step, or (cleaner) point
+the sample tutor at a throwaway instance dir instead of `selfhost/`, matching the deployed model. Deployed
+instances do not hit this.
+
+### 4.6 Delivery — the tutor loop is closed by GitOps CD
+
+The tutor emits **PRs against the gaggle's own instance config repo** (§1.1) — the exact repo a deployed daemon
+should be tracking. A merged PR changes nothing on the *running* daemon unless that config is reconciled to the
+live instance — and today it is not: the live instance's workflow YAML is a hand-maintained drifted fork, not
+updated by a merge (see memory: instance-config-is-drifted-fork). So the tutor's loop is **structurally open**
+without continuous delivery — and this is the *same* fork problem WCD exists to solve, which is why the two are
+one system.
+
+**Workflow CD (#453 / WCD-1..7, milestone 15) is the promotion mechanism that closes it.** With CD, a merged
+tutor PR on the instance repo's tracked `main` is reconciled into the live daemon (poll/watch/hook +
+last-known-good, #458), so the *next* runs actually execute the improved config and the tutor can measure the
+effect. The two efforts compose into one loop:
+
+```
+   mine (§4.1 version-segmented)  →  propose PR (§4.2 bounded)  →  validate held-in/out (§4.4.3)
+        ↑                                                                      │
+   verify live / shadow (§4.7) ← reconcile to live (Workflow CD #458) ← human gate (§5)
+```
+
+Implication: **CD is a soft prerequisite for the tutor's verify-live step and a hard prerequisite for shadow
+evaluation (§4.7).** The provenance foundation (§4.1) is what makes each arrow *measurable*; CD is what makes
+the loop *actuate*. This is the concrete reason the GitOps milestone and the tutor milestone should be
+sequenced together, not independently.
+
+### 4.7 Shadow / A-B evaluation (future milestone)
+
+The verify-live step above is retrospective (measure *after* promoting). The stronger, safer form — and a
+natural future milestone — is to evaluate a proposed change **before** it replaces the live one:
+
+- **Versioned / variant workflows.** A gaggle can hold more than one `EffectiveVersion` of a workflow
+  simultaneously — the *live* (authoritative) version A and a tutor-proposed *candidate* version B.
+- **Shadow execution.** Version B runs **non-authoritatively** alongside A against real work — it produces no
+  merges, comments, or side effects that reach the world (a dry-run / sandboxed sink), but its runs are fully
+  journalled under B's `EffectiveVersion`.
+- **Compare, then promote or discard.** Because A and B are distinguished by the provenance key (§4.1), their
+  cohorts are compared *without conflation*. B is promoted (via CD, §4.6) only if it improves the target metric
+  **and** introduces no new failure/error signatures A didn't have — catching *unforeseen* regressions the
+  offline held-in/held-out split (§4.4.3) can miss. Otherwise it is discarded and the finding re-opened.
+
+This is the "propose → run as shadow → prove desired outcome and no new issues → then promote/replace" loop the
+PO described. It depends on: the provenance key (§4.1, this milestone), CD promotion (§4.6, milestone 15), and
+a new **shadow-run / non-authoritative-sink capability** plus variant-version routing (future). It is
+explicitly **out of scope for Tutor v2's first cut** and tracked as a follow-on milestone (§8).
 
 ## 5. Governance & guardrails
 
 Expanding beyond prose edits introduces failure modes the single path-check does not cover. These are hard
 requirements, each mapped to prior art (§3):
 
-1. **Fail-first tests.** Every tutor-authored test must be demonstrated **red against the pre-fix tree**
-   (reproduces the regression) before green against the fix. A vacuously-passing test that "closes" a finding
-   games the loop. (Analog of #909's "validate every config.")
+1. **Fail-first validation.** Every tutor-authored workflow-level test / validation stage must be demonstrated
+   **red against the pre-fix config** (reproduces the process regression) before green against the fix. A
+   vacuously-passing check that "closes" a finding games the loop. (Analog of #909's "validate every config.")
 2. **Metric-gaming guard (sharpest new risk).** The tutor mines `gate-never-fails` / `gate-repass-churn`. If it
    can also *edit gates*, the cheapest way to improve those metrics is to loosen/delete the noisy gate —
    improving its own score while stripping real coverage. A "noisy" gate can be *miscalibrated, not useless*
@@ -223,63 +307,68 @@ requirements, each mapped to prior art (§3):
 3. **Never self-judge efficacy unaided.** Before/after scoring uses the deterministic version-segmented stats
    (§4.1) plus, where a judgment is needed, **multiple judges + human oversight** — never the tutor grading
    its own change (measurable self-preference bias, §3).
-4. **Blast-radius checks mandatory.** Workflow-structure / shared-stage changes run the dual-assert and the
-   `grep -rl "evaluator: agentic"` audit before landing (§4.5).
-5. **Drift/golden sync is the tutor's job.** Any workflow-YAML edit updates the `acme-web` copy and regenerates
-   affected goldens/manifests in the same PR (§4.5), or the PR is instantly CI-red.
-6. **Differentiated human gate.** CODEOWNERS-differentiated review: prompt/instruction changes stay
-   light-touch; `workflows/**` topology, gate removals, skill bodies, and any `*_test.go` addition require
+4. **Validity gate mandatory.** Every workflow-structure change must pass the instance's own `goobers validate`
+   and the `grep -rl "evaluator: agentic"` audit before landing (§4.5). (The product-golden dual-assert applies
+   only to the self-hosting *sample*, §4.5 — deployed instances gate on `validate`.)
+5. **Differentiated human gate.** CODEOWNERS-differentiated review: prompt/instruction changes stay
+   light-touch; `workflows/**` topology, gate removals, skill bodies, and validation-stage additions require
    explicit human sign-off. Autonomy pressure (sustained-flow-creation-without-drainage) will push to auto-merge
-   tutor PRs — **resist that specifically for structure/test/skill changes.**
-7. **Provenance discipline scales up.** Tutor PRs already cite run-ids + journal pointers (TUT-007). Extend:
-   test additions cite the specific failing run(s) *and* the fail-first reproduction; structure changes cite the
-   aggregate that flagged them. **Meta-risk:** if telemetry integrity is blind (#710/#530), the tutor mines
-   noise and "improves" against phantom signal — so **observability fixes are a prerequisite tier, not a peer**
-   (§6 Class 7).
+   tutor PRs — **resist that specifically for structure/skill/validation changes.**
+6. **Provenance discipline scales up.** Tutor PRs already cite run-ids + journal pointers (TUT-007). Extend:
+   validation additions cite the specific failing run(s) *and* the fail-first reproduction; structure changes
+   cite the aggregate that flagged them. **Meta-risk:** if telemetry integrity is blind (#710/#530), the tutor
+   mines noise and "improves" against phantom signal. Those observability fixes are *product-code* work (not the
+   tutor's job, §1.1), but they are a **prerequisite** for trusting the tutor's inputs — a sequencing
+   dependency, not a tutor action.
 
 ## 6. Empirical learning taxonomy (why the above)
 
 From an audit of our operational-memory corpus + closed run-quality issues, our learnings fall into 8 recurring
-classes. Write-target legend: `instruction` | `skill` | `test`(Go) | `wf-structure`(selfhost YAML) |
-`code-fix`(out of scope) | `infra/policy`.
+classes. The decisive column is **Domain**: is the fix *process config* (the tutor's job, §1.1) or *product
+code* (the implementation workflows' job)? This split is what the PO's "edit the instance, not the main repo"
+directive draws.
 
-| # | Class | Example refs | Write-target(s) | Reachable today? |
+| # | Class | Example refs | Domain | Tutor-reachable? |
 |---|---|---|---|---|
-| 1 | Flaky-test / non-determinism | #745, #827, #1128, wave-705 | code-fix + test + instruction/policy | ✗ (mostly) |
-| 2 | Gate over/under-sensitivity | `gate-never-fails`/`repass-churn`, #608, #415 | wf-structure, instruction, sometimes code-fix | ◑ (YAML slice) |
-| 3 | **Missing regression test** | #707 (only errcheck caught), #415 guard, #909 | **test (Go)** | ✗ — **the biggest unlock** |
-| 4 | Workflow wiring / ordering bug | #929, #496, #1052, #912 | wf-structure (YAML) or code-fix (applyverdict/claim) | ◑ (YAML slice) |
-| 5 | Goober instruction / contract gap | #297/#299/#301/#310, #314 | **instruction** | ✓ (home turf) |
-| 6 | Capability / preflight gap | #735, #238, #284 | wf-structure (decls) + code-fix/infra | ◑ (decls only) |
-| 7 | Provenance / observability gap | #710, #530, #230, #849 | code-fix (telemetry) | ✗ — **caps tutor quality** |
-| 8 | Flow / throughput ceiling | openprcount, claim.go liveness | code-fix + wf-structure (caps) | ◑ (caps only) |
+| 1 | Flaky-test / non-determinism | #745, #827, #1128, wave-705 | **product** (code/test fix) | — not tutor's job |
+| 2 | Gate over/under-sensitivity | `gate-never-fails`/`repass-churn`, #608 | **process** (gate config) | ✓ core tutor |
+| 3 | Missing regression test | #707, #415 guard, #909 | **product** (Go test) — but the *workflow-level* analog (a missing validation stage) is **process** | ◑ process analog only |
+| 4 | Workflow wiring / ordering | #929, #496, #1052, #912 | **process** where it's YAML wiring; **product** where it's `applyverdict`/`claim` logic | ✓ for the config slice |
+| 5 | Goober instruction / contract gap | #297/#299/#301/#310, #314 | **process** (instructions) | ✓ home turf |
+| 6 | Capability / preflight gap | #735, #238, #284 | **process** (declarations) + **product** (preflight logic) | ◑ declarations |
+| 7 | Provenance / observability gap | #710, #530, #230, #849 | **product** (telemetry code) | — not tutor's job, but a prerequisite (§5.6) |
+| 8 | Flow / throughput ceiling | openprcount, claim.go liveness | **product** (scheduler code) + **process** (readiness caps) | ◑ caps only |
 
-Cross-class modifiers: **drift/dual-copy** (selfhost + acme-web, goldens, manifests) and **platform
-portability** — both almost always resolve to test/CI + code outside the config root.
-
-**Reachability:** exactly **1 class fully reachable** (Class 5) and **~4 partially** (only their YAML slice);
-by volume of concrete learnings, the current config-only tutor addresses ~¼–⅓. **Class 3 (missing tests)** is
-the single largest thing the expansion unlocks; **Class 7 (observability)** feeds the tutor and so is a
-prerequisite, not a peer.
+**Reachability, honestly stated:** the *process* classes (2, 4-YAML, 5, 6-decls, 8-caps) are squarely the
+tutor's domain and mostly reachable today; the expansion adds **skill bodies** and **workflow-level
+validation stages** (Class 3's process analog) to that domain. The *product* classes (1, 3-Go, 7, and the code
+halves of 4/6/8) are **deliberately not** the tutor's job — they are "goobers on goobers" implementation work.
+So the redesign is not about reaching into code; it is about making the tutor **complete within the process
+domain** and **version-aware** (§4.1) so its process changes are measured without conflation.
 
 **Topology signal:** Classes 2/4/5 cluster per-workflow (local context); Classes 1/3/6/7/8 + shared-evaluator +
-shared-schema cut across everything (global). ⇒ the two-tier split of §4.3.
+shared-schema cut across the **whole gaggle** (per-gaggle, *not* cross-gaggle — the silo holds). ⇒ the
+per-workflow → per-gaggle split of §4.3.
 
 ## 7. Open decisions (for review)
 
-- **D1 — Topology.** Adopt the hybrid two-tier (per-workflow + one global platform tutor)? _Recommended: yes._
-  Alternatives: single global; per-workflow only.
-- **D2 — Write-authority ceiling.** Confirm the tutor may author **workflow YAML + skill bodies + fail-first
-  Go tests**, but **not** production `.go`, CI, or `api/schemas`. _Recommended: yes_ (matches the PO's "skills,
-  tests, etc." while keeping production code human/other-workflow).
-- **D3 — Skill location.** Skills live at repo-root `./skills/`, outside any tutor root. To let the tutor author
-  skills, either (a) add `./skills/` as a per-target allow-root, or (b) relocate the goobers gaggle's skills
-  under `selfhost/`. _Recommended: (a)_ — smaller blast radius, no move.
-- **D4 — Live-verification gate.** Require a post-merge holdout re-run confirming the predicted improvement
-  before the finding is considered closed? _Recommended: yes_ for structure/test/skill changes; optional for
-  persona tweaks.
-- **D5 — Auto-merge stance.** Structure/test/skill tutor PRs are **never** auto-merged (§5.6); persona/gate-tune
-  PRs may follow the normal review path. Confirm.
+- **D1 — Topology.** Adopt the per-workflow → **per-gaggle** two-tier, with **cross-gaggle rare-or-impossible
+  by design** (the gaggle is the silo)? _Recommended: yes._ Confirms there is **no** global/cross-gaggle tutor.
+- **D2 — Target & write-authority ceiling.** Confirm the tutor writes only to the **instance config namespace**
+  (`goobers-instances/<name>/`, §1.1) — workflow YAML + skill bodies + workflow-level validation stages — and
+  **never** product code (`internal/`, `cmd/`, `api/schemas`, Go tests, CI), which stays with the implementation
+  workflows. _Recommended: yes_ (this is the PO's "edit the instance, not the main repo" directive).
+- **D3 — Skill location.** The instance's skills currently sit outside the config root. To let the tutor author
+  skill bodies, either (a) add the skills tree as a per-target allow-root, or (b) relocate skills under the
+  instance config root. _Recommended: (a)_ — smaller blast radius, no move.
+- **D4 — Live-verification gate.** Require a post-promotion holdout re-run confirming the predicted improvement
+  before a finding is closed? _Recommended: yes_ for structure/skill/validation changes; optional for persona
+  tweaks. (The stronger shadow/A-B form is a future milestone, §4.7.)
+- **D5 — Auto-merge stance.** Structure/skill/validation tutor PRs are **never** auto-merged (§5.5);
+  persona/gate-tune PRs may follow the normal review path. Confirm.
+- **D6 — Milestone sequencing.** Sequence Tutor v2 *with* Workflow CD (§4.6): the tutor's verify-live step is
+  only meaningful once CD reconciles merged config to the live instance. _Recommended: yes_ — treat CD (M15) as
+  a soft prerequisite for Tutor v2 and a hard prerequisite for the shadow/A-B milestone (§4.7).
 
 ## 8. Proposed backlog (staged)
 
@@ -287,14 +376,20 @@ shared-schema cut across everything (global). ⇒ the two-tier split of §4.3.
 `TUT-P1` GooberDigest · `TUT-P2` model+harness version provenance · `TUT-P3` version-segmented efficacy in
 `telemetry-query` (+ cohort rules). (`TUT-P4` journal migration tracked under #769.)
 
-**Tier 1 — action-space + safety (after D1–D5):**
-`TUT-A1` per-target sub-boundaries (replace single `configRoot`) · `TUT-A2` golden/dual-assert co-regeneration
-capability · `TUT-A3` fail-first test-authorship contract · `TUT-A4` metric-gaming guard · `TUT-A5` two-tier
-topology (per-workflow + global) · `TUT-A6` skill-body authoring root · `TUT-A7` differentiated CODEOWNERS
-review gates · `TUT-A8` live-verification holdout.
+**Tier 1 — action-space + safety, all within the instance config (after D1–D6):**
+`TUT-A1` per-target sub-boundaries within the instance config (replace single `configRoot`) · `TUT-A2`
+fail-first validation-authorship contract · `TUT-A3` metric-gaming guard · `TUT-A4` per-workflow → per-gaggle
+topology (no cross-gaggle) · `TUT-A5` skill-body authoring root · `TUT-A6` differentiated CODEOWNERS review
+gates · `TUT-A7` post-promotion live-verification holdout.
 
-**Prerequisite tier (observability — already filed):** #710/#530/#230/#849 land *before* trusting an expanded
-tutor (§5.7).
+**Tier 2 — closes the loop (depends on Workflow CD, M15):** the tutor targets the gaggle's **instance config
+repo** as the CD source (§4.6), so merged tutor PRs reconcile to the live daemon.
+
+**Future milestone — shadow / A-B evaluation (§4.7):** variant-version routing + a non-authoritative shadow-run
+sink, so a candidate version proves itself against live runs before promotion.
+
+**Prerequisite (observability — *product* work, already filed):** #710/#530/#230/#849 land *before* trusting an
+expanded tutor's inputs (§5.6) — a sequencing dependency, not a tutor task.
 
 ## 9. References
 
