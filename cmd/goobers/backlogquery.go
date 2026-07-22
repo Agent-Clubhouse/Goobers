@@ -758,9 +758,10 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 			// new local owner from claiming this item. Keep the ledger entry if
 			// provider cleanup fails so a retry retains the item ID.
 			if _, rerr := issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
-				Repository: repo,
-				ID:         entry.ItemID,
-				RunID:      runID,
+				Repository:       repo,
+				ID:               entry.ItemID,
+				RunID:            runID,
+				LedgerAuthorized: true,
 			}); rerr != nil {
 				return fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, rerr)
 			}

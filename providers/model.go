@@ -697,6 +697,10 @@ type ClaimWorkItemRequest struct {
 	RunID string `json:"runId"`
 	// ClaimLabel overrides the claiming label; defaults to LabelClaimed.
 	ClaimLabel string `json:"claimLabel,omitempty"`
+	// LedgerAuthorized permits release to reconcile a provider marker left by a
+	// historical run. Callers set it only after verifying that RunID currently
+	// owns the authoritative ledger lease.
+	LedgerAuthorized bool `json:"ledgerAuthorized,omitempty"`
 }
 
 // ClaimResult reports the outcome of a claim attempt.

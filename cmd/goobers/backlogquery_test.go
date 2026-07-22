@@ -591,6 +591,53 @@ func TestBacklogQueryReleaseUnblocksAFollowUpClaim(t *testing.T) {
 	}
 }
 
+func TestBacklogQueryReleaseReconcilesHistoricalProviderClaim(t *testing.T) {
+	root := initDemo(t)
+	schedulerDir := filepath.Join(root, "scheduler")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Fix the bug", "goobers:approved", "goobers:claimed")
+	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier Goobers version.")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", "goobers:ready,goobers:needs-human")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", "20")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("claim over historical marker: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, held := ledger.ForRun("curation-run")
+	if !held || entry.ItemID != "7" {
+		t.Fatalf("curation ledger claim = %+v, held=%v; want item 7", entry, held)
+	}
+
+	code, stdout, stderr = runArgs(t, "backlog-query", "--release", root)
+	if code != 0 {
+		t.Fatalf("release historical marker: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := reopened.ForRun("curation-run"); held {
+		t.Fatal("curation run should hold no claim after reconciling release")
+	}
+	server.mu.Lock()
+	labels := append([]string(nil), server.issues[7].labels...)
+	server.mu.Unlock()
+	if hasAnyLabel(labels, []string{"goobers:claimed"}) {
+		t.Fatalf("labels after historical release = %v, want goobers:claimed removed", labels)
+	}
+}
+
 func TestBacklogQueryReleaseReleasesAllClaims(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")

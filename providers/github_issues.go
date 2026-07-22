@@ -380,8 +380,9 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 }
 
 // ReleaseWorkItemClaim ends the current provider claim epoch and removes its label
-// mirror. The release breadcrumb lands first so a successful release never leaves
-// later claimers stuck behind the durable breadcrumb from the previous owner.
+// mirror. A ledger-authorized owner may also retire a historical provider winner.
+// The release breadcrumb lands first so a successful release never leaves later
+// claimers stuck behind the durable breadcrumb from the previous owner.
 func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return WorkItem{}, err
@@ -402,13 +403,19 @@ func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWork
 		return WorkItem{}, err
 	}
 	if claimed && winner != req.RunID {
-		return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
+		if !req.LedgerAuthorized {
+			return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
+		}
 	}
 	before, err := p.GetWorkItem(ctx, req.Repository, req.ID)
 	if err != nil {
 		return WorkItem{}, err
 	}
-	if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(req.RunID)); err != nil {
+	releasedRunID := req.RunID
+	if claimed {
+		releasedRunID = winner
+	}
+	if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(releasedRunID)); err != nil {
 		return WorkItem{}, err
 	}
 	if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
@@ -425,7 +432,7 @@ func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWork
 		Operation: "claim-release",
 		RunID:     req.RunID,
 		Fields: map[string]FieldDigest{
-			"claim":  {Before: digestString("run=" + req.RunID), After: digestString("released")},
+			"claim":  {Before: digestString("run=" + releasedRunID), After: digestString("released")},
 			"labels": {Before: digestLabels(before.Labels), After: digestLabels(final.Labels)},
 		},
 	})
@@ -453,10 +460,16 @@ func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id
 	return ClaimResult{Claimed: claimed, ClaimedBy: winner, Item: item}, nil
 }
 
-// claimWinner reads the issue comments and returns the run id of the recognized
-// claimer in the current epoch. A matching release breadcrumb ends an epoch, so
-// stale winner and losing-racer breadcrumbs cannot block the next owner.
+// claimWinner reads trusted issue comments and returns the run id of the recognized
+// claimer in the current epoch. Only the authenticated provider identity can change
+// epoch state; issue comments from other users are untrusted. A matching release
+// breadcrumb ends an epoch, so stale winner and losing-racer breadcrumbs cannot
+// block the next owner.
 func (p *GitHubProvider) claimWinner(ctx context.Context, repo RepositoryRef, id string) (string, bool, error) {
+	markerAuthor, err := p.AuthenticatedLogin(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve claim marker author: %w", err)
+	}
 	raw, err := p.allIssueComments(ctx, repo, id)
 	if err != nil {
 		return "", false, err
@@ -464,6 +477,9 @@ func (p *GitHubProvider) claimWinner(ctx context.Context, repo RepositoryRef, id
 	sort.Slice(raw, func(i, j int) bool { return raw[i].ID < raw[j].ID })
 	winner := ""
 	for _, c := range raw {
+		if !strings.EqualFold(c.User.Login, markerAuthor) {
+			continue
+		}
 		if releasedBy := claimReleaseRunID(c.Body); releasedBy != "" {
 			if winner == releasedBy {
 				winner = ""

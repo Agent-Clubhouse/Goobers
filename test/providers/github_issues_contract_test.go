@@ -28,6 +28,9 @@ type githubIssueBackend struct {
 func (b *githubIssueBackend) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/user", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]string{"login": "goobers"})
+	})
 	mux.HandleFunc("/repos/acme/app/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		defer b.mu.Unlock()
