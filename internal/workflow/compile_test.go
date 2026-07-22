@@ -974,6 +974,25 @@ func TestCompileGateOutcomeCoverage(t *testing.T) {
 		}
 	})
 
+	t.Run("all missing outcomes share one diagnostic", func(t *testing.T) {
+		spec := apiv1.WorkflowSpec{
+			Gaggle: "web",
+			Start:  "gate-only",
+			Gates: []apiv1.Gate{{
+				Name: "gate-only", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "land-outcome"},
+				Branches: map[string]string{"merged": TerminalComplete},
+			}},
+		}
+		problems := CheckGateOutcomes(Definition{Name: "x", Version: 1, Spec: spec})
+		if len(problems) != 1 {
+			t.Fatalf("CheckGateOutcomes returned %d problems, want one diagnostic: %v", len(problems), problems)
+		}
+		want := `gate "gate-only": producible outcomes "enqueued", "fail" have no branches (would fail closed at evaluation time)`
+		if problems[0] != want {
+			t.Fatalf("CheckGateOutcomes problem = %q, want %q", problems[0], want)
+		}
+	})
+
 	t.Run("queue-outcome full coverage compiles", func(t *testing.T) {
 		spec := apiv1.WorkflowSpec{
 			Gaggle: "web",
