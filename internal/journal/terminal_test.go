@@ -185,3 +185,44 @@ func TestRecoverDoesNotHealNonTerminalMissingCheckpoint(t *testing.T) {
 		t.Fatalf("state.json exists after Recover on a non-terminal run with a missing checkpoint, want still absent: %v", err)
 	}
 }
+
+func TestStageRerunRequestReopensEscalatedRun(t *testing.T) {
+	root := t.TempDir()
+	run, err := Create(root, testIdentity(), nil, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(Event{Type: EventRunFinished, Status: string(PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(Event{
+		Type: EventStageRerunRequested, Stage: "implement", Attempt: 2,
+		AttemptClass: AttemptHuman, Actor: "maintainer",
+		InstructionAddendum: "Reuse the parser seam.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := filepath.Join(root, testIdentity().RunID)
+	reader, err := OpenRead(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase != PhaseRunning {
+		t.Fatalf("phase = %s, want running", phase)
+	}
+	state, err := reader.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Phase != PhaseRunning || state.MachineState != "implement" || state.Reason != "" {
+		t.Fatalf("state after rerun request = %+v", state)
+	}
+}

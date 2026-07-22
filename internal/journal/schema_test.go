@@ -36,6 +36,10 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 	// Exercise a representative spread of event shapes.
 	for _, ev := range []Event{
 		{Type: EventStageStarted, Stage: "impl", Attempt: 1},
+		{
+			Type: EventStageRerunRequested, Stage: "impl", Attempt: 2,
+			Actor: "maintainer@example.com", InstructionAddendum: "Reuse the existing parser.",
+		},
 		{Type: EventStageHeartbeat, Stage: "impl", Attempt: 1},
 		{Type: EventStageFinished, Stage: "impl", Attempt: 2, AttemptClass: AttemptPolicy, Status: "success"},
 		// Outputs/Artifacts populated (#107/#108's resume reconstruction) —

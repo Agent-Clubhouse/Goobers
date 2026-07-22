@@ -539,7 +539,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 			}
 		}
 
-		result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, registrar, walkSeed{})
+		result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, nil, registrar, walkSeed{})
 		if err != nil {
 			span.Fail(err)
 			return result, err
@@ -644,16 +644,13 @@ func (e *executors) agentic(gooberName string) (invoke.Goober, error) {
 	return ag, nil
 }
 
-// resumeContext carries the one piece of resume-specific state walk needs: if
-// the checkpointed resume point is a task that was still in flight when the
-// runner was interrupted (crash or unclean shutdown), the interrupted attempt
-// number to journal as a terminal, infra-tagged failure before continuing —
-// see resume.go's interruptedAttempt. nil for a fresh Start; consumed (set to
-// nil) after its one use, so it never applies to a later dispatch of a
-// different stage.
+// resumeContext identifies a task attempt that was in flight when the runner
+// stopped. Its original class is retained so a human rerun's start/finish audit
+// pair remains matched; ordinary crash recovery still closes it as infra.
 type resumeContext struct {
 	stage   string
 	attempt int
+	class   journal.AttemptClass
 }
 
 const (
@@ -786,7 +783,7 @@ func workspaceBranchFrom(outputs map[string]interface{}, nsPrefix string) string
 // too (#316), and seed reconstructed from the journal (#107/#108). reg is the
 // run's SecretRegistrar (see Start), threaded to every executor constructed
 // here.
-func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, gateAttempts map[string]int, gateDiffDigests map[string]string, reg SecretRegistrar, seed walkSeed) (Result, error) {
+func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, rerun *rerunContext, gateAttempts map[string]int, gateDiffDigests map[string]string, reg SecretRegistrar, seed walkSeed) (Result, error) {
 	ex := newExecutors(r.cfg, jr, reg)
 	gateEval := &gate.Evaluator{
 		Automated:      r.cfg.Automated,
@@ -833,24 +830,41 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 
 		if t, ok := in.Machine.Task(state); ok {
 			startAttempt := int32(1)
+			var firstClass journal.AttemptClass
+			var instructionAddendum string
+			if rerun != nil && rerun.stage == t.Name {
+				startAttempt = int32(rerun.attempt)
+				firstClass = journal.AttemptHuman
+				instructionAddendum = rerun.instructionAddendum
+			}
 			if resume != nil && resume.stage == t.Name {
+				interruptedClass := journal.AttemptInfra
+				if rerun != nil && rerun.stage == t.Name {
+					interruptedClass = resume.class
+				}
 				// The attempt in flight when the runner was interrupted is
-				// terminal now — journal it as a failed, infra-tagged attempt
-				// (never silently re-run, §17) before dispatching the next
-				// one, which continues the SAME attempt count (so a crash
-				// cannot grant a task more attempts than its own policy
-				// allows).
+				// terminal now. Preserve a human rerun's class for an auditable
+				// matched start/finish; ordinary crash recovery remains infra-
+				// tagged. The next dispatch advances the attempt count.
 				if err := jr.Append(journal.Event{
-					Type: journal.EventStageFinished, Stage: t.Name, Attempt: resume.attempt, AttemptClass: journal.AttemptInfra,
+					Type: journal.EventStageFinished, Stage: t.Name, Attempt: resume.attempt, AttemptClass: interruptedClass,
 					Status: string(apiv1.ResultFailure),
 					Error:  &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"},
 				}); err != nil {
 					return Result{}, fmt.Errorf("runner: journal interrupted attempt for %q: %w", t.Name, err)
 				}
 				startAttempt = int32(resume.attempt) + 1
+				if rerun != nil && rerun.stage == t.Name {
+					firstClass = journal.AttemptHuman
+				} else {
+					firstClass = journal.AttemptInfra
+				}
 				resume = nil
 			}
-			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, workspaceBranch)
+			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, firstClass, instructionAddendum, workspaceBranch)
+			if rerun != nil && rerun.stage == t.Name {
+				rerun = nil
+			}
 			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, t.Name, steps); stalled {
 				return stalledResult, stalledErr
 			}
@@ -901,7 +915,12 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: steps}, nil
 			}
 
-			gr, err, removeErr := r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, lastResult, pointers, workspaceBranch)
+			var instructionAddendum string
+			if rerun != nil && rerun.stage == g.Name {
+				instructionAddendum = rerun.instructionAddendum
+				rerun = nil
+			}
+			gr, err, removeErr := r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, lastResult, pointers, instructionAddendum, workspaceBranch)
 			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, g.Name, steps); stalled {
 				return stalledResult, stalledErr
 			}
@@ -1794,7 +1813,7 @@ func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string,
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, workspaceBranch string) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -1806,7 +1825,10 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 	// The infrastructure budget includes its triggering failure, so it can add
 	// at most MaxInfrastructureAttempts-1 dispatches to the policy budget.
 	maxAttempts := policyMaxAttempts + DefaultMaxInfrastructureAttempts - 1
-	if startAttempt > policyMaxAttempts {
+	humanRerun := firstClass == journal.AttemptHuman
+	if humanRerun {
+		maxAttempts = startAttempt + policyMaxAttempts + DefaultMaxInfrastructureAttempts - 2
+	} else if startAttempt > policyMaxAttempts {
 		err := fmt.Errorf("runner: task %q has no attempts left after resume (interrupted attempt already exhausted its %d-attempt budget)", t.Name, policyMaxAttempts)
 		return apiv1.ResultEnvelope{}, nil, err
 	}
@@ -1814,24 +1836,22 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 	var lastErr error
 	nextRetryClass := journal.AttemptPolicy
 	policyAttempts := startAttempt - 1
+	if humanRerun {
+		policyAttempts = 0
+	}
 	var infrastructureFailures int32
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
 		if _, ok := stalledRequestFromContext(ctx); ok {
 			return apiv1.ResultEnvelope{}, nil, errStalledRun
 		}
-		// The initial attempt carries no class and is always conformance-
-		// normative. A retry within THIS dispatch uses the class selected by
-		// the prior failure: "infra" for an InfrastructureFailure marker,
-		// otherwise "policy". When this call resumes after an interrupted
-		// attempt (startAttempt > 1, resume.go), its FIRST iteration is also
-		// tagged "infra" — the crash drove it, not Task.Retry, so it must be
-		// excluded from the conformance set (§3.3) exactly like the
-		// interrupted attempt's own infra-tagged stage.finished marker
-		// (walk's resumeContext handling) — otherwise a crashed-and-resumed
-		// run's normative event set gains an extra started/finished pair a
-		// crash-free run of the identical workflow never produces (#111).
+		// An ordinary initial attempt carries no class. An operator rerun starts
+		// with "human"; a retry within this dispatch uses the class selected by
+		// the prior failure ("infra" or "policy"). A crash-driven continuation
+		// starts "infra" so it stays excluded from conformance (§3.3).
 		var class journal.AttemptClass
 		switch {
+		case attempt == startAttempt && firstClass != "":
+			class = firstClass
 		case attempt == startAttempt && startAttempt > 1:
 			class = journal.AttemptInfra
 		case attempt > startAttempt:
@@ -1850,7 +1870,11 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 		}
 
 		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, span, workspaceBranch)
+		var attemptAddendum string
+		if class == journal.AttemptHuman {
+			attemptAddendum = instructionAddendum
+		}
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, int(attempt), class, attemptAddendum, span, workspaceBranch)
 		if err := finishTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, removeErr); err != nil {
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
@@ -2004,7 +2028,7 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, attempt int, class journal.AttemptClass, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	workspaceMode := apiv1.WorkspaceRepo
 	if t.Run != nil && t.Run.Workspace != "" {
 		workspaceMode = t.Run.Workspace
@@ -2028,6 +2052,7 @@ func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInpu
 		}
 		return apiv1.ResultEnvelope{}, nil, prepErr, nil
 	}
+	env.InstructionAddendum = instructionAddendum
 	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
 	var agentInvocation *gooberInvocation
 	defer func() {
@@ -2297,7 +2322,7 @@ func taskEscalationTarget(machine *workflow.Machine, task apiv1.Task) string {
 // Provisioning one anyway wasted a git clone/checkout on every automated-gate
 // evaluation and turned a worktree-provisioning failure (disk, git) into a
 // failure of a gate that touches no filesystem whatsoever.
-func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string) (result gate.Result, err error, removeErr error) {
+func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, instructionAddendum, workspaceBranch string) (result gate.Result, err error, removeErr error) {
 	// Same drain contract as runTask: SIGTERM does not interrupt an active gate,
 	// but a stalled-run watchdog request does.
 	ctx = stalledAttemptContext(ctx)
@@ -2364,6 +2389,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 			span.Fail(err)
 			return gate.Result{}, err, nil
 		}
+		env.InstructionAddendum = instructionAddendum
 		if g.Evaluator == apiv1.EvaluatorAgentic {
 			gateTelemetryDir = telemetry.ResetStageTelemetryDir(env.Workspace)
 		}
@@ -2426,13 +2452,19 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 	// call — possibly to nil — mirroring Reviewer's own rebind contract
 	// just below, so a hit for one gate can never leak into the next.
 	var cachedVerdict *apiv1.Verdict
-	if raw, ok := subjectResult.Outputs["cachedVerdictJson"].(string); ok && raw != "" {
+	if raw, ok := subjectResult.Outputs["cachedVerdictJson"].(string); instructionAddendum == "" && ok && raw != "" {
 		var v apiv1.Verdict
 		if jerr := json.Unmarshal([]byte(raw), &v); jerr == nil {
 			cachedVerdict = &v
 		}
 	}
 	gateEval.CachedVerdict = cachedVerdict
+	if instructionAddendum != "" {
+		// An explicit operator rerun must invoke the reviewer it targets, even
+		// when ordinary automation would reuse a cached verdict or fast-fail an
+		// empty diff without calling the agent.
+		emptyDiff = false
+	}
 
 	switch g.Evaluator {
 	case apiv1.EvaluatorAutomated:

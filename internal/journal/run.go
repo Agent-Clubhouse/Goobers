@@ -236,6 +236,10 @@ func (r *Run) Append(ev Event) error {
 		if ev.Error != nil {
 			r.reason = ev.Error.Message
 		}
+	} else if ev.Type == EventStageRerunRequested {
+		r.phase = PhaseRunning
+		r.machineState = ev.Stage
+		r.reason = ""
 	}
 	return r.checkpoint()
 }

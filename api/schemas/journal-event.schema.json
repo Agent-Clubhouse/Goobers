@@ -27,6 +27,7 @@
         "stage.started",
         "stage.heartbeat",
         "stage.finished",
+        "stage.rerun.requested",
         "gate.started",
         "gate.paused",
         "gate.evaluated",
@@ -73,10 +74,22 @@
       "x-conformance": "conditional: excluded for stage.heartbeat; otherwise normative"
     },
     "attemptClass": {
-      "description": "Why a retry attempt exists. Only 'policy' attempts are normative; 'infra' attempts are excluded from the conformance set. The initial attempt carries no class and is always included.",
+      "description": "Why a non-initial attempt exists. 'policy' and operator-requested 'human' attempts are normative; 'infra' attempts are excluded from the conformance set. The initial attempt carries no class and is always included.",
       "type": "string",
-      "enum": ["policy", "infra"],
+      "enum": ["policy", "infra", "human"],
       "x-conformance": "conditional: excluded for stage.heartbeat and when 'infra'"
+    },
+    "actor": {
+      "description": "Operator identity for an auditable intervention such as stage.rerun.requested.",
+      "type": "string",
+      "minLength": 1,
+      "x-conformance": "normative"
+    },
+    "instructionAddendum": {
+      "description": "One-off instruction text supplied for stage.rerun.requested.",
+      "type": "string",
+      "minLength": 1,
+      "x-conformance": "normative"
     },
     "gate": {
       "description": "Gate name for gate.* events. gate.started and gate.paused are operational bookkeeping excluded from conformance; gate.evaluated is normative.",

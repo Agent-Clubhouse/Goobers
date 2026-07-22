@@ -238,6 +238,7 @@ func TestRunDetailEventsAttemptsAndPinnedGraph(t *testing.T) {
 		if err := run.Append(event); err != nil {
 			t.Fatal(err)
 		}
+
 	}
 	appendEvent(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
 	appendEvent(journal.Event{
@@ -407,6 +408,58 @@ func TestRunDetailEventsAttemptsAndPinnedGraph(t *testing.T) {
 		policy.Artifacts[0].Digest != artifactRef.Digest ||
 		policy.Artifacts[0].MediaType != "application/json" {
 		t.Fatalf("attempt artifacts = %+v", policy.Artifacts)
+	}
+}
+
+func TestStageRerunRequestReturnsEscalatedRunToRunning(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	started := time.Date(2026, 7, 21, 9, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-rerun-requested",
+		machine.Def.Name,
+		"goobers",
+		started,
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	appendEvent := func(event journal.Event) {
+		t.Helper()
+		clock.advance(time.Second)
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendEvent(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
+	appendEvent(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+		Status: string(apiv1.ResultBlocked),
+	})
+	appendEvent(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)})
+	appendEvent(journal.Event{
+		Type: journal.EventStageRerunRequested, Stage: "implement", Attempt: 2,
+		AttemptClass: journal.AttemptHuman, Actor: "maintainer",
+		InstructionAddendum: "Reuse the parser seam.",
+	})
+	appendEvent(journal.Event{
+		Type: journal.EventStageStarted, Stage: "implement", Attempt: 2,
+		AttemptClass: journal.AttemptHuman,
+	})
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := service.GetRun(context.Background(), "run-rerun-requested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Phase != journal.PhaseRunning || detail.Terminal || detail.CurrentStage != "implement" {
+		t.Fatalf("rerun detail = %+v", detail.RunSummary)
+	}
+	if detail.RepassCount != 0 || detail.RetryCount != 0 {
+		t.Fatalf("human rerun changed automatic attempt counts: %+v", detail.RunSummary)
 	}
 }
 
