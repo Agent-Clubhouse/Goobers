@@ -120,6 +120,34 @@ func TestBaseEnvPassesThroughProfileLocationsWithoutAuthTokens(t *testing.T) {
 	}
 }
 
+func TestBaseEnvPassesThroughWindowsRuntimeWithoutSecrets(t *testing.T) {
+	runtimeVars := map[string]string{
+		"SystemRoot":   `C:\Windows`,
+		"WINDIR":       `C:\Windows`,
+		"TEMP":         `C:\Temp`,
+		"TMP":          `C:\Temp`,
+		"ComSpec":      `C:\Windows\System32\cmd.exe`,
+		"PATHEXT":      `.COM;.EXE;.BAT;.CMD`,
+		"PSModulePath": `C:\Program Files\PowerShell\Modules`,
+	}
+	for name, value := range runtimeVars {
+		t.Setenv(name, value)
+	}
+	t.Setenv("AZURE_DEVOPS_EXT_PAT", "must-not-pass")
+
+	env := BaseEnv()
+	for name, value := range runtimeVars {
+		if !contains(env, name+"="+value) {
+			t.Fatalf("Windows runtime var %s did not pass through BaseEnv(): %v", name, env)
+		}
+	}
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "AZURE_DEVOPS_EXT_PAT=") {
+			t.Fatalf("ambient token leaked through runtime allowlist: %v", env)
+		}
+	}
+}
+
 // TestBaseEnvExpandedAllowlistStillBlocksSecrets proves the polyglot expansion
 // stays default-deny: credential-shaped ambient vars must not pass, including
 // an npm per-registry setting — which is why the Node cache is allowlisted by

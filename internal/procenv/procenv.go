@@ -19,6 +19,9 @@ import (
 // invoking `go`, to locate its own toolchain); Windows profile paths
 // (USERPROFILE/APPDATA/LOCALAPPDATA/HOMEDRIVE/HOMEPATH), required by
 // authenticated CLIs such as Copilot to find their existing per-user config;
+// Windows runtime/shell paths (SystemRoot/WINDIR/TEMP/TMP/ComSpec/PATHEXT/
+// PSModulePath), required for Node CSPRNG initialization and PowerShell tool
+// execution;
 // XDG_CONFIG_HOME/XDG_DATA_HOME
 // (XDG base-directory tools); LANG (locale); SSL_CERT_FILE (custom CA
 // bundles behind a corporate proxy); HTTP_PROXY/HTTPS_PROXY/NO_PROXY; the
@@ -41,6 +44,7 @@ import (
 var Vars = []string{
 	"PATH", "HOME", "TMPDIR",
 	"USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH",
+	"SystemRoot", "WINDIR", "TEMP", "TMP", "ComSpec", "PATHEXT", "PSModulePath",
 	"XDG_CONFIG_HOME", "XDG_DATA_HOME",
 	"LANG",
 	"SSL_CERT_FILE",
