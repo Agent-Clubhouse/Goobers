@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -480,6 +481,40 @@ func TestCompilerChecksSurfaceInValidate(t *testing.T) {
 		if !strings.Contains(all, want) {
 			t.Errorf("expected an error mentioning %q; full report:\n%s", want, all)
 		}
+	}
+}
+
+func TestStageTimeoutCoherenceSurfacesInValidate(t *testing.T) {
+	ix := newIndex()
+	ix.gaggles["example"] = apiv1.Gaggle{}
+	report := &Report{}
+	workflow := apiv1.Workflow{
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "example",
+			Start:  "queue-watch",
+			Tasks: []apiv1.Task{{
+				Name: "queue-watch",
+				Type: apiv1.TaskDeterministic,
+				Goal: "Wait for the queue.",
+				Run:  &apiv1.DeterministicRun{Command: []string{"watch-queue"}},
+				Inputs: map[string]string{
+					"pollTimeoutSeconds": "30m",
+				},
+			}},
+		},
+	}
+	workflow.Name = "queue-review"
+	ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+	var found bool
+	for _, issue := range report.Issues {
+		if issue.Severity == Error && strings.Contains(issue.Message, "effective stage timeout 10m0s") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("timeout-coherence diagnostic not surfaced: %v", report.Issues)
 	}
 }
 

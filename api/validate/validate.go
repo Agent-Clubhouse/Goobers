@@ -878,6 +878,11 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckStageRequiredInputs(def) {
 		r.add(Error, file, "Workflow", w.Name, "%s", msg)
 	}
+	// Bounded waits must finish before the executor can terminate their stage;
+	// command-specific clamps are modeled by the workflow check itself.
+	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
+		r.add(Error, file, "Workflow", w.Name, "%s", msg)
+	}
 	// Only the breaking half is reported here. CheckStageContractWarnings
 	// covers the same omission on outputs nothing reads yet, which #881's
 	// VER003 "expectedOutputs is declared but not enforced" already warns

@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
@@ -103,7 +104,7 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 	// was in fact successfully enqueued and will very likely merge.
 	// Reporting a working landing as a failure is worse than reporting it
 	// late, so the poll budget yields to the stage budget.
-	if clamped := mergeQueuePollBudget(stageTimeout()); timeout > clamped {
+	if clamped := boundedwait.MergeQueuePollBudget(stageTimeout()); timeout > clamped {
 		pf(stderr, "note: poll timeout %s exceeds this stage's own budget; polling for %s instead\n", timeout, clamped)
 		timeout = clamped
 	}
@@ -298,22 +299,6 @@ func writeQueueResult(path, selectedNumber, queueOutcome, mergeSHA string, clean
 // internal/executor/cipoll.go's durationInput: an unset key applies the
 // caller's default, but a SET, malformed value fails closed with a real
 // error rather than silently defaulting.
-// mergeQueuePollBudget returns the longest poll timeout that still leaves
-// the loop time to exit cleanly and write its result file before the
-// executor kills the stage at stageTimeout.
-const mergeQueuePollMinMargin = time.Minute
-
-func mergeQueuePollBudget(stage time.Duration) time.Duration {
-	margin := stage / 10
-	if margin < mergeQueuePollMinMargin {
-		margin = mergeQueuePollMinMargin
-	}
-	if budget := stage - margin; budget > 0 {
-		return budget
-	}
-	return stage / 2
-}
-
 // mergeQueueEntryGrace bounds how long an absent merge queue entry is
 // tolerated as "not visible yet" before it is read as an eviction (#885).
 // It only applies before any entry has been seen: once one has, absence is

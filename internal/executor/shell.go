@@ -16,6 +16,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -26,7 +27,7 @@ import (
 
 // DefaultTimeout bounds a shell stage's execution when neither the executor
 // nor the stage declares one.
-const DefaultTimeout = 10 * time.Minute
+const DefaultTimeout = boundedwait.DefaultTimeout
 
 // DefaultMaxOutputBytes caps captured stdout/stderr (each stream) when
 // neither the executor nor the stage declares a limit.
@@ -64,7 +65,7 @@ const timeoutDumpGrace = 5 * time.Second
 // fields — see doc.go.
 const (
 	// InputTimeout is a time.ParseDuration string, e.g. "5m".
-	InputTimeout = "timeout"
+	InputTimeout = boundedwait.InputTimeout
 	// InputResultFile is a path, relative to the workspace, whose bytes (once
 	// the command exits) become an artifact. If declared, the file's presence
 	// is also a success criterion: a zero exit with no such file is a failure.
