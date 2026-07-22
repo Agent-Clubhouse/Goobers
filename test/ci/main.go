@@ -303,6 +303,7 @@ func fullChecks(makeCommand string) []check {
 		"sandbox-check",
 		"linux-node-validation",
 		"test-shipped-workflows",
+		"stress",
 	}
 	result := make([]check, 0, len(targets))
 	for _, target := range targets {

@@ -3,8 +3,9 @@
 
 # ---- Portability posture (#630) ---------------------------------------------
 # The fast and merge tiers (`make verify-fast` / `make ci` -> `go run
-# ./test/ci`) and the coverage gate (`make cover-check` -> `go run
-# ./test/coveragegate`) are pure Go. They spawn only real toolchain binaries
+# ./test/ci`), the coverage gate (`make cover-check` -> `go run
+# ./test/coveragegate`), and the stress tier (`make stress` -> `go run
+# ./test/stress`) are pure Go. They spawn only real toolchain binaries
 # (go, gofmt, git, npm, golangci-lint) and the freshly built goobers validator,
 # never bash/sh or a project shell script, so CI reproduces on any OS with a Go
 # toolchain — Windows included: test/ci handles the .exe suffix, the cgo race
@@ -38,6 +39,8 @@ NPM           ?= npm
 # Minimum testable-logic coverage enforced by `make cover-check` (ratchet up over
 # time). Overridable: `make cover-check COVERAGE_THRESHOLD=75`.
 COVERAGE_THRESHOLD ?= 70
+STRESS_OUTPUT_DIR   ?= stress-results
+STRESS_SEED         ?= 0
 
 # Pinned codegen + test tooling (run via `go run`, no global installs).
 CONTROLLER_GEN_VERSION ?= v0.16.5
@@ -255,7 +258,14 @@ verify-fast:
 ci:
 	$(GO) run ./test/ci
 
-## verify-full: Run all merge, integration, platform, coverage, and shipped-workflow gates.
+## stress: Repeat timing-sensitive packages under the race detector.
+.PHONY: stress
+stress:
+	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO) run ./test/stress \
+		-go "$(GO)" -packages test/stress/packages.txt \
+		-output "$(STRESS_OUTPUT_DIR)" -seed "$(STRESS_SEED)"
+
+## verify-full: Run all merge, integration, platform, coverage, shipped-workflow, and stress gates.
 .PHONY: verify-full
 verify-full:
 	$(GO) run ./test/ci full "$(MAKE)"
@@ -263,4 +273,4 @@ verify-full:
 ## clean: Remove build artifacts.
 .PHONY: clean
 clean:
-	rm -rf $(BIN) coverage.out
+	rm -rf $(BIN) coverage.out stress-results
