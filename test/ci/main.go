@@ -1,4 +1,4 @@
-// Command ci runs the repository's portable fast and merge validation tiers.
+// Command ci runs the repository's fast, merge, and full validation tiers.
 package main
 
 import (
@@ -58,8 +58,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case len(args) == 0:
 	case len(args) == 1 && args[0] == "fast":
 		fast = true
+	case len(args) == 2 && args[0] == "full" && strings.TrimSpace(args[1]) != "":
+		exec := processExecutor{stdout: stdout, stderr: stderr}
+		if err := executeChecks(exec, fullChecks(args[1]), stdout, stderr); err != nil {
+			_, _ = fmt.Fprintf(stderr, "ci: %v\n", err)
+			return 1
+		}
+		return 0
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/ci [fast]")
+		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/ci [fast | full MAKE_COMMAND]")
 		return 2
 	}
 
@@ -282,6 +289,28 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			windowsBatch: true,
 		},
 	)
+	return result
+}
+
+func fullChecks(makeCommand string) []check {
+	targets := []string{
+		"ci",
+		"test-integration-strict",
+		"test-e2e",
+		"test-envtest",
+		"cover-check",
+		"sandbox-check",
+		"linux-node-validation",
+		"test-shipped-workflows",
+	}
+	result := make([]check, 0, len(targets))
+	for _, target := range targets {
+		result = append(result, check{
+			label:   target,
+			command: makeCommand,
+			args:    []string{target},
+		})
+	}
 	return result
 }
 

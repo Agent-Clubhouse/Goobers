@@ -8,6 +8,12 @@ workflow summary, and compares with the latest successful `main` artifact when
 one is available. Capture runs inside `test/hermetic`, preserving the unit
 tier's isolated tool `PATH` and offline Go environment.
 
+For local feedback, the Go validation orchestrator prints elapsed time after
+every check. `make verify-full` uses that orchestrator to run `ci` and each
+additional Make gate serially, so integration, e2e, envtest, coverage, sandbox,
+platform, and shipped-workflow durations are all visible without producing CI
+artifacts.
+
 The artifact is JSON with `schemaVersion: 1`:
 
 ```json

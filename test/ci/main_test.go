@@ -156,6 +156,50 @@ func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 	}
 }
 
+func TestFullChecksRunEveryGateSeriallyWithElapsedReporting(t *testing.T) {
+	t.Parallel()
+	got := fullChecks("custom-make")
+	want := []string{
+		"ci",
+		"test-integration-strict",
+		"test-e2e",
+		"test-envtest",
+		"cover-check",
+		"sandbox-check",
+		"linux-node-validation",
+		"test-shipped-workflows",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("full checks = %d, want %d", len(got), len(want))
+	}
+	for i, current := range got {
+		if current.label != want[i] || current.command != "custom-make" ||
+			!reflect.DeepEqual(current.args, []string{want[i]}) {
+			t.Fatalf("full check %d = %#v, want custom-make %s", i, current, want[i])
+		}
+	}
+
+	tick := int64(0)
+	now := func() time.Time {
+		current := time.Unix(tick, 0)
+		tick++
+		return current
+	}
+	exec := &fakeExecutor{}
+	var stdout, stderr bytes.Buffer
+	if err := executeChecksAt(exec, got, &stdout, &stderr, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(exec.calls) != len(want) {
+		t.Fatalf("executed %d full checks, want %d", len(exec.calls), len(want))
+	}
+	for _, label := range want {
+		if !strings.Contains(stdout.String(), "<== "+label+" (elapsed 1s)") {
+			t.Errorf("stdout missing elapsed %s target:\n%s", label, &stdout)
+		}
+	}
+}
+
 func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 	t.Parallel()
 	got := checks(

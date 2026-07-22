@@ -38,11 +38,11 @@ The stable local contract is `make verify-fast` ⊂ `make ci` ⊂
 
 The subset relationship is executable rather than documentary:
 `verify-fast` selects checks from the same Go check list as `ci`, while
-`verify-full` has `ci` and the additional gates as serialized Make
-prerequisites. Tests in `test/ci` compare the complete tier recipes and
-prerequisite graph, so extra or missing commands fail the contract check.
-Each local gate target prints its elapsed time; CI also publishes structured
-unit-test timing and soft-budget comparisons — see
+`verify-full` asks the same orchestrator to invoke `ci` and each additional
+Make gate serially. Tests in `test/ci` compare the complete tier check lists and
+recipes, so extra or missing commands fail the contract check. Each validation
+tier prints the elapsed time for every gate it runs; CI also publishes
+structured unit-test timing and soft-budget comparisons — see
 [`docs/guides/test-timing.md`](docs/guides/test-timing.md).
 
 Tests that intentionally execute tools outside the Go test process belong in
