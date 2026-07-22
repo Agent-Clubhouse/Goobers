@@ -85,7 +85,7 @@ func init() {
 		command("init", apicontract.ActionConfigTime, runInit).
 			withSynopsis(synopsisByID["init"]).
 			withHelp("scaffold an instance root", initHelp).
-			withExamples("goobers init", "goobers init --demo ./demo"),
+			withExamples("goobers init", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
 		groupCommand(
 			"scaffold",
 			runScaffold,

@@ -566,19 +566,23 @@ $ goobers gather-sibling-context
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--demo] [path]
+Usage: goobers init [--guided | --demo] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), runs/, scheduler/, workcopies/, and a
-telemetry.db placeholder. Re-running is safe — existing pieces are left
-untouched. --demo seeds an offline deterministic tour requiring no repo
-or credentials.
+telemetry.db placeholder. Re-running without --guided is safe — existing
+pieces are left untouched. --guided is first-run only and refuses a target
+with instance.yaml or a populated config/ before prompting. It prompts for
+a GitHub repository, work tracking, token references, and canonical workflows,
+then validates the result. --demo seeds an offline deterministic tour requiring
+no repo or credentials.
 ~~~
 
 **Examples**
 
 ~~~console
 $ goobers init
+$ goobers init --guided ./my-instance
 $ goobers init --demo ./demo
 ~~~
 
