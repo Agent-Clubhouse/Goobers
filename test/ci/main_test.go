@@ -163,6 +163,7 @@ func TestFullChecksRunEveryGateSeriallyWithElapsedReporting(t *testing.T) {
 		"ci",
 		"test-integration-strict",
 		"test-e2e",
+		"test-conformance",
 		"test-envtest",
 		"cover-check",
 		"sandbox-check",

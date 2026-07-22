@@ -35,7 +35,7 @@ The stable local contract is `make verify-fast` ⊂ `make ci` ⊂
 |---|---|---|
 | `make verify-fast` | Format check, `go vet`, and every `cmd/*` Go build | Fast feedback during development and before a push |
 | `make ci` | The unchanged portable merge gate: fast-tier checks plus shipped-config validation, race tests with coverage, lint, and portal build/test/contract checks | Required before merge; the shipped agent workflows' `local-ci` stages invoke this tier |
-| `make verify-full` | `ci` plus strict declared-dependency integration tests, walking-skeleton e2e, Kubernetes envtest, coverage threshold, native sandbox confinement, and Linux-node/Windows-seam validation | Nightly, on-demand, and release-candidate validation |
+| `make verify-full` | `ci` plus strict declared-dependency integration tests, walking-skeleton e2e, journal conformance, Kubernetes envtest, coverage threshold, native sandbox confinement, and Linux-node/Windows-seam validation | Nightly, on-demand, and release-candidate validation |
 
 `make vulncheck` is a separate, network-backed static-analysis gate. It runs the
 pinned `govulncheck` version used by pull-request and scheduled CI without adding
@@ -78,17 +78,22 @@ command instead. **CI:** each validation job maps to the same contract:
 | `platform gate` (Ubuntu/macOS) | `make ci` (`go run ./test/ci` is its portable implementation) |
 | `windows compile smoke` | The Windows `go vet` + build slice of `verify-fast` |
 | `Go vulnerability scan` | Standalone `make vulncheck` gate for reachable standard-library and dependency vulnerabilities |
-| `make ci` aggregate | Required status for the merge tier, Windows compile slice, and vulnerability scan; it runs no additional validation |
+| `journal conformance` | Full-tier `make test-conformance` gate; also a dependency of the required aggregate status |
+| `make ci` aggregate | Required status for the merge tier, Windows compile slice, vulnerability scan, and journal-conformance gate; it runs no additional validation |
 | `declared-dependency integration` | Full-tier `make test-integration-strict` gate with every inventoried executable provisioned |
 | `sandbox confinement` | Full-tier `make sandbox-check` gate with native sandbox availability required |
 | `linux node validation` | Full-tier `make linux-node-validation` platform acceptance gate for the shipped binary, daemon lifecycle, and Windows seams |
 
-The dedicated vulnerability, integration, sandbox, and Linux-node CI jobs invoke
-their corresponding Make targets. The vulnerability target also runs daily from
-`.github/workflows/vulnerability-scan.yml`, so newly disclosed findings surface
-without a code change. E2e, envtest, and coverage are local `verify-full` gates
-pending CI promotion in [#628](https://github.com/Agent-Clubhouse/Goobers/issues/628);
-future conformance or stress jobs follow the same one-target-per-job pattern.
+The dedicated vulnerability, integration, conformance, sandbox, and Linux-node CI
+jobs invoke their corresponding Make targets. The vulnerability target also runs
+daily from `.github/workflows/vulnerability-scan.yml`, so newly disclosed findings
+surface without a code change. `make test-conformance` selects every Go test whose
+name begins with `TestConformance`, currently covering `journal.ConformanceView`,
+journal sequence determinism, and the local-runner walking-skeleton seed. This
+target and naming boundary are the landing zone for the V2 local-to-Temporal
+dual-runner conformance harness. E2e, envtest, and coverage are local `verify-full`
+gates pending CI promotion in [#628](https://github.com/Agent-Clubhouse/Goobers/issues/628);
+future stress jobs follow the same one-target-per-job pattern.
 Focused targets such as
 `make validate-configs`, `make portal-ci`, and `make portal-contract` remain
 available when only one surface changed. `go run ./test/ci` is the
@@ -153,8 +158,8 @@ module and build caches are scoped to each runner OS.
 `main` is protected. The active repository rules require:
 
 - **CI is green** — the required aggregate confirms the Ubuntu and macOS
-  portable CI checks, Windows compile smoke, and vulnerability scan pass on the
-  latest commit.
+  portable CI checks, Windows compile smoke, vulnerability scan, and
+  journal-conformance gate pass on the latest commit.
 - **Approvals** — none. The required approval count is zero, and
   [CODEOWNER](.github/CODEOWNERS) approval is not required. CODEOWNERS are still
   requested for review, but those requests are advisory.

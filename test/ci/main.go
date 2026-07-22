@@ -297,6 +297,7 @@ func fullChecks(makeCommand string) []check {
 		"ci",
 		"test-integration-strict",
 		"test-e2e",
+		"test-conformance",
 		"test-envtest",
 		"cover-check",
 		"sandbox-check",

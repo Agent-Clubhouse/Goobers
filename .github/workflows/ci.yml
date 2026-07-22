@@ -8,8 +8,10 @@ name: CI
 #
 # Windows is gated too, as a required compile smoke (go build + go vet for
 # windows/amd64) — not the full suite yet (#633; full `make ci` on Windows is
-# gated on #630). The platform legs and vulnerability scan must be green for the
-# required `make ci` check to pass; see the jobs below.
+# gated on #630). The platform legs, the vulnerability scan, and the dedicated
+# journal-conformance job must all be green for the required `make ci` check to
+# pass; see the conformance, windows-smoke, vulnerability-scan, and required-ci
+# jobs below.
 
 on:
   push:
@@ -167,6 +169,25 @@ jobs:
       - name: Run strict integration tier
         run: make test-integration-strict
 
+  conformance:
+    name: journal conformance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Enforce the journal conformance contract
+        run: make test-conformance
+
   # Windows joins CI as a REQUIRED, GREEN compile smoke (#633) — deliberately not
   # the old advisory `continue-on-error` `windows-smoke` job (#928) that #960 had
   # to remove: that one published a red check the Goobers merge flow (which has no
@@ -245,7 +266,7 @@ jobs:
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() }}
-    needs: [ci, windows-smoke, shipped-workflows, vulnerability-scan]
+    needs: [ci, windows-smoke, shipped-workflows, vulnerability-scan, conformance]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required gates
@@ -254,6 +275,7 @@ jobs:
           VULNCHECK_RESULT: ${{ needs.vulnerability-scan.result }}
           WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
           SHIPPED_WORKFLOWS_RESULT: ${{ needs.shipped-workflows.result }}
+          CONFORMANCE_RESULT: ${{ needs.conformance.result }}
         run: |
           if [ "$MATRIX_RESULT" != "success" ]; then
             echo "A required platform gate (ubuntu/macos make ci) did not pass."
@@ -269,6 +291,10 @@ jobs:
           fi
           if [ "$VULNCHECK_RESULT" != "success" ]; then
             echo "The Go vulnerability scan did not pass."
+            exit 1
+          fi
+          if [ "$CONFORMANCE_RESULT" != "success" ]; then
+            echo "The journal conformance gate did not pass."
             exit 1
           fi
 

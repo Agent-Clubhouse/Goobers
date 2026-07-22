@@ -2136,7 +2136,7 @@ func TestJournalToleratedFailureIsIdempotentPerAttempt(t *testing.T) {
 	}
 }
 
-func TestJournalToleratedFailurePreservesInfraAttemptMetadataOnReplay(t *testing.T) {
+func TestConformanceJournalToleratedFailurePreservesInfraAttemptMetadataOnReplay(t *testing.T) {
 	runsDir := t.TempDir()
 	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-infra-tolerated-note"}, nil)
 	if err != nil {
@@ -3074,11 +3074,11 @@ func simulateCrashMidAttempt(t *testing.T, runsDir string, machine *workflow.Mac
 	}
 }
 
-// TestRunnerResumeRetriesInterruptedAttempt is #17's crash/resume acceptance
+// TestConformanceRunnerResumeRetriesInterruptedAttempt is #17's crash/resume acceptance
 // scenario: a run interrupted mid-attempt resumes, journals the interrupted
 // attempt as a terminal infra-tagged failure (never silently re-run), and
 // continues the SAME attempt count against the task's own retry budget.
-func TestRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
+func TestConformanceRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
 	machine := retryFixtureMachine(t, 3)
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
