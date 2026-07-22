@@ -161,7 +161,7 @@ func TestResumeFromTerminalRefusesChangedWorkflowPin(t *testing.T) {
 				Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: workflow.TerminalComplete,
 			}},
 		},
-	})
+	}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile changed machine: %v", err)
 	}
