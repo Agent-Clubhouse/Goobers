@@ -170,7 +170,7 @@ safely remove one blocked-item record, under claims.lock
 Usage: goobers blocked clear <item-id> [path]
 
 Remove one scheduler/blocked.json record by item id (e.g. "955" or
-"pr/955"), or by the repository-scoped key shown by `blocked list`
+"pr/955"), or by the owner/repo#N ref shown by `blocked list`
 when the id is ambiguous. Default path is ".". Exit codes: 0 =
 cleared, 1 = no unique record, 2 = usage/IO error.
 ~~~
@@ -188,10 +188,11 @@ print the learned blocked-item ledger (scheduler/blocked.json)
 ~~~text
 Usage: goobers blocked list [--json] [path]
 
-Print the current scheduler/blocked.json records (item id, repository,
-record key, blockers, stage, reason, recordedAt), snapshotted under
-claims.lock. Default path is ".". Exit codes: 0 = printed, 2 =
-usage/IO error.
+Print one dependency line per scheduler/blocked.json record, snapshotted
+under claims.lock. A single-repository ledger uses #N (or PR #N); when
+multiple repositories are present, refs use owner/repo#N. --json emits a
+stable ordered array with ref, kind (issue or pull_request), and blockedBy.
+Default path is ".". Exit codes: 0 = printed, 2 = usage/IO error.
 ~~~
 
 **Examples**

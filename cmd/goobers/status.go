@@ -47,15 +47,18 @@ func providerQuotaStatusLine(status readservice.SchedulerStatus, now time.Time) 
 		status.ProviderQuotaResumeAt.UTC().Format(time.RFC3339) + "\n"
 }
 
-func parkedDependencyStatusText(parked []parkedDependency) string {
+func parkedDependencyStatusText(parked []blockedListRecord) string {
 	var text strings.Builder
 	pf(&text, "Issues parked on learned dependencies: %d\n", len(parked))
 	for _, dependency := range parked {
-		blockers := make([]string, len(dependency.Blockers))
-		for i, blocker := range dependency.Blockers {
-			blockers[i] = "#" + blocker
+		blockers := make([]string, len(dependency.BlockedBy))
+		for i, blocker := range dependency.BlockedBy {
+			blockers[i] = humanBlockedReference(blocker)
 		}
-		pf(&text, "  #%s blocked by %s\n", dependency.ItemID, strings.Join(blockers, ", "))
+		pf(&text, "  %s blocked by %s\n",
+			humanBlockedReference(blockedListReference{Ref: dependency.Ref, Kind: dependency.Kind}),
+			strings.Join(blockers, ", "),
+		)
 	}
 	return text.String()
 }
