@@ -63,21 +63,6 @@ func TestIntegrationTool(t *testing.T) {
 	deps.Require(t, "bwrap")
 }
 `)
-	writeFixture(t, root, "live/smoke_test.go", `//go:build integration
-
-package live
-
-import (
-	"os/exec"
-	"testing"
-)
-
-func TestLiveSmoke(t *testing.T) {
-	if _, err := exec.LookPath("external-live-tool"); err != nil {
-		t.Skip("live tool unavailable")
-	}
-}
-`)
 
 	got, err := scanIntegration(root)
 	if err != nil {
@@ -88,30 +73,6 @@ func TestLiveSmoke(t *testing.T) {
 	}
 	if want := map[string]bool{"bwrap": true, "sh": true, "sleep": true}; !reflect.DeepEqual(got.dependencies, want) {
 		t.Fatalf("dependencies = %v, want %v", got.dependencies, want)
-	}
-}
-
-func TestInspectIntegrationFileIgnoresOtherIntegrationTiers(t *testing.T) {
-	source := []byte(`package fixture
-import (
-	"os/exec"
-	"testing"
-)
-func TestLiveSmoke(t *testing.T) {
-	if _, err := exec.LookPath("live-tool"); err != nil {
-		t.Skip("live tool unavailable")
-	}
-}`)
-
-	dependencies, violations, included, err := inspectIntegrationFile("live_test.go", source)
-	if err != nil {
-		t.Fatalf("inspectIntegrationFile: %v", err)
-	}
-	if included {
-		t.Fatal("inspectIntegrationFile included a test outside the declared-dependency tier")
-	}
-	if len(dependencies) != 0 || len(violations) != 0 {
-		t.Fatalf("dependencies = %v, violations = %v, want both empty", dependencies, violations)
 	}
 }
 
@@ -221,7 +182,7 @@ func TestTool(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, violations, _, err := inspectIntegrationFile("fixture_test.go", []byte(test.source))
+			_, violations, err := inspectIntegrationFile("fixture_test.go", []byte(test.source))
 			if err != nil {
 				t.Fatalf("inspectIntegrationFile: %v", err)
 			}
