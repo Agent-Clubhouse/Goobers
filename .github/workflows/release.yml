@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: go run ./release/notes -tag "$TAG" -output release-notes.md
+
+      - name: Build release artifacts
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          commit="$(git rev-parse --short=12 "$COMMIT_SHA")"
+          date="$(git show -s --format=%cI "$COMMIT_SHA")"
+          go run ./release \
+            -version "$TAG" \
+            -commit "$commit" \
+            -date "$date" \
+            -output dist
+
+      - name: Verify release artifacts
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          mkdir smoke
+          tar -xzf "dist/goobers_${TAG}_linux_amd64.tar.gz" -C smoke
+          smoke/goobers --version | grep --fixed-strings "$TAG"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" --notes-file release-notes.md
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --verify-tag \
+              --title "$TAG" \
+              --notes-file release-notes.md
+          fi
