@@ -1,10 +1,11 @@
 name: CI
 
 # Goobers control-plane and portal CI — the enforced merge gate.
-# Runs the portable Go CI entrypoint (Go fmt/vet/build/test/lint + portal
-# build/test) on Ubuntu and macOS on every PR to main, push to main, and
-# merge-group build. See CONTRIBUTING.md's validation tier contract and test/ci
-# for the authoritative full-gate step list.
+# Runs dead-code analysis plus the portable Go CI entrypoint (Go
+# fmt/vet/build/test/lint + portal build/test) on Ubuntu and macOS on every PR
+# to main, push to main, and merge-group build. See CONTRIBUTING.md's validation
+# tier contract, the Makefile's deadcode target, and test/ci for the
+# authoritative full-gate step list.
 #
 # Windows is gated too, as a required compile smoke (go build + go vet for
 # windows/amd64) — not the full suite yet (#633; full `make ci` on Windows is
@@ -106,8 +107,11 @@ jobs:
           run-id: ${{ steps.previous-timing.outputs.result }}
           github-token: ${{ github.token }}
 
+      - name: Dead-code analysis
+        run: make deadcode
+
       # Portable implementation of the documented `make ci` merge tier. The
-      # Make target delegates here on Unix without a second implementation.
+      # Make target composes the deadcode target above with this entrypoint.
 
       - name: Portable CI
         env:
@@ -264,7 +268,7 @@ jobs:
         run: make vulncheck
 
   required-ci:
-    name: make ci (fmt-check · vet · build · test · lint)
+    name: make ci (deadcode · fmt-check · vet · build · test · lint)
     if: ${{ always() }}
     needs: [ci, windows-smoke, shipped-workflows, vulnerability-scan, conformance]
     runs-on: ubuntu-latest

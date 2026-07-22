@@ -118,6 +118,7 @@ func TestMakefileGatesDelegateToGo(t *testing.T) {
 		"run ./test/ci full",      // verify-full: -> its serialized Make-target mode
 		"run ./test/coveragegate", // cover-check: -> the Go coverage gate
 		"run ./test/configvalidate",
+		"run ./test/deadcode",
 		"run ./test/integration",
 		"run ./test/hermetic", // test: -> the hermetic Go unit-test wrapper
 		"run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)",
@@ -155,7 +156,8 @@ func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
 		{
 			target: "ci",
 			want: makeTarget{
-				recipes: []string{"$(GO) run ./test/ci"},
+				prerequisites: []string{"deadcode"},
+				recipes:       []string{"$(GO) run ./test/ci"},
 			},
 		},
 		{
@@ -206,7 +208,7 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, target := range []string{"vulncheck", "test-integration-strict", "test-conformance", "sandbox-check", "linux-node-validation"} {
+	for _, target := range []string{"deadcode", "vulncheck", "test-integration-strict", "test-conformance", "sandbox-check", "linux-node-validation"} {
 		if !strings.Contains(workflow, "run: make "+target) {
 			t.Errorf("CI workflow must invoke make %s so the job is locally reproducible", target)
 		}

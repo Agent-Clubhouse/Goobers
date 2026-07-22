@@ -94,14 +94,6 @@ type Executor struct {
 // Option configures an Executor at construction.
 type Option func(*Executor)
 
-// WithResultPath overrides the workspace-relative path a task's result JSON
-// must be written to (default DefaultResultPath).
-func WithResultPath(path string) Option { return func(e *Executor) { e.resultPath = path } }
-
-// WithVerdictPath overrides the workspace-relative path a reviewer gate's
-// verdict JSON must be written to (default DefaultVerdictPath).
-func WithVerdictPath(path string) Option { return func(e *Executor) { e.verdictPath = path } }
-
 // WithTimeout bounds every harness session this Executor drives.
 func WithTimeout(d time.Duration) Option { return func(e *Executor) { e.timeout = d } }
 

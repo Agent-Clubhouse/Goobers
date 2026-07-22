@@ -1,0 +1,9 @@
+# Exact analyzer identities only. Every entry requires a concrete reason;
+# test/deadcode rejects broad matching, duplicate entries, and stale exemptions.
+
+github.com/goobers/goobers/api/v1alpha1.Resource # Conventional Kubernetes API helper retained for external CRD consumers.
+github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory retained for config and tooling consumers.
+github.com/goobers/goobers/internal/bootstrap.RegisterEngine # Quarantined Temporal V2 worker seam retained per docs/ARCHITECTURE.md section 11.
+github.com/goobers/goobers/internal/scheduler.EventTrigger.Name # Provider-event scheduling is a reserved V1 trigger exercised by its package tests.
+github.com/goobers/goobers/internal/testdep.Require # Test-only dependency guard called from integration-tagged test files.
+github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
