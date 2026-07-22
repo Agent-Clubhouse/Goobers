@@ -116,6 +116,7 @@ func TestMakefileGatesDelegateToGo(t *testing.T) {
 		"run ./test/ci fast",      // verify-fast: -> the same orchestrator's subset
 		"run ./test/coveragegate", // cover-check: -> the Go coverage gate
 		"run ./test/configvalidate",
+		"run ./test/integration",
 	} {
 		if !strings.Contains(makefile, want) {
 			t.Errorf("Makefile no longer delegates to `%s`; the gate must stay in Go, not move into a shell script", want)
@@ -153,10 +154,23 @@ func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
 			},
 		},
 		{
+			target: "test-integration",
+			want: makeTarget{
+				recipes: []string{"$(GO) run ./test/integration -go $(GO)"},
+			},
+		},
+		{
+			target: "test-integration-strict",
+			want: makeTarget{
+				recipes: []string{"TESTDEP_STRICT=1 $(GO) run ./test/integration -go $(GO)"},
+			},
+		},
+		{
 			target: "verify-full",
 			want: makeTarget{
 				prerequisites: []string{
 					"ci",
+					"test-integration-strict",
 					"test-e2e",
 					"test-envtest",
 					"cover-check",
@@ -201,7 +215,7 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, target := range []string{"sandbox-check", "linux-node-validation"} {
+	for _, target := range []string{"test-integration-strict", "sandbox-check", "linux-node-validation"} {
 		if !strings.Contains(workflow, "run: make "+target) {
 			t.Errorf("CI workflow must invoke make %s so the job is locally reproducible", target)
 		}
