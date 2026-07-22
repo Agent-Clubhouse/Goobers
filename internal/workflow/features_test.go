@@ -334,7 +334,7 @@ func TestCompileConsumesFeatureRegistry(t *testing.T) {
 	currentFeatureRegistry = registry
 	t.Cleanup(func() { currentFeatureRegistry = original })
 
-	_, err = Compile(Definition{Name: "linear", Version: 1, Spec: linearSpec()})
+	_, err = compileAcknowledged(Definition{Name: "linear", Version: 1, Spec: linearSpec()})
 	if err == nil || !strings.Contains(err.Error(), `DSL feature registry is missing: workflow.spec.gaggle`) {
 		t.Fatalf("Compile error = %v, want missing registry feature", err)
 	}

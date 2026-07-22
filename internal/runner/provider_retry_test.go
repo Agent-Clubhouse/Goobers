@@ -108,7 +108,7 @@ func ciPollRetryFixtureMachine(t *testing.T, maxAttempts int32) *workflow.Machin
 			Branches:  map[string]string{"pass": workflow.TerminalComplete, "fail": workflow.TargetAbort},
 		}},
 	}
-	machine, err := workflow.Compile(workflow.Definition{Name: "ci-poll-retry-fixture", Version: 1, Spec: spec})
+	machine, err := workflow.Compile(workflow.Definition{Name: "ci-poll-retry-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile ci-poll retry fixture: %v", err)
 	}

@@ -21,7 +21,6 @@ import (
 	"github.com/goobers/goobers/internal/backlog"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/telemetry"
-	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -148,18 +147,19 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 	if !ok {
 		return engine.RunInput{}, fmt.Errorf("scheduler: workflow %q is not registered", ev.WorkflowName)
 	}
-	machine, err := workflow.Compile(def)
+	machine, err := s.cfg.Registry.Compile(def)
 	if err != nil {
 		return engine.RunInput{}, fmt.Errorf("scheduler: compile pinned workflow %q: %w", ev.WorkflowName, err)
 	}
 	in := engine.RunInput{
-		RunID:          engine.RunID(s.cfg.Gaggle, def.Name, ev.DedupeKey),
-		Gaggle:         s.cfg.Gaggle,
-		WorkflowName:   def.Name,
-		Version:        def.Version,
-		WorkflowDigest: machine.Digest(),
-		Spec:           def.Spec,
-		RepoRef:        s.cfg.Repo,
+		RunID:                  engine.RunID(s.cfg.Gaggle, def.Name, ev.DedupeKey),
+		Gaggle:                 s.cfg.Gaggle,
+		WorkflowName:           def.Name,
+		Version:                def.Version,
+		WorkflowDigest:         machine.Digest(),
+		PreviewFeaturesEnabled: s.cfg.Registry.PreviewFeaturesEnabled(),
+		Spec:                   def.Spec,
+		RepoRef:                s.cfg.Repo,
 	}
 	if ev.Item != nil {
 		bi := backlog.FromWorkItem(*ev.Item)

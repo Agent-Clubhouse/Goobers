@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/configsync"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/scheduler"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // Loaded is the typed, registered result of loading a config repo.
@@ -49,7 +50,11 @@ func LoadAndRegister(root, namespace string) (*Loaded, error) {
 		return nil, fmt.Errorf("bootstrap: load %s: %w", root, err)
 	}
 
-	out := &Loaded{Manifest: set.Manifest, Registry: engine.NewRegistry()}
+	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
+	out := &Loaded{
+		Manifest: set.Manifest,
+		Registry: engine.NewRegistryWithPreviewFeatures(allowPreview),
+	}
 	for _, obj := range set.Objects {
 		switch o := obj.(type) {
 		case *apiv1.Gaggle:

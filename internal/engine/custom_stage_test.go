@@ -84,7 +84,10 @@ func TestCustomStageExampleDryRun(t *testing.T) {
 		t.Skip("example task intentionally exercises a POSIX shell script")
 	}
 	spec := loadCustomStageWorkflow(t)
-	machine, err := wf.Compile(wf.Definition{Name: "todo-check", Version: 1, Spec: spec})
+	machine, err := wf.Compile(
+		wf.Definition{Name: "todo-check", Version: 1, Spec: spec},
+		wf.WithPreviewFeatures(true),
+	)
 	if err != nil {
 		t.Fatalf("compile todo-check workflow: %v", err)
 	}

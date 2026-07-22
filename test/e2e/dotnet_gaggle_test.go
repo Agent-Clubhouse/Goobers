@@ -14,6 +14,51 @@ import (
 
 const dotnetGaggleDir = "../../config-examples/gaggles/dotnet-service"
 
+// dotnetServiceMachine loads the SHIPPED dotnet-service gaggle + implementation
+// workflow, resolves the per-gaggle CI command into the local-ci stage exactly
+// as the daemon does (#1009), and compiles the result. This is what makes the
+// test a "shipped-workflow contract test": the machine under test IS the example
+// config, and the local-ci command it runs is proven to be the gaggle's
+// `dotnet test` — not a value hard-coded by the test.
+func dotnetServiceMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	gaggle := loadYAML[apiv1.Gaggle](t, filepath.Join(dotnetGaggleDir, "gaggle.yaml"))
+	wf := loadYAML[apiv1.Workflow](t, filepath.Join(dotnetGaggleDir, "workflows", "dotnet-implementation.yaml"))
+	goobers := map[string]apiv1.GooberSpec{}
+	for _, name := range []string{"dotnet-implementer", "dotnet-reviewer"} {
+		g := loadYAML[apiv1.Goober](t, filepath.Join(dotnetGaggleDir, "goobers", name, "goober.yaml"))
+		goobers[g.Name] = g.Spec
+	}
+
+	// Resolve the gaggle's ciCommand into the local-ci stage (the real #1009
+	// seam), then assert it actually became `dotnet test` before we run it.
+	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{gaggle}, Workflows: []apiv1.Workflow{wf}}
+	instance.ApplyGaggleCICommand(set)
+	wf = set.Workflows[0]
+	if got := localCICommand(wf); fmt.Sprint(got) != fmt.Sprint([]string{"dotnet", "test"}) {
+		t.Fatalf("local-ci command = %v, want [dotnet test] after #1009 gaggle-ciCommand resolution", got)
+	}
+
+	m, err := workflow.Compile(
+		workflow.Definition{Name: wf.Name, Version: 1, Spec: wf.Spec},
+		workflow.WithGoobers(goobers),
+		workflow.WithPreviewFeatures(true),
+	)
+	if err != nil {
+		t.Fatalf("compile dotnet-service machine: %v", err)
+	}
+	return m
+}
+
+func localCICommand(wf apiv1.Workflow) []string {
+	for _, task := range wf.Spec.Tasks {
+		if task.Name == "local-ci" && task.Run != nil {
+			return task.Run.Command
+		}
+	}
+	return nil
+}
+
 func loadYAML[T any](t *testing.T, path string) T {
 	t.Helper()
 	raw, err := os.ReadFile(path)

@@ -100,7 +100,8 @@ func TestSweepStalledRunsEscalatesLiveAdmittedRunAcrossReload(t *testing.T) {
 				Next: workflow.TerminalComplete,
 			}},
 		},
-	})
+	}, workflow.WithPreviewFeatures(true))
+
 	if err != nil {
 		t.Fatal(err)
 	}

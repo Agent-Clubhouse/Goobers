@@ -362,7 +362,7 @@ func TestRunnerToleratedFailureStopsHeartbeatBeforeJournalingOutcome(t *testing.
 			ContinueOnError: true,
 		}},
 	}
-	machine, err := workflow.Compile(workflow.Definition{Name: "tolerated-heartbeat", Version: 1, Spec: spec})
+	machine, err := workflow.Compile(workflow.Definition{Name: "tolerated-heartbeat", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -773,7 +773,7 @@ func fixtureMachine(t *testing.T) *workflow.Machine {
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "fixture", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile fixture machine: %v", err)
 	}
@@ -806,7 +806,7 @@ func escalationParkingMachine(t *testing.T) *workflow.Machine {
 			},
 		}},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "escalation-parking", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "escalation-parking", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile escalation parking machine: %v", err)
 	}
@@ -874,7 +874,7 @@ func retryFixtureMachine(t *testing.T, maxAttempts int32) *workflow.Machine {
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "retry-fixture", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "retry-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile retry fixture machine: %v", err)
 	}
@@ -901,7 +901,7 @@ func taskReservedNextFixtureMachine(t *testing.T, next string) *workflow.Machine
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "task-reserved-next-fixture", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "task-reserved-next-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile task-reserved-next fixture machine (next=%q): %v", next, err)
 	}
@@ -918,7 +918,7 @@ func agenticReservedNextFixtureMachine(t *testing.T, next string) *workflow.Mach
 			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a diff", Next: next,
 		}},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "agentic-reserved-next-fixture", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "agentic-reserved-next-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile agentic reserved-next fixture machine (next=%q): %v", next, err)
 	}
@@ -1014,7 +1014,7 @@ func noWorkFixtureMachine(t *testing.T) *workflow.Machine {
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "no-work-fixture", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "no-work-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile no-work fixture machine: %v", err)
 	}
@@ -1100,7 +1100,7 @@ func inputsFromFixtureMachine(t *testing.T) *workflow.Machine {
 				InputsFrom: map[string]string{"prNumber": "prNumber"}},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "inputs-from-fixture", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "inputs-from-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile inputs-from fixture machine: %v", err)
 	}
@@ -1165,7 +1165,7 @@ func TestRunnerPopulatesDeclaredTaskAndGateLimits(t *testing.T) {
 		}},
 	}
 
-	machine, err := workflow.Compile(workflow.Definition{Name: "limits-fixture", Version: 1, Spec: spec})
+	machine, err := workflow.Compile(workflow.Definition{Name: "limits-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -1223,7 +1223,7 @@ func TestRunnerThreadsAutomatedGateCadenceToCIPollTask(t *testing.T) {
 			},
 		}},
 	}
-	machine, err := workflow.Compile(workflow.Definition{Name: "ci-cadence-fixture", Version: 1, Spec: spec})
+	machine, err := workflow.Compile(workflow.Definition{Name: "ci-cadence-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -1526,7 +1526,7 @@ func terminalFailMachine(t *testing.T) *workflow.Machine {
 			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a diff", Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "terminal-fail", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "terminal-fail", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile terminal-fail machine: %v", err)
 	}
@@ -1547,7 +1547,7 @@ func chainedNoGateMachine(t *testing.T) *workflow.Machine {
 			{Name: "deploy", Type: apiv1.TaskDeterministic, Goal: "ship it", Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "chained-no-gate", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "chained-no-gate", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile chained-no-gate machine: %v", err)
 	}
@@ -1632,7 +1632,7 @@ func gateAbsorbedCompleteMachine(t *testing.T) *workflow.Machine {
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "gate-absorbed-complete", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "gate-absorbed-complete", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile gate-absorbed-complete machine: %v", err)
 	}
@@ -2026,7 +2026,7 @@ func TestRunnerTaskFailureContinueOnErrorMatrix(t *testing.T) {
 				},
 				Gates: gates,
 			}
-			machine, err := workflow.Compile(workflow.Definition{Name: "continue-on-error", Version: 1, Spec: spec})
+			machine, err := workflow.Compile(workflow.Definition{Name: "continue-on-error", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 			if err != nil {
 				t.Fatalf("Compile: %v", err)
 			}
@@ -2205,7 +2205,7 @@ func TestRunnerToleratedFailureDoesNotSatisfyInputsFrom(t *testing.T) {
 			},
 		},
 	}
-	machine, err := workflow.Compile(workflow.Definition{Name: "continue-on-error-inputs", Version: 1, Spec: spec})
+	machine, err := workflow.Compile(workflow.Definition{Name: "continue-on-error-inputs", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -2505,7 +2505,7 @@ func TestRunnerMaxStepsExceededFailsRunClosed(t *testing.T) {
 			},
 		},
 	}
-	machine, err := workflow.Compile(workflow.Definition{Name: "runaway", Version: 1, Spec: spec})
+	machine, err := workflow.Compile(workflow.Definition{Name: "runaway", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -2580,7 +2580,7 @@ func TestRunnerRejectsHumanGateBeforeStarting(t *testing.T) {
 			},
 		},
 	}
-	_, err := workflow.Compile(workflow.Definition{Name: "human-gate", Version: 1, Spec: spec})
+	_, err := workflow.Compile(workflow.Definition{Name: "human-gate", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	const want = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("compile error = %v, want actionable rejection before runner start", err)
@@ -2860,7 +2860,7 @@ func retryFixtureMachineWithBackoff(t *testing.T, maxAttempts int32, backoff tim
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "retry-backoff-fixture", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "retry-backoff-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile retry backoff fixture machine: %v", err)
 	}
@@ -3417,7 +3417,7 @@ func TestRunnerResumeRestoresGateRepassCounter(t *testing.T) {
 			},
 		},
 	}
-	machine, err := workflow.Compile(workflow.Definition{Name: "repass-loop", Version: 1, Spec: spec})
+	machine, err := workflow.Compile(workflow.Definition{Name: "repass-loop", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -3502,7 +3502,7 @@ func TestRunnerResumeEscalatesAfterRepeatedInterruptedGateEvaluations(t *testing
 			},
 		},
 	}
-	machine, err := workflow.Compile(workflow.Definition{Name: "interrupted-gate-loop", Version: 1, Spec: spec})
+	machine, err := workflow.Compile(workflow.Definition{Name: "interrupted-gate-loop", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -3734,7 +3734,7 @@ func chainedThroughGateMachine(t *testing.T) *workflow.Machine {
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "chained-through-gate", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "chained-through-gate", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile chained-through-gate machine: %v", err)
 	}
@@ -4185,7 +4185,7 @@ func terminalCIGateMachine(t *testing.T) *workflow.Machine {
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "terminal-ci-gate", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "terminal-ci-gate", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile terminal CI gate machine: %v", err)
 	}
@@ -4471,7 +4471,7 @@ func repassLoopMachine(t *testing.T) *workflow.Machine {
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "repass-loop-escalate", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "repass-loop-escalate", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile repass-loop machine: %v", err)
 	}
@@ -4737,7 +4737,7 @@ func agenticGateMachine(t *testing.T) *workflow.Machine {
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "agentic-gate-fixture", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "agentic-gate-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile agentic gate machine: %v", err)
 	}
@@ -4770,7 +4770,7 @@ func agenticImplementGateMachine(t *testing.T) *workflow.Machine {
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "agentic-implement-fixture", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "agentic-implement-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile agentic implement machine: %v", err)
 	}

@@ -34,7 +34,7 @@ func newStuckRun(t *testing.T, l instance.Layout, runID, workflowName string) {
 	found := false
 	for i := range set.Workflows {
 		if set.Workflows[i].Name == workflowName {
-			m, err := workflow.Compile(workflow.Definition{Name: set.Workflows[i].Name, Version: 1, Spec: set.Workflows[i].Spec})
+			m, err := workflow.Compile(workflow.Definition{Name: set.Workflows[i].Name, Version: 1, Spec: set.Workflows[i].Spec}, workflow.WithPreviewFeatures(true))
 			if err != nil {
 				t.Fatalf("compile fixture workflow: %v", err)
 			}

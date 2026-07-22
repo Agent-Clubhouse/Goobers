@@ -7,7 +7,7 @@ import (
 )
 
 func TestVersionPinning(t *testing.T) {
-	r := NewRegistry()
+	r := NewRegistryWithPreviewFeatures(true)
 
 	v1, err := r.Register("flow", linearSpec())
 	if err != nil {
@@ -24,6 +24,9 @@ func TestVersionPinning(t *testing.T) {
 	}
 	if in1.Version != 1 {
 		t.Errorf("pinned version = %d, want 1", in1.Version)
+	}
+	if !in1.PreviewFeaturesEnabled {
+		t.Error("pinned input did not carry the registry preview-feature policy")
 	}
 	if len(in1.Spec.Gates) != 0 {
 		t.Errorf("v1 should have no gates, got %d", len(in1.Spec.Gates))
@@ -57,7 +60,7 @@ func TestVersionPinning(t *testing.T) {
 }
 
 func TestGetAndLatest(t *testing.T) {
-	r := NewRegistry()
+	r := NewRegistryWithPreviewFeatures(true)
 	if _, ok := r.Latest("nope"); ok {
 		t.Error("Latest on unknown should be false")
 	}
@@ -85,6 +88,13 @@ func TestRegisterInvalidRejected(t *testing.T) {
 	}
 	if _, ok := r.Latest("bad"); ok {
 		t.Error("invalid workflow should not be registered")
+	}
+}
+
+func TestRegisterPreviewFeaturesRequiresOptIn(t *testing.T) {
+	r := NewRegistry()
+	if _, err := r.Register("flow", linearSpec()); err == nil {
+		t.Fatal("expected preview workflow registration without opt-in to fail")
 	}
 }
 

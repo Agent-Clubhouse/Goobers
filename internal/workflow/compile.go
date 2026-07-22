@@ -64,8 +64,7 @@ func PreviewFeaturesEnabled(annotations map[string]string) bool {
 }
 
 // WithPreviewFeatures applies an instance's preview-feature acknowledgement to
-// compilation. Callers without instance context may omit it; config loading
-// enforces the same policy through api/validate before compilation.
+// compilation. Preview features are rejected when this option is omitted.
 func WithPreviewFeatures(enabled bool) Option {
 	return func(o *options) { o.allowPreviewFeatures = &enabled }
 }
@@ -156,7 +155,7 @@ func blockingFeatureProblems(diagnostics []FeatureDiagnostic) []string {
 // undefined states, gates with no branches or branches to undefined states,
 // human evaluators while durable pause/resume is unavailable, states
 // unreachable from start, loops with no exit to a terminal, removed DSL
-// features, preview DSL features when WithPreviewFeatures(false) is supplied,
+// features, preview DSL features unless WithPreviewFeatures(true) is supplied,
 // and — when WithGoobers is supplied — a goober granting or a stage declaring
 // a capability outside the canonical registry (internal/capability, issue #74),
 // stages using capabilities their goober does not grant, and goobers on an
@@ -172,7 +171,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	m := newMachine(def)
 
 	var problems []string
-	allowPreview := true
+	allowPreview := false
 	if o.allowPreviewFeatures != nil {
 		allowPreview = *o.allowPreviewFeatures
 	}
