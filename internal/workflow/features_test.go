@@ -120,6 +120,154 @@ func TestCurrentFeaturesArePreviewAtInitialVersion(t *testing.T) {
 		if feature.SinceVersion != initialFeatureSinceVersion {
 			t.Errorf("feature %q since-version = %q, want initial app version %q", feature.ID, feature.SinceVersion, initialFeatureSinceVersion)
 		}
+		wantHistory := []SupportTransition{{
+			Level:        SupportPreview,
+			SinceVersion: initialFeatureSinceVersion,
+		}}
+		if !slices.Equal(feature.History, wantHistory) {
+			t.Errorf("feature %q history = %+v, want %+v", feature.ID, feature.History, wantHistory)
+		}
+	}
+}
+
+func TestCurrentFeatureRegistrySatisfiesCompatibilityPolicy(t *testing.T) {
+	if _, err := NewFeatureRegistry(currentFeatures(initialFeatureSinceVersion)); err != nil {
+		t.Fatalf("current feature registry violates compatibility policy: %v", err)
+	}
+}
+
+func TestFeatureRegistryCompatibilityPolicy(t *testing.T) {
+	transition := func(level SupportLevel, version string) SupportTransition {
+		return SupportTransition{Level: level, SinceVersion: version}
+	}
+	valid := Feature{
+		ID:           "example.feature",
+		Level:        SupportRemoved,
+		SinceVersion: "v1.3.0",
+		History: []SupportTransition{
+			transition(SupportPreview, "dev"),
+			transition(SupportGA, "v1.1.0"),
+			transition(SupportDeprecated, "v1.2.0"),
+			transition(SupportRemoved, "v1.3.0"),
+		},
+	}
+	if _, err := NewFeatureRegistry([]Feature{valid}); err != nil {
+		t.Fatalf("valid lifecycle rejected: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		feature Feature
+		want    string
+	}{
+		{
+			name: "missing history",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportGA,
+				SinceVersion: "v1.0.0",
+			},
+			want: "history must not be empty",
+		},
+		{
+			name: "ga directly to removed",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportRemoved,
+				SinceVersion: "v1.1.0",
+				History: []SupportTransition{
+					transition(SupportGA, "v1.0.0"),
+					transition(SupportRemoved, "v1.1.0"),
+				},
+			},
+			want: `invalid lifecycle transition "ga" -> "removed"`,
+		},
+		{
+			name: "preview directly to removed",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportRemoved,
+				SinceVersion: "v1.1.0",
+				History: []SupportTransition{
+					transition(SupportPreview, "v1.0.0"),
+					transition(SupportRemoved, "v1.1.0"),
+				},
+			},
+			want: `invalid lifecycle transition "preview" -> "removed"`,
+		},
+		{
+			name: "removed within deprecation minor",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportRemoved,
+				SinceVersion: "v1.2.4",
+				History: []SupportTransition{
+					transition(SupportGA, "v1.0.0"),
+					transition(SupportDeprecated, "v1.2.0"),
+					transition(SupportRemoved, "v1.2.4"),
+				},
+			},
+			want: "must remain deprecated until a later minor release",
+		},
+		{
+			name: "versions out of order",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportDeprecated,
+				SinceVersion: "v1.1.0",
+				History: []SupportTransition{
+					transition(SupportGA, "v1.2.0"),
+					transition(SupportDeprecated, "v1.1.0"),
+				},
+			},
+			want: `lifecycle version "v1.1.0" must follow "v1.2.0"`,
+		},
+		{
+			name: "current state differs from history",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportGA,
+				SinceVersion: "v1.1.0",
+				History: []SupportTransition{
+					transition(SupportPreview, "v1.0.0"),
+				},
+			},
+			want: "does not match lifecycle history",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewFeatureRegistry([]Feature{test.feature})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("NewFeatureRegistry() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestFeatureRegistryLifecycleHistoryIsImmutable(t *testing.T) {
+	features := []Feature{{
+		ID:           "example.feature",
+		Level:        SupportPreview,
+		SinceVersion: "dev",
+		History: []SupportTransition{{
+			Level:        SupportPreview,
+			SinceVersion: "dev",
+		}},
+	}}
+	registry, err := NewFeatureRegistry(features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	features[0].History[0].Level = SupportRemoved
+	lookedUp, ok := registry.Lookup("example.feature")
+	if !ok {
+		t.Fatal("registered feature was not found")
+	}
+	lookedUp.History[0].Level = SupportRemoved
+	lookedUpAgain, _ := registry.Lookup("example.feature")
+	if lookedUpAgain.History[0].Level != SupportPreview {
+		t.Fatalf("registry history was mutated through a returned feature: %+v", lookedUpAgain.History)
 	}
 }
 

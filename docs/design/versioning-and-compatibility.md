@@ -47,8 +47,9 @@ Kubernetes-style *group/version* of the resource shape and only bumps on a full 
 
 - **Capability/feature registry**: a single in-code registry of named DSL features (e.g.
   `trigger.signal`, `gate.evaluator.human`, `task.retry.backoff`, `goober.spec.model`), each with a
-  **support level**: `preview | ga | deprecated | removed`, plus the app version it entered each
-  level. This is the source of truth for validation *and* the published feature matrix (§3.3).
+  **support level**: `preview | ga | deprecated | removed`, plus an ordered history of every level
+  and the app version that entered it. The current level and since-version are the final history
+  entry. This is the source of truth for validation *and* the published feature matrix (§3.3).
 - **Validation semantics** (extends `api/validate` + `internal/workflow/compile.go`):
   - `removed` feature used → **error** (fail closed), message names the feature and last-supporting version.
   - `deprecated` feature used → **warning** (still compiles/runs), message names the replacement + removal target.
@@ -61,7 +62,11 @@ Kubernetes-style *group/version* of the resource shape and only bumps on a full 
     adding new stage/gate kinds, relaxing constraints, promoting `preview→ga`.
   - *Breaking* (requires `deprecated→removed` cycle across ≥1 minor release, or an `apiVersion` bump):
     removing/renaming a field, tightening a constraint, changing a default, changing semantics.
-  - A feature must live ≥1 released minor in `deprecated` before it may become `removed`.
+  - A feature must live ≥1 released minor in `deprecated` before it may become `removed`: a feature
+    deprecated in `v1.2.x` may be removed no earlier than `v1.3.0`. Registry history must use
+    `vMAJOR.MINOR.PATCH` releases (`dev` is only the initial pre-release baseline); CI rejects
+    skipped transitions such as `ga→removed`, out-of-order versions, and removal within the
+    deprecation minor.
 
 ### 3.2 Release process (REL)
 
