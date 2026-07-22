@@ -81,6 +81,7 @@ links to this documented allowlist:
 
 - all platforms: `go`, `git`, and the C compiler selected by `go env CC` (needed
   by the race detector);
+- Linux: the compiler subprocess helpers `as` and `ld`;
 - Unix: `sh`, optional `bash`, `cat`, `dirname`, `echo`, `false`, `head`,
   `mkdir`, `rm`, `sleep`, `tr`, `true`, `wc`, and `yes`;
 - Windows: `cmd.exe` and `icacls`.

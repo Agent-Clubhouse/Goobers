@@ -155,32 +155,7 @@ func findModuleRoot() (string, error) {
 }
 
 func resolveTools(goCommand string) ([]resolvedTool, string, error) {
-	var specs []toolSpec
-	if runtime.GOOS == "windows" {
-		specs = []toolSpec{
-			{name: "git", required: true},
-			{name: "cmd.exe", required: true},
-			{name: "icacls", required: true},
-		}
-	} else {
-		specs = []toolSpec{
-			{name: "git", required: true},
-			{name: "sh", required: true},
-			{name: "bash"},
-			{name: "cat", required: true},
-			{name: "dirname", required: true},
-			{name: "echo", required: true},
-			{name: "false", required: true},
-			{name: "head", required: true},
-			{name: "mkdir", required: true},
-			{name: "rm", required: true},
-			{name: "sleep", required: true},
-			{name: "tr", required: true},
-			{name: "true", required: true},
-			{name: "wc", required: true},
-			{name: "yes", required: true},
-		}
-	}
+	specs := platformToolSpecs(runtime.GOOS)
 
 	goPath, err := exec.LookPath(goCommand)
 	if err != nil {
@@ -219,6 +194,41 @@ func resolveTools(goCommand string) ([]resolvedTool, string, error) {
 		tools = append(tools, resolvedTool{name: compilerName, path: compilerPath})
 	}
 	return tools, compilerName, nil
+}
+
+func platformToolSpecs(goos string) []toolSpec {
+	if goos == "windows" {
+		return []toolSpec{
+			{name: "git", required: true},
+			{name: "cmd.exe", required: true},
+			{name: "icacls", required: true},
+		}
+	}
+
+	specs := []toolSpec{
+		{name: "git", required: true},
+		{name: "sh", required: true},
+		{name: "bash"},
+		{name: "cat", required: true},
+		{name: "dirname", required: true},
+		{name: "echo", required: true},
+		{name: "false", required: true},
+		{name: "head", required: true},
+		{name: "mkdir", required: true},
+		{name: "rm", required: true},
+		{name: "sleep", required: true},
+		{name: "tr", required: true},
+		{name: "true", required: true},
+		{name: "wc", required: true},
+		{name: "yes", required: true},
+	}
+	if goos == "linux" {
+		specs = append(specs,
+			toolSpec{name: "as", required: true},
+			toolSpec{name: "ld", required: true},
+		)
+	}
+	return specs
 }
 
 func toolNames(tools []resolvedTool) map[string]struct{} {

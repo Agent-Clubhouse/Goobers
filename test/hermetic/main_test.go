@@ -50,6 +50,19 @@ func TestResolveToolsUsesConfiguredGoExecutable(t *testing.T) {
 	t.Fatal("resolved tools do not contain Go")
 }
 
+func TestPlatformToolSpecsIncludeLinuxCompilerHelpers(t *testing.T) {
+	specs := platformToolSpecs("linux")
+	required := make(map[string]bool, len(specs))
+	for _, spec := range specs {
+		required[spec.name] = spec.required
+	}
+	for _, name := range []string{"as", "ld"} {
+		if !required[name] {
+			t.Errorf("Linux tool %q is not required", name)
+		}
+	}
+}
+
 func TestHermeticEnvironmentReplacesAmbientToolAndNetworkSettings(t *testing.T) {
 	got := hermeticEnvironment([]string{
 		"HOME=/home/tester",
