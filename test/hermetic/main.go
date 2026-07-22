@@ -54,11 +54,10 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "--" {
-		args = args[1:]
-	}
-	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/hermetic -- <go test arguments>")
+	goCommand, args, err := parseInvocation(args)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
+		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/hermetic [--go-command <go>] -- <go test arguments>")
 		return 2
 	}
 
@@ -68,7 +67,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	tools, compilerName, err := resolveTools()
+	tools, compilerName, err := resolveTools(goCommand)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
 		return 1
@@ -118,6 +117,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 1
 }
 
+func parseInvocation(args []string) (string, []string, error) {
+	goCommand := "go"
+	if len(args) > 0 && args[0] == "--go-command" {
+		if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
+			return "", nil, errors.New("--go-command requires an executable")
+		}
+		goCommand = args[1]
+		args = args[2:]
+	}
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		return "", nil, errors.New("go test arguments are required")
+	}
+	return goCommand, args, nil
+}
+
 func findModuleRoot() (string, error) {
 	current, err := os.Getwd()
 	if err != nil {
@@ -137,18 +154,16 @@ func findModuleRoot() (string, error) {
 	}
 }
 
-func resolveTools() ([]resolvedTool, string, error) {
+func resolveTools(goCommand string) ([]resolvedTool, string, error) {
 	var specs []toolSpec
 	if runtime.GOOS == "windows" {
 		specs = []toolSpec{
-			{name: "go", required: true},
 			{name: "git", required: true},
 			{name: "cmd.exe", required: true},
 			{name: "icacls", required: true},
 		}
 	} else {
 		specs = []toolSpec{
-			{name: "go", required: true},
 			{name: "git", required: true},
 			{name: "sh", required: true},
 			{name: "bash"},
@@ -167,7 +182,12 @@ func resolveTools() ([]resolvedTool, string, error) {
 		}
 	}
 
-	tools := make([]resolvedTool, 0, len(specs)+1)
+	goPath, err := exec.LookPath(goCommand)
+	if err != nil {
+		return nil, "", fmt.Errorf("configured Go command %q is unavailable: %w", goCommand, err)
+	}
+	tools := make([]resolvedTool, 0, len(specs)+2)
+	tools = append(tools, resolvedTool{name: "go", path: goPath})
 	for _, spec := range specs {
 		path, err := exec.LookPath(spec.name)
 		if err != nil {
@@ -179,13 +199,6 @@ func resolveTools() ([]resolvedTool, string, error) {
 		tools = append(tools, resolvedTool{name: spec.name, path: path})
 	}
 
-	goPath := ""
-	for _, tool := range tools {
-		if tool.name == "go" {
-			goPath = tool.path
-			break
-		}
-	}
 	output, err := exec.Command(goPath, "env", "CC").Output()
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve Go C compiler: %w", err)

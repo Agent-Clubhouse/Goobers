@@ -1,3 +1,5 @@
+//go:build integration
+
 package operator
 
 import (
@@ -20,8 +22,8 @@ import (
 
 // TestEnvtestReconcile runs the reconciler against a real (envtest) API server:
 // create CR -> reconcile drives desired state + updates status (M9 acceptance).
-// It self-skips when KUBEBUILDER_ASSETS is unset so plain `make ci` stays
-// portable; run it via `make test-envtest` (which provisions the assets).
+// Run it via `make test-envtest`, which selects the integration tier and
+// provisions the assets.
 func TestEnvtestReconcile(t *testing.T) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS not set; run `make test-envtest` to provision envtest binaries")

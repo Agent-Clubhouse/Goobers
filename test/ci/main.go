@@ -228,7 +228,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos str
 			// -count and the OTLP-flush blocking that compounded it is fixed in
 			// this change (telemetry soft-fails an unreachable collector). Normal
 			// runs finish in ~2m, so the higher ceiling never slows a green run.
-			args: []string{"run", "./test/hermetic", "--", "-race", "-timeout", "20m", "-covermode=atomic", "-coverprofile=coverage.out", "./..."},
+			args: []string{"run", "./test/hermetic", "--go-command", tools.goCommand, "--", "-race", "-timeout", "20m", "-covermode=atomic", "-coverprofile=coverage.out", "./..."},
 			env:  testEnvironment,
 		},
 		check{label: "lint", command: tools.golangciCommand, args: []string{"run"}},

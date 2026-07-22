@@ -4,12 +4,51 @@ import (
 	"bytes"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestParseInvocationPreservesConfiguredGoCommand(t *testing.T) {
+	goCommand, args, err := parseInvocation([]string{"--go-command", "/tools/custom-go", "--", "-race", "./..."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goCommand != "/tools/custom-go" {
+		t.Fatalf("Go command = %q, want /tools/custom-go", goCommand)
+	}
+	if want := []string{"-race", "./..."}; !reflect.DeepEqual(args, want) {
+		t.Fatalf("test arguments = %q, want %q", args, want)
+	}
+}
+
+func TestResolveToolsUsesConfiguredGoExecutable(t *testing.T) {
+	ambientGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuredGo := filepath.Join(t.TempDir(), executableName("configured-go"))
+	if err := linkTool(ambientGo, configuredGo); err != nil {
+		t.Fatal(err)
+	}
+
+	tools, _, err := resolveTools(configuredGo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools {
+		if tool.name == "go" {
+			if tool.path != configuredGo {
+				t.Fatalf("resolved Go path = %q, want %q", tool.path, configuredGo)
+			}
+			return
+		}
+	}
+	t.Fatal("resolved tools do not contain Go")
+}
 
 func TestHermeticEnvironmentReplacesAmbientToolAndNetworkSettings(t *testing.T) {
 	got := hermeticEnvironment([]string{

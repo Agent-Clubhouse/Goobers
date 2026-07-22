@@ -95,7 +95,7 @@ test-integration-strict:
 .PHONY: test-envtest
 test-envtest:
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
-		$(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
+		$(GO) test -tags=integration -race -covermode=atomic -coverprofile=coverage.out ./...
 
 ## test-e2e: Run the walking-skeleton E2E harness scaffold.
 .PHONY: test-e2e
@@ -189,7 +189,7 @@ GO_TEST_NETWORK_OFF := GOENV=off GOFLAGS=-mod=readonly GONOPROXY=none GONOSUMDB=
 ## test: Run unit tests with race detector and coverage.
 .PHONY: test
 test:
-	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic -- -race -covermode=atomic -coverprofile=coverage.out ./...
+	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic --go-command "$(GO)" -- -race -covermode=atomic -coverprofile=coverage.out ./...
 
 ## portal-ci: Install, type-check, build, test, and verify the Go wire contract.
 .PHONY: portal-install portal-typecheck portal-build portal-test portal-contract portal-ci
