@@ -205,7 +205,7 @@ func resolveTools(goCommand string) ([]resolvedTool, string, error) {
 	}
 	compilerCommand := strings.TrimSpace(string(output))
 	if fields := strings.Fields(compilerCommand); len(fields) != 1 {
-		return nil, "", fmt.Errorf("Go C compiler command %q must be a single executable", compilerCommand)
+		return nil, "", fmt.Errorf("go C compiler command %q must be a single executable", compilerCommand)
 	}
 	compilerPath, err := exec.LookPath(compilerCommand)
 	if err != nil {
@@ -239,7 +239,7 @@ func populateToolPath(directory string, tools []resolvedTool) error {
 	return nil
 }
 
-func linkTool(source, destination string) error {
+func linkTool(source, destination string) (returnErr error) {
 	absolute, err := filepath.Abs(source)
 	if err != nil {
 		return err
@@ -254,7 +254,9 @@ func linkTool(source, destination string) error {
 	if err != nil {
 		return err
 	}
-	defer input.Close()
+	defer func() {
+		returnErr = errors.Join(returnErr, input.Close())
+	}()
 	info, err := input.Stat()
 	if err != nil {
 		return err
