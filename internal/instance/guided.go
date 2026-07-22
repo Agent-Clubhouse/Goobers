@@ -17,8 +17,11 @@ import (
 )
 
 const (
-	GuidedWorkflowImplementation   = "implementation"
-	GuidedWorkflowBacklogCuration  = "backlog-curation"
+	// GuidedWorkflowImplementation identifies the canonical implementation workflow.
+	GuidedWorkflowImplementation = "implementation"
+	// GuidedWorkflowBacklogCuration identifies the canonical backlog-curation workflow.
+	GuidedWorkflowBacklogCuration = "backlog-curation"
+	// GuidedWorkflowWorkNomination identifies the canonical work-nomination workflow.
 	GuidedWorkflowWorkNomination   = "work-nomination"
 	guidedExampleGaggle            = "acme-web"
 	guidedExampleDisplayName       = "Acme Web"
