@@ -82,6 +82,17 @@ empty baseline; exactly one baseline option is required. The
 [illustrative generated note](../releases/sample-release-notes.md) shows all
 three transition categories.
 
+> **DSL version-support extension.** The pending
+> [DVL-8 change](https://github.com/Agent-Clubhouse/Goobers/pull/1222) adds
+> `dsl-support-matrix.json` and `-previous-support-matrix`. Its tagged-release
+> integration must preserve the feature-registry contract above: download both
+> snapshots from the same previous release, pass both baselines to one packaging
+> invocation, publish both JSON assets, and compose `RELEASE_NOTES.md` in this
+> order: curated highlights, commit changelog, feature-support delta, DSL
+> support-matrix delta, then external-consumer policy. Until that integration
+> lands, tagged releases publish only the feature-registry metadata described
+> above.
+
 External consumers should pin both the Goobers binary version and its attached
 snapshot. Preview features are unstable; GA features carry the compatibility
 contract; deprecated features continue to validate with warnings for at least
