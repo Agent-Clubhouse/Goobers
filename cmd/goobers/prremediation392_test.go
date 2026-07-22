@@ -314,6 +314,10 @@ func TestPushRemediatedPublishesAndClearsLabel(t *testing.T) {
 	if !strings.Contains(stdout, "#77") {
 		t.Errorf("stdout = %q, want a mention of PR #77", stdout)
 	}
+	pushResult := readCheckpointResult(t, filepath.Join(wtPath, pushRemediatedResultName))
+	if pushResult["published"] != "true" || pushResult["selectedNumber"] != "77" {
+		t.Errorf("push result = %v, want published=true for PR 77", pushResult)
+	}
 
 	// The remote branch really moved to the local rework.
 	local := strings.TrimSpace(runGitOutputT(t, wtPath, "rev-parse", "HEAD"))
@@ -332,6 +336,19 @@ func TestPushRemediatedPublishesAndClearsLabel(t *testing.T) {
 		if l == needsRemediationLabel {
 			t.Errorf("labels = %v, want %s cleared so merge-review re-evaluates the PR", st.labels, needsRemediationLabel)
 		}
+	}
+}
+
+func TestPushRemediatedResultRecordsSkippedPublication(t *testing.T) {
+	resultFile := filepath.Join(t.TempDir(), pushRemediatedResultName)
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
+	var stderr strings.Builder
+	if code := writePushRemediatedResult(77, false, "", &stderr); code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	result := readCheckpointResult(t, resultFile)
+	if result["published"] != "false" || result["selectedNumber"] != "77" {
+		t.Errorf("push result = %v, want published=false for PR 77", result)
 	}
 }
 

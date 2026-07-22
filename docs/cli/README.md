@@ -49,6 +49,7 @@
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-PR repass budget + same-diff escalation (a workflow stage) |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
+| [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
 | [`goobers run abort`](#goobers-run-abort) | mark a stuck non-terminal run aborted |
 | [`goobers run cancel`](#goobers-run-cancel) | cancel a live in-flight run via the daemon |
@@ -978,6 +979,31 @@ Exit codes: 0 = reset written, 2 = usage/IO error.
 
 ~~~console
 $ goobers reset-rate-limit
+~~~
+
+## `goobers respond-to-findings`
+
+post a validated per-finding remediation response to the claimed PR (a workflow stage)
+
+~~~text
+Usage: goobers respond-to-findings [path]
+
+Read the claimed PR's original remediation verdict and the latest
+implement stage's findingResponses output from this run's journal.
+Require exactly one addressed/declined disposition with a non-empty
+detail for every finding, post the resulting changelog to the PR, and
+write the complete structured response to the declared result file.
+Retries reconcile one run-scoped comment instead of appending duplicates.
+If push-remediated skipped a closed PR, records the unposted account
+without claiming those local changes landed.
+[path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = response
+processed, 1 = business error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers respond-to-findings
 ~~~
 
 ## `goobers run`

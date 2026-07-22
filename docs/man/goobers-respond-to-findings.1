@@ -1,0 +1,27 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RESPOND TO FINDINGS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers respond-to-findings \- post a validated per-finding remediation response to the claimed PR (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers respond-to-findings\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers respond-to-findings [path]
+
+Read the claimed PR's original remediation verdict and the latest
+implement stage's findingResponses output from this run's journal.
+Require exactly one addressed/declined disposition with a non-empty
+detail for every finding, post the resulting changelog to the PR, and
+write the complete structured response to the declared result file.
+Retries reconcile one run-scoped comment instead of appending duplicates.
+If push-remediated skipped a closed PR, records the unposted account
+without claiming those local changes landed.
+[path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = response
+processed, 1 = business error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers respond-to-findings
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

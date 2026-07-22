@@ -1,16 +1,23 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
+)
+
+const (
+	pushRemediatedResultName      = "push-remediated-result.json"
+	pushRemediatedPublishedOutput = "published"
 )
 
 // runPushRemediated implements `goobers push-remediated` (issue #392):
@@ -139,7 +146,7 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 		// to, and force-pushing to a merged PR's branch would be actively
 		// wrong. A clean no-op; next cycle selects on current facts.
 		pf(stdout, "PR #%d is no longer open (merged/closed during remediation) — nothing to push\n", selectedNumber)
-		return 0
+		return writePushRemediatedResult(selectedNumber, false, "", stderr)
 	}
 
 	rawComments, err := provider.ListComments(ctx, repo, strconv.Itoa(selectedNumber))
@@ -185,6 +192,24 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 	}
 
 	pf(stdout, "PR #%d: pushed remediated branch %s and cleared %s\n", selectedNumber, current.Head, needsRemediationLabel)
+	return writePushRemediatedResult(selectedNumber, true, current.Head, stderr)
+}
+
+func writePushRemediatedResult(selectedNumber int, published bool, head string, stderr io.Writer) int {
+	resultFile := providerInput("resultFile", pushRemediatedResultName)
+	data, err := json.Marshal(map[string]string{
+		"selectedNumber":              strconv.Itoa(selectedNumber),
+		pushRemediatedPublishedOutput: strconv.FormatBool(published),
+		"head":                        head,
+	})
+	if err != nil {
+		pf(stderr, "error: marshal push-remediated result: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		pf(stderr, "error: write %s: %v\n", resultFile, err)
+		return 2
+	}
 	return 0
 }
 

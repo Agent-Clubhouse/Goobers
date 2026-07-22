@@ -131,6 +131,9 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if got := implement.Next; got != "review" {
 		t.Errorf("implement next = %q, want the review gate", got)
 	}
+	if !containsString(implement.ExpectedOutputs, "findingResponses") {
+		t.Errorf("implement expectedOutputs = %v, missing findingResponses account", implement.ExpectedOutputs)
+	}
 
 	// The full executor chain, exactly as implementation.yaml shapes it:
 	// review -> local-ci -> local-gate -> publish.
@@ -246,19 +249,19 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 	}
 }
 
-// TestPRRemediationPublishesAndClearsTheLabel pins the cycle's terminal step.
+// TestPRRemediationPublishesAndResponds pins the cycle's terminal steps.
 // Without a publish stage the agentic chain's work stays local to the run's
 // worktree and is discarded at teardown — the run would report success having
 // changed nothing on the PR, the most expensive possible no-op.
-func TestPRRemediationPublishesAndClearsTheLabel(t *testing.T) {
+func TestPRRemediationPublishesAndResponds(t *testing.T) {
 	_, m := loadPRRemediation(t)
 
 	push, ok := m.Task("push-remediated")
 	if !ok {
 		t.Fatal("push-remediated not found — the remediation would never reach the PR")
 	}
-	if push.Next != "" {
-		t.Errorf("push-remediated next = %q, want terminal", push.Next)
+	if push.Next != "respond-to-findings" {
+		t.Errorf("push-remediated next = %q, want respond-to-findings after the branch is published", push.Next)
 	}
 	wantCaps := map[string]bool{"repo:push": false, "github:pr:write": false, "github:issues:write": false}
 	for _, c := range push.Capabilities {
@@ -266,10 +269,44 @@ func TestPRRemediationPublishesAndClearsTheLabel(t *testing.T) {
 			wantCaps[c] = true
 		}
 	}
+
+	respond, ok := m.Task("respond-to-findings")
+	if !ok {
+		t.Fatal("respond-to-findings not found — the published remediation would remain silent")
+	}
+	if respond.Next != "" {
+		t.Errorf("respond-to-findings next = %q, want terminal", respond.Next)
+	}
+	if respond.Run == nil {
+		t.Fatal("respond-to-findings has no deterministic run command")
+	}
+	if len(respond.Run.Command) != 2 ||
+		respond.Run.Command[0] != "goobers" || respond.Run.Command[1] != "respond-to-findings" {
+		t.Errorf("respond-to-findings command = %v, want [goobers respond-to-findings]", respond.Run.Command)
+	}
+	if respond.Run.Workspace != apiv1.WorkspaceScratch {
+		t.Errorf("respond-to-findings workspace = %q, want scratch: it reads declared journal inputs, not repository state", respond.Run.Workspace)
+	}
+	if len(respond.Capabilities) != 1 || respond.Capabilities[0] != "github:issues:write" {
+		t.Errorf("respond-to-findings capabilities = %v, want only github:issues:write", respond.Capabilities)
+	}
+	if respond.Inputs["resultFile"] != "remediation-response.json" {
+		t.Errorf("respond-to-findings resultFile = %q, want durable remediation-response.json", respond.Inputs["resultFile"])
+	}
+	if len(respond.InputsFrom) != 0 {
+		t.Errorf("respond-to-findings inputsFrom = %v, want none so omitting the stage only removes legibility", respond.InputsFrom)
+	}
+	if !containsString(respond.ExpectedOutputs, "posted") {
+		t.Errorf("respond-to-findings outputs = %v, missing posted status", respond.ExpectedOutputs)
+	}
 	for c, granted := range wantCaps {
 		if !granted {
 			t.Errorf("push-remediated is missing capability %q", c)
 		}
+	}
+	if push.Inputs["resultFile"] != "push-remediated-result.json" ||
+		!containsString(push.ExpectedOutputs, "published") {
+		t.Errorf("push-remediated result contract = inputs %v outputs %v, want durable published status", push.Inputs, push.ExpectedOutputs)
 	}
 
 	// pr-remediation is the ONLY workflow that pushes to existing PR
