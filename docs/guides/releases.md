@@ -4,30 +4,52 @@ How Goobers binaries are built for distribution, packaged, and verified — and 
 Windows distribution story (artifacts, checksums, signing posture, scoop/winget
 shape) added by [#655](https://github.com/Agent-Clubhouse/Goobers/issues/655).
 
-> **Scope boundary.** This page documents the release **packaging engine** and
-> the **distribution shape**. It does *not* document a tagged-release
-> **workflow** — the GitHub Actions automation that fires on a tag, builds the
-> matrix, uploads artifacts, and writes the changelog is
-> [#432 (REL-2)](https://github.com/Agent-Clubhouse/Goobers/issues/432) and is
-> not built yet. The engine below is designed to be the step that workflow
-> *calls*; until #432 lands, releases are produced by running the engine
-> manually. **No Windows artifact is published until the Windows CI leg
-> ([#633](https://github.com/Agent-Clubhouse/Goobers/issues/633)) is green** — see
-> [The Windows gate](#the-windows-gate).
+## Tagged releases
+
+Pushing a stable semantic-version tag (`vMAJOR.MINOR.PATCH`) runs
+`.github/workflows/release.yml`. The workflow builds the packaging engine's
+complete matrix, verifies its shared checksum manifest and Linux binary, and
+creates a GitHub Release containing the archives, `SHA256SUMS`,
+`feature-registry.json`, and `RELEASE_NOTES.md`. The release body and attached
+notes are the same document: curated highlights and the commit changelog followed
+by the DSL feature-support delta and external-consumer policy. Re-running the
+workflow updates the existing release and replaces its assets, so a partially
+failed publication can be recovered safely.
+
+Release notes combine a curated overview with the first-parent commit history
+since the previous stable tag. Conventional-Commit messages are grouped by type,
+including `BREAKING CHANGE:` and `BREAKING-CHANGE:` footers; non-conforming
+subjects remain visible under **Other changes**. A non-empty curated overview is
+required. Add it at `.github/release-notes/<tag>.md` in the tagged commit, or use
+a non-empty annotated-tag message. A lightweight tag without the matching file
+fails before publication. The first stable release explicitly starts an empty
+feature baseline. Later releases download `feature-registry.json` from the
+previous stable GitHub Release; a missing prior snapshot stops publication.
+
+```sh
+mkdir -p .github/release-notes
+$EDITOR .github/release-notes/v1.2.3.md
+git add .github/release-notes/v1.2.3.md
+git commit -m "docs: curate v1.2.3 release notes"
+git tag v1.2.3
+git push origin v1.2.3
+```
 
 ## The packaging engine
 
 `go run ./release` cross-compiles `./cmd/goobers` for the release matrix,
 packages each target into a platform-conventional archive, and writes a shared
-`SHA256SUMS` manifest into `dist/` (override with `-output`). It is a standalone
-Go tool — matching `test/ci` and `test/coveragegate` — so it runs identically on
-any release runner without a shell dependency.
+`SHA256SUMS` manifest, generated release notes, and the shipped DSL feature
+snapshot into `dist/` (override with `-output`). It is a standalone Go tool —
+matching `test/ci` and `test/coveragegate` — so it runs identically on any
+release runner without a shell dependency.
 
 ```sh
-go run ./release                              # full matrix into ./dist
-go run ./release -targets windows/amd64       # just the Windows artifact
-go run ./release -version v1.2.3 -output dist # explicit version + output dir
-go run ./release -skip-unbuildable            # package what compiles, skip the rest
+go run ./release -first-feature-snapshot      # first recorded snapshot only
+go run ./release -previous-features previous-feature-registry.json
+go run ./release -previous-features previous-feature-registry.json -targets windows/amd64
+go run ./release -previous-features previous-feature-registry.json -version v1.2.3 -output dist
+go run ./release -previous-features previous-feature-registry.json -skip-unbuildable
 ```
 
 Build metadata (`version`/`commit`/`date`) is injected via the same
@@ -36,6 +58,37 @@ released binary's `goobers --version` is byte-for-byte consistent with a local
 `make build`. Version defaults to `git describe --tags --always --dirty`; the
 build date defaults to the commit's committer date, so re-running the engine on
 the same commit is reproducible (`-trimpath` is always on).
+
+### Release notes and DSL feature snapshot
+
+Every non-empty release build writes two metadata assets alongside the binaries:
+
+- `feature-registry.json` is the complete, schema-versioned snapshot returned by
+  the same registry that powers `goobers features` and
+  [`docs/feature-matrix.md`](../feature-matrix.md).
+- `RELEASE_NOTES.md` is rendered from
+  [`release/release-notes.tmpl.md`](../../release/release-notes.tmpl.md). It
+  includes newly GA, newly deprecated, and removed features plus the external
+  consumer support policy. The tagged workflow combines those sections with its
+  required curated overview and generated commit changelog, then uses the result
+  as both the attached file and the GitHub Release body.
+
+For every release after the first, download `feature-registry.json` from the
+previous GitHub Release and pass it with `-previous-features`. The generator
+validates the snapshot and compares support levels by stable feature ID. A
+feature must remain in the registry at level `removed`, not disappear. For the
+first recorded snapshot, pass `-first-feature-snapshot` to explicitly select an
+empty baseline; exactly one baseline option is required. The
+[illustrative generated note](../releases/sample-release-notes.md) shows all
+three transition categories.
+
+External consumers should pin both the Goobers binary version and its attached
+snapshot. Preview features are unstable; GA features carry the compatibility
+contract; deprecated features continue to validate with warnings for at least
+one released minor before removal; removed features fail validation. Within an
+`apiVersion`, optional additions and `preview` to `ga` promotions are
+non-breaking. Field removal or renaming, tighter constraints, changed defaults,
+and semantic changes require the deprecation window or an `apiVersion` bump.
 
 ### Artifact shape
 
@@ -52,8 +105,10 @@ the binary under its natural name.
 ### Checksums
 
 `SHA256SUMS` is a coreutils `sha256sum -c`-compatible manifest — one
-`<hex>  <filename>` line per artifact, sorted by filename. The same file verifies
-on every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
+`<hex>  <filename>` line per binary archive and the authoritative
+`feature-registry.json`, sorted by filename. The generated release note remains
+editable for curation and is not checksummed. The same file verifies on every
+platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
 `Get-FileHash -Algorithm SHA256` on Windows (see the
 [Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This is the
 **primary integrity mechanism** for the initially-unsigned Windows artifacts.
