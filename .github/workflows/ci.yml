@@ -268,7 +268,7 @@ jobs:
         run: make vulncheck
 
   required-ci:
-    name: make ci (deadcode · fmt-check · vet · build · test · lint)
+    name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() }}
     needs: [ci, windows-smoke, shipped-workflows, vulnerability-scan, conformance]
     runs-on: ubuntu-latest
