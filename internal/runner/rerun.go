@@ -28,6 +28,7 @@ type rerunContext struct {
 	requestAttempt         int
 	policyAttempts         int32
 	infrastructureFailures int32
+	gateAttempts           int
 	instructionAddendum    string
 }
 
@@ -128,7 +129,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		seed.lastStage, seed.lastResult, _ = lastFinishedSubject(seedEvents)
 		seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
 		gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)
-		resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
+		gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
 
 		ctx, span := r.startRunSpan(ctx, startIn)
 		defer span.End()
@@ -222,6 +223,7 @@ func pendingRerun(events []journal.Event, machine *workflow.Machine) (*rerunCont
 			requestAttempt:         request.Attempt,
 			policyAttempts:         policyAttempts,
 			infrastructureFailures: infrastructureFailures,
+			gateAttempts:           pendingRerunGateAttempts(events[i+1:], request.Stage),
 			instructionAddendum:    request.InstructionAddendum,
 		}, seed, nil
 	}
@@ -266,17 +268,31 @@ func pendingRerunAttempt(events []journal.Event, request journal.Event) int {
 	return attempt
 }
 
-func resetRerunGateSeeds(machine *workflow.Machine, rerun *rerunContext, attempts map[string]int, digests map[string]string) {
+func pendingRerunGateAttempts(events []journal.Event, gate string) int {
+	attempts := 0
+	for _, event := range events {
+		if event.Type == journal.EventGateStarted && event.Gate == gate {
+			attempts++
+		}
+	}
+	return attempts
+}
+
+func resetRerunGateSeeds(machine *workflow.Machine, rerun *rerunContext, attempts map[string]int, digests map[string]string) map[string]int {
 	if rerun == nil {
-		return
+		return attempts
 	}
 	if gate, ok := machine.Gate(rerun.stage); !ok || gate.Evaluator != apiv1.EvaluatorAgentic {
-		return
+		return attempts
+	}
+	if attempts == nil && rerun.gateAttempts > 0 {
+		attempts = make(map[string]int)
 	}
 	if attempts != nil {
-		attempts[rerun.stage] = 0
+		attempts[rerun.stage] = rerun.gateAttempts
 	}
 	if digests != nil {
 		delete(digests, rerun.stage)
 	}
+	return attempts
 }

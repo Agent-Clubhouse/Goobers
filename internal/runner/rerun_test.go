@@ -489,6 +489,72 @@ func TestResumeDoesNotResetHumanRerunPolicyBudgetAfterRepeatedCrashes(t *testing
 	}
 }
 
+func TestResumeDoesNotResetHumanGateRerunBudgetAfterRepeatedCrashes(t *testing.T) {
+	const (
+		runID    = "run-rerun-gate-repeated-crashes"
+		addendum = "Keep the reviewer guidance."
+	)
+	machine := rerunGateMachine(t)
+	reviewer := &rerunGateReviewer{}
+	byTask := map[string]stubTaskResult{runID + ":implement": {status: apiv1.ResultSuccess}}
+	r, runsDir := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		return reviewer, nil
+	}, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		return &committingStubDeterministic{t: t, rec: rec, byTask: byTask}, nil
+	})
+	r.cfg.MaxRepasses = 1
+	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("initial phase = %s, want escalated", result.Phase)
+	}
+
+	recovered, _, err := journal.Recover(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []journal.Event{
+		{
+			Type: journal.EventStageRerunRequested, Stage: "review", Attempt: 2,
+			AttemptClass: journal.AttemptHuman, Actor: "maintainer",
+			InstructionAddendum: addendum,
+		},
+		{Type: journal.EventGateStarted, Gate: "review", Runner: map[string]any{"repassAttempt": 1}},
+		{Type: journal.EventGateStarted, Gate: "review", Runner: map[string]any{"repassAttempt": 2}},
+	} {
+		if err := recovered.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := recovered.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err = r.Resume(context.Background(), ResumeInput{RunID: runID, Machine: machine, RepoRef: repo})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("resumed phase = %s, want escalated", result.Phase)
+	}
+	if len(reviewer.addenda) != 1 {
+		t.Fatalf("reviewer invocations = %d, want only the original attempt", len(reviewer.addenda))
+	}
+
+	events := readRerunEvents(t, runsDir, runID)
+	last := events[len(events)-2]
+	if last.Type != journal.EventGateEvaluated || last.Gate != "review" ||
+		last.Runner["interrupted"] != true || last.Runner["repassAttempt"] != float64(2) {
+		t.Fatalf("recovered gate verdict = %+v", last)
+	}
+}
+
 func TestResumePreservesHumanRerunInfrastructureBudget(t *testing.T) {
 	const runID = "run-rerun-infrastructure-budget"
 	machine := rerunTaskMachineWithMaxAttempts(t, 3)

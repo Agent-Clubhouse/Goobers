@@ -250,7 +250,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	setStalledAttemptContext(ctx)
 
 	gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)
-	resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
+	gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
 	result, err := r.walk(ctx, jr, startIn, startState, resume, rerun, gateAttempts, gateDiffDigests, registrar, seed)
 	if err != nil {
 		span.Fail(err)
