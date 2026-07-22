@@ -56,8 +56,8 @@ func TestReadFeatureSnapshotRejectsInvalidRegistry(t *testing.T) {
   "schemaVersion": 1,
   "release": "v1.0.0",
   "features": [
-    {"id":"duplicate","level":"ga","sinceVersion":"v1.0.0"},
-    {"id":"duplicate","level":"ga","sinceVersion":"v1.1.0"}
+    {"id":"duplicate","level":"ga","sinceVersion":"v1.0.0","history":[{"level":"ga","sinceVersion":"v1.0.0"}]},
+    {"id":"duplicate","level":"ga","sinceVersion":"v1.1.0","history":[{"level":"ga","sinceVersion":"v1.1.0"}]}
   ]
 }`
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
@@ -134,17 +134,17 @@ func TestSampleReleaseNoteUpToDate(t *testing.T) {
 func sampleFeatureSnapshots(t *testing.T) (featureSnapshot, featureSnapshot) {
 	t.Helper()
 	previous, err := newFeatureSnapshot("v0.1.0", []workflow.Feature{
-		{ID: "stage.shell", Level: workflow.SupportGA, SinceVersion: "v0.1.0"},
-		{ID: "trigger.schedule", Level: workflow.SupportPreview, SinceVersion: "v0.1.0"},
-		{ID: "trigger.webhook", Level: workflow.SupportDeprecated, SinceVersion: "v0.1.0", Replacement: "trigger.schedule", RemovalTargetVersion: "v0.2.0"},
+		{ID: "stage.shell", Level: workflow.SupportGA, SinceVersion: "v0.1.0", History: []workflow.SupportTransition{{Level: workflow.SupportGA, SinceVersion: "v0.1.0"}}},
+		{ID: "trigger.schedule", Level: workflow.SupportPreview, SinceVersion: "v0.1.0", History: []workflow.SupportTransition{{Level: workflow.SupportPreview, SinceVersion: "v0.1.0"}}},
+		{ID: "trigger.webhook", Level: workflow.SupportDeprecated, SinceVersion: "v0.1.0", Replacement: "trigger.schedule", RemovalTargetVersion: "v0.2.0", History: []workflow.SupportTransition{{Level: workflow.SupportGA, SinceVersion: "dev"}, {Level: workflow.SupportDeprecated, SinceVersion: "v0.1.0"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	current, err := newFeatureSnapshot("v0.2.0", []workflow.Feature{
-		{ID: "stage.shell", Level: workflow.SupportDeprecated, SinceVersion: "v0.2.0", Replacement: "stage.run", RemovalTargetVersion: "v0.3.0"},
-		{ID: "trigger.schedule", Level: workflow.SupportGA, SinceVersion: "v0.2.0"},
-		{ID: "trigger.webhook", Level: workflow.SupportRemoved, SinceVersion: "v0.2.0", LastSupportingVersion: "v0.1.0"},
+		{ID: "stage.shell", Level: workflow.SupportDeprecated, SinceVersion: "v0.2.0", Replacement: "stage.run", RemovalTargetVersion: "v0.3.0", History: []workflow.SupportTransition{{Level: workflow.SupportGA, SinceVersion: "v0.1.0"}, {Level: workflow.SupportDeprecated, SinceVersion: "v0.2.0"}}},
+		{ID: "trigger.schedule", Level: workflow.SupportGA, SinceVersion: "v0.2.0", History: []workflow.SupportTransition{{Level: workflow.SupportPreview, SinceVersion: "v0.1.0"}, {Level: workflow.SupportGA, SinceVersion: "v0.2.0"}}},
+		{ID: "trigger.webhook", Level: workflow.SupportRemoved, SinceVersion: "v0.2.0", LastSupportingVersion: "v0.1.0", History: []workflow.SupportTransition{{Level: workflow.SupportGA, SinceVersion: "dev"}, {Level: workflow.SupportDeprecated, SinceVersion: "v0.1.0"}, {Level: workflow.SupportRemoved, SinceVersion: "v0.2.0"}}},
 	})
 	if err != nil {
 		t.Fatal(err)

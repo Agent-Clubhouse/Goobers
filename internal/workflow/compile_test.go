@@ -89,19 +89,34 @@ func TestCompileFeatureSupportLevels(t *testing.T) {
 			features := original.All()
 			for i := range features {
 				features[i].Level = SupportGA
+				features[i].SinceVersion = "v1.0.0"
 				features[i].Replacement = ""
 				features[i].RemovalTargetVersion = ""
 				features[i].LastSupportingVersion = ""
+				features[i].History = []SupportTransition{
+					{Level: SupportPreview, SinceVersion: initialFeatureSinceVersion},
+					{Level: SupportGA, SinceVersion: "v1.0.0"},
+				}
 				if features[i].ID != featureWorkflowGaggle {
 					continue
 				}
 				features[i].Level = tc.level
 				switch tc.level {
+				case SupportPreview:
+					features[i].SinceVersion = initialFeatureSinceVersion
+					features[i].History = features[i].History[:1]
 				case SupportDeprecated:
+					features[i].SinceVersion = "v1.1.0"
 					features[i].Replacement = featureWorkflowDisplayName
 					features[i].RemovalTargetVersion = "v2.0.0"
+					features[i].History = append(features[i].History,
+						SupportTransition{Level: SupportDeprecated, SinceVersion: "v1.1.0"})
 				case SupportRemoved:
+					features[i].SinceVersion = "v1.2.0"
 					features[i].LastSupportingVersion = "v1.9.0"
+					features[i].History = append(features[i].History,
+						SupportTransition{Level: SupportDeprecated, SinceVersion: "v1.1.0"},
+						SupportTransition{Level: SupportRemoved, SinceVersion: "v1.2.0"})
 				}
 			}
 			registry, err := NewFeatureRegistry(features)

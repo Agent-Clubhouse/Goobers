@@ -153,6 +153,40 @@ documented and enforced policies do not drift.
 
 Prefer small, reviewable PRs. Squash-merge is the default so `main` stays linear.
 
+## DSL compatibility policy
+
+The `apiVersion` on configuration resources defines a compatibility line. Within
+one `apiVersion`, the following changes are non-breaking and may ship in a minor
+release:
+
+- adding optional fields or enum values;
+- adding stage or gate kinds;
+- relaxing constraints; and
+- promoting a DSL feature from `preview` to `ga`.
+
+Removing or renaming a field, tightening a constraint, changing a default, or
+changing existing semantics is breaking. A breaking change requires either a new
+`apiVersion` or a `deprecated -> removed` lifecycle in
+`internal/workflow/features.go` (`ga` features must first transition to
+`deprecated`). A feature must remain usable as `deprecated` for at least one
+released minor: if it is deprecated in `v1.2.x`, the earliest removal is
+`v1.3.0`. Direct `ga -> removed` and `preview -> removed` transitions are
+forbidden.
+
+Registry entries retain every lifecycle transition in `Feature.History`; the
+current `Level` and `SinceVersion` must match the final transition. Use
+`vMAJOR.MINOR.PATCH` release versions (`dev` is reserved for the initial
+pre-release baseline). The compatibility guard compares the current registry
+with the feature registry executed from the latest reachable canonical SemVer
+tag. A removal is valid only when that tagged build already marks the feature
+deprecated; adding deprecated and removed history in one change does not
+satisfy the release window. Before the first tagged release, the external
+baseline is empty and no feature may enter `removed`. Registry validation and
+`TestFeatureRegistryAgainstLatestRelease` reject rewritten, skipped,
+out-of-order, or too-early transitions. CI checks out complete tag history so
+the release baseline cannot silently disappear. When changing the current
+feature matrix, regenerate it with `make docs`.
+
 ## Commit messages
 
 Use a short imperative subject (`area: do the thing`), a body explaining *why* when it's
