@@ -55,18 +55,11 @@ type Prober interface {
 }
 
 // Verifier holds the registered probes and the exec seam. The zero value is not
-// usable; construct with DefaultVerifier or New.
+// usable; construct with DefaultVerifier.
 type Verifier struct {
 	probes map[string]Prober
 	run    ExecFunc
 	goos   string
-}
-
-// New builds a Verifier from an explicit probe registry and exec seam. goos is
-// the host OS the `os=` probe compares against (runtime.GOOS in production).
-// Tests use it to inject fakes; production uses DefaultVerifier.
-func New(probes map[string]Prober, run ExecFunc, goos string) *Verifier {
-	return &Verifier{probes: probes, run: run, goos: goos}
 }
 
 // DefaultVerifier returns the production Verifier: the built-in probe set, real

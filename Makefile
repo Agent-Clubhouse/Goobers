@@ -160,6 +160,11 @@ lint:
 vulncheck:
 	$(GOVULNCHECK) ./...
 
+## deadcode: Report unreviewed unreachable production functions.
+.PHONY: deadcode
+deadcode:
+	$(GO) run ./test/deadcode -go $(GO)
+
 ## build: Build all cmd/* binaries into bin/.
 .PHONY: build
 build: $(addprefix build-,$(CMDS))
@@ -255,7 +260,7 @@ verify-fast:
 
 ## ci: Run the portable full Go, config, and portal gate (matches the pipeline).
 .PHONY: ci
-ci:
+ci: deadcode
 	$(GO) run ./test/ci
 
 ## stress: Repeat timing-sensitive packages under the race detector.

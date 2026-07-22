@@ -28,14 +28,6 @@ func ActiveRunCounts(runsDir string) (map[string]int, error) {
 	return counts, err
 }
 
-// ActiveRunCountsByWorkflow returns active counts keyed by gaggle and workflow.
-// Inventory readers use this projection because workflow names are only unique
-// within a gaggle.
-func ActiveRunCountsByWorkflow(runsDir string) (map[WorkflowIdentity]int, error) {
-	counts, _, err := activeRuns([]string{runsDir})
-	return counts, err
-}
-
 // ActiveRunCountsByWorkflowDirs returns active counts across several gaggle
 // run roots.
 func ActiveRunCountsByWorkflowDirs(runsDirs []string) (map[WorkflowIdentity]int, error) {

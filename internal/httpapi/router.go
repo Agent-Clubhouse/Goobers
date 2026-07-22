@@ -138,11 +138,6 @@ func (h *apiHandler) shutdown() {
 	}
 }
 
-// NewRouter constructs an empty API router.
-func NewRouter(authorizer Authorizer) (*Router, error) {
-	return newRouter(NullAuthenticator{}, authorizer)
-}
-
 func newRouter(authenticator Authenticator, authorizer Authorizer) (*Router, error) {
 	if authenticator == nil {
 		return nil, errors.New("http API authenticator is required")

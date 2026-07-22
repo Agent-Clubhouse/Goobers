@@ -343,15 +343,6 @@ func (l *ClaimLedger) ForceRelease(itemID string) error {
 	return l.forceRelease(itemID, forceReleaseActorCLI)
 }
 
-// ForceReleaseScoped force-releases a claim identified by its scoped key.
-func (l *ClaimLedger) ForceReleaseScoped(key ClaimKey) error {
-	storageKey, err := key.storageKey()
-	if err != nil {
-		return err
-	}
-	return l.forceRelease(storageKey, forceReleaseActorCLI)
-}
-
 // ForceReleaseEntry force-releases entry without losing its namespace and
 // records actor in the distinct administrative journal event.
 func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry, actor string) error {
