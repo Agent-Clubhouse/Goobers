@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -32,6 +33,16 @@ type ResumeInput struct {
 	// RepoRef is the target repository every stage worktree branches from —
 	// the same value originally passed to Start.
 	RepoRef apiv1.RepoRef
+}
+
+// ResumeFromTerminalInput describes an explicit human action that reopens an
+// escalated or failed run at a chosen workflow state.
+type ResumeFromTerminalInput struct {
+	RunID   string
+	Machine *workflow.Machine
+	RepoRef apiv1.RepoRef
+	Target  string
+	Actor   string
 }
 
 // Resume reopens an interrupted run's journal (journal.Recover — replays the
@@ -94,6 +105,86 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	})
 }
 
+// ResumeFromTerminal durably reopens an escalated or failed run and continues
+// it from Target. The action remains pinned to the immutable workflow identity
+// in run.yaml (WF-016); a changed definition is refused before run.resumed is
+// appended. The event records the human actor, prior terminal phase, target,
+// and verified workflow pin so a crash after the action can recover it exactly.
+func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalInput) (Result, error) {
+	if !apiv1.ValidRunID(in.RunID) {
+		return Result{}, fmt.Errorf("runner: invalid run id %q", in.RunID)
+	}
+	if in.Machine == nil {
+		return Result{}, fmt.Errorf("runner: Machine is required")
+	}
+	in.Target = strings.TrimSpace(in.Target)
+	if in.Target == "" {
+		return Result{}, fmt.Errorf("runner: terminal resume target is required")
+	}
+	in.Actor = strings.TrimSpace(in.Actor)
+	if in.Actor == "" {
+		return Result{}, fmt.Errorf("runner: terminal resume actor is required")
+	}
+
+	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
+	registrar, scrubber := journal.DefaultScrubber()
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: recover run %q for terminal resume: %w", in.RunID, err)
+	}
+	defer func() { _ = jr.Close() }()
+
+	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+		rd, err := journal.OpenRead(dir)
+		if err != nil {
+			return Result{}, fmt.Errorf("runner: open run %q for terminal resume: %w", in.RunID, err)
+		}
+		id, err := rd.Identity()
+		if err != nil {
+			return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
+		}
+		phase, err := rd.Phase()
+		if err != nil {
+			return Result{}, fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)
+		}
+		if phase != journal.PhaseEscalated && phase != journal.PhaseFailed {
+			return Result{}, fmt.Errorf("runner: run %q is %s; only escalated or failed runs can be resumed by a human", in.RunID, phase)
+		}
+		if id.WorkflowDigest == "" {
+			return Result{}, fmt.Errorf("runner: run %q has no pinned workflow digest, refusing terminal resume (WF-016)", in.RunID)
+		}
+		if id.Workflow != in.Machine.Def.Name ||
+			id.WorkflowVersion != in.Machine.Def.Version ||
+			id.WorkflowDigest != in.Machine.Digest() {
+			return Result{}, fmt.Errorf(
+				"runner: run %q is pinned to workflow %q version %d digest %q, cannot terminal-resume against %q version %d digest %q (WF-016)",
+				in.RunID, id.Workflow, id.WorkflowVersion, id.WorkflowDigest,
+				in.Machine.Def.Name, in.Machine.Def.Version, in.Machine.Digest(),
+			)
+		}
+		if _, task := in.Machine.Task(in.Target); !task {
+			if _, gate := in.Machine.Gate(in.Target); !gate {
+				return Result{}, fmt.Errorf("runner: terminal resume target %q is not a workflow state", in.Target)
+			}
+		}
+
+		if err := jr.Append(journal.Event{
+			Type:            journal.EventRunResumed,
+			Status:          string(phase),
+			Target:          in.Target,
+			Actor:           in.Actor,
+			WorkflowVersion: id.WorkflowVersion,
+			WorkflowDigest:  id.WorkflowDigest,
+		}); err != nil {
+			return Result{}, fmt.Errorf("runner: journal terminal resume for run %q: %w", in.RunID, err)
+		}
+
+		return r.resumeOwned(ctx, ResumeInput{
+			RunID: in.RunID, Machine: in.Machine, RepoRef: in.RepoRef,
+		}, jr, registrar, dir)
+	})
+}
+
 func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Run, registrar SecretRegistrar, dir string) (Result, error) {
 	rd, err := journal.OpenRead(dir)
 	if err != nil {
@@ -133,6 +224,11 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return res, nil
 	}
 
+	events, err := rd.Events()
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: read events for run %q: %w", in.RunID, err)
+	}
+
 	// Every run Start creates pins WorkflowDigest (run.go's journal.Create
 	// call, always from in.Machine.Digest()) — an empty value here means the
 	// pin itself is missing (a corrupted or pre-WF-016 run.yaml), which is
@@ -148,10 +244,10 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return r.refuseResume(jr, in.RunID, "resume_refused_digest_mismatch",
 			fmt.Sprintf("run %q is pinned to workflow digest %q, cannot resume against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest()))
 	}
-
-	events, err := rd.Events()
-	if err != nil {
-		return Result{}, fmt.Errorf("runner: read events for run %q: %w", in.RunID, err)
+	if resumed, ok := latestRunResume(events); ok &&
+		(resumed.WorkflowVersion != id.WorkflowVersion || resumed.WorkflowDigest != id.WorkflowDigest) {
+		return r.refuseResume(jr, in.RunID, "resume_refused_intervention_pin_mismatch",
+			fmt.Sprintf("run %q terminal-resume pin does not match run.yaml (WF-016)", in.RunID))
 	}
 	rerun, seedEvents, err := pendingRerun(events, in.Machine)
 	if err != nil {
@@ -170,6 +266,8 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	lastStage, lastResult, hasLast := lastFinishedSubject(seedEvents)
 	seed.lastStage, seed.lastResult = lastStage, lastResult
 	seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
+	segment, resumeTarget := currentRunSegment(events)
+	segmentLastStage, _, hasSegmentLast := lastFinishedSubject(segment)
 
 	// state.json's MachineState is a checked hint, not a requirement
 	// (#242): read it when available, but a missing/corrupt checkpoint no
@@ -188,7 +286,11 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		startState = st.MachineState
 	}
 	if startState == "" {
-		if hasLast {
+		if hasSegmentLast {
+			startState = segmentLastStage
+		} else if resumeTarget != "" {
+			startState = resumeTarget
+		} else if hasLast {
 			startState = lastStage
 		} else {
 			startState = in.Machine.Def.Spec.Start
@@ -208,13 +310,13 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 
 	var resume *resumeContext
 	if t, isTask := in.Machine.Task(startState); isTask {
-		if attempt := interruptedAttempt(events, startState); attempt > 0 {
+		if attempt := interruptedAttempt(segment, startState); attempt > 0 {
 			resume = &resumeContext{
 				stage:   startState,
 				attempt: attempt,
-				class:   startedAttemptClass(events, startState, attempt),
+				class:   startedAttemptClass(segment, startState, attempt),
 			}
-		} else if rerun == nil && hasLast && lastStage == startState {
+		} else if rerun == nil && hasSegmentLast && segmentLastStage == startState {
 			// state.json's machineState still names this task (walk's
 			// SetMachineState timing: it's set BEFORE dispatch and not
 			// reassigned until the transition decision after runTask
@@ -249,7 +351,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	defer span.End()
 	setStalledAttemptContext(ctx)
 
-	gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)
+	gateAttempts, gateDiffDigests := gateRepassSeed(segment), gateDiffSeed(segment)
 	gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
 	result, err := r.walk(ctx, jr, startIn, startState, resume, rerun, gateAttempts, gateDiffDigests, registrar, seed)
 	if err != nil {
@@ -258,6 +360,24 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	}
 	completeRunSpan(span, result)
 	return result, nil
+}
+
+func currentRunSegment(events []journal.Event) ([]journal.Event, string) {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventRunResumed {
+			return events[i+1:], events[i].Target
+		}
+	}
+	return events, ""
+}
+
+func latestRunResume(events []journal.Event) (journal.Event, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventRunResumed {
+			return events[i], true
+		}
+	}
+	return journal.Event{}, false
 }
 
 // refuseResume ends a run whose WF-016 resume verification failed at the
@@ -482,31 +602,22 @@ func gateDiffSeed(events []journal.Event) map[string]string {
 	return seed
 }
 
-// interruptedAttempt reports the attempt number of stageName's most recent
-// stage.started event that has no matching stage.finished among events — the
-// signature of a crash mid-attempt, since a graceful path (success, business
-// failure/blocked, or a retry loop giving up) always journals a matching
-// stage.finished before returning control to walk. Returns 0 if stageName's
-// last attempt completed normally (or the stage was never started at all).
+// interruptedAttempt reports the attempt number when stageName's latest
+// attempt-boundary event is stage.started rather than stage.finished. Scanning
+// backward, rather than comparing maximum attempt numbers, handles workflow
+// loops that revisit a stage and restart numbering at attempt 1.
 func interruptedAttempt(events []journal.Event, stageName string) int {
-	started, finished := 0, 0
-	for _, e := range events {
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
 		if e.Stage != stageName {
 			continue
 		}
 		switch e.Type {
 		case journal.EventStageStarted:
-			if e.Attempt > started {
-				started = e.Attempt
-			}
+			return e.Attempt
 		case journal.EventStageFinished:
-			if e.Attempt > finished {
-				finished = e.Attempt
-			}
+			return 0
 		}
-	}
-	if started > finished {
-		return started
 	}
 	return 0
 }

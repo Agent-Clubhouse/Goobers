@@ -261,6 +261,7 @@ func followTrace(
 
 	var lastSeq uint64
 	for {
+		lifecycleStartSeq := traceLifecycleStartSeq(events)
 		for _, event := range events {
 			if event.Seq <= lastSeq {
 				continue
@@ -272,7 +273,7 @@ func followTrace(
 				return err
 			}
 			lastSeq = event.Seq
-			if event.Type == journal.EventRunFinished {
+			if event.Type == journal.EventRunFinished && event.Seq > lifecycleStartSeq {
 				return nil
 			}
 		}
@@ -288,6 +289,15 @@ func followTrace(
 		}
 		events = ledger.Events
 	}
+}
+
+func traceLifecycleStartSeq(events []readservice.RunEvent) uint64 {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventRunResumed {
+			return events[i].Seq
+		}
+	}
+	return 0
 }
 
 func writeFollowEvent(stdout io.Writer, event readservice.RunEvent, jsonOutput bool) error {
@@ -315,8 +325,11 @@ func writeFollowEvent(stdout io.Writer, event readservice.RunEvent, jsonOutput b
 }
 
 func traceEventsTerminal(events []readservice.RunEvent) bool {
-	for _, event := range events {
-		if event.Type == journal.EventRunFinished {
+	for i := len(events) - 1; i >= 0; i-- {
+		switch events[i].Type {
+		case journal.EventRunResumed:
+			return false
+		case journal.EventRunFinished:
 			return true
 		}
 	}
@@ -524,6 +537,11 @@ func formatEvent(ev journal.Event) string {
 			return fmt.Sprintf("%s target=%s old=%s new=%s", prefix, ev.Redaction.Target, ev.Redaction.OldDigest, ev.Redaction.NewDigest)
 		}
 		return prefix
+	case journal.EventRunResumed:
+		return fmt.Sprintf(
+			"%s actor=%s target=%s from=%s workflowVersion=%d workflowDigest=%s",
+			prefix, ev.Actor, ev.Target, ev.Status, ev.WorkflowVersion, ev.WorkflowDigest,
+		)
 	case journal.EventRunStarted, journal.EventRunFinished:
 		if ev.Status != "" {
 			return fmt.Sprintf("%s status=%s", prefix, ev.Status)
@@ -556,27 +574,30 @@ func traceJournalEvent(event readservice.RunEvent) journal.Event {
 		attemptClass = ""
 	}
 	projected := journal.Event{
-		Schema:       event.Schema,
-		Seq:          event.Seq,
-		Type:         event.Type,
-		Branch:       event.Branch,
-		Time:         event.Time,
-		Stage:        event.Stage,
-		Attempt:      event.Attempt,
-		AttemptClass: attemptClass,
-		Gate:         event.Gate,
-		Verdict:      event.Verdict,
-		Target:       event.Target,
-		Status:       event.Status,
-		Outputs:      event.Outputs,
-		Name:         event.Name,
-		ExternalRef:  event.ExternalRef,
-		Error:        event.Error,
-		Redaction:    event.Redaction,
-		Runner:       event.Runner,
-		Workflow:     event.Workflow,
-		RunID:        event.RunID,
-		Reason:       event.Reason,
+		Schema:          event.Schema,
+		Seq:             event.Seq,
+		Type:            event.Type,
+		Branch:          event.Branch,
+		Time:            event.Time,
+		Stage:           event.Stage,
+		Attempt:         event.Attempt,
+		AttemptClass:    attemptClass,
+		Gate:            event.Gate,
+		Verdict:         event.Verdict,
+		Target:          event.Target,
+		Status:          event.Status,
+		Actor:           event.Actor,
+		WorkflowVersion: event.WorkflowVersion,
+		WorkflowDigest:  event.WorkflowDigest,
+		Outputs:         event.Outputs,
+		Name:            event.Name,
+		ExternalRef:     event.ExternalRef,
+		Error:           event.Error,
+		Redaction:       event.Redaction,
+		Runner:          event.Runner,
+		Workflow:        event.Workflow,
+		RunID:           event.RunID,
+		Reason:          event.Reason,
 	}
 	if event.Artifact != nil {
 		projected.Ref = &journal.Ref{

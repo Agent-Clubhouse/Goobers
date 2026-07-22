@@ -111,15 +111,28 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 		return fmt.Errorf("read terminal run events: %w", err)
 	}
 
+	segmentStart := 0
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventRunResumed {
+			segmentStart = i + 1
+			break
+		}
+	}
+
 	var branch *journal.ExternalRef
 	var pushed, openedPR, alreadyFinalized bool
 	for i := range events {
 		ev := events[i]
 		if ev.ExternalRef != nil && ev.ExternalRef.Kind == "branch" {
-			if branch == nil {
+			if branch == nil || (branch.ID == "" && ev.ExternalRef.ID != "") {
 				ref := *ev.ExternalRef
 				branch = &ref
 			}
+		}
+		if i < segmentStart {
+			continue
+		}
+		if ev.ExternalRef != nil && ev.ExternalRef.Kind == "branch" {
 			if ev.Runner["operation"] == branchCleanupOperation {
 				alreadyFinalized = true
 			}

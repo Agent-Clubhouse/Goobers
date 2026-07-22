@@ -192,6 +192,53 @@ func TestFinalizeTerminalBranchIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestFinalizeTerminalBranchScopesCleanupToResumedSegment(t *testing.T) {
+	runsDir, runID, jr := newTerminalBranchJournal(t, true, false)
+	var calls int
+	deleteBranch := func(_ context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
+		calls++
+		if req.Name != providers.BranchName("implementation", runID) {
+			t.Fatalf("branch = %q", req.Name)
+		}
+		return providers.DeleteBranchResult{Deleted: true}, nil
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+	if err := finalizeTerminalBranch(runsDir, runID, jr, repo, deleteBranch); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Append(journal.Event{
+		Type:   journal.EventRunFinished,
+		Status: string(journal.PhaseEscalated),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Append(journal.Event{
+		Type:   journal.EventRunResumed,
+		Status: string(journal.PhaseEscalated),
+		Target: "push-branch",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Append(journal.Event{
+		Type:   journal.EventStageFinished,
+		Stage:  "push-branch",
+		Status: string(apiv1.ResultSuccess),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := finalizeTerminalBranch(runsDir, runID, jr, repo, deleteBranch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("delete calls = %d, want one per terminal segment", calls)
+	}
+	if events := terminalBranchCleanupEvents(t, runsDir, runID); len(events) != 2 {
+		t.Fatalf("cleanup events = %d, want one per terminal segment", len(events))
+	}
+}
+
 func TestRunAbortPreparesTerminalBranchCleanup(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -65,6 +65,12 @@ func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
 		switch event.Type {
 		case journal.EventRunStarted:
 			r.runStarted = event.Time
+		case journal.EventRunResumed:
+			r.terminal = false
+			r.pausedGate = ""
+			pf(r.out, "run %s resumed by %s at %s (elapsed=%s)\n",
+				r.runID, event.Actor, event.Target, r.runElapsed(event.Time))
+			transitioned = true
 		case journal.EventRunFinished:
 			r.terminal = true
 		case journal.EventStageStarted:
