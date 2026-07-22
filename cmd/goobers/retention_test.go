@@ -133,7 +133,8 @@ func TestPruneConfiguredRetentionProtectsPausedRunReboundBranchOnRestart(t *test
 				},
 			},
 		},
-	})
+	}, workflow.WithPreviewFeatures(true))
+
 	if err != nil {
 		t.Fatalf("compile fixture workflow: %v", err)
 	}

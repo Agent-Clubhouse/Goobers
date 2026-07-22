@@ -158,7 +158,7 @@ func skeletonMachine(t *testing.T) *workflow.Machine {
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "walking-skeleton", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "walking-skeleton", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile skeleton machine: %v", err)
 	}

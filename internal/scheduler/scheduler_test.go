@@ -55,7 +55,7 @@ func (f *fakeStarter) count(runID string) int {
 
 func testRegistry(t *testing.T) *engine.Registry {
 	t.Helper()
-	r := engine.NewRegistry()
+	r := engine.NewRegistryWithPreviewFeatures(true)
 	if _, err := r.Register("flow", flowSpec()); err != nil {
 		t.Fatalf("register: %v", err)
 	}

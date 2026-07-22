@@ -35,7 +35,14 @@ func (f *fakeStarter) ExecuteWorkflow(_ context.Context, opts client.StartWorkfl
 }
 
 func sampleInput() RunInput {
-	return RunInput{RunID: "web/flow/item-1", Gaggle: "web", WorkflowName: "flow", Version: 1, Spec: linearSpec()}
+	return RunInput{
+		RunID:                  "web/flow/item-1",
+		Gaggle:                 "web",
+		WorkflowName:           "flow",
+		Version:                1,
+		PreviewFeaturesEnabled: true,
+		Spec:                   linearSpec(),
+	}
 }
 
 func TestRunIDDerivesDeterministicTraceID(t *testing.T) {

@@ -51,11 +51,11 @@ func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 		goobers[g.Name] = g.Spec
 	}
 
-	m, err := Compile(
+	m, err := compileAcknowledged(
 		Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		WithGoobers(goobers),
-		WithKnownChecks([]string{"output-equals", "status-equals"}),
-	)
+		WithKnownChecks([]string{"output-equals", "status-equals"}))
+
 	if err != nil {
 		t.Fatalf("compile pr-remediation against selfhost's real goobers: %v", err)
 	}

@@ -68,7 +68,7 @@ func TestShippedWorkflowsCompile(t *testing.T) {
 		t.Run(file, func(t *testing.T) {
 			def := loadShippedWorkflow(t, file)
 
-			m, err := Compile(def, WithGoobers(goobers))
+			m, err := compileAcknowledged(def, WithGoobers(goobers))
 			if err != nil {
 				t.Fatalf("compile: %v", err)
 			}
@@ -78,7 +78,7 @@ func TestShippedWorkflowsCompile(t *testing.T) {
 			t.Logf("%s digest = %s", file, m.Digest())
 
 			// Deterministic: recompiling the same definition yields the same digest.
-			m2, err := Compile(def, WithGoobers(goobers))
+			m2, err := compileAcknowledged(def, WithGoobers(goobers))
 			if err != nil {
 				t.Fatalf("recompile: %v", err)
 			}
@@ -103,7 +103,7 @@ func TestExampleConfigWorkflowCompiles(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &w); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	m, err := Compile(Definition{Name: w.Name, Version: 1, Spec: w.Spec})
+	m, err := compileAcknowledged(Definition{Name: w.Name, Version: 1, Spec: w.Spec})
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -118,13 +118,13 @@ func TestExampleConfigWorkflowCompiles(t *testing.T) {
 // definition: a semantic change must move it.
 func TestDigestChangesWithContent(t *testing.T) {
 	base := Definition{Name: "x", Version: 1, Spec: linearSpec()}
-	m1, err := Compile(base)
+	m1, err := compileAcknowledged(base)
 	if err != nil {
 		t.Fatal(err)
 	}
 	changed := Definition{Name: "x", Version: 1, Spec: linearSpec()}
 	changed.Spec.Tasks[0].Goal = "a different goal"
-	m2, err := Compile(changed)
+	m2, err := compileAcknowledged(changed)
 	if err != nil {
 		t.Fatal(err)
 	}

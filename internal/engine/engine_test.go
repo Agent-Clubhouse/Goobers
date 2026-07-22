@@ -35,12 +35,13 @@ func (f *fakeRunner) Run(ctx context.Context, env apiv1.InvocationEnvelope, r ap
 
 func runInput(name string, spec apiv1.WorkflowSpec) RunInput {
 	return RunInput{
-		RunID:        "run-" + name,
-		Gaggle:       "web",
-		WorkflowName: name,
-		Version:      1,
-		Spec:         spec,
-		RepoRef:      apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		RunID:                  "run-" + name,
+		Gaggle:                 "web",
+		WorkflowName:           name,
+		Version:                1,
+		PreviewFeaturesEnabled: true,
+		Spec:                   spec,
+		RepoRef:                apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
 	}
 }
 

@@ -52,7 +52,7 @@ func TestImplementationEscalatingBranchesRunIssueBookkeeping(t *testing.T) {
 			if err := yaml.Unmarshal(raw, &w); err != nil {
 				t.Fatalf("unmarshal workflow: %v", err)
 			}
-			m, err := Compile(Definition{Name: w.Name, Version: 1, Spec: w.Spec})
+			m, err := compileAcknowledged(Definition{Name: w.Name, Version: 1, Spec: w.Spec})
 			if err != nil {
 				t.Fatalf("compile: %v", err)
 			}

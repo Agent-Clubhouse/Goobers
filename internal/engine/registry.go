@@ -14,8 +14,9 @@ import (
 // (WF-016). The Registry is used by the run starter (outside the workflow
 // function), so its mutex does not affect workflow determinism.
 type Registry struct {
-	mu   sync.RWMutex
-	defs map[string][]apiv1.WorkflowSpec // name -> versions; index+1 == version
+	mu                   sync.RWMutex
+	defs                 map[string][]apiv1.WorkflowSpec // name -> versions; index+1 == version
+	allowPreviewFeatures bool
 }
 
 // NewRegistry returns an empty Registry.
@@ -23,18 +24,37 @@ func NewRegistry() *Registry {
 	return &Registry{defs: make(map[string][]apiv1.WorkflowSpec)}
 }
 
+// NewRegistryWithPreviewFeatures returns an empty Registry with the instance's
+// explicit preview-feature acknowledgement.
+func NewRegistryWithPreviewFeatures(enabled bool) *Registry {
+	return &Registry{
+		defs:                 make(map[string][]apiv1.WorkflowSpec),
+		allowPreviewFeatures: enabled,
+	}
+}
+
 // Register appends spec as the next version of the named workflow and returns the
 // new version number (1-based). It validates the definition compiles before
 // accepting it, so a broken definition can never be started.
 func (r *Registry) Register(name string, spec apiv1.WorkflowSpec) (int, error) {
 	version := len(r.peek(name)) + 1
-	if _, err := wf.Compile(wf.Definition{Name: name, Version: version, Spec: spec}); err != nil {
+	if _, err := r.Compile(wf.Definition{Name: name, Version: version, Spec: spec}); err != nil {
 		return 0, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.defs[name] = append(r.defs[name], spec)
 	return len(r.defs[name]), nil
+}
+
+// Compile validates def with the same preview policy used for registration.
+func (r *Registry) Compile(def wf.Definition) (*wf.Machine, error) {
+	return wf.Compile(def, wf.WithPreviewFeatures(r.allowPreviewFeatures))
+}
+
+// PreviewFeaturesEnabled reports the policy carried by registered definitions.
+func (r *Registry) PreviewFeaturesEnabled() bool {
+	return r.allowPreviewFeatures
 }
 
 func (r *Registry) peek(name string) []apiv1.WorkflowSpec {
@@ -91,12 +111,13 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 		return RunInput{}, fmt.Errorf("workflow %q version %d is not registered", name, version)
 	}
 	return RunInput{
-		RunID:        s.RunID,
-		Gaggle:       s.Gaggle,
-		WorkflowName: name,
-		Version:      def.Version,
-		Spec:         def.Spec,
-		RepoRef:      s.RepoRef,
-		Item:         s.Item,
+		RunID:                  s.RunID,
+		Gaggle:                 s.Gaggle,
+		WorkflowName:           name,
+		Version:                def.Version,
+		PreviewFeaturesEnabled: r.allowPreviewFeatures,
+		Spec:                   def.Spec,
+		RepoRef:                s.RepoRef,
+		Item:                   s.Item,
 	}, nil
 }

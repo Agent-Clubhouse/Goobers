@@ -44,12 +44,13 @@ func loadImplementationWorkflow(t *testing.T) apiv1.WorkflowSpec {
 
 func implementationRunInput(spec apiv1.WorkflowSpec) RunInput {
 	return RunInput{
-		RunID:        "run-implementation",
-		Gaggle:       "acme-web",
-		WorkflowName: "implementation",
-		Version:      1,
-		Spec:         spec,
-		RepoRef:      apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		RunID:                  "run-implementation",
+		Gaggle:                 "acme-web",
+		WorkflowName:           "implementation",
+		Version:                1,
+		PreviewFeaturesEnabled: true,
+		Spec:                   spec,
+		RepoRef:                apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
 	}
 }
 

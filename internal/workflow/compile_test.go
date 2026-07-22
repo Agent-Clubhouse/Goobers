@@ -42,11 +42,15 @@ func gatedSpec() apiv1.WorkflowSpec {
 	}
 }
 
+func compileAcknowledged(def Definition, opts ...Option) (*Machine, error) {
+	return Compile(def, append(opts, WithPreviewFeatures(true))...)
+}
+
 func TestCompileValid(t *testing.T) {
-	if _, err := Compile(Definition{Name: "linear", Version: 1, Spec: linearSpec()}); err != nil {
+	if _, err := compileAcknowledged(Definition{Name: "linear", Version: 1, Spec: linearSpec()}); err != nil {
 		t.Fatalf("linear: %v", err)
 	}
-	if _, err := Compile(Definition{Name: "gated", Version: 1, Spec: gatedSpec()}); err != nil {
+	if _, err := compileAcknowledged(Definition{Name: "gated", Version: 1, Spec: gatedSpec()}); err != nil {
 		t.Fatalf("gated: %v", err)
 	}
 }
@@ -108,8 +112,8 @@ func TestCompileFeatureSupportLevels(t *testing.T) {
 
 			_, err = Compile(
 				Definition{Name: "linear", Version: 1, Spec: linearSpec()},
-				WithPreviewFeatures(tc.allowPreview),
-			)
+				WithPreviewFeatures(tc.allowPreview))
+
 			if tc.wantError {
 				if err == nil || !strings.Contains(err.Error(), tc.wantDiagnostic) {
 					t.Fatalf("Compile error = %v, want diagnostic containing %q", err, tc.wantDiagnostic)
@@ -120,6 +124,13 @@ func TestCompileFeatureSupportLevels(t *testing.T) {
 				t.Fatalf("Compile: %v", err)
 			}
 		})
+	}
+}
+
+func TestCompileRejectsPreviewFeaturesWhenOptionOmitted(t *testing.T) {
+	_, err := Compile(Definition{Name: "linear", Version: 1, Spec: linearSpec()})
+	if err == nil || !strings.Contains(err.Error(), `DSL feature "workflow.spec.gaggle" is preview and requires explicit instance opt-in`) {
+		t.Fatalf("Compile error = %v, want preview opt-in diagnostic", err)
 	}
 }
 
@@ -135,7 +146,7 @@ func TestCompileRejectsHumanGate(t *testing.T) {
 		}},
 	}
 
-	_, err := Compile(Definition{Name: "human-approval", Version: 1, Spec: spec})
+	_, err := compileAcknowledged(Definition{Name: "human-approval", Version: 1, Spec: spec})
 	const want = "human gates ship with durable pause/resume (#168/#465); until then use an automated gate or remove this block"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("expected actionable human-gate rejection, got %v", err)
@@ -170,7 +181,7 @@ func TestCompileOnTimeoutPolicy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Compile(tc.def)
+			_, err := compileAcknowledged(tc.def)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("Compile: unexpected error %v", err)
@@ -216,7 +227,7 @@ func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
 			spec.Tasks[0].Inputs = tc.inputs
 			def := Definition{Name: "claim", Version: 1, Spec: spec}
 
-			if _, err := Compile(def); err != nil {
+			if _, err := compileAcknowledged(def); err != nil {
 				t.Fatalf("warning must not fail compilation: %v", err)
 			}
 			warnings := CheckWarnings(def)
@@ -288,7 +299,7 @@ func TestCheckWarningsAcceptedButInertFields(t *testing.T) {
 		}},
 	}}
 
-	if _, err := Compile(def); err != nil {
+	if _, err := compileAcknowledged(def); err != nil {
 		t.Fatalf("warnings must not fail compilation: %v", err)
 	}
 	warnings := CheckWarnings(def)
@@ -309,12 +320,12 @@ func TestCheckWarningsAcceptedButInertFields(t *testing.T) {
 func TestCompileManualOnlyTrigger(t *testing.T) {
 	spec := linearSpec()
 	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerManual}}
-	if _, err := Compile(Definition{Name: "manual", Version: 1, Spec: spec}); err != nil {
+	if _, err := compileAcknowledged(Definition{Name: "manual", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("manual-only workflow should compile, got %v", err)
 	}
 
 	spec.Triggers = append(spec.Triggers, apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "@daily"})
-	_, err := Compile(Definition{Name: "mixed", Version: 1, Spec: spec})
+	_, err := compileAcknowledged(Definition{Name: "mixed", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), "type=manual must be the only trigger") {
 		t.Fatalf("manual trigger mixed with an automatic trigger should fail, got %v", err)
 	}
@@ -372,7 +383,7 @@ func TestCompileStructuralErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Compile(Definition{Name: "x", Version: 1, Spec: tc.spec})
+			_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: tc.spec})
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.want)
 			}
@@ -393,7 +404,7 @@ func TestCompileRejectsUnreachableState(t *testing.T) {
 			{Name: "orphan", Type: apiv1.TaskAgentic, Goal: "g"},
 		},
 	}
-	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), `state "orphan" is unreachable from start "a"`) {
 		t.Fatalf("expected unreachable error, got %v", err)
 	}
@@ -409,7 +420,7 @@ func TestCompileRejectsLoopWithoutExit(t *testing.T) {
 			{Name: "b", Type: apiv1.TaskAgentic, Goal: "g", Next: "a"},
 		},
 	}
-	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), "cannot reach a terminal outcome") {
 		t.Fatalf("expected loop-without-exit error, got %v", err)
 	}
@@ -418,7 +429,7 @@ func TestCompileRejectsLoopWithoutExit(t *testing.T) {
 func TestCompileAcceptsLoopWithGateExit(t *testing.T) {
 	// implement -> review; review can loop back OR pass to terminal. The cycle is
 	// fine because the gate provides an exit.
-	if _, err := Compile(Definition{Name: "gated", Version: 1, Spec: gatedSpec()}); err != nil {
+	if _, err := compileAcknowledged(Definition{Name: "gated", Version: 1, Spec: gatedSpec()}); err != nil {
 		t.Fatalf("gate-exited loop should compile, got %v", err)
 	}
 }
@@ -426,7 +437,7 @@ func TestCompileAcceptsLoopWithGateExit(t *testing.T) {
 func TestCompileRejectsBadSchedule(t *testing.T) {
 	spec := linearSpec()
 	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "not a cron"}}
-	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), "invalid schedule") {
 		t.Fatalf("expected bad-schedule error, got %v", err)
 	}
@@ -436,7 +447,7 @@ func TestValidSchedulesAccepted(t *testing.T) {
 	for _, ok := range []string{"0 * * * *", "*/5 0 * * * *", "@daily", "@hourly", "@every 1h30m", "0 0 1 * *"} {
 		spec := linearSpec()
 		spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: ok}}
-		if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+		if _, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
 			t.Errorf("schedule %q should be valid, got %v", ok, err)
 		}
 	}
@@ -454,7 +465,7 @@ func TestCompileAllowsMultipleScheduleTriggers(t *testing.T) {
 		{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"},
 		{Type: apiv1.TriggerSchedule, Schedule: "0 9 * * *"},
 	}
-	if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+	if _, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("multiple schedule triggers should compile clean, got %v", err)
 	}
 }
@@ -468,7 +479,7 @@ func TestCompileRejectsMalformedScheduleAmongMultiple(t *testing.T) {
 		{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"},
 		{Type: apiv1.TriggerSchedule, Schedule: "not-a-cron-expression"},
 	}
-	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), "invalid schedule") {
 		t.Fatalf("expected an invalid-schedule error, got %v", err)
 	}
@@ -481,13 +492,13 @@ func TestCompileRejectsMalformedScheduleAmongMultiple(t *testing.T) {
 func TestCompileRejectsSignalTriggerWithNoName(t *testing.T) {
 	spec := linearSpec()
 	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerSignal}}
-	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), `trigger[0] type=signal requires a signal name`) {
 		t.Fatalf("expected missing-signal-name error, got %v", err)
 	}
 
 	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerSignal, Signal: "upstream-workflow-done"}}
-	if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+	if _, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("a named signal trigger should compile, got %v", err)
 	}
 }
@@ -495,19 +506,19 @@ func TestCompileRejectsSignalTriggerWithNoName(t *testing.T) {
 func TestCompileRejectsWebhookTriggerWithoutEvents(t *testing.T) {
 	spec := linearSpec()
 	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerWebhook}}
-	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), `trigger[0] type=webhook requires at least one event name`) {
 		t.Fatalf("expected missing-webhook-events error, got %v", err)
 	}
 
 	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerWebhook, Events: []string{"issues", " "}}}
-	_, err = Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	_, err = compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), `trigger[0] type=webhook event[1] must not be empty`) {
 		t.Fatalf("expected empty-webhook-event error, got %v", err)
 	}
 
 	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerWebhook, Events: []string{"issues", "pull_request"}}}
-	if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+	if _, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("a webhook trigger with events should compile, got %v", err)
 	}
 }
@@ -521,7 +532,7 @@ func TestCompileRejectsUnknownWorkspace(t *testing.T) {
 			Workspace: apiv1.WorkspaceMode("host"),
 		},
 	}
-	_, err := Compile(Definition{Name: "bad-workspace", Version: 1, Spec: spec})
+	_, err := compileAcknowledged(Definition{Name: "bad-workspace", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), `unknown workspace "host"`) {
 		t.Fatalf("Compile error = %v, want unknown workspace", err)
 	}
@@ -537,7 +548,7 @@ func TestCompileRejectsSyncBaseInScratchWorkspace(t *testing.T) {
 			SyncBase:  true,
 		},
 	}
-	_, err := Compile(Definition{Name: "bad-sync-base", Version: 1, Spec: spec})
+	_, err := compileAcknowledged(Definition{Name: "bad-sync-base", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), "syncBase requires a repo workspace") {
 		t.Fatalf("Compile error = %v, want syncBase repo-workspace requirement", err)
 	}
@@ -552,7 +563,7 @@ func TestCompileRejectsUnknownNetworkMode(t *testing.T) {
 			Network: apiv1.NetworkMode("host"),
 		},
 	}
-	_, err := Compile(Definition{Name: "bad-network", Version: 1, Spec: spec})
+	_, err := compileAcknowledged(Definition{Name: "bad-network", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), `unknown network mode "host"`) {
 		t.Fatalf("Compile error = %v, want unknown network mode", err)
 	}
@@ -570,21 +581,20 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{
 		"coder": {Role: "coder", Harness: apiv1.HarnessCopilot, Capabilities: []string{"github:issues:write", "repo:push"}},
 	}
-	if _, err := Compile(
+	if _, err := compileAcknowledged(
 		Definition{Name: "x", Version: 1, Spec: spec},
 		WithGoobers(goobers),
-		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
-	); err != nil {
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)})); err != nil {
 		t.Fatalf("granted capabilities should compile, got %v", err)
 	}
 
 	// Drop repo:push from the grant set -> admission fails closed.
 	goobers["coder"] = apiv1.GooberSpec{Role: "coder", Harness: apiv1.HarnessCopilot, Capabilities: []string{"github:issues:write"}}
-	_, err := Compile(
+	_, err := compileAcknowledged(
 		Definition{Name: "x", Version: 1, Spec: spec},
 		WithGoobers(goobers),
-		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
-	)
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}))
+
 	if err == nil || !strings.Contains(err.Error(), `uses capability "repo:push" not granted to goober "coder"`) {
 		t.Fatalf("expected undeclared-capability error, got %v", err)
 	}
@@ -619,7 +629,7 @@ func TestCompileCIPollRequiresGitHubPRWrite(t *testing.T) {
 					Capabilities: tc.caps,
 				}},
 			}
-			_, err := Compile(Definition{Name: "ci-poll", Version: 1, Spec: spec})
+			_, err := compileAcknowledged(Definition{Name: "ci-poll", Version: 1, Spec: spec})
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("Compile: unexpected error %v", err)
@@ -656,14 +666,14 @@ func TestCompileRejectsGateVocabMismatch(t *testing.T) {
 			},
 		},
 	}
-	_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), `check "ci-status" params.equals "success" is not one of`) {
 		t.Fatalf("expected a gate-vocabulary-mismatch error, got %v", err)
 	}
 
 	// The correct vocabulary for ci-status compiles clean.
 	spec.Gates[0].Automated.Params["equals"] = "passing"
-	if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+	if _, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("correct ci-status vocabulary should compile, got %v", err)
 	}
 
@@ -671,7 +681,7 @@ func TestCompileRejectsGateVocabMismatch(t *testing.T) {
 	// "passing" is invalid there too.
 	spec.Gates[0].Automated.Check = "status-equals"
 	spec.Gates[0].Automated.Params["equals"] = "passing"
-	_, err = Compile(Definition{Name: "x", Version: 1, Spec: spec})
+	_, err = compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), `check "status-equals" params.equals "passing" is not one of`) {
 		t.Fatalf("expected a gate-vocabulary-mismatch error for status-equals, got %v", err)
 	}
@@ -699,7 +709,7 @@ func TestCompileAcceptsNewAutomatedCheckParams(t *testing.T) {
 					Branches:  map[string]string{"pass": TerminalComplete, "fail": TargetAbort},
 				}},
 			}
-			if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+			if _, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
 				t.Fatalf("Compile: unexpected error %v", err)
 			}
 		})
@@ -735,7 +745,7 @@ func TestCompileRejectsInvalidAutomatedCheckParams(t *testing.T) {
 					Branches:  map[string]string{"pass": TerminalComplete, "fail": TargetAbort},
 				}},
 			}
-			_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+			_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("Compile error = %v, want containing %q", err, tc.wantErr)
 			}
@@ -748,11 +758,11 @@ func TestCompileAdmissionUnknownCapabilityGranted(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{
 		"coder": {Role: "coder", Harness: apiv1.HarnessCopilot, Capabilities: []string{"github:prs:write"}},
 	}
-	_, err := Compile(
+	_, err := compileAcknowledged(
 		Definition{Name: "x", Version: 1, Spec: spec},
 		WithGoobers(goobers),
-		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
-	)
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}))
+
 	if err == nil || !strings.Contains(err.Error(), `goober "coder" grants unknown capability "github:prs:write"`) {
 		t.Fatalf("expected unknown-capability-granted error, got %v", err)
 	}
@@ -773,11 +783,11 @@ func TestCompileAdmissionUnknownCapabilityDeclared(t *testing.T) {
 	// The typo'd spelling is internally consistent (granted == declared), so
 	// only the canonical-registry check catches it — the grant-membership
 	// check alone would pass this.
-	_, err := Compile(
+	_, err := compileAcknowledged(
 		Definition{Name: "x", Version: 1, Spec: spec},
 		WithGoobers(goobers),
-		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
-	)
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}))
+
 	if err == nil || !strings.Contains(err.Error(), `task "implement" declares unknown capability "github:pulls:write"`) {
 		t.Fatalf("expected unknown-capability-declared error, got %v", err)
 	}
@@ -788,11 +798,11 @@ func TestCompileAdmissionUnknownHarness(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{
 		"coder": {Role: "coder", Harness: apiv1.Harness("nonesuch")},
 	}
-	_, err := Compile(
+	_, err := compileAcknowledged(
 		Definition{Name: "x", Version: 1, Spec: spec},
 		WithGoobers(goobers),
-		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
-	)
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}))
+
 	if err == nil || !strings.Contains(err.Error(), `unknown harness "nonesuch"`) {
 		t.Fatalf("expected unknown-harness error, got %v", err)
 	}
@@ -804,10 +814,10 @@ func TestCompileAdmissionUsesRegisteredHarnessNames(t *testing.T) {
 	}
 	def := Definition{Name: "x", Version: 1, Spec: linearSpec()}
 
-	if _, err := Compile(def, WithGoobers(goobers), WithKnownHarnesses([]string{"alternate"})); err != nil {
+	if _, err := compileAcknowledged(def, WithGoobers(goobers), WithKnownHarnesses([]string{"alternate"})); err != nil {
 		t.Fatalf("registered harness should compile, got %v", err)
 	}
-	if _, err := Compile(def, WithGoobers(goobers), WithKnownHarnesses(nil)); err == nil ||
+	if _, err := compileAcknowledged(def, WithGoobers(goobers), WithKnownHarnesses(nil)); err == nil ||
 		!strings.Contains(err.Error(), `unknown harness "alternate"`) {
 		t.Fatalf("unregistered harness should fail closed, got %v", err)
 	}
@@ -832,11 +842,11 @@ func TestCompileDeterministicTaskUnknownCapability(t *testing.T) {
 	// WithGoobers supplied (even though this task has none) — matches the
 	// real config-validation call site (api/validate's CheckAdmission always
 	// passes the full goober set), so this must fail with goobers present.
-	_, err := Compile(
+	_, err := compileAcknowledged(
 		Definition{Name: "x", Version: 1, Spec: spec},
 		WithGoobers(map[string]apiv1.GooberSpec{}),
-		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
-	)
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}))
+
 	if err == nil || !strings.Contains(err.Error(), `task "build" declares unknown capability "github:pr:wirte"`) {
 		t.Fatalf("expected unknown-capability error for the deterministic task, got %v", err)
 	}
@@ -862,7 +872,7 @@ func TestCompileGateOutcomeCoverage(t *testing.T) {
 
 	t.Run("unproducible branch key", func(t *testing.T) {
 		spec := agenticGate(map[string]string{"pass": TerminalComplete, "fail": TargetAbort, "needs-changes": "implement", "reject": TargetAbort})
-		_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+		_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 		if err == nil || !strings.Contains(err.Error(), `gate "review": branch "reject" is not a producible outcome`) {
 			t.Fatalf("expected unproducible-branch error, got %v", err)
 		}
@@ -870,7 +880,7 @@ func TestCompileGateOutcomeCoverage(t *testing.T) {
 
 	t.Run("missing producible outcome", func(t *testing.T) {
 		spec := agenticGate(map[string]string{"pass": TerminalComplete, "fail": TargetAbort}) // no needs-changes
-		_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+		_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 		if err == nil || !strings.Contains(err.Error(), `gate "review": producible outcome "needs-changes" has no branch`) {
 			t.Fatalf("expected missing-outcome error, got %v", err)
 		}
@@ -878,7 +888,7 @@ func TestCompileGateOutcomeCoverage(t *testing.T) {
 
 	t.Run("full coverage compiles", func(t *testing.T) {
 		spec := agenticGate(map[string]string{"pass": TerminalComplete, "fail": TargetAbort, "needs-changes": "implement"})
-		if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+		if _, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
 			t.Fatalf("full outcome coverage should compile, got %v", err)
 		}
 	})
@@ -888,7 +898,7 @@ func TestCompileGateOutcomeCoverage(t *testing.T) {
 			"pass": TerminalComplete, "fail": TargetAbort, "needs-changes": "implement",
 			BranchEscalate: TargetAbort,
 		})
-		if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+		if _, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
 			t.Fatalf("escalation control branch should compile, got %v", err)
 		}
 	})
@@ -903,7 +913,7 @@ func TestCompileGateOutcomeCoverage(t *testing.T) {
 				Branches: map[string]string{"pass": "sink"},
 			}},
 		}
-		_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+		_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 		if err == nil || !strings.Contains(err.Error(), `gate "gate-only": producible outcome "fail" has no branch`) {
 			t.Fatalf("expected missing-fail-branch error, got %v", err)
 		}
@@ -924,7 +934,7 @@ func TestCompileGateOutcomeCoverage(t *testing.T) {
 				Branches: map[string]string{"merged": "sink", "fail": "sink"},
 			}},
 		}
-		_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+		_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 		if err == nil || !strings.Contains(err.Error(), `gate "gate-only": producible outcome "enqueued" has no branch`) {
 			t.Fatalf("expected missing-enqueued-branch error, got %v", err)
 		}
@@ -940,7 +950,7 @@ func TestCompileGateOutcomeCoverage(t *testing.T) {
 				Branches: map[string]string{"merged": "sink", "evicted": "sink", "timeout": "", "fail": ""},
 			}},
 		}
-		if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+		if _, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
 			t.Fatalf("full queue-outcome coverage should compile, got %v", err)
 		}
 	})
@@ -955,7 +965,7 @@ func TestCompileGateOutcomeCoverage(t *testing.T) {
 				Branches: map[string]string{"merged": "sink", "timeout": "", "fail": ""},
 			}},
 		}
-		_, err := Compile(Definition{Name: "x", Version: 1, Spec: spec})
+		_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
 		if err == nil || !strings.Contains(err.Error(), `gate "gate-only": producible outcome "evicted" has no branch`) {
 			t.Fatalf("expected missing-evicted-branch error, got %v", err)
 		}
@@ -979,7 +989,7 @@ func TestCompileWithKnownChecksRejectsUnknownCheckName(t *testing.T) {
 	}
 	def := Definition{Name: "x", Version: 1, Spec: spec}
 
-	_, err := Compile(def, WithKnownChecks([]string{"status-equals", "ci-status"}))
+	_, err := compileAcknowledged(def, WithKnownChecks([]string{"status-equals", "ci-status"}))
 	if err == nil || !strings.Contains(err.Error(), `gate "gate-only": unknown automated check "ci-green"`) {
 		t.Fatalf("expected unknown-check error, got %v", err)
 	}
@@ -987,7 +997,7 @@ func TestCompileWithKnownChecksRejectsUnknownCheckName(t *testing.T) {
 	// Without WithKnownChecks (the runner path default), check names are not
 	// validated — internal/gate itself still fails closed at evaluation time
 	// regardless, per the doc comment on WithKnownChecks.
-	if _, err := Compile(def); err != nil {
+	if _, err := compileAcknowledged(def); err != nil {
 		t.Fatalf("check-name validation should be opt-in; compiled without WithKnownChecks, got %v", err)
 	}
 }
@@ -1002,7 +1012,7 @@ func TestAdmissionSkippedWithoutGoobers(t *testing.T) {
 			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "g", Capabilities: []string{"repo:push"}},
 		},
 	}
-	if _, err := Compile(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
+	if _, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("runner path should not run admission, got %v", err)
 	}
 }

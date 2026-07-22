@@ -92,7 +92,8 @@ done >> "$GOOBERS_TELEMETRY_DIR/events.jsonl"`
 				Next: workflow.TerminalComplete,
 			}},
 		},
-	})
+	}, workflow.WithPreviewFeatures(true))
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +275,8 @@ func TestAgenticGateTelemetryRoundTripsToRollup(t *testing.T) {
 				},
 			}},
 		},
-	})
+	}, workflow.WithPreviewFeatures(true))
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +360,8 @@ func TestResumeFailedRunSpanMatchesJournalOutcome(t *testing.T) {
 				Next: workflow.TerminalComplete,
 			}},
 		},
-	})
+	}, workflow.WithPreviewFeatures(true))
+
 	if err != nil {
 		t.Fatal(err)
 	}
