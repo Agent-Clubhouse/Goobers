@@ -537,6 +537,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           retryWasteAttempts: 0,
         },
       ],
+      models: [],
     },
     telemetryErrors: { items: [] },
   };
@@ -598,6 +599,6 @@ export function emptyDaemonFixtures(): DaemonFixtures {
     runs: { runs: [] },
     runDetails: {},
     runEvents: {},
-    telemetryStats: { gaggles: [], runs: [], stages: [] },
+    telemetryStats: { gaggles: [], runs: [], stages: [], models: [] },
   };
 }

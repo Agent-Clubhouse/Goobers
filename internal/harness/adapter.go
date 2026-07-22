@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -108,6 +109,9 @@ type Outcome struct {
 	// Metrics contains adapter-observed numeric measures under canonical
 	// telemetry names. An absent measure is omitted; an observed zero is kept.
 	Metrics map[string]float64
+	// ModelUsage preserves the same measures per model when the harness exposes
+	// that dimension. Nil measures are unknown; pointers to zero are observed.
+	ModelUsage []telemetry.ModelUsage
 	// Transcript is the raw (unredacted) harness transcript, for the caller
 	// to scrub and record as a journal span (GBO-020). Bounded at
 	// MaxTranscriptBytes — a truncated transcript carries a trailing marker

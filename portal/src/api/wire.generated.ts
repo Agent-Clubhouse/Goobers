@@ -604,6 +604,20 @@ export const goWireFixtures = {
         "retryWasteTokens": 12000,
         "retryWasteCostUSD": 0.75
       }
+    ],
+    "models": [
+      {
+        "model": "gpt-5.4",
+        "usageSamples": 3,
+        "inputTokenSamples": 3,
+        "inputTokens": 36000,
+        "outputTokenSamples": 3,
+        "outputTokens": 12000,
+        "premiumRequestSamples": 3,
+        "copilotPremiumRequests": 3,
+        "costSamples": 3,
+        "costUSD": 1.5
+      }
     ]
   },
   "telemetryErrors": {

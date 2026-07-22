@@ -321,7 +321,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 
 	out, runErr := e.adapter.Run(ctx, req)
-	telemetry.RecordAgentUsage(ctx, out.Metrics)
+	telemetry.RecordAgentUsage(ctx, out.Metrics, out.ModelUsage)
 	if out.TranscriptSchema == "" {
 		prompt := e.scrubber.Scrub([]byte(renderPrompt(req)))
 		output := e.scrubber.Scrub(out.Transcript)

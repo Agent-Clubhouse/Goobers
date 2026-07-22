@@ -97,6 +97,10 @@ func newWireFixtures() wireFixtures {
 	retryWasteDuration := int64(100000)
 	retryWasteTokens := int64(12000)
 	retryWasteCostUSD := 0.75
+	modelInputTokens := int64(36000)
+	modelOutputTokens := int64(12000)
+	modelPremiumRequests := 3.0
+	modelCostUSD := 1.5
 	warning := validate.CodedWarning{
 		Code:        validate.WarningDeprecatedFeature,
 		Severity:    validate.Warning,
@@ -425,6 +429,18 @@ func newWireFixtures() wireFixtures {
 				RetryWasteDurationMs: &retryWasteDuration,
 				RetryWasteTokens:     &retryWasteTokens,
 				RetryWasteCostUSD:    &retryWasteCostUSD,
+			}},
+			Models: []readservice.TelemetryModelStats{{
+				Model:                  "gpt-5.4",
+				UsageSamples:           3,
+				InputTokenSamples:      3,
+				InputTokens:            &modelInputTokens,
+				OutputTokenSamples:     3,
+				OutputTokens:           &modelOutputTokens,
+				PremiumRequestSamples:  3,
+				CopilotPremiumRequests: &modelPremiumRequests,
+				CostSamples:            3,
+				CostUSD:                &modelCostUSD,
 			}},
 		},
 		TelemetryErrors: readservice.TelemetryErrorsPage{
