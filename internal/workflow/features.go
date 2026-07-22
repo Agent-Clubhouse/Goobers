@@ -62,6 +62,9 @@ func NewFeatureRegistry(features []Feature) (FeatureRegistry, error) {
 		if strings.TrimSpace(feature.SinceVersion) == "" {
 			return FeatureRegistry{}, fmt.Errorf("DSL feature %q has an empty since-version", feature.ID)
 		}
+		if err := validateFeatureHistory(feature); err != nil {
+			return FeatureRegistry{}, fmt.Errorf("DSL feature %q: %w", feature.ID, err)
+		}
 		switch feature.Level {
 		case SupportDeprecated:
 			if strings.TrimSpace(string(feature.Replacement)) == "" {
@@ -74,9 +77,6 @@ func NewFeatureRegistry(features []Feature) (FeatureRegistry, error) {
 			if strings.TrimSpace(feature.LastSupportingVersion) == "" {
 				return FeatureRegistry{}, fmt.Errorf("removed DSL feature %q has no last-supporting version", feature.ID)
 			}
-		}
-		if err := validateFeatureHistory(feature); err != nil {
-			return FeatureRegistry{}, fmt.Errorf("DSL feature %q: %w", feature.ID, err)
 		}
 		if _, exists := entries[feature.ID]; exists {
 			return FeatureRegistry{}, fmt.Errorf("duplicate DSL feature %q", feature.ID)

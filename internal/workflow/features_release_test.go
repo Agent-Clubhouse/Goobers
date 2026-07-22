@@ -77,10 +77,11 @@ func TestLatestReleasedFeatureRegistryComesFromTag(t *testing.T) {
 	}
 
 	removed := Feature{
-		ID:           "example.feature",
-		Level:        SupportRemoved,
-		SinceVersion: "v1.3.0",
-		History:      fabricatedHistory,
+		ID:                    "example.feature",
+		Level:                 SupportRemoved,
+		SinceVersion:          "v1.3.0",
+		LastSupportingVersion: "v1.2.0",
+		History:               fabricatedHistory,
 	}
 	if _, err := newFeatureRegistryAgainstReleased(released, []Feature{removed}); err == nil ||
 		!strings.Contains(err.Error(), "must be deprecated in the latest released registry") {
