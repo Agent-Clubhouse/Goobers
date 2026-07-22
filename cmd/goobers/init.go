@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -145,22 +146,8 @@ func promptGuidedOptions(stdin io.Reader, stdout io.Writer) (instance.GuidedOpti
 	}
 
 	pln(stdout, "")
-	pln(stdout, "Use a fine-grained, least-privilege PAT; never paste its value here.")
-	pln(stdout, "  Create: https://github.com/settings/personal-access-tokens/new")
-	pln(stdout, "  Scopes: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/github-token-scopes.md")
-	repoTokenEnv, err := p.ask("Repository PAT environment variable", "GOOBERS_GITHUB_TOKEN", instance.ValidGuidedTokenEnvName)
-	if err != nil {
-		return instance.GuidedOptions{}, err
-	}
-
-	pln(stdout, "")
 	pf(stdout, "Work tracking: GitHub Issues in %s/%s (Azure DevOps is not yet supported).\n", repoOwner, repoName)
 	pln(stdout, "The local runner currently requires code and work tracking in the same repository.")
-	pln(stdout, "The repository PAT needs Issues read/write permission for this mapping.")
-	copilotTokenEnv, err := p.ask("Copilot Requests PAT environment variable", "GOOBERS_COPILOT_TOKEN", instance.ValidGuidedTokenEnvName)
-	if err != nil {
-		return instance.GuidedOptions{}, err
-	}
 
 	pln(stdout, "")
 	pln(stdout, "Canonical workflows:")
@@ -191,16 +178,66 @@ func promptGuidedOptions(stdin io.Reader, stdout io.Writer) (instance.GuidedOpti
 		break
 	}
 
+	pln(stdout, "")
+	pln(stdout, "Create separate fine-grained, least-privilege PATs; never paste their values here.")
+	pln(stdout, "  Create: https://github.com/settings/personal-access-tokens/new")
+	pln(stdout, "  Scopes: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/github-token-scopes.md")
+	pf(stdout, "  Repository access: select only %s/%s for repository-scoped PATs.\n", repoOwner, repoName)
+	pln(stdout, "Repository read PAT permissions: Contents: Read-only.")
+	repoTokenEnv, err := p.ask("Repository read PAT environment variable", "GOOBERS_GITHUB_REPO_TOKEN", instance.ValidGuidedTokenEnvName)
+	if err != nil {
+		return instance.GuidedOptions{}, err
+	}
+	pln(stdout, "Work-tracking PAT permissions: Issues: Read and write.")
+	workTrackingTokenEnv, err := p.ask("Work-tracking PAT environment variable", "GOOBERS_GITHUB_ISSUES_TOKEN", instance.ValidGuidedTokenEnvName)
+	if err != nil {
+		return instance.GuidedOptions{}, err
+	}
+
+	pullRequestTokenEnv := ""
+	needsPullRequests := slices.Contains(workflows, instance.GuidedWorkflowImplementation) ||
+		slices.Contains(workflows, instance.GuidedWorkflowBacklogCuration)
+	if needsPullRequests {
+		if slices.Contains(workflows, instance.GuidedWorkflowImplementation) {
+			pln(stdout, "Pull-request PAT permissions: Pull requests: Read and write; Contents: Read and write.")
+			pln(stdout, "Implementation CI polling also requires: Checks: Read-only; Commit statuses: Read-only.")
+		} else {
+			pln(stdout, "Pull-request PAT permissions: Pull requests: Read-only.")
+		}
+		pullRequestTokenEnv, err = p.ask("Pull-request PAT environment variable", "GOOBERS_GITHUB_PR_TOKEN", instance.ValidGuidedTokenEnvName)
+		if err != nil {
+			return instance.GuidedOptions{}, err
+		}
+	}
+
+	repoPushTokenEnv := ""
+	if slices.Contains(workflows, instance.GuidedWorkflowImplementation) {
+		pln(stdout, "Repository push PAT permissions: Contents: Read and write.")
+		repoPushTokenEnv, err = p.ask("Repository push PAT environment variable", "GOOBERS_GITHUB_PUSH_TOKEN", instance.ValidGuidedTokenEnvName)
+		if err != nil {
+			return instance.GuidedOptions{}, err
+		}
+	}
+
+	pln(stdout, "Copilot PAT permissions: Copilot Requests: Read-only; no repository access.")
+	copilotTokenEnv, err := p.ask("Copilot Requests PAT environment variable", "GOOBERS_COPILOT_TOKEN", instance.ValidGuidedTokenEnvName)
+	if err != nil {
+		return instance.GuidedOptions{}, err
+	}
+
 	return instance.GuidedOptions{
-		GaggleName:      guidedGaggleName(repoName),
-		DisplayName:     repoOwner + "/" + repoName,
-		RepoOwner:       repoOwner,
-		RepoName:        repoName,
-		RepoBranch:      branch,
-		RepoTokenEnv:    repoTokenEnv,
-		CopilotTokenEnv: copilotTokenEnv,
-		Workflows:       workflows,
-		CICommand:       ciCommand,
+		GaggleName:           guidedGaggleName(repoName),
+		DisplayName:          repoOwner + "/" + repoName,
+		RepoOwner:            repoOwner,
+		RepoName:             repoName,
+		RepoBranch:           branch,
+		RepoTokenEnv:         repoTokenEnv,
+		WorkTrackingTokenEnv: workTrackingTokenEnv,
+		PullRequestTokenEnv:  pullRequestTokenEnv,
+		RepoPushTokenEnv:     repoPushTokenEnv,
+		CopilotTokenEnv:      copilotTokenEnv,
+		Workflows:            workflows,
+		CICommand:            ciCommand,
 	}, nil
 }
 

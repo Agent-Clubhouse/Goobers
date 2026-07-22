@@ -13,15 +13,18 @@ import (
 func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "guided")
 	opts := GuidedOptions{
-		GaggleName:      "widget-service",
-		DisplayName:     "acme/widget-service",
-		RepoOwner:       "acme",
-		RepoName:        "widget-service",
-		RepoBranch:      "release/v1",
-		RepoTokenEnv:    "WIDGET_REPO_TOKEN",
-		CopilotTokenEnv: "WIDGET_COPILOT_TOKEN",
-		Workflows:       []string{GuidedWorkflowImplementation, GuidedWorkflowWorkNomination},
-		CICommand:       []string{"npm", "run", "ci"},
+		GaggleName:           "widget-service",
+		DisplayName:          "acme/widget-service",
+		RepoOwner:            "acme",
+		RepoName:             "widget-service",
+		RepoBranch:           "release/v1",
+		RepoTokenEnv:         "WIDGET_REPO_TOKEN",
+		WorkTrackingTokenEnv: "WIDGET_ISSUES_TOKEN",
+		PullRequestTokenEnv:  "WIDGET_PR_TOKEN",
+		RepoPushTokenEnv:     "WIDGET_PUSH_TOKEN",
+		CopilotTokenEnv:      "WIDGET_COPILOT_TOKEN",
+		Workflows:            []string{GuidedWorkflowImplementation, GuidedWorkflowWorkNomination},
+		CICommand:            []string{"npm", "run", "ci"},
 	}
 
 	res, err := InitGuided(root, opts)
@@ -41,9 +44,19 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 		cfg.Repos[0].Name != "widget-service" || cfg.Repos[0].Token.Env != "WIDGET_REPO_TOKEN" {
 		t.Fatalf("unexpected guided repository config: %+v", cfg.Repos)
 	}
-	if len(cfg.Credentials) != 1 ||
-		cfg.Credentials[0].Capability != string(capability.AgentModel) {
+	wantCredentials := map[string]string{
+		string(capability.GitHubIssuesWrite): "WIDGET_ISSUES_TOKEN",
+		string(capability.GitHubPRWrite):     "WIDGET_PR_TOKEN",
+		string(capability.RepoPush):          "WIDGET_PUSH_TOKEN",
+		string(capability.AgentModel):        "WIDGET_COPILOT_TOKEN",
+	}
+	if len(cfg.Credentials) != len(wantCredentials) {
 		t.Fatalf("unexpected guided credential config: %+v", cfg.Credentials)
+	}
+	for _, credential := range cfg.Credentials {
+		if want := wantCredentials[credential.Capability]; credential.Token.Env != want {
+			t.Errorf("credential %q token env = %q, want %q", credential.Capability, credential.Token.Env, want)
+		}
 	}
 
 	set, report, err := LoadConfigDir(layout.ConfigDir())
@@ -99,12 +112,13 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 func TestInitGuidedRejectsInvalidOptionsBeforeWriting(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "guided")
 	_, err := InitGuided(root, GuidedOptions{
-		GaggleName:      "widget",
-		RepoOwner:       "acme",
-		RepoName:        "widget",
-		RepoTokenEnv:    "TOKEN",
-		CopilotTokenEnv: "MODEL_TOKEN",
-		Workflows:       []string{"not-canonical"},
+		GaggleName:           "widget",
+		RepoOwner:            "acme",
+		RepoName:             "widget",
+		RepoTokenEnv:         "TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		CopilotTokenEnv:      "MODEL_TOKEN",
+		Workflows:            []string{"not-canonical"},
 	})
 	if err == nil || !strings.Contains(err.Error(), `unknown guided workflow "not-canonical"`) {
 		t.Fatalf("InitGuided error = %v", err)
@@ -116,12 +130,14 @@ func TestInitGuidedRejectsInvalidOptionsBeforeWriting(t *testing.T) {
 
 func TestInitGuidedRejectsExistingConfigurationBeforeWriting(t *testing.T) {
 	opts := GuidedOptions{
-		GaggleName:      "widget",
-		RepoOwner:       "acme",
-		RepoName:        "widget",
-		RepoTokenEnv:    "REPO_TOKEN",
-		CopilotTokenEnv: "MODEL_TOKEN",
-		Workflows:       []string{GuidedWorkflowBacklogCuration},
+		GaggleName:           "widget",
+		RepoOwner:            "acme",
+		RepoName:             "widget",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		PullRequestTokenEnv:  "PR_TOKEN",
+		CopilotTokenEnv:      "MODEL_TOKEN",
+		Workflows:            []string{GuidedWorkflowBacklogCuration},
 	}
 	for _, test := range []struct {
 		name    string
@@ -184,15 +200,20 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 	for _, workflow := range GuidedWorkflowNames() {
 		t.Run(workflow, func(t *testing.T) {
 			opts := GuidedOptions{
-				GaggleName:      "widget",
-				RepoOwner:       "acme",
-				RepoName:        "widget",
-				RepoTokenEnv:    "REPO_TOKEN",
-				CopilotTokenEnv: "MODEL_TOKEN",
-				Workflows:       []string{workflow},
+				GaggleName:           "widget",
+				RepoOwner:            "acme",
+				RepoName:             "widget",
+				RepoTokenEnv:         "REPO_TOKEN",
+				WorkTrackingTokenEnv: "ISSUES_TOKEN",
+				CopilotTokenEnv:      "MODEL_TOKEN",
+				Workflows:            []string{workflow},
 			}
 			if workflow == GuidedWorkflowImplementation {
 				opts.CICommand = []string{"go", "test", "./..."}
+				opts.PullRequestTokenEnv = "PR_TOKEN"
+				opts.RepoPushTokenEnv = "PUSH_TOKEN"
+			} else if workflow == GuidedWorkflowBacklogCuration {
+				opts.PullRequestTokenEnv = "PR_TOKEN"
 			}
 			root := filepath.Join(t.TempDir(), "guided")
 			if _, err := InitGuided(root, opts); err != nil {
@@ -204,6 +225,28 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 			}
 			if len(set.Workflows) != 1 || set.Workflows[0].Name != workflow {
 				t.Fatalf("guided workflows = %+v, want only %q", set.Workflows, workflow)
+			}
+			cfg, err := LoadConfig(NewLayout(root).ConfigFile())
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			wantCredentials := map[string]string{
+				string(capability.GitHubIssuesWrite): "ISSUES_TOKEN",
+				string(capability.AgentModel):        "MODEL_TOKEN",
+			}
+			if workflow == GuidedWorkflowImplementation || workflow == GuidedWorkflowBacklogCuration {
+				wantCredentials[string(capability.GitHubPRWrite)] = "PR_TOKEN"
+			}
+			if workflow == GuidedWorkflowImplementation {
+				wantCredentials[string(capability.RepoPush)] = "PUSH_TOKEN"
+			}
+			if len(cfg.Credentials) != len(wantCredentials) {
+				t.Fatalf("guided credentials = %+v, want %v", cfg.Credentials, wantCredentials)
+			}
+			for _, credential := range cfg.Credentials {
+				if want := wantCredentials[credential.Capability]; credential.Token.Env != want {
+					t.Errorf("credential %q token env = %q, want %q", credential.Capability, credential.Token.Env, want)
+				}
 			}
 		})
 	}
@@ -225,12 +268,14 @@ func TestValidGuidedTokenEnvNameRejectsTokenValues(t *testing.T) {
 func TestInitGuidedTokenValidationDoesNotEchoSecret(t *testing.T) {
 	const secret = "github_pat_11AASecret"
 	_, err := InitGuided(filepath.Join(t.TempDir(), "guided"), GuidedOptions{
-		GaggleName:      "widget",
-		RepoOwner:       "acme",
-		RepoName:        "widget",
-		RepoTokenEnv:    secret,
-		CopilotTokenEnv: "MODEL_TOKEN",
-		Workflows:       []string{GuidedWorkflowBacklogCuration},
+		GaggleName:           "widget",
+		RepoOwner:            "acme",
+		RepoName:             "widget",
+		RepoTokenEnv:         secret,
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		PullRequestTokenEnv:  "PR_TOKEN",
+		CopilotTokenEnv:      "MODEL_TOKEN",
+		Workflows:            []string{GuidedWorkflowBacklogCuration},
 	})
 	if err == nil {
 		t.Fatal("InitGuided succeeded with a token value as token.env")

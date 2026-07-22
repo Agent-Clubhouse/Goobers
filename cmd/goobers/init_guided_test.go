@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -14,6 +15,9 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "widget-instance")
 	input := strings.NewReader(strings.Join([]string{
 		"https://github.com/acme/Widget.Service.git",
+		"",
+		"",
+		"",
 		"",
 		"",
 		"",
@@ -33,7 +37,12 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"OK: instance.yaml valid; config/ valid (1 gaggle(s), 4 goober(s), 3 workflow(s))",
 		"docs/guides/github-token-scopes.md",
 		"Work tracking: GitHub Issues in acme/Widget.Service",
-		"Issues read/write permission",
+		"Repository read PAT permissions: Contents: Read-only.",
+		"Work-tracking PAT permissions: Issues: Read and write.",
+		"Pull-request PAT permissions: Pull requests: Read and write; Contents: Read and write.",
+		"Implementation CI polling also requires: Checks: Read-only; Commit statuses: Read-only.",
+		"Repository push PAT permissions: Contents: Read and write.",
+		"Copilot PAT permissions: Copilot Requests: Read-only; no repository access.",
 		"Author workflows:",
 		"docs/guides/dsl-authoring-skill.md",
 		"Make custom agent stages:",
@@ -52,13 +61,86 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 	}
 	if len(cfg.Repos) != 1 || cfg.Repos[0].Owner != "acme" ||
 		cfg.Repos[0].Name != "Widget.Service" ||
-		cfg.Repos[0].Token.Env != "GOOBERS_GITHUB_TOKEN" {
+		cfg.Repos[0].Token.Env != "GOOBERS_GITHUB_REPO_TOKEN" {
 		t.Fatalf("unexpected guided instance config: %+v", cfg)
+	}
+	wantCredentials := map[string]string{
+		string(capability.GitHubIssuesWrite): "GOOBERS_GITHUB_ISSUES_TOKEN",
+		string(capability.GitHubPRWrite):     "GOOBERS_GITHUB_PR_TOKEN",
+		string(capability.RepoPush):          "GOOBERS_GITHUB_PUSH_TOKEN",
+		string(capability.AgentModel):        "GOOBERS_COPILOT_TOKEN",
+	}
+	if len(cfg.Credentials) != len(wantCredentials) {
+		t.Fatalf("guided credentials = %+v, want %v", cfg.Credentials, wantCredentials)
+	}
+	for _, credential := range cfg.Credentials {
+		if want := wantCredentials[credential.Capability]; credential.Token.Env != want {
+			t.Errorf("credential %q token env = %q, want %q", credential.Capability, credential.Token.Env, want)
+		}
 	}
 	for _, name := range instance.GuidedWorkflowNames() {
 		path := filepath.Join(root, "config", "gaggles", "widget-service", "workflows", name+".yaml")
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("selected workflow %q not scaffolded: %v", name, err)
+		}
+	}
+}
+
+func TestPromptGuidedOptionsOnlyRequestsSelectedCredentialClasses(t *testing.T) {
+	input := strings.NewReader(strings.Join([]string{
+		"acme/widget",
+		"",
+		"work-nomination",
+		"",
+		"",
+		"",
+	}, "\n") + "\n")
+	var stdout bytes.Buffer
+
+	opts, err := promptGuidedOptions(input, &stdout)
+	if err != nil {
+		t.Fatalf("promptGuidedOptions: %v", err)
+	}
+	if opts.RepoTokenEnv != "GOOBERS_GITHUB_REPO_TOKEN" ||
+		opts.WorkTrackingTokenEnv != "GOOBERS_GITHUB_ISSUES_TOKEN" ||
+		opts.CopilotTokenEnv != "GOOBERS_COPILOT_TOKEN" {
+		t.Fatalf("unexpected common token refs: %+v", opts)
+	}
+	if opts.PullRequestTokenEnv != "" || opts.RepoPushTokenEnv != "" {
+		t.Fatalf("work nomination received unused token refs: %+v", opts)
+	}
+	for _, unwanted := range []string{"Pull-request PAT", "Repository push PAT", "Checks: Read-only"} {
+		if strings.Contains(stdout.String(), unwanted) {
+			t.Errorf("work-nomination prompt unexpectedly contains %q:\n%s", unwanted, stdout.String())
+		}
+	}
+}
+
+func TestPromptGuidedOptionsUsesReadOnlyPullRequestScopeForCuration(t *testing.T) {
+	input := strings.NewReader(strings.Join([]string{
+		"acme/widget",
+		"",
+		"backlog-curation",
+		"",
+		"",
+		"",
+		"",
+	}, "\n") + "\n")
+	var stdout bytes.Buffer
+
+	opts, err := promptGuidedOptions(input, &stdout)
+	if err != nil {
+		t.Fatalf("promptGuidedOptions: %v", err)
+	}
+	if opts.PullRequestTokenEnv != "GOOBERS_GITHUB_PR_TOKEN" || opts.RepoPushTokenEnv != "" {
+		t.Fatalf("unexpected curation token refs: %+v", opts)
+	}
+	if !strings.Contains(stdout.String(), "Pull-request PAT permissions: Pull requests: Read-only.") {
+		t.Errorf("curation prompt lacks read-only PR guidance:\n%s", stdout.String())
+	}
+	for _, unwanted := range []string{"Implementation CI polling", "Repository push PAT"} {
+		if strings.Contains(stdout.String(), unwanted) {
+			t.Errorf("curation prompt unexpectedly contains %q:\n%s", unwanted, stdout.String())
 		}
 	}
 }

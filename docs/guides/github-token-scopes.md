@@ -31,7 +31,7 @@ in `instance.yaml`:
 | `github:issues:read` | Issues: Read-only | Backlog polling, triage stages. |
 | `github:issues:write` | Issues: Read and write | Create, claim, comment, ordinary-label, close. Does not authorize the `goobers:approved` trust decision. |
 | `github:issues:approve` | Issues: Read and write | Apply `goobers:approved` to nominated work. Keep this out of workflow stages unless self-approval is intentional. |
-| `github:pr:write` | Pull requests: Read and write, Contents: Read and write | Only for stages that open/update PRs. |
+| `github:pr:write` | Pull requests: Read and write, Contents: Read and write | Only for stages that open/update PRs. The canonical implementation workflow also uses this capability for `ci-poll`, which requires Checks: Read-only and Commit statuses: Read-only. |
 | `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
 | `repo:clone` (read-only stages) | Contents: Read-only | Curation/analysis stages that never push. |
@@ -73,19 +73,20 @@ when your target repo lives in an org, `agent:model`'s token is necessarily a
 - **`agent:model` token** — a *personal* fine-grained PAT with **Copilot
   Requests: Read-only** and **no repository access at all** (it authenticates
   the model, nothing else).
-- **repo/issue/PR token** — the org-scoped fine-grained PAT with the
-  Contents/Issues/Pull-requests permissions from the table above. An org owner
-  must **approve** a personal fine-grained PAT before it can access org repos
-  (org *Settings → Third-party Access → Personal access tokens*), so budget for
-  that approval step on the repo credential.
+- **repository capability tokens** — org-scoped fine-grained PATs with the
+  narrow Contents, Issues, Pull-requests, Checks, and Commit-statuses permissions
+  required by the selected workflows. An org owner must **approve** personal
+  fine-grained PATs before they can access org repos (org *Settings → Third-party
+  Access → Personal access tokens*), so budget for that approval step.
 
 (For a target repo under your **personal** account, one personal PAT carrying
 both the repo permissions *and* Copilot Requests can back both capabilities —
 point `agent:model` and the repo grants at the same ref. The two-token split is
 mandatory only across the org boundary above.)
 
-Wire the tokens with a `credentials:` block in `instance.yaml`: the repo token
-stays on the repo's `token:` ref, and `agent:model` gets its own ref.
+Wire the tokens in `instance.yaml`: the repository-read token stays on the
+repo's `token:` ref, and each broader capability gets its own `credentials:`
+override.
 
 ```yaml
 repos:
@@ -93,20 +94,27 @@ repos:
     owner: your-org
     name: your-repo
     token:
-      env: GOOBERS_GITHUB_TOKEN      # org repo PAT → GH_TOKEN (github tool, repo/issue/PR)
+      env: GOOBERS_GITHUB_REPO_TOKEN # Contents: read-only
 credentials:
+  - capability: github:issues:write
+    token:
+      env: GOOBERS_GITHUB_ISSUES_TOKEN # Issues: read and write
+  - capability: github:pr:write
+    token:
+      env: GOOBERS_GITHUB_PR_TOKEN   # PR/Contents: read-write; CI Checks/statuses: read-only
+  - capability: repo:push
+    token:
+      env: GOOBERS_GITHUB_PUSH_TOKEN # Contents: read and write
   - capability: agent:model
     token:
-      env: GOOBERS_COPILOT_TOKEN     # personal "Copilot Requests" PAT → COPILOT_GITHUB_TOKEN
-  - capability: github:pr:review
-    token:
-      env: GOOBERS_GITHUB_REVIEW_TOKEN # different GitHub identity for native reviews
+      env: GOOBERS_COPILOT_TOKEN     # Copilot Requests: read-only; no repo access
 ```
 
 Each `credentials:` entry sources one capability from its own token ref; an
 entry for a capability the repo token would otherwise back **overrides** it (so
-`repo:push` can be pointed at a distinct token too, if ever needed). Values are
-never inline — `token.env` or `token.file` only (`CFG-009`/`SEC-010`).
+an issues-only stage never receives a token carrying code or PR authority).
+Omit overrides for capabilities no selected workflow declares. Values are never
+inline — `token.env` or `token.file` only (`CFG-009`/`SEC-010`).
 
 Verify before a live run: `goobers validate --check-harness` preflights the
 Copilot CLI (and, when `AuthCheckArgs` is configured, its authentication) so a

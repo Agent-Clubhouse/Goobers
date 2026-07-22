@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -50,15 +51,18 @@ func GuidedWorkflowNames() []string {
 
 // GuidedOptions describes one guided first-run instance.
 type GuidedOptions struct {
-	GaggleName      string
-	DisplayName     string
-	RepoOwner       string
-	RepoName        string
-	RepoBranch      string
-	RepoTokenEnv    string
-	CopilotTokenEnv string
-	Workflows       []string
-	CICommand       []string
+	GaggleName           string
+	DisplayName          string
+	RepoOwner            string
+	RepoName             string
+	RepoBranch           string
+	RepoTokenEnv         string
+	WorkTrackingTokenEnv string
+	PullRequestTokenEnv  string
+	RepoPushTokenEnv     string
+	CopilotTokenEnv      string
+	Workflows            []string
+	CICommand            []string
 }
 
 // InitGuided scaffolds a repository-specific instance from selected canonical
@@ -103,6 +107,9 @@ func normalizeGuidedOptions(opts GuidedOptions) GuidedOptions {
 	opts.RepoName = strings.TrimSpace(opts.RepoName)
 	opts.RepoBranch = strings.TrimSpace(opts.RepoBranch)
 	opts.RepoTokenEnv = strings.TrimSpace(opts.RepoTokenEnv)
+	opts.WorkTrackingTokenEnv = strings.TrimSpace(opts.WorkTrackingTokenEnv)
+	opts.PullRequestTokenEnv = strings.TrimSpace(opts.PullRequestTokenEnv)
+	opts.RepoPushTokenEnv = strings.TrimSpace(opts.RepoPushTokenEnv)
 	opts.CopilotTokenEnv = strings.TrimSpace(opts.CopilotTokenEnv)
 	if opts.DisplayName == "" {
 		opts.DisplayName = opts.RepoOwner + "/" + opts.RepoName
@@ -126,14 +133,6 @@ func validateGuidedOptions(opts GuidedOptions) error {
 	}
 	if !guidedObjectName(opts.GaggleName) {
 		return fmt.Errorf("gaggle name %q must contain lowercase letters, numbers, or hyphens and start and end with a letter or number", opts.GaggleName)
-	}
-	for label, value := range map[string]string{
-		"repository token environment variable": opts.RepoTokenEnv,
-		"Copilot token environment variable":    opts.CopilotTokenEnv,
-	} {
-		if !ValidGuidedTokenEnvName(value) {
-			return fmt.Errorf("%s must name a valid environment variable; do not provide a token value", label)
-		}
 	}
 	if len(opts.Workflows) == 0 {
 		return fmt.Errorf("select at least one workflow")
@@ -159,6 +158,35 @@ func validateGuidedOptions(opts GuidedOptions) error {
 		}
 	} else if len(opts.CICommand) > 0 {
 		return fmt.Errorf("local CI command requires the implementation workflow")
+	}
+	type guidedTokenEnv struct {
+		label string
+		value string
+	}
+	tokenEnvs := []guidedTokenEnv{
+		{label: "repository token environment variable", value: opts.RepoTokenEnv},
+		{label: "work-tracking token environment variable", value: opts.WorkTrackingTokenEnv},
+	}
+	if seen[GuidedWorkflowImplementation] || seen[GuidedWorkflowBacklogCuration] {
+		tokenEnvs = append(tokenEnvs, guidedTokenEnv{
+			label: "pull-request token environment variable",
+			value: opts.PullRequestTokenEnv,
+		})
+	}
+	if seen[GuidedWorkflowImplementation] {
+		tokenEnvs = append(tokenEnvs, guidedTokenEnv{
+			label: "repository push token environment variable",
+			value: opts.RepoPushTokenEnv,
+		})
+	}
+	tokenEnvs = append(tokenEnvs, guidedTokenEnv{
+		label: "Copilot token environment variable",
+		value: opts.CopilotTokenEnv,
+	})
+	for _, tokenEnv := range tokenEnvs {
+		if !ValidGuidedTokenEnvName(tokenEnv.value) {
+			return fmt.Errorf("%s must name a valid environment variable; do not provide a token value", tokenEnv.label)
+		}
 	}
 	return nil
 }
@@ -190,6 +218,27 @@ func ValidGuidedTokenEnvName(value string) bool {
 }
 
 func guidedConfig(opts GuidedOptions) *Config {
+	credentials := []CredentialGrant{{
+		Capability: string(capability.GitHubIssuesWrite),
+		Token:      TokenRef{Env: opts.WorkTrackingTokenEnv},
+	}}
+	if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) ||
+		slices.Contains(opts.Workflows, GuidedWorkflowBacklogCuration) {
+		credentials = append(credentials, CredentialGrant{
+			Capability: string(capability.GitHubPRWrite),
+			Token:      TokenRef{Env: opts.PullRequestTokenEnv},
+		})
+	}
+	if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) {
+		credentials = append(credentials, CredentialGrant{
+			Capability: string(capability.RepoPush),
+			Token:      TokenRef{Env: opts.RepoPushTokenEnv},
+		})
+	}
+	credentials = append(credentials, CredentialGrant{
+		Capability: string(capability.AgentModel),
+		Token:      TokenRef{Env: opts.CopilotTokenEnv},
+	})
 	cfg := &Config{
 		APIVersion: ConfigAPIVersion,
 		Kind:       ConfigKind,
@@ -199,10 +248,7 @@ func guidedConfig(opts GuidedOptions) *Config {
 			Name:     opts.RepoName,
 			Token:    TokenRef{Env: opts.RepoTokenEnv},
 		}},
-		Credentials: []CredentialGrant{{
-			Capability: string(capability.AgentModel),
-			Token:      TokenRef{Env: opts.CopilotTokenEnv},
-		}},
+		Credentials:   credentials,
 		RunConditions: RunConditions{MaxParallelRuns: 1},
 	}
 	return cfg
