@@ -1,6 +1,10 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -61,6 +65,149 @@ func TestElectionDecision(t *testing.T) {
 				t.Fatalf("electionDecision(%v, %d) = %v, want %v", tt.findings, tt.thisPR, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNoLanderEscalationReason(t *testing.T) {
+	substantive := []apiv1.Finding{{Class: apiv1.FindingSubstantive}}
+	crossPR := []apiv1.Finding{{Class: apiv1.FindingCrossPRBlocked, BlockingPRs: []int{11}}}
+
+	tests := []struct {
+		name       string
+		decision   apiv1.VerdictDecision
+		findings   []apiv1.Finding
+		selected   int
+		overlaps   []int
+		demoted    map[int]bool
+		wantReason bool
+	}{
+		{"policy winner with real defect has no lander", apiv1.VerdictNeedsChanges, substantive, 10, []int{11}, nil, true},
+		{"non-winner with real defect leaves the winner available", apiv1.VerdictNeedsChanges, substantive, 11, []int{10}, nil, false},
+		{"pure ordering winner is electable", apiv1.VerdictNeedsChanges, crossPR, 10, []int{11}, nil, false},
+		{"no deterministic overlap is not a cluster", apiv1.VerdictNeedsChanges, substantive, 10, nil, nil, false},
+		{"demoted winner yields to the next candidate", apiv1.VerdictNeedsChanges, substantive, 10, []int{11}, map[int]bool{10: true}, false},
+		{"defective winner with all siblings demoted still has no lander", apiv1.VerdictNeedsChanges, substantive, 11, []int{10}, map[int]bool{10: true}, true},
+		{"fail verdict is already an explicit escalation", apiv1.VerdictFail, substantive, 10, []int{11}, nil, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason := noLanderEscalationReason(tt.decision, tt.findings, tt.selected, tt.overlaps, electedLander, tt.demoted, "fifo")
+			if (reason != "") != tt.wantReason {
+				t.Fatalf("noLanderEscalationReason() = %q, wantReason %v", reason, tt.wantReason)
+			}
+			if tt.wantReason {
+				for _, want := range []string{"Cluster has no lander", "#10", "#11", "fifo"} {
+					if !strings.Contains(reason, want) {
+						t.Errorf("reason = %q, want it to contain %q", reason, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestAsymmetricFindingsEscalateClusterWithoutLander(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+
+	const (
+		selectedNumber = 10
+		siblingNumber  = 11
+		runID          = "asymmetric-lander"
+	)
+	server.addIssue(selectedNumber, "deterministic winner")
+	server.addIssue(siblingNumber, "blocked sibling", blockedOnSiblingLabel)
+	overlap := []fakePRFile{{path: "cmd/goobers/electlander.go", status: "modified", additions: 1}}
+	server.addOpenPR(selectedNumber, "goobers/implementation/10", "main", "head-10", "base", false, nil, overlap)
+	server.addOpenPR(siblingNumber, "goobers/implementation/11", "main", "head-11", "base", false, []string{blockedOnSiblingLabel}, overlap)
+	blockedComment, err := blockedOnSiblingComment(blockedOnSiblingState{
+		Blockers: []int{selectedNumber},
+		Reason:   "reviewer classified the overlap as cross-pr-blocked",
+		HeadSHA:  "head-11",
+		BaseSHA:  "base",
+	})
+	if err != nil {
+		t.Fatalf("build sibling blocked record: %v", err)
+	}
+	server.addComment(siblingNumber, blockedComment)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
+	t.Setenv("GOOBERS_INPUT_OVERLAPPINGSIBLINGS", "11")
+	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
+		Decision:  apiv1.VerdictNeedsChanges,
+		Rationale: "the overlap is a substantive conflict",
+		HeadSHA:   "head-10",
+		BaseSHA:   "base",
+		Findings: []apiv1.Finding{{
+			Class:    apiv1.FindingSubstantive,
+			Severity: apiv1.SeverityError,
+			Message:  "the sibling changed an assumption this PR relies on",
+		}},
+	})
+
+	electionDir := t.TempDir()
+	t.Chdir(electionDir)
+	code, stdout, stderr := runArgs(t, "elect-lander", root)
+	if code != 0 {
+		t.Fatalf("elect-lander: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Cluster has no lander") {
+		t.Fatalf("elect-lander stdout = %q, want explicit no-lander decision", stdout)
+	}
+	data, err := os.ReadFile(filepath.Join(electionDir, "election.json"))
+	if err != nil {
+		t.Fatalf("read election result: %v", err)
+	}
+	var election map[string]string
+	if err := json.Unmarshal(data, &election); err != nil {
+		t.Fatalf("unmarshal election result: %v", err)
+	}
+	if election["elected"] != "false" {
+		t.Fatalf("elected = %q, want false", election["elected"])
+	}
+
+	applyDir := t.TempDir()
+	t.Chdir(applyDir)
+	code, stdout, stderr = runArgs(t, "apply-verdict", root)
+	if code != 0 {
+		t.Fatalf("apply-verdict: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err = os.ReadFile(filepath.Join(applyDir, "verdict-result.json"))
+	if err != nil {
+		t.Fatalf("read apply-verdict result: %v", err)
+	}
+	var applied map[string]string
+	if err := json.Unmarshal(data, &applied); err != nil {
+		t.Fatalf("unmarshal apply-verdict result: %v", err)
+	}
+	if applied["decision"] != string(apiv1.VerdictFail) {
+		t.Fatalf("applied decision = %q, want fail", applied["decision"])
+	}
+
+	server.mu.Lock()
+	labels := append([]string(nil), server.issues[selectedNumber].labels...)
+	comments := append([]string(nil), server.issues[selectedNumber].comments...)
+	server.mu.Unlock()
+	if len(comments) != 1 {
+		t.Fatalf("comments = %v, want one escalation comment", comments)
+	}
+	hasEscalationLabel := false
+	for _, label := range labels {
+		if label == "goobers:merge-escalated" {
+			hasEscalationLabel = true
+			break
+		}
+	}
+	if !hasEscalationLabel {
+		t.Fatalf("labels = %v, want goobers:merge-escalated (apply-verdict stdout = %q)", labels, stdout)
+	}
+	for _, want := range []string{"Cluster has no lander", "#10", "#11", "fifo"} {
+		if !strings.Contains(comments[0], want) {
+			t.Errorf("escalation comment = %q, want it to contain %q", comments[0], want)
+		}
 	}
 }
 
