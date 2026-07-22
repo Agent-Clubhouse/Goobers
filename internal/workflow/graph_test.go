@@ -9,7 +9,7 @@ import (
 )
 
 func TestGraphProjectsLinearWorkflow(t *testing.T) {
-	m, err := Compile(Definition{Name: "linear", Version: 3, Spec: linearSpec()})
+	m, err := compileAcknowledged(Definition{Name: "linear", Version: 3, Spec: linearSpec()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func graphDefinition() Definition {
 }
 
 func TestGraphProjectionGolden(t *testing.T) {
-	m, err := Compile(graphDefinition())
+	m, err := compileAcknowledged(graphDefinition())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,11 +156,11 @@ func TestGraphSerializationIsDeterministic(t *testing.T) {
 		second.Spec.Gates[0].Branches[outcome] = first.Spec.Gates[0].Branches[outcome]
 	}
 
-	m1, err := Compile(first)
+	m1, err := compileAcknowledged(first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m2, err := Compile(second)
+	m2, err := compileAcknowledged(second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestGraphSerializationIsDeterministic(t *testing.T) {
 }
 
 func TestGraphProjectsAgenticGateOwner(t *testing.T) {
-	m, err := Compile(Definition{Name: "gated", Version: 1, Spec: gatedSpec()})
+	m, err := compileAcknowledged(Definition{Name: "gated", Version: 1, Spec: gatedSpec()})
 	if err != nil {
 		t.Fatal(err)
 	}

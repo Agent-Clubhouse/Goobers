@@ -8,13 +8,19 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 func testDefinitions() *instance.ConfigSet {
 	return &instance.ConfigSet{Manifest: &apiv1.Manifest{
+		ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+			workflow.PreviewFeaturesAnnotation: "true",
+		}},
 		Spec: apiv1.ManifestSpec{
 			Instance: apiv1.InstanceRef{Name: "clubhouse", Environment: apiv1.EnvironmentDev},
 		},

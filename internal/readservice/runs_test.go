@@ -48,7 +48,7 @@ func fixtureMachine(t *testing.T) *workflow.Machine {
 				},
 			}},
 		},
-	})
+	}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatal(err)
 	}

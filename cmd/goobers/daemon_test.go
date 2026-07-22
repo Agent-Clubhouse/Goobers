@@ -602,7 +602,7 @@ func TestUpResumesInterruptedRun(t *testing.T) {
 	if wf == nil {
 		t.Fatal("default-implement workflow not found in fixture config")
 	}
-	machine, err := workflow.Compile(workflow.Definition{Name: wf.Name, Version: 1, Spec: wf.Spec})
+	machine, err := workflow.Compile(workflow.Definition{Name: wf.Name, Version: 1, Spec: wf.Spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile fixture workflow: %v", err)
 	}
@@ -766,7 +766,7 @@ func TestRunRejectedOverMaxConcurrentRuns(t *testing.T) {
 		t.Fatal("default-implement workflow not found in fixture config")
 	}
 	// maxConcurrentRuns defaults to 1 when unset (localscheduler.Conditions.Admit).
-	machine, err := workflow.Compile(workflow.Definition{Name: wf.Name, Version: 1, Spec: wf.Spec})
+	machine, err := workflow.Compile(workflow.Definition{Name: wf.Name, Version: 1, Spec: wf.Spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile fixture workflow: %v", err)
 	}

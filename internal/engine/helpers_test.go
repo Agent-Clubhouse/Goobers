@@ -5,6 +5,10 @@ import (
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
+func boolPointer(value bool) *bool {
+	return &value
+}
+
 // linearSpec is a single-stage, implement-only workflow — the shape the engine's
 // happy-path run tests walk.
 func linearSpec() apiv1.WorkflowSpec {

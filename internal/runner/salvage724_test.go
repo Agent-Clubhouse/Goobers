@@ -81,7 +81,7 @@ func salvageMachine(t *testing.T, onTimeout string) *workflow.Machine {
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "salvage-fixture", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "salvage-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile salvage machine: %v", err)
 	}

@@ -17,10 +17,15 @@ import (
 
 func inventoryDefinitions() *instance.ConfigSet {
 	return &instance.ConfigSet{
-		Manifest: &apiv1.Manifest{Spec: apiv1.ManifestSpec{
-			Instance: apiv1.InstanceRef{Name: "clubhouse", Environment: apiv1.EnvironmentDev},
-			Gaggles:  []string{"beta", "alpha"},
-		}},
+		Manifest: &apiv1.Manifest{
+			ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+				workflow.PreviewFeaturesAnnotation: "true",
+			}},
+			Spec: apiv1.ManifestSpec{
+				Instance: apiv1.InstanceRef{Name: "clubhouse", Environment: apiv1.EnvironmentDev},
+				Gaggles:  []string{"beta", "alpha"},
+			},
+		},
 		Gaggles: []apiv1.Gaggle{
 			{
 				ObjectMeta: metav1.ObjectMeta{Name: "beta"},

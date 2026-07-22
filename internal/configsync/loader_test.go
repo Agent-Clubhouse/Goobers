@@ -145,7 +145,7 @@ func TestLoadIgnoresWorkflowCollisionFromExcludedGaggle(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "manifest.yaml", `apiVersion: goobers.dev/v1alpha1
 kind: Manifest
-metadata: {name: inst}
+metadata: {name: inst, annotations: {goobers.dev/allow-preview-features: "true"}}
 spec:
   instance: {name: acme, environment: dev}
   gaggles: [alpha]
@@ -181,6 +181,8 @@ func TestLoad_ManifestGatesGaggles(t *testing.T) {
 kind: Manifest
 metadata:
   name: inst
+  annotations:
+    goobers.dev/allow-preview-features: "true"
 spec:
   instance: {name: acme, environment: dev}
   gaggles: [included]
@@ -218,7 +220,7 @@ func TestLoad_IgnoresOutputDir(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "manifest.yaml", `apiVersion: goobers.dev/v1alpha1
 kind: Manifest
-metadata: {name: inst}
+metadata: {name: inst, annotations: {goobers.dev/allow-preview-features: "true"}}
 spec:
   instance: {name: acme, environment: dev}
   gaggles: [web]
@@ -231,7 +233,7 @@ spec:
 	writeFile(t, out, "gaggle-web.yaml", gaggleYAML("web"))
 	writeFile(t, out, "manifest-inst.yaml", `apiVersion: goobers.dev/v1alpha1
 kind: Manifest
-metadata: {name: inst}
+metadata: {name: inst, annotations: {goobers.dev/allow-preview-features: "true"}}
 spec: {instance: {name: acme, environment: dev}, gaggles: [web]}
 `)
 

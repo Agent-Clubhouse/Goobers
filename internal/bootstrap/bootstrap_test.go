@@ -7,7 +7,6 @@ import (
 
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/scheduler"
-	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -43,6 +42,9 @@ func TestLoadAndRegisterFixture(t *testing.T) {
 	if loaded.Manifest == nil {
 		t.Fatal("expected a manifest")
 	}
+	if !loaded.Registry.PreviewFeaturesEnabled() {
+		t.Fatal("expected manifest preview-feature acknowledgement to reach the registry")
+	}
 	if len(loaded.Gaggles) == 0 || len(loaded.Workflows) == 0 {
 		t.Fatalf("expected gaggles + workflows, got %d gaggles, %d workflows", len(loaded.Gaggles), len(loaded.Workflows))
 	}
@@ -53,7 +55,7 @@ func TestLoadAndRegisterFixture(t *testing.T) {
 			t.Errorf("workflow %q was not registered", w.Name)
 			continue
 		}
-		if _, err := wf.Compile(def); err != nil {
+		if _, err := loaded.Registry.Compile(def); err != nil {
 			t.Errorf("registered workflow %q does not compile: %v", w.Name, err)
 		}
 	}

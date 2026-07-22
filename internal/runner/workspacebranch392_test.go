@@ -117,7 +117,7 @@ func rebindFixtureMachine(t *testing.T) *workflow.Machine {
 			},
 		},
 	}
-	m, err := workflow.Compile(workflow.Definition{Name: "rebind-fixture", Version: 1, Spec: spec})
+	m, err := workflow.Compile(workflow.Definition{Name: "rebind-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile rebind fixture machine: %v", err)
 	}
@@ -553,6 +553,7 @@ func TestWorkspaceBranchRejectsUntrustedRebindingsOnResume(t *testing.T) {
 		workflow.WithGoobers(map[string]apiv1.GooberSpec{
 			"implementer": {Workflows: []string{"agentic-only"}, Capabilities: []string{"repo:push", "agent:model"}},
 		}),
+		workflow.WithPreviewFeatures(true),
 	)
 	if err != nil {
 		t.Fatalf("compile: %v", err)

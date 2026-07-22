@@ -45,7 +45,7 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 				t.Fatalf("unmarshal %s: %v", file, err)
 			}
 			def := Definition{Name: w.Name, Version: 1, Spec: w.Spec}
-			if _, err := Compile(def, WithGoobers(goobers)); err != nil {
+			if _, err := compileAcknowledged(def, WithGoobers(goobers)); err != nil {
 				t.Fatalf("compile %s against selfhost's real goobers: %v", file, err)
 			}
 			if file == "backlog-curation.yaml" {
