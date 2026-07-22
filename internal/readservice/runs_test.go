@@ -988,6 +988,79 @@ func TestDirectStageEscalationIncludesCause(t *testing.T) {
 	}
 }
 
+func TestEscalationAttributionUsesCurrentLifecycleSegment(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-resumed-escalation",
+		machine.Def.Name,
+		"goobers",
+		time.Date(2026, 7, 21, 16, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventGateEvaluated,
+		Gate:    "review",
+		Verdict: string(apiv1.VerdictFail),
+		Target:  workflow.TargetEscalate,
+		Runner:  map[string]any{"repassAttempt": 4},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:   journal.EventRunFinished,
+		Status: string(journal.PhaseEscalated),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:            journal.EventRunResumed,
+		Status:          string(journal.PhaseEscalated),
+		Target:          "implement",
+		Actor:           "operator@example.test",
+		WorkflowVersion: machine.Def.Version,
+		WorkflowDigest:  machine.Digest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "implement",
+		Attempt: 1,
+		Status:  string(apiv1.ResultFailure),
+		Error:   &journal.ErrorDetail{Code: "new_failure", Message: "resumed segment failed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseEscalated)
+
+	detail, err := service.GetRun(context.Background(), "run-resumed-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Escalation == nil ||
+		detail.Escalation.Selector != (EscalationSelector{Kind: "stage", Name: "implement"}) ||
+		detail.Escalation.TerminalReason != "resumed segment failed" {
+		t.Fatalf("resumed escalation = %+v", detail.Escalation)
+	}
+	traceEscalation, err := service.RunEscalation(context.Background(), "run-resumed-escalation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traceEscalation == nil ||
+		traceEscalation.RepassCount != 0 ||
+		traceEscalation.LastNeedsChangesReason != "" {
+		t.Fatalf("trace escalation leaked prior segment = %+v", traceEscalation)
+	}
+}
+
 func TestParkedStageEscalationUsesOriginatingFailure(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, clock := createFixtureRun(

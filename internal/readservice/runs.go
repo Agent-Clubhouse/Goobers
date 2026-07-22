@@ -674,18 +674,19 @@ func (s *Local) RunEscalation(ctx context.Context, runID string) (*TraceEscalati
 	if summary.Phase != journal.PhaseEscalated {
 		return nil, nil
 	}
+	records := currentLifecycleRecords(run.records)
 	result := &TraceEscalation{}
-	terminalStage := successfulTerminalStage(run.records)
-	for i := len(run.records) - 1; i >= 0; i-- {
-		event := run.records[i].Event
+	terminalStage := successfulTerminalStage(records)
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
 		if !isEscalatingGateEvent(event, terminalStage) {
 			continue
 		}
-		result.RepassCount, err = gateRepassCount(run.records[:i+1], event.Gate)
+		result.RepassCount, err = gateRepassCount(records[:i+1], event.Gate)
 		if err != nil {
 			return nil, err
 		}
-		result.LastNeedsChangesReason, err = lastNeedsChangesReason(run.reader, run.records[:i+1], event.Gate)
+		result.LastNeedsChangesReason, err = lastNeedsChangesReason(run.reader, records[:i+1], event.Gate)
 		if err != nil {
 			return nil, err
 		}
@@ -917,6 +918,7 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 	if summary.Phase != journal.PhaseEscalated {
 		return nil, nil
 	}
+	records = currentLifecycleRecords(records)
 	cause := &EscalationCause{
 		RepassCount: summary.RepassCount,
 		RetryCount:  summary.RetryCount,
@@ -965,6 +967,16 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		break
 	}
 	return cause, nil
+}
+
+func currentLifecycleRecords(records []journal.EventRecord) []journal.EventRecord {
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if event.KnownSchema() && event.Type == journal.EventRunResumed {
+			return records[i+1:]
+		}
+	}
+	return records
 }
 
 func successfulTerminalStage(records []journal.EventRecord) string {
