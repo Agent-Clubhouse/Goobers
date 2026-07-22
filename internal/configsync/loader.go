@@ -11,6 +11,7 @@
 package configsync
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/configsource"
 	"github.com/goobers/goobers/internal/gooberassets"
 )
 
@@ -44,6 +46,12 @@ const (
 // ErrInvalidConfig is returned by Load when the config repo fails validation.
 // The accompanying *validate.Report carries the field-level issues.
 var ErrInvalidConfig = errors.New("config repo failed validation")
+
+// ConfigSource resolves a config snapshot to a directory for loading.
+type ConfigSource = configsource.ConfigSource
+
+// LocalDirSource loads config directly from a plain local directory.
+type LocalDirSource = configsource.LocalDirSource
 
 // RenderSet is the desired set of Goobers CRs derived from a config repo, in a
 // deterministic order. Objects carry their TypeMeta, target namespace, and
@@ -85,6 +93,19 @@ var docSep = regexp.MustCompile(`(?m)^---\s*$`)
 // validation finds errors, Load returns ErrInvalidConfig and a nil RenderSet —
 // callers reject the change and surface the report.
 func (l *Loader) Load(root string, ignoreDirs ...string) (*RenderSet, *validate.Report, error) {
+	return l.LoadSource(context.Background(), LocalDirSource{Path: root}, ignoreDirs...)
+}
+
+// LoadSource resolves and loads the current snapshot from source.
+func (l *Loader) LoadSource(ctx context.Context, source ConfigSource, ignoreDirs ...string) (*RenderSet, *validate.Report, error) {
+	if source == nil {
+		return nil, nil, errors.New("config source is required")
+	}
+	root, err := source.Resolve(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve config source: %w", err)
+	}
+
 	src, cleanup, err := stageSource(root, ignoreDirs)
 	if err != nil {
 		return nil, nil, err
