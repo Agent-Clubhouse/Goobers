@@ -197,11 +197,12 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	if err := recordStart(e.Journal, g.Name, e.Attempts[g.Name]+1); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal evaluation start: %w", g.Name, err)
 	}
-	if env.Limits.MaxDurationSeconds > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(env.Limits.MaxDurationSeconds)*time.Second)
-		defer cancel()
-	}
+	// #765: the evaluator call below is invoked through evaluateWithRetry, which
+	// honors the gate's declared RetryPolicy for transient evaluator errors and
+	// applies the per-attempt timeout (env.Limits.MaxDurationSeconds, the gate's
+	// own TimeoutSeconds) inside each attempt so a retry gets a fresh window
+	// rather than the remainder of a shared one.
+	policy := gateRetryPolicy(g)
 
 	var outcome string
 	var verdict *apiv1.Verdict
@@ -214,8 +215,12 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 		if g.Automated != nil {
 			conf = *g.Automated
 		}
-		out, err := e.Automated.Evaluate(ctx, conf, env)
-		if err != nil {
+		var out string
+		if err := e.evaluateWithRetry(ctx, g.Name, policy, env.Limits.MaxDurationSeconds, func(attemptCtx context.Context) error {
+			var callErr error
+			out, callErr = e.Automated.Evaluate(attemptCtx, conf, env)
+			return callErr
+		}); err != nil {
 			return Result{}, fmt.Errorf("gate %q: evaluate automated: %w", g.Name, err)
 		}
 		outcome = out
@@ -256,8 +261,12 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 				Rationale: fmt.Sprintf("runner: this repass produced a diff identical to the immediately prior attempt (digest %s) — escalating without re-review, since an unchanged diff cannot yield a different verdict", diffDigest),
 			}
 		} else {
-			v, err := e.Reviewer.Review(ctx, env, subjectStage, subject)
-			if err != nil {
+			var v apiv1.Verdict
+			if err := e.evaluateWithRetry(ctx, g.Name, policy, env.Limits.MaxDurationSeconds, func(attemptCtx context.Context) error {
+				var callErr error
+				v, callErr = e.Reviewer.Review(attemptCtx, env, subjectStage, subject)
+				return callErr
+			}); err != nil {
 				return Result{}, fmt.Errorf("gate %q: reviewer evaluation: %w", g.Name, err)
 			}
 			verdict = &v
@@ -347,4 +356,85 @@ func (e *Evaluator) maxRepasses() int {
 		return e.MaxRepasses
 	}
 	return DefaultMaxRepasses
+}
+
+// gateRetryPolicy returns the gate's declared evaluator retry policy, read off
+// its evaluator sub-config (#151 added the DSL field on AutomatedGate/
+// AgenticGate; #765 honors it). nil when the gate declares no retry — the
+// common case, which evaluateWithRetry treats as a single attempt.
+func gateRetryPolicy(g apiv1.Gate) *apiv1.RetryPolicy {
+	switch g.Evaluator {
+	case apiv1.EvaluatorAutomated:
+		if g.Automated != nil {
+			return g.Automated.Retry
+		}
+	case apiv1.EvaluatorAgentic:
+		if g.Agentic != nil {
+			return g.Agentic.Retry
+		}
+	}
+	return nil
+}
+
+// retryBounds resolves a RetryPolicy into a total attempt count and constant
+// backoff. A nil policy — or MaxAttempts <= 1 — means a single attempt, so a
+// gate that declares no retry is byte-identical to the pre-#765 fail-fast
+// behavior. This is what bounds the blast radius: only a gate that opts in via
+// `retry:` ever retries.
+func retryBounds(policy *apiv1.RetryPolicy) (maxAttempts int, backoff time.Duration) {
+	maxAttempts = 1
+	if policy != nil && policy.MaxAttempts > 1 {
+		maxAttempts = int(policy.MaxAttempts)
+		backoff = time.Duration(policy.BackoffSeconds) * time.Second
+	}
+	return maxAttempts, backoff
+}
+
+// evaluateWithRetry invokes a gate's evaluator (call) up to the bound declared
+// by policy, retrying ONLY transient errors — those an evaluator seam marked
+// invoke.InfrastructureFailure, the same predicate the runner's stage-retry
+// path uses (internal/runner, run.go). The #765 case is a reviewer session that
+// wrote no verdict file, tagged infrastructure at the reviewer seam
+// (reviewer.go). A non-transient error — a misconfiguration, a business
+// failure, anything unmarked — returns immediately, and exhausting the bound
+// returns the last error: both fail the run exactly as before #765. Each failed
+// transient attempt is journaled (recordEvaluatorRetry), and each attempt runs
+// under its own timeoutSeconds deadline so a retry gets a fresh window.
+func (e *Evaluator) evaluateWithRetry(ctx context.Context, gateName string, policy *apiv1.RetryPolicy, timeoutSeconds int32, call func(context.Context) error) error {
+	maxAttempts, backoff := retryBounds(policy)
+	for attempt := 1; ; attempt++ {
+		attemptCtx := ctx
+		var cancel context.CancelFunc
+		if timeoutSeconds > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+		}
+		err := call(attemptCtx)
+		if cancel != nil {
+			cancel()
+		}
+		if err == nil {
+			return nil
+		}
+		// Only a transient (infrastructure-marked) error is retryable; a
+		// non-transient one fails fast, no wasted retries.
+		if !invoke.IsInfrastructureFailure(err) {
+			return err
+		}
+		if jerr := recordEvaluatorRetry(e.Journal, gateName, attempt, err); jerr != nil {
+			return jerr
+		}
+		if attempt >= maxAttempts {
+			// Bound exhausted — fail the run, never a silent infinite retry.
+			return err
+		}
+		if backoff > 0 {
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return err
+			case <-timer.C:
+			}
+		}
+	}
 }
