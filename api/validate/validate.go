@@ -37,7 +37,7 @@ const (
 	Warning Severity = "warning"
 )
 
-// WarningCode is a stable machine-readable identifier for a warning class.
+// WarningCode is a stable machine-readable identifier for a validation finding.
 type WarningCode string
 
 const (
@@ -47,6 +47,8 @@ const (
 	WarningPreviewFeature WarningCode = "VER002"
 	// WarningCompatibility identifies a compatibility notice.
 	WarningCompatibility WarningCode = "VER003"
+	// ErrorRemovedFeature identifies use of a removed DSL feature.
+	ErrorRemovedFeature WarningCode = "VER004"
 	// WarningModelFallback identifies fallback from a requested model.
 	WarningModelFallback WarningCode = "MODEL002"
 )
@@ -220,6 +222,33 @@ func (r *Report) addWarning(code WarningCode, file, gaggle, kind, name, format s
 		Name:     name,
 		Message:  fmt.Sprintf(format, args...),
 	})
+}
+
+func (r *Report) addFeatureDiagnostics(file, gaggle, kind, name string, diagnostics []wf.FeatureDiagnostic) {
+	for _, diagnostic := range diagnostics {
+		severity := Warning
+		if diagnostic.Blocking {
+			severity = Error
+		}
+		var code WarningCode
+		switch diagnostic.Feature.Level {
+		case wf.SupportDeprecated:
+			code = WarningDeprecatedFeature
+		case wf.SupportPreview:
+			code = WarningPreviewFeature
+		case wf.SupportRemoved:
+			code = ErrorRemovedFeature
+		}
+		r.Issues = append(r.Issues, Issue{
+			Code:     code,
+			Severity: severity,
+			File:     file,
+			Gaggle:   gaggle,
+			Kind:     kind,
+			Name:     name,
+			Message:  diagnostic.Message,
+		})
+	}
 }
 
 // Validator holds compiled schemas, reusable across many validations.
@@ -508,9 +537,6 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 			r.add(Error, doc.file, doc.kind, doc.name, "decode: %v", err)
 			return
 		}
-		for _, msg := range wf.CheckGooberFeatures(g.Spec) {
-			r.add(Error, doc.file, doc.kind, doc.name, "%s", msg)
-		}
 		ix.dupCheck(r, doc, "Goober", g.Name, func() bool { _, ok := ix.goobers[g.Name]; return ok })
 		ix.goobers[g.Name] = g
 		ix.gooberFile[g.Name] = doc.file
@@ -549,6 +575,7 @@ func (ix *index) crossCheck(r *Report) {
 		// refuses to load.
 		r.add(Error, "", "Manifest", "", "more than one Manifest found (%d); exactly one is expected", len(ix.manifests))
 	}
+	allowPreview := ix.allowPreviewFeatures(r)
 
 	// Manifest -> gaggle references resolve.
 	for _, m := range ix.manifests {
@@ -575,6 +602,8 @@ func (ix *index) crossCheck(r *Report) {
 	// Goober -> gaggle / workflow references resolve; instruction file exists.
 	for _, g := range ix.goobers {
 		file := ix.gooberFile[g.Name]
+		r.addFeatureDiagnostics(file, g.Spec.Gaggle, "Goober", g.Name,
+			wf.CheckGooberFeatureSupport(g.Spec, allowPreview))
 		if _, ok := ix.gaggles[g.Spec.Gaggle]; !ok {
 			r.add(Error, file, "Goober", g.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 				g.Spec.Gaggle, g.Spec.Gaggle)
@@ -617,8 +646,25 @@ func (ix *index) crossCheck(r *Report) {
 
 	// Workflow state machine integrity.
 	for _, indexed := range ix.workflows {
-		ix.checkWorkflow(r, indexed.definition, indexed.file)
+		ix.checkWorkflow(r, indexed.definition, indexed.file, allowPreview)
 	}
+}
+
+func (ix *index) allowPreviewFeatures(r *Report) bool {
+	if len(ix.manifests) != 1 {
+		return false
+	}
+	manifest := ix.manifests[0]
+	value, set := manifest.Annotations[wf.PreviewFeaturesAnnotation]
+	if !set || value == "false" {
+		return false
+	}
+	if value == "true" {
+		return true
+	}
+	r.add(Error, ix.manifestFile[manifest.Name], "Manifest", manifest.Name,
+		"metadata.annotations[%q] must be %q or %q", wf.PreviewFeaturesAnnotation, "true", "false")
+	return false
 }
 
 // checkGaggleConnections enforces MGV-4's repo-token-ref coherence (#1011):
@@ -709,14 +755,13 @@ func (ix *index) checkGaggleConnections(r *Report) {
 	}
 }
 
-func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string) {
+func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
 	if _, ok := ix.gaggles[w.Spec.Gaggle]; !ok {
 		r.add(Error, file, "Workflow", w.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 			w.Spec.Gaggle, w.Spec.Gaggle)
 	}
-	for _, msg := range wf.CheckWorkflowFeatures(wf.Definition{Name: w.Name, Version: 1, Spec: w.Spec}) {
-		r.add(Error, file, "Workflow", w.Name, "%s", msg)
-	}
+	r.addFeatureDiagnostics(file, w.Spec.Gaggle, "Workflow", w.Name,
+		wf.CheckWorkflowFeatureSupport(wf.Definition{Name: w.Name, Version: 1, Spec: w.Spec}, allowPreview))
 
 	states := map[string]bool{}
 	for _, t := range w.Spec.Tasks {

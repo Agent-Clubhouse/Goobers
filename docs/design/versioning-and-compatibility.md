@@ -52,8 +52,9 @@ Kubernetes-style *group/version* of the resource shape and only bumps on a full 
 - **Validation semantics** (extends `api/validate` + `internal/workflow/compile.go`):
   - `removed` feature used → **error** (fail closed), message names the feature and last-supporting version.
   - `deprecated` feature used → **warning** (still compiles/runs), message names the replacement + removal target.
-  - `preview` feature used → **info/warning** (works, flagged unstable), gated behind an explicit
-    opt-in acknowledgement field or instance setting so preview usage is never accidental.
+  - `preview` feature used → **info/warning** (works, flagged unstable), gated behind the explicit
+    instance Manifest annotation `goobers.dev/allow-preview-features: "true"` so preview usage is
+    never accidental.
   - `ga` → silent.
 - **Non-breaking vs breaking policy** (documented contract, enforced by CI test over the registry):
   - *Non-breaking* (allowed within an `apiVersion`): adding optional fields, adding enum values,
@@ -101,6 +102,7 @@ The CLI warning codes are stable within their namespace:
 | `VER001` | Deprecated DSL feature |
 | `VER002` | Preview DSL feature |
 | `VER003` | Compatibility notice |
+| `VER004` | Removed DSL feature |
 | `MODEL002` | Model fallback |
 
 #### Compatibility registry
@@ -149,7 +151,8 @@ their existing chronological order. Warning-free configuration emits an empty
 
 ## 5. Open questions
 
-- Does the preview opt-in live per-workflow (a field) or per-instance (a setting)? Leaning instance-level.
+- Resolved by VER-2: preview opt-in is instance-level through the Manifest annotation
+  `goobers.dev/allow-preview-features: "true"`.
 - Do we adopt strict SemVer for the app binary and treat the DSL feature-registry as the compatibility
   authority, or version the DSL independently (e.g. a `dslVersion` label consumers can pin)? Leaning:
   app SemVer + registry-as-authority; revisit if consumers need to pin DSL independently of the binary.

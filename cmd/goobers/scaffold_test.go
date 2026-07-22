@@ -92,9 +92,7 @@ func TestScaffoldGooberAndWorkflowValidate(t *testing.T) {
 		"WARNING Workflow/default-implement: workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`",
 		"WARNING Workflow/my-flow: workflow \"my-flow\" has no schedule trigger; it will not fire autonomously — run it with `goobers run my-flow`",
 	}
-	if warnings := warningLines(stdout); !slices.Equal(warnings, wantWarnings) {
-		t.Fatalf("validate warnings = %#v, want %#v", warnings, wantWarnings)
-	}
+	assertScaffoldValidationWarnings(t, stdout, wantWarnings)
 	if !strings.Contains(stdout, "2 goober(s), 2 workflow(s)") {
 		t.Fatalf("validate did not load both scaffolds: %q", stdout)
 	}
@@ -118,8 +116,25 @@ func TestScaffoldScalarNamesValidate(t *testing.T) {
 		"WARNING Workflow/default-implement: workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`",
 		"WARNING Workflow/true: workflow \"true\" has no schedule trigger; it will not fire autonomously — run it with `goobers run true`",
 	}
-	if warnings := warningLines(stdout); !slices.Equal(warnings, wantWarnings) {
-		t.Fatalf("validate warnings = %#v, want %#v", warnings, wantWarnings)
+	assertScaffoldValidationWarnings(t, stdout, wantWarnings)
+}
+
+func assertScaffoldValidationWarnings(t *testing.T, output string, wantCompatibility []string) {
+	t.Helper()
+	var compatibility []string
+	sawPreview := false
+	for _, warning := range warningLines(output) {
+		if strings.HasPrefix(warning, "WARNING VER002 ") {
+			sawPreview = true
+			continue
+		}
+		compatibility = append(compatibility, warning)
+	}
+	if !sawPreview {
+		t.Fatal("validate emitted no preview-feature warnings")
+	}
+	if !slices.Equal(compatibility, wantCompatibility) {
+		t.Fatalf("validate compatibility warnings = %#v, want %#v", compatibility, wantCompatibility)
 	}
 }
 
