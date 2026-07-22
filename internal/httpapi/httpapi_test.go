@@ -285,7 +285,7 @@ func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
 		name string
 		path string
 	}{
-		{name: "list", path: RunsPath + "?workflow=implementation&gaggle=goobers&phase=running&trigger=item&limit=10&cursor=next"},
+		{name: "list", path: RunsPath + "?workflow=implementation&gaggle=goobers&stage=implement&outcome=terminal&population=measured&phase=running&trigger=item&since=2026-07-01T00:00:00Z&until=2026-07-08T00:00:00Z&limit=10&cursor=next"},
 		{name: "detail", path: RunsPath + "/run-1"},
 		{name: "events", path: RunsPath + "/run-1/events"},
 		{name: "attempts", path: RunsPath + "/run-1/stages/implement/attempts"},
@@ -304,10 +304,15 @@ func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
 	}
 	if reader.options.Workflow != "implementation" ||
 		reader.options.Gaggle != "goobers" ||
+		reader.options.Stage != "implement" ||
+		reader.options.Outcome != readservice.OutcomeTerminal ||
+		reader.options.StagePopulation != readservice.StagePopulationMeasured ||
 		reader.options.Phase != "running" ||
 		reader.options.Trigger != "item" ||
 		reader.options.Limit != 10 ||
-		reader.options.Cursor != "next" {
+		reader.options.Cursor != "next" ||
+		!reader.options.Since.Equal(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)) ||
+		!reader.options.Until.Equal(time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("list options = %+v", reader.options)
 	}
 	if reader.runID != "run-1" || reader.stage != "implement" {
@@ -392,6 +397,15 @@ func TestAPIErrorsUseStructuredEnvelope(t *testing.T) {
 			reader:     &fakeReader{},
 			method:     http.MethodGet,
 			path:       RunsPath + "?limit=lots",
+			authorizer: AllowAll,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_argument",
+		},
+		{
+			name:       "invalid run time",
+			reader:     &fakeReader{},
+			method:     http.MethodGet,
+			path:       RunsPath + "?since=yesterday",
 			authorizer: AllowAll,
 			wantStatus: http.StatusBadRequest,
 			wantCode:   "invalid_argument",

@@ -209,21 +209,21 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	pln(stdout, "WORKFLOW STATS")
-	pf(stdout, "%-24s  %6s  %9s  %6s  %6s  %8s  %8s  %8s  %8s\n",
-		"WORKFLOW", "TOTAL", "COMPLETED", "FAILED", "OTHER", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
+	pf(stdout, "%-16s  %-24s  %6s  %9s  %6s  %6s  %8s  %8s  %8s  %8s\n",
+		"GAGGLE", "WORKFLOW", "TOTAL", "COMPLETED", "FAILED", "OTHER", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
 	for _, r := range result.Runs {
-		pf(stdout, "%-24s  %6d  %9d  %6d  %6d  %8s  %8s  %8s  %8s\n",
-			r.Workflow, r.TotalRuns, r.CompletedRuns, r.FailedRuns, r.OtherRuns,
+		pf(stdout, "%-16s  %-24s  %6d  %9d  %6d  %6d  %8s  %8s  %8s  %8s\n",
+			r.Gaggle, r.Workflow, r.TotalRuns, r.CompletedRuns, r.FailedRuns, r.OtherRuns,
 			formatTelemetryRate(r.SuccessRate), formatTelemetryFloat(r.AvgDurationMs),
 			formatTelemetryInt(r.MinDurationMs), formatTelemetryInt(r.MaxDurationMs))
 	}
 
 	pln(stdout, "\nSTAGE STATS")
-	pf(stdout, "%-16s  %9s  %9s  %6s  %8s  %8s  %8s  %8s\n",
-		"STAGE", "ATTEMPTS", "SUCCEEDED", "FAILED", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
+	pf(stdout, "%-16s  %-24s  %-16s  %9s  %9s  %6s  %8s  %8s  %8s  %8s\n",
+		"GAGGLE", "WORKFLOW", "STAGE", "ATTEMPTS", "SUCCEEDED", "FAILED", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
 	for _, s := range result.Stages {
-		pf(stdout, "%-16s  %9d  %9d  %6d  %8s  %8s  %8s  %8s\n",
-			s.Stage, s.TotalAttempts, s.SucceededAttempts, s.FailedAttempts,
+		pf(stdout, "%-16s  %-24s  %-16s  %9d  %9d  %6d  %8s  %8s  %8s  %8s\n",
+			s.Gaggle, s.Workflow, s.Stage, s.TotalAttempts, s.SucceededAttempts, s.FailedAttempts,
 			formatTelemetryRate(s.SuccessRate), formatTelemetryFloat(s.AvgDurationMs),
 			formatTelemetryInt(s.MinDurationMs), formatTelemetryInt(s.MaxDurationMs))
 	}

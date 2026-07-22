@@ -8,6 +8,7 @@ export type IconName =
   | "close"
   | "code"
   | "gate"
+  | "insight"
   | "moon"
   | "next"
   | "overview"
@@ -72,6 +73,13 @@ export function Icon({ name, size = 18 }: IconProps) {
         <path d="M5 4h14v16H5z" />
         <path d="M9 4v16" />
         <path d="m13 8 3 4-3 4" />
+      </>
+    ),
+    insight: (
+      <>
+        <path d="M5 19V11" />
+        <path d="M12 19V5" />
+        <path d="M19 19V8" />
       </>
     ),
     moon: <path d="M20 15.4A8.5 8.5 0 0 1 8.6 4 8.5 8.5 0 1 0 20 15.4Z" />,

@@ -378,7 +378,19 @@ func newWireFixtures() wireFixtures {
 			}},
 		},
 		TelemetryStats: readservice.TelemetryStatsResult{
+			Gaggles: []readservice.TelemetryGaggleStats{{
+				Gaggle:        "core",
+				TotalRuns:     4,
+				CompletedRuns: 3,
+				FailedRuns:    1,
+				OtherRuns:     0,
+				SuccessRate:   &successRate,
+				AvgDurationMs: &averageDuration,
+				MinDurationMs: &minDuration,
+				MaxDurationMs: &maxDuration,
+			}},
 			Runs: []readservice.TelemetryRunStats{{
+				Gaggle:        "core",
 				Workflow:      "implementation",
 				TotalRuns:     4,
 				CompletedRuns: 3,
@@ -390,6 +402,8 @@ func newWireFixtures() wireFixtures {
 				MaxDurationMs: &maxDuration,
 			}},
 			Stages: []readservice.TelemetryStageStats{{
+				Gaggle:               "core",
+				Workflow:             "implementation",
 				Stage:                "implement",
 				TotalAttempts:        4,
 				SucceededAttempts:    3,

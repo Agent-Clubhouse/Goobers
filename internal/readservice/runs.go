@@ -42,6 +42,29 @@ type RunPhase = journal.RunPhase
 // TriggerKind keeps HTTP adapters on the shared read contract.
 type TriggerKind = journal.TriggerKind
 
+// OutcomeFilter selects the run or attempt population behind an Insight metric.
+type OutcomeFilter string
+
+// OutcomeFinished, OutcomeTerminal, OutcomeSuccess, OutcomeFailure, and
+// OutcomeOther are the canonical metric populations.
+const (
+	OutcomeFinished OutcomeFilter = "finished"
+	OutcomeTerminal OutcomeFilter = "terminal"
+	OutcomeSuccess  OutcomeFilter = "success"
+	OutcomeFailure  OutcomeFilter = "failure"
+	OutcomeOther    OutcomeFilter = "other"
+)
+
+// StagePopulation selects which attempts of a stage contribute runs.
+type StagePopulation string
+
+// StagePopulationAttempts and StagePopulationMeasured are the canonical stage
+// populations.
+const (
+	StagePopulationAttempts StagePopulation = "attempts"
+	StagePopulationMeasured StagePopulation = "measured"
+)
+
 // OfflineRuns is the shared run-diagnostics boundary used by CLI adapters
 // when no daemon is running.
 type OfflineRuns interface {
@@ -70,12 +93,17 @@ func NewOfflineRuns(layout instance.Layout) (OfflineRuns, error) {
 
 // RunListOptions controls deterministic run filtering and keyset pagination.
 type RunListOptions struct {
-	Gaggle   string
-	Workflow string
-	Phase    journal.RunPhase
-	Trigger  journal.TriggerKind
-	Limit    int
-	Cursor   string
+	Gaggle          string
+	Workflow        string
+	Stage           string
+	Outcome         OutcomeFilter
+	StagePopulation StagePopulation
+	Phase           journal.RunPhase
+	Trigger         journal.TriggerKind
+	Since           time.Time
+	Until           time.Time
+	Limit           int
+	Cursor          string
 }
 
 // RunList is one deterministic page of run summaries.
@@ -105,6 +133,8 @@ type RunSummary struct {
 	RetryCount       int              `json:"retryCount"`
 	PolicyRetryCount int              `json:"policyRetryCount"`
 	InfraRetryCount  int              `json:"infraRetryCount"`
+	Stages           []string         `json:"-"`
+	stageAttempts    map[string][]StageAttempt
 }
 
 // RunDetail includes the immutable graph pin and structured escalation cause.
@@ -256,6 +286,18 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 	if options.Trigger != "" && !canonicalTrigger(options.Trigger) {
 		return RunList{}, fmt.Errorf("%w: unknown trigger %q", ErrInvalidArgument, options.Trigger)
 	}
+	if options.Outcome != "" && !canonicalOutcome(options.Outcome) {
+		return RunList{}, fmt.Errorf("%w: unknown outcome %q", ErrInvalidArgument, options.Outcome)
+	}
+	if options.StagePopulation != "" && !canonicalStagePopulation(options.StagePopulation) {
+		return RunList{}, fmt.Errorf("%w: unknown stage population %q", ErrInvalidArgument, options.StagePopulation)
+	}
+	if options.StagePopulation != "" && options.Stage == "" {
+		return RunList{}, fmt.Errorf("%w: stage population requires a stage", ErrInvalidArgument)
+	}
+	if !options.Since.IsZero() && !options.Until.IsZero() && options.Since.After(options.Until) {
+		return RunList{}, fmt.Errorf("%w: since must not be after until", ErrInvalidArgument)
+	}
 
 	var cursor *runCursor
 	if options.Cursor != "" {
@@ -266,7 +308,11 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 		cursor = &decoded
 	}
 
-	allSummaries, err := s.runSummaries(ctx, false)
+	attemptStage := ""
+	if options.Stage != "" && (options.Outcome != "" || options.StagePopulation != "") {
+		attemptStage = options.Stage
+	}
+	allSummaries, err := s.runSummariesForStage(ctx, false, attemptStage)
 	if err != nil {
 		return RunList{}, err
 	}
@@ -278,10 +324,34 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 		if options.Workflow != "" && summary.Workflow != options.Workflow {
 			continue
 		}
+		if options.Stage != "" && !containsString(summary.Stages, options.Stage) {
+			continue
+		}
+		if (options.Outcome != "" || options.StagePopulation != "") && !summary.Terminal {
+			continue
+		}
+		if options.Stage != "" &&
+			(options.Outcome != "" || options.StagePopulation != "") &&
+			!matchesStageAttempt(
+				summary.stageAttempts[options.Stage],
+				options.Outcome,
+				options.StagePopulation,
+			) {
+			continue
+		}
+		if options.Stage == "" && options.Outcome != "" && !matchesRunOutcome(summary.Phase, options.Outcome) {
+			continue
+		}
 		if options.Phase != "" && summary.Phase != options.Phase {
 			continue
 		}
 		if options.Trigger != "" && summary.Trigger.Kind != options.Trigger {
+			continue
+		}
+		if !options.Since.IsZero() && summary.StartedAt.Before(options.Since) {
+			continue
+		}
+		if !options.Until.IsZero() && summary.StartedAt.After(options.Until) {
 			continue
 		}
 		summaries = append(summaries, summary)
@@ -310,6 +380,14 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 }
 
 func (s *Local) runSummaries(ctx context.Context, skipUnreadable bool) ([]RunSummary, error) {
+	return s.runSummariesForStage(ctx, skipUnreadable, "")
+}
+
+func (s *Local) runSummariesForStage(
+	ctx context.Context,
+	skipUnreadable bool,
+	attemptStage string,
+) ([]RunSummary, error) {
 	runDirs, err := s.sources.Layout.RunDirs()
 	if err != nil {
 		return nil, err
@@ -339,7 +417,7 @@ func (s *Local) runSummaries(ctx context.Context, skipUnreadable bool) ([]RunSum
 				}
 				return nil, err
 			}
-			summary, err := summarizeRun(run, observedAt)
+			summary, err := summarizeRunForStage(run, observedAt, attemptStage)
 			if err != nil {
 				if skipUnreadable {
 					continue
@@ -468,74 +546,7 @@ func (s *Local) StageAttempts(ctx context.Context, runID, stage string) (Attempt
 		return AttemptList{}, err
 	}
 
-	artifacts := indexArtifacts(run.records)
-	attempts := make([]StageAttempt, 0)
-	for _, record := range run.records {
-		event := record.Event
-		if !event.KnownSchema() || event.Stage != stage {
-			continue
-		}
-		switch event.Type {
-		case journal.EventStageStarted:
-			started := event.Time
-			attempts = append(attempts, StageAttempt{
-				Number:     event.Attempt,
-				Class:      attemptClass(event.AttemptClass),
-				Status:     "running",
-				StartedSeq: event.Seq,
-				StartedAt:  &started,
-				Artifacts:  []ArtifactMetadata{},
-			})
-		case journal.EventArtifactRecorded:
-			if event.Ref == nil {
-				continue
-			}
-			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass); i >= 0 {
-				if metadata, ok := artifacts.bySeq[event.Seq]; ok {
-					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
-				}
-			}
-		case journal.EventError:
-			if event.Error == nil || event.Error.Code != "executor_error" {
-				continue
-			}
-			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass)
-			if i < 0 {
-				attempts = append(attempts, StageAttempt{
-					Number:    event.Attempt,
-					Class:     attemptClass(event.AttemptClass),
-					Artifacts: []ArtifactMetadata{},
-				})
-				i = len(attempts) - 1
-			}
-			finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
-		case journal.EventStageFinished:
-			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass)
-			if i < 0 {
-				attempts = append(attempts, StageAttempt{
-					Number:    event.Attempt,
-					Class:     attemptClass(event.AttemptClass),
-					Artifacts: []ArtifactMetadata{},
-				})
-				i = len(attempts) - 1
-			}
-			finishAttempt(&attempts[i], event, event.Status, event.Outputs, event.Error)
-			for _, ref := range event.Artifacts {
-				if metadata, ok := artifacts.match(
-					ref.Digest,
-					stage,
-					event.Attempt,
-					event.AttemptClass,
-					event.Branch,
-					attempts[i].StartedSeq,
-					event.Seq,
-				); ok &&
-					!containsArtifact(attempts[i].Artifacts, metadata.RecordedSeq, metadata.Digest) {
-					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
-				}
-			}
-		}
-	}
+	attempts := collectStageAttempts(run.records, indexArtifacts(run.records), stage)[stage]
 	return AttemptList{RunID: run.identity.RunID, Stage: stage, Attempts: attempts}, nil
 }
 
@@ -770,12 +781,21 @@ func (s *Local) openRun(runID string) (runRead, error) {
 }
 
 func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
+	return summarizeRunForStage(run, observedAt, "")
+}
+
+func summarizeRunForStage(
+	run runRead,
+	observedAt time.Time,
+	attemptStage string,
+) (RunSummary, error) {
 	phase := journal.PhaseRunning
 	var finishedAt *time.Time
 	var lastSeq uint64
 	var lastActivityAt time.Time
 	currentStage := ""
 	seenInitial := make(map[string]bool)
+	seenStages := make(map[string]struct{})
 	repasses, retries, policyRetries, infraRetries := 0, 0, 0, 0
 
 	for _, record := range run.records {
@@ -786,6 +806,12 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 		}
 		if !event.KnownSchema() {
 			continue
+		}
+		if event.Stage != "" {
+			seenStages[event.Stage] = struct{}{}
+		}
+		if event.Gate != "" {
+			seenStages[event.Gate] = struct{}{}
 		}
 		switch event.Type {
 		case journal.EventStageStarted:
@@ -844,6 +870,15 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	if !durationEnd.Before(run.identity.StartedAt) {
 		duration = durationEnd.Sub(run.identity.StartedAt).Milliseconds()
 	}
+	stages := make([]string, 0, len(seenStages))
+	for stage := range seenStages {
+		stages = append(stages, stage)
+	}
+	sort.Strings(stages)
+	var stageAttempts map[string][]StageAttempt
+	if attemptStage != "" {
+		stageAttempts = collectStageAttempts(run.records, artifactIndex{}, attemptStage)
+	}
 
 	return RunSummary{
 		ID:               run.identity.RunID,
@@ -864,7 +899,91 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 		RetryCount:       retries,
 		PolicyRetryCount: policyRetries,
 		InfraRetryCount:  infraRetries,
+		Stages:           stages,
+		stageAttempts:    stageAttempts,
 	}, nil
+}
+
+func matchesRunOutcome(phase journal.RunPhase, outcome OutcomeFilter) bool {
+	switch outcome {
+	case OutcomeFinished:
+		return phase != journal.PhaseRunning
+	case OutcomeTerminal:
+		return phase == journal.PhaseCompleted || phase == journal.PhaseFailed
+	case OutcomeSuccess:
+		return phase == journal.PhaseCompleted
+	case OutcomeFailure:
+		return phase == journal.PhaseFailed
+	case OutcomeOther:
+		return phase == journal.PhaseAborted || phase == journal.PhaseEscalated
+	default:
+		return true
+	}
+}
+
+func matchesStageAttempt(
+	attempts []StageAttempt,
+	outcome OutcomeFilter,
+	population StagePopulation,
+) bool {
+	for _, attempt := range attempts {
+		if population == StagePopulationMeasured &&
+			(attempt.StartedAt == nil ||
+				attempt.FinishedAt == nil ||
+				attempt.FinishedAt.Before(*attempt.StartedAt)) {
+			continue
+		}
+		switch outcome {
+		case OutcomeFinished:
+		case OutcomeTerminal:
+			if attempt.Status != string(apiv1.ResultSuccess) &&
+				attempt.Status != string(apiv1.ResultFailure) {
+				continue
+			}
+		case OutcomeSuccess:
+			if attempt.Status != string(apiv1.ResultSuccess) {
+				continue
+			}
+		case OutcomeFailure:
+			if attempt.Status != string(apiv1.ResultFailure) {
+				continue
+			}
+		case OutcomeOther:
+			if attempt.Status == string(apiv1.ResultSuccess) ||
+				attempt.Status == string(apiv1.ResultFailure) {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalOutcome(outcome OutcomeFilter) bool {
+	switch outcome {
+	case OutcomeFinished, OutcomeTerminal, OutcomeSuccess, OutcomeFailure, OutcomeOther:
+		return true
+	default:
+		return false
+	}
+}
+
+func canonicalStagePopulation(population StagePopulation) bool {
+	switch population {
+	case StagePopulationAttempts, StagePopulationMeasured:
+		return true
+	default:
+		return false
+	}
 }
 
 func pinnedGraph(run runRead) (*workflow.Graph, string, error) {
@@ -1361,6 +1480,86 @@ func (i *artifactIndex) applyRedaction(event journal.Event) {
 		i.byDigest[event.Redaction.NewDigest] = *replacement
 	}
 	i.bySeq[event.Seq] = replacement.metadata
+}
+
+func collectStageAttempts(
+	records []journal.EventRecord,
+	artifacts artifactIndex,
+	stage string,
+) map[string][]StageAttempt {
+	byStage := make(map[string][]StageAttempt)
+	if stage != "" {
+		byStage[stage] = []StageAttempt{}
+	}
+	for _, record := range records {
+		event := record.Event
+		if !event.KnownSchema() || event.Stage == "" || (stage != "" && event.Stage != stage) {
+			continue
+		}
+		attempts := byStage[event.Stage]
+		switch event.Type {
+		case journal.EventStageStarted:
+			started := event.Time
+			attempts = append(attempts, StageAttempt{
+				Number:     event.Attempt,
+				Class:      attemptClass(event.AttemptClass),
+				Status:     "running",
+				StartedSeq: event.Seq,
+				StartedAt:  &started,
+				Artifacts:  []ArtifactMetadata{},
+			})
+		case journal.EventArtifactRecorded:
+			if event.Ref == nil {
+				continue
+			}
+			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass); i >= 0 {
+				if metadata, ok := artifacts.bySeq[event.Seq]; ok {
+					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
+				}
+			}
+		case journal.EventError:
+			if event.Error == nil || event.Error.Code != "executor_error" {
+				continue
+			}
+			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass)
+			if i < 0 {
+				attempts = append(attempts, StageAttempt{
+					Number:    event.Attempt,
+					Class:     attemptClass(event.AttemptClass),
+					Artifacts: []ArtifactMetadata{},
+				})
+				i = len(attempts) - 1
+			}
+			finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
+		case journal.EventStageFinished:
+			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass)
+			if i < 0 {
+				attempts = append(attempts, StageAttempt{
+					Number:    event.Attempt,
+					Class:     attemptClass(event.AttemptClass),
+					Artifacts: []ArtifactMetadata{},
+				})
+				i = len(attempts) - 1
+			}
+			finishAttempt(&attempts[i], event, event.Status, event.Outputs, event.Error)
+			for _, ref := range event.Artifacts {
+				if metadata, ok := artifacts.match(
+					ref.Digest,
+					event.Stage,
+					event.Attempt,
+					event.AttemptClass,
+					event.Branch,
+					attempts[i].StartedSeq,
+					event.Seq,
+				); ok &&
+					!containsArtifact(attempts[i].Artifacts, metadata.RecordedSeq, metadata.Digest) {
+					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
+				}
+			}
+		}
+		byStage[event.Stage] = attempts
+	}
+	return byStage
 }
 
 func finishAttempt(

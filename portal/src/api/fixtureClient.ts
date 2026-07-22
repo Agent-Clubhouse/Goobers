@@ -17,10 +17,13 @@ import type {
   Instance,
   PageRequest,
   RequestOptions,
+  RunEvent,
   RunDetail,
   RunList,
   RunListOptions,
+  RunPhase,
   RunSummary,
+  StageAttemptStatus,
   TelemetryErrorsOptions,
   TelemetryErrorsPage,
   TelemetryStatsOptions,
@@ -113,18 +116,15 @@ export class FixtureDaemonClient implements DaemonClient {
   async listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {
     throwIfCancelled(options);
     const limit = request?.limit ?? DEFAULT_RUN_LIMIT;
-    let runs = this.fixtures.runs.runs.filter(
-      (run) =>
-        (!request?.gaggle || run.gaggle === request.gaggle) &&
-        (!request?.workflow || run.workflow === request.workflow) &&
-        (!request?.phase || run.phase === request.phase) &&
-        (!request?.trigger || run.trigger.kind === request.trigger),
+    let runs = this.fixtures.runs.runs.filter((run) =>
+      matchesRunRequest(run, this.fixtures.runEvents?.[run.id]?.events ?? [], request),
     );
     runs = [...runs].sort(compareRunsNewestFirst);
     if (request?.cursor) {
       const cursor = decodeFixtureCursor(request.cursor);
       runs = runs.filter((run) => runAfterCursor(run, cursor));
     }
+
     let nextCursor: string | undefined;
     if (runs.length > limit) {
       runs = runs.slice(0, limit);
@@ -162,11 +162,27 @@ export class FixtureDaemonClient implements DaemonClient {
     return { ...value, bytes: value.bytes.slice(0) };
   }
 
-  getTelemetryStats(
-    _request?: TelemetryStatsOptions,
+  async getTelemetryStats(
+    request?: TelemetryStatsOptions,
     options?: RequestOptions,
   ): Promise<TelemetryStatsResult> {
-    return fixture(this.fixtures.telemetryStats, options);
+    throwIfCancelled(options);
+    const stats = this.fixtures.telemetryStats;
+    return structuredClone({
+      gaggles: stats.gaggles.filter(
+        (item) => !request?.gaggle || item.gaggle === request.gaggle,
+      ),
+      runs: stats.runs.filter(
+        (item) =>
+          (!request?.gaggle || item.gaggle === request.gaggle) &&
+          (!request?.workflow || item.workflow === request.workflow),
+      ),
+      stages: stats.stages.filter(
+        (item) =>
+          (!request?.gaggle || item.gaggle === request.gaggle) &&
+          (!request?.workflow || item.workflow === request.workflow),
+      ),
+    });
   }
 
   listTelemetryErrors(
@@ -174,6 +190,137 @@ export class FixtureDaemonClient implements DaemonClient {
     options?: RequestOptions,
   ): Promise<TelemetryErrorsPage> {
     return fixture(this.fixtures.telemetryErrors, options);
+  }
+}
+
+interface FixtureStageAttempt {
+  class: string;
+  finishedAt?: string;
+  number: number;
+  startedAt?: string;
+  status: StageAttemptStatus | "";
+}
+
+function matchesRunRequest(
+  run: RunSummary,
+  events: RunEvent[],
+  request?: RunListOptions,
+): boolean {
+  if (
+    (request?.gaggle && run.gaggle !== request.gaggle) ||
+    (request?.workflow && run.workflow !== request.workflow) ||
+    (request?.phase && run.phase !== request.phase) ||
+    (request?.trigger && run.trigger.kind !== request.trigger) ||
+    (request?.since && Date.parse(run.startedAt) < Date.parse(request.since)) ||
+    (request?.until && Date.parse(run.startedAt) > Date.parse(request.until))
+  ) {
+    return false;
+  }
+  if ((request?.outcome || request?.population) && !run.terminal) {
+    return false;
+  }
+
+  if (!request?.stage) {
+    return !request?.outcome || matchesOutcome(run.phase, request.outcome);
+  }
+  const stageEvents = events.filter((event) => event.stage === request.stage);
+  if (!request.outcome && !request.population) {
+    return stageEvents.length > 0 || events.some((event) => event.gate === request.stage);
+  }
+  return fixtureStageAttempts(stageEvents).some(
+    (attempt) =>
+      (!request.population ||
+        request.population === "attempts" ||
+        isMeasuredAttempt(attempt)) &&
+      (!request.outcome || matchesAttemptOutcome(attempt.status, request.outcome)),
+  );
+}
+
+function fixtureStageAttempts(events: RunEvent[]): FixtureStageAttempt[] {
+  const attempts: FixtureStageAttempt[] = [];
+  for (const event of events) {
+    if (event.type === "stage.started") {
+      attempts.push({
+        class: event.attemptClass ?? "initial",
+        number: event.attempt ?? 0,
+        startedAt: event.time,
+        status: "running",
+      });
+      continue;
+    }
+    const status =
+      event.type === "stage.finished"
+        ? (event.status as StageAttemptStatus | undefined)
+        : event.type === "error" && event.error?.code === "executor_error"
+          ? "failure"
+          : undefined;
+    if (!status) {
+      continue;
+    }
+    const attemptClass = event.attemptClass ?? "initial";
+    const number = event.attempt ?? 0;
+    let index = -1;
+    for (let candidate = attempts.length - 1; candidate >= 0; candidate -= 1) {
+      const attempt = attempts[candidate];
+      if (!attempt.finishedAt && attempt.number === number && attempt.class === attemptClass) {
+        index = candidate;
+        break;
+      }
+    }
+    if (index < 0) {
+      index = attempts.push({
+        class: attemptClass,
+        number,
+        status: "",
+      }) - 1;
+    }
+    attempts[index].finishedAt = event.time;
+    attempts[index].status = status;
+  }
+  return attempts;
+}
+
+function isMeasuredAttempt(attempt: FixtureStageAttempt): boolean {
+  return (
+    attempt.startedAt !== undefined &&
+    attempt.finishedAt !== undefined &&
+    Date.parse(attempt.finishedAt) >= Date.parse(attempt.startedAt)
+  );
+}
+
+function matchesOutcome(
+  status: RunPhase,
+  outcome: NonNullable<RunListOptions["outcome"]>,
+): boolean {
+  switch (outcome) {
+    case "finished":
+      return status !== "running";
+    case "terminal":
+      return status === "completed" || status === "failed";
+    case "success":
+      return status === "completed";
+    case "failure":
+      return status === "failed";
+    case "other":
+      return status === "aborted" || status === "escalated";
+  }
+}
+
+function matchesAttemptOutcome(
+  status: StageAttemptStatus | "",
+  outcome: NonNullable<RunListOptions["outcome"]>,
+): boolean {
+  switch (outcome) {
+    case "finished":
+      return true;
+    case "terminal":
+      return status === "success" || status === "failure";
+    case "success":
+      return status === "success";
+    case "failure":
+      return status === "failure";
+    case "other":
+      return status !== "success" && status !== "failure";
   }
 }
 

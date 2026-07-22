@@ -53,13 +53,16 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
 	store := &fakeTelemetryStore{stats: rollup.StatsResult{
+		Gaggles: []rollup.GaggleStats{
+			{Gaggle: "core", TotalRuns: 2, CompletedRuns: 1, FailedRuns: 1, SuccessRate: 0.5},
+		},
 		Runs: []rollup.RunStats{
-			{Workflow: "failed", TotalRuns: 1, FailedRuns: 1, HasDuration: true},
-			{Workflow: "running", TotalRuns: 1, OtherRuns: 1},
+			{Gaggle: "core", Workflow: "failed", TotalRuns: 1, FailedRuns: 1, HasDuration: true},
+			{Gaggle: "core", Workflow: "running", TotalRuns: 1, OtherRuns: 1},
 		},
 		Stages: []rollup.StageStats{
 			{
-				Stage: "done", TotalAttempts: 2, FailedAttempts: 1, HasDuration: true,
+				Gaggle: "core", Workflow: "failed", Stage: "done", TotalAttempts: 2, FailedAttempts: 1, HasDuration: true,
 				DurationSamples: 2, P50DurationMs: 10, P95DurationMs: 20,
 				TokenSamples: 2, P50Tokens: 100, P95Tokens: 200, HasTokens: true,
 				CostSamples: 2, P50CostUSD: 0.5, P95CostUSD: 1, HasCost: true,
@@ -67,7 +70,7 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 				RetryWasteTokens: 100, HasRetryWasteTokens: true,
 				RetryWasteCostUSD: 0.5, HasRetryWasteCost: true,
 			},
-			{Stage: "active", TotalAttempts: 1},
+			{Gaggle: "core", Workflow: "running", Stage: "active", TotalAttempts: 1},
 		},
 	}}
 	service := &Telemetry{store: store}
@@ -85,7 +88,11 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	if !reflect.DeepEqual(store.statsReq, wantReq) {
 		t.Fatalf("store request = %+v, want %+v", store.statsReq, wantReq)
 	}
-	if got.Runs[0].SuccessRate == nil || *got.Runs[0].SuccessRate != 0 {
+	if len(got.Gaggles) != 1 || got.Gaggles[0].Gaggle != "core" ||
+		got.Gaggles[0].SuccessRate == nil || *got.Gaggles[0].SuccessRate != 0.5 {
+		t.Fatalf("projected gaggle stats = %+v", got.Gaggles)
+	}
+	if got.Runs[0].Gaggle != "core" || got.Runs[0].SuccessRate == nil || *got.Runs[0].SuccessRate != 0 {
 		t.Fatalf("observed zero success rate = %v, want pointer to zero", got.Runs[0].SuccessRate)
 	}
 	if got.Runs[0].AvgDurationMs == nil || *got.Runs[0].AvgDurationMs != 0 {
@@ -94,7 +101,8 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	if got.Runs[1].SuccessRate != nil || got.Runs[1].AvgDurationMs != nil {
 		t.Fatalf("running metrics = %+v, want unknown metrics absent", got.Runs[1])
 	}
-	if got.Stages[1].SuccessRate != nil || got.Stages[1].AvgDurationMs != nil {
+	if got.Stages[1].Gaggle != "core" || got.Stages[1].Workflow != "running" ||
+		got.Stages[1].SuccessRate != nil || got.Stages[1].AvgDurationMs != nil {
 		t.Fatalf("active stage metrics = %+v, want unknown metrics absent", got.Stages[1])
 	}
 	done := got.Stages[0]
@@ -146,7 +154,8 @@ func TestTelemetryStatsEmptySlicesAndInvalidWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Runs == nil || got.Stages == nil || len(got.Runs) != 0 || len(got.Stages) != 0 {
+	if got.Gaggles == nil || got.Runs == nil || got.Stages == nil ||
+		len(got.Gaggles) != 0 || len(got.Runs) != 0 || len(got.Stages) != 0 {
 		t.Fatalf("empty stats = %#v", got)
 	}
 
