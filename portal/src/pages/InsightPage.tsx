@@ -284,7 +284,7 @@ function StageDistributions({
               stage.gaggle,
               stage.workflow,
               stage.stage,
-              undefined,
+              "finished",
               "measured",
             ),
           })}
@@ -558,7 +558,10 @@ function drillFilters(
   };
 }
 
-function metricHref(metric: OutcomeMetric, outcome?: RunRouteFilters["outcome"]): string {
+function metricHref(
+  metric: OutcomeMetric,
+  outcome: RunRouteFilters["outcome"] = "finished",
+): string {
   return routeHash({
     page: "runs",
     filters: {

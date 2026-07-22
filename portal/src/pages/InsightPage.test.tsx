@@ -48,7 +48,10 @@ describe("Insight page", () => {
       screen.getByRole("link", {
         name: /^View runs behind core implementation implement:/,
       }),
-    ).toHaveAttribute("href", expect.stringContaining("population=measured"));
+    ).toHaveAttribute(
+      "href",
+      expect.stringMatching(/stage=implement.*outcome=finished.*population=measured/),
+    );
 
     await user.selectOptions(screen.getByLabelText("Time window"), "24h");
     await waitFor(() => {
@@ -80,7 +83,7 @@ describe("Insight page", () => {
           gaggle: "core",
           workflow: "implementation",
           stage: undefined,
-          outcome: undefined,
+          outcome: "finished",
           population: undefined,
           since: expect.stringMatching(/Z$/),
           until: expect.stringMatching(/Z$/),
@@ -119,7 +122,7 @@ describe("Insight page", () => {
     expect(succeeded).toHaveAttribute("href", expect.stringContaining("outcome=success"));
     expect(failed).toHaveAttribute("href", expect.stringContaining("outcome=failure"));
     expect(other).toHaveAttribute("href", expect.stringContaining("outcome=other"));
-    expect(total.getAttribute("href")).not.toContain("outcome=");
+    expect(total).toHaveAttribute("href", expect.stringContaining("outcome=finished"));
   });
 
   it("keeps a selected scope when a narrower window has no rows", async () => {

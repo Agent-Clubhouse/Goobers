@@ -42,12 +42,13 @@ type RunPhase = journal.RunPhase
 // TriggerKind keeps HTTP adapters on the shared read contract.
 type TriggerKind = journal.TriggerKind
 
-// OutcomeFilter selects the success/failure population behind an Insight metric.
+// OutcomeFilter selects the run or attempt population behind an Insight metric.
 type OutcomeFilter string
 
-// OutcomeTerminal, OutcomeSuccess, OutcomeFailure, and OutcomeOther are the
-// canonical metric populations.
+// OutcomeFinished, OutcomeTerminal, OutcomeSuccess, OutcomeFailure, and
+// OutcomeOther are the canonical metric populations.
 const (
+	OutcomeFinished OutcomeFilter = "finished"
 	OutcomeTerminal OutcomeFilter = "terminal"
 	OutcomeSuccess  OutcomeFilter = "success"
 	OutcomeFailure  OutcomeFilter = "failure"
@@ -324,6 +325,9 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 			continue
 		}
 		if options.Stage != "" && !containsString(summary.Stages, options.Stage) {
+			continue
+		}
+		if (options.Outcome != "" || options.StagePopulation != "") && !summary.Terminal {
 			continue
 		}
 		if options.Stage != "" &&
@@ -902,6 +906,8 @@ func summarizeRunForStage(
 
 func matchesRunOutcome(phase journal.RunPhase, outcome OutcomeFilter) bool {
 	switch outcome {
+	case OutcomeFinished:
+		return phase != journal.PhaseRunning
 	case OutcomeTerminal:
 		return phase == journal.PhaseCompleted || phase == journal.PhaseFailed
 	case OutcomeSuccess:
@@ -909,7 +915,7 @@ func matchesRunOutcome(phase journal.RunPhase, outcome OutcomeFilter) bool {
 	case OutcomeFailure:
 		return phase == journal.PhaseFailed
 	case OutcomeOther:
-		return phase != journal.PhaseCompleted && phase != journal.PhaseFailed
+		return phase == journal.PhaseAborted || phase == journal.PhaseEscalated
 	default:
 		return true
 	}
@@ -928,6 +934,7 @@ func matchesStageAttempt(
 			continue
 		}
 		switch outcome {
+		case OutcomeFinished:
 		case OutcomeTerminal:
 			if attempt.Status != string(apiv1.ResultSuccess) &&
 				attempt.Status != string(apiv1.ResultFailure) {
@@ -963,7 +970,7 @@ func containsString(values []string, target string) bool {
 
 func canonicalOutcome(outcome OutcomeFilter) bool {
 	switch outcome {
-	case OutcomeTerminal, OutcomeSuccess, OutcomeFailure, OutcomeOther:
+	case OutcomeFinished, OutcomeTerminal, OutcomeSuccess, OutcomeFailure, OutcomeOther:
 		return true
 	default:
 		return false

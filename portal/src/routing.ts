@@ -97,7 +97,8 @@ function optionalQuery(search: URLSearchParams, name: string): string | undefine
 
 function outcomeQuery(search: URLSearchParams): OutcomeFilter | undefined {
   const value = optionalQuery(search, "outcome");
-  return value === "terminal" ||
+  return value === "finished" ||
+    value === "terminal" ||
     value === "success" ||
     value === "failure" ||
     value === "other"

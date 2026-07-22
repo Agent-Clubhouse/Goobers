@@ -21,4 +21,19 @@ describe("Insight routing", () => {
     expect(parseRoute(hash)).toEqual(route);
     expect(activeArea(parseRoute("#/insight"))).toBe("insight");
   });
+
+  it("retains the finished telemetry population", () => {
+    expect(parseRoute("#/runs?outcome=finished")).toEqual({
+      page: "runs",
+      filters: {
+        gaggle: undefined,
+        workflow: undefined,
+        stage: undefined,
+        outcome: "finished",
+        population: undefined,
+        since: undefined,
+        until: undefined,
+      },
+    });
+  });
 });

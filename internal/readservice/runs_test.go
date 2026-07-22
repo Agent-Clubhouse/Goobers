@@ -280,7 +280,7 @@ func TestListRunsOutcomeAndStagePopulationFilters(t *testing.T) {
 		{id: "run-success", phase: journal.PhaseCompleted, stageStatus: string(apiv1.ResultSuccess)},
 		{id: "run-failure", phase: journal.PhaseFailed, stageStatus: string(apiv1.ResultFailure)},
 		{id: "run-other", phase: journal.PhaseAborted, stageStatus: string(apiv1.ResultBlocked)},
-		{id: "run-active", phase: journal.PhaseRunning},
+		{id: "run-active", phase: journal.PhaseRunning, stageStatus: string(apiv1.ResultSuccess)},
 	}
 	for index, fixture := range fixtures {
 		run, clock := createFixtureRun(
@@ -319,13 +319,25 @@ func TestListRunsOutcomeAndStagePopulationFilters(t *testing.T) {
 		}
 	}
 
+	assertRuns(
+		RunListOptions{},
+		"run-active",
+		"run-other",
+		"run-failure",
+		"run-success",
+	)
+	assertRuns(
+		RunListOptions{Outcome: OutcomeFinished},
+		"run-other",
+		"run-failure",
+		"run-success",
+	)
 	assertRuns(RunListOptions{Outcome: OutcomeTerminal}, "run-failure", "run-success")
 	assertRuns(RunListOptions{Outcome: OutcomeSuccess}, "run-success")
 	assertRuns(RunListOptions{Outcome: OutcomeFailure}, "run-failure")
-	assertRuns(RunListOptions{Outcome: OutcomeOther}, "run-active", "run-other")
+	assertRuns(RunListOptions{Outcome: OutcomeOther}, "run-other")
 	assertRuns(
 		RunListOptions{Stage: "implement", StagePopulation: StagePopulationAttempts},
-		"run-active",
 		"run-other",
 		"run-failure",
 		"run-success",
@@ -351,7 +363,6 @@ func TestListRunsOutcomeAndStagePopulationFilters(t *testing.T) {
 	)
 	assertRuns(
 		RunListOptions{Stage: "implement", Outcome: OutcomeOther},
-		"run-active",
 		"run-other",
 	)
 	started := base.Add(time.Hour)

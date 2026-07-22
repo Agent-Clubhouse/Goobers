@@ -117,6 +117,9 @@ describe("FixtureDaemonClient", () => {
       (await client.listRuns(request)).runs.map((run) => run.id);
 
     await expect(
+      ids({ gaggle: "core", workflow: "implementation", outcome: "finished" }),
+    ).resolves.toEqual(["01JZ402DASHBOARD", "01JZ400FAILED", "01JZ455ESCALATE"]);
+    await expect(
       ids({ gaggle: "core", workflow: "implementation", outcome: "terminal" }),
     ).resolves.toEqual(["01JZ400FAILED", "01JZ455ESCALATE"]);
     await expect(
@@ -127,7 +130,7 @@ describe("FixtureDaemonClient", () => {
     ).resolves.toEqual(["01JZ400FAILED"]);
     await expect(
       ids({ gaggle: "core", workflow: "implementation", outcome: "other" }),
-    ).resolves.toEqual(["01JZ441DAEMONAPI", "01JZ402DASHBOARD"]);
+    ).resolves.toEqual(["01JZ402DASHBOARD"]);
 
     await expect(
       ids({
@@ -136,12 +139,7 @@ describe("FixtureDaemonClient", () => {
         stage: "implement",
         population: "attempts",
       }),
-    ).resolves.toEqual([
-      "01JZ441DAEMONAPI",
-      "01JZ402DASHBOARD",
-      "01JZ400FAILED",
-      "01JZ455ESCALATE",
-    ]);
+    ).resolves.toEqual(["01JZ402DASHBOARD", "01JZ400FAILED", "01JZ455ESCALATE"]);
     await expect(
       ids({
         gaggle: "core",
@@ -149,12 +147,7 @@ describe("FixtureDaemonClient", () => {
         stage: "implement",
         population: "measured",
       }),
-    ).resolves.toEqual([
-      "01JZ441DAEMONAPI",
-      "01JZ402DASHBOARD",
-      "01JZ400FAILED",
-      "01JZ455ESCALATE",
-    ]);
+    ).resolves.toEqual(["01JZ402DASHBOARD", "01JZ400FAILED", "01JZ455ESCALATE"]);
     await expect(
       ids({
         gaggle: "core",

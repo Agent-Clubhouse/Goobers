@@ -216,6 +216,9 @@ function matchesRunRequest(
   ) {
     return false;
   }
+  if ((request?.outcome || request?.population) && !run.terminal) {
+    return false;
+  }
 
   if (!request?.stage) {
     return !request?.outcome || matchesOutcome(run.phase, request.outcome);
@@ -290,6 +293,8 @@ function matchesOutcome(
   outcome: NonNullable<RunListOptions["outcome"]>,
 ): boolean {
   switch (outcome) {
+    case "finished":
+      return status !== "running";
     case "terminal":
       return status === "completed" || status === "failed";
     case "success":
@@ -297,7 +302,7 @@ function matchesOutcome(
     case "failure":
       return status === "failed";
     case "other":
-      return status !== "completed" && status !== "failed";
+      return status === "aborted" || status === "escalated";
   }
 }
 
@@ -306,6 +311,8 @@ function matchesAttemptOutcome(
   outcome: NonNullable<RunListOptions["outcome"]>,
 ): boolean {
   switch (outcome) {
+    case "finished":
+      return true;
     case "terminal":
       return status === "success" || status === "failure";
     case "success":
