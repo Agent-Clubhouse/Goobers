@@ -712,12 +712,12 @@ evicts it, or this stage's own poll times out. Declared inputs:
 pullNumber (required), pollIntervalSeconds/pollMaxIntervalSeconds/
 pollTimeoutSeconds (time.ParseDuration strings, default to
 internal/executor's ci-poll defaults), resultFile (default
-queue-result.json). An eviction applies goobers:needs-remediation plus
-an explanatory comment before reporting queueOutcome=evicted — that
-labeling is the acceptance criterion, so a failure to apply it is a
-stage failure, not a swallowed warning. Exit codes: 0 = evaluated
-(merged, evicted, or still-pending-timeout — see the result file's
-queueOutcome field), 1 = business error (missing capability/config,
+queue-result.json). An eviction or timeout applies
+goobers:needs-remediation plus an explanatory comment before reporting
+its queueOutcome — a failure to apply that trail is a stage failure,
+not a swallowed warning. Exit codes: 0 = evaluated (merged, evicted,
+or still-pending-timeout — see the result file's queueOutcome field),
+1 = business error (missing capability/config,
 provider failure), 2 = usage/IO error.
 ~~~
 
