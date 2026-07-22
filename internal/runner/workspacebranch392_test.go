@@ -382,6 +382,7 @@ func TestLastWorkspaceBranchRecoversTheNewestBinding(t *testing.T) {
 					Type: journal.EventStageFinished, Stage: "rework", AttemptClass: journal.AttemptInfra,
 					Error:   &journal.ErrorDetail{Code: interruptedAttemptErrorCode},
 					Outputs: map[string]any{WorkspaceBranchOutput: "goobers/never"},
+					Runner:  map[string]any{interruptedAttemptMarkerKey: true},
 				},
 			},
 			want: "goobers/a",

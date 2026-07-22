@@ -423,9 +423,8 @@ func RestoredWorkspaceBranch(events []journal.Event, machine *workflow.Machine, 
 }
 
 func isInterruptedAttemptMarker(e journal.Event) bool {
-	return e.Type == journal.EventStageFinished &&
-		e.Error != nil &&
-		e.Error.Code == interruptedAttemptErrorCode
+	marker, ok := e.Runner[interruptedAttemptMarkerKey].(bool)
+	return e.Type == journal.EventStageFinished && ok && marker
 }
 
 // gateRepassSeed reconstructs internal/gate.Evaluator.Attempts from the

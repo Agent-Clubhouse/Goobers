@@ -23,9 +23,12 @@ type RerunStageInput struct {
 }
 
 type rerunContext struct {
-	stage               string
-	attempt             int
-	instructionAddendum string
+	stage                  string
+	attempt                int
+	requestAttempt         int
+	policyAttempts         int32
+	infrastructureFailures int32
+	instructionAddendum    string
 }
 
 // RerunStage re-enters an escalated run at one agentic task or reviewer gate.
@@ -95,9 +98,11 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			return Result{}, fmt.Errorf("runner: rerun item snapshot for run %q: %w", in.RunID, err)
 		}
 
+		attempt := nextRerunAttempt(events, in.Stage, isGate)
 		rerun := &rerunContext{
 			stage:               in.Stage,
-			attempt:             nextRerunAttempt(events, in.Stage, isGate),
+			attempt:             attempt,
+			requestAttempt:      attempt,
 			instructionAddendum: addendum,
 		}
 		if err := jr.Append(journal.Event{
@@ -210,13 +215,45 @@ func pendingRerun(events []journal.Event, machine *workflow.Machine) (*rerunCont
 		if err != nil {
 			return nil, nil, err
 		}
+		policyAttempts, infrastructureFailures := pendingRerunRetryUsage(events[i+1:], request.Stage)
 		return &rerunContext{
-			stage:               request.Stage,
-			attempt:             pendingRerunAttempt(events[i+1:], request),
-			instructionAddendum: request.InstructionAddendum,
+			stage:                  request.Stage,
+			attempt:                pendingRerunAttempt(events[i+1:], request),
+			requestAttempt:         request.Attempt,
+			policyAttempts:         policyAttempts,
+			infrastructureFailures: infrastructureFailures,
+			instructionAddendum:    request.InstructionAddendum,
 		}, seed, nil
 	}
 	return nil, nil, nil
+}
+
+// pendingRerunRetryUsage restores the counters runTask held in memory. The
+// infra-class starts preserve counts from journals written before failures
+// carried retryFailureClass; max avoids counting the same failure twice.
+func pendingRerunRetryUsage(events []journal.Event, stage string) (int32, int32) {
+	var policyAttempts, taggedInfrastructureFailures, infrastructureStarts int32
+	for _, event := range events {
+		if event.Stage != stage {
+			continue
+		}
+		if event.Type == journal.EventStageStarted {
+			switch event.AttemptClass {
+			case journal.AttemptHuman, journal.AttemptPolicy:
+				policyAttempts++
+			case journal.AttemptInfra:
+				infrastructureStarts++
+			}
+		}
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" &&
+			event.Runner[retryFailureClassKey] == string(journal.AttemptInfra) {
+			taggedInfrastructureFailures++
+		}
+	}
+	if taggedInfrastructureFailures < infrastructureStarts {
+		taggedInfrastructureFailures = infrastructureStarts
+	}
+	return policyAttempts, taggedInfrastructureFailures
 }
 
 func pendingRerunAttempt(events []journal.Event, request journal.Event) int {

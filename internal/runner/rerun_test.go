@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -49,6 +50,22 @@ func (*capturingSuccessGoober) Review(context.Context, apiv1.InvocationEnvelope)
 
 type rerunGateReviewer struct {
 	addenda []string
+}
+
+type rerunInfrastructureGoober struct {
+	invocations []apiv1.InvocationEnvelope
+}
+
+func (g *rerunInfrastructureGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.invocations = append(g.invocations, env)
+	if env.InstructionAddendum == "" {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultBlocked}, nil
+	}
+	return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(errors.New("provider unavailable"))
+}
+
+func (*rerunInfrastructureGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
 }
 
 func (*rerunGateReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
@@ -197,7 +214,8 @@ func TestPendingRerunRestoresUnfinishedAddendum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rerun == nil || rerun.stage != "implement" || rerun.attempt != 2 ||
+	if rerun == nil || rerun.stage != "implement" || rerun.attempt != 2 || rerun.requestAttempt != 2 ||
+		rerun.policyAttempts != 1 || rerun.infrastructureFailures != 0 ||
 		rerun.instructionAddendum != "Try the parser seam." {
 		t.Fatalf("pending rerun = %+v", rerun)
 	}
@@ -213,6 +231,46 @@ func TestPendingRerunRestoresUnfinishedAddendum(t *testing.T) {
 		t.Fatal(err)
 	} else if rerun != nil {
 		t.Fatalf("completed rerun remained pending: %+v", rerun)
+	}
+}
+
+func TestStageResultWithInterruptedErrorCodeIsNotRecoveryMarker(t *testing.T) {
+	machine := rerunTaskMachine(t)
+	events := []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultBlocked)},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+		{
+			Type: journal.EventStageRerunRequested, Stage: "implement", Attempt: 2,
+			AttemptClass: journal.AttemptHuman, Actor: "maintainer",
+			InstructionAddendum: "Retry with guidance.",
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptHuman},
+		{
+			Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
+			AttemptClass: journal.AttemptHuman, Status: string(apiv1.ResultFailure),
+			Error: &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "stage-owned result"},
+			Artifacts: []journal.Ref{{
+				Path: "artifacts/stage-owned", Digest: "sha256:stage-owned", Size: 11,
+			}},
+		},
+	}
+
+	if isInterruptedAttemptMarker(events[len(events)-1]) {
+		t.Fatal("stage-controlled error code was classified as a runner recovery marker")
+	}
+	if rerun, _, err := pendingRerun(events, machine); err != nil {
+		t.Fatal(err)
+	} else if rerun != nil {
+		t.Fatalf("completed stage result remained pending: %+v", rerun)
+	}
+	stage, result, ok := lastFinishedSubject(events)
+	if !ok || stage != "implement" || result.Error == nil || result.Error.Code != interruptedAttemptErrorCode {
+		t.Fatalf("last finished subject = (%q, %+v, %t)", stage, result, ok)
+	}
+	pointers := reconstructPointers(events)
+	if len(pointers) != 1 || pointers[0].Artifact == nil || pointers[0].Artifact.Digest != "sha256:stage-owned" {
+		t.Fatalf("reconstructed pointers = %+v", pointers)
 	}
 }
 
@@ -281,7 +339,8 @@ func TestResumeContinuesInterruptedHumanRerunWithRecordedAddendum(t *testing.T) 
 	}
 	for _, event := range events {
 		if event.Type == journal.EventStageFinished && event.Stage == "implement" && event.Attempt == 2 {
-			if event.AttemptClass != journal.AttemptHuman || event.Error == nil || event.Error.Code != interruptedAttemptErrorCode {
+			if event.AttemptClass != journal.AttemptHuman || event.Error == nil ||
+				event.Error.Code != interruptedAttemptErrorCode || !isInterruptedAttemptMarker(event) {
 				t.Fatalf("interrupted human attempt marker = %+v", event)
 			}
 			return
@@ -335,6 +394,7 @@ func TestResumeAdvancesHumanRerunAfterInterruptedAttemptWasClosed(t *testing.T) 
 				Code:    interruptedAttemptErrorCode,
 				Message: "attempt was in flight when the runner was interrupted",
 			},
+			Runner: map[string]any{interruptedAttemptMarkerKey: true},
 		},
 	} {
 		if err := recovered.Append(event); err != nil {
@@ -371,14 +431,136 @@ func TestResumeAdvancesHumanRerunAfterInterruptedAttemptWasClosed(t *testing.T) 
 	}
 }
 
+func TestResumeDoesNotResetHumanRerunPolicyBudgetAfterRepeatedCrashes(t *testing.T) {
+	const runID = "run-rerun-repeated-crashes"
+	machine := rerunTaskMachine(t)
+	implementer := &rerunTaskGoober{}
+	r, runsDir := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		return implementer, nil
+	}, nil)
+	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("initial phase = %s, want escalated", result.Phase)
+	}
+
+	recovered, _, err := journal.Recover(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []journal.Event{
+		{
+			Type: journal.EventStageRerunRequested, Stage: "implement", Attempt: 2,
+			AttemptClass: journal.AttemptHuman, Actor: "maintainer",
+			InstructionAddendum: "Preserve this guidance.",
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptHuman},
+		{
+			Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
+			AttemptClass: journal.AttemptHuman, Status: string(apiv1.ResultFailure),
+			Error:  &journal.ErrorDetail{Code: interruptedAttemptErrorCode},
+			Runner: map[string]any{interruptedAttemptMarkerKey: true},
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 3, AttemptClass: journal.AttemptHuman},
+	} {
+		if err := recovered.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := recovered.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err = r.Resume(context.Background(), ResumeInput{RunID: runID, Machine: machine, RepoRef: repo})
+	if err == nil {
+		t.Fatal("Resume: want an error after the rerun policy budget is exhausted")
+	}
+	if result.Phase != journal.PhaseFailed {
+		t.Fatalf("resumed phase = %s, want failed", result.Phase)
+	}
+	if len(implementer.invocations) != 1 {
+		t.Fatalf("implementer invocations = %d, want only the original attempt", len(implementer.invocations))
+	}
+}
+
+func TestResumePreservesHumanRerunInfrastructureBudget(t *testing.T) {
+	const runID = "run-rerun-infrastructure-budget"
+	machine := rerunTaskMachineWithMaxAttempts(t, 3)
+	implementer := &rerunInfrastructureGoober{}
+	r, runsDir := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		return implementer, nil
+	}, nil)
+	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("initial phase = %s, want escalated", result.Phase)
+	}
+
+	recovered, _, err := journal.Recover(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []journal.Event{
+		{
+			Type: journal.EventStageRerunRequested, Stage: "implement", Attempt: 2,
+			AttemptClass: journal.AttemptHuman, Actor: "maintainer",
+			InstructionAddendum: "Use the provider fallback.",
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptHuman},
+		{
+			Type: journal.EventError, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptHuman,
+			Error:  &journal.ErrorDetail{Code: "executor_error"},
+			Runner: map[string]any{retryFailureClassKey: string(journal.AttemptInfra)},
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 3, AttemptClass: journal.AttemptInfra},
+	} {
+		if err := recovered.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := recovered.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err = r.Resume(context.Background(), ResumeInput{RunID: runID, Machine: machine, RepoRef: repo})
+	if err == nil {
+		t.Fatal("Resume: want an error when the final infrastructure allowance fails")
+	}
+	if result.Phase != journal.PhaseFailed {
+		t.Fatalf("resumed phase = %s, want failed", result.Phase)
+	}
+	if len(implementer.invocations) != 2 {
+		t.Fatalf("implementer invocations = %d, want one original and one resumed invocation", len(implementer.invocations))
+	}
+}
+
 func rerunTaskMachine(t *testing.T) *workflow.Machine {
+	return rerunTaskMachineWithMaxAttempts(t, 2)
+}
+
+func rerunTaskMachineWithMaxAttempts(t *testing.T, maxAttempts int32) *workflow.Machine {
 	t.Helper()
 	machine, err := workflow.Compile(workflow.Definition{
 		Name: "rerun-task", Version: 1,
 		Spec: apiv1.WorkflowSpec{
 			Gaggle: "acme-web", Start: "implement",
 			Tasks: []apiv1.Task{
-				{Name: "implement", Type: apiv1.TaskAgentic, Goober: "implementer", Goal: "implement the change", Next: "finish"},
+				{
+					Name: "implement", Type: apiv1.TaskAgentic, Goober: "implementer", Goal: "implement the change", Next: "finish",
+					Retry: &apiv1.RetryPolicy{MaxAttempts: maxAttempts},
+				},
 				{Name: "finish", Type: apiv1.TaskAgentic, Goober: "finisher", Goal: "finish the run", Next: workflow.TerminalComplete},
 			},
 		},

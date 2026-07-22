@@ -655,6 +655,8 @@ type resumeContext struct {
 
 const (
 	interruptedAttemptErrorCode = "interrupted"
+	interruptedAttemptMarkerKey = "interruptedAttempt"
+	retryFailureClassKey        = "retryFailureClass"
 	toleratedFailureErrorCode   = "stage_failure_tolerated"
 )
 
@@ -832,7 +834,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			startAttempt := int32(1)
 			var firstClass journal.AttemptClass
 			var instructionAddendum string
+			var taskRerun *rerunContext
 			if rerun != nil && rerun.stage == t.Name {
+				taskRerun = rerun
 				startAttempt = int32(rerun.attempt)
 				firstClass = journal.AttemptHuman
 				instructionAddendum = rerun.instructionAddendum
@@ -850,6 +854,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					Type: journal.EventStageFinished, Stage: t.Name, Attempt: resume.attempt, AttemptClass: interruptedClass,
 					Status: string(apiv1.ResultFailure),
 					Error:  &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"},
+					Runner: map[string]any{interruptedAttemptMarkerKey: true},
 				}); err != nil {
 					return Result{}, fmt.Errorf("runner: journal interrupted attempt for %q: %w", t.Name, err)
 				}
@@ -861,7 +866,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				}
 				resume = nil
 			}
-			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, firstClass, instructionAddendum, workspaceBranch)
+			result, produced, err := r.runTask(ctx, jr, in, ex, t, pointers, lastResult, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun)
 			if rerun != nil && rerun.stage == t.Name {
 				rerun = nil
 			}
@@ -1813,7 +1818,7 @@ func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string,
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -1825,9 +1830,24 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 	// The infrastructure budget includes its triggering failure, so it can add
 	// at most MaxInfrastructureAttempts-1 dispatches to the policy budget.
 	maxAttempts := policyMaxAttempts + DefaultMaxInfrastructureAttempts - 1
-	humanRerun := firstClass == journal.AttemptHuman
-	if humanRerun {
-		maxAttempts = startAttempt + policyMaxAttempts + DefaultMaxInfrastructureAttempts - 2
+	policyAttempts := startAttempt - 1
+	var infrastructureFailures int32
+	if rerun != nil {
+		maxAttempts = int32(rerun.requestAttempt) + policyMaxAttempts + DefaultMaxInfrastructureAttempts - 2
+		policyAttempts = rerun.policyAttempts
+		infrastructureFailures = rerun.infrastructureFailures
+		if policyAttempts >= policyMaxAttempts {
+			err := fmt.Errorf("runner: task %q has no attempts left after resuming human rerun (interrupted attempts already exhausted its %d-attempt policy budget)", t.Name, policyMaxAttempts)
+			return apiv1.ResultEnvelope{}, nil, err
+		}
+		if infrastructureFailures >= DefaultMaxInfrastructureAttempts {
+			err := fmt.Errorf("runner: task %q has no attempts left after resuming human rerun (infrastructure failures already exhausted its %d-attempt infrastructure budget)", t.Name, DefaultMaxInfrastructureAttempts)
+			return apiv1.ResultEnvelope{}, nil, err
+		}
+		if startAttempt > maxAttempts {
+			err := fmt.Errorf("runner: task %q has no attempts left after resuming human rerun (interrupted attempts exhausted the combined retry budget)", t.Name)
+			return apiv1.ResultEnvelope{}, nil, err
+		}
 	} else if startAttempt > policyMaxAttempts {
 		err := fmt.Errorf("runner: task %q has no attempts left after resume (interrupted attempt already exhausted its %d-attempt budget)", t.Name, policyMaxAttempts)
 		return apiv1.ResultEnvelope{}, nil, err
@@ -1835,11 +1855,6 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 
 	var lastErr error
 	nextRetryClass := journal.AttemptPolicy
-	policyAttempts := startAttempt - 1
-	if humanRerun {
-		policyAttempts = 0
-	}
-	var infrastructureFailures int32
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
 		if _, ok := stalledRequestFromContext(ctx); ok {
 			return apiv1.ResultEnvelope{}, nil, errStalledRun
@@ -1888,19 +1903,22 @@ func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex
 			retryCount := policyAttempts
 			shouldRetry := policyAttempts < policyMaxAttempts
 			nextRetryClass = journal.AttemptPolicy
+			failureClass := journal.AttemptPolicy
 			if invoke.IsInfrastructureFailure(dispatchErr) {
 				infrastructureFailures++
 				retryLimit = DefaultMaxInfrastructureAttempts
 				retryCount = infrastructureFailures
 				shouldRetry = infrastructureFailures < DefaultMaxInfrastructureAttempts
 				nextRetryClass = journal.AttemptInfra
+				failureClass = journal.AttemptInfra
 			}
 			// A journal that cannot be written stops the run (§2.6): this
 			// write failing means the run's own record of what happened is
 			// now unreliable, so it is fatal, not best-effort.
 			if aerr := jr.Append(journal.Event{
 				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-				Error: &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
+				Error:  &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
+				Runner: map[string]any{retryFailureClassKey: string(failureClass)},
 			}); aerr != nil {
 				err := fmt.Errorf("runner: journal executor error for %q: %w", t.Name, aerr)
 				span.Fail(err)
