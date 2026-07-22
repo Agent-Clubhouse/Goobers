@@ -2,7 +2,9 @@ package workflow
 
 import (
 	"fmt"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -26,8 +28,13 @@ const (
 	SupportRemoved SupportLevel = "removed"
 )
 
-// Feature records a DSL feature's current support level and the app version in
-// which it entered that level.
+// SupportTransition records when a DSL feature entered one support level.
+type SupportTransition struct {
+	Level        SupportLevel `json:"level"`
+	SinceVersion string       `json:"sinceVersion"`
+}
+
+// Feature records a DSL feature's current support level and complete lifecycle.
 type Feature struct {
 	ID                    FeatureID           `json:"id"`
 	Level                 SupportLevel        `json:"level"`
@@ -36,6 +43,7 @@ type Feature struct {
 	RemovalTargetVersion  string              `json:"removalTargetVersion,omitempty"`
 	LastSupportingVersion string              `json:"lastSupportingVersion,omitempty"`
 	DSLVersions           []DSLFeatureSupport `json:"dslVersions,omitempty"`
+	History               []SupportTransition `json:"history"`
 }
 
 // DSLFeatureSupport records a feature's support level in one DSL version.
@@ -57,9 +65,7 @@ func NewFeatureRegistry(features []Feature) (FeatureRegistry, error) {
 		if strings.TrimSpace(string(feature.ID)) == "" {
 			return FeatureRegistry{}, fmt.Errorf("DSL feature ID must not be empty")
 		}
-		switch feature.Level {
-		case SupportPreview, SupportGA, SupportDeprecated, SupportRemoved:
-		default:
+		if !validSupportLevel(feature.Level) {
 			return FeatureRegistry{}, fmt.Errorf("DSL feature %q has unknown support level %q", feature.ID, feature.Level)
 		}
 		if strings.TrimSpace(feature.SinceVersion) == "" {
@@ -79,6 +85,9 @@ func NewFeatureRegistry(features []Feature) (FeatureRegistry, error) {
 				return FeatureRegistry{}, fmt.Errorf("DSL feature %q has duplicate DSL version %q", feature.ID, version.Version)
 			}
 			seenVersions[version.Version] = struct{}{}
+		}
+		if err := validateFeatureHistory(feature); err != nil {
+			return FeatureRegistry{}, fmt.Errorf("DSL feature %q: %w", feature.ID, err)
 		}
 		switch feature.Level {
 		case SupportDeprecated:
@@ -120,8 +129,192 @@ func (r FeatureRegistry) All() []Feature {
 }
 
 func cloneFeature(feature Feature) Feature {
-	feature.DSLVersions = append([]DSLFeatureSupport(nil), feature.DSLVersions...)
+	feature.History = slices.Clone(feature.History)
+	feature.DSLVersions = slices.Clone(feature.DSLVersions)
 	return feature
+}
+
+func newFeatureRegistryAgainstReleased(released FeatureRegistry, features []Feature) (FeatureRegistry, error) {
+	current, err := NewFeatureRegistry(features)
+	if err != nil {
+		return FeatureRegistry{}, err
+	}
+	if err := validateFeatureRegistryEvolution(released, current); err != nil {
+		return FeatureRegistry{}, err
+	}
+	return current, nil
+}
+
+func validateFeatureRegistryEvolution(released, current FeatureRegistry) error {
+	for _, previous := range released.All() {
+		candidate, ok := current.Lookup(previous.ID)
+		if !ok {
+			return fmt.Errorf("released DSL feature %q must remain in the registry", previous.ID)
+		}
+		if len(candidate.History) < len(previous.History) ||
+			!slices.Equal(candidate.History[:len(previous.History)], previous.History) {
+			return fmt.Errorf("released DSL feature %q lifecycle history must not change", previous.ID)
+		}
+	}
+
+	for _, candidate := range current.All() {
+		if candidate.Level != SupportRemoved {
+			continue
+		}
+		previous, ok := released.Lookup(candidate.ID)
+		if !ok || (previous.Level != SupportDeprecated && previous.Level != SupportRemoved) {
+			return fmt.Errorf(
+				"DSL feature %q must be deprecated in the latest released registry before removal",
+				candidate.ID,
+			)
+		}
+	}
+	return nil
+}
+
+func validateFeatureHistory(feature Feature) error {
+	if len(feature.History) == 0 {
+		return fmt.Errorf("lifecycle history must not be empty")
+	}
+
+	for i, transition := range feature.History {
+		if !validSupportLevel(transition.Level) {
+			return fmt.Errorf("lifecycle history has unknown support level %q", transition.Level)
+		}
+		if i == 0 {
+			if transition.Level != SupportPreview && transition.Level != SupportGA {
+				return fmt.Errorf("lifecycle must start at preview or ga, not %q", transition.Level)
+			}
+			if _, err := parseReleaseVersion(transition.SinceVersion, true); err != nil {
+				return fmt.Errorf("invalid initial version %q: %w", transition.SinceVersion, err)
+			}
+			continue
+		}
+
+		previous := feature.History[i-1]
+		if !validSupportTransition(previous.Level, transition.Level) {
+			return fmt.Errorf("invalid lifecycle transition %q -> %q", previous.Level, transition.Level)
+		}
+		previousVersion, err := parseReleaseVersion(previous.SinceVersion, true)
+		if err != nil {
+			return fmt.Errorf("invalid version %q: %w", previous.SinceVersion, err)
+		}
+		currentVersion, err := parseReleaseVersion(transition.SinceVersion, false)
+		if err != nil {
+			return fmt.Errorf("invalid version %q: %w", transition.SinceVersion, err)
+		}
+		if previous.SinceVersion != initialFeatureSinceVersion &&
+			compareReleaseVersions(previousVersion, currentVersion) >= 0 {
+			return fmt.Errorf(
+				"lifecycle version %q must follow %q",
+				transition.SinceVersion,
+				previous.SinceVersion,
+			)
+		}
+		if transition.Level == SupportRemoved &&
+			!isLaterMinor(previousVersion, currentVersion) {
+			return fmt.Errorf(
+				"feature deprecated in %q must remain deprecated until a later minor release before removal in %q",
+				previous.SinceVersion,
+				transition.SinceVersion,
+			)
+		}
+	}
+
+	current := feature.History[len(feature.History)-1]
+	if feature.Level != current.Level || feature.SinceVersion != current.SinceVersion {
+		return fmt.Errorf(
+			"current support %q since %q does not match lifecycle history %q since %q",
+			feature.Level,
+			feature.SinceVersion,
+			current.Level,
+			current.SinceVersion,
+		)
+	}
+	return nil
+}
+
+func validSupportLevel(level SupportLevel) bool {
+	switch level {
+	case SupportPreview, SupportGA, SupportDeprecated, SupportRemoved:
+		return true
+	default:
+		return false
+	}
+}
+
+func validSupportTransition(from, to SupportLevel) bool {
+	switch from {
+	case SupportPreview:
+		return to == SupportGA || to == SupportDeprecated
+	case SupportGA:
+		return to == SupportDeprecated
+	case SupportDeprecated:
+		return to == SupportRemoved
+	default:
+		return false
+	}
+}
+
+type releaseVersion struct {
+	major uint64
+	minor uint64
+	patch uint64
+}
+
+func parseReleaseVersion(value string, allowDevelopment bool) (releaseVersion, error) {
+	if value == initialFeatureSinceVersion {
+		if allowDevelopment {
+			return releaseVersion{}, nil
+		}
+		return releaseVersion{}, fmt.Errorf("%q is only valid for the initial pre-release baseline", value)
+	}
+	if value != strings.TrimSpace(value) || !strings.HasPrefix(value, "v") {
+		return releaseVersion{}, fmt.Errorf("must use vMAJOR.MINOR.PATCH")
+	}
+	parts := strings.Split(strings.TrimPrefix(value, "v"), ".")
+	if len(parts) != 3 {
+		return releaseVersion{}, fmt.Errorf("must use vMAJOR.MINOR.PATCH")
+	}
+	numbers := make([]uint64, len(parts))
+	for i, part := range parts {
+		if part == "" || (len(part) > 1 && part[0] == '0') {
+			return releaseVersion{}, fmt.Errorf("must use canonical vMAJOR.MINOR.PATCH")
+		}
+		number, err := strconv.ParseUint(part, 10, 64)
+		if err != nil {
+			return releaseVersion{}, fmt.Errorf("must use vMAJOR.MINOR.PATCH")
+		}
+		numbers[i] = number
+	}
+	return releaseVersion{major: numbers[0], minor: numbers[1], patch: numbers[2]}, nil
+}
+
+func compareReleaseVersions(left, right releaseVersion) int {
+	switch {
+	case left.major != right.major:
+		return cmpUint64(left.major, right.major)
+	case left.minor != right.minor:
+		return cmpUint64(left.minor, right.minor)
+	default:
+		return cmpUint64(left.patch, right.patch)
+	}
+}
+
+func cmpUint64(left, right uint64) int {
+	switch {
+	case left < right:
+		return -1
+	case left > right:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func isLaterMinor(deprecated, removed releaseVersion) bool {
+	return removed.major > deprecated.major ||
+		(removed.major == deprecated.major && removed.minor > deprecated.minor)
 }
 
 func (r FeatureRegistry) resolve(ids []FeatureID) ([]Feature, error) {
@@ -399,6 +592,10 @@ func currentFeatures(sinceVersion string) []Feature {
 	}
 	features := make([]Feature, 0, len(ids))
 	for _, id := range ids {
+		history := []SupportTransition{{
+			Level:        SupportPreview,
+			SinceVersion: sinceVersion,
+		}}
 		features = append(features, Feature{
 			ID:           id,
 			Level:        SupportPreview,
@@ -407,6 +604,7 @@ func currentFeatures(sinceVersion string) []Feature {
 				Version: supportmatrix.CurrentDSLVersion,
 				Level:   SupportPreview,
 			}},
+			History: history,
 		})
 	}
 	return features

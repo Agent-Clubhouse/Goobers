@@ -125,6 +125,13 @@ func TestCurrentFeaturesArePreviewAtInitialVersion(t *testing.T) {
 			feature.DSLVersions[0] != (DSLFeatureSupport{Version: supportmatrix.CurrentDSLVersion, Level: SupportPreview}) {
 			t.Errorf("feature %q DSL versions = %+v", feature.ID, feature.DSLVersions)
 		}
+		wantHistory := []SupportTransition{{
+			Level:        SupportPreview,
+			SinceVersion: initialFeatureSinceVersion,
+		}}
+		if !slices.Equal(feature.History, wantHistory) {
+			t.Errorf("feature %q history = %+v, want %+v", feature.ID, feature.History, wantHistory)
+		}
 	}
 }
 
@@ -143,6 +150,285 @@ func TestFeaturesForDSLVersion(t *testing.T) {
 	}
 	if _, err := FeaturesForDSLVersion("9.9"); err == nil || !strings.Contains(err.Error(), "unknown DSL version") {
 		t.Fatalf("FeaturesForDSLVersion(9.9) error = %v", err)
+	}
+}
+
+func TestCurrentFeatureRegistrySatisfiesLifecyclePolicy(t *testing.T) {
+	if _, err := NewFeatureRegistry(currentFeatures(initialFeatureSinceVersion)); err != nil {
+		t.Fatalf("current feature registry violates lifecycle policy: %v", err)
+	}
+}
+
+func TestFeatureRegistryCompatibilityPolicyUsesReleasedSnapshot(t *testing.T) {
+	transition := func(level SupportLevel, version string) SupportTransition {
+		return SupportTransition{Level: level, SinceVersion: version}
+	}
+	feature := func(level SupportLevel, version string, history ...SupportTransition) Feature {
+		result := Feature{
+			ID:           "example.feature",
+			Level:        level,
+			SinceVersion: version,
+			History:      history,
+		}
+		switch level {
+		case SupportDeprecated:
+			result.Replacement = "replacement.feature"
+			result.RemovalTargetVersion = "v1.3.0"
+		case SupportRemoved:
+			result.LastSupportingVersion = "v1.2.0"
+		}
+		return result
+	}
+	registry := func(features ...Feature) FeatureRegistry {
+		t.Helper()
+		result, err := NewFeatureRegistry(features)
+		if err != nil {
+			t.Fatalf("NewFeatureRegistry: %v", err)
+		}
+		return result
+	}
+
+	releasedGA := registry(feature(
+		SupportGA,
+		"v1.1.0",
+		transition(SupportPreview, "dev"),
+		transition(SupportGA, "v1.1.0"),
+	))
+	deprecatedAndRemoved := feature(
+		SupportRemoved,
+		"v1.3.0",
+		transition(SupportPreview, "dev"),
+		transition(SupportGA, "v1.1.0"),
+		transition(SupportDeprecated, "v1.2.0"),
+		transition(SupportRemoved, "v1.3.0"),
+	)
+	if _, err := newFeatureRegistryAgainstReleased(registry(), []Feature{deprecatedAndRemoved}); err == nil ||
+		!strings.Contains(err.Error(), "must be deprecated in the latest released registry") {
+		t.Fatalf("unreleased removal error = %v, want released-deprecation failure", err)
+	}
+	if _, err := newFeatureRegistryAgainstReleased(releasedGA, []Feature{deprecatedAndRemoved}); err == nil ||
+		!strings.Contains(err.Error(), "must be deprecated in the latest released registry") {
+		t.Fatalf("same-change deprecation and removal error = %v, want released-deprecation failure", err)
+	}
+
+	releasedDeprecated := registry(feature(
+		SupportDeprecated,
+		"v1.2.0",
+		deprecatedAndRemoved.History[:3]...,
+	))
+	if _, err := newFeatureRegistryAgainstReleased(releasedDeprecated, []Feature{deprecatedAndRemoved}); err != nil {
+		t.Fatalf("removal after a released deprecated minor was rejected: %v", err)
+	}
+}
+
+func TestFeatureRegistryCompatibilityPolicyPreservesReleasedSnapshot(t *testing.T) {
+	transition := func(level SupportLevel, version string) SupportTransition {
+		return SupportTransition{Level: level, SinceVersion: version}
+	}
+	releasedFeature := Feature{
+		ID:           "example.feature",
+		Level:        SupportGA,
+		SinceVersion: "v1.1.0",
+		History: []SupportTransition{
+			transition(SupportPreview, "dev"),
+			transition(SupportGA, "v1.1.0"),
+		},
+	}
+	released, err := NewFeatureRegistry([]Feature{releasedFeature})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name       string
+		candidates []Feature
+		want       string
+	}{
+		{
+			name: "released feature omitted",
+			want: "must remain in the registry",
+		},
+		{
+			name: "released history rewritten",
+			candidates: []Feature{{
+				ID:           "example.feature",
+				Level:        SupportGA,
+				SinceVersion: "v1.2.0",
+				History: []SupportTransition{
+					transition(SupportPreview, "dev"),
+					transition(SupportGA, "v1.2.0"),
+				},
+			}},
+			want: "lifecycle history must not change",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := newFeatureRegistryAgainstReleased(released, test.candidates)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("newFeatureRegistryAgainstReleased() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestFeatureRegistryCompatibilityPolicy(t *testing.T) {
+	transition := func(level SupportLevel, version string) SupportTransition {
+		return SupportTransition{Level: level, SinceVersion: version}
+	}
+	valid := Feature{
+		ID:                    "example.feature",
+		Level:                 SupportRemoved,
+		SinceVersion:          "v1.3.0",
+		LastSupportingVersion: "v1.2.0",
+		History: []SupportTransition{
+			transition(SupportPreview, "dev"),
+			transition(SupportGA, "v1.1.0"),
+			transition(SupportDeprecated, "v1.2.0"),
+			transition(SupportRemoved, "v1.3.0"),
+		},
+	}
+	if _, err := NewFeatureRegistry([]Feature{valid}); err != nil {
+		t.Fatalf("valid lifecycle rejected: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		feature Feature
+		want    string
+	}{
+		{
+			name: "missing history",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportGA,
+				SinceVersion: "v1.0.0",
+			},
+			want: "history must not be empty",
+		},
+		{
+			name: "lifecycle starts deprecated",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportDeprecated,
+				SinceVersion: "v1.0.0",
+				History: []SupportTransition{
+					transition(SupportDeprecated, "v1.0.0"),
+				},
+			},
+			want: "lifecycle must start at preview or ga",
+		},
+		{
+			name: "initial version is not a release",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportGA,
+				SinceVersion: "1.0.0",
+				History: []SupportTransition{
+					transition(SupportGA, "1.0.0"),
+				},
+			},
+			want: "must use vMAJOR.MINOR.PATCH",
+		},
+		{
+			name: "ga directly to removed",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportRemoved,
+				SinceVersion: "v1.1.0",
+				History: []SupportTransition{
+					transition(SupportGA, "v1.0.0"),
+					transition(SupportRemoved, "v1.1.0"),
+				},
+			},
+			want: `invalid lifecycle transition "ga" -> "removed"`,
+		},
+		{
+			name: "preview directly to removed",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportRemoved,
+				SinceVersion: "v1.1.0",
+				History: []SupportTransition{
+					transition(SupportPreview, "v1.0.0"),
+					transition(SupportRemoved, "v1.1.0"),
+				},
+			},
+			want: `invalid lifecycle transition "preview" -> "removed"`,
+		},
+		{
+			name: "removed within deprecation minor",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportRemoved,
+				SinceVersion: "v1.2.4",
+				History: []SupportTransition{
+					transition(SupportGA, "v1.0.0"),
+					transition(SupportDeprecated, "v1.2.0"),
+					transition(SupportRemoved, "v1.2.4"),
+				},
+			},
+			want: "must remain deprecated until a later minor release",
+		},
+		{
+			name: "versions out of order",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportDeprecated,
+				SinceVersion: "v1.1.0",
+				History: []SupportTransition{
+					transition(SupportGA, "v1.2.0"),
+					transition(SupportDeprecated, "v1.1.0"),
+				},
+			},
+			want: `lifecycle version "v1.1.0" must follow "v1.2.0"`,
+		},
+		{
+			name: "current state differs from history",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportGA,
+				SinceVersion: "v1.1.0",
+				History: []SupportTransition{
+					transition(SupportPreview, "v1.0.0"),
+				},
+			},
+			want: "does not match lifecycle history",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewFeatureRegistry([]Feature{test.feature})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("NewFeatureRegistry() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestFeatureRegistryLifecycleHistoryIsImmutable(t *testing.T) {
+	features := []Feature{{
+		ID:           "example.feature",
+		Level:        SupportPreview,
+		SinceVersion: "dev",
+		History: []SupportTransition{{
+			Level:        SupportPreview,
+			SinceVersion: "dev",
+		}},
+	}}
+	registry, err := NewFeatureRegistry(features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	features[0].History[0].Level = SupportRemoved
+	lookedUp, ok := registry.Lookup("example.feature")
+	if !ok {
+		t.Fatal("registered feature was not found")
+	}
+	lookedUp.History[0].Level = SupportRemoved
+	lookedUpAgain, _ := registry.Lookup("example.feature")
+	if lookedUpAgain.History[0].Level != SupportPreview {
+		t.Fatalf("registry history was mutated through a returned feature: %+v", lookedUpAgain.History)
 	}
 }
 
