@@ -1,6 +1,6 @@
 # Design: Tutor v2 — version-aware, instance-scoped process self-improvement
 
-> Status: **Draft for review — not implemented** · Area prefix: `TUT` · Milestone: _proposed_ **Tutor v2**
+> Status: **Accepted (PO-ratified 2026-07-21) — not yet implemented** · Area prefix: `TUT` · Milestone: _proposed_ **Tutor v2**
 > Scope: the tutor edits a gaggle's **instance config** (`goobers-instances/<name>/`), never product code (§1.1). Its loop closes through **Workflow CD** (§4.6, M15).
 > Related issues: #36 (tutor epic), #102 (cross-run detection queries), #104 (config-only write-boundary), #453 (Workflow CD / GitOps — the promotion half), #460 (WCD-6 `configrepo:read` — the tutor needs a write-sibling, §4.8), #507 (who owns test-suite quality), #150 (`Goober.spec.model`), #417 (first-class agent signal), #776 (usage in envelopes/spans), #769 (journal/telemetry schema migration).
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
@@ -369,25 +369,26 @@ domain** and **version-aware** (§4.1) so its process changes are measured witho
 shared-schema cut across the **whole gaggle** (per-gaggle, *not* cross-gaggle — the silo holds). ⇒ the
 per-workflow → per-gaggle split of §4.3.
 
-## 7. Open decisions (for review)
+## 7. Decisions (PO-ratified 2026-07-21)
 
-- **D1 — Topology.** Adopt the per-workflow → **per-gaggle** two-tier, with **cross-gaggle rare-or-impossible
-  by design** (the gaggle is the silo)? _Recommended: yes._ Confirms there is **no** global/cross-gaggle tutor.
-- **D2 — Target & write-authority ceiling.** Confirm the tutor writes only to the **instance config namespace**
-  (`goobers-instances/<name>/`, §1.1) — workflow YAML + skill bodies + workflow-level validation stages — and
+All resolved at their recommended values; each maps to a backlog item in §8.
+
+- **D1 — Topology → ACCEPTED.** Per-workflow → **per-gaggle** two-tier, **cross-gaggle rare-or-impossible by
+  design** (the gaggle is the silo). There is **no** global/cross-gaggle tutor. (TUT-A4)
+- **D2 — Target & write-authority ceiling → ACCEPTED.** The tutor writes only to the **operator-injected
+  instance config namespace** (§1.1) — workflow YAML + skill bodies + workflow-level validation stages — and
   **never** product code (`internal/`, `cmd/`, `api/schemas`, Go tests, CI), which stays with the implementation
-  workflows. _Recommended: yes_ (this is the PO's "edit the instance, not the main repo" directive).
-- **D3 — Skill location.** The instance's skills currently sit outside the config root. To let the tutor author
-  skill bodies, either (a) add the skills tree as a per-target allow-root, or (b) relocate skills under the
-  instance config root. _Recommended: (a)_ — smaller blast radius, no move.
-- **D4 — Live-verification gate.** Require a post-promotion holdout re-run confirming the predicted improvement
-  before a finding is closed? _Recommended: yes_ for structure/skill/validation changes; optional for persona
-  tweaks. (The stronger shadow/A-B form is a future milestone, §4.7.)
-- **D5 — Auto-merge stance.** Structure/skill/validation tutor PRs are **never** auto-merged (§5.5);
-  persona/gate-tune PRs may follow the normal review path. Confirm.
-- **D6 — Milestone sequencing.** Sequence Tutor v2 *with* Workflow CD (§4.6): the tutor's verify-live step is
-  only meaningful once CD reconciles merged config to the live instance. _Recommended: yes_ — treat CD (M15) as
-  a soft prerequisite for Tutor v2 and a hard prerequisite for the shadow/A-B milestone (§4.7).
+  workflows. (TUT-A1)
+- **D3 — Skill location → ACCEPTED (option a).** Add the instance's skills tree as a per-target allow-root
+  (no relocation). (TUT-A5)
+- **D4 — Live-verification gate → ACCEPTED.** Post-promotion holdout re-run required for structure/skill/
+  validation changes; optional for persona tweaks. The stronger shadow/A-B form is the future milestone (§4.7).
+  (TUT-A7)
+- **D5 — Auto-merge stance → ACCEPTED.** Structure/skill/validation tutor PRs are **never** auto-merged (§5.5);
+  persona/gate-tune PRs may follow the normal review path. (TUT-A6)
+- **D6 — Milestone sequencing → ACCEPTED.** Sequence Tutor v2 *with* Workflow CD (§4.6): CD (M15) is a soft
+  prerequisite for Tutor v2 (verify-live is only meaningful once merged config reconciles to the live instance)
+  and a hard prerequisite for the shadow/A-B milestone (§4.7).
 
 ## 8. Proposed backlog (staged)
 
