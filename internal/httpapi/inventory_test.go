@@ -143,8 +143,8 @@ func TestWorkflowEndpointsLoadScopedProductionDefinitionsAndWarnings(t *testing.
 			previewWarnings++
 		}
 	}
-	if previewWarnings == 0 {
-		t.Fatalf("alpha warnings contain no preview-feature notices: %+v", alpha.Warnings)
+	if previewWarnings != 0 {
+		t.Fatalf("alpha warnings must contain no preview notices — standard DSL fields are GA (#1196): %+v", alpha.Warnings)
 	}
 	if len(compatibilityWarnings) != 2 {
 		t.Fatalf("alpha compatibility warnings = %+v", compatibilityWarnings)
@@ -171,8 +171,8 @@ func TestWorkflowEndpointsLoadScopedProductionDefinitionsAndWarnings(t *testing.
 			betaPreviewWarnings++
 		}
 	}
-	if betaPreviewWarnings == 0 || len(betaCompatibilityWarnings) != 1 {
-		t.Fatalf("beta warnings = %+v", beta.Warnings)
+	if betaPreviewWarnings != 0 || len(betaCompatibilityWarnings) != 1 {
+		t.Fatalf("beta warnings must be a single compatibility notice with no preview notices — GA (#1196): %+v", beta.Warnings)
 	}
 	betaTriggerWarning := betaCompatibilityWarnings[0]
 	if betaTriggerWarning.Code != validate.WarningCompatibility || betaTriggerWarning.Severity != validate.Warning ||

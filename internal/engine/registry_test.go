@@ -93,7 +93,7 @@ func TestRegisterInvalidRejected(t *testing.T) {
 
 func TestRegisterPreviewFeaturesRequiresOptIn(t *testing.T) {
 	r := NewRegistry()
-	if _, err := r.Register("flow", linearSpec()); err == nil {
+	if _, err := r.Register("flow", previewSpec()); err == nil {
 		t.Fatal("expected preview workflow registration without opt-in to fail")
 	}
 }

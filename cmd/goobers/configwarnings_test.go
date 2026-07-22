@@ -91,8 +91,11 @@ func TestUpAndStatusPrintIdenticalOrderedWarnings(t *testing.T) {
 	}
 	statusWarnings, statusPreviewCount := withoutGeneratedPreviewWarnings(statusOut)
 	upWarnings, upPreviewCount := withoutGeneratedPreviewWarnings(upOut.String())
-	if statusPreviewCount == 0 || upPreviewCount == 0 {
-		t.Fatalf("status/up omitted preview notices: status=%d up=%d", statusPreviewCount, upPreviewCount)
+	// The demo config is GA (#1196), so it generates no preview notices; the
+	// point here is that status and up agree on the (now zero) generated preview
+	// notices and surface the identical injected VER001/VER002 warnings.
+	if statusPreviewCount != upPreviewCount {
+		t.Fatalf("status/up disagree on generated preview notices: status=%d up=%d", statusPreviewCount, upPreviewCount)
 	}
 	if strings.Join(statusWarnings, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("status warnings = %#v, want %#v", statusWarnings, want)
@@ -129,7 +132,7 @@ func TestStatusJSONIncludesStableWarningShape(t *testing.T) {
 		}
 		nonPreview = append(nonPreview, warning)
 	}
-	if previewCount == 0 || len(nonPreview) != 1 ||
+	if previewCount != 0 || len(nonPreview) != 1 ||
 		nonPreview[0].Code != "MODEL002" ||
 		nonPreview[0].Severity != "warning" ||
 		nonPreview[0].Scope != "Goober/coder" ||
@@ -141,15 +144,18 @@ func TestStatusJSONIncludesStableWarningShape(t *testing.T) {
 	}
 }
 
-func TestOptedInPreviewCommandsPrintOnlyLifecycleWarnings(t *testing.T) {
+// TestDemoConfigValidatesCleanWithoutNotices pins the #1196 fix at the command
+// level: the demo config uses only GA DSL features, so status and up emit no
+// config-validation notices at all (previously every field warned as preview).
+func TestDemoConfigValidatesCleanWithoutNotices(t *testing.T) {
 	root := initDeterministicDemo(t)
 
 	statusCode, statusOut, statusErr := runArgs(t, "status", root)
 	if statusCode != 0 {
 		t.Fatalf("status code = %d, stderr = %q", statusCode, statusErr)
 	}
-	if warnings, previewCount := withoutGeneratedPreviewWarnings(statusOut); len(warnings) != 0 || previewCount == 0 {
-		t.Fatalf("status warnings = %#v, preview count = %d; want only preview notices", warnings, previewCount)
+	if warnings, previewCount := withoutGeneratedPreviewWarnings(statusOut); len(warnings) != 0 || previewCount != 0 {
+		t.Fatalf("status warnings = %#v, preview count = %d; want a clean demo config with no notices (#1196)", warnings, previewCount)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -158,8 +164,8 @@ func TestOptedInPreviewCommandsPrintOnlyLifecycleWarnings(t *testing.T) {
 	if code := runUpContext(ctx, []string{"--quiet", root}, &upOut, &upErr); code != 0 {
 		t.Fatalf("up code = %d, stderr = %q", code, upErr.String())
 	}
-	if warnings, previewCount := withoutGeneratedPreviewWarnings(upOut.String()); len(warnings) != 0 || previewCount == 0 {
-		t.Fatalf("up warnings = %#v, preview count = %d; want only preview notices", warnings, previewCount)
+	if warnings, previewCount := withoutGeneratedPreviewWarnings(upOut.String()); len(warnings) != 0 || previewCount != 0 {
+		t.Fatalf("up warnings = %#v, preview count = %d; want a clean demo config with no notices (#1196)", warnings, previewCount)
 	}
 }
 

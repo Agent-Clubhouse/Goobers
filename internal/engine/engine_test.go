@@ -93,7 +93,7 @@ func TestRunPreservesLegacyPreviewAdmission(t *testing.T) {
 }
 
 func TestRunRejectsExplicitlyDisabledPreviewFeatures(t *testing.T) {
-	in := runInput("disabled-preview", linearSpec())
+	in := runInput("disabled-preview", previewSpec())
 	in.PreviewFeaturesEnabled = boolPointer(false)
 
 	var ts testsuite.WorkflowTestSuite
