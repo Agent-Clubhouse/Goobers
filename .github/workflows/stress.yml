@@ -1,0 +1,46 @@
+name: Stress
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stress-${{ github.event.pull_request.number || github.ref || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  stress:
+    name: race count=20
+    if: ${{ github.event_name != 'pull_request' || github.event.label.name == '/stress' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Run enrolled stress packages
+        run: make stress
+
+      - name: Upload stress results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: stress-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: stress-results/
+          if-no-files-found: warn
+          retention-days: 30
