@@ -110,6 +110,19 @@ func TestIntegrationTool(t *testing.T) {
 			wantError: "raw test skip is forbidden",
 		},
 		{
+			name: "raw skip now",
+			source: `package fixture
+import (
+	"testing"
+	"github.com/goobers/goobers/internal/testdep"
+)
+func TestIntegrationTool(t *testing.T) {
+	testdep.Require(t, "sh")
+	t.SkipNow()
+}`,
+			wantError: "raw test skip is forbidden",
+		},
+		{
 			name: "missing declaration",
 			source: `package fixture
 import "testing"
@@ -169,7 +182,10 @@ func TestTool(t *testing.T) {
 }
 
 func TestValidateInventory(t *testing.T) {
-	if err := validateInventory(map[string]bool{"bwrap": true, "sh": true, "sleep": true}); err != nil {
+	if err := validateInventory(map[string]bool{
+		"bash": true, "bwrap": true, "dirname": true, "head": true,
+		"mkdir": true, "sh": true, "sleep": true, "yes": true,
+	}); err != nil {
 		t.Fatalf("validateInventory exact match: %v", err)
 	}
 
@@ -179,8 +195,13 @@ func TestValidateInventory(t *testing.T) {
 	}
 	for _, want := range []string{
 		`dependency "unknown" is required`,
+		`inventory dependency "bash" is not required`,
 		`inventory dependency "bwrap" is not required`,
+		`inventory dependency "dirname" is not required`,
+		`inventory dependency "head" is not required`,
+		`inventory dependency "mkdir" is not required`,
 		`inventory dependency "sleep" is not required`,
+		`inventory dependency "yes" is not required`,
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not contain %q", err, want)

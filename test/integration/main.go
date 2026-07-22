@@ -269,7 +269,7 @@ func inspectIntegrationFile(filePath string, data []byte) ([]string, []string, e
 		if receiver != nil && execAliases[receiver.Name] && selector.Sel.Name == "LookPath" {
 			violations = append(violations, fmt.Sprintf("%s: direct exec.LookPath is forbidden; use testdep.Require", position))
 		}
-		if selector.Sel.Name == "Skip" || selector.Sel.Name == "Skipf" {
+		if selector.Sel.Name == "Skip" || selector.Sel.Name == "Skipf" || selector.Sel.Name == "SkipNow" {
 			violations = append(violations, fmt.Sprintf("%s: raw test skip is forbidden in the integration tier; use testdep.Require", position))
 		}
 		if receiver == nil || !testdepAliases[receiver.Name] || selector.Sel.Name != "Require" {

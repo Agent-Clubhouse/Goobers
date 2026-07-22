@@ -91,9 +91,14 @@ func TestRequireRejectsUnregisteredDependency(t *testing.T) {
 func TestDependenciesAreSorted(t *testing.T) {
 	got := Dependencies()
 	want := []Dependency{
+		{Name: "bash", InstallHint: "install Bash (Debian/Ubuntu: apt-get install bash)"},
 		{Name: "bwrap", InstallHint: "install bubblewrap (Debian/Ubuntu: apt-get install bubblewrap)"},
+		{Name: "dirname", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
+		{Name: "head", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
+		{Name: "mkdir", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "sh", InstallHint: "install a POSIX shell (Debian/Ubuntu: apt-get install dash)"},
 		{Name: "sleep", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
+		{Name: "yes", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Dependencies() = %#v, want %#v", got, want)

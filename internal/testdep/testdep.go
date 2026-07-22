@@ -19,9 +19,25 @@ type Dependency struct {
 }
 
 var declared = map[string]Dependency{
+	"bash": {
+		Name:        "bash",
+		InstallHint: "install Bash (Debian/Ubuntu: apt-get install bash)",
+	},
 	"bwrap": {
 		Name:        "bwrap",
 		InstallHint: "install bubblewrap (Debian/Ubuntu: apt-get install bubblewrap)",
+	},
+	"dirname": {
+		Name:        "dirname",
+		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
+	},
+	"head": {
+		Name:        "head",
+		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
+	},
+	"mkdir": {
+		Name:        "mkdir",
+		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
 	},
 	"sh": {
 		Name:        "sh",
@@ -29,6 +45,10 @@ var declared = map[string]Dependency{
 	},
 	"sleep": {
 		Name:        "sleep",
+		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
+	},
+	"yes": {
+		Name:        "yes",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
 	},
 }

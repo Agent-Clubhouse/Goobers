@@ -103,10 +103,10 @@ jobs:
 
       # Keep this list aligned with the inventory printed by
       # `make test-integration`. Strict mode makes an absent executable red.
-      - name: Provision declared dependencies (bwrap, sh, sleep)
+      - name: Provision declared dependencies (bash, bwrap, dirname, head, mkdir, sh, sleep, yes)
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap coreutils dash
+          sudo apt-get install --yes bash bubblewrap coreutils dash
           # Ubuntu 24.04 restricts the user namespace needed by bubblewrap.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
