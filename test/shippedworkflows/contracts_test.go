@@ -31,6 +31,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 const (
@@ -38,7 +39,6 @@ const (
 	contractHelperPayload    = "GOOBERS_SHIPPED_CONTRACT_PAYLOAD"
 	contractHelperResultFile = "GOOBERS_SHIPPED_CONTRACT_RESULT_FILE"
 	contractHelperExitCode   = "GOOBERS_SHIPPED_CONTRACT_EXIT_CODE"
-	contractResultFile       = ".goobers-contract-result.json"
 	contractNumber           = float64(73)
 )
 
@@ -109,6 +109,7 @@ var shippedContracts = map[string]workflowContract{
 				"task:update-behind-pr", "gate:update-behind-gate=fail",
 				"task:gather-pr-context", "task:rebase-pr", "gate:rebase-gate=fail",
 				"task:remediation-checkpoint", "gate:checkpoint-gate=pass",
+				"task:gather-sibling-context",
 				"task:implement", "gate:review=needs-changes",
 				"task:implement", "gate:review=needs-changes", "task:park-escalated")),
 		},
@@ -153,9 +154,11 @@ func TestShippedWorkflowCommandHelper(t *testing.T) {
 	if os.Getenv(contractHelperMode) == "" {
 		return
 	}
-	if err := os.WriteFile(os.Getenv(contractHelperResultFile), []byte(os.Getenv(contractHelperPayload)), 0o644); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+	if resultFile := os.Getenv(contractHelperResultFile); resultFile != "" {
+		if err := os.WriteFile(resultFile, []byte(os.Getenv(contractHelperPayload)), 0o644); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
 	}
 	exitCode, err := strconv.Atoi(os.Getenv(contractHelperExitCode))
 	if err != nil {
@@ -446,11 +449,8 @@ func (s *scenarioScript) deterministic(stage string, inputs map[string]any) stag
 			outputs["claimed-item"] = "fixture"
 		case "open-pr":
 			outputs["pull-request-url"] = "https://example.test/pull/73"
-			outputs["prNumber"] = contractNumber
+			outputs["prNumber"] = "73"
 			outputs["opened"] = true
-		case "ci-poll":
-			outputs["ciStatus"] = "passing"
-			outputs["contractThreadedNumber"] = inputs["prNumber"]
 		}
 	case "merge-review":
 		switch stage {
@@ -587,15 +587,26 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 
 type scriptedDeterministic struct {
 	shell      *executor.ShellExecutor
+	builtins   *executor.TaskExecutor
 	executable string
 	script     *scenarioScript
 }
 
 var _ invoke.Deterministic = (*scriptedDeterministic)(nil)
 
-// Run substitutes only the external provider/command effect. The production
-// ShellExecutor still harvests the result file and builds the stage envelope.
+type contractPRPoller struct{}
+
+func (contractPRPoller) PollPullRequest(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
+	return providers.PullRequestPollResult{CheckState: providers.CheckStatePassing}, nil
+}
+
+// Run preserves built-in dispatch and substitutes only external shell command
+// effects. ShellExecutor still harvests each workflow's declared result file.
 func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	if kind, _ := env.Inputs[executor.InputKind].(string); kind == executor.KindCIPoll {
+		return d.builtins.Run(ctx, env, run)
+	}
+
 	stage := stageName(env.TaskID)
 	script := d.script.deterministic(stage, env.Inputs)
 	payload, err := json.Marshal(script.outputs)
@@ -603,17 +614,19 @@ func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 		return apiv1.ResultEnvelope{}, fmt.Errorf("marshal scripted result for %s: %w", stage, err)
 	}
 
-	inputs := make(map[string]any, len(env.Inputs)+1)
-	for key, value := range env.Inputs {
-		inputs[key] = value
+	resultFile := ""
+	if value, ok := env.Inputs[executor.InputResultFile]; ok {
+		var valid bool
+		resultFile, valid = value.(string)
+		if !valid {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("%s input for %s is %T, want string", executor.InputResultFile, stage, value)
+		}
 	}
-	inputs[executor.InputResultFile] = contractResultFile
-	env.Inputs = inputs
 	run.Command = []string{d.executable, "-test.run=^TestShippedWorkflowCommandHelper$"}
 	run.Env = map[string]string{
 		contractHelperMode:       "1",
 		contractHelperPayload:    string(payload),
-		contractHelperResultFile: contractResultFile,
+		contractHelperResultFile: resultFile,
 		contractHelperExitCode:   strconv.Itoa(script.exitCode),
 	}
 	run.Network = ""
@@ -655,7 +668,17 @@ func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities ma
 			if err != nil {
 				return nil, err
 			}
-			return &scriptedDeterministic{shell: shell, executable: executable, script: script}, nil
+			ciPoll, err := executor.NewCIPollExecutor(contractPRPoller{}, rec)
+			if err != nil {
+				return nil, err
+			}
+			builtins, err := executor.NewTaskExecutor(shell, ciPoll)
+			if err != nil {
+				return nil, err
+			}
+			return &scriptedDeterministic{
+				shell: shell, builtins: builtins, executable: executable, script: script,
+			}, nil
 		},
 		NewAgentic: func(_ string, rec runner.ArtifactRecorder, registrar runner.SecretRegistrar) (invoke.Goober, error) {
 			injector, err := credentials.NewInjector(resolver, nil, registrar)

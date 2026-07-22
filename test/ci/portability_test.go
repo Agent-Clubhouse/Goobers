@@ -177,6 +177,7 @@ func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
 					"cover-check",
 					"sandbox-check",
 					"linux-node-validation",
+					"test-shipped-workflows",
 				},
 			},
 		},
