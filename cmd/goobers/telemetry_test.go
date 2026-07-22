@@ -70,6 +70,39 @@ func writeFixtureRunWithErrorForGaggle(t *testing.T, l instance.Layout, runID, g
 	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
 		t.Fatal(err)
 	}
+
+	span := telemetry.SpanRecord{
+		Schema:     telemetry.SpanSchema,
+		TraceID:    runID,
+		SpanID:     "0123456789abcdef",
+		Name:       "task/implement",
+		Kind:       telemetry.SpanKindTask,
+		StartTime:  time.Now().UTC().Add(-time.Minute),
+		EndTime:    time.Now().UTC().Add(time.Minute),
+		Status:     "error",
+		Attributes: map[string]string{telemetry.AttrStage: "implement", telemetry.AttrAttemptNumber: "1"},
+		Events: []telemetry.SpanEventRecord{{
+			Name: telemetry.GenAIModelUsageEventName,
+			Attributes: map[string]string{
+				telemetry.AttrGenAIResponseModel:     "gpt-5.4",
+				telemetry.AttrGenAIUsageInputTokens:  "120",
+				telemetry.AttrGenAIUsageOutputTokens: "30",
+				telemetry.AttrCopilotPremiumRequests: "1",
+				telemetry.AttrUsageCostUSD:           "0.25",
+			},
+		}},
+	}
+	spanData, err := json.Marshal(span)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanDir := filepath.Join(l.RunsDir(), runID, "spans")
+	if err := os.MkdirAll(spanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spanDir, "spans.jsonl"), append(spanData, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestTelemetryStatsAfterRun hand-writes its fixture run directly to disk
@@ -129,11 +162,20 @@ func TestTelemetryStatsJSON(t *testing.T) {
 		got.Stages[0].TotalAttempts != 1 || got.Stages[0].FailedAttempts != 1 {
 		t.Fatalf("stage stats = %#v", got.Stages)
 	}
+	if len(got.Models) != 1 || got.Models[0].Model != "gpt-5.4" ||
+		got.Models[0].UsageSamples != 1 ||
+		got.Models[0].InputTokenSamples != 1 || got.Models[0].InputTokens != 120 ||
+		got.Models[0].OutputTokenSamples != 1 || got.Models[0].OutputTokens != 30 ||
+		got.Models[0].PremiumRequestSamples != 1 || got.Models[0].CopilotPremiumRequests != 1 ||
+		got.Models[0].CostSamples != 1 || got.Models[0].CostUSD != 0.25 {
+		t.Fatalf("model stats = %#v", got.Models)
+	}
 
 	var document struct {
 		Gaggles []json.RawMessage `json:"gaggles"`
 		Runs    []json.RawMessage `json:"runs"`
 		Stages  []json.RawMessage `json:"stages"`
+		Models  []json.RawMessage `json:"models"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 		t.Fatal(err)
@@ -151,6 +193,13 @@ func TestTelemetryStatsJSON(t *testing.T) {
 		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
 		"durationSamples", "p50DurationMs", "p95DurationMs",
 		"tokenSamples", "costSamples", "retryWasteAttempts",
+	)
+	assertJSONObjectKeys(t, document.Models[0],
+		"model", "usageSamples",
+		"inputTokenSamples", "inputTokens",
+		"outputTokenSamples", "outputTokens",
+		"premiumRequestSamples", "copilotPremiumRequests",
+		"costSamples", "costUSD",
 	)
 }
 
@@ -252,7 +301,7 @@ func TestTelemetryJSONEmptyInstance(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"gaggles":[],"runs":[],"stages":[]}` + "\n"},
+		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"gaggles":[],"runs":[],"stages":[],"models":[]}` + "\n"},
 		{name: "errors", args: []string{"telemetry", "errors", "--json", root}, want: "[]\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

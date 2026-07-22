@@ -182,6 +182,7 @@ export class FixtureDaemonClient implements DaemonClient {
           (!request?.gaggle || item.gaggle === request.gaggle) &&
           (!request?.workflow || item.workflow === request.workflow),
       ),
+      models: stats.models,
     });
   }
 

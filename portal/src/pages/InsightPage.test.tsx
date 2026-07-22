@@ -135,7 +135,7 @@ describe("Insight page", () => {
       await screen.findByLabelText("Scope"),
       screen.getByRole("option", { name: "Workflow · core / implementation" }),
     );
-    getTelemetryStats.mockResolvedValueOnce({ gaggles: [], runs: [], stages: [] });
+    getTelemetryStats.mockResolvedValueOnce({ gaggles: [], runs: [], stages: [], models: [] });
 
     await user.selectOptions(screen.getByLabelText("Time window"), "24h");
 
