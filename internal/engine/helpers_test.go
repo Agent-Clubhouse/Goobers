@@ -22,6 +22,24 @@ func linearSpec() apiv1.WorkflowSpec {
 	}
 }
 
+// previewSpec uses a container-image stage — the one DSL feature that remains
+// preview (containers deferred #1102) now that the standard surface is GA
+// (#1196) — so the engine's preview-gate tests still exercise a real preview
+// feature.
+func previewSpec() apiv1.WorkflowSpec {
+	return apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build",
+			Type: apiv1.TaskDeterministic,
+			Goal: "build",
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Image: "alpine:3.20"},
+		}},
+	}
+}
+
 // gatedSpec is an implement→review workflow whose reviewer gate can pass, abort,
 // or loop back for changes — the shape the engine's branching tests walk.
 func gatedSpec() apiv1.WorkflowSpec {

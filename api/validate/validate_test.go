@@ -110,6 +110,47 @@ func TestExampleConfigPasses(t *testing.T) {
 	}
 }
 
+// TestCanonicalConfigIsGAWithoutPreviewOptIn is the #1196 regression: the
+// canonical DSL surface that guided-init scaffolds and /config-examples model
+// must validate with NO VER002 preview findings even without the preview
+// opt-in, because every standard field is GA. An earlier placeholder marked
+// every field preview, so guided-init tripped a blocking VER002 on every field
+// ("config directory failed validation"). Stripping the opt-in here proves the
+// surface is genuinely GA, not merely opt-in-tolerated.
+func TestCanonicalConfigIsGAWithoutPreviewOptIn(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(root, "manifest.yaml")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	needle := "  annotations:\n    " + wf.PreviewFeaturesAnnotation + `: "true"`
+	stripped := strings.Replace(string(manifest), needle, "", 1)
+	if stripped == string(manifest) {
+		t.Fatal("test setup: preview opt-in annotation not found in config-examples manifest")
+	}
+	if err := os.WriteFile(manifestPath, []byte(stripped), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := newV(t).ValidateDir(root)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	for _, issue := range report.Issues {
+		if issue.Code == WarningPreviewFeature {
+			t.Errorf("standard field wrongly flagged preview without opt-in (#1196): %s/%s: %s",
+				issue.Kind, issue.Name, issue.Message)
+		}
+	}
+	if report.HasErrors() {
+		t.Fatalf("canonical config without preview opt-in must validate clean (all standard fields GA), got:\n%s", joinIssues(report))
+	}
+}
+
 func TestGooberAssetsAreOpaqueToConfigValidation(t *testing.T) {
 	root := t.TempDir()
 	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {

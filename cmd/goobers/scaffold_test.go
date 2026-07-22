@@ -130,8 +130,8 @@ func assertScaffoldValidationWarnings(t *testing.T, output string, wantCompatibi
 		}
 		compatibility = append(compatibility, warning)
 	}
-	if !sawPreview {
-		t.Fatal("validate emitted no preview-feature warnings")
+	if sawPreview {
+		t.Fatal("scaffolded config must not emit preview-feature warnings — standard DSL fields are GA (#1196)")
 	}
 	if !slices.Equal(compatibility, wantCompatibility) {
 		t.Fatalf("validate compatibility warnings = %#v, want %#v", compatibility, wantCompatibility)
