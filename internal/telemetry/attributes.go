@@ -26,6 +26,7 @@ const (
 	AttrGateDecision           = "goobers.gate.decision"
 	AttrGateRepassNumber       = "goobers.gate.repass.n"
 	AttrErrorType              = string(semconv.ErrorTypeKey)
+	AttrGenAIResponseModel     = string(semconv.GenAIResponseModelKey)
 	AttrGenAIUsageInputTokens  = string(semconv.GenAIUsageInputTokensKey)
 	AttrGenAIUsageOutputTokens = string(semconv.GenAIUsageOutputTokensKey)
 	AttrCopilotPremiumRequests = "goobers.usage.copilot_premium_requests"
@@ -58,6 +59,7 @@ func AllAttributes() []Attribute {
 		AttrGateDecision,
 		AttrGateRepassNumber,
 		Attribute(AttrErrorType),
+		Attribute(AttrGenAIResponseModel),
 		Attribute(AttrGenAIUsageInputTokens),
 		Attribute(AttrGenAIUsageOutputTokens),
 		AttrCopilotPremiumRequests,

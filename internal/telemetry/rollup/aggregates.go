@@ -119,13 +119,32 @@ type StageStats struct {
 	HasRetryWasteCost     bool    `json:"-"`
 }
 
+// ModelStats is total observed usage grouped by model. Each measure carries its
+// own sample count so absent usage is never reported as zero.
+type ModelStats struct {
+	Model                  string  `json:"model"`
+	UsageSamples           int     `json:"usageSamples"`
+	InputTokenSamples      int     `json:"inputTokenSamples"`
+	InputTokens            int64   `json:"inputTokens"`
+	HasInputTokens         bool    `json:"-"`
+	OutputTokenSamples     int     `json:"outputTokenSamples"`
+	OutputTokens           int64   `json:"outputTokens"`
+	HasOutputTokens        bool    `json:"-"`
+	PremiumRequestSamples  int     `json:"premiumRequestSamples"`
+	CopilotPremiumRequests float64 `json:"copilotPremiumRequests"`
+	HasPremiumRequests     bool    `json:"-"`
+	CostSamples            int     `json:"costSamples"`
+	CostUSD                float64 `json:"costUSD"`
+	HasCost                bool    `json:"-"`
+}
+
 // StatsResult bundles the run-level and stage-level views a single Stats call
-// returns — one query round-trip covers both the "by workflow" and "by stage"
-// shapes #24 asks for.
+// returns.
 type StatsResult struct {
 	Gaggles []GaggleStats `json:"gaggles"`
 	Runs    []RunStats    `json:"runs"`
 	Stages  []StageStats  `json:"stages"`
+	Models  []ModelStats  `json:"models"`
 }
 
 // InstanceSummary is the lifetime (or Since-windowed) instance card exposed by
@@ -287,7 +306,11 @@ func (db *DB) Stats(req StatsRequest) (StatsResult, error) {
 	if err := db.populateStageDistributions(req, stages); err != nil {
 		return StatsResult{}, err
 	}
-	return StatsResult{Gaggles: gaggles, Runs: runs, Stages: stages}, nil
+	models, err := db.modelStats(req)
+	if err != nil {
+		return StatsResult{}, err
+	}
+	return StatsResult{Gaggles: gaggles, Runs: runs, Stages: stages, Models: models}, nil
 }
 
 func (db *DB) gaggleStats(req StatsRequest) ([]GaggleStats, error) {

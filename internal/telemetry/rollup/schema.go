@@ -305,4 +305,23 @@ CREATE INDEX IF NOT EXISTS idx_agent_invocations_run ON agent_invocations(run_id
 CREATE INDEX IF NOT EXISTS idx_agent_invocations_attempt ON agent_invocations(run_id, stage, traversal);
 CREATE INDEX IF NOT EXISTS idx_agent_invocations_model_version ON agent_invocations(model, harness_version);
 `,
+	// v9 (issue #1208): preserve the model dimension without changing
+	// stage_usage's one-row-per-attempt aggregate contract. Existing attempts
+	// remain explicitly unmeasured by model because no rows are backfilled.
+	`
+CREATE TABLE IF NOT EXISTS stage_model_usage (
+	run_id                   TEXT NOT NULL,
+	stage                    TEXT NOT NULL,
+	traversal                INTEGER NOT NULL,
+	attempt                  INTEGER NOT NULL,
+	model                    TEXT NOT NULL,
+	input_tokens             INTEGER,
+	output_tokens            INTEGER,
+	copilot_premium_requests REAL,
+	cost_usd                 REAL,
+	PRIMARY KEY (run_id, stage, traversal, model)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stage_model_usage_run ON stage_model_usage(run_id);
+`,
 }

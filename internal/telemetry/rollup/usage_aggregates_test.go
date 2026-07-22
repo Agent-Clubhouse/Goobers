@@ -21,6 +21,7 @@ type usageAttemptFixture struct {
 	model          string
 	harnessVersion string
 	metrics        map[string]float64
+	modelUsage     []telemetry.ModelUsage
 	skipSpan       bool
 }
 
@@ -86,6 +87,26 @@ func seedUsageRun(
 			Status:     "ok",
 			Attributes: attrs,
 		}
+		for _, usage := range attempt.modelUsage {
+			eventAttrs := map[string]string{telemetry.AttrGenAIResponseModel: usage.Model}
+			if usage.InputTokens != nil {
+				eventAttrs[telemetry.AttrGenAIUsageInputTokens] = strconv.FormatInt(*usage.InputTokens, 10)
+			}
+			if usage.OutputTokens != nil {
+				eventAttrs[telemetry.AttrGenAIUsageOutputTokens] = strconv.FormatInt(*usage.OutputTokens, 10)
+			}
+			if usage.CopilotPremiumRequests != nil {
+				eventAttrs[telemetry.AttrCopilotPremiumRequests] = strconv.FormatFloat(*usage.CopilotPremiumRequests, 'f', -1, 64)
+			}
+			if usage.CostUSD != nil {
+				eventAttrs[telemetry.AttrUsageCostUSD] = strconv.FormatFloat(*usage.CostUSD, 'f', -1, 64)
+			}
+			record.Events = append(record.Events, telemetry.SpanEventRecord{
+				Name:       telemetry.GenAIModelUsageEventName,
+				Time:       cursor,
+				Attributes: eventAttrs,
+			})
+		}
 		data, err := json.Marshal(record)
 		if err != nil {
 			t.Fatalf("marshal span fixture: %v", err)
@@ -99,6 +120,9 @@ func seedUsageRun(
 	mustWriteFile(t, filepath.Join(dir, dirSpans, fileSpans), strings.Join(spanLines, "\n")+"\n")
 	return dir
 }
+
+func int64Usage(value int64) *int64       { return &value }
+func float64Usage(value float64) *float64 { return &value }
 
 func TestUsageRollupPreservesTaskRepasses(t *testing.T) {
 	tmp := t.TempDir()
@@ -412,6 +436,69 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	}
 	if err := db.IngestRun(unmeteredDir); err != nil {
 		t.Fatalf("re-ingest unmetered run: %v", err)
+	}
+}
+
+func TestUsageRollupGroupsObservedUsageByModel(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	firstDir := seedUsageRun(t, runsDir, "1111111111111111cdcdcdcdcdcdcdcd", "implement", "agent", fixtureStart,
+		usageAttemptFixture{duration: time.Millisecond, status: "success", modelUsage: []telemetry.ModelUsage{
+			{
+				Model: "a-model", InputTokens: int64Usage(10), OutputTokens: int64Usage(5),
+				CopilotPremiumRequests: float64Usage(0.5), CostUSD: float64Usage(0.25),
+			},
+			{
+				Model: "zero-model", InputTokens: int64Usage(0), OutputTokens: int64Usage(0),
+				CopilotPremiumRequests: float64Usage(0), CostUSD: float64Usage(0),
+			},
+		}})
+	seedUsageRun(t, runsDir, "2222222222222222cdcdcdcdcdcdcdcd", "implement", "agent", fixtureStart.Add(time.Hour),
+		usageAttemptFixture{duration: time.Millisecond, status: "success", modelUsage: []telemetry.ModelUsage{{
+			Model: "a-model", InputTokens: int64Usage(20), OutputTokens: int64Usage(10), CostUSD: float64Usage(0.75),
+		}}})
+	seedUsageRun(t, runsDir, "3333333333333333cdcdcdcdcdcdcdcd", "implement", "unmeasured", fixtureStart.Add(2*time.Hour),
+		usageAttemptFixture{duration: time.Millisecond, status: "success"})
+	seedUsageRun(t, runsDir, "4444444444444444cdcdcdcdcdcdcdcd", "nominate", "agent", fixtureStart.Add(3*time.Hour),
+		usageAttemptFixture{duration: time.Millisecond, status: "success", modelUsage: []telemetry.ModelUsage{{
+			Model: "a-model", InputTokens: int64Usage(1000), OutputTokens: int64Usage(1000), CostUSD: float64Usage(100),
+		}}})
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+	stats, err := db.Stats(StatsRequest{Workflow: "implement"})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if len(stats.Models) != 2 {
+		t.Fatalf("model stats = %#v, want two measured models", stats.Models)
+	}
+	aModel := stats.Models[0]
+	if aModel.Model != "a-model" || aModel.UsageSamples != 2 ||
+		!aModel.HasInputTokens || aModel.InputTokenSamples != 2 || aModel.InputTokens != 30 ||
+		!aModel.HasOutputTokens || aModel.OutputTokenSamples != 2 || aModel.OutputTokens != 15 ||
+		!aModel.HasPremiumRequests || aModel.PremiumRequestSamples != 1 || aModel.CopilotPremiumRequests != 0.5 ||
+		!aModel.HasCost || aModel.CostSamples != 2 || aModel.CostUSD != 1 {
+		t.Fatalf("a-model stats = %#v", aModel)
+	}
+	zero := stats.Models[1]
+	if zero.Model != "zero-model" ||
+		!zero.HasInputTokens || zero.InputTokens != 0 ||
+		!zero.HasOutputTokens || zero.OutputTokens != 0 ||
+		!zero.HasPremiumRequests || zero.CopilotPremiumRequests != 0 ||
+		!zero.HasCost || zero.CostUSD != 0 {
+		t.Fatalf("zero-model stats = %#v", zero)
+	}
+
+	var rows int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM stage_model_usage`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 4 {
+		t.Fatalf("stage_model_usage rows = %d, want 4 including filtered workflow", rows)
+	}
+	if err := db.IngestRun(firstDir); err != nil {
+		t.Fatalf("re-ingest model usage: %v", err)
 	}
 }
 

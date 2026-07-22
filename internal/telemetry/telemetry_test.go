@@ -836,6 +836,7 @@ func TestCanonicalAttributeRegistryDoesNotDrift(t *testing.T) {
 		"goobers.gate.decision",
 		"goobers.gate.repass.n",
 		"error.type",
+		"gen_ai.response.model",
 		"gen_ai.usage.input_tokens",
 		"gen_ai.usage.output_tokens",
 		"goobers.usage.copilot_premium_requests",

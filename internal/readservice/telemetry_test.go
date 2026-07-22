@@ -72,6 +72,10 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 			},
 			{Gaggle: "core", Workflow: "running", Stage: "active", TotalAttempts: 1},
 		},
+		Models: []rollup.ModelStats{{
+			Model: "gpt-5.4", UsageSamples: 1,
+			InputTokenSamples: 1, InputTokens: 0, HasInputTokens: true,
+		}},
 	}}
 	service := &Telemetry{store: store}
 
@@ -125,6 +129,11 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 		done.RetryWasteCostUSD == nil || *done.RetryWasteCostUSD != 0.5 {
 		t.Fatalf("projected stage distributions = %+v", done)
 	}
+	if len(got.Models) != 1 ||
+		got.Models[0].InputTokens == nil || *got.Models[0].InputTokens != 0 ||
+		got.Models[0].OutputTokens != nil || got.Models[0].CostUSD != nil {
+		t.Fatalf("projected model usage = %+v", got.Models)
+	}
 
 	data, err := json.Marshal(got.Runs[1])
 	if err != nil {
@@ -165,8 +174,8 @@ func TestTelemetryStatsEmptySlicesAndInvalidWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Gaggles == nil || got.Runs == nil || got.Stages == nil ||
-		len(got.Gaggles) != 0 || len(got.Runs) != 0 || len(got.Stages) != 0 {
+	if got.Gaggles == nil || got.Runs == nil || got.Stages == nil || got.Models == nil ||
+		len(got.Gaggles) != 0 || len(got.Runs) != 0 || len(got.Stages) != 0 || len(got.Models) != 0 {
 		t.Fatalf("empty stats = %#v", got)
 	}
 

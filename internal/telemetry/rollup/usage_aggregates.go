@@ -29,6 +29,55 @@ type stageDistributionKey struct {
 	harnessVersion string
 }
 
+func (db *DB) modelStats(req StatsRequest) ([]ModelStats, error) {
+	where, args := statsWhere("r.workflow", "r.gaggle", "r.started_at", req)
+	query := fmt.Sprintf(`
+		SELECT smu.model,
+		       COUNT(*),
+		       COUNT(smu.input_tokens), COALESCE(SUM(smu.input_tokens), 0),
+		       COUNT(smu.output_tokens), COALESCE(SUM(smu.output_tokens), 0),
+		       COUNT(smu.copilot_premium_requests), COALESCE(SUM(smu.copilot_premium_requests), 0),
+		       COUNT(smu.cost_usd), COALESCE(SUM(smu.cost_usd), 0)
+		FROM stage_model_usage smu
+		JOIN runs r ON r.run_id = smu.run_id
+		%s
+		GROUP BY smu.model
+		ORDER BY smu.model`, where)
+	rows, err := db.sql.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query model usage: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []ModelStats
+	for rows.Next() {
+		var stat ModelStats
+		if err := rows.Scan(
+			&stat.Model,
+			&stat.UsageSamples,
+			&stat.InputTokenSamples,
+			&stat.InputTokens,
+			&stat.OutputTokenSamples,
+			&stat.OutputTokens,
+			&stat.PremiumRequestSamples,
+			&stat.CopilotPremiumRequests,
+			&stat.CostSamples,
+			&stat.CostUSD,
+		); err != nil {
+			return nil, fmt.Errorf("rollup: scan model usage: %w", err)
+		}
+		stat.HasInputTokens = stat.InputTokenSamples > 0
+		stat.HasOutputTokens = stat.OutputTokenSamples > 0
+		stat.HasPremiumRequests = stat.PremiumRequestSamples > 0
+		stat.HasCost = stat.CostSamples > 0
+		out = append(out, stat)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rollup: iterate model usage: %w", err)
+	}
+	return out, nil
+}
+
 // populateStageDistributions adds nearest-rank p50/p95 measurements and retry
 // waste to the existing stage rows. A retry-waste resource total is available
 // only when every superseded attempt reported that resource, so missing usage

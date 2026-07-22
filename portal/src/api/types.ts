@@ -471,6 +471,7 @@ export interface TelemetryStatsResult {
   gaggles: TelemetryGaggleStats[];
   runs: TelemetryRunStats[];
   stages: TelemetryStageStats[];
+  models: TelemetryModelStats[];
 }
 
 export interface TelemetryGaggleStats {
@@ -522,6 +523,19 @@ export interface TelemetryStageStats {
   retryWasteDurationMs?: number;
   retryWasteTokens?: number;
   retryWasteCostUSD?: number;
+}
+
+export interface TelemetryModelStats {
+  model: string;
+  usageSamples: number;
+  inputTokenSamples: number;
+  inputTokens?: number;
+  outputTokenSamples: number;
+  outputTokens?: number;
+  premiumRequestSamples: number;
+  copilotPremiumRequests?: number;
+  costSamples: number;
+  costUSD?: number;
 }
 
 export interface TelemetryErrorsOptions extends TelemetryStatsOptions {

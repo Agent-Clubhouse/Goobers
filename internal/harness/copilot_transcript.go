@@ -84,6 +84,7 @@ type copilotShutdownData struct {
 type transcriptCapture struct {
 	data         []byte
 	metrics      map[string]float64
+	modelUsage   []telemetry.ModelUsage
 	truncated    bool
 	droppedBytes int64
 }
@@ -112,6 +113,7 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 	buf := newTranscriptBuffer(limit)
 	converted := false
 	var metrics map[string]float64
+	var modelUsage []telemetry.ModelUsage
 	var prompt, finalOutput *transcriptEvent
 
 	for scanner.Scan() {
@@ -128,8 +130,9 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 		}
 		events := convertCopilotSessionEvent(native)
 		if native.Type == "session.shutdown" {
-			if usage, ok := copilotUsageMetrics(native.Data); ok {
+			if usage, models, ok := copilotUsageMetrics(native.Data); ok {
 				metrics = usage
+				modelUsage = models
 				if len(usage) > 0 {
 					converted = true
 				}
@@ -172,15 +175,16 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 	return transcriptCapture{
 		data:         data,
 		metrics:      metrics,
+		modelUsage:   modelUsage,
 		truncated:    dropped > 0,
 		droppedBytes: dropped,
 	}, true
 }
 
-func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, bool) {
+func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.ModelUsage, bool) {
 	var data copilotShutdownData
 	if json.Unmarshal(raw, &data) != nil {
-		return nil, false
+		return nil, nil, false
 	}
 
 	models := make([]string, 0, len(data.ModelMetrics))
@@ -190,10 +194,17 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, bool) {
 	sort.Strings(models)
 
 	metrics := make(map[string]float64, 4)
+	var modelUsage []telemetry.ModelUsage
 	var premiumRequests, nanoAIU float64
 	var hasPremiumRequests, hasNanoAIU bool
 	for _, model := range models {
 		metric := data.ModelMetrics[model]
+		usage := telemetry.ModelUsage{
+			Model:                  model,
+			InputTokens:            metric.Usage.InputTokens,
+			OutputTokens:           metric.Usage.OutputTokens,
+			CopilotPremiumRequests: metric.Requests.Cost,
+		}
 		if metric.Usage.InputTokens != nil {
 			metrics[telemetry.AttrGenAIUsageInputTokens] += float64(*metric.Usage.InputTokens)
 		}
@@ -207,6 +218,12 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, bool) {
 		if metric.TotalNanoAIU != nil {
 			nanoAIU += *metric.TotalNanoAIU
 			hasNanoAIU = true
+			cost := *metric.TotalNanoAIU / nanoAIUPerUSD
+			usage.CostUSD = &cost
+		}
+		if usage.InputTokens != nil || usage.OutputTokens != nil ||
+			usage.CopilotPremiumRequests != nil || usage.CostUSD != nil {
+			modelUsage = append(modelUsage, usage)
 		}
 	}
 	if data.TotalPremiumRequests != nil {
@@ -224,9 +241,9 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, bool) {
 		metrics[telemetry.AttrUsageCostUSD] = nanoAIU / nanoAIUPerUSD
 	}
 	if len(metrics) == 0 {
-		return nil, true
+		return nil, modelUsage, true
 	}
-	return metrics, true
+	return metrics, modelUsage, true
 }
 
 func convertCopilotSessionEvent(native copilotSessionEvent) []transcriptEvent {

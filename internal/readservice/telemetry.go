@@ -44,6 +44,7 @@ type TelemetryStatsResult struct {
 	Gaggles []TelemetryGaggleStats `json:"gaggles"`
 	Runs    []TelemetryRunStats    `json:"runs"`
 	Stages  []TelemetryStageStats  `json:"stages"`
+	Models  []TelemetryModelStats  `json:"models"`
 }
 
 // TelemetryGaggleStats is the run aggregate for one gaggle.
@@ -103,6 +104,20 @@ type TelemetryStageStats struct {
 	RetryWasteDurationMs *int64   `json:"retryWasteDurationMs,omitempty"`
 	RetryWasteTokens     *int64   `json:"retryWasteTokens,omitempty"`
 	RetryWasteCostUSD    *float64 `json:"retryWasteCostUSD,omitempty"`
+}
+
+// TelemetryModelStats is observed usage totaled by model.
+type TelemetryModelStats struct {
+	Model                  string   `json:"model"`
+	UsageSamples           int      `json:"usageSamples"`
+	InputTokenSamples      int      `json:"inputTokenSamples"`
+	InputTokens            *int64   `json:"inputTokens,omitempty"`
+	OutputTokenSamples     int      `json:"outputTokenSamples"`
+	OutputTokens           *int64   `json:"outputTokens,omitempty"`
+	PremiumRequestSamples  int      `json:"premiumRequestSamples"`
+	CopilotPremiumRequests *float64 `json:"copilotPremiumRequests,omitempty"`
+	CostSamples            int      `json:"costSamples"`
+	CostUSD                *float64 `json:"costUSD,omitempty"`
 }
 
 // TelemetryErrorsRequest filters and paginates recent errors.
@@ -181,6 +196,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		Gaggles: make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
 		Runs:    make([]TelemetryRunStats, 0, len(stats.Runs)),
 		Stages:  make([]TelemetryStageStats, 0, len(stats.Stages)),
+		Models:  make([]TelemetryModelStats, 0, len(stats.Models)),
 	}
 	for _, stat := range stats.Gaggles {
 		item := TelemetryGaggleStats{
@@ -264,6 +280,29 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
 		}
 		result.Stages = append(result.Stages, item)
+	}
+	for _, stat := range stats.Models {
+		item := TelemetryModelStats{
+			Model:                 stat.Model,
+			UsageSamples:          stat.UsageSamples,
+			InputTokenSamples:     stat.InputTokenSamples,
+			OutputTokenSamples:    stat.OutputTokenSamples,
+			PremiumRequestSamples: stat.PremiumRequestSamples,
+			CostSamples:           stat.CostSamples,
+		}
+		if stat.HasInputTokens {
+			item.InputTokens = int64Pointer(stat.InputTokens)
+		}
+		if stat.HasOutputTokens {
+			item.OutputTokens = int64Pointer(stat.OutputTokens)
+		}
+		if stat.HasPremiumRequests {
+			item.CopilotPremiumRequests = float64Pointer(stat.CopilotPremiumRequests)
+		}
+		if stat.HasCost {
+			item.CostUSD = float64Pointer(stat.CostUSD)
+		}
+		result.Models = append(result.Models, item)
 	}
 	return result, nil
 }

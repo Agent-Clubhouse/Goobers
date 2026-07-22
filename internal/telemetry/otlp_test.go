@@ -99,6 +99,7 @@ func TestJournalSpanExporterWritesLosslessOTLPJSON(t *testing.T) {
 		attribute.String(AttrGateDecision, "needs-changes"),
 		attribute.Int(AttrGateRepassNumber, 1),
 		attribute.String(AttrErrorType, "testing"),
+		attribute.String(AttrGenAIResponseModel, "gpt-5.4"),
 		attribute.Int(AttrGenAIUsageInputTokens, 1200),
 		attribute.Int(AttrGenAIUsageOutputTokens, 340),
 		attribute.Int(AttrCopilotPremiumRequests, 3),

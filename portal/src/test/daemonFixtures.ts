@@ -537,6 +537,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           retryWasteAttempts: 0,
         },
       ],
+      models: [],
     },
     telemetryErrors: { items: [] },
   };
