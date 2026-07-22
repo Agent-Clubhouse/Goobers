@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/executor"
 )
 
@@ -582,7 +583,7 @@ func TestMergeQueuePollBudgetStaysInsideTheStageDeadline(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			budget := mergeQueuePollBudget(tc.stage)
+			budget := boundedwait.MergeQueuePollBudget(tc.stage)
 			if budget <= 0 {
 				t.Fatalf("budget = %s, want a positive poll budget", budget)
 			}
@@ -592,7 +593,7 @@ func TestMergeQueuePollBudgetStaysInsideTheStageDeadline(t *testing.T) {
 		})
 	}
 	// The specific pairing that caused the live failure.
-	if got := mergeQueuePollBudget(executor.DefaultTimeout); got >= executor.DefaultPollTimeout {
+	if got := boundedwait.MergeQueuePollBudget(executor.DefaultTimeout); got >= executor.DefaultPollTimeout {
 		t.Fatalf("budget under the default stage timeout = %s, want it to clamp the %s default poll timeout down", got, executor.DefaultPollTimeout)
 	}
 }
@@ -607,7 +608,7 @@ func TestMergeQueuePollReadsStageTimeoutFromDeclaredInput(t *testing.T) {
 	if got, want := stageTimeout(), 35*time.Minute; got != want {
 		t.Fatalf("stageTimeout() = %s, want %s (the declared input)", got, want)
 	}
-	if budget := mergeQueuePollBudget(stageTimeout()); budget <= executor.DefaultTimeout {
+	if budget := boundedwait.MergeQueuePollBudget(stageTimeout()); budget <= executor.DefaultTimeout {
 		t.Fatalf("budget = %s, want more than the %s executor default once the stage declares 35m", budget, executor.DefaultTimeout)
 	}
 }
