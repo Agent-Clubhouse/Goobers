@@ -1001,6 +1001,16 @@ func TestEscalationAttributionUsesCurrentLifecycleSegment(t *testing.T) {
 		journal.Trigger{Kind: journal.TriggerManual},
 		false,
 	)
+	for _, event := range []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 3, AttemptClass: journal.AttemptPolicy},
+	} {
+		clock.advance(time.Second)
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
 	clock.advance(time.Second)
 	if err := run.Append(journal.Event{
 		Type:    journal.EventGateEvaluated,
@@ -1047,8 +1057,13 @@ func TestEscalationAttributionUsesCurrentLifecycleSegment(t *testing.T) {
 	}
 	if detail.Escalation == nil ||
 		detail.Escalation.Selector != (EscalationSelector{Kind: "stage", Name: "implement"}) ||
-		detail.Escalation.TerminalReason != "resumed segment failed" {
+		detail.Escalation.TerminalReason != "resumed segment failed" ||
+		detail.Escalation.RepassCount != 0 ||
+		detail.Escalation.RetryCount != 0 {
 		t.Fatalf("resumed escalation = %+v", detail.Escalation)
+	}
+	if detail.RepassCount != 1 || detail.RetryCount != 1 {
+		t.Fatalf("whole-run attempt counts = repasses %d retries %d, want 1 each", detail.RepassCount, detail.RetryCount)
 	}
 	traceEscalation, err := service.RunEscalation(context.Background(), "run-resumed-escalation")
 	if err != nil {

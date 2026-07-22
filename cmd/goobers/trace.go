@@ -261,6 +261,7 @@ func followTrace(
 
 	var lastSeq uint64
 	for {
+		lifecycleStartSeq := traceLifecycleStartSeq(events)
 		for _, event := range events {
 			if event.Seq <= lastSeq {
 				continue
@@ -272,7 +273,7 @@ func followTrace(
 				return err
 			}
 			lastSeq = event.Seq
-			if event.Type == journal.EventRunFinished {
+			if event.Type == journal.EventRunFinished && event.Seq > lifecycleStartSeq {
 				return nil
 			}
 		}
@@ -288,6 +289,15 @@ func followTrace(
 		}
 		events = ledger.Events
 	}
+}
+
+func traceLifecycleStartSeq(events []readservice.RunEvent) uint64 {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventRunResumed {
+			return events[i].Seq
+		}
+	}
+	return 0
 }
 
 func writeFollowEvent(stdout io.Writer, event readservice.RunEvent, jsonOutput bool) error {

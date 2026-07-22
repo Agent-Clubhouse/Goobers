@@ -779,8 +779,7 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	var lastSeq uint64
 	var lastActivityAt time.Time
 	currentStage := ""
-	seenInitial := make(map[string]bool)
-	repasses, retries, policyRetries, infraRetries := 0, 0, 0, 0
+	repasses, retries, policyRetries, infraRetries := countStageAttempts(run.records)
 
 	for _, record := range run.records {
 		event := record.Event
@@ -798,19 +797,6 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 			currentStage = event.Target
 		case journal.EventStageStarted:
 			currentStage = event.Stage
-			switch event.AttemptClass {
-			case journal.AttemptPolicy:
-				retries++
-				policyRetries++
-			case journal.AttemptInfra:
-				retries++
-				infraRetries++
-			default:
-				if seenInitial[event.Stage] {
-					repasses++
-				}
-				seenInitial[event.Stage] = true
-			}
 		case journal.EventStageFinished:
 			if currentStage == event.Stage {
 				currentStage = ""
@@ -868,6 +854,30 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	}, nil
 }
 
+func countStageAttempts(records []journal.EventRecord) (repasses, retries, policyRetries, infraRetries int) {
+	seenInitial := make(map[string]bool)
+	for _, record := range records {
+		event := record.Event
+		if !event.KnownSchema() || event.Type != journal.EventStageStarted {
+			continue
+		}
+		switch event.AttemptClass {
+		case journal.AttemptPolicy:
+			retries++
+			policyRetries++
+		case journal.AttemptInfra:
+			retries++
+			infraRetries++
+		default:
+			if seenInitial[event.Stage] {
+				repasses++
+			}
+			seenInitial[event.Stage] = true
+		}
+	}
+	return repasses, retries, policyRetries, infraRetries
+}
+
 func pinnedGraph(run runRead) (*workflow.Graph, string, error) {
 	var ref *journal.Ref
 	for _, input := range run.identity.Inputs {
@@ -919,9 +929,10 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		return nil, nil
 	}
 	records = currentLifecycleRecords(records)
+	repasses, retries, _, _ := countStageAttempts(records)
 	cause := &EscalationCause{
-		RepassCount: summary.RepassCount,
-		RetryCount:  summary.RetryCount,
+		RepassCount: repasses,
+		RetryCount:  retries,
 	}
 	terminalStage := successfulTerminalStage(records)
 	for i := len(records) - 1; i >= 0; i-- {
