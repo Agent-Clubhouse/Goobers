@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"sync"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -112,6 +113,68 @@ func TestRegisterDefinitionRetainsDSLVersion(t *testing.T) {
 	}
 	if in.DSLVersion != "1.4" {
 		t.Fatalf("run input dslVersion = %q, want 1.4", in.DSLVersion)
+	}
+}
+
+func TestConcurrentRegistrationAssignsMonotonicVersions(t *testing.T) {
+	const registrations = 100
+
+	r := NewRegistryWithPreviewFeatures(true)
+	start := make(chan struct{})
+	results := make(chan int, registrations)
+	errs := make(chan error, registrations)
+
+	var wg sync.WaitGroup
+	for range registrations {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			version, err := r.Register("flow", linearSpec())
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- version
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		t.Errorf("Register: %v", err)
+	}
+
+	seen := make(map[int]bool, registrations)
+	for version := range results {
+		if seen[version] {
+			t.Errorf("version %d returned more than once", version)
+		}
+		seen[version] = true
+	}
+	for version := 1; version <= registrations; version++ {
+		if !seen[version] {
+			t.Errorf("version %d was not returned", version)
+		}
+		def, ok := r.Get("flow", version)
+		if !ok {
+			t.Errorf("version %d was not stored", version)
+			continue
+		}
+		if def.Version != version {
+			t.Errorf("stored version at index %d = %d", version, def.Version)
+		}
+	}
+
+	latest, ok := r.Latest("flow")
+	if !ok {
+		t.Fatal("latest definition not found")
+	}
+	if latest.Version != registrations {
+		t.Errorf("latest version = %d, want %d", latest.Version, registrations)
 	}
 }
 

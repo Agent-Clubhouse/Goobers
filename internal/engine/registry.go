@@ -43,14 +43,15 @@ func (r *Registry) Register(name string, spec apiv1.WorkflowSpec) (int, error) {
 // RegisterDefinition appends a parsed workflow definition, assigning its
 // registry run-pin version while retaining its independent DSL version.
 func (r *Registry) RegisterDefinition(def wf.Definition) (int, error) {
-	def.Version = len(r.peek(def.Name)) + 1
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	def.Version = len(r.defs[def.Name]) + 1
 	if _, err := r.Compile(def); err != nil {
 		return 0, err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.defs[def.Name] = append(r.defs[def.Name], def)
-	return len(r.defs[def.Name]), nil
+	return def.Version, nil
 }
 
 // Compile validates def with the same preview policy used for registration.
@@ -61,12 +62,6 @@ func (r *Registry) Compile(def wf.Definition) (*wf.Machine, error) {
 // PreviewFeaturesEnabled reports the policy carried by registered definitions.
 func (r *Registry) PreviewFeaturesEnabled() bool {
 	return r.allowPreviewFeatures
-}
-
-func (r *Registry) peek(name string) []wf.Definition {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.defs[name]
 }
 
 // Get returns a specific pinned version of a workflow (1-based).
