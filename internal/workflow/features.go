@@ -425,23 +425,10 @@ const (
 // since-version must not.
 const initialFeatureSinceVersion = "dev"
 
-// This registry is the immutable compatibility record from the latest tagged
-// release. It is empty until the first release and advances only when a release
-// records the feature matrix it shipped.
-var latestReleasedFeatureRegistry = mustFeatureRegistry(nil)
-
-var currentFeatureRegistry = mustCurrentFeatureRegistry(currentFeatures(initialFeatureSinceVersion))
+var currentFeatureRegistry = mustFeatureRegistry(currentFeatures(initialFeatureSinceVersion))
 
 func mustFeatureRegistry(features []Feature) FeatureRegistry {
 	registry, err := NewFeatureRegistry(features)
-	if err != nil {
-		panic(err)
-	}
-	return registry
-}
-
-func mustCurrentFeatureRegistry(features []Feature) FeatureRegistry {
-	registry, err := newFeatureRegistryAgainstReleased(latestReleasedFeatureRegistry, features)
 	if err != nil {
 		panic(err)
 	}

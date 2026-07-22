@@ -130,12 +130,9 @@ func TestCurrentFeaturesArePreviewAtInitialVersion(t *testing.T) {
 	}
 }
 
-func TestCurrentFeatureRegistrySatisfiesCompatibilityPolicy(t *testing.T) {
-	if _, err := newFeatureRegistryAgainstReleased(
-		latestReleasedFeatureRegistry,
-		currentFeatures(initialFeatureSinceVersion),
-	); err != nil {
-		t.Fatalf("current feature registry violates compatibility policy: %v", err)
+func TestCurrentFeatureRegistrySatisfiesLifecyclePolicy(t *testing.T) {
+	if _, err := NewFeatureRegistry(currentFeatures(initialFeatureSinceVersion)); err != nil {
+		t.Fatalf("current feature registry violates lifecycle policy: %v", err)
 	}
 }
 

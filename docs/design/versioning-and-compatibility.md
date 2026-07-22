@@ -67,10 +67,11 @@ Kubernetes-style *group/version* of the resource shape and only bumps on a full 
     `vMAJOR.MINOR.PATCH` releases (`dev` is only the initial pre-release baseline); CI rejects
     skipped transitions such as `ga→removed`, out-of-order versions, removal within the
     deprecation minor, and lifecycle history that rewrites the latest tagged release's immutable
-    feature snapshot. Removal is allowed only when that snapshot already records the feature as
-    deprecated, so adding `deprecated` and `removed` entries together cannot manufacture the
-    required release window. Until the first tagged release, the snapshot is empty and no feature
-    may enter `removed`.
+    feature snapshot. CI executes the feature registry from the latest reachable canonical SemVer
+    tag rather than trusting a snapshot in the proposed source tree. Removal is allowed only when
+    that tagged build already records the feature as deprecated, so adding `deprecated` and
+    `removed` entries together cannot manufacture the required release window. Until the first
+    tagged release, the external snapshot is empty and no feature may enter `removed`.
 
 ### 3.2 Release process (REL)
 
@@ -80,10 +81,10 @@ Kubernetes-style *group/version* of the resource shape and only bumps on a full 
   Conventional-Commit history + a curated release note, and attaches artifacts to the GitHub Release.
 - **Consumable without cloning**: publish binaries (and optionally a container image + Homebrew tap —
   ties to #33) so a consumer runs `goobers` from a downloaded artifact.
-- **Version ↔ DSL linkage**: each release records the DSL feature-registry snapshot it ships;
-  the release notes include the feature-matrix delta (newly GA, newly deprecated, removed). That
-  snapshot advances only from the feature matrix that actually shipped, never in the feature-change
-  PR that will be checked against it.
+- **Version ↔ DSL linkage**: the release tag pins the DSL feature registry it ships; the release
+  notes include the feature-matrix delta (newly GA, newly deprecated, removed). The compatibility
+  guard derives its snapshot by executing that tagged source, never from a release claim in the
+  feature-change PR being checked.
 
 ### 3.3 Feature-support matrix (VER/REL)
 

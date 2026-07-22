@@ -43,6 +43,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # The DSL compatibility test executes the registry from the latest
+          # reachable SemVer tag, so shallow history would erase its baseline.
+          fetch-depth: 0
 
       # Track the toolchain declared in go.mod (currently go 1.26) rather than a
       # hardcoded version, so CI can't drift from the module's `go` directive.
