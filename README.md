@@ -118,7 +118,7 @@ goobers completion fish | source  # fish
 ```sh
 make verify-fast # pre-push format, vet, and Go build tier
 make ci          # merge gate (Go + config + portal)
-make verify-full # merge gate plus e2e, envtest, and coverage
+make verify-full # merge plus integration, platform, and coverage gates
 ```
 
 CI runs the same merge-tier implementation on every PR to `main`. See the

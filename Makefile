@@ -12,11 +12,11 @@
 # There are no build/CI shell scripts in the tree, and a guard test enforces
 # that (test/ci: no shell on the toolchain path; the gates stay Go-delegated).
 #
-# The convenience recipes below (build, clean, help, cover, test-envtest) use a
-# POSIX shell for `$(shell …)`, `rm`, `grep`/`sed`/`expand`, etc. They are
-# developer ergonomics, not required checks. On a shell-less platform (e.g.
-# Windows cmd without git-bash) build a binary directly with
-# `go build ./cmd/<name>`, or reproduce the full gate with `go run ./test/ci`.
+# The Unix-hosted full tier and convenience recipes below (build, clean, help,
+# test-envtest) use a POSIX shell for environment assignments, `$(shell …)`,
+# `rm`, `grep`/`sed`/`expand`, etc. On a shell-less platform (e.g. Windows cmd
+# without git-bash), build a binary directly with `go build ./cmd/<name>` or
+# reproduce the merge gate with `go run ./test/ci`.
 
 .DEFAULT_GOAL := help
 
@@ -91,6 +91,21 @@ test-envtest:
 .PHONY: test-e2e
 test-e2e:
 	$(GO) test ./test/e2e -count=1
+
+## sandbox-check: Require and exercise native sandbox confinement.
+.PHONY: sandbox-check
+sandbox-check:
+	GOOBERS_REQUIRE_SANDBOX_TEST=1 $(GO) test -race ./internal/sandbox
+
+## linux-node-validation: Validate the daemon lifecycle and Windows platform seams.
+.PHONY: linux-node-validation
+linux-node-validation:
+	$(GO) build -o $(BIN)/goobers ./cmd/goobers
+	$(GO) run ./test/linuxvalidate -bin $(BIN)/goobers -out $(BIN)/linux-validation-evidence
+	GOOS=windows $(GO) build ./internal/winsvc/...
+	GOOS=windows $(GO) vet ./internal/winsvc/...
+	GOOS=windows $(GO) build ./internal/platform/safeopen/... ./internal/gooberassets/...
+	GOOS=windows $(GO) vet ./internal/platform/safeopen/... ./internal/gooberassets/...
 
 ## fmt: Format all Go source.
 .PHONY: fmt
@@ -209,9 +224,10 @@ verify-fast:
 ci:
 	$(GO) run ./test/ci
 
-## verify-full: Run the merge gate plus e2e, envtest, and coverage gates.
+## verify-full: Run all merge, integration, platform, and coverage gates.
 .PHONY: verify-full
-verify-full: ci test-e2e test-envtest cover-check
+.NOTPARALLEL: verify-full
+verify-full: ci test-e2e test-envtest cover-check sandbox-check linux-node-validation
 
 ## clean: Remove build artifacts.
 .PHONY: clean

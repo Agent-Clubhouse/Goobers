@@ -136,35 +136,113 @@ func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
 	}
 	makefile := string(data)
 
-	if !strings.Contains(makefile, "verify-fast:\n\t$(GO) run ./test/ci fast") {
-		t.Fatal("verify-fast must use the portable CI runner's mechanically checked fast subset")
+	tests := []struct {
+		target string
+		want   makeTarget
+	}{
+		{
+			target: "verify-fast",
+			want: makeTarget{
+				recipes: []string{"$(GO) run ./test/ci fast"},
+			},
+		},
+		{
+			target: "ci",
+			want: makeTarget{
+				recipes: []string{"$(GO) run ./test/ci"},
+			},
+		},
+		{
+			target: "verify-full",
+			want: makeTarget{
+				prerequisites: []string{
+					"ci",
+					"test-e2e",
+					"test-envtest",
+					"cover-check",
+					"sandbox-check",
+					"linux-node-validation",
+				},
+			},
+		},
 	}
-	if !strings.Contains(makefile, "ci:\n\t$(GO) run ./test/ci\n") {
-		t.Fatal("ci must use the portable CI runner's complete merge-gate check list")
-	}
-
-	fullPrerequisites := makeTargetPrerequisites(makefile, "verify-full")
-	if !slices.Contains(fullPrerequisites, "ci") {
-		t.Fatalf("verify-full prerequisites = %q, want ci", fullPrerequisites)
-	}
-	for _, want := range []string{"test-e2e", "test-envtest", "cover-check"} {
-		if !slices.Contains(fullPrerequisites, want) {
-			t.Errorf("verify-full prerequisites = %q, want %s", fullPrerequisites, want)
+	for _, test := range tests {
+		definitions := makeTargetDefinitions(makefile, test.target)
+		if len(definitions) != 1 {
+			t.Errorf("%s has %d definitions, want exactly one", test.target, len(definitions))
+			continue
+		}
+		if got := definitions[0]; !slices.Equal(got.prerequisites, test.want.prerequisites) ||
+			!slices.Equal(got.recipes, test.want.recipes) {
+			t.Errorf("%s = prerequisites %q, recipes %q; want prerequisites %q, recipes %q",
+				test.target, got.prerequisites, got.recipes, test.want.prerequisites, test.want.recipes)
 		}
 	}
-	if len(fullPrerequisites) < 2 {
-		t.Fatalf("verify-full prerequisites = %q, want a strict superset of ci", fullPrerequisites)
+
+	notParallel := makeTargetDefinitions(makefile, ".NOTPARALLEL")
+	serialized := false
+	for _, definition := range notParallel {
+		if slices.Contains(definition.prerequisites, "verify-full") {
+			serialized = true
+			break
+		}
+	}
+	if !serialized {
+		t.Error("verify-full prerequisites must be serialized to protect shared coverage.out writes")
 	}
 }
 
-func makeTargetPrerequisites(makefile, target string) []string {
-	prefix := target + ":"
-	for _, line := range strings.Split(makefile, "\n") {
-		if strings.HasPrefix(line, prefix) {
-			return strings.Fields(strings.TrimPrefix(line, prefix))
+func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflow := string(data)
+
+	for _, target := range []string{"sandbox-check", "linux-node-validation"} {
+		if !strings.Contains(workflow, "run: make "+target) {
+			t.Errorf("CI workflow must invoke make %s so the job is locally reproducible", target)
 		}
 	}
-	return nil
+}
+
+type makeTarget struct {
+	prerequisites []string
+	recipes       []string
+}
+
+func makeTargetDefinitions(makefile, target string) []makeTarget {
+	prefix := target + ":"
+	lines := strings.Split(makefile, "\n")
+	var definitions []makeTarget
+	for i, line := range lines {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		declaration := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		parts := strings.SplitN(declaration, ";", 2)
+		definition := makeTarget{
+			prerequisites: strings.Fields(parts[0]),
+		}
+		if len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
+			definition.recipes = append(definition.recipes, strings.TrimSpace(parts[1]))
+		}
+		for j := i + 1; j < len(lines); j++ {
+			next := lines[j]
+			if strings.HasPrefix(next, "\t") {
+				definition.recipes = append(definition.recipes, strings.TrimSpace(next))
+				continue
+			}
+			if strings.TrimSpace(next) == "" || strings.HasPrefix(strings.TrimSpace(next), "#") {
+				continue
+			}
+			break
+		}
+		definitions = append(definitions, definition)
+	}
+	return definitions
 }
 
 // isShellInterpreter reports whether base names a shell interpreter or a shell

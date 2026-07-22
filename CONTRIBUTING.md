@@ -22,7 +22,7 @@ Node.js 24 with npm, Git, and
 ```sh
 make verify-fast # pre-push format, vet, and Go build tier
 make ci          # merge gate: full Go, config, and portal validation
-make verify-full # ci plus e2e, envtest, and coverage gates
+make verify-full # ci plus integration, platform, and coverage gates
 ```
 
 ### Validation tier contract
@@ -34,42 +34,44 @@ The stable local contract is `make verify-fast` ⊂ `make ci` ⊂
 |---|---|---|
 | `make verify-fast` | Format check, `go vet`, and every `cmd/*` Go build | Fast feedback during development and before a push |
 | `make ci` | The unchanged portable merge gate: fast-tier checks plus shipped-config validation, race tests with coverage, lint, and portal build/test/contract checks | Required before merge; the shipped agent workflows' `local-ci` stages invoke this tier |
-| `make verify-full` | `ci` plus the explicit walking-skeleton e2e, Kubernetes envtest, and coverage-threshold gates | Nightly, on-demand, and release-candidate validation |
+| `make verify-full` | `ci` plus walking-skeleton e2e, Kubernetes envtest, coverage threshold, native sandbox confinement, and Linux-node/Windows-seam validation | Nightly, on-demand, and release-candidate validation |
 
 The subset relationship is executable rather than documentary:
 `verify-fast` selects checks from the same Go check list as `ci`, while
-`verify-full` has `ci` and the additional gates as Make prerequisites. Tests in
-`test/ci` fail if either relationship drifts.
+`verify-full` has `ci` and the additional gates as serialized Make
+prerequisites. Tests in `test/ci` compare the complete tier recipes and
+prerequisite graph, so extra or missing commands fail the contract check.
 
 **Humans:** use `verify-fast` for the short edit/push loop, `ci` for the merge
-gate, and `verify-full` when the host has the pinned envtest prerequisites
-available. **Agent workflow authors:** a Goobers `local-ci` stage for this
-repository must call `make ci`; the subprocess may assume only the tools listed
-below are on the daemon's `PATH` and otherwise inherits the daemon environment.
-This contract does not make stage execution hermetic. For another repository,
-configure its real non-interactive merge-gate command instead. **CI:** each
-validation job maps to the same contract:
+gate, and `verify-full` on a Unix-like host with the pinned envtest and native
+sandbox prerequisites available. **Agent workflow authors:** a Goobers
+`local-ci` stage for this repository must call `make ci`; the subprocess may
+assume only the tools listed below are on the daemon's `PATH` and otherwise
+inherits the daemon environment. This contract does not make stage execution
+hermetic. For another repository, configure its real non-interactive merge-gate
+command instead. **CI:** each validation job maps to the same contract:
 
 | GitHub Actions job | Tier correspondence |
 |---|---|
 | `platform gate` (Ubuntu/macOS) | `make ci` (`go run ./test/ci` is its portable implementation) |
 | `windows compile smoke` | The Windows `go vet` + build slice of `verify-fast` |
 | `make ci` aggregate | Required status for the merge tier and Windows compile slice; it runs no additional validation |
-| `sandbox confinement` | Merge-tier package validation repeated with native sandbox availability required |
-| `linux node validation` | Merge-tier platform acceptance companion for the shipped binary and daemon lifecycle |
+| `sandbox confinement` | Full-tier `make sandbox-check` gate with native sandbox availability required |
+| `linux node validation` | Full-tier `make linux-node-validation` platform acceptance gate for the shipped binary, daemon lifecycle, and Windows seams |
 
-Future dedicated e2e, envtest, coverage, conformance, or stress jobs belong to
-`verify-full`; each should invoke the corresponding Make target so its check is
-locally reproducible. Focused targets such as `make validate-configs`,
-`make portal-ci`, and `make portal-contract` remain available when only one
-surface changed. `go run ./test/ci` is the cross-platform implementation of
-`make ci`; it launches tools without Bash or POSIX-shell syntax. On Windows,
-stock `cmd.exe` is used only for Node's `npm.cmd` shim, and GNU Make is not
-required. Other convenience targets can still use a POSIX shell.
+Dedicated e2e, envtest, coverage, sandbox, and Linux-node jobs invoke their
+corresponding Make targets and compose under `verify-full`; future conformance
+or stress jobs follow the same pattern. Focused targets such as
+`make validate-configs`, `make portal-ci`, and `make portal-contract` remain
+available when only one surface changed. `go run ./test/ci` is the
+cross-platform implementation of `make ci`; it launches tools without Bash or
+POSIX-shell syntax. On Windows, stock `cmd.exe` is used only for Node's
+`npm.cmd` shim, and GNU Make is not required. Other convenience targets can
+still use a POSIX shell.
 
 ### Platform prerequisites
 
-| Platform | Required tools | Full gate invocation |
+| Platform | Required tools | Merge-tier invocation |
 |---|---|---|
 | Linux | Go from `go.mod`, Node.js 24 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
 | macOS | Go from `go.mod`, Node.js 24 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
@@ -85,6 +87,9 @@ bare filename. See Go's
 [race-detector requirements](https://go.dev/doc/articles/race_detector#Requirements).
 No Bash or MSYS shell is required by the gate; tests that specifically
 exercise Unix process and shell semantics are platform-gated on Windows.
+`verify-full` is Unix-hosted because its envtest, native-sandbox, and node
+validation targets use POSIX host facilities; Linux additionally requires
+`bubblewrap` with unprivileged user namespaces available.
 
 ### CI platform matrix
 
