@@ -124,6 +124,14 @@ func TestTickPrioritizesAgedWorkflowWhenCapacityReturns(t *testing.T) {
 	sched.Wait()
 
 	sched.Tick(context.Background(), now.Add(backlogPollInterval+time.Second))
+	// b-workflow's run dispatches asynchronously — dispatch launches
+	// Starter.Start in its own goroutine (#142) — so its start registers after
+	// Tick returns. Wait for it before asserting counts: a bare read here races
+	// the goroutine and flakes as b:0 on a contended runner (the macOS
+	// platform-gate flake, #1239), while the pool-skip and run.started-order
+	// assertions below stay deterministic because dispatch journals them
+	// synchronously before spawning the goroutine.
+	waitForCount(t, b.count, 1)
 	if a.count() != 1 || b.count() != 1 {
 		t.Fatalf("starts after capacity returned = a:%d b:%d, want 1 and 1", a.count(), b.count())
 	}

@@ -76,8 +76,16 @@ func TestProviderHTTPClientBoundsStalledEndpointRetries(t *testing.T) {
 	if err == nil {
 		t.Fatal("ListWorkItems() error = nil, want timeout")
 	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("stalled request took %s, want retries bounded by the client timeout", elapsed)
+	// The real "retries are bounded" invariant is the attempt count below:
+	// exactly retries+1 requests, each terminated by the client timeout. The
+	// elapsed check is only a coarse backstop against an *unbounded* regression
+	// (which would fill the buffered channel and hang) failing faster than the
+	// package test timeout — NOT a tight timing assertion. The former 500ms
+	// ceiling was ~8x the ~60ms nominal (3 x 20ms) and still tripped on the
+	// contended macOS hosted runner (#1195/#1239 flake); a whole-second budget
+	// keeps the hang backstop while giving CI scheduling jitter ample headroom.
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("stalled request took %s — retries appear unbounded, not capped by the client timeout", elapsed)
 	}
 	if got, want := len(requests), retries+1; got != want {
 		t.Fatalf("request attempts = %d, want %d", got, want)
