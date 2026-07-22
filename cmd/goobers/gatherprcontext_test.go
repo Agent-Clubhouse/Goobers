@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	apivalidate "github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -278,29 +280,23 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 		t.Fatalf("checked-out branch = %q, want %q (the PR's own branch, not the runner's default)", branch, prBranch)
 	}
 
-	data, err := os.ReadFile(filepath.Join(wt.Path, "pr-context.json"))
+	data, err := os.ReadFile(filepath.Join(wt.Path, remediationBriefResultFile))
 	if err != nil {
-		t.Fatalf("read pr-context.json: %v", err)
+		t.Fatalf("read %s: %v", remediationBriefResultFile, err)
 	}
-	var got struct {
-		SelectedNumber         string `json:"selectedNumber"`
-		Head                   string `json:"head"`
-		IsBehindBase           bool   `json:"isBehindBase"`
-		HasSubstantiveFindings string `json:"hasSubstantiveFindings"`
-		HasFailingCI           string `json:"hasFailingCI"`
-		Verdict                struct {
-			Decision string `json:"decision"`
-			Findings []struct {
-				Class string `json:"class"`
-			} `json:"findings"`
-		} `json:"verdict"`
-		Comments []struct {
-			Author string `json:"author"`
-			Body   string `json:"body"`
-		} `json:"comments"`
+	validator, err := apivalidate.New()
+	if err != nil {
+		t.Fatalf("create schema validator: %v", err)
 	}
+	if err := validator.ValidateJSON(schemas.RemediationBrief, data); err != nil {
+		t.Fatalf("%s does not satisfy its schema: %v\n%s", remediationBriefResultFile, err, data)
+	}
+	var got apiv1.RemediationBrief
 	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal pr-context.json: %v (data=%s)", err, data)
+		t.Fatalf("unmarshal %s: %v (data=%s)", remediationBriefResultFile, err, data)
+	}
+	if got.Schema != apiv1.RemediationBriefVersion {
+		t.Fatalf("schema = %q, want %q", got.Schema, apiv1.RemediationBriefVersion)
 	}
 	if got.SelectedNumber != "55" || got.Head != prBranch {
 		t.Fatalf("got = %+v, want selectedNumber=\"55\" head=%q", got, prBranch)
@@ -308,8 +304,14 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 	if !got.IsBehindBase {
 		t.Fatal("isBehindBase = false, want true — main advanced past the PR's branch point")
 	}
-	if got.Verdict.Decision != "needs-changes" || len(got.Verdict.Findings) != 1 || got.Verdict.Findings[0].Class != "substantive" {
-		t.Fatalf("verdict = %+v, want the embedded needs-changes verdict recovered from the comment thread", got.Verdict)
+	if got.GatherPRContext.HeadSHA != headSHA || got.GatherPRContext.BaseSHA != baseSHA {
+		t.Fatalf("gatherPrContext SHA pins = %q/%q, want %q/%q",
+			got.GatherPRContext.HeadSHA, got.GatherPRContext.BaseSHA, headSHA, baseSHA)
+	}
+	verdict := got.GatherPRContext.Verdict
+	if verdict == nil || verdict.Decision != apiv1.VerdictNeedsChanges ||
+		len(verdict.Findings) != 1 || verdict.Findings[0].Class != apiv1.FindingSubstantive {
+		t.Fatalf("verdict = %+v, want the embedded needs-changes verdict recovered from the comment thread", verdict)
 	}
 	if got.HasSubstantiveFindings != "true" {
 		t.Fatalf("hasSubstantiveFindings = %q, want \"true\" (the embedded verdict has a substantive finding)", got.HasSubstantiveFindings)
@@ -317,8 +319,13 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 	if got.HasFailingCI != "false" {
 		t.Fatalf("hasFailingCI = %q, want \"false\"", got.HasFailingCI)
 	}
-	if len(got.Comments) != 4 {
-		t.Fatalf("comments = %+v, want the full thread surfaced", got.Comments)
+	if len(got.GatherPRContext.Comments) != 4 {
+		t.Fatalf("comments = %+v, want the full thread surfaced", got.GatherPRContext.Comments)
+	}
+	if got.GatherCIFailures != nil || got.GatherReviewThreads != nil ||
+		got.GatherSiblingContext != nil || got.GatherIssueContext != nil {
+		t.Fatalf("optional gatherer sections = %+v/%+v/%+v/%+v, want omitted when those stages are absent",
+			got.GatherCIFailures, got.GatherReviewThreads, got.GatherSiblingContext, got.GatherIssueContext)
 	}
 }
 
@@ -489,16 +496,16 @@ func TestGatherPRContextCountsCrossPRConflictVerdict(t *testing.T) {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 
-	data, err := os.ReadFile(filepath.Join(wt.Path, "pr-context.json"))
+	data, err := os.ReadFile(filepath.Join(wt.Path, remediationBriefResultFile))
 	if err != nil {
-		t.Fatalf("read pr-context.json: %v", err)
+		t.Fatalf("read %s: %v", remediationBriefResultFile, err)
 	}
 	var got struct {
 		SelectedNumber         string `json:"selectedNumber"`
 		HasSubstantiveFindings string `json:"hasSubstantiveFindings"`
 	}
 	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal pr-context.json: %v (data=%s)", err, data)
+		t.Fatalf("unmarshal %s: %v (data=%s)", remediationBriefResultFile, err, data)
 	}
 	if got.SelectedNumber != "597" {
 		t.Fatalf("selectedNumber = %q, want \"597\"", got.SelectedNumber)
@@ -691,9 +698,9 @@ func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 		t.Fatalf("stdout = %q, want a mention of PR #56", stdout)
 	}
 
-	data, err := os.ReadFile(filepath.Join(wt.Path, "pr-context.json"))
+	data, err := os.ReadFile(filepath.Join(wt.Path, remediationBriefResultFile))
 	if err != nil {
-		t.Fatalf("read pr-context.json: %v", err)
+		t.Fatalf("read %s: %v", remediationBriefResultFile, err)
 	}
 	var got struct {
 		SelectedNumber string `json:"selectedNumber"`
@@ -701,7 +708,7 @@ func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 		HasFailingCI   string `json:"hasFailingCI"`
 	}
 	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal pr-context.json: %v (data=%s)", err, data)
+		t.Fatalf("unmarshal %s: %v (data=%s)", remediationBriefResultFile, err, data)
 	}
 	if got.SelectedNumber != "56" || got.Head != prBranch {
 		t.Fatalf("got = %+v, want selectedNumber=\"56\" head=%q", got, prBranch)
@@ -752,9 +759,9 @@ func TestGatherPRContextSelectsBehindBaseOnlyPRAndRebases(t *testing.T) {
 		t.Fatalf("gather-pr-context code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 
-	data, err := os.ReadFile(filepath.Join(wt.Path, "pr-context.json"))
+	data, err := os.ReadFile(filepath.Join(wt.Path, remediationBriefResultFile))
 	if err != nil {
-		t.Fatalf("read pr-context.json: %v", err)
+		t.Fatalf("read %s: %v", remediationBriefResultFile, err)
 	}
 	var contextResult struct {
 		SelectedNumber         string `json:"selectedNumber"`
@@ -764,7 +771,7 @@ func TestGatherPRContextSelectsBehindBaseOnlyPRAndRebases(t *testing.T) {
 		HasFailingCI           string `json:"hasFailingCI"`
 	}
 	if err := json.Unmarshal(data, &contextResult); err != nil {
-		t.Fatalf("unmarshal pr-context.json: %v", err)
+		t.Fatalf("unmarshal %s: %v", remediationBriefResultFile, err)
 	}
 	if contextResult.SelectedNumber != "58" {
 		t.Fatalf("selectedNumber = %q, want 58", contextResult.SelectedNumber)
@@ -833,9 +840,9 @@ func TestGatherPRContextPreservesClaimedConflictedBehindPR(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gather-pr-context code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	data, err := os.ReadFile(filepath.Join(wt.Path, "pr-context.json"))
+	data, err := os.ReadFile(filepath.Join(wt.Path, remediationBriefResultFile))
 	if err != nil {
-		t.Fatalf("read pr-context.json: %v", err)
+		t.Fatalf("read %s: %v", remediationBriefResultFile, err)
 	}
 	var contextResult struct {
 		SelectedNumber         string `json:"selectedNumber"`
@@ -845,7 +852,7 @@ func TestGatherPRContextPreservesClaimedConflictedBehindPR(t *testing.T) {
 		HasFailingCI           string `json:"hasFailingCI"`
 	}
 	if err := json.Unmarshal(data, &contextResult); err != nil {
-		t.Fatalf("unmarshal pr-context.json: %v", err)
+		t.Fatalf("unmarshal %s: %v", remediationBriefResultFile, err)
 	}
 	if contextResult.SelectedNumber != "59" {
 		t.Fatalf("selectedNumber = %q, want claimed PR 59", contextResult.SelectedNumber)
@@ -963,7 +970,7 @@ func TestGatherPRContextSkipsPRHeldByInFlightWorktree(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
 	t.Chdir(remWT.Path)
-	resultFile := filepath.Join(remWT.Path, "pr-context.json")
+	resultFile := filepath.Join(remWT.Path, remediationBriefResultFile)
 	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
 
 	// Phase 1: the owning run still holds the branch — expect a clean skip.
@@ -992,16 +999,16 @@ func TestGatherPRContextSkipsPRHeldByInFlightWorktree(t *testing.T) {
 	if !strings.Contains(stdout, "PR #72") {
 		t.Fatalf("phase 2 stdout = %q, want PR #72 gathered once its branch was released", stdout)
 	}
-	data, err := os.ReadFile(filepath.Join(remWT.Path, "pr-context.json"))
+	data, err := os.ReadFile(filepath.Join(remWT.Path, remediationBriefResultFile))
 	if err != nil {
-		t.Fatalf("phase 2 read pr-context.json: %v", err)
+		t.Fatalf("phase 2 read %s: %v", remediationBriefResultFile, err)
 	}
 	var got struct {
 		SelectedNumber string `json:"selectedNumber"`
 		Head           string `json:"head"`
 	}
 	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("phase 2 unmarshal pr-context.json: %v (data=%s)", err, data)
+		t.Fatalf("phase 2 unmarshal %s: %v (data=%s)", remediationBriefResultFile, err, data)
 	}
 	if got.SelectedNumber != "72" || got.Head != prBranch {
 		t.Fatalf("phase 2 got = %+v, want selectedNumber=\"72\" head=%q", got, prBranch)

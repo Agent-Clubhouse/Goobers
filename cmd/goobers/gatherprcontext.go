@@ -28,6 +28,8 @@ var prReferencePattern = regexp.MustCompile(`(?i)\bPR\s*#\s*([0-9]+)\b`)
 // prReferencePattern requires.
 var hashReferencePattern = regexp.MustCompile(`#\s*([0-9]+)\b`)
 
+const remediationBriefResultFile = "remediation-brief.json"
+
 type remediationPriority uint8
 
 const (
@@ -37,23 +39,14 @@ const (
 	remediationPriorityNeedsRemediation
 )
 
-// prThreadComment is one comment on the PR thread — human/other-agent review
-// feedback, or a prior merge-review verdict comment — surfaced as context
-// for whatever addresses the PR next (design doc §5: pr-remediation reads
-// "the Verdict artifact, PR-thread comments, and behind/conflict state").
-type prThreadComment struct {
-	Author    string `json:"author,omitempty"`
-	Body      string `json:"body"`
-	CreatedAt string `json:"createdAt,omitempty"`
-}
-
 const gatherPRContextHelp = "Usage: goobers gather-pr-context [path]\n\n" +
 	"Select one open, goober-authored PR labeled goobers:needs-remediation\n" +
 	"or reporting failing CI, falling back to a PR behind its base only when\n" +
 	"neither stronger signal is present. Check out its branch into this\n" +
 	"stage's worktree and load the latest merge-review verdict + PR-thread\n" +
 	"comments + whether the base has advanced since this PR branched, writing\n" +
-	"them to the declared result file. [path] is the instance root (matching\n" +
+	"the versioned remediation-brief artifact to the declared result file.\n" +
+	"[path] is the instance root (matching\n" +
 	"pr-select/apply-verdict), defaulting to GOOBERS_INSTANCE_ROOT; git\n" +
 	"operations run against the stage's actual worktree (the process's\n" +
 	"current directory), not path — same split push-branch already relies\n" +
@@ -123,7 +116,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})
 	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, "pr-context.json")
+		return failProviderStage(stderr, "list pull requests", err, remediationBriefResultFile)
 	}
 	claimedNumber, hasExistingClaim, err := claimedPullRequestNumber(root)
 	if err != nil {
@@ -168,7 +161,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 
 	nonBlocked, err := filterRemediationPullRequests(ctx, provider, repo, prs, heldBranches)
 	if err != nil {
-		return failProviderStage(stderr, "filter remediation candidates", err, "pr-context.json")
+		return failProviderStage(stderr, "filter remediation candidates", err, remediationBriefResultFile)
 	}
 
 	// update-behind-pr already selected and claimed a full-remediation
@@ -222,11 +215,11 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 
 	rawComments, err := provider.ListComments(ctx, repo, strconv.Itoa(selected.Number))
 	if err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selected.Number), err, "pr-context.json")
+		return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selected.Number), err, remediationBriefResultFile)
 	}
 	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
 	if err != nil {
-		return failProviderStage(stderr, "resolve merge-review verdict author", err, "pr-context.json")
+		return failProviderStage(stderr, "resolve merge-review verdict author", err, remediationBriefResultFile)
 	}
 	verdict := gatherPRVerdict(rawComments, verdictAuthor)
 
@@ -256,13 +249,15 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	comments := make([]prThreadComment, 0, len(rawComments))
+	comments := make([]apiv1.RemediationThreadComment, 0, len(rawComments))
 	for _, c := range rawComments {
 		createdAt := ""
 		if c.CreatedAt != nil {
 			createdAt = c.CreatedAt.Format(time.RFC3339)
 		}
-		comments = append(comments, prThreadComment{Author: c.Author, Body: c.Body, CreatedAt: createdAt})
+		comments = append(comments, apiv1.RemediationThreadComment{
+			Author: c.Author, Body: c.Body, CreatedAt: createdAt, URL: c.URL,
+		})
 	}
 
 	// hasSubstantiveFindings is a plain "true"/"false" STRING, not a native
@@ -279,10 +274,11 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	}
 	hasFailingCI := strconv.FormatBool(selected.CheckState == providers.CheckStateFailing)
 
-	resultFile := providerInput("resultFile", "pr-context.json")
-	data, err := json.MarshalIndent(map[string]interface{}{
-		"selectedNumber": strconv.Itoa(selected.Number),
-		"head":           selected.Head,
+	resultFile := providerInput("resultFile", remediationBriefResultFile)
+	data, err := json.MarshalIndent(apiv1.RemediationBrief{
+		Schema:         apiv1.RemediationBriefVersion,
+		SelectedNumber: strconv.Itoa(selected.Number),
+		Head:           selected.Head,
 		// The runner's well-known branch-rebinding output (issue #392,
 		// runner.WorkspaceBranchOutput): every stage AFTER this one gets its
 		// worktree provisioned on the PR's own head branch instead of a fresh
@@ -297,18 +293,20 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		// CONTRACT with the runner, not a second name for a field a stage
 		// happens to also thread to rebase-pr via inputsFrom, and renaming or
 		// dropping "head" must not silently un-wire the chain.
-		"workspaceBranch":        selected.Head,
-		"base":                   selected.Base,
-		"headSha":                selected.HeadSHA,
-		"baseSha":                selected.BaseSHA,
-		"isBehindBase":           behind,
-		"hasSubstantiveFindings": hasSubstantiveFindings,
-		"hasFailingCI":           hasFailingCI,
-		"verdict":                verdict,
-		"comments":               comments,
+		WorkspaceBranch:        selected.Head,
+		Base:                   selected.Base,
+		IsBehindBase:           behind,
+		HasSubstantiveFindings: hasSubstantiveFindings,
+		HasFailingCI:           hasFailingCI,
+		GatherPRContext: apiv1.RemediationPRContext{
+			HeadSHA:  selected.HeadSHA,
+			BaseSHA:  selected.BaseSHA,
+			Verdict:  verdict,
+			Comments: comments,
+		},
 	}, "", "  ")
 	if err != nil {
-		pf(stderr, "error: marshal pr context: %v\n", err)
+		pf(stderr, "error: marshal remediation brief: %v\n", err)
 		return 1
 	}
 	if err := os.WriteFile(resultFile, data, 0o644); err != nil {

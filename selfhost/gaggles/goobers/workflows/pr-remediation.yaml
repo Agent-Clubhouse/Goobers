@@ -81,11 +81,11 @@ spec:
     # race on the same PR.
     - name: gather-pr-context
       type: deterministic
-      goal: Select a PR needing remediation, check out its branch, and load review context.
+      goal: Select a PR needing remediation, check out its branch, and emit the versioned remediation brief.
       run:
         command: ["goobers", "gather-pr-context"]
       inputs:
-        resultFile: "pr-context.json"
+        resultFile: "remediation-brief.json"
       capabilities:
         - github:pr:write
         - github:issues:write
@@ -205,8 +205,9 @@ spec:
       goal: >-
         Remediate this pull request. The worktree is already checked out on
         the PR's own branch, rebased onto its base where that was possible.
-        Read the merge-review verdict, the PR thread comments, and any rebase
-        conflict left to resolve — all attached as context — and address EVERY
+        Read remediation-brief.json from the attached context for the full
+        merge-review verdict and PR thread comments, plus any rebase conflict
+        left to resolve, and address EVERY
         finding in the verdict: it is a checklist, and merge-review re-verifies
         each item before the PR can become merge-ready, so a fix that only
         addresses some of them just burns another cycle. If the rebase
