@@ -21,6 +21,12 @@ type stageDistributionAccum struct {
 	wasteCostUSD           float64
 }
 
+type stageIdentity struct {
+	gaggle   string
+	workflow string
+	stage    string
+}
+
 // populateStageDistributions adds nearest-rank p50/p95 measurements and retry
 // waste to the existing stage rows. A retry-waste resource total is available
 // only when every superseded attempt reported that resource, so missing usage
@@ -31,7 +37,8 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 	}
 	where, args := statsWhere("r.workflow", "r.gaggle", "r.started_at", req)
 	query := fmt.Sprintf(`
-		SELECT sa.stage, sa.traversal < latest.final_traversal,
+		SELECT r.gaggle, r.workflow, sa.stage,
+		       sa.traversal < latest.final_traversal,
 		       sa.duration_ms,
 		       su.input_tokens,
 		       su.output_tokens,
@@ -46,30 +53,39 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 			GROUP BY run_id, stage
 		) latest ON latest.run_id = sa.run_id AND latest.stage = sa.stage
 		%s
-		ORDER BY sa.stage, sa.run_id, sa.traversal`, where)
+		ORDER BY r.gaggle, r.workflow, sa.stage, sa.run_id, sa.traversal`, where)
 	rows, err := db.sql.Query(query, args...)
 	if err != nil {
 		return fmt.Errorf("rollup: query stage distributions: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	accums := make(map[string]*stageDistributionAccum, len(stages))
+	accums := make(map[stageIdentity]*stageDistributionAccum, len(stages))
 	for rows.Next() {
-		var stage string
+		var identity stageIdentity
 		var wasted bool
 		var durationMs, inputTokens, outputTokens sql.NullInt64
 		var costUSD sql.NullFloat64
-		if err := rows.Scan(&stage, &wasted, &durationMs, &inputTokens, &outputTokens, &costUSD); err != nil {
+		if err := rows.Scan(
+			&identity.gaggle,
+			&identity.workflow,
+			&identity.stage,
+			&wasted,
+			&durationMs,
+			&inputTokens,
+			&outputTokens,
+			&costUSD,
+		); err != nil {
 			return fmt.Errorf("rollup: scan stage distribution: %w", err)
 		}
-		accum := accums[stage]
+		accum := accums[identity]
 		if accum == nil {
 			accum = &stageDistributionAccum{}
-			accums[stage] = accum
+			accums[identity] = accum
 		}
 		if durationMs.Valid {
 			if durationMs.Int64 < 0 {
-				return fmt.Errorf("rollup: stage %s has negative duration %d", stage, durationMs.Int64)
+				return fmt.Errorf("rollup: stage %s has negative duration %d", identity.stage, durationMs.Int64)
 			}
 			accum.durations = append(accum.durations, durationMs.Int64)
 		}
@@ -77,17 +93,17 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 		hasTokens := inputTokens.Valid && outputTokens.Valid
 		if hasTokens {
 			if inputTokens.Int64 < 0 || outputTokens.Int64 < 0 {
-				return fmt.Errorf("rollup: stage %s has negative token usage", stage)
+				return fmt.Errorf("rollup: stage %s has negative token usage", identity.stage)
 			}
 			tokens, err = addNonnegativeInt64(inputTokens.Int64, outputTokens.Int64)
 			if err != nil {
-				return fmt.Errorf("rollup: sum token usage for stage %s: %w", stage, err)
+				return fmt.Errorf("rollup: sum token usage for stage %s: %w", identity.stage, err)
 			}
 			accum.tokens = append(accum.tokens, tokens)
 		}
 		if costUSD.Valid {
 			if costUSD.Float64 < 0 || math.IsNaN(costUSD.Float64) || math.IsInf(costUSD.Float64, 0) {
-				return fmt.Errorf("rollup: stage %s has invalid cost %v", stage, costUSD.Float64)
+				return fmt.Errorf("rollup: stage %s has invalid cost %v", identity.stage, costUSD.Float64)
 			}
 			accum.costs = append(accum.costs, costUSD.Float64)
 		}
@@ -100,7 +116,7 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 			var err error
 			accum.wasteDurationMs, err = addNonnegativeInt64(accum.wasteDurationMs, durationMs.Int64)
 			if err != nil {
-				return fmt.Errorf("rollup: sum retry-waste duration for stage %s: %w", stage, err)
+				return fmt.Errorf("rollup: sum retry-waste duration for stage %s: %w", identity.stage, err)
 			}
 		}
 		if hasTokens {
@@ -108,14 +124,14 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 			var err error
 			accum.wasteTokens, err = addNonnegativeInt64(accum.wasteTokens, tokens)
 			if err != nil {
-				return fmt.Errorf("rollup: sum retry-waste tokens for stage %s: %w", stage, err)
+				return fmt.Errorf("rollup: sum retry-waste tokens for stage %s: %w", identity.stage, err)
 			}
 		}
 		if costUSD.Valid {
 			accum.wasteCostsObserved++
 			accum.wasteCostUSD += costUSD.Float64
 			if math.IsInf(accum.wasteCostUSD, 0) {
-				return fmt.Errorf("rollup: retry-waste cost overflow for stage %s", stage)
+				return fmt.Errorf("rollup: retry-waste cost overflow for stage %s", identity.stage)
 			}
 		}
 	}
@@ -124,7 +140,11 @@ func (db *DB) populateStageDistributions(req StatsRequest, stages []StageStats) 
 	}
 
 	for i := range stages {
-		accum := accums[stages[i].Stage]
+		accum := accums[stageIdentity{
+			gaggle:   stages[i].Gaggle,
+			workflow: stages[i].Workflow,
+			stage:    stages[i].Stage,
+		}]
 		if accum == nil {
 			continue
 		}

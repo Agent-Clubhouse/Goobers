@@ -83,7 +83,9 @@ func TestTelemetryStatsAfterRun(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stdout, "WORKFLOW STATS") || !strings.Contains(stdout, "default-implement") {
+	if !strings.Contains(stdout, "WORKFLOW STATS") ||
+		!strings.Contains(stdout, "GAGGLE") ||
+		!strings.Contains(stdout, "default-implement") {
 		t.Fatalf("stdout = %q", stdout)
 	}
 }
@@ -117,24 +119,33 @@ func TestTelemetryStatsJSON(t *testing.T) {
 		got.Runs[0].TotalRuns != 1 || got.Runs[0].FailedRuns != 1 {
 		t.Fatalf("run stats = %#v", got.Runs)
 	}
+	if len(got.Gaggles) != 1 || got.Gaggles[0].Gaggle != "example" ||
+		got.Gaggles[0].TotalRuns != 1 || got.Gaggles[0].FailedRuns != 1 {
+		t.Fatalf("gaggle stats = %#v", got.Gaggles)
+	}
 	if len(got.Stages) != 1 || got.Stages[0].Stage != "implement" ||
 		got.Stages[0].TotalAttempts != 1 || got.Stages[0].FailedAttempts != 1 {
 		t.Fatalf("stage stats = %#v", got.Stages)
 	}
 
 	var document struct {
-		Runs   []json.RawMessage `json:"runs"`
-		Stages []json.RawMessage `json:"stages"`
+		Gaggles []json.RawMessage `json:"gaggles"`
+		Runs    []json.RawMessage `json:"runs"`
+		Stages  []json.RawMessage `json:"stages"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 		t.Fatal(err)
 	}
+	assertJSONObjectKeys(t, document.Gaggles[0],
+		"gaggle", "totalRuns", "completedRuns", "failedRuns", "otherRuns",
+		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
+	)
 	assertJSONObjectKeys(t, document.Runs[0],
-		"workflow", "totalRuns", "completedRuns", "failedRuns", "otherRuns",
+		"gaggle", "workflow", "totalRuns", "completedRuns", "failedRuns", "otherRuns",
 		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
 	)
 	assertJSONObjectKeys(t, document.Stages[0],
-		"stage", "totalAttempts", "succeededAttempts", "failedAttempts",
+		"gaggle", "workflow", "stage", "totalAttempts", "succeededAttempts", "failedAttempts",
 		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
 		"durationSamples", "p50DurationMs", "p95DurationMs",
 		"tokenSamples", "costSamples", "retryWasteAttempts",
@@ -175,7 +186,7 @@ func TestTelemetryJSONEmptyInstance(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"runs":[],"stages":[]}` + "\n"},
+		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"gaggles":[],"runs":[],"stages":[]}` + "\n"},
 		{name: "errors", args: []string{"telemetry", "errors", "--json", root}, want: "[]\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

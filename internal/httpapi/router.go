@@ -321,11 +321,22 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 
 func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
 	query := request.URL.Query()
+	since, err := parseOptionalTime(query.Get("since"), "since")
+	if err != nil {
+		return readservice.RunListOptions{}, fmt.Errorf("%w: %v", readservice.ErrInvalidArgument, err)
+	}
+	until, err := parseOptionalTime(query.Get("until"), "until")
+	if err != nil {
+		return readservice.RunListOptions{}, fmt.Errorf("%w: %v", readservice.ErrInvalidArgument, err)
+	}
 	options := readservice.RunListOptions{
 		Gaggle:   query.Get("gaggle"),
 		Workflow: query.Get("workflow"),
+		Stage:    query.Get("stage"),
 		Phase:    readservice.RunPhase(query.Get("phase")),
 		Trigger:  readservice.TriggerKind(query.Get("trigger")),
+		Since:    since,
+		Until:    until,
 		Cursor:   query.Get("cursor"),
 	}
 	if value := query.Get("limit"); value != "" {

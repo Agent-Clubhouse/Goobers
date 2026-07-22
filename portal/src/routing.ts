@@ -1,14 +1,26 @@
 export type Route =
   | { page: "overview" }
   | { page: "workflows" }
-  | { page: "runs" }
+  | { page: "runs"; filters?: RunRouteFilters }
+  | { page: "insight" }
   | { page: "workflow"; id: string; gaggle?: string }
   | { page: "run"; id: string };
 
-export type PrimaryArea = "overview" | "workflows" | "runs";
+export interface RunRouteFilters {
+  gaggle?: string;
+  workflow?: string;
+  stage?: string;
+  since?: string;
+  until?: string;
+}
+
+export type PrimaryArea = "overview" | "workflows" | "runs" | "insight";
 
 export function parseRoute(hash = window.location.hash): Route {
-  const path = hash.replace(/^#\/?/, "");
+  const fragment = hash.replace(/^#\/?/, "");
+  const queryStart = fragment.indexOf("?");
+  const path = queryStart >= 0 ? fragment.slice(0, queryStart) : fragment;
+  const search = new URLSearchParams(queryStart >= 0 ? fragment.slice(queryStart + 1) : "");
   const [area, first, second] = path.split("/");
   const id = first ? decodeURIComponent(first) : "";
   if (area === "workflow" && id) {
@@ -23,7 +35,17 @@ export function parseRoute(hash = window.location.hash): Route {
     return { page: "workflows" };
   }
   if (area === "runs") {
-    return { page: "runs" };
+    const filters: RunRouteFilters = {
+      gaggle: optionalQuery(search, "gaggle"),
+      workflow: optionalQuery(search, "workflow"),
+      stage: optionalQuery(search, "stage"),
+      since: optionalQuery(search, "since"),
+      until: optionalQuery(search, "until"),
+    };
+    return Object.values(filters).some(Boolean) ? { page: "runs", filters } : { page: "runs" };
+  }
+  if (area === "insight") {
+    return { page: "insight" };
   }
   return { page: "overview" };
 }
@@ -37,6 +59,16 @@ export function routeHash(route: Route): string {
   }
   if (route.page === "run") {
     return `#/run/${encodeURIComponent(route.id)}`;
+  }
+  if (route.page === "runs" && route.filters) {
+    const search = new URLSearchParams();
+    for (const [name, value] of Object.entries(route.filters)) {
+      if (value) {
+        search.set(name, value);
+      }
+    }
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    return `#/runs${suffix}`;
   }
   return `#/${route.page}`;
 }
@@ -52,3 +84,7 @@ export function activeArea(route: Route): PrimaryArea {
 }
 
 export type Navigate = (route: Route) => void;
+
+function optionalQuery(search: URLSearchParams, name: string): string | undefined {
+  return search.get(name) || undefined;
+}

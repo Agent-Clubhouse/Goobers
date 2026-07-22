@@ -117,8 +117,14 @@ export class FixtureDaemonClient implements DaemonClient {
       (run) =>
         (!request?.gaggle || run.gaggle === request.gaggle) &&
         (!request?.workflow || run.workflow === request.workflow) &&
+        (!request?.stage ||
+          this.fixtures.runEvents?.[run.id]?.events.some(
+            (event) => event.stage === request.stage || event.gate === request.stage,
+          )) &&
         (!request?.phase || run.phase === request.phase) &&
-        (!request?.trigger || run.trigger.kind === request.trigger),
+        (!request?.trigger || run.trigger.kind === request.trigger) &&
+        (!request?.since || Date.parse(run.startedAt) >= Date.parse(request.since)) &&
+        (!request?.until || Date.parse(run.startedAt) <= Date.parse(request.until)),
     );
     runs = [...runs].sort(compareRunsNewestFirst);
     if (request?.cursor) {
@@ -162,11 +168,27 @@ export class FixtureDaemonClient implements DaemonClient {
     return { ...value, bytes: value.bytes.slice(0) };
   }
 
-  getTelemetryStats(
-    _request?: TelemetryStatsOptions,
+  async getTelemetryStats(
+    request?: TelemetryStatsOptions,
     options?: RequestOptions,
   ): Promise<TelemetryStatsResult> {
-    return fixture(this.fixtures.telemetryStats, options);
+    throwIfCancelled(options);
+    const stats = this.fixtures.telemetryStats;
+    return structuredClone({
+      gaggles: stats.gaggles.filter(
+        (item) => !request?.gaggle || item.gaggle === request.gaggle,
+      ),
+      runs: stats.runs.filter(
+        (item) =>
+          (!request?.gaggle || item.gaggle === request.gaggle) &&
+          (!request?.workflow || item.workflow === request.workflow),
+      ),
+      stages: stats.stages.filter(
+        (item) =>
+          (!request?.gaggle || item.gaggle === request.gaggle) &&
+          (!request?.workflow || item.workflow === request.workflow),
+      ),
+    });
   }
 
   listTelemetryErrors(

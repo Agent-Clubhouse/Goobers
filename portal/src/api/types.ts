@@ -285,8 +285,11 @@ export interface RunTrigger {
 export interface RunListOptions {
   gaggle?: string;
   workflow?: string;
+  stage?: string;
   phase?: RunPhase;
   trigger?: RunTriggerKind;
+  since?: string;
+  until?: string;
   limit?: number;
   cursor?: string;
 }
@@ -461,11 +464,25 @@ export interface TelemetryStatsOptions {
 }
 
 export interface TelemetryStatsResult {
+  gaggles: TelemetryGaggleStats[];
   runs: TelemetryRunStats[];
   stages: TelemetryStageStats[];
 }
 
+export interface TelemetryGaggleStats {
+  gaggle: string;
+  totalRuns: number;
+  completedRuns: number;
+  failedRuns: number;
+  otherRuns: number;
+  successRate?: number;
+  avgDurationMs?: number;
+  minDurationMs?: number;
+  maxDurationMs?: number;
+}
+
 export interface TelemetryRunStats {
+  gaggle: string;
   workflow: string;
   totalRuns: number;
   completedRuns: number;
@@ -478,6 +495,8 @@ export interface TelemetryRunStats {
 }
 
 export interface TelemetryStageStats {
+  gaggle: string;
+  workflow: string;
   stage: string;
   totalAttempts: number;
   succeededAttempts: number;

@@ -136,6 +136,7 @@ describe("portal foundation", () => {
     { hash: "#/overview", heading: "2 runs need attention." },
     { hash: "#/workflows", heading: "Workflows" },
     { hash: "#/runs", heading: "Runs" },
+    { hash: "#/insight", heading: "Insight" },
   ])("renders the $hash shell route from daemon fixtures", async ({ hash, heading }) => {
     window.location.hash = hash;
     renderLiveApp();

@@ -71,7 +71,7 @@ function fixtures(): DaemonFixtures {
         bytes: new TextEncoder().encode("ok").buffer,
       },
     },
-    telemetryStats: { runs: [], stages: [] },
+    telemetryStats: { gaggles: [], runs: [], stages: [] },
     telemetryErrors: { items: [] },
   };
 }

@@ -40,8 +40,23 @@ type StatsRequest struct {
 	Until    time.Time
 }
 
+// GaggleStats is the success/failure/duration aggregate for one gaggle.
+type GaggleStats struct {
+	Gaggle        string  `json:"gaggle"`
+	TotalRuns     int     `json:"totalRuns"`
+	CompletedRuns int     `json:"completedRuns"`
+	FailedRuns    int     `json:"failedRuns"`
+	OtherRuns     int     `json:"otherRuns"`
+	SuccessRate   float64 `json:"successRate"`
+	AvgDurationMs float64 `json:"avgDurationMs"`
+	MinDurationMs int64   `json:"minDurationMs"`
+	MaxDurationMs int64   `json:"maxDurationMs"`
+	HasDuration   bool    `json:"-"`
+}
+
 // RunStats is the success/failure/duration aggregate for one workflow.
 type RunStats struct {
+	Gaggle        string `json:"gaggle"`
 	Workflow      string `json:"workflow"`
 	TotalRuns     int    `json:"totalRuns"`
 	CompletedRuns int    `json:"completedRuns"`
@@ -57,9 +72,10 @@ type RunStats struct {
 	HasDuration   bool    `json:"-"`
 }
 
-// StageStats is the success/failure/duration aggregate for one stage name,
-// across every run matching the request's filters.
+// StageStats is the success/failure/duration aggregate for one stage identity.
 type StageStats struct {
+	Gaggle            string `json:"gaggle"`
+	Workflow          string `json:"workflow"`
 	Stage             string `json:"stage"`
 	TotalAttempts     int    `json:"totalAttempts"`
 	SucceededAttempts int    `json:"succeededAttempts"`
@@ -100,8 +116,9 @@ type StageStats struct {
 // returns — one query round-trip covers both the "by workflow" and "by stage"
 // shapes #24 asks for.
 type StatsResult struct {
-	Runs   []RunStats   `json:"runs"`
-	Stages []StageStats `json:"stages"`
+	Gaggles []GaggleStats `json:"gaggles"`
+	Runs    []RunStats    `json:"runs"`
+	Stages  []StageStats  `json:"stages"`
 }
 
 // InstanceSummary is the lifetime (or Since-windowed) instance card exposed by
@@ -248,6 +265,10 @@ func (db *DB) InstanceSummaryStats(since time.Time) (InstanceSummary, error) {
 // stage, optionally filtered by workflow and/or a [Since, Until] time window
 // on the run's start time (TEL-020/#24).
 func (db *DB) Stats(req StatsRequest) (StatsResult, error) {
+	gaggles, err := db.gaggleStats(req)
+	if err != nil {
+		return StatsResult{}, err
+	}
 	runs, err := db.runStats(req)
 	if err != nil {
 		return StatsResult{}, err
@@ -259,20 +280,58 @@ func (db *DB) Stats(req StatsRequest) (StatsResult, error) {
 	if err := db.populateStageDistributions(req, stages); err != nil {
 		return StatsResult{}, err
 	}
-	return StatsResult{Runs: runs, Stages: stages}, nil
+	return StatsResult{Gaggles: gaggles, Runs: runs, Stages: stages}, nil
 }
 
-func (db *DB) runStats(req StatsRequest) ([]RunStats, error) {
+func (db *DB) gaggleStats(req StatsRequest) ([]GaggleStats, error) {
 	where, args := statsWhere("workflow", "gaggle", "started_at", req)
 	query := fmt.Sprintf(`
-		SELECT workflow,
+		SELECT gaggle,
 			COUNT(*) AS total,
 			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS completed,
 			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS failed,
 			AVG(duration_ms), MIN(duration_ms), MAX(duration_ms)
 		FROM runs
 		%s
-		GROUP BY workflow ORDER BY workflow`, where)
+		GROUP BY gaggle ORDER BY gaggle`, where)
+	args = append([]any{runStatusCompleted, runStatusFailed}, args...)
+
+	rows, err := db.sql.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query gaggle stats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []GaggleStats
+	for rows.Next() {
+		var s GaggleStats
+		var avg sql.NullFloat64
+		var min, max sql.NullInt64
+		if err := rows.Scan(&s.Gaggle, &s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max); err != nil {
+			return nil, fmt.Errorf("rollup: scan gaggle stats: %w", err)
+		}
+		s.OtherRuns = s.TotalRuns - s.CompletedRuns - s.FailedRuns
+		if terminal := s.CompletedRuns + s.FailedRuns; terminal > 0 {
+			s.SuccessRate = float64(s.CompletedRuns) / float64(terminal)
+		}
+		s.AvgDurationMs, s.MinDurationMs, s.MaxDurationMs = avg.Float64, min.Int64, max.Int64
+		s.HasDuration = avg.Valid
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) runStats(req StatsRequest) ([]RunStats, error) {
+	where, args := statsWhere("workflow", "gaggle", "started_at", req)
+	query := fmt.Sprintf(`
+		SELECT gaggle, workflow,
+			COUNT(*) AS total,
+			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS completed,
+			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS failed,
+			AVG(duration_ms), MIN(duration_ms), MAX(duration_ms)
+		FROM runs
+		%s
+		GROUP BY gaggle, workflow ORDER BY gaggle, workflow`, where)
 	args = append([]any{runStatusCompleted, runStatusFailed}, args...)
 
 	rows, err := db.sql.Query(query, args...)
@@ -286,7 +345,7 @@ func (db *DB) runStats(req StatsRequest) ([]RunStats, error) {
 		var s RunStats
 		var avg sql.NullFloat64
 		var min, max sql.NullInt64
-		if err := rows.Scan(&s.Workflow, &s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max); err != nil {
+		if err := rows.Scan(&s.Gaggle, &s.Workflow, &s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max); err != nil {
 			return nil, fmt.Errorf("rollup: scan run stats: %w", err)
 		}
 		s.OtherRuns = s.TotalRuns - s.CompletedRuns - s.FailedRuns
@@ -307,7 +366,7 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 	// attempt that never started).
 	joinWhere, args := statsWhere("r.workflow", "r.gaggle", "r.started_at", req)
 	query := fmt.Sprintf(`
-		SELECT sa.stage,
+		SELECT r.gaggle, r.workflow, sa.stage,
 			COUNT(*) AS total,
 			SUM(CASE WHEN sa.status = ? THEN 1 ELSE 0 END) AS succeeded,
 			SUM(CASE WHEN sa.status = ? THEN 1 ELSE 0 END) AS failed,
@@ -315,7 +374,8 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 		FROM stage_attempts sa
 		JOIN runs r ON r.run_id = sa.run_id
 		%s
-		GROUP BY sa.stage ORDER BY sa.stage`, joinWhere)
+		GROUP BY r.gaggle, r.workflow, sa.stage
+		ORDER BY r.gaggle, r.workflow, sa.stage`, joinWhere)
 	args = append([]any{stageStatusSuccess, stageStatusFailure}, args...)
 
 	rows, err := db.sql.Query(query, args...)
@@ -329,7 +389,7 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 		var s StageStats
 		var avg sql.NullFloat64
 		var min, max sql.NullInt64
-		if err := rows.Scan(&s.Stage, &s.TotalAttempts, &s.SucceededAttempts, &s.FailedAttempts, &avg, &min, &max); err != nil {
+		if err := rows.Scan(&s.Gaggle, &s.Workflow, &s.Stage, &s.TotalAttempts, &s.SucceededAttempts, &s.FailedAttempts, &avg, &min, &max); err != nil {
 			return nil, fmt.Errorf("rollup: scan stage stats: %w", err)
 		}
 		if terminal := s.SucceededAttempts + s.FailedAttempts; terminal > 0 {

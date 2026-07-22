@@ -144,6 +144,14 @@ func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 			true,
 		)
 		if fixture.phase == journal.PhaseRunning {
+			clock.advance(time.Second)
+			if err := run.Append(journal.Event{
+				Type:    journal.EventStageStarted,
+				Stage:   "implement",
+				Attempt: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
 			run.SetMachineState("implement")
 			if err := run.Checkpoint(); err != nil {
 				t.Fatal(err)
@@ -185,12 +193,21 @@ func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 		Workflow: "implementation",
 		Gaggle:   "goobers",
 		Trigger:  journal.TriggerManual,
+		Since:    base.Add(time.Minute),
+		Until:    base.Add(4 * time.Minute),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(filtered.Runs) != 2 || filtered.Runs[0].ID != "run-d" || filtered.Runs[1].ID != "run-a" {
+	if len(filtered.Runs) != 1 || filtered.Runs[0].ID != "run-d" {
 		t.Fatalf("filtered runs = %+v", filtered.Runs)
+	}
+	stageFiltered, err := service.ListRuns(context.Background(), RunListOptions{Stage: "implement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stageFiltered.Runs) != 1 || stageFiltered.Runs[0].ID != "run-d" {
+		t.Fatalf("stage-filtered runs = %+v", stageFiltered.Runs)
 	}
 	completed, err := service.ListRuns(context.Background(), RunListOptions{Phase: journal.PhaseCompleted})
 	if err != nil {
@@ -211,6 +228,12 @@ func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 	}
 	if _, err := service.ListRuns(context.Background(), RunListOptions{Trigger: "webhook"}); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("non-canonical trigger error = %v", err)
+	}
+	if _, err := service.ListRuns(context.Background(), RunListOptions{
+		Since: base.Add(time.Hour),
+		Until: base,
+	}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("reversed window error = %v", err)
 	}
 	if _, err := service.GetRun(context.Background(), "partial-run"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("partial run error = %v", err)

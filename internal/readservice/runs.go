@@ -72,8 +72,11 @@ func NewOfflineRuns(layout instance.Layout) (OfflineRuns, error) {
 type RunListOptions struct {
 	Gaggle   string
 	Workflow string
+	Stage    string
 	Phase    journal.RunPhase
 	Trigger  journal.TriggerKind
+	Since    time.Time
+	Until    time.Time
 	Limit    int
 	Cursor   string
 }
@@ -105,6 +108,7 @@ type RunSummary struct {
 	RetryCount       int              `json:"retryCount"`
 	PolicyRetryCount int              `json:"policyRetryCount"`
 	InfraRetryCount  int              `json:"infraRetryCount"`
+	Stages           []string         `json:"-"`
 }
 
 // RunDetail includes the immutable graph pin and structured escalation cause.
@@ -256,6 +260,9 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 	if options.Trigger != "" && !canonicalTrigger(options.Trigger) {
 		return RunList{}, fmt.Errorf("%w: unknown trigger %q", ErrInvalidArgument, options.Trigger)
 	}
+	if !options.Since.IsZero() && !options.Until.IsZero() && options.Since.After(options.Until) {
+		return RunList{}, fmt.Errorf("%w: since must not be after until", ErrInvalidArgument)
+	}
 
 	var cursor *runCursor
 	if options.Cursor != "" {
@@ -278,10 +285,19 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 		if options.Workflow != "" && summary.Workflow != options.Workflow {
 			continue
 		}
+		if options.Stage != "" && !containsString(summary.Stages, options.Stage) {
+			continue
+		}
 		if options.Phase != "" && summary.Phase != options.Phase {
 			continue
 		}
 		if options.Trigger != "" && summary.Trigger.Kind != options.Trigger {
+			continue
+		}
+		if !options.Since.IsZero() && summary.StartedAt.Before(options.Since) {
+			continue
+		}
+		if !options.Until.IsZero() && summary.StartedAt.After(options.Until) {
 			continue
 		}
 		summaries = append(summaries, summary)
@@ -776,6 +792,7 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	var lastActivityAt time.Time
 	currentStage := ""
 	seenInitial := make(map[string]bool)
+	seenStages := make(map[string]struct{})
 	repasses, retries, policyRetries, infraRetries := 0, 0, 0, 0
 
 	for _, record := range run.records {
@@ -786,6 +803,12 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 		}
 		if !event.KnownSchema() {
 			continue
+		}
+		if event.Stage != "" {
+			seenStages[event.Stage] = struct{}{}
+		}
+		if event.Gate != "" {
+			seenStages[event.Gate] = struct{}{}
 		}
 		switch event.Type {
 		case journal.EventStageStarted:
@@ -844,6 +867,11 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	if !durationEnd.Before(run.identity.StartedAt) {
 		duration = durationEnd.Sub(run.identity.StartedAt).Milliseconds()
 	}
+	stages := make([]string, 0, len(seenStages))
+	for stage := range seenStages {
+		stages = append(stages, stage)
+	}
+	sort.Strings(stages)
 
 	return RunSummary{
 		ID:               run.identity.RunID,
@@ -864,7 +892,17 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 		RetryCount:       retries,
 		PolicyRetryCount: policyRetries,
 		InfraRetryCount:  infraRetries,
+		Stages:           stages,
 	}, nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func pinnedGraph(run runRead) (*workflow.Graph, string, error) {

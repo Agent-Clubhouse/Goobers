@@ -36,13 +36,28 @@ type TelemetryStatsRequest struct {
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
 type TelemetryStatsResult struct {
-	Runs   []TelemetryRunStats   `json:"runs"`
-	Stages []TelemetryStageStats `json:"stages"`
+	Gaggles []TelemetryGaggleStats `json:"gaggles"`
+	Runs    []TelemetryRunStats    `json:"runs"`
+	Stages  []TelemetryStageStats  `json:"stages"`
+}
+
+// TelemetryGaggleStats is the run aggregate for one gaggle.
+type TelemetryGaggleStats struct {
+	Gaggle        string   `json:"gaggle"`
+	TotalRuns     int      `json:"totalRuns"`
+	CompletedRuns int      `json:"completedRuns"`
+	FailedRuns    int      `json:"failedRuns"`
+	OtherRuns     int      `json:"otherRuns"`
+	SuccessRate   *float64 `json:"successRate,omitempty"`
+	AvgDurationMs *float64 `json:"avgDurationMs,omitempty"`
+	MinDurationMs *int64   `json:"minDurationMs,omitempty"`
+	MaxDurationMs *int64   `json:"maxDurationMs,omitempty"`
 }
 
 // TelemetryRunStats is the run aggregate for one workflow. Optional metrics
 // are absent when no matching run has produced the underlying measurement.
 type TelemetryRunStats struct {
+	Gaggle        string   `json:"gaggle"`
 	Workflow      string   `json:"workflow"`
 	TotalRuns     int      `json:"totalRuns"`
 	CompletedRuns int      `json:"completedRuns"`
@@ -56,6 +71,8 @@ type TelemetryRunStats struct {
 
 // TelemetryStageStats is the attempt aggregate for one stage.
 type TelemetryStageStats struct {
+	Gaggle               string   `json:"gaggle"`
+	Workflow             string   `json:"workflow"`
 	Stage                string   `json:"stage"`
 	TotalAttempts        int      `json:"totalAttempts"`
 	SucceededAttempts    int      `json:"succeededAttempts"`
@@ -148,11 +165,31 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 
 	result := TelemetryStatsResult{
-		Runs:   make([]TelemetryRunStats, 0, len(stats.Runs)),
-		Stages: make([]TelemetryStageStats, 0, len(stats.Stages)),
+		Gaggles: make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
+		Runs:    make([]TelemetryRunStats, 0, len(stats.Runs)),
+		Stages:  make([]TelemetryStageStats, 0, len(stats.Stages)),
+	}
+	for _, stat := range stats.Gaggles {
+		item := TelemetryGaggleStats{
+			Gaggle:        stat.Gaggle,
+			TotalRuns:     stat.TotalRuns,
+			CompletedRuns: stat.CompletedRuns,
+			FailedRuns:    stat.FailedRuns,
+			OtherRuns:     stat.OtherRuns,
+		}
+		if stat.CompletedRuns+stat.FailedRuns > 0 {
+			item.SuccessRate = float64Pointer(stat.SuccessRate)
+		}
+		if stat.HasDuration {
+			item.AvgDurationMs = float64Pointer(stat.AvgDurationMs)
+			item.MinDurationMs = int64Pointer(stat.MinDurationMs)
+			item.MaxDurationMs = int64Pointer(stat.MaxDurationMs)
+		}
+		result.Gaggles = append(result.Gaggles, item)
 	}
 	for _, stat := range stats.Runs {
 		item := TelemetryRunStats{
+			Gaggle:        stat.Gaggle,
 			Workflow:      stat.Workflow,
 			TotalRuns:     stat.TotalRuns,
 			CompletedRuns: stat.CompletedRuns,
@@ -171,6 +208,8 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 	for _, stat := range stats.Stages {
 		item := TelemetryStageStats{
+			Gaggle:             stat.Gaggle,
+			Workflow:           stat.Workflow,
 			Stage:              stat.Stage,
 			TotalAttempts:      stat.TotalAttempts,
 			SucceededAttempts:  stat.SucceededAttempts,
