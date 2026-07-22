@@ -212,11 +212,21 @@ func pendingRerun(events []journal.Event, machine *workflow.Machine) (*rerunCont
 		}
 		return &rerunContext{
 			stage:               request.Stage,
-			attempt:             request.Attempt,
+			attempt:             pendingRerunAttempt(events[i+1:], request),
 			instructionAddendum: request.InstructionAddendum,
 		}, seed, nil
 	}
 	return nil, nil, nil
+}
+
+func pendingRerunAttempt(events []journal.Event, request journal.Event) int {
+	attempt := request.Attempt
+	for _, event := range events {
+		if event.Stage == request.Stage && isInterruptedAttemptMarker(event) && event.Attempt >= attempt {
+			attempt = event.Attempt + 1
+		}
+	}
+	return attempt
 }
 
 func resetRerunGateSeeds(machine *workflow.Machine, rerun *rerunContext, attempts map[string]int, digests map[string]string) {

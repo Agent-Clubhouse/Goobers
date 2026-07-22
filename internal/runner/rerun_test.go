@@ -290,6 +290,87 @@ func TestResumeContinuesInterruptedHumanRerunWithRecordedAddendum(t *testing.T) 
 	t.Fatal("journal does not close interrupted human attempt")
 }
 
+func TestResumeAdvancesHumanRerunAfterInterruptedAttemptWasClosed(t *testing.T) {
+	const (
+		runID    = "run-rerun-resume-after-close"
+		addendum = "Keep the recovery addendum."
+	)
+	machine := rerunTaskMachine(t)
+	implementer := &rerunTaskGoober{}
+	finisher := &capturingSuccessGoober{}
+	r, runsDir := newRerunTestRunner(t, func(name string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+		if name == "implementer" {
+			return implementer, nil
+		}
+		return finisher, nil
+	}, nil)
+	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("initial phase = %s, want escalated", result.Phase)
+	}
+
+	runDir := filepath.Join(runsDir, runID)
+	recovered, _, err := journal.Recover(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []journal.Event{
+		{
+			Type: journal.EventStageRerunRequested, Stage: "implement", Attempt: 2,
+			AttemptClass: journal.AttemptHuman, Actor: "maintainer",
+			InstructionAddendum: addendum,
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptHuman},
+		{
+			Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
+			AttemptClass: journal.AttemptHuman, Status: string(apiv1.ResultFailure),
+			Error: &journal.ErrorDetail{
+				Code:    interruptedAttemptErrorCode,
+				Message: "attempt was in flight when the runner was interrupted",
+			},
+		},
+	} {
+		if err := recovered.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := recovered.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err = r.Resume(context.Background(), ResumeInput{RunID: runID, Machine: machine, RepoRef: repo})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("resumed rerun phase = %s, want completed", result.Phase)
+	}
+	if len(implementer.invocations) != 2 || implementer.invocations[1].InstructionAddendum != addendum {
+		t.Fatalf("resumed rerun invocations = %+v", implementer.invocations)
+	}
+
+	events := readRerunEvents(t, runsDir, runID)
+	if !hasStageAttempt(events, "implement", 3, journal.AttemptHuman, apiv1.ResultSuccess) {
+		t.Fatalf("journal does not contain advanced human attempt: %+v", events)
+	}
+	startsAtTwo := 0
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted && event.Stage == "implement" && event.Attempt == 2 {
+			startsAtTwo++
+		}
+	}
+	if startsAtTwo != 1 {
+		t.Fatalf("stage attempt 2 started %d times, want 1", startsAtTwo)
+	}
+}
+
 func rerunTaskMachine(t *testing.T) *workflow.Machine {
 	t.Helper()
 	machine, err := workflow.Compile(workflow.Definition{
