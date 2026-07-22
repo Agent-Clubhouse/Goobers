@@ -133,16 +133,20 @@ func scanIntegration(root string) (scanResult, error) {
 			return nil
 		}
 
+		fileDependencies, fileViolations, included, err := inspectIntegrationFile(filePath, data)
+		if err != nil {
+			return err
+		}
+		if !included {
+			return nil
+		}
+
 		relDir, err := filepath.Rel(root, filepath.Dir(filePath))
 		if err != nil {
 			return err
 		}
 		packageSet["./"+filepath.ToSlash(relDir)] = true
 
-		fileDependencies, fileViolations, err := inspectIntegrationFile(filePath, data)
-		if err != nil {
-			return err
-		}
 		for _, name := range fileDependencies {
 			result.dependencies[name] = true
 		}
@@ -199,11 +203,11 @@ func containsPositiveIntegrationTag(expression constraint.Expr, negated bool) bo
 	}
 }
 
-func inspectIntegrationFile(filePath string, data []byte) ([]string, []string, error) {
+func inspectIntegrationFile(filePath string, data []byte) ([]string, []string, bool, error) {
 	files := token.NewFileSet()
 	parsed, err := parser.ParseFile(files, filePath, data, 0)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse %s: %w", filePath, err)
+		return nil, nil, false, fmt.Errorf("parse %s: %w", filePath, err)
 	}
 
 	execAliases := make(map[string]bool)
@@ -211,7 +215,7 @@ func inspectIntegrationFile(filePath string, data []byte) ([]string, []string, e
 	for _, spec := range parsed.Imports {
 		importPath, err := strconv.Unquote(spec.Path.Value)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s: parse import %s: %w", filePath, spec.Path.Value, err)
+			return nil, nil, false, fmt.Errorf("%s: parse import %s: %w", filePath, spec.Path.Value, err)
 		}
 		alias := path.Base(importPath)
 		if spec.Name != nil {
@@ -249,6 +253,9 @@ func inspectIntegrationFile(filePath string, data []byte) ([]string, []string, e
 				files.Position(function.Name.Pos()),
 			))
 		}
+	}
+	if integrationTests == 0 && len(testdepAliases) == 0 {
+		return nil, nil, false, nil
 	}
 	if integrationTests == 0 {
 		violations = append(violations, fmt.Sprintf("%s: integration-tagged file has no TestIntegration function", filePath))
@@ -324,7 +331,7 @@ func inspectIntegrationFile(filePath string, data []byte) ([]string, []string, e
 	if requireCalls == 0 {
 		violations = append(violations, fmt.Sprintf("%s: integration-tagged file has no testdep.Require or testdep.RequireEnv declaration", filePath))
 	}
-	return dependencies, violations, nil
+	return dependencies, violations, true, nil
 }
 
 func isRequireStatement(statement ast.Stmt, aliases map[string]bool) bool {
