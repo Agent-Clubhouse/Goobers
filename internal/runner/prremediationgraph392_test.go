@@ -115,6 +115,7 @@ func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 		workflow.Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		workflow.WithGoobers(goobers),
 		workflow.WithKnownChecks([]string{"output-equals", "status-equals"}),
+		workflow.WithPreviewFeatures(true),
 	)
 	if err != nil {
 		t.Fatalf("compile shipped pr-remediation: %v", err)
@@ -428,6 +429,7 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 		// #947: open-pr-gate uses output-equals(opened) to abort on a
 		// mid-flight-closed issue.
 		workflow.WithKnownChecks([]string{"status-equals", "ci-status", "output-equals"}),
+		workflow.WithPreviewFeatures(true),
 	)
 	if err != nil {
 		t.Fatalf("compile shipped implementation: %v", err)

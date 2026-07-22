@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 func newV(t *testing.T) *Validator {
@@ -76,13 +78,17 @@ func TestExampleConfigPasses(t *testing.T) {
 	if report.HasErrors() {
 		t.Fatalf("expected /config-examples to be valid, got issues:\n%s", joinIssues(report))
 	}
-	// The only expected warnings are the manual-only advisories on the two
-	// example workflows that carry no schedule trigger: acme-web's
-	// default-implement and the dotnet-service polyglot reference (#1093), which
-	// is deliberately a `goobers run`-only build/test-gate demonstration.
-	warnings := report.Warnings()
+	// The compatibility warnings are the manual-only advisories on the two
+	// example workflows that carry no schedule trigger. Preview warnings are
+	// asserted separately by TestPreviewFeaturesRequireInstanceOptIn.
+	var warnings []CodedWarning
+	for _, warning := range report.Warnings() {
+		if warning.Code == WarningCompatibility {
+			warnings = append(warnings, warning)
+		}
+	}
 	if len(warnings) != 2 {
-		t.Fatalf("expected two actionable manual-only warnings, got %+v", warnings)
+		t.Fatalf("expected two actionable manual-only compatibility warnings, got %+v", warnings)
 	}
 	var sawDefaultImplement, sawDotnetImplementation bool
 	for _, w := range warnings {
@@ -446,9 +452,14 @@ func TestAcceptedButInertWorkflowFieldsEmitCodedWarnings(t *testing.T) {
 		t.Fatalf("warnings must not fail validation:\n%s", joinIssues(report))
 	}
 
-	warnings := report.Warnings()
+	var warnings []CodedWarning
+	for _, warning := range report.Warnings() {
+		if warning.Code == WarningCompatibility {
+			warnings = append(warnings, warning)
+		}
+	}
 	if len(warnings) != 2 {
-		t.Fatalf("Warnings() = %+v, want expectedOutputs and run.image warnings", warnings)
+		t.Fatalf("compatibility warnings = %+v, want expectedOutputs and run.image warnings", warnings)
 	}
 	all := make([]string, 0, len(warnings))
 	for _, warning := range warnings {
@@ -591,6 +602,8 @@ func TestForeignLayoutDiagnosticsAreActionable(t *testing.T) {
 kind: Manifest
 metadata:
   name: foreign
+  annotations:
+    goobers.dev/allow-preview-features: "true"
 spec:
   instance:
     name: foreign
@@ -683,13 +696,157 @@ func TestWarningCodesAreStable(t *testing.T) {
 		WarningDeprecatedFeature,
 		WarningPreviewFeature,
 		WarningCompatibility,
+		ErrorRemovedFeature,
 		WarningModelFallback,
 	}
-	want := []WarningCode{"VER001", "VER002", "VER003", "MODEL002"}
+	want := []WarningCode{"VER001", "VER002", "VER003", "VER004", "MODEL002"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("warning code %d = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestFeatureSupportLevelsUseIssueChannel(t *testing.T) {
+	tests := []struct {
+		name         string
+		feature      wf.Feature
+		allowPreview bool
+		wantCode     WarningCode
+		wantSeverity Severity
+		wantIssue    bool
+	}{
+		{
+			name:      "ga",
+			feature:   wf.Feature{ID: "stable", Level: wf.SupportGA, SinceVersion: "v1.0.0"},
+			wantIssue: false,
+		},
+		{
+			name:         "preview",
+			feature:      wf.Feature{ID: "new-field", Level: wf.SupportPreview, SinceVersion: "v1.2.0"},
+			allowPreview: true,
+			wantCode:     WarningPreviewFeature,
+			wantSeverity: Warning,
+			wantIssue:    true,
+		},
+		{
+			name: "deprecated",
+			feature: wf.Feature{
+				ID:                   "old-field",
+				Level:                wf.SupportDeprecated,
+				SinceVersion:         "v1.3.0",
+				Replacement:          "new-field",
+				RemovalTargetVersion: "v2.0.0",
+			},
+			wantCode:     WarningDeprecatedFeature,
+			wantSeverity: Warning,
+			wantIssue:    true,
+		},
+		{
+			name: "removed",
+			feature: wf.Feature{
+				ID:                    "removed-field",
+				Level:                 wf.SupportRemoved,
+				SinceVersion:          "v2.0.0",
+				LastSupportingVersion: "v1.9.0",
+			},
+			wantCode:     ErrorRemovedFeature,
+			wantSeverity: Error,
+			wantIssue:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			report := &Report{}
+			report.addFeatureDiagnostics(
+				"workflow.yaml",
+				"example",
+				"Workflow",
+				"feature-level",
+				wf.CheckFeatureSupport([]wf.Feature{tc.feature}, tc.allowPreview),
+			)
+			if !tc.wantIssue {
+				if len(report.Issues) != 0 {
+					t.Fatalf("issues = %+v, want none", report.Issues)
+				}
+				return
+			}
+			if len(report.Issues) != 1 {
+				t.Fatalf("issues = %+v, want one", report.Issues)
+			}
+			issue := report.Issues[0]
+			if issue.Code != tc.wantCode || issue.Severity != tc.wantSeverity {
+				t.Fatalf("issue = %+v, want code %q severity %q", issue, tc.wantCode, tc.wantSeverity)
+			}
+			if !strings.Contains(issue.Message, string(tc.feature.ID)) {
+				t.Errorf("message = %q, want feature name %q", issue.Message, tc.feature.ID)
+			}
+		})
+	}
+}
+
+func TestPreviewFeaturesRequireInstanceOptIn(t *testing.T) {
+	tests := []struct {
+		name         string
+		annotation   string
+		omit         bool
+		wantSeverity Severity
+		wantErrors   bool
+	}{
+		{name: "explicit opt-in", annotation: "true", wantSeverity: Warning},
+		{name: "disabled", annotation: "false", wantSeverity: Error, wantErrors: true},
+		{name: "missing", omit: true, wantSeverity: Error, wantErrors: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.CopyFS(root, os.DirFS("testdata/config-warnings")); err != nil {
+				t.Fatal(err)
+			}
+			manifestPath := filepath.Join(root, "manifest.yaml")
+			manifest, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			needle := wf.PreviewFeaturesAnnotation + `: "true"`
+			replacement := wf.PreviewFeaturesAnnotation + `: "` + tc.annotation + `"`
+			if tc.omit {
+				needle = "  annotations:\n    " + needle
+				replacement = ""
+			}
+			manifest = []byte(strings.Replace(
+				string(manifest),
+				needle,
+				replacement,
+				1,
+			))
+			if err := os.WriteFile(manifestPath, manifest, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := newV(t).ValidateDir(root)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			if report.HasErrors() != tc.wantErrors {
+				t.Fatalf("HasErrors() = %v, want %v:\n%s", report.HasErrors(), tc.wantErrors, joinIssues(report))
+			}
+			previewIssues := 0
+			for _, issue := range report.Issues {
+				if issue.Code != WarningPreviewFeature {
+					continue
+				}
+				previewIssues++
+				if issue.Severity != tc.wantSeverity {
+					t.Errorf("preview issue severity = %q, want %q: %+v", issue.Severity, tc.wantSeverity, issue)
+				}
+			}
+			if previewIssues == 0 {
+				t.Fatal("expected preview feature issues")
+			}
+		})
 	}
 }
 

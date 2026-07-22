@@ -23,6 +23,8 @@ const (
 kind: Manifest
 metadata:
   name: test-instance
+  annotations:
+    goobers.dev/allow-preview-features: "true"
 spec:
   instance:
     name: test

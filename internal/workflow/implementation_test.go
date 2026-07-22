@@ -39,7 +39,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	}
 
 	def := Definition{Name: w.Name, Version: 1, Spec: w.Spec}
-	m, err := Compile(def, WithGoobers(goobers))
+	m, err := compileAcknowledged(def, WithGoobers(goobers))
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
 	}
 
-	m2, err := Compile(def, WithGoobers(goobers))
+	m2, err := compileAcknowledged(def, WithGoobers(goobers))
 	if err != nil {
 		t.Fatalf("recompile: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestImplementationWorkflowRejectsUngrantedCapability(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{
 		"implementer": {Role: "implementer", Harness: apiv1.HarnessCopilot, Capabilities: []string{"repo:push"}},
 	}
-	_, err := Compile(Definition{Name: "implementation", Version: 1, Spec: spec}, WithGoobers(goobers))
+	_, err := compileAcknowledged(Definition{Name: "implementation", Version: 1, Spec: spec}, WithGoobers(goobers))
 	if err == nil {
 		t.Fatal("expected compile to reject an ungranted github:pr:write capability, got nil error")
 	}

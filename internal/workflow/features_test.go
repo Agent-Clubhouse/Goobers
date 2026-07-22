@@ -31,6 +31,83 @@ func TestFeatureRegistryLookup(t *testing.T) {
 	}
 }
 
+func TestFeatureSupportDiagnostics(t *testing.T) {
+	tests := []struct {
+		name         string
+		feature      Feature
+		allowPreview bool
+		wantCount    int
+		wantBlocking bool
+		wantParts    []string
+	}{
+		{
+			name:      "ga",
+			feature:   Feature{ID: "stable", Level: SupportGA, SinceVersion: "v1.0.0"},
+			wantCount: 0,
+		},
+		{
+			name:         "preview",
+			feature:      Feature{ID: "new-field", Level: SupportPreview, SinceVersion: "v1.2.0"},
+			allowPreview: true,
+			wantCount:    1,
+			wantParts:    []string{"new-field", "preview", "v1.2.0"},
+		},
+		{
+			name: "deprecated",
+			feature: Feature{
+				ID:                   "old-field",
+				Level:                SupportDeprecated,
+				SinceVersion:         "v1.3.0",
+				Replacement:          "new-field",
+				RemovalTargetVersion: "v2.0.0",
+			},
+			wantCount: 1,
+			wantParts: []string{"old-field", "new-field", "v2.0.0"},
+		},
+		{
+			name: "removed",
+			feature: Feature{
+				ID:                    "removed-field",
+				Level:                 SupportRemoved,
+				SinceVersion:          "v2.0.0",
+				LastSupportingVersion: "v1.9.0",
+			},
+			wantCount:    1,
+			wantBlocking: true,
+			wantParts:    []string{"removed-field", "v1.9.0"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			diagnostics := CheckFeatureSupport([]Feature{tc.feature}, tc.allowPreview)
+			if len(diagnostics) != tc.wantCount {
+				t.Fatalf("diagnostics = %+v, want %d", diagnostics, tc.wantCount)
+			}
+			if tc.wantCount == 0 {
+				return
+			}
+			if diagnostics[0].Blocking != tc.wantBlocking {
+				t.Errorf("Blocking = %v, want %v", diagnostics[0].Blocking, tc.wantBlocking)
+			}
+			for _, want := range tc.wantParts {
+				if !strings.Contains(diagnostics[0].Message, want) {
+					t.Errorf("Message = %q, want it to contain %q", diagnostics[0].Message, want)
+				}
+			}
+		})
+	}
+}
+
+func TestPreviewFeatureRequiresOptIn(t *testing.T) {
+	feature := Feature{ID: "new-field", Level: SupportPreview, SinceVersion: "v1.2.0"}
+	diagnostics := CheckFeatureSupport([]Feature{feature}, false)
+	if len(diagnostics) != 1 || !diagnostics[0].Blocking ||
+		!strings.Contains(diagnostics[0].Message, PreviewFeaturesAnnotation) {
+		t.Fatalf("diagnostics = %+v, want a blocking diagnostic naming the opt-in annotation", diagnostics)
+	}
+}
+
 func TestCurrentFeaturesArePreviewAtInitialVersion(t *testing.T) {
 	features := AllFeatures()
 	if len(features) == 0 {
@@ -257,7 +334,7 @@ func TestCompileConsumesFeatureRegistry(t *testing.T) {
 	currentFeatureRegistry = registry
 	t.Cleanup(func() { currentFeatureRegistry = original })
 
-	_, err = Compile(Definition{Name: "linear", Version: 1, Spec: linearSpec()})
+	_, err = compileAcknowledged(Definition{Name: "linear", Version: 1, Spec: linearSpec()})
 	if err == nil || !strings.Contains(err.Error(), `DSL feature registry is missing: workflow.spec.gaggle`) {
 		t.Fatalf("Compile error = %v, want missing registry feature", err)
 	}

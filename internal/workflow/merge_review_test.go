@@ -56,11 +56,11 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				t.Error("reviewer is not registered for merge-review")
 			}
 
-			m, err := Compile(
+			m, err := compileAcknowledged(
 				Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 				WithGoobers(map[string]apiv1.GooberSpec{"reviewer": reviewer.Spec}),
-				WithKnownChecks([]string{"output-equals", "land-outcome", "queue-outcome"}),
-			)
+				WithKnownChecks([]string{"output-equals", "land-outcome", "queue-outcome"}))
+
 			if err != nil {
 				t.Fatalf("compile workflow: %v", err)
 			}

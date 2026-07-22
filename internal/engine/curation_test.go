@@ -44,12 +44,13 @@ func fixtureBacklog() []string {
 
 func curationRunInput(spec apiv1.WorkflowSpec) RunInput {
 	return RunInput{
-		RunID:        "run-curation",
-		Gaggle:       "acme-web",
-		WorkflowName: "backlog-curation",
-		Version:      1,
-		Spec:         spec,
-		RepoRef:      apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		RunID:                  "run-curation",
+		Gaggle:                 "acme-web",
+		WorkflowName:           "backlog-curation",
+		Version:                1,
+		PreviewFeaturesEnabled: boolPointer(true),
+		Spec:                   spec,
+		RepoRef:                apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
 	}
 }
 

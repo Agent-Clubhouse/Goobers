@@ -38,6 +38,20 @@ func warningLines(output string) []string {
 	return warnings
 }
 
+func withoutGeneratedPreviewWarnings(output string) ([]string, int) {
+	var warnings []string
+	previewCount := 0
+	for _, warning := range warningLines(output) {
+		if strings.Contains(warning, `: DSL feature "`) &&
+			strings.Contains(warning, " is preview and unstable (available since ") {
+			previewCount++
+			continue
+		}
+		warnings = append(warnings, warning)
+	}
+	return warnings, previewCount
+}
+
 func TestUpAndStatusPrintIdenticalOrderedWarnings(t *testing.T) {
 	root := initDeterministicDemo(t)
 	withValidationIssues(t,
@@ -75,8 +89,11 @@ func TestUpAndStatusPrintIdenticalOrderedWarnings(t *testing.T) {
 		"WARNING VER001 a-deprecated.yaml Workflow/legacy-flow: deprecated feature remains supported",
 		"WARNING VER002 z-preview.yaml Workflow/preview-flow: preview feature may change",
 	}
-	statusWarnings := warningLines(statusOut)
-	upWarnings := warningLines(upOut.String())
+	statusWarnings, statusPreviewCount := withoutGeneratedPreviewWarnings(statusOut)
+	upWarnings, upPreviewCount := withoutGeneratedPreviewWarnings(upOut.String())
+	if statusPreviewCount == 0 || upPreviewCount == 0 {
+		t.Fatalf("status/up omitted preview notices: status=%d up=%d", statusPreviewCount, upPreviewCount)
+	}
 	if strings.Join(statusWarnings, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("status warnings = %#v, want %#v", statusWarnings, want)
 	}
@@ -103,11 +120,20 @@ func TestStatusJSONIncludesStableWarningShape(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("status JSON = %q: %v", stdout, err)
 	}
-	if len(got.Warnings) != 1 ||
-		got.Warnings[0].Code != "MODEL002" ||
-		got.Warnings[0].Severity != "warning" ||
-		got.Warnings[0].Scope != "Goober/coder" ||
-		got.Warnings[0].Explanation != "requested model is unavailable; using the harness default" {
+	var nonPreview []validate.CodedWarning
+	previewCount := 0
+	for _, warning := range got.Warnings {
+		if warning.Code == validate.WarningPreviewFeature {
+			previewCount++
+			continue
+		}
+		nonPreview = append(nonPreview, warning)
+	}
+	if previewCount == 0 || len(nonPreview) != 1 ||
+		nonPreview[0].Code != "MODEL002" ||
+		nonPreview[0].Severity != "warning" ||
+		nonPreview[0].Scope != "Goober/coder" ||
+		nonPreview[0].Explanation != "requested model is unavailable; using the harness default" {
 		t.Fatalf("warnings = %+v", got.Warnings)
 	}
 	if got.Summary == nil || len(got.Runs) != 0 {
@@ -115,15 +141,15 @@ func TestStatusJSONIncludesStableWarningShape(t *testing.T) {
 	}
 }
 
-func TestWarningFreeCommandsPrintNoWarningLines(t *testing.T) {
+func TestOptedInPreviewCommandsPrintOnlyLifecycleWarnings(t *testing.T) {
 	root := initDeterministicDemo(t)
 
 	statusCode, statusOut, statusErr := runArgs(t, "status", root)
 	if statusCode != 0 {
 		t.Fatalf("status code = %d, stderr = %q", statusCode, statusErr)
 	}
-	if warnings := warningLines(statusOut); len(warnings) != 0 {
-		t.Fatalf("status printed warnings for warning-free config: %#v", warnings)
+	if warnings, previewCount := withoutGeneratedPreviewWarnings(statusOut); len(warnings) != 0 || previewCount == 0 {
+		t.Fatalf("status warnings = %#v, preview count = %d; want only preview notices", warnings, previewCount)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -132,8 +158,8 @@ func TestWarningFreeCommandsPrintNoWarningLines(t *testing.T) {
 	if code := runUpContext(ctx, []string{"--quiet", root}, &upOut, &upErr); code != 0 {
 		t.Fatalf("up code = %d, stderr = %q", code, upErr.String())
 	}
-	if warnings := warningLines(upOut.String()); len(warnings) != 0 {
-		t.Fatalf("up printed warnings for warning-free config: %#v", warnings)
+	if warnings, previewCount := withoutGeneratedPreviewWarnings(upOut.String()); len(warnings) != 0 || previewCount == 0 {
+		t.Fatalf("up warnings = %#v, preview count = %d; want only preview notices", warnings, previewCount)
 	}
 }
 
@@ -210,10 +236,10 @@ func TestCompileErrorsStillSurfaceIdenticalWarnings(t *testing.T) {
 	}
 
 	want := []string{"WARNING VER001 deprecated.yaml: deprecated feature remains supported"}
-	if got := warningLines(statusErr); strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if got, _ := withoutGeneratedPreviewWarnings(statusErr); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("status warnings = %#v, want %#v", got, want)
 	}
-	if got := warningLines(upErr.String()); strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if got, _ := withoutGeneratedPreviewWarnings(upErr.String()); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("up warnings = %#v, want %#v", got, want)
 	}
 }

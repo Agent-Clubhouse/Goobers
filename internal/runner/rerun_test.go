@@ -630,7 +630,7 @@ func rerunTaskMachineWithMaxAttempts(t *testing.T, maxAttempts int32) *workflow.
 				{Name: "finish", Type: apiv1.TaskAgentic, Goober: "finisher", Goal: "finish the run", Next: workflow.TerminalComplete},
 			},
 		},
-	})
+	}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile task rerun machine: %v", err)
 	}
@@ -657,7 +657,7 @@ func rerunGateMachine(t *testing.T) *workflow.Machine {
 				},
 			}},
 		},
-	})
+	}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile gate rerun machine: %v", err)
 	}

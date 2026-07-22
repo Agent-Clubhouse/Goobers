@@ -251,7 +251,10 @@ func (n *fixtureNominator) Review(context.Context, apiv1.InvocationEnvelope) (ap
 
 func nominationMachine(t *testing.T, spec apiv1.WorkflowSpec) *workflow.Machine {
 	t.Helper()
-	machine, err := workflow.Compile(workflow.Definition{Name: "work-nomination", Version: 1, Spec: spec})
+	machine, err := workflow.Compile(
+		workflow.Definition{Name: "work-nomination", Version: 1, Spec: spec},
+		workflow.WithPreviewFeatures(true),
+	)
 	if err != nil {
 		t.Fatalf("compile work-nomination: %v", err)
 	}
@@ -473,6 +476,7 @@ func TestWorkNominationApprovalCapabilityIsStageOptIn(t *testing.T) {
 	if _, err := workflow.Compile(
 		workflow.Definition{Name: "work-nomination", Version: 1, Spec: spec},
 		workflow.WithGoobers(map[string]apiv1.GooberSpec{"nominator": nominator}),
+		workflow.WithPreviewFeatures(true),
 	); err != nil {
 		t.Fatalf("compile opted-in work-nomination: %v", err)
 	}

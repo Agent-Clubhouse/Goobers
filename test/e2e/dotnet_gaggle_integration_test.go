@@ -57,7 +57,11 @@ func dotnetServiceMachine(t *testing.T) *workflow.Machine {
 		t.Fatalf("local-ci command = %v, want [dotnet test] after #1009 gaggle-ciCommand resolution", got)
 	}
 
-	m, err := workflow.Compile(workflow.Definition{Name: wf.Name, Version: 1, Spec: wf.Spec}, workflow.WithGoobers(goobers))
+	m, err := workflow.Compile(
+		workflow.Definition{Name: wf.Name, Version: 1, Spec: wf.Spec},
+		workflow.WithGoobers(goobers),
+		workflow.WithPreviewFeatures(true),
+	)
 	if err != nil {
 		t.Fatalf("compile dotnet-service machine: %v", err)
 	}
