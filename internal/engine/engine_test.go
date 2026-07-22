@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -39,7 +40,7 @@ func runInput(name string, spec apiv1.WorkflowSpec) RunInput {
 		Gaggle:                 "web",
 		WorkflowName:           name,
 		Version:                1,
-		PreviewFeaturesEnabled: true,
+		PreviewFeaturesEnabled: boolPointer(true),
 		Spec:                   spec,
 		RepoRef:                apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
 	}
@@ -50,6 +51,57 @@ func successInvoker() *fakeInvoker {
 		invoke: func(_ context.Context, _ apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "done"}, nil
 		},
+	}
+}
+
+func TestRunPreservesLegacyPreviewAdmission(t *testing.T) {
+	legacyPayload, err := json.Marshal(struct {
+		RunID          string             `json:"runId"`
+		Gaggle         string             `json:"gaggle"`
+		WorkflowName   string             `json:"workflowName"`
+		Version        int                `json:"version"`
+		WorkflowDigest string             `json:"workflowDigest"`
+		Spec           apiv1.WorkflowSpec `json:"spec"`
+		RepoRef        apiv1.RepoRef      `json:"repoRef"`
+	}{
+		RunID:        "run-legacy",
+		Gaggle:       "web",
+		WorkflowName: "legacy",
+		Version:      1,
+		Spec:         linearSpec(),
+		RepoRef:      apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+	})
+	if err != nil {
+		t.Fatalf("marshal legacy input: %v", err)
+	}
+
+	var in RunInput
+	if err := json.Unmarshal(legacyPayload, &in); err != nil {
+		t.Fatalf("unmarshal legacy input: %v", err)
+	}
+	if in.PreviewFeaturesEnabled != nil {
+		t.Fatalf("legacy preview policy = %v, want absent", *in.PreviewFeaturesEnabled)
+	}
+
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	env.RegisterActivity(&Activities{Goober: successInvoker()})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("legacy workflow error: %v", err)
+	}
+}
+
+func TestRunRejectsExplicitlyDisabledPreviewFeatures(t *testing.T) {
+	in := runInput("disabled-preview", linearSpec())
+	in.PreviewFeaturesEnabled = boolPointer(false)
+
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	env.ExecuteWorkflow(Run, in)
+	err := env.GetWorkflowError()
+	if err == nil || !strings.Contains(err.Error(), "requires explicit instance opt-in") {
+		t.Fatalf("workflow error = %v, want preview opt-in rejection", err)
 	}
 }
 

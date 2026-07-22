@@ -151,13 +151,14 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 	if err != nil {
 		return engine.RunInput{}, fmt.Errorf("scheduler: compile pinned workflow %q: %w", ev.WorkflowName, err)
 	}
+	allowPreviewFeatures := s.cfg.Registry.PreviewFeaturesEnabled()
 	in := engine.RunInput{
 		RunID:                  engine.RunID(s.cfg.Gaggle, def.Name, ev.DedupeKey),
 		Gaggle:                 s.cfg.Gaggle,
 		WorkflowName:           def.Name,
 		Version:                def.Version,
 		WorkflowDigest:         machine.Digest(),
-		PreviewFeaturesEnabled: s.cfg.Registry.PreviewFeaturesEnabled(),
+		PreviewFeaturesEnabled: &allowPreviewFeatures,
 		Spec:                   def.Spec,
 		RepoRef:                s.cfg.Repo,
 	}

@@ -40,7 +40,7 @@ func sampleInput() RunInput {
 		Gaggle:                 "web",
 		WorkflowName:           "flow",
 		Version:                1,
-		PreviewFeaturesEnabled: true,
+		PreviewFeaturesEnabled: boolPointer(true),
 		Spec:                   linearSpec(),
 	}
 }

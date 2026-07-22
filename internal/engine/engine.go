@@ -35,10 +35,19 @@ type RunInput struct {
 	WorkflowName           string             `json:"workflowName"`
 	Version                int                `json:"version"`
 	WorkflowDigest         string             `json:"workflowDigest"`
-	PreviewFeaturesEnabled bool               `json:"previewFeaturesEnabled,omitempty"`
+	PreviewFeaturesEnabled *bool              `json:"previewFeaturesEnabled,omitempty"`
 	Spec                   apiv1.WorkflowSpec `json:"spec"`
 	RepoRef                apiv1.RepoRef      `json:"repoRef"`
 	Item                   *apiv1.BacklogItem `json:"item,omitempty"`
+}
+
+func (in RunInput) previewFeaturesEnabled() bool {
+	if in.PreviewFeaturesEnabled == nil {
+		// Inputs persisted before this policy existed were already admitted under
+		// preview-permissive compilation and must retain that behavior on replay.
+		return true
+	}
+	return *in.PreviewFeaturesEnabled
 }
 
 // RunResult is the terminal outcome of a workflow run.
@@ -63,7 +72,7 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	logger := workflow.GetLogger(ctx)
 	m, err := wf.Compile(
 		wf.Definition{Name: in.WorkflowName, Version: in.Version, Spec: in.Spec},
-		wf.WithPreviewFeatures(in.PreviewFeaturesEnabled),
+		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
 	)
 	if err != nil {
 		return RunResult{}, err
