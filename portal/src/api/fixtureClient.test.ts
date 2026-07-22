@@ -8,6 +8,7 @@ import {
   type Health,
   type Instance,
 } from "./types";
+import { populatedDaemonFixtures } from "../test/daemonFixtures";
 
 const health: Health = {
   apiVersion: API_VERSION,
@@ -108,5 +109,83 @@ describe("FixtureDaemonClient", () => {
     await expect(client.listRuns(undefined, { signal: controller.signal })).rejects.toBeInstanceOf(
       RequestCancelledError,
     );
+  });
+
+  it("returns only runs in the requested outcome and stage-attempt population", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const ids = async (request: Parameters<DaemonClient["listRuns"]>[0]) =>
+      (await client.listRuns(request)).runs.map((run) => run.id);
+
+    await expect(
+      ids({ gaggle: "core", workflow: "implementation", outcome: "terminal" }),
+    ).resolves.toEqual(["01JZ400FAILED", "01JZ455ESCALATE"]);
+    await expect(
+      ids({ gaggle: "core", workflow: "implementation", outcome: "success" }),
+    ).resolves.toEqual(["01JZ455ESCALATE"]);
+    await expect(
+      ids({ gaggle: "core", workflow: "implementation", outcome: "failure" }),
+    ).resolves.toEqual(["01JZ400FAILED"]);
+    await expect(
+      ids({ gaggle: "core", workflow: "implementation", outcome: "other" }),
+    ).resolves.toEqual(["01JZ441DAEMONAPI", "01JZ402DASHBOARD"]);
+
+    await expect(
+      ids({
+        gaggle: "core",
+        workflow: "implementation",
+        stage: "implement",
+        population: "attempts",
+      }),
+    ).resolves.toEqual([
+      "01JZ441DAEMONAPI",
+      "01JZ402DASHBOARD",
+      "01JZ400FAILED",
+      "01JZ455ESCALATE",
+    ]);
+    await expect(
+      ids({
+        gaggle: "core",
+        workflow: "implementation",
+        stage: "implement",
+        population: "measured",
+      }),
+    ).resolves.toEqual([
+      "01JZ441DAEMONAPI",
+      "01JZ402DASHBOARD",
+      "01JZ400FAILED",
+      "01JZ455ESCALATE",
+    ]);
+    await expect(
+      ids({
+        gaggle: "core",
+        workflow: "implementation",
+        stage: "implement",
+        outcome: "failure",
+      }),
+    ).resolves.toEqual(["01JZ402DASHBOARD", "01JZ400FAILED"]);
+    await expect(
+      ids({
+        gaggle: "core",
+        workflow: "implementation",
+        stage: "implement",
+        outcome: "other",
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      ids({
+        gaggle: "tools",
+        workflow: "implementation",
+        stage: "implement",
+        population: "attempts",
+      }),
+    ).resolves.toEqual(["01JZ300ABORTED"]);
+    await expect(
+      ids({
+        gaggle: "tools",
+        workflow: "implementation",
+        stage: "implement",
+        population: "measured",
+      }),
+    ).resolves.toEqual([]);
   });
 });

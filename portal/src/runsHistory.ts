@@ -34,7 +34,7 @@ export interface RunsHistoryQuery {
 
 export type RunHistoryScope = Pick<
   RunListOptions,
-  "gaggle" | "workflow" | "stage" | "since" | "until"
+  "gaggle" | "workflow" | "stage" | "outcome" | "population" | "since" | "until"
 >;
 
 interface RunsStream {
@@ -100,7 +100,7 @@ export function useRunsHistory(
         return false;
       },
     );
-  }, [client, filter, isFresh, publish, scope.gaggle, scope.since, scope.stage, scope.until, scope.workflow]);
+  }, [client, filter, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
 
   const loadMore = useCallback(() => {
     if (loadingMore.current || !streams.current.some((stream) => !stream.exhausted)) {
@@ -127,7 +127,7 @@ export function useRunsHistory(
         }
       },
     );
-  }, [client, isFresh, publish, scope.gaggle, scope.since, scope.stage, scope.until, scope.workflow]);
+  }, [client, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
 
   useEffect(() => {
     const unsubscribe = subscribe(["run"], refresh);

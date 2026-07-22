@@ -330,14 +330,16 @@ func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
 		return readservice.RunListOptions{}, fmt.Errorf("%w: %w", readservice.ErrInvalidArgument, err)
 	}
 	options := readservice.RunListOptions{
-		Gaggle:   query.Get("gaggle"),
-		Workflow: query.Get("workflow"),
-		Stage:    query.Get("stage"),
-		Phase:    readservice.RunPhase(query.Get("phase")),
-		Trigger:  readservice.TriggerKind(query.Get("trigger")),
-		Since:    since,
-		Until:    until,
-		Cursor:   query.Get("cursor"),
+		Gaggle:          query.Get("gaggle"),
+		Workflow:        query.Get("workflow"),
+		Stage:           query.Get("stage"),
+		Outcome:         readservice.OutcomeFilter(query.Get("outcome")),
+		StagePopulation: readservice.StagePopulation(query.Get("population")),
+		Phase:           readservice.RunPhase(query.Get("phase")),
+		Trigger:         readservice.TriggerKind(query.Get("trigger")),
+		Since:           since,
+		Until:           until,
+		Cursor:          query.Get("cursor"),
 	}
 	if value := query.Get("limit"); value != "" {
 		limit, err := strconv.Atoi(value)

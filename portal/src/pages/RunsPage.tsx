@@ -102,13 +102,33 @@ export function RunsPage({
 }
 
 function formatScope(filters: RunRouteFilters): string {
+  let scope: string;
   if (filters.stage) {
-    return `${filters.gaggle ?? "All gaggles"} / ${filters.workflow ?? "All workflows"} / ${filters.stage}`;
+    scope = `${filters.gaggle ?? "All gaggles"} / ${filters.workflow ?? "All workflows"} / ${filters.stage}`;
+  } else if (filters.workflow) {
+    scope = `${filters.gaggle ?? "All gaggles"} / ${filters.workflow}`;
+  } else {
+    scope = filters.gaggle ? `Gaggle: ${filters.gaggle}` : "Instance";
   }
-  if (filters.workflow) {
-    return `${filters.gaggle ?? "All gaggles"} / ${filters.workflow}`;
+  return `${scope}${formatPopulation(filters)}`;
+}
+
+function formatPopulation(filters: RunRouteFilters): string {
+  if (filters.population === "measured") {
+    return " · Measured attempts";
   }
-  return filters.gaggle ? `Gaggle: ${filters.gaggle}` : "Instance";
+  switch (filters.outcome) {
+    case "terminal":
+      return " · Terminal outcomes";
+    case "success":
+      return " · Successful outcomes";
+    case "failure":
+      return " · Failed outcomes";
+    case "other":
+      return " · Other outcomes";
+    default:
+      return filters.population === "attempts" ? " · All attempts" : "";
+  }
 }
 
 function formatWindow(filters: RunRouteFilters): string {

@@ -63,11 +63,11 @@ export function InsightPage({
   }
 
   const snapshot = query.state.data;
-  const scopes = scopeOptions(snapshot.stats);
   const requestedScope = scopeFromKey(scopeKey);
-  const scope = scopes.some((option) => option.key === scopeKey)
-    ? requestedScope
-    : { kind: "instance" as const };
+  const availableScopes = scopeOptions(snapshot.stats);
+  const scopes = availableScopes.some((option) => option.key === scopeToKey(requestedScope))
+    ? availableScopes
+    : [...availableScopes, scopeOption(requestedScope)];
 
   return (
     <>
@@ -75,8 +75,8 @@ export function InsightPage({
         <p className="page-kicker">Telemetry</p>
         <h1>Insight</h1>
         <p>
-          Success and latency diagnostics for the selected operational scope. Every row opens the
-          runs behind it.
+          Success and latency diagnostics for the selected operational scope. Every metric opens
+          the runs behind it.
         </p>
       </header>
 
@@ -86,7 +86,7 @@ export function InsightPage({
           <select
             aria-label="Scope"
             onChange={(event) => setScopeKey(event.target.value)}
-            value={scopeToKey(scope)}
+            value={scopeToKey(requestedScope)}
           >
             {scopes.map((option) => (
               <option key={option.key} value={option.key}>
@@ -117,7 +117,7 @@ export function InsightPage({
         </div>
       )}
 
-      <InsightContent scope={scope} snapshot={snapshot} />
+      <InsightContent scope={requestedScope} snapshot={snapshot} />
     </>
   );
 }
@@ -202,27 +202,53 @@ function OutcomeRow({ emphasis = false, metric }: { emphasis?: boolean; metric: 
   const successWidth = terminal > 0 ? (metric.succeeded / terminal) * 100 : 0;
   const failureWidth = terminal > 0 ? (metric.failed / terminal) * 100 : 0;
   return (
-    <a
-      aria-label={`View runs behind ${metric.label}: success rate ${formatRate(metric.successRate)}, succeeded ${metric.succeeded}, failed ${metric.failed}, other ${metric.other}, total ${metric.total} ${metric.unit}`}
+    <div
       className={emphasis ? "insight-outcome-row insight-outcome-row-summary" : "insight-outcome-row"}
-      href={routeHash({ page: "runs", filters: metric.filters })}
     >
       <span className="insight-scope-label">
         <strong>{metric.label}</strong>
         <small>{metric.unit}</small>
       </span>
-      <span className="insight-rate">
+      <a
+        aria-label={`View terminal ${metric.unit} behind ${metric.label} for success rate ${formatRate(metric.successRate)}`}
+        className="insight-rate insight-metric-link"
+        href={metricHref(metric, "terminal")}
+      >
         <span aria-hidden="true" className="outcome-bar">
           <span className="outcome-bar-success" style={{ width: `${successWidth}%` }} />
           <span className="outcome-bar-failure" style={{ width: `${failureWidth}%` }} />
         </span>
         <strong>{formatRate(metric.successRate)}</strong>
-      </span>
-      <span className="insight-number insight-number-success">{metric.succeeded}</span>
-      <span className="insight-number insight-number-failure">{metric.failed}</span>
-      <span className="insight-number">{metric.other}</span>
-      <span className="insight-number">{metric.total}</span>
-    </a>
+      </a>
+      <a
+        aria-label={`View successful ${metric.unit} behind ${metric.label}: ${metric.succeeded}`}
+        className="insight-number insight-number-success insight-metric-link"
+        href={metricHref(metric, "success")}
+      >
+        {metric.succeeded}
+      </a>
+      <a
+        aria-label={`View failed ${metric.unit} behind ${metric.label}: ${metric.failed}`}
+        className="insight-number insight-number-failure insight-metric-link"
+        href={metricHref(metric, "failure")}
+      >
+        {metric.failed}
+      </a>
+      <a
+        aria-label={`View other ${metric.unit} behind ${metric.label}: ${metric.other}`}
+        className="insight-number insight-metric-link"
+        href={metricHref(metric, "other")}
+      >
+        {metric.other}
+      </a>
+      <a
+        aria-label={`View all ${metric.unit} behind ${metric.label}: ${metric.total}`}
+        className="insight-number insight-metric-link"
+        href={metricHref(metric)}
+      >
+        {metric.total}
+      </a>
+    </div>
   );
 }
 
@@ -253,7 +279,14 @@ function StageDistributions({
           className="stage-distribution-row"
           href={routeHash({
             page: "runs",
-            filters: drillFilters(filters, stage.gaggle, stage.workflow, stage.stage),
+            filters: drillFilters(
+              filters,
+              stage.gaggle,
+              stage.workflow,
+              stage.stage,
+              undefined,
+              "measured",
+            ),
           })}
           key={`${stage.gaggle}:${stage.workflow}:${stage.stage}`}
         >
@@ -323,25 +356,39 @@ function DistributionPlot({
 
 function scopeOptions(stats: TelemetryStatsResult): { key: string; label: string }[] {
   return [
-    { key: scopeToKey({ kind: "instance" }), label: "Instance" },
-    ...stats.gaggles.map((item) => ({
-      key: scopeToKey({ kind: "gaggle", gaggle: item.gaggle }),
-      label: `Gaggle · ${item.gaggle}`,
-    })),
-    ...stats.runs.map((item) => ({
-      key: scopeToKey({ kind: "workflow", gaggle: item.gaggle, workflow: item.workflow }),
-      label: `Workflow · ${item.gaggle} / ${item.workflow}`,
-    })),
-    ...stats.stages.map((item) => ({
-      key: scopeToKey({
+    scopeOption({ kind: "instance" }),
+    ...stats.gaggles.map((item) => scopeOption({ kind: "gaggle", gaggle: item.gaggle })),
+    ...stats.runs.map((item) =>
+      scopeOption({ kind: "workflow", gaggle: item.gaggle, workflow: item.workflow }),
+    ),
+    ...stats.stages.map((item) =>
+      scopeOption({
         kind: "stage",
         gaggle: item.gaggle,
         workflow: item.workflow,
         stage: item.stage,
       }),
-      label: `Stage · ${item.gaggle} / ${item.workflow} / ${item.stage}`,
-    })),
+    ),
   ];
+}
+
+function scopeOption(scope: InsightScope): { key: string; label: string } {
+  switch (scope.kind) {
+    case "instance":
+      return { key: scopeToKey(scope), label: "Instance" };
+    case "gaggle":
+      return { key: scopeToKey(scope), label: `Gaggle · ${scope.gaggle}` };
+    case "workflow":
+      return {
+        key: scopeToKey(scope),
+        label: `Workflow · ${scope.gaggle} / ${scope.workflow}`,
+      };
+    case "stage":
+      return {
+        key: scopeToKey(scope),
+        label: `Stage · ${scope.gaggle} / ${scope.workflow} / ${scope.stage}`,
+      };
+  }
 }
 
 function scopeMetric(
@@ -497,14 +544,29 @@ function drillFilters(
   gaggle?: string,
   workflow?: string,
   stage?: string,
+  outcome?: RunRouteFilters["outcome"],
+  population?: RunRouteFilters["population"],
 ): RunRouteFilters {
   return {
     gaggle,
     workflow,
     stage,
+    outcome,
+    population,
     since: filters.since,
     until: filters.until,
   };
+}
+
+function metricHref(metric: OutcomeMetric, outcome?: RunRouteFilters["outcome"]): string {
+  return routeHash({
+    page: "runs",
+    filters: {
+      ...metric.filters,
+      outcome,
+      population: metric.unit === "attempts" ? "attempts" : undefined,
+    },
+  });
 }
 
 function scopeToKey(scope: InsightScope): string {

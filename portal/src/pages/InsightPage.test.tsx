@@ -31,12 +31,24 @@ describe("Insight page", () => {
       screen.getByLabelText("Scope"),
       screen.getByRole("option", { name: "Stage · core / implementation / implement" }),
     );
-    expect(screen.getByText("60.0%")).toBeInTheDocument();
     expect(
       screen.getByRole("link", {
-        name: /^View runs behind core \/ implementation \/ implement:/,
+        name: /^View terminal attempts behind core \/ implementation \/ implement for success rate 60.0%/,
       }),
-    ).toHaveAttribute("href", expect.stringContaining("stage=implement"));
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: /^View terminal attempts behind core \/ implementation \/ implement for success rate/,
+      }),
+    ).toHaveAttribute(
+      "href",
+      expect.stringMatching(/stage=implement.*outcome=terminal.*population=attempts/),
+    );
+    expect(
+      screen.getByRole("link", {
+        name: /^View runs behind core implementation implement:/,
+      }),
+    ).toHaveAttribute("href", expect.stringContaining("population=measured"));
 
     await user.selectOptions(screen.getByLabelText("Time window"), "24h");
     await waitFor(() => {
@@ -57,7 +69,7 @@ describe("Insight page", () => {
       screen.getByRole("option", { name: "Workflow · core / implementation" }),
     );
     await user.click(
-      screen.getByRole("link", { name: /^View runs behind core \/ implementation:/ }),
+      screen.getByRole("link", { name: "View all runs behind core / implementation: 4" }),
     );
 
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
@@ -68,12 +80,69 @@ describe("Insight page", () => {
           gaggle: "core",
           workflow: "implementation",
           stage: undefined,
+          outcome: undefined,
+          population: undefined,
           since: expect.stringMatching(/Z$/),
           until: expect.stringMatching(/Z$/),
         }),
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
+  });
+
+  it("gives each outcome number its exact run population", async () => {
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await user.selectOptions(
+      await screen.findByLabelText("Scope"),
+      screen.getByRole("option", { name: "Workflow · core / implementation" }),
+    );
+
+    const terminal = screen.getByRole("link", {
+      name: "View terminal runs behind core / implementation for success rate 50.0%",
+    });
+    const succeeded = screen.getByRole("link", {
+      name: "View successful runs behind core / implementation: 1",
+    });
+    const failed = screen.getByRole("link", {
+      name: "View failed runs behind core / implementation: 1",
+    });
+    const other = screen.getByRole("link", {
+      name: "View other runs behind core / implementation: 2",
+    });
+    const total = screen.getByRole("link", {
+      name: "View all runs behind core / implementation: 4",
+    });
+
+    expect(terminal).toHaveAttribute("href", expect.stringContaining("outcome=terminal"));
+    expect(succeeded).toHaveAttribute("href", expect.stringContaining("outcome=success"));
+    expect(failed).toHaveAttribute("href", expect.stringContaining("outcome=failure"));
+    expect(other).toHaveAttribute("href", expect.stringContaining("outcome=other"));
+    expect(total.getAttribute("href")).not.toContain("outcome=");
+  });
+
+  it("keeps a selected scope when a narrower window has no rows", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await user.selectOptions(
+      await screen.findByLabelText("Scope"),
+      screen.getByRole("option", { name: "Workflow · core / implementation" }),
+    );
+    getTelemetryStats.mockResolvedValueOnce({ gaggles: [], runs: [], stages: [] });
+
+    await user.selectOptions(screen.getByLabelText("Time window"), "24h");
+
+    expect(
+      await screen.findByRole("heading", { name: "No telemetry in this window" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Scope")).toHaveDisplayValue(
+      "Workflow · core / implementation",
+    );
+    expect(screen.queryByText("Gaggle: Instance")).not.toBeInTheDocument();
   });
 
   it("shows an honest empty state when no telemetry was measured", async () => {

@@ -1,3 +1,5 @@
+import type { OutcomeFilter, StagePopulationFilter } from "./api/types";
+
 export type Route =
   | { page: "overview" }
   | { page: "workflows" }
@@ -10,6 +12,8 @@ export interface RunRouteFilters {
   gaggle?: string;
   workflow?: string;
   stage?: string;
+  outcome?: OutcomeFilter;
+  population?: StagePopulationFilter;
   since?: string;
   until?: string;
 }
@@ -39,6 +43,8 @@ export function parseRoute(hash = window.location.hash): Route {
       gaggle: optionalQuery(search, "gaggle"),
       workflow: optionalQuery(search, "workflow"),
       stage: optionalQuery(search, "stage"),
+      outcome: outcomeQuery(search),
+      population: populationQuery(search),
       since: optionalQuery(search, "since"),
       until: optionalQuery(search, "until"),
     };
@@ -87,4 +93,19 @@ export type Navigate = (route: Route) => void;
 
 function optionalQuery(search: URLSearchParams, name: string): string | undefined {
   return search.get(name) || undefined;
+}
+
+function outcomeQuery(search: URLSearchParams): OutcomeFilter | undefined {
+  const value = optionalQuery(search, "outcome");
+  return value === "terminal" ||
+    value === "success" ||
+    value === "failure" ||
+    value === "other"
+    ? value
+    : undefined;
+}
+
+function populationQuery(search: URLSearchParams): StagePopulationFilter | undefined {
+  const value = optionalQuery(search, "population");
+  return value === "attempts" || value === "measured" ? value : undefined;
 }

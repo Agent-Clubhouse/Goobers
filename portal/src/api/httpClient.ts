@@ -200,6 +200,8 @@ export class HttpDaemonClient implements DaemonClient {
         gaggle: request.gaggle,
         workflow: request.workflow,
         stage: request.stage,
+        outcome: request.outcome,
+        population: request.population,
         phase: request.phase,
         trigger: request.trigger,
         since: request.since,

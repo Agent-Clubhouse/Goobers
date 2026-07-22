@@ -1193,6 +1193,18 @@ summary:focus-visible {
   background: var(--accent-soft);
 }
 
+.insight-metric-link {
+  border-radius: 5px;
+  color: inherit;
+  margin: -6px;
+  padding: 6px;
+  text-decoration: none;
+}
+
+.insight-metric-link:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .insight-scope-label {
   display: grid;
   gap: 3px;
@@ -3220,8 +3232,8 @@ summary:focus-visible {
 
   .insight-outcome-header > span:nth-child(5),
   .insight-outcome-header > span:nth-child(6),
-  .insight-outcome-row > span:nth-child(5),
-  .insight-outcome-row > span:nth-child(6) {
+  .insight-outcome-row > :nth-child(5),
+  .insight-outcome-row > :nth-child(6) {
     display: none;
   }
 
@@ -3435,7 +3447,7 @@ summary:focus-visible {
   }
 
   .insight-outcome-header > span:nth-child(n + 3),
-  .insight-outcome-row > span:nth-child(n + 3) {
+  .insight-outcome-row > :nth-child(n + 3) {
     display: none;
   }
 

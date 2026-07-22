@@ -16,6 +16,8 @@ export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalat
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
 export type AttemptClass = "initial" | "policy" | "infra";
 export type StageAttemptStatus = "running" | "success" | "failure" | "blocked" | "no-work";
+export type OutcomeFilter = "terminal" | "success" | "failure" | "other";
+export type StagePopulationFilter = "attempts" | "measured";
 export type ValidationSeverity = "error" | "warning";
 export type ValidationWarningCode = "VER001" | "VER002" | "VER003" | "MODEL002";
 export type UpdateModel = "instance" | "run" | "workflow";
@@ -286,6 +288,8 @@ export interface RunListOptions {
   gaggle?: string;
   workflow?: string;
   stage?: string;
+  outcome?: OutcomeFilter;
+  population?: StagePopulationFilter;
   phase?: RunPhase;
   trigger?: RunTriggerKind;
   since?: string;
