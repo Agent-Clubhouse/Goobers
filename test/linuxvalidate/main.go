@@ -46,11 +46,15 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 // runIDPattern matches the 32-hex-char run id printed by `goobers run` as
 // "created run <id> (...)".
 var runIDPattern = regexp.MustCompile(`created run ([0-9a-f]{32})`)
+
+const ephemeralAPIListenAddress = "127.0.0.1:0"
 
 func main() {
 	bin := flag.String("bin", defaultBin(), "path to the goobers binary to validate")
@@ -108,6 +112,9 @@ func run(bin, outDir string) error {
 	if out, err := runGoobers(absBin, 30*time.Second, "init", "--demo", daemonInstance); err != nil {
 		return fmt.Errorf("init --demo (daemon instance) failed: %w\n%s", err, out)
 	}
+	if err := configureEphemeralAPI(daemonInstance); err != nil {
+		return err
+	}
 	lifecycle, err := validateDaemonLifecycle(absBin, daemonInstance, outDir)
 	summary.WriteString(lifecycle)
 	if err != nil {
@@ -117,6 +124,19 @@ func run(bin, outDir string) error {
 	summary.WriteString("\n**Result: PASS** — all Linux node validation checks passed.\n")
 	if err := os.WriteFile(filepath.Join(outDir, "summary.md"), []byte(summary.String()), 0o644); err != nil {
 		return fmt.Errorf("write summary.md: %w", err)
+	}
+	return nil
+}
+
+func configureEphemeralAPI(root string) error {
+	path := filepath.Join(root, "instance.yaml")
+	cfg, err := instance.LoadConfig(path)
+	if err != nil {
+		return fmt.Errorf("load daemon instance config: %w", err)
+	}
+	cfg.API.Listen = ephemeralAPIListenAddress
+	if err := instance.WriteConfig(path, cfg); err != nil {
+		return fmt.Errorf("write daemon instance config: %w", err)
 	}
 	return nil
 }
