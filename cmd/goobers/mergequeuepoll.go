@@ -22,17 +22,13 @@ import (
 // like ci-poll — internal/executor/cipoll.go's own doc) neither happens
 // before this stage's own poll times out.
 //
-// Merged and evicted are both terminal, successful determinations (exit 0):
+// Merged, evicted, and timed out are successful determinations (exit 0):
 // a merged pull request gets the same branch cleanup merge-pr's direct path
-// already does; an evicted one is labeled goobers:needs-remediation with an
-// explanatory comment before reporting the outcome — the routing IS the
-// acceptance criterion, so a failure to apply that label is a genuine stage
-// failure (exit 1), not a swallowed warning that would silently leave an
-// evicted pull request unrouted. A still-pending entry past this stage's
-// own poll timeout is also exit 0 (queueOutcome=timeout) — mergepr.go's own
-// "not ready yet is not a stage failure" philosophy, not ci-poll's
-// executor-kind ResultFailure/Retryable convention (this is a plain
-// provider-chain subcommand, not that distinct executor path).
+// already does; evicted and timed-out pull requests are labeled
+// goobers:needs-remediation with an explanatory comment before reporting the
+// outcome. The routing is part of the outcome, so a failure to apply that label
+// is a genuine stage failure (exit 1), not a swallowed warning that would
+// silently leave the pull request unrouted.
 const mergeQueuePollHelp = "Usage: goobers merge-queue-poll [path]\n\n" +
 	"Watch a pull request already enqueued to its repo's merge queue (issue\n" +
 	"#758's Land, in merge-queue-enqueue policy) until the queue merges or\n" +
@@ -40,12 +36,12 @@ const mergeQueuePollHelp = "Usage: goobers merge-queue-poll [path]\n\n" +
 	"pullNumber (required), pollIntervalSeconds/pollMaxIntervalSeconds/\n" +
 	"pollTimeoutSeconds (time.ParseDuration strings, default to\n" +
 	"internal/executor's ci-poll defaults), resultFile (default\n" +
-	"queue-result.json). An eviction applies goobers:needs-remediation plus\n" +
-	"an explanatory comment before reporting queueOutcome=evicted — that\n" +
-	"labeling is the acceptance criterion, so a failure to apply it is a\n" +
-	"stage failure, not a swallowed warning. Exit codes: 0 = evaluated\n" +
-	"(merged, evicted, or still-pending-timeout — see the result file's\n" +
-	"queueOutcome field), 1 = business error (missing capability/config,\n" +
+	"queue-result.json). An eviction or timeout applies\n" +
+	"goobers:needs-remediation plus an explanatory comment before reporting\n" +
+	"its queueOutcome — a failure to apply that trail is a stage failure,\n" +
+	"not a swallowed warning. Exit codes: 0 = evaluated (merged, evicted,\n" +
+	"or still-pending-timeout — see the result file's queueOutcome field),\n" +
+	"1 = business error (missing capability/config,\n" +
 	"provider failure), 2 = usage/IO error.\n"
 
 func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
@@ -153,7 +149,7 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 			case providers.MergeQueueEntryMerged:
 				return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
 			case providers.MergeQueueEntryEvicted:
-				return mergeQueuePollEvicted(ctx, provider, repo, pullNumber, resultFile, stdout, stderr)
+				return mergeQueuePollEvicted(ctx, repo, pullNumber, resultFile, stdout, stderr)
 			case providers.MergeQueueEntryPending:
 				entrySeen = true
 				// A conclusive non-absent read breaks the absence streak.
@@ -169,7 +165,7 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 					// in the gap would have resolved to Merged by now, so this
 					// is a real eviction.
 					pf(stdout, "pr #%s is open and unmerged with no merge queue entry across %d polls — evicted\n", pullNumber, absentStreak)
-					return mergeQueuePollEvicted(ctx, provider, repo, pullNumber, resultFile, stdout, stderr)
+					return mergeQueuePollEvicted(ctx, repo, pullNumber, resultFile, stdout, stderr)
 				default:
 					// First absent read of this streak. Do NOT commit to an
 					// eviction yet — this is exactly what a successful merge
@@ -184,12 +180,7 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 				pf(stderr, "error: record timed-out merge queue entry for reconciliation: %v\n", err)
 				return 1
 			}
-			if err := writeQueueResult(resultFile, pullNumber, "timeout", "", nil, ""); err != nil {
-				pf(stderr, "error: %v\n", err)
-				return 1
-			}
-			pf(stdout, "merge queue poll for pr #%s timed out after %s, still pending\n", pullNumber, timeout)
-			return 0
+			return mergeQueuePollTimedOut(ctx, repo, pullNumber, timeout, resultFile, stdout, stderr)
 		}
 		select {
 		case <-ctx.Done():
@@ -237,25 +228,35 @@ func mergeQueuePollMerged(ctx context.Context, provider *providers.GitHubProvide
 // needed — mirroring cleanupMergedBranch's own GitHubBranchDelete pattern —
 // since labeling is a distinct authority from the github:pr:merge token
 // this stage's poll itself runs under.
-func mergeQueuePollEvicted(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pullNumber, resultFile string, stdout, stderr io.Writer) int {
+func mergeQueuePollEvicted(ctx context.Context, repo providers.RepositoryRef, pullNumber, resultFile string, stdout, stderr io.Writer) int {
+	reason := fmt.Sprintf("merge queue evicted pull request #%s: its combined build against the projected merge state failed", pullNumber)
+	comment := fmt.Sprintf("The merge queue evicted this pull request — its combined build against the projected merge state failed. Labeling `%s` for remediation.", needsRemediationLabel)
+	return mergeQueuePollNeedsRemediation(ctx, repo, pullNumber, "evicted", reason, comment, resultFile, stdout, stderr)
+}
+
+func mergeQueuePollTimedOut(ctx context.Context, repo providers.RepositoryRef, pullNumber string, timeout time.Duration, resultFile string, stdout, stderr io.Writer) int {
+	reason := fmt.Sprintf("merge queue poll for pull request #%s timed out after %s while it was still pending", pullNumber, timeout)
+	comment := fmt.Sprintf("Merge queue monitoring timed out after `%s` while this pull request was still pending. Labeling `%s` so a remediation selector or human can verify its queue state. Post-merge reconciliation will continue checking in case it lands later.", timeout, needsRemediationLabel)
+	return mergeQueuePollNeedsRemediation(ctx, repo, pullNumber, "timeout", reason, comment, resultFile, stdout, stderr)
+}
+
+func mergeQueuePollNeedsRemediation(ctx context.Context, repo providers.RepositoryRef, pullNumber, outcome, reason, comment, resultFile string, stdout, stderr io.Writer) int {
 	labelToken, err := providerToken(capability.GitHubIssuesWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	labelProvider := newGitHubProvider(labelToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
-	reason := fmt.Sprintf("merge queue evicted pull request #%s: its combined build against the projected merge state failed", pullNumber)
-	comment := fmt.Sprintf("The merge queue evicted this pull request — its combined build against the projected merge state failed. Labeling `%s` for remediation.", needsRemediationLabel)
 	if _, err := labelProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository: repo, ID: pullNumber, AddLabels: []string{needsRemediationLabel}, Comment: comment,
 	}); err != nil {
-		return failProviderStage(stderr, "label evicted pull request for remediation", err, resultFile)
+		return failProviderStage(stderr, fmt.Sprintf("label %s pull request for remediation", outcome), err, resultFile)
 	}
-	if err := writeQueueResult(resultFile, pullNumber, "evicted", "", nil, reason); err != nil {
+	if err := writeQueueResult(resultFile, pullNumber, outcome, "", nil, reason); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	pf(stdout, "merge queue evicted pr #%s, labeled %s\n", pullNumber, needsRemediationLabel)
+	pf(stdout, "merge queue %s pr #%s, labeled %s\n", outcome, pullNumber, needsRemediationLabel)
 	return 0
 }
 
@@ -264,7 +265,7 @@ func mergeQueuePollEvicted(ctx context.Context, provider *providers.GitHubProvid
 // ("merged"/"evicted"/"timeout", always present — this stage always
 // determines one of the three before returning, matching ci-poll's own
 // "always succeeds at determining an outcome" philosophy), mergeSha (on
-// merged), reason (on evicted), and headBranch/branchCleanup/
+// merged), reason (on evicted or timeout), and headBranch/branchCleanup/
 // branchCleanupError (after a merge) — the same flat-scalar convention
 // writeMergeResult already follows.
 func writeQueueResult(path, selectedNumber, queueOutcome, mergeSHA string, cleanup *mergeBranchCleanup, reason string) error {

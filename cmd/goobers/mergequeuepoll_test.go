@@ -55,6 +55,7 @@ type mergeQueuePollServerState struct {
 	// answer "did we post a comment onto this pull request?" — which is the
 	// question #924's assertions actually need.
 	commentPostCalls int
+	commentBodies    []string
 	labelStatus      int // non-zero forces the labels endpoint to fail
 }
 
@@ -183,6 +184,16 @@ func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePol
 		}
 		st.mu.Lock()
 		st.commentPostCalls++
+		var body struct {
+			Body string `json:"body"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			st.mu.Unlock()
+			t.Errorf("decode posted comment: %v", err)
+			http.Error(w, "invalid comment", http.StatusBadRequest)
+			return
+		}
+		st.commentBodies = append(st.commentBodies, body.Body)
 		st.mu.Unlock()
 		writeFakeJSON(w, map[string]interface{}{"id": 1})
 	})
@@ -442,7 +453,8 @@ func TestMergeQueuePollStillDetectsAnEvictionThatPersists(t *testing.T) {
 // that as an eviction would label a perfectly healthy just-enqueued pull
 // request needs-remediation. Before any entry has been seen, absence is
 // tolerated for a grace window — so a poll whose budget expires inside that
-// window reports timeout, never eviction.
+// window reports timeout, never eviction. Timeout still leaves the labeled,
+// commented trail required by #944.
 func TestMergeQueuePollToleratesAnAbsentEntryBeforeItHasSeenOne(t *testing.T) {
 	st := &mergeQueuePollServerState{
 		// No entry ever appears, and the pull request stays open.
@@ -463,8 +475,8 @@ func TestMergeQueuePollToleratesAnAbsentEntryBeforeItHasSeenOne(t *testing.T) {
 	if result["queueOutcome"] != "timeout" {
 		t.Fatalf("result = %+v, want queueOutcome=timeout — an entry that is not visible YET is not an eviction", result)
 	}
-	if st.labelCalls != 0 {
-		t.Fatalf("label calls = %d, want 0 — a just-enqueued pull request must never be labeled needs-remediation", st.labelCalls)
+	if st.labelCalls != 1 || st.commentPostCalls != 1 {
+		t.Fatalf("label/comment calls = %d/%d, want 1/1 — timeout must remain visible even when absence is still inside the propagation grace window", st.labelCalls, st.commentPostCalls)
 	}
 }
 
@@ -507,8 +519,8 @@ func TestMergeQueuePollEvictionLabelFailureFailsTheStage(t *testing.T) {
 // TestMergeQueuePollTimesOutWhenStillPending is #758's third outcome
 // (mirroring ci-status's own OutcomeTimeout, #239): a pull request that
 // never resolves within this stage's own bounded poll reports
-// queueOutcome=timeout, distinct from both merged and evicted, with exit 0
-// (still pending is not itself a stage failure).
+// queueOutcome=timeout, distinct from both merged and evicted, with a
+// human-visible remediation label and explanatory comment (#944).
 func TestMergeQueuePollTimesOutWhenStillPending(t *testing.T) {
 	st := &mergeQueuePollServerState{pendingCalls: 1_000_000, terminalState: "open", terminalMerged: false}
 	server := newMergeQueuePollServer(t, "your-org", "your-repo", st)
@@ -524,8 +536,18 @@ func TestMergeQueuePollTimesOutWhenStillPending(t *testing.T) {
 	if result["queueOutcome"] != "timeout" {
 		t.Fatalf("result = %+v, want queueOutcome=timeout", result)
 	}
-	if st.labelCalls != 0 || st.deleteCalls != 0 {
-		t.Fatalf("label/delete calls = %d/%d, want 0/0 for a timeout (no terminal outcome to act on yet)", st.labelCalls, st.deleteCalls)
+	reason, _ := result["reason"].(string)
+	if !strings.Contains(reason, "timed out") || !strings.Contains(reason, "still pending") {
+		t.Fatalf("result reason = %q, want the timeout explained", reason)
+	}
+	if st.labelCalls != 1 || st.commentPostCalls != 1 {
+		t.Fatalf("label/comment calls = %d/%d, want 1/1 so a timed-out PR remains visible", st.labelCalls, st.commentPostCalls)
+	}
+	if len(st.commentBodies) != 1 || !strings.Contains(st.commentBodies[0], "timed out") || !strings.Contains(st.commentBodies[0], needsRemediationLabel) {
+		t.Fatalf("comments = %q, want one human-visible timeout explanation naming %s", st.commentBodies, needsRemediationLabel)
+	}
+	if st.deleteCalls != 0 {
+		t.Fatalf("branch delete calls = %d, want 0 for a timeout", st.deleteCalls)
 	}
 	ledgerPath := filepath.Join(layoutFor(root).SchedulerDir(), postMergeReconcileLedgerFile)
 	ledger, err := readPostMergeReconcileLedger(ledgerPath)
