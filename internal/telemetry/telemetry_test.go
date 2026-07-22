@@ -51,36 +51,39 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 		t.Fatalf("StartRun() error = %v", err)
 	}
 
-	taskCtx, taskSpan, err := client.StartTask(runCtx, TaskAttributes{
-		Gaggle:      "acme-web",
-		WorkflowID:  "default-implement",
-		RunID:       runID,
-		TaskID:      "implement",
-		TaskType:    "agentic",
-		GooberID:    "coder",
-		Attempt:     2,
-		AttemptKind: AttemptKindPolicy,
+	_, taskSpan, err := client.StartTask(runCtx, TaskAttributes{
+		Gaggle:         "acme-web",
+		WorkflowID:     "default-implement",
+		RunID:          runID,
+		TaskID:         "implement",
+		TaskType:       "agentic",
+		GooberID:       "coder",
+		Model:          "gpt-5.6-sol",
+		HarnessVersion: "copilot version 1.2.3",
+		Attempt:        2,
+		AttemptKind:    AttemptKindPolicy,
 	})
 	if err != nil {
 		t.Fatalf("StartTask() error = %v", err)
 	}
-	RecordAgentProvenance(taskCtx, "gpt-5.6-sol", "copilot version 1.2.3")
 	taskSpan.Event("tool.completed", attribute.String("tool.name", "go-test"))
 	taskSpan.Succeed("task completed")
 
-	gateCtx, gateSpan, err := client.StartGate(runCtx, GateAttributes{
-		Gaggle:       "acme-web",
-		WorkflowID:   "default-implement",
-		RunID:        runID,
-		GateID:       "qa",
-		Decision:     "pass",
-		RepassNumber: 1,
-		GooberID:     "reviewer",
+	_, gateSpan, err := client.StartGate(runCtx, GateAttributes{
+		Gaggle:         "acme-web",
+		WorkflowID:     "default-implement",
+		RunID:          runID,
+		GateID:         "qa",
+		Decision:       "pass",
+		RepassNumber:   1,
+		GooberID:       "reviewer",
+		Agentic:        true,
+		Model:          "claude-sonnet-5",
+		HarnessVersion: "copilot version 1.2.3",
 	})
 	if err != nil {
 		t.Fatalf("StartGate() error = %v", err)
 	}
-	RecordAgentProvenance(gateCtx, "claude-sonnet-5", "copilot version 1.2.3")
 	gateSpan.SetGateResult("pass", 1)
 	gateSpan.Complete(OutcomeSuccess, false)
 	runSpan.End()

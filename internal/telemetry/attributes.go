@@ -126,6 +126,8 @@ type TaskAttributes struct {
 	TaskID          string
 	TaskType        string
 	GooberID        string
+	Model           string
+	HarnessVersion  string
 	Attempt         int
 	AttemptKind     string
 	ItemID          string
@@ -143,6 +145,9 @@ type GateAttributes struct {
 	Decision        string
 	RepassNumber    int
 	GooberID        string
+	Agentic         bool
+	Model           string
+	HarnessVersion  string
 	ItemID          string
 	ItemURL         string
 }

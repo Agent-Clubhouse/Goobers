@@ -1165,9 +1165,18 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	// each goober to its declared grants for that lookup; only agentic gates
 	// consult it (task stages carry their own stage-level capabilities).
 	gateGooberCaps := make(map[string][]string, len(goobers))
+	agentProvenance := make(map[string]runner.AgentProvenance, len(goobers))
 	for name, spec := range goobers {
 		if len(spec.Capabilities) > 0 {
 			gateGooberCaps[name] = append([]string(nil), spec.Capabilities...)
+		}
+		harnessName := spec.Harness
+		if harnessName == "" {
+			harnessName = apiv1.HarnessCopilot
+		}
+		agentProvenance[name] = runner.AgentProvenance{
+			Model:          spec.Model,
+			HarnessVersion: harnessInfo[harnessName].Version,
 		}
 	}
 
@@ -1299,6 +1308,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		RunsDir:                l.RunsDir(),
 		RepoCloneURL:           repoCloneURL,
 		GateGooberCapabilities: gateGooberCaps,
+		AgentProvenance:        agentProvenance,
 		// Wire the escalation notifier (#312) so a repass-budget escalation
 		// actually comments on the driving issue; nil for a repo-less instance.
 		Escalation: buildEscalationNotifier(cfg, resolver, sharedReg),
