@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -419,6 +421,14 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		if reason, dup := duplicateOfEarlierPR(ctx, provider, repo, current); dup {
 			return closeMootPullRequest(ctx, provider, repo, selectedNumber, current, *verdict, reason, resultFile, stdout, stderr)
 		}
+		// Superseded by a byte-identical earlier open sibling (#1211): two PRs
+		// that implement DIFFERENT issues can still converge to the identical
+		// tree, which duplicateOfEarlierPR (shared-issue only) misses — the
+		// deadlock #1179/#1180 filed. Same disposition: the earlier one wins,
+		// this redundant later one is closed as no-longer-needed.
+		if reason, superseded := supersededByIdenticalSibling(ctx, provider, repo, current); superseded {
+			return closeMootPullRequest(ctx, provider, repo, selectedNumber, current, *verdict, reason, resultFile, stdout, stderr)
+		}
 	}
 
 	posted := *verdict
@@ -823,6 +833,83 @@ func duplicateOfEarlierPR(ctx context.Context, provider *providers.GitHubProvide
 		}
 	}
 	return "", false
+}
+
+// supersededByIdenticalSibling reports whether pr is a byte-identical duplicate
+// of an EARLIER open sibling that should be closed as superseded (#1211) — the
+// gap duplicateOfEarlierPR does not cover, because that keys on a shared issue
+// and two independently-claimed issues can converge to the identical tree
+// (#1179/#1180: two issues, same four files byte-for-byte). The earlier PR wins,
+// fifo, exactly as it does for a shared-issue duplicate; this later one is
+// redundant and can never both-land, deadlocking its cluster.
+//
+// Supersession is established ONLY by a deterministic repository fact: the two
+// pull requests propose the byte-identical diff — the identical set of changed
+// files, each with the byte-identical patch. The reviewer's prose gates nothing
+// (it is only quoted in the close comment), matching mootFailReason's contract.
+// Deliberately conservative: it requires the patches to match verbatim, so two
+// duplicates opened against DIFFERENT bases (whose hunk line numbers differ)
+// are NOT auto-closed but fall through to the ordinary human-escalation path —
+// the safe direction for an action that closes a pull request. The caller gates
+// this to non-passing PRs, so a passing PR is never closed as superseded.
+//
+// Fails closed on any provider error and on any file whose patch GitHub omits
+// (binary or over its size cutoff — byte-identity is then unverifiable).
+func supersededByIdenticalSibling(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) (string, bool) {
+	mine, ok := changedDiffDigest(ctx, provider, repo, pr.Number)
+	if !ok {
+		return "", false
+	}
+	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
+	})
+	if err != nil {
+		return "", false
+	}
+	for _, o := range others {
+		// ListPullRequests returns only open PRs; a lower number is a strictly-
+		// earlier claim, so only it can supersede pr (never the reverse).
+		if o.Number >= pr.Number {
+			continue
+		}
+		theirs, ok := changedDiffDigest(ctx, provider, repo, o.Number)
+		if !ok {
+			continue
+		}
+		if theirs == mine {
+			return fmt.Sprintf(
+				"pull request #%d proposes a byte-identical diff and was opened first — this one is a redundant duplicate",
+				o.Number), true
+		}
+	}
+	return "", false
+}
+
+// changedDiffDigest returns a deterministic digest of a pull request's diff —
+// every changed file's path, status, and exact patch text, in a
+// listing-order-independent way — and whether it could be computed reliably.
+// It returns ok=false when the provider errors, the PR has an empty diff
+// (nothing to compare; mootFailReason owns that case), or ANY file's patch is
+// omitted by the provider (binary/too-large): an unverifiable file must never
+// be treated as matching, so callers fail closed on it.
+func changedDiffDigest(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, number int) (string, bool) {
+	files, err := provider.PullRequestFiles(ctx, repo, strconv.Itoa(number))
+	if err != nil || len(files) == 0 {
+		return "", false
+	}
+	sorted := append([]providers.ChangedFile(nil), files...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
+	h := sha256.New()
+	for _, f := range sorted {
+		if f.Patch == "" {
+			return "", false
+		}
+		// Length-prefix every field so no path/status/patch boundary can be
+		// forged by concatenation (e.g. "a"+"b" colliding with "ab").
+		_, _ = fmt.Fprintf(h, "%d:%s\n%d:%s\n%d:%s\n",
+			len(f.Path), f.Path, len(f.Status), f.Status, len(f.Patch), f.Patch)
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), true
 }
 
 // closeMootPullRequest closes a pull request that is no longer needed, stating
