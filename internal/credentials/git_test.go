@@ -37,11 +37,5 @@ func TestWriteAskpassScriptContainsNoSecretMaterial(t *testing.T) {
 		t.Fatalf("walk %s: %v", dir, err)
 	}
 
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat askpass script: %v", err)
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("askpass script perms = %v, want no group/other access", info.Mode().Perm())
-	}
+	assertAskpassProtected(t, path)
 }

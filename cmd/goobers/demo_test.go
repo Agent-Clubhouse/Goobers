@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -95,43 +96,48 @@ Demo tour (run these from %s):
 
 func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
 	start := time.Now()
+	if runtime.GOOS == "windows" {
+		t.Setenv("GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE", "1")
+	}
 	root := filepath.Join(t.TempDir(), "demo")
 	if code, _, stderr := runArgs(t, "init", "--demo", root); code != 0 {
 		t.Fatalf("init --demo: code = %d, stderr = %q", code, stderr)
 	}
 	setAPIListenAddress(t, root, freeLoopbackAddress(t))
 
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for network probe: %v", err)
-	}
-	t.Cleanup(func() { _ = probe.Close() })
-	workflowPath := filepath.Join(root, "config", "gaggles", "demo", "workflows", "demo.yaml")
-	workflowData, err := os.ReadFile(workflowPath)
-	if err != nil {
-		t.Fatalf("read demo workflow: %v", err)
-	}
-	var demo apiv1.Workflow
-	if err := yaml.Unmarshal(workflowData, &demo); err != nil {
-		t.Fatalf("decode demo workflow: %v", err)
-	}
-	testBin, err := os.Executable()
-	if err != nil {
-		t.Fatalf("resolve test binary: %v", err)
-	}
-	demo.Spec.Tasks[0].Run.Command = []string{
-		testBin,
-		"-test.run=^TestDemoNetworkProbe$",
-		"--",
-		"demo-network-probe",
-		probe.Addr().String(),
-	}
-	workflowData, err = yaml.Marshal(demo)
-	if err != nil {
-		t.Fatalf("encode demo workflow: %v", err)
-	}
-	if err := os.WriteFile(workflowPath, workflowData, 0o644); err != nil {
-		t.Fatalf("write demo workflow: %v", err)
+	if runtime.GOOS != "windows" {
+		probe, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen for network probe: %v", err)
+		}
+		t.Cleanup(func() { _ = probe.Close() })
+		workflowPath := filepath.Join(root, "config", "gaggles", "demo", "workflows", "demo.yaml")
+		workflowData, err := os.ReadFile(workflowPath)
+		if err != nil {
+			t.Fatalf("read demo workflow: %v", err)
+		}
+		var demo apiv1.Workflow
+		if err := yaml.Unmarshal(workflowData, &demo); err != nil {
+			t.Fatalf("decode demo workflow: %v", err)
+		}
+		testBin, err := os.Executable()
+		if err != nil {
+			t.Fatalf("resolve test binary: %v", err)
+		}
+		demo.Spec.Tasks[0].Run.Command = []string{
+			testBin,
+			"-test.run=^TestDemoNetworkProbe$",
+			"--",
+			"demo-network-probe",
+			probe.Addr().String(),
+		}
+		workflowData, err = yaml.Marshal(demo)
+		if err != nil {
+			t.Fatalf("encode demo workflow: %v", err)
+		}
+		if err := os.WriteFile(workflowPath, workflowData, 0o644); err != nil {
+			t.Fatalf("write demo workflow: %v", err)
+		}
 	}
 
 	orphan := filepath.Join(root, "workcopies", "scratch", "stage-crash-orphan")

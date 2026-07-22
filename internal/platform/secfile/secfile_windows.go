@@ -54,16 +54,15 @@ func verifyPrivate(path string) error {
 		return fmt.Errorf("%w: %s: cannot resolve tolerated system SIDs: %w", ErrNotPrivate, path, err)
 	}
 
-	// Walk the ACEs directly: x/sys/windows exposes the raw ACL header and ACE
-	// layout but no iterator. Only ACCESS_ALLOWED aces can expose the secret; a
-	// DENY ace merely restricts, and object aces (types 5/6) do not occur on
-	// file DACLs. Any allow ace granting a non-tolerated trustee any access is
-	// an exposure.
-	ace := unsafe.Pointer(uintptr(unsafe.Pointer(dacl)) + unsafe.Sizeof(windows.ACL{}))
+	// Only ACCESS_ALLOWED aces can expose the secret; a DENY ace merely
+	// restricts. GetAce avoids unsafe pointer arithmetic over the
+	// variable-length ACL, which is invalid under the race detector's checkptr.
 	for i := uint16(0); i < dacl.AceCount; i++ {
-		header := (*windows.ACE_HEADER)(ace)
-		if header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE {
-			allowed := (*windows.ACCESS_ALLOWED_ACE)(ace)
+		var allowed *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, uint32(i), &allowed); err != nil {
+			return fmt.Errorf("%w: %s: cannot read ACE %d: %w", ErrNotPrivate, path, i, err)
+		}
+		if allowed.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE {
 			if allowed.Mask != 0 {
 				sid := (*windows.SID)(unsafe.Pointer(&allowed.SidStart))
 				if !sidIn(sid, tolerated) {
@@ -73,7 +72,6 @@ func verifyPrivate(path string) error {
 				}
 			}
 		}
-		ace = unsafe.Pointer(uintptr(ace) + uintptr(header.AceSize))
 	}
 	return nil
 }

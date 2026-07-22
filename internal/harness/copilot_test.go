@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -321,11 +322,13 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 		t.Fatalf("transcript = %q", out.Transcript)
 	}
 
-	// The command was built as Command + PromptFlag + prompt text + extras.
-	if len(runner.lastReq.Command) < 3 || runner.lastReq.Command[0] != "copilot" || runner.lastReq.Command[1] != defaultPromptFlag {
+	// The command contains PromptFlag + prompt text + extras. On Windows the
+	// base command is the PowerShell npm shim rather than bare "copilot".
+	promptIndex := slices.Index(runner.lastReq.Command, defaultPromptFlag)
+	if promptIndex < 0 || promptIndex+1 >= len(runner.lastReq.Command) {
 		t.Fatalf("unexpected command: %v", runner.lastReq.Command)
 	}
-	promptText := runner.lastReq.Command[2]
+	promptText := runner.lastReq.Command[promptIndex+1]
 	if !strings.Contains(promptText, "You are a coder.") {
 		t.Fatalf("prompt missing instructions: %q", promptText)
 	}

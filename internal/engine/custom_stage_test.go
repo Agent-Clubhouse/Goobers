@@ -72,7 +72,15 @@ func customStageWorkspace(t *testing.T, fixture string) string {
 		{"init", "--quiet", workspace},
 		{"-C", workspace, "add", "fixture.go"},
 	} {
-		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		command := exec.Command("git", args...)
+		command.Env = append(os.Environ(),
+			"GIT_CONFIG_COUNT=2",
+			"GIT_CONFIG_KEY_0=core.autocrlf",
+			"GIT_CONFIG_VALUE_0=false",
+			"GIT_CONFIG_KEY_1=core.safecrlf",
+			"GIT_CONFIG_VALUE_1=false",
+		)
+		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 		}
 	}

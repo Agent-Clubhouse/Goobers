@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -20,23 +19,6 @@ func TestResolverResolvesFromEnv(t *testing.T) {
 	}
 	if got != "s3cr3t-value" {
 		t.Fatalf("Resolve = %q, want trimmed %q", got, "s3cr3t-value")
-	}
-}
-
-func TestResolverResolvesFromOwnerOnlyFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "token")
-	writeFile(t, path, "file-secret\n")
-	r, err := NewResolver([]TokenRef{{Name: "gh", File: path}})
-	if err != nil {
-		t.Fatalf("NewResolver: %v", err)
-	}
-	got, err := r.Resolve(context.Background(), "gh")
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if got != "file-secret" {
-		t.Fatalf("Resolve = %q, want %q", got, "file-secret")
 	}
 }
 

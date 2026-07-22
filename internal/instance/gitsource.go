@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -79,7 +80,7 @@ func NewGitSource(opts GitSourceOptions) (*GitSource, error) {
 			return nil, fmt.Errorf("git config source: resolve local repository: %w", err)
 		}
 		local = true
-	case !os.IsNotExist(statErr):
+	case !isGitSourceRemote(repository) && !os.IsNotExist(statErr):
 		return nil, fmt.Errorf("git config source: inspect repository: %w", statErr)
 	}
 
@@ -91,10 +92,24 @@ func NewGitSource(opts GitSourceOptions) (*GitSource, error) {
 		local:         local,
 		repositoryDir: repositoryDir,
 	}
+
 	if !local {
 		source.mirror = filepath.Join(repositoryDir, "repo.git")
 	}
 	return source, nil
+}
+
+func isGitSourceRemote(repository string) bool {
+	if filepath.VolumeName(repository) != "" {
+		return false
+	}
+	parsed, err := url.Parse(repository)
+	if err == nil && parsed.Scheme != "" {
+		return true
+	}
+	at := strings.IndexByte(repository, '@')
+	colon := strings.IndexByte(repository, ':')
+	return at >= 0 && colon > at
 }
 
 // Resolve fetches the source when needed and returns an immutable materialized
