@@ -122,7 +122,8 @@ scoped to each runner OS.
 
 `main` is protected. The active repository rules require:
 
-- **CI is green** — the required Ubuntu and macOS portable CI checks pass on the latest commit.
+- **CI is green** — the required aggregate confirms the Ubuntu and macOS
+  portable CI checks and the Windows compile smoke pass on the latest commit.
 - **Approvals** — none. The required approval count is zero, and
   [CODEOWNER](.github/CODEOWNERS) approval is not required. CODEOWNERS are still
   requested for review, but those requests are advisory.
