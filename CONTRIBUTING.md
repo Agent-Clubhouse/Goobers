@@ -59,9 +59,11 @@ command instead. **CI:** each validation job maps to the same contract:
 | `sandbox confinement` | Full-tier `make sandbox-check` gate with native sandbox availability required |
 | `linux node validation` | Full-tier `make linux-node-validation` platform acceptance gate for the shipped binary, daemon lifecycle, and Windows seams |
 
-Dedicated e2e, envtest, coverage, sandbox, and Linux-node jobs invoke their
-corresponding Make targets and compose under `verify-full`; future conformance
-or stress jobs follow the same pattern. Focused targets such as
+The dedicated sandbox and Linux-node CI jobs invoke their corresponding Make
+targets. E2e, envtest, and coverage are local `verify-full` gates pending CI
+promotion in [#628](https://github.com/Agent-Clubhouse/Goobers/issues/628);
+future conformance or stress jobs follow the same one-target-per-job pattern.
+Focused targets such as
 `make validate-configs`, `make portal-ci`, and `make portal-contract` remain
 available when only one surface changed. `go run ./test/ci` is the
 cross-platform implementation of `make ci`; it launches tools without Bash or
