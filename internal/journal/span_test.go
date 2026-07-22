@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestRecordSpanRoundTrip(t *testing.T) {
+func TestConformanceRecordSpanRoundTrip(t *testing.T) {
 	run, root := newRun(t)
 
 	transcript := []byte("harness transcript: implementing the change...")

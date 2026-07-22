@@ -104,6 +104,11 @@ test-envtest:
 test-e2e:
 	$(GO) test ./test/e2e -count=1
 
+## test-conformance: Run journal-contract conformance assertions in isolation.
+.PHONY: test-conformance
+test-conformance:
+	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic --go-command "$(GO)" -- -race -run '^TestConformance' -count=1 ./...
+
 ## sandbox-check: Require and exercise native sandbox confinement.
 .PHONY: sandbox-check
 sandbox-check:

@@ -204,13 +204,13 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, target := range []string{"vulncheck", "test-integration-strict", "sandbox-check", "linux-node-validation"} {
+	for _, target := range []string{"vulncheck", "test-integration-strict", "test-conformance", "sandbox-check", "linux-node-validation"} {
 		if !strings.Contains(workflow, "run: make "+target) {
 			t.Errorf("CI workflow must invoke make %s so the job is locally reproducible", target)
 		}
 	}
-	if !strings.Contains(workflow, "needs: [ci, windows-smoke, shipped-workflows, vulnerability-scan]") {
-		t.Error("required CI aggregate must fail when the vulnerability scan fails")
+	if !strings.Contains(workflow, "needs: [ci, windows-smoke, shipped-workflows, vulnerability-scan, conformance]") {
+		t.Error("required CI aggregate must fail when the vulnerability scan or journal conformance gate fails")
 	}
 }
 
