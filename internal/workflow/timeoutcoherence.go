@@ -35,14 +35,14 @@ func CheckStageTimeoutCoherence(def Definition) []string {
 			continue
 		}
 		wait, clamp, ok := effectivePollWait(task, wait, stageTimeout)
-		if !ok || wait <= stageTimeout {
+		if !ok || wait < stageTimeout {
 			continue
 		}
 		if clamp != "" {
 			source += ", " + clamp
 		}
 		problems = append(problems, fmt.Sprintf(
-			"task %q inputs.%s has effective bounded wait %s (%s), exceeding its effective stage timeout %s; the executor can terminate the stage before the wait finishes and before the stage writes a result",
+			"task %q inputs.%s has effective bounded wait %s (%s), meeting or exceeding its effective stage timeout %s; the executor can terminate the stage before the wait finishes and before the stage writes a result",
 			task.Name, boundedwait.InputPollTimeout, wait, source, stageTimeout,
 		))
 	}
@@ -65,7 +65,7 @@ func effectiveStageTimeout(task apiv1.Task) (time.Duration, bool) {
 		return boundedwait.DefaultTimeout, true
 	}
 	timeout, err := time.ParseDuration(value)
-	if err != nil || timeout <= 0 {
+	if err != nil {
 		return 0, false
 	}
 	return timeout, true

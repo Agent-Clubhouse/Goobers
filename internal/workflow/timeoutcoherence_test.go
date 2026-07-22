@@ -30,6 +30,8 @@ func TestStageTimeoutCoherence(t *testing.T) {
 			task: pollTask([]string{"watch-queue"}, map[string]string{
 				boundedwait.InputPollTimeout: "10m",
 			}),
+			want:       true,
+			wantDetail: []string{"10m0s", "meeting or exceeding its effective stage timeout 10m0s"},
 		},
 		{
 			name: "wait below legacy stage timeout",
@@ -88,6 +90,14 @@ func TestStageTimeoutCoherence(t *testing.T) {
 			wantDetail: []string{"9m0s", "default 30m0s", "effective stage timeout 5m0s"},
 		},
 		{
+			name: "merge queue clamp equal to canonical timeout",
+			task: withTimeout(pollTask([]string{"goobers", "merge-queue-poll"}, map[string]string{
+				boundedwait.InputPollTimeout: "30m",
+			}), 540),
+			want:       true,
+			wantDetail: []string{"9m0s", "clamped from 30m0s by merge-queue-poll", "effective stage timeout 9m0s"},
+		},
+		{
 			name: "ci poll clamp stays within canonical timeout",
 			task: withTimeout(pollTask([]string{"goobers", "ci-poll"}, map[string]string{
 				boundedwait.InputKind:        boundedwait.KindCIPoll,
@@ -107,6 +117,24 @@ func TestStageTimeoutCoherence(t *testing.T) {
 			}), map[string]string{
 				boundedwait.InputTimeout: "upstreamTimeout",
 			}),
+		},
+		{
+			name: "zero legacy stage timeout",
+			task: pollTask([]string{"watch-queue"}, map[string]string{
+				boundedwait.InputPollTimeout: "1s",
+				boundedwait.InputTimeout:     "0s",
+			}),
+			want:       true,
+			wantDetail: []string{"effective stage timeout 0s"},
+		},
+		{
+			name: "negative legacy stage timeout",
+			task: pollTask([]string{"watch-queue"}, map[string]string{
+				boundedwait.InputPollTimeout: "1s",
+				boundedwait.InputTimeout:     "-1s",
+			}),
+			want:       true,
+			wantDetail: []string{"effective stage timeout -1s"},
 		},
 		{
 			name: "unbounded command has no declared wait",
