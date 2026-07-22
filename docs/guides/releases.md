@@ -4,16 +4,30 @@ How Goobers binaries are built for distribution, packaged, and verified — and 
 Windows distribution story (artifacts, checksums, signing posture, scoop/winget
 shape) added by [#655](https://github.com/Agent-Clubhouse/Goobers/issues/655).
 
-> **Scope boundary.** This page documents the release **packaging engine** and
-> the **distribution shape**. It does *not* document a tagged-release
-> **workflow** — the GitHub Actions automation that fires on a tag, builds the
-> matrix, uploads artifacts, and writes the changelog is
-> [#432 (REL-2)](https://github.com/Agent-Clubhouse/Goobers/issues/432) and is
-> not built yet. The engine below is designed to be the step that workflow
-> *calls*; until #432 lands, releases are produced by running the engine
-> manually. **No Windows artifact is published until the Windows CI leg
-> ([#633](https://github.com/Agent-Clubhouse/Goobers/issues/633)) is green** — see
-> [The Windows gate](#the-windows-gate).
+## Tagged releases
+
+Pushing a stable semantic-version tag (`vMAJOR.MINOR.PATCH`) runs
+`.github/workflows/release.yml`. The workflow builds the packaging engine's
+complete matrix, verifies its shared checksum manifest and Linux binary, and
+creates a GitHub Release containing the archives, `SHA256SUMS`, and generated
+release notes. Re-running the workflow updates the existing release and replaces
+its assets, so a partially failed publication can be recovered safely.
+
+Release notes combine a curated overview with the first-parent commit history
+since the previous stable tag. Conventional-Commit subjects are grouped by type;
+non-conforming subjects remain visible under **Other changes**. Add the curated
+overview at `.github/release-notes/<tag>.md` in the tagged commit. An annotated
+tag message is used when that file is absent, and a short default introduction
+keeps lightweight tags publishable.
+
+```sh
+mkdir -p .github/release-notes
+$EDITOR .github/release-notes/v1.2.3.md
+git add .github/release-notes/v1.2.3.md
+git commit -m "docs: curate v1.2.3 release notes"
+git tag v1.2.3
+git push origin v1.2.3
+```
 
 ## The packaging engine
 
