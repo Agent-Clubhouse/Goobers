@@ -203,3 +203,68 @@ func TestRunWritesOutputFile(t *testing.T) {
 		t.Errorf("stdout = %q, want empty", stdout.String())
 	}
 }
+
+func TestRunCombinesFeatureNotesIntoOutputFile(t *testing.T) {
+	git := fakeGit{
+		command("rev-parse", "--verify", "refs/tags/v1.0.0^{commit}"): {output: "release"},
+		command("rev-list", "--parents", "-n", "1", "v1.0.0"):         {output: "release"},
+		command("log", "--first-parent", "--format="+gitLogFormat, "v1.0.0"): {
+			output: "abcdef123456\x1ffeat: ship releases\x1e",
+		},
+	}
+	output := t.TempDir() + "/RELEASE_NOTES.md"
+	readFile := func(path string) ([]byte, error) {
+		if path == output {
+			return []byte(`# Goobers v1.0.0
+
+## Highlights
+
+- No curated highlights supplied.
+
+## DSL feature-support delta
+
+This is the first recorded snapshot.
+
+## Support policy for external consumers
+
+- Pin the release and snapshot.
+`), nil
+		}
+		return []byte("A curated overview."), nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := run(
+		[]string{"-tag", "v1.0.0", "-feature-notes", output, "-output", output},
+		&stdout,
+		&stderr,
+		git,
+		readFile,
+	)
+	if err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"A curated overview.",
+		"## Changelog",
+		"## DSL feature-support delta",
+		"## Support policy for external consumers",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("combined notes missing %q:\n%s", want, data)
+		}
+	}
+	if strings.Contains(string(data), "No curated highlights supplied") {
+		t.Errorf("combined notes retained generated highlight placeholder:\n%s", data)
+	}
+}
+
+func TestCombineFeatureNotesRequiresFeatureDelta(t *testing.T) {
+	if _, err := combineFeatureNotes("changelog", "not feature notes"); err == nil {
+		t.Fatal("combineFeatureNotes should reject notes without a feature delta")
+	}
+}
