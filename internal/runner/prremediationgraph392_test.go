@@ -64,7 +64,11 @@ func (g *remediationGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelo
 	}
 	runGit(g.t, env.Workspace, "add", "-A")
 	runGit(g.t, env.Workspace, "commit", "-m", "address merge-review findings")
-	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "remediated"}, nil
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Summary: "remediated",
+		Outputs: map[string]interface{}{"findingResponses": "[]"},
+	}, nil
 }
 
 func (g *remediationGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
@@ -120,8 +124,8 @@ func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 
 // visitRecordingDeterministic records the order stages were dispatched in and
 // serves each one canned outputs, standing in for the provider-chain CLIs
-// (gather-pr-context, rebase-pr, remediation-checkpoint, push-remediated) and
-// for `make ci`.
+// (gather-pr-context, rebase-pr, remediation-checkpoint, push-remediated,
+// respond-to-findings) and for `make ci`.
 type visitRecordingDeterministic struct {
 	t       *testing.T
 	rec     ArtifactRecorder
@@ -182,9 +186,14 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			artifactName: "sibling-context.json", artifactData: []byte(`{"siblings":[]}`),
 			artifactMediaType: "application/json",
 		},
-		runID + ":local-ci":        {status: apiv1.ResultSuccess},
-		runID + ":push-remediated": {status: apiv1.ResultSuccess},
-		runID + ":park-escalated":  {status: apiv1.ResultSuccess},
+		runID + ":local-ci": {status: apiv1.ResultSuccess},
+		runID + ":push-remediated": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"published": "true"},
+		},
+		runID + ":respond-to-findings": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"posted": true},
+		},
+		runID + ":park-escalated": {status: apiv1.ResultSuccess},
 	}
 
 	r, err := New(Config{
@@ -227,8 +236,8 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 // real git worktrees. A PR with a substantive finding must travel
 // gather-pr-context → rebase-pr → [needs agent] → remediation-checkpoint →
 // [continue] → gather-sibling-context → implement → [review pass] → local-ci
-// → [ci pass] → push-remediated, and complete. Before #392 this run dead-ended
-// at remediation-checkpoint.
+// → [ci pass] → push-remediated → respond-to-findings, and complete. Before
+// #392 this run dead-ended at remediation-checkpoint.
 func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	goober := &remediationGoober{t: t}
 	res, visited, _ := walkShippedPRRemediation(t, "prr-full", goober)
@@ -245,6 +254,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"implement",
 		"local-ci",
 		"push-remediated",
+		"respond-to-findings",
 	}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)
@@ -351,8 +361,8 @@ func TestShippedPRRemediationRepassesOnNeedsChanges(t *testing.T) {
 	if implements != 2 {
 		t.Errorf("implement dispatched %d times, want 2 (visited: %v)", implements, visited)
 	}
-	if visited[len(visited)-1] != "push-remediated" {
-		t.Errorf("last stage = %q, want push-remediated after the repass passed review", visited[len(visited)-1])
+	if visited[len(visited)-1] != "respond-to-findings" {
+		t.Errorf("last stage = %q, want respond-to-findings after the remediated branch was published", visited[len(visited)-1])
 	}
 }
 

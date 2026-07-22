@@ -60,4 +60,5 @@ var synopsisByID = map[string]string{
 	"rebase-pr":              "  goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)\n",
 	"remediation-checkpoint": "  goobers remediation-checkpoint [--budget N] [--escalate <reason>]  durable per-PR repass budget + same-diff escalation (a workflow stage)\n",
 	"push-remediated":        "  goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)\n",
+	"respond-to-findings":    "  goobers respond-to-findings            post a validated per-finding remediation response to the claimed PR (a workflow stage)\n",
 }

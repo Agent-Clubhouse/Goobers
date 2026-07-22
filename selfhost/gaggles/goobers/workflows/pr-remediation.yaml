@@ -231,7 +231,17 @@ spec:
         resolve, and address EVERY
         finding in the verdict: it is a checklist, and merge-review re-verifies
         each item before the PR can become merge-ready, so a fix that only
-        addresses some of them just burns another cycle. If the rebase
+        addresses some of them just burns another cycle. In every successful
+        result, set outputs.findingResponses to a JSON-encoded array containing
+        exactly one object for each original merge-review verdict finding, in
+        this shape: {"finding": <1-based verdict order>, "disposition":
+        "addressed"|"declined", "detail": "<what changed, or why the finding
+        does not apply>"}. Emit "[]" when that verdict has no findings. This
+        is a scalar JSON string, not a structured output value; the later
+        respond-to-findings stage validates and publishes it. On a reviewer
+        repass, replace the whole array with an updated, complete account of
+        the original verdict — do not report only the new reviewer feedback.
+        If the rebase
         conflicted, resolving it IS the work. Verify with fast, targeted tests
         for what you changed, and commit to the PR's branch (push is a separate
         deterministic stage — see push-remediated below). Do NOT run the full
@@ -245,6 +255,8 @@ spec:
       retry:
         maxAttempts: 2
         backoffSeconds: 15
+      expectedOutputs:
+        - findingResponses
       # Deliberately NO onTimeout: salvage, unlike implementation's otherwise
       # identical implement stage (#724). Salvage decides "was anything
       # produced?" from `git diff <repoRef.branch>...HEAD` being non-empty,
@@ -282,13 +294,47 @@ spec:
       goal: Force-push (with lease) the remediated branch to the PR and clear the needs-remediation label.
       run:
         command: ["goobers", "push-remediated"]
+      inputs:
+        resultFile: "push-remediated-result.json"
       capabilities:
         - repo:push
         - github:pr:write
         - github:issues:write
-      # Terminal: the cycle's product — a republished PR back in
-      # merge-review's hands — is complete. This workflow never merges;
-      # merge-review owns that capability-gated path.
+      expectedOutputs:
+        - selectedNumber
+        - published
+        - head
+      next: respond-to-findings
+
+    # PRR-7 / design doc D3: publish the account only after the branch moved,
+    # so every "addressed" claim describes work that actually landed. The
+    # stage reads both the original verdict artifact and implement's structured
+    # scalar output from this run's journal, validates exact coverage, and
+    # records its complete response as the declared result-file artifact before
+    # the run terminates. It is deliberately self-contained: deleting this task
+    # and push-remediated's next restores the prior, still-functional silent
+    # terminal without changing any other stage.
+    - name: respond-to-findings
+      type: deterministic
+      goal: Post an auditable reply accounting for every original verdict finding after the remediated branch is published.
+      run:
+        command: ["goobers", "respond-to-findings"]
+        workspace: scratch
+      inputs:
+        resultFile: "remediation-response.json"
+      capabilities:
+        - github:issues:write
+      expectedOutputs:
+        - selectedNumber
+        - sourceRunId
+        - findingCount
+        - posted
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 5
+      # Terminal: the cycle's product — a republished PR plus its explicit
+      # finding-by-finding changelog — is back in merge-review's hands. This
+      # workflow never merges; merge-review owns that capability-gated path.
 
     # Terminal @escalate for a reviewer "fail" verdict (design doc §4 D2:
     # `fail` is a fundamentally wrong approach, and must NOT be burned on
