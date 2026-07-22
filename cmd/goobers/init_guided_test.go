@@ -71,6 +71,52 @@ func TestGuidedInitFlagsAreMutuallyExclusive(t *testing.T) {
 	}
 }
 
+func TestGuidedInitRejectsExistingInstanceBeforePrompt(t *testing.T) {
+	root := t.TempDir()
+	if _, err := instance.Init(root); err != nil {
+		t.Fatalf("plain Init: %v", err)
+	}
+	layout := instance.NewLayout(root)
+	configBefore, err := os.ReadFile(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(layout.ConfigDir(), "manifest.yaml")
+	manifestBefore, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input := strings.NewReader("acme/replacement\n")
+	var stdout, stderr bytes.Buffer
+	code := runInitWithInput([]string{"--guided", root}, input, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("guided rerun code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if input.Len() != len("acme/replacement\n") {
+		t.Fatalf("guided rerun consumed prompt input before rejecting existing config")
+	}
+	if !strings.Contains(stderr.String(), "guided setup requires an unconfigured target") ||
+		!strings.Contains(stderr.String(), instance.ConfigFileName) {
+		t.Fatalf("guided rerun stderr = %q", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "Guided first-run setup") ||
+		strings.Contains(stdout.String(), "Ready to run") {
+		t.Fatalf("guided rerun reported setup progress or success: %q", stdout.String())
+	}
+	configAfter, err := os.ReadFile(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestAfter, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(configAfter, configBefore) || !bytes.Equal(manifestAfter, manifestBefore) {
+		t.Fatal("guided rerun modified existing configuration")
+	}
+}
+
 func TestParseWorkflowSelection(t *testing.T) {
 	got, err := parseWorkflowSelection("3, implementation")
 	if err != nil {

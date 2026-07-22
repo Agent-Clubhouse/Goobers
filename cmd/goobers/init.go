@@ -20,10 +20,12 @@ import (
 const initHelp = "Usage: goobers init [--guided | --demo] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), runs/, scheduler/, workcopies/, and a\n" +
-	"telemetry.db placeholder. Re-running is safe — existing pieces are left\n" +
-	"untouched. --guided prompts for a GitHub repository, work tracking, token\n" +
-	"references, and canonical workflows, then validates the result. --demo\n" +
-	"seeds an offline deterministic tour requiring no repo or credentials.\n"
+	"telemetry.db placeholder. Re-running without --guided is safe — existing\n" +
+	"pieces are left untouched. --guided is first-run only and refuses a target\n" +
+	"with instance.yaml or a populated config/ before prompting. It prompts for\n" +
+	"a GitHub repository, work tracking, token references, and canonical workflows,\n" +
+	"then validates the result. --demo seeds an offline deterministic tour requiring\n" +
+	"no repo or credentials.\n"
 
 func runInit(args []string, stdout, stderr io.Writer) int {
 	return runInitWithInput(args, os.Stdin, stdout, stderr)
@@ -49,6 +51,12 @@ func runInitWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	root := "."
 	if fs.NArg() == 1 {
 		root = fs.Arg(0)
+	}
+	if *guided {
+		if err := instance.CheckGuidedInitTarget(root); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
 	}
 
 	var res *instance.InitResult

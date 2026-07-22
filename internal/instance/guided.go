@@ -68,9 +68,32 @@ func InitGuided(root string, opts GuidedOptions) (*InitResult, error) {
 	if err := validateGuidedOptions(opts); err != nil {
 		return nil, err
 	}
+	if err := CheckGuidedInitTarget(root); err != nil {
+		return nil, err
+	}
 	return initWithSeed(root, guidedConfig(opts), func(dir string) error {
 		return copyGuidedConfig(dir, opts)
 	})
+}
+
+// CheckGuidedInitTarget rejects configuration that guided setup cannot safely
+// replace. Other scaffold directories may already exist.
+func CheckGuidedInitTarget(root string) error {
+	layout := NewLayout(root)
+	if _, err := os.Stat(layout.ConfigFile()); err == nil {
+		return fmt.Errorf("guided setup requires an unconfigured target: %s already exists; choose an empty path", ConfigFileName)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect %s: %w", ConfigFileName, err)
+	}
+
+	populated, err := dirHasFiles(layout.ConfigDir())
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", ConfigDirName, err)
+	}
+	if populated {
+		return fmt.Errorf("guided setup requires an unconfigured target: %s already contains files; choose an empty path", ConfigDirName)
+	}
+	return nil
 }
 
 func normalizeGuidedOptions(opts GuidedOptions) GuidedOptions {

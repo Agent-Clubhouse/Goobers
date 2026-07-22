@@ -114,6 +114,72 @@ func TestInitGuidedRejectsInvalidOptionsBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestInitGuidedRejectsExistingConfigurationBeforeWriting(t *testing.T) {
+	opts := GuidedOptions{
+		GaggleName:      "widget",
+		RepoOwner:       "acme",
+		RepoName:        "widget",
+		RepoTokenEnv:    "REPO_TOKEN",
+		CopilotTokenEnv: "MODEL_TOKEN",
+		Workflows:       []string{GuidedWorkflowBacklogCuration},
+	}
+	for _, test := range []struct {
+		name    string
+		blocker string
+		seed    func(t *testing.T, layout Layout) string
+	}{
+		{
+			name:    "instance file",
+			blocker: ConfigFileName,
+			seed: func(t *testing.T, layout Layout) string {
+				t.Helper()
+				if err := os.WriteFile(layout.ConfigFile(), []byte("sentinel"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return layout.ConfigFile()
+			},
+		},
+		{
+			name:    "populated config directory",
+			blocker: ConfigDirName,
+			seed: func(t *testing.T, layout Layout) string {
+				t.Helper()
+				if err := os.MkdirAll(layout.ConfigDir(), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(layout.ConfigDir(), "custom.yaml")
+				if err := os.WriteFile(path, []byte("sentinel"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			layout := NewLayout(root)
+			sentinel := test.seed(t, layout)
+
+			_, err := InitGuided(root, opts)
+			if err == nil || !strings.Contains(err.Error(), "guided setup requires an unconfigured target") ||
+				!strings.Contains(err.Error(), test.blocker) {
+				t.Fatalf("InitGuided error = %v", err)
+			}
+			data, readErr := os.ReadFile(sentinel)
+			if readErr != nil || string(data) != "sentinel" {
+				t.Fatalf("existing configuration changed: data=%q err=%v", data, readErr)
+			}
+			if test.blocker == ConfigDirName {
+				if _, statErr := os.Stat(layout.ConfigFile()); !os.IsNotExist(statErr) {
+					t.Fatalf("rejected guided setup wrote %s, stat error = %v", ConfigFileName, statErr)
+				}
+			} else if _, statErr := os.Stat(layout.ConfigDir()); !os.IsNotExist(statErr) {
+				t.Fatalf("rejected guided setup wrote %s, stat error = %v", ConfigDirName, statErr)
+			}
+		})
+	}
+}
+
 func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 	for _, workflow := range GuidedWorkflowNames() {
 		t.Run(workflow, func(t *testing.T) {
