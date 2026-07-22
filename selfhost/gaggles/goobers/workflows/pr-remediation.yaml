@@ -193,6 +193,26 @@ spec:
         - headSha
       next: checkpoint-gate
 
+    # Reuse merge-review's sibling gatherer immediately before agentic work so
+    # the remediator sees every open sibling's files and deterministic overlap
+    # set. The command reuses the instance-wide per-head sibling memo; only its
+    # unrelated verdict-cache lookup is disabled. selectedNumber flows through
+    # checkpoint-gate from remediation-checkpoint.
+    - name: gather-sibling-context
+      type: deterministic
+      goal: Load the other open PRs' touched files and overlap with the PR being remediated.
+      run:
+        command: ["goobers", "gather-sibling-context", "--no-verdict-cache"]
+      inputsFrom:
+        selectedNumber: selectedNumber
+      inputs:
+        resultFile: "sibling-context.json"
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        - selectedNumber
+      next: implement
+
     # Agentic rework in a worktree provisioned on the PR's own branch (see
     # this file's top comment): the SAME implementer goober implementation.yaml
     # uses, entered on an existing PR rather than a fresh issue. Scoped to
@@ -206,8 +226,9 @@ spec:
         Remediate this pull request. The worktree is already checked out on
         the PR's own branch, rebased onto its base where that was possible.
         Read remediation-brief.json from the attached context for the full
-        merge-review verdict and PR thread comments, plus any rebase conflict
-        left to resolve, and address EVERY
+        merge-review verdict and PR thread comments, the sibling PR file/overlap
+        context (sibling-context.json), plus any rebase conflict left to
+        resolve, and address EVERY
         finding in the verdict: it is a checklist, and merge-review re-verifies
         each item before the PR can become merge-ready, so a fix that only
         addresses some of them just burns another cycle. If the rebase
@@ -340,7 +361,7 @@ spec:
           key: continueRemediation
           equals: "true"
       branches:
-        pass: implement
+        pass: gather-sibling-context
         fail: ""
 
     # Agentic reviewer gate, the same shape and the same reviewer goober

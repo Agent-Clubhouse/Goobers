@@ -543,7 +543,8 @@ Usage: goobers post-merge [path]
 
 Run the two actions that follow a successful merge: triage every
 other open PR targeting the same base branch and label ONLY the
-conflicted or file-overlapping ones goobers:needs-remediation (issue
+conflicted or file-overlapping ones goobers:needs-remediation, recording
+the merged PR and overlapping paths on each affected PR (issue
 #715 — a clean disjoint sibling is left untouched), and mark each
 issue the merged PR's body references (Fixes/Closes/Resolves #N)
 done. Declared input: pullNumber (required — the just-merged PR).
