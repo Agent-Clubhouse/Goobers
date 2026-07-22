@@ -25,13 +25,14 @@ func main() {
 }
 
 type options struct {
-	version         string
-	commit          string
-	date            string
-	outDir          string
-	targets         []Target
-	checksums       bool
-	skipUnbuildable bool
+	version          string
+	commit           string
+	date             string
+	outDir           string
+	previousFeatures string
+	targets          []Target
+	checksums        bool
+	skipUnbuildable  bool
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
@@ -70,8 +71,18 @@ func run(args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintf(stdout, "build %-14s -> %s\n", t, filepath.Base(archivePath))
 	}
 
-	if opts.checksums && len(archives) > 0 {
-		manifest, err := checksumsManifest(archives)
+	checksumAssets := append([]string(nil), archives...)
+	if len(archives) > 0 {
+		notesPath, snapshotPath, err := writeReleaseMetadata(opts.version, opts.previousFeatures, opts.outDir)
+		if err != nil {
+			return err
+		}
+		checksumAssets = append(checksumAssets, snapshotPath)
+		_, _ = fmt.Fprintf(stdout, "wrote %s and %s\n", filepath.Base(notesPath), filepath.Base(snapshotPath))
+	}
+
+	if opts.checksums && len(checksumAssets) > 0 {
+		manifest, err := checksumsManifest(checksumAssets)
 		if err != nil {
 			return err
 		}
@@ -79,7 +90,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		if err := os.WriteFile(sumsPath, []byte(manifest), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", sumsPath, err)
 		}
-		_, _ = fmt.Fprintf(stdout, "wrote %s (%d artifact(s))\n", filepath.Base(sumsPath), len(archives))
+		_, _ = fmt.Fprintf(stdout, "wrote %s (%d artifact(s))\n", filepath.Base(sumsPath), len(checksumAssets))
 	}
 
 	if len(skipped) > 0 {
@@ -95,27 +106,37 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("release", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		version   = fs.String("version", "", "release version (default: git describe --tags --always --dirty)")
-		commit    = fs.String("commit", "", "build commit (default: git rev-parse --short HEAD)")
-		date      = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
-		outDir    = fs.String("output", "dist", "output directory for archives + SHA256SUMS")
-		targetCSV = fs.String("targets", "", "comma-separated os/arch list (default: the full release matrix)")
-		checksums = fs.Bool("checksums", true, "write a SHA256SUMS manifest over the archives")
-		skip      = fs.Bool("skip-unbuildable", false, "package only targets that compile, skipping (not failing on) the rest")
+		version          = fs.String("version", "", "release version (default: git describe --tags --always --dirty)")
+		commit           = fs.String("commit", "", "build commit (default: git rev-parse --short HEAD)")
+		date             = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
+		outDir           = fs.String("output", "dist", "output directory for release assets")
+		previousFeatures = fs.String("previous-features", "", "feature-registry.json from the previous release")
+		firstFeatures    = fs.Bool("first-feature-snapshot", false, "use an empty feature baseline for the first recorded snapshot")
+		targetCSV        = fs.String("targets", "", "comma-separated os/arch list (default: the full release matrix)")
+		checksums        = fs.Bool("checksums", true, "write a SHA256SUMS manifest over binary archives and the feature snapshot")
+		skip             = fs.Bool("skip-unbuildable", false, "package only targets that compile, skipping (not failing on) the rest")
 	)
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
 
 	opts := options{
-		outDir:          *outDir,
-		checksums:       *checksums,
-		skipUnbuildable: *skip,
+		outDir:           *outDir,
+		previousFeatures: strings.TrimSpace(*previousFeatures),
+		checksums:        *checksums,
+		skipUnbuildable:  *skip,
 	}
 
 	opts.version = firstNonEmpty(*version, os.Getenv("GOOBERS_VERSION"), gitOutput("describe", "--tags", "--always", "--dirty"), "dev")
 	opts.commit = firstNonEmpty(*commit, gitOutput("rev-parse", "--short", "HEAD"), "none")
 	opts.date = firstNonEmpty(*date, gitOutput("show", "-s", "--format=%cI", "HEAD"), "unknown")
+
+	switch {
+	case opts.previousFeatures == "" && !*firstFeatures:
+		return options{}, fmt.Errorf("feature baseline required: pass -previous-features or explicitly acknowledge -first-feature-snapshot")
+	case opts.previousFeatures != "" && *firstFeatures:
+		return options{}, fmt.Errorf("-previous-features and -first-feature-snapshot are mutually exclusive")
+	}
 
 	targets, err := parseTargets(*targetCSV)
 	if err != nil {

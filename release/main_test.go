@@ -22,7 +22,7 @@ func TestParseFlagsExplicit(t *testing.T) {
 	// Explicit values bypass the git-derived defaults, so this is hermetic.
 	opts, err := parseFlags([]string{
 		"-version", "v9.9.9", "-commit", "abc123", "-date", "2026-01-02T03:04:05Z",
-		"-targets", "windows/amd64", "-output", "out",
+		"-targets", "windows/amd64", "-output", "out", "-previous-features", "previous.json",
 	}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
@@ -30,23 +30,36 @@ func TestParseFlagsExplicit(t *testing.T) {
 	if opts.version != "v9.9.9" || opts.commit != "abc123" || opts.date != "2026-01-02T03:04:05Z" {
 		t.Errorf("metadata not honored: %+v", opts)
 	}
-	if opts.outDir != "out" || len(opts.targets) != 1 || opts.targets[0].String() != "windows/amd64" {
-		t.Errorf("targets/output not honored: %+v", opts)
+	if opts.outDir != "out" || opts.previousFeatures != "previous.json" ||
+		len(opts.targets) != 1 || opts.targets[0].String() != "windows/amd64" {
+		t.Errorf("release options not honored: %+v", opts)
 	}
 	if !opts.checksums {
 		t.Error("checksums should default true")
 	}
 }
 
+func TestParseFlagsRequiresExplicitFeatureBaseline(t *testing.T) {
+	metadata := []string{"-version", "v1.0.0", "-commit", "abc123", "-date", "2026-01-02T03:04:05Z"}
+	if _, err := parseFlags(metadata, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "feature baseline required") {
+		t.Fatalf("missing baseline error = %v", err)
+	}
+	args := append(append([]string(nil), metadata...), "-previous-features", "previous.json", "-first-feature-snapshot")
+	if _, err := parseFlags(args, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("conflicting baseline error = %v", err)
+	}
+}
+
 func TestParseFlagsBadTarget(t *testing.T) {
-	if _, err := parseFlags([]string{"-targets", "not-a-target"}, &bytes.Buffer{}); err == nil {
+	if _, err := parseFlags([]string{"-targets", "not-a-target", "-first-feature-snapshot"}, &bytes.Buffer{}); err == nil {
 		t.Error("parseFlags with a bad target should error")
 	}
 }
 
-// TestRunEndToEnd exercises the whole pipeline — cross-compile, package, and
-// checksum — against a small in-module package (this release tool itself), so it
-// stays fast and independent of the daemon's cross-compile state.
+// TestRunEndToEnd exercises the whole pipeline — cross-compile, package,
+// release metadata, and checksums — against a small in-module package (this
+// release tool itself), so it stays fast and independent of the daemon's
+// cross-compile state.
 func TestRunEndToEnd(t *testing.T) {
 	orig := buildPackage
 	buildPackage = "./"
@@ -56,7 +69,7 @@ func TestRunEndToEnd(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run([]string{
 		"-version", "v1.2.3", "-commit", "deadbee", "-date", "2026-01-02T03:04:05Z",
-		"-targets", "windows/amd64", "-output", out,
+		"-targets", "windows/amd64", "-output", out, "-first-feature-snapshot",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
@@ -84,14 +97,22 @@ func TestRunEndToEnd(t *testing.T) {
 	if !strings.Contains(string(sums), "goobers_v1.2.3_windows_amd64.zip") {
 		t.Errorf("SHA256SUMS missing the archive:\n%s", sums)
 	}
-	// The intermediate binary was cleaned up, leaving only the archive + sums.
+	if !strings.Contains(string(sums), featureSnapshotFile) {
+		t.Errorf("SHA256SUMS missing the feature snapshot:\n%s", sums)
+	}
+	// The intermediate binary was cleaned up, leaving only release assets.
 	entries, _ := os.ReadDir(out)
-	if len(entries) != 2 {
+	if len(entries) != 4 {
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-		t.Errorf("dist has %v, want exactly the archive + SHA256SUMS", names)
+		t.Errorf("dist has %v, want archive, checksums, release notes, and feature snapshot", names)
+	}
+	for _, name := range []string{releaseNotesFile, featureSnapshotFile} {
+		if _, err := os.Stat(filepath.Join(out, name)); err != nil {
+			t.Errorf("missing release metadata %s: %v", name, err)
+		}
 	}
 }
 
@@ -106,7 +127,7 @@ func TestRunSkipUnbuildable(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run([]string{
 		"-targets", "windows/ppc64", // an unsupported GOOS/GOARCH pair: fails fast
-		"-skip-unbuildable", "-output", out,
+		"-skip-unbuildable", "-output", out, "-first-feature-snapshot",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run with -skip-unbuildable should not fail: %v", err)
