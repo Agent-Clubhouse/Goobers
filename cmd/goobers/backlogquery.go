@@ -123,7 +123,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issueProvider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+	issueProvider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}), apiReadCacheOption(root))
 
 	trustLabel := providerInput("trustLabel", "")
 	requireLabels := splitLabelList(providerInput("requireLabels", ""))
@@ -180,7 +180,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		openIssues map[string]bool
 	)
 	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil {
-		prProvider = newGitHubProvider(prToken)
+		prProvider = newGitHubProvider(prToken, apiReadCacheOption(root))
 		openIssues, err = openPRIssueNumbers(ctx, prProvider, repo)
 		if err != nil {
 			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")
