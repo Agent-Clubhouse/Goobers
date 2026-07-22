@@ -45,6 +45,12 @@ func InitDemo(root string) (*InitResult, error) {
 }
 
 func initWithConfig(root, configSource string, cfg *Config) (*InitResult, error) {
+	return initWithSeed(root, cfg, func(dir string) error {
+		return copyConfig(dir, configSource)
+	})
+}
+
+func initWithSeed(root string, cfg *Config, seedConfig func(string) error) (*InitResult, error) {
 	l := NewLayout(root)
 	res := &InitResult{Root: root}
 
@@ -68,7 +74,7 @@ func initWithConfig(root, configSource string, cfg *Config) (*InitResult, error)
 	if configSeeded {
 		res.Skipped = append(res.Skipped, ConfigDirName)
 	} else {
-		if err := copyConfig(l.ConfigDir(), configSource); err != nil {
+		if err := seedConfig(l.ConfigDir()); err != nil {
 			return nil, fmt.Errorf("seed %s: %w", ConfigDirName, err)
 		}
 		res.Created = append(res.Created, ConfigDirName)

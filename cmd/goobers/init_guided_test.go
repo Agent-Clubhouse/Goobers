@@ -1,0 +1,124 @@
+package main
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/goobers/goobers/internal/instance"
+)
+
+func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "widget-instance")
+	input := strings.NewReader(strings.Join([]string{
+		"https://github.com/acme/Widget.Service.git",
+		"",
+		"",
+		"",
+		"",
+		"",
+	}, "\n") + "\n")
+	var stdout, stderr bytes.Buffer
+
+	code := runInitWithInput([]string{"--guided", root}, input, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("guided init code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("guided init stderr = %q", stderr.String())
+	}
+	for _, want := range []string{
+		"OK: instance.yaml valid; config/ valid (1 gaggle(s), 4 goober(s), 3 workflow(s))",
+		"docs/guides/github-token-scopes.md",
+		"Work tracking: GitHub Issues in acme/Widget.Service",
+		"Issues read/write permission",
+		"Author workflows:",
+		"docs/guides/dsl-authoring-skill.md",
+		"Make custom agent stages:",
+		"docs/requirements/goober.md",
+		"View journal telemetry:",
+		"`goobers trace` / `goobers telemetry`",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("guided init stdout lacks %q:\n%s", want, stdout.String())
+		}
+	}
+
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.Repos) != 1 || cfg.Repos[0].Owner != "acme" ||
+		cfg.Repos[0].Name != "Widget.Service" ||
+		cfg.Repos[0].Token.Env != "GOOBERS_GITHUB_TOKEN" {
+		t.Fatalf("unexpected guided instance config: %+v", cfg)
+	}
+	for _, name := range instance.GuidedWorkflowNames() {
+		path := filepath.Join(root, "config", "gaggles", "widget-service", "workflows", name+".yaml")
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("selected workflow %q not scaffolded: %v", name, err)
+		}
+	}
+}
+
+func TestGuidedInitFlagsAreMutuallyExclusive(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runInitWithInput([]string{"--guided", "--demo"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "--demo and --guided cannot be used together") {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestParseWorkflowSelection(t *testing.T) {
+	got, err := parseWorkflowSelection("3, implementation")
+	if err != nil {
+		t.Fatalf("parseWorkflowSelection: %v", err)
+	}
+	want := []string{instance.GuidedWorkflowImplementation, instance.GuidedWorkflowWorkNomination}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("selection = %v, want %v", got, want)
+	}
+	for _, input := range []string{"", "4", "1,implementation"} {
+		if _, err := parseWorkflowSelection(input); err == nil {
+			t.Errorf("parseWorkflowSelection(%q) succeeded, want error", input)
+		}
+	}
+}
+
+func TestGuidedInputValidation(t *testing.T) {
+	for _, input := range []string{"main", "release/v1", "feature/widget.v2"} {
+		if !validBranch(input) {
+			t.Errorf("validBranch(%q) = false", input)
+		}
+	}
+	for _, input := range []string{"", "@", "-main", "feature//x", ".hidden", "feature/.hidden", "main.lock", "feature/x.lock"} {
+		if validBranch(input) {
+			t.Errorf("validBranch(%q) = true", input)
+		}
+	}
+	longName := guidedGaggleName(strings.Repeat("widget-", 20))
+	if len(longName) > 50 || strings.HasSuffix(longName, "-") {
+		t.Errorf("guidedGaggleName produced invalid bounded name %q", longName)
+	}
+	for _, test := range []struct {
+		input string
+		want  []string
+	}{
+		{input: "npm run ci", want: []string{"npm", "run", "ci"}},
+		{input: `["go", "test", "./..."]`, want: []string{"go", "test", "./..."}},
+	} {
+		got, err := parseCommand(test.input)
+		if err != nil {
+			t.Errorf("parseCommand(%q): %v", test.input, err)
+		} else if strings.Join(got, "\x00") != strings.Join(test.want, "\x00") {
+			t.Errorf("parseCommand(%q) = %v, want %v", test.input, got, test.want)
+		}
+	}
+	for _, input := range []string{"", "[]", `["make", ""]`, `["make"`} {
+		if _, err := parseCommand(input); err == nil {
+			t.Errorf("parseCommand(%q) succeeded, want error", input)
+		}
+	}
+}
