@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/configsource"
 	"github.com/goobers/goobers/internal/gooberassets"
 )
 
@@ -20,17 +22,20 @@ import (
 // fails schema validation (CFG-023: fail closed).
 var ErrInvalidConfig = errors.New("config directory failed validation")
 
+// ConfigSource resolves a config snapshot to a directory for loading.
+type ConfigSource = configsource.ConfigSource
+
+// LocalDirSource loads config directly from a plain local directory.
+type LocalDirSource = configsource.LocalDirSource
+
 // ConfigSet is a config/ directory's definitions, parsed into typed structs
 // and pruned to the manifest's desired state (only manifest-listed gaggles
 // and the goobers/workflows that belong to them).
 //
-// This is the tier 1-2 local counterpart to internal/configsync's Loader: it
-// shares configsync's generic YAML-tree-walking shape but skips everything
-// CRD-specific (client.Object, namespace/label stamping), since a local
-// instance has no Kubernetes API server to reconcile against. The two loaders
-// may be worth consolidating behind a shared "parse docs into typed objects"
-// helper once both have settled — left as follow-up rather than refactoring
-// configsync out from under an in-flight mission.
+// This is the tier 1-2 local counterpart to internal/configsync's Loader. Both
+// consume ConfigSource, while this parser skips everything CRD-specific
+// (client.Object, namespace/label stamping) because a local instance has no
+// Kubernetes API server to reconcile against.
 type ConfigSet struct {
 	Manifest  *apiv1.Manifest
 	Gaggles   []apiv1.Gaggle
@@ -64,7 +69,12 @@ func (s *ConfigSet) WorkflowSource(gaggle, name string) (string, bool) {
 // nil ConfigSet, so a caller with a last-known-good set (e.g. a watching
 // daemon) can leave it in place.
 func LoadConfigDir(dir string) (*ConfigSet, *validate.Report, error) {
-	set, report, err := LoadConfigDirForComparison(dir)
+	return LoadConfigSource(context.Background(), LocalDirSource{Path: dir})
+}
+
+// LoadConfigSource resolves, validates, and parses the current config snapshot.
+func LoadConfigSource(ctx context.Context, source ConfigSource) (*ConfigSet, *validate.Report, error) {
+	set, report, err := LoadConfigSourceForComparison(ctx, source)
 	if err != nil {
 		return nil, report, err
 	}
@@ -74,8 +84,23 @@ func LoadConfigDir(dir string) (*ConfigSet, *validate.Report, error) {
 // LoadConfigDirForComparison validates and parses the config directory at dir.
 // Unlike LoadConfigDir, it returns a parseable ConfigSet alongside
 // ErrInvalidConfig so diagnostic tooling can compare invalid definitions.
-// Runtime callers must use LoadConfigDir to preserve fail-closed loading.
+// Runtime callers must use LoadConfigDir or LoadConfigSource to preserve
+// fail-closed loading.
 func LoadConfigDirForComparison(dir string) (*ConfigSet, *validate.Report, error) {
+	return LoadConfigSourceForComparison(context.Background(), LocalDirSource{Path: dir})
+}
+
+// LoadConfigSourceForComparison resolves, validates, and parses a config
+// snapshot while retaining parseable invalid definitions for diagnostics.
+func LoadConfigSourceForComparison(ctx context.Context, source ConfigSource) (*ConfigSet, *validate.Report, error) {
+	if source == nil {
+		return nil, nil, errors.New("config source is required")
+	}
+	dir, err := source.Resolve(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve config source: %w", err)
+	}
+
 	v, err := validate.New()
 	if err != nil {
 		return nil, nil, fmt.Errorf("init validator: %w", err)
