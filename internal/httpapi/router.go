@@ -323,11 +323,11 @@ func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
 	query := request.URL.Query()
 	since, err := parseOptionalTime(query.Get("since"), "since")
 	if err != nil {
-		return readservice.RunListOptions{}, fmt.Errorf("%w: %v", readservice.ErrInvalidArgument, err)
+		return readservice.RunListOptions{}, fmt.Errorf("%w: %w", readservice.ErrInvalidArgument, err)
 	}
 	until, err := parseOptionalTime(query.Get("until"), "until")
 	if err != nil {
-		return readservice.RunListOptions{}, fmt.Errorf("%w: %v", readservice.ErrInvalidArgument, err)
+		return readservice.RunListOptions{}, fmt.Errorf("%w: %w", readservice.ErrInvalidArgument, err)
 	}
 	options := readservice.RunListOptions{
 		Gaggle:   query.Get("gaggle"),
