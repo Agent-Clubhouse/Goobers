@@ -9,10 +9,11 @@ import (
 )
 
 // Toolchain de-bashing guard (#630). CI orchestration lives in this Go program
-// and the coverage gate in test/coveragegate — not in shell scripts. These
-// tests give that property teeth: they fail if a shell (bash/sh/*.sh) creeps
-// back onto the build/CI/test path, so the toolchain cannot silently re-bash and
-// reintroduce a Unix-shell dependency the Windows port would trip over.
+// and the coverage/stress gates in test/coveragegate and test/stress — not in
+// shell scripts. These tests give that property teeth: they fail if a shell
+// (bash/sh/*.sh) creeps back onto the build/CI/test path, so the toolchain cannot
+// silently re-bash and reintroduce a Unix-shell dependency the Windows port
+// would trip over.
 
 // allowedToolBinaries are the only executables the merge gate may invoke — real
 // toolchain binaries resolved on PATH, never a shell interpreter or a project
@@ -120,6 +121,7 @@ func TestMakefileGatesDelegateToGo(t *testing.T) {
 		"run ./test/integration",
 		"run ./test/hermetic", // test: -> the hermetic Go unit-test wrapper
 		"run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)",
+		"run ./test/stress", // stress: -> the Go repeated-test orchestrator
 	} {
 		if !strings.Contains(makefile, want) {
 			t.Errorf("Makefile no longer delegates to `%s`; the gate must stay in Go, not move into a shell script", want)

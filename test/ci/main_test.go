@@ -168,6 +168,7 @@ func TestFullChecksRunEveryGateSeriallyWithElapsedReporting(t *testing.T) {
 		"sandbox-check",
 		"linux-node-validation",
 		"test-shipped-workflows",
+		"stress",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("full checks = %d, want %d", len(got), len(want))
