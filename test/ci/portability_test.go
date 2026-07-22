@@ -44,7 +44,7 @@ func TestChecksInvokeOnlyAllowlistedToolBinaries(t *testing.T) {
 	commands := []string{"config-sync", "goobers", "operator", "scheduler"}
 
 	for _, goos := range []string{"linux", "darwin", "windows"} {
-		for _, current := range checks(commands, tools, metadata, goos) {
+		for _, current := range checks(commands, tools, metadata, goos, "test-timings/unit.json") {
 			binary, _ := commandInvocation(current, goos, func(string) string { return "" })
 			base := strings.ToLower(filepath.Base(binary))
 			if isShellInterpreter(base) {
@@ -114,6 +114,7 @@ func TestMakefileGatesDelegateToGo(t *testing.T) {
 	for _, want := range []string{
 		"run ./test/ci",           // ci: -> the Go merge-gate orchestrator
 		"run ./test/ci fast",      // verify-fast: -> the same orchestrator's subset
+		"run ./test/ci full",      // verify-full: -> its serialized Make-target mode
 		"run ./test/coveragegate", // cover-check: -> the Go coverage gate
 		"run ./test/configvalidate",
 		"run ./test/integration",
@@ -169,16 +170,7 @@ func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
 		{
 			target: "verify-full",
 			want: makeTarget{
-				prerequisites: []string{
-					"ci",
-					"test-integration-strict",
-					"test-e2e",
-					"test-envtest",
-					"cover-check",
-					"sandbox-check",
-					"linux-node-validation",
-					"test-shipped-workflows",
-				},
+				recipes: []string{`$(GO) run ./test/ci full "$(MAKE)"`},
 			},
 		},
 	}
@@ -193,18 +185,6 @@ func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
 			t.Errorf("%s = prerequisites %q, recipes %q; want prerequisites %q, recipes %q",
 				test.target, got.prerequisites, got.recipes, test.want.prerequisites, test.want.recipes)
 		}
-	}
-
-	notParallel := makeTargetDefinitions(makefile, ".NOTPARALLEL")
-	serialized := false
-	for _, definition := range notParallel {
-		if slices.Contains(definition.prerequisites, "verify-full") {
-			serialized = true
-			break
-		}
-	}
-	if !serialized {
-		t.Error("verify-full prerequisites must be serialized to protect shared coverage.out writes")
 	}
 }
 

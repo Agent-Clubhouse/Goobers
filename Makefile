@@ -245,8 +245,8 @@ ci:
 
 ## verify-full: Run all merge, integration, platform, coverage, and shipped-workflow gates.
 .PHONY: verify-full
-.NOTPARALLEL: verify-full
-verify-full: ci test-integration-strict test-e2e test-envtest cover-check sandbox-check linux-node-validation test-shipped-workflows
+verify-full:
+	$(GO) run ./test/ci full "$(MAKE)"
 
 ## clean: Remove build artifacts.
 .PHONY: clean

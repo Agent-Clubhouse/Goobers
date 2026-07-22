@@ -21,6 +21,7 @@ on:
 
 # Least privilege: CI only needs to read the checkout.
 permissions:
+  actions: read
   contents: read
 
 # One in-flight run per ref; newer pushes cancel stale runs.
@@ -73,10 +74,59 @@ jobs:
             | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      - name: Find previous main timing run
+        id: previous-timing
+        continue-on-error: true
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const {data} = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "ci.yml",
+              branch: "main",
+              status: "success",
+              per_page: 20,
+            });
+            const previous = data.workflow_runs.find(
+              run => run.id !== context.runId,
+            );
+            return previous ? String(previous.id) : "";
+          result-encoding: string
+
+      - name: Download previous timing artifact
+        if: ${{ steps.previous-timing.outputs.result != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v6
+        with:
+          name: test-timings-${{ runner.os }}
+          path: previous-test-timings
+          run-id: ${{ steps.previous-timing.outputs.result }}
+          github-token: ${{ github.token }}
+
       # Portable implementation of the documented `make ci` merge tier. The
       # Make target delegates here on Unix without a second implementation.
+
       - name: Portable CI
+        env:
+          GOOBERS_TEST_TIMING_FILE: test-timings/unit-${{ runner.os }}.json
         run: go run ./test/ci
+
+      - name: Report test timing budget
+        if: ${{ !cancelled() && hashFiles(format('test-timings/unit-{0}.json', runner.os)) != '' }}
+        run: >-
+          go run ./test/testtiming report
+          -budget .github/test-timing-budgets.json
+          -current test-timings/unit-${{ runner.os }}.json
+          -previous previous-test-timings/unit-${{ runner.os }}.json
+
+      - name: Upload test timing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: test-timings-${{ runner.os }}
+          path: test-timings/unit-${{ runner.os }}.json
+          if-no-files-found: warn
 
       # Parity with the ADO pipeline's coverage publish (informational; the
       # coverage *gate* is `make cover-check`, part of `verify-full` but

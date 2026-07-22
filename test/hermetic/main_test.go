@@ -13,15 +13,48 @@ import (
 )
 
 func TestParseInvocationPreservesConfiguredGoCommand(t *testing.T) {
-	goCommand, args, err := parseInvocation([]string{"--go-command", "/tools/custom-go", "--", "-race", "./..."})
+	got, err := parseInvocation([]string{"--go-command", "/tools/custom-go", "--", "-race", "./..."})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if goCommand != "/tools/custom-go" {
-		t.Fatalf("Go command = %q, want /tools/custom-go", goCommand)
+	if got.goCommand != "/tools/custom-go" {
+		t.Fatalf("Go command = %q, want /tools/custom-go", got.goCommand)
 	}
-	if want := []string{"-race", "./..."}; !reflect.DeepEqual(args, want) {
-		t.Fatalf("test arguments = %q, want %q", args, want)
+	if want := []string{"-race", "./..."}; !reflect.DeepEqual(got.testArgs, want) {
+		t.Fatalf("test arguments = %q, want %q", got.testArgs, want)
+	}
+}
+
+func TestParseInvocationPreservesTimingConfiguration(t *testing.T) {
+	got, err := parseInvocation([]string{
+		"--timing-job", "unit",
+		"--timing-output", "test-timings/unit.json",
+		"--",
+		"-race", "./...",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.timingJob != "unit" || got.timingOutput != "test-timings/unit.json" {
+		t.Fatalf("timing configuration = %q, %q", got.timingJob, got.timingOutput)
+	}
+}
+
+func TestGoCommandArgsRoutesTimedTestsThroughCapture(t *testing.T) {
+	got := goCommandArgs(invocation{
+		timingJob:    "unit",
+		timingOutput: "test-timings/unit.json",
+		testArgs:     []string{"-race", "./..."},
+	})
+	want := []string{
+		"run", "./test/testtiming", "capture",
+		"-job", "unit",
+		"-out", "test-timings/unit.json",
+		"--",
+		"-race", "./...",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("timed Go arguments = %q, want %q", got, want)
 	}
 }
 
@@ -76,6 +109,7 @@ func TestHermeticEnvironmentReplacesAmbientToolAndNetworkSettings(t *testing.T) 
 	values := environmentMap(got)
 	for name, want := range map[string]string{
 		"CC":          "hermetic-cc",
+		"GO":          executableName("go"),
 		"GOENV":       "off",
 		"GOFLAGS":     "-mod=readonly",
 		"GONOPROXY":   "none",
@@ -228,6 +262,12 @@ func TestRunRequiresGoTestArguments(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "usage:") {
 		t.Fatalf("stderr = %q, want usage", stderr.String())
+	}
+}
+
+func TestParseInvocationRejectsIncompleteTimingConfiguration(t *testing.T) {
+	if _, err := parseInvocation([]string{"--timing-output", "timing.json", "--", "./..."}); err == nil {
+		t.Fatal("parseInvocation() accepted timing output without a job")
 	}
 }
 
