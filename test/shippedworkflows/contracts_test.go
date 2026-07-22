@@ -175,6 +175,7 @@ func TestShippedWorkflowContracts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load selfhost config: %v\n%v", err, report)
 	}
+	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
 
 	discovered := discoverWorkflowDefinitions(t, selfhost)
 	loaded := make(map[string]apiv1.Workflow, len(set.Workflows))
@@ -206,7 +207,7 @@ func TestShippedWorkflowContracts(t *testing.T) {
 				t.Run(string(contractScenario.kind), func(t *testing.T) {
 					machine, err := workflow.Compile(workflow.Definition{
 						Name: definition.Name, Version: 1, Spec: definition.Spec,
-					})
+					}, workflow.WithPreviewFeatures(allowPreview))
 					if err != nil {
 						t.Fatalf("compile shipped workflow: %v", err)
 					}
