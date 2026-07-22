@@ -2,12 +2,13 @@
 # Owns the Go build/test/lint toolchain for the monorepo (module github.com/goobers/goobers).
 
 # ---- Portability posture (#630) ---------------------------------------------
-# The merge gate (`make ci` -> `go run ./test/ci`) and the coverage gate
-# (`make cover-check` -> `go run ./test/coveragegate`) are pure Go. They spawn
-# only real toolchain binaries (go, gofmt, git, npm, golangci-lint) and the
-# freshly built goobers validator, never bash/sh or a project shell script, so
-# CI reproduces on any OS with a Go toolchain — Windows included: test/ci handles
-# the .exe suffix, the cgo race detector, and wrapping npm through cmd.exe.
+# The fast and merge tiers (`make verify-fast` / `make ci` -> `go run
+# ./test/ci`) and the coverage gate (`make cover-check` -> `go run
+# ./test/coveragegate`) are pure Go. They spawn only real toolchain binaries
+# (go, gofmt, git, npm, golangci-lint) and the freshly built goobers validator,
+# never bash/sh or a project shell script, so CI reproduces on any OS with a Go
+# toolchain — Windows included: test/ci handles the .exe suffix, the cgo race
+# detector, and wrapping npm through cmd.exe.
 # There are no build/CI shell scripts in the tree, and a guard test enforces
 # that (test/ci: no shell on the toolchain path; the gates stay Go-delegated).
 #
@@ -198,10 +199,19 @@ cover: test
 cover-check: test
 	COVERAGE_PROFILE=coverage.out $(GO) run ./test/coveragegate $(COVERAGE_THRESHOLD)
 
+## verify-fast: Run the pre-push format, vet, and Go build tier.
+.PHONY: verify-fast
+verify-fast:
+	$(GO) run ./test/ci fast
+
 ## ci: Run the portable full Go, config, and portal gate (matches the pipeline).
 .PHONY: ci
 ci:
 	$(GO) run ./test/ci
+
+## verify-full: Run the merge gate plus e2e, envtest, and coverage gates.
+.PHONY: verify-full
+verify-full: ci test-e2e test-envtest cover-check
 
 ## clean: Remove build artifacts.
 .PHONY: clean

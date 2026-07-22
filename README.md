@@ -116,15 +116,14 @@ goobers completion fish | source  # fish
 ## Developing
 
 ```sh
-go run ./test/ci # portable full local gate (Go + portal)
-make ci          # optional Unix compatibility alias
-make help        # list Unix convenience targets
-make build       # build all cmd/* into bin/
-make test        # unit tests with race detector + coverage
+make verify-fast # pre-push format, vet, and Go build tier
+make ci          # merge gate (Go + config + portal)
+make verify-full # merge gate plus e2e, envtest, and coverage
 ```
 
-CI runs the same portable gate on every PR to `main`. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md) for per-platform prerequisites.
+CI runs the same merge-tier implementation on every PR to `main`. See the
+[`validation tier contract`](CONTRIBUTING.md#validation-tier-contract) for
+audience guidance, CI job mapping, and per-platform prerequisites.
 
 ## Contributing
 

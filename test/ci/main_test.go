@@ -94,6 +94,51 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 }
 
+func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
+	t.Parallel()
+	mergeChecks := checks(
+		[]string{"config-sync", "goobers", "scheduler"},
+		toolchain{
+			goCommand:       "go",
+			gofmtCommand:    "gofmt",
+			gitCommand:      "git",
+			npmCommand:      "npm",
+			golangciCommand: "golangci-lint",
+		},
+		buildMetadata{},
+		"linux",
+	)
+	fast := fastChecks(mergeChecks)
+
+	var got []string
+	for _, current := range fast {
+		got = append(got, current.label)
+	}
+	want := []string{
+		"fmt-check",
+		"vet",
+		"build-config-sync",
+		"build-goobers",
+		"build-scheduler",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fast check order = %q, want %q", got, want)
+	}
+	if len(fast) >= len(mergeChecks) {
+		t.Fatalf("fast tier has %d checks, merge tier has %d; want a strict subset", len(fast), len(mergeChecks))
+	}
+
+	mergeLabels := make(map[string]bool, len(mergeChecks))
+	for _, current := range mergeChecks {
+		mergeLabels[current.label] = true
+	}
+	for _, current := range fast {
+		if !mergeLabels[current.label] {
+			t.Errorf("fast check %q is absent from the merge tier", current.label)
+		}
+	}
+}
+
 func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 	t.Parallel()
 	got := checks(

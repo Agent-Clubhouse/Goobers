@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -112,6 +113,7 @@ func TestMakefileGatesDelegateToGo(t *testing.T) {
 
 	for _, want := range []string{
 		"run ./test/ci",           // ci: -> the Go merge-gate orchestrator
+		"run ./test/ci fast",      // verify-fast: -> the same orchestrator's subset
 		"run ./test/coveragegate", // cover-check: -> the Go coverage gate
 		"run ./test/configvalidate",
 	} {
@@ -123,6 +125,46 @@ func TestMakefileGatesDelegateToGo(t *testing.T) {
 	if strings.Contains(makefile, ".sh") {
 		t.Error("Makefile references a .sh script; build/CI logic belongs in Go (test/ci, test/coveragegate)")
 	}
+}
+
+func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(data)
+
+	if !strings.Contains(makefile, "verify-fast:\n\t$(GO) run ./test/ci fast") {
+		t.Fatal("verify-fast must use the portable CI runner's mechanically checked fast subset")
+	}
+	if !strings.Contains(makefile, "ci:\n\t$(GO) run ./test/ci\n") {
+		t.Fatal("ci must use the portable CI runner's complete merge-gate check list")
+	}
+
+	fullPrerequisites := makeTargetPrerequisites(makefile, "verify-full")
+	if !slices.Contains(fullPrerequisites, "ci") {
+		t.Fatalf("verify-full prerequisites = %q, want ci", fullPrerequisites)
+	}
+	for _, want := range []string{"test-e2e", "test-envtest", "cover-check"} {
+		if !slices.Contains(fullPrerequisites, want) {
+			t.Errorf("verify-full prerequisites = %q, want %s", fullPrerequisites, want)
+		}
+	}
+	if len(fullPrerequisites) < 2 {
+		t.Fatalf("verify-full prerequisites = %q, want a strict superset of ci", fullPrerequisites)
+	}
+}
+
+func makeTargetPrerequisites(makefile, target string) []string {
+	prefix := target + ":"
+	for _, line := range strings.Split(makefile, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.Fields(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return nil
 }
 
 // isShellInterpreter reports whether base names a shell interpreter or a shell

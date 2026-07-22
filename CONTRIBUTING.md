@@ -20,36 +20,52 @@ Node.js 24 with npm, Git, and
 [`.golangci.yml`](.golangci.yml)).
 
 ```sh
-go run ./test/ci      # portable full Go and portal merge gate
-make ci               # optional Unix compatibility alias
-make help             # list Unix convenience targets
-make validate-configs # build the validator and check every shipped config tree
-make portal-ci        # install, type-check, build, test, and check the portal contract
-make portal-contract  # regenerate and verify the Go/TypeScript wire contract
+make verify-fast # pre-push format, vet, and Go build tier
+make ci          # merge gate: full Go, config, and portal validation
+make verify-full # ci plus e2e, envtest, and coverage gates
 ```
 
-`go run ./test/ci` is the cross-platform entrypoint CI enforces (see
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml)). It launches each tool
-without Bash or POSIX-shell syntax and runs the existing Go format, vet, build,
-shipped-config validation, race-test, and lint checks plus the portal build,
-typecheck, tests, and stale-fixture check. On Windows, the runner uses stock
-`cmd.exe` only to invoke Node's standard `npm.cmd` shim. The strategy
-deliberately keeps the Go toolchain as the only task-runner prerequisite: GNU
-Make is **not** required on Windows.
-`make ci` is a thin compatibility shim for existing Darwin and Linux workflows.
-The other Make targets remain optional POSIX-shell conveniences;
-`make validate-configs` builds the validator and checks every config shipped by
-the repository without network or credentials. Run it locally before pushing a
-config change; warnings are printed, while validation errors fail the target.
-`make portal-ci` reproduces the portal portion alone, and
-`make portal-contract` narrows that to the generated Go/TypeScript wire seam.
+### Validation tier contract
 
-The portability audit found the old CI graph depended on a globally selected
-Bash, shell command substitution and conditionals for `fmt-check`, POSIX
-environment-prefix assignments for tests, and shell calls for build metadata.
-The Go runner replaces those CI-path constructs with direct process and
-environment APIs. Non-CI Make conveniences such as `help`, `cover`, and `clean`
-still use Unix tools and are not the supported Windows path.
+The stable local contract is `make verify-fast` ⊂ `make ci` ⊂
+`make verify-full`:
+
+| Tier | Composition | Use |
+|---|---|---|
+| `make verify-fast` | Format check, `go vet`, and every `cmd/*` Go build | Fast feedback during development and before a push |
+| `make ci` | The unchanged portable merge gate: fast-tier checks plus shipped-config validation, race tests with coverage, lint, and portal build/test/contract checks | Required before merge; the shipped agent workflows' `local-ci` stages invoke this tier |
+| `make verify-full` | `ci` plus the explicit walking-skeleton e2e, Kubernetes envtest, and coverage-threshold gates | Nightly, on-demand, and release-candidate validation |
+
+The subset relationship is executable rather than documentary:
+`verify-fast` selects checks from the same Go check list as `ci`, while
+`verify-full` has `ci` and the additional gates as Make prerequisites. Tests in
+`test/ci` fail if either relationship drifts.
+
+**Humans:** use `verify-fast` for the short edit/push loop, `ci` for the merge
+gate, and `verify-full` when the host has the pinned envtest prerequisites
+available. **Agent workflow authors:** a Goobers `local-ci` stage for this
+repository must call `make ci`; the subprocess may assume only the tools listed
+below are on the daemon's `PATH` and otherwise inherits the daemon environment.
+This contract does not make stage execution hermetic. For another repository,
+configure its real non-interactive merge-gate command instead. **CI:** each
+validation job maps to the same contract:
+
+| GitHub Actions job | Tier correspondence |
+|---|---|
+| `platform gate` (Ubuntu/macOS) | `make ci` (`go run ./test/ci` is its portable implementation) |
+| `windows compile smoke` | The Windows `go vet` + build slice of `verify-fast` |
+| `make ci` aggregate | Required status for the merge tier and Windows compile slice; it runs no additional validation |
+| `sandbox confinement` | Merge-tier package validation repeated with native sandbox availability required |
+| `linux node validation` | Merge-tier platform acceptance companion for the shipped binary and daemon lifecycle |
+
+Future dedicated e2e, envtest, coverage, conformance, or stress jobs belong to
+`verify-full`; each should invoke the corresponding Make target so its check is
+locally reproducible. Focused targets such as `make validate-configs`,
+`make portal-ci`, and `make portal-contract` remain available when only one
+surface changed. `go run ./test/ci` is the cross-platform implementation of
+`make ci`; it launches tools without Bash or POSIX-shell syntax. On Windows,
+stock `cmd.exe` is used only for Node's `npm.cmd` shim, and GNU Make is not
+required. Other convenience targets can still use a POSIX shell.
 
 ### Platform prerequisites
 
@@ -76,13 +92,12 @@ exercise Unix process and shell semantics are platform-gated on Windows.
 |---|---|---|---|
 | `ubuntu-latest` | `go run ./test/ci` | Required via the aggregate CI check | The full Linux Go and portal gate |
 | `macos-latest` | `go run ./test/ci` | Required via the aggregate CI check | The full macOS Go and portal gate |
-| `windows-latest` | Not yet enabled (#633) | None | The portable entrypoint is ready; remaining Windows runtime abstractions land separately |
+| `windows-latest` | `go build ./...` + `go vet ./...` | Required via the aggregate CI check | Native Windows compile and vet coverage |
 
 The required `make ci (fmt-check · vet · build · test · lint)` status keeps its
-existing name for branch-protection compatibility and fails when either current
-platform leg fails. Go module and build caches are scoped to each runner OS.
-Once the remaining Windows prerequisites land, Windows will run the same
-portable command and become a required leg without adding Make or Bash.
+existing name for branch-protection compatibility and fails when either full
+platform leg or the Windows compile slice fails. Go module and build caches are
+scoped to each runner OS.
 
 ## Workflow
 
@@ -90,11 +105,11 @@ portable command and become a required leg without adding Make or Bash.
 2. Create a topic branch: `git checkout -b <area>/<short-description>`.
 3. Make your change. Keep the diff scoped to one logical concern.
 4. **Add tests** for new behavior and error paths — untested new behavior will be sent back.
-5. Run `go run ./test/ci` locally until green (`make ci` is the Unix alias).
+5. Run the `make ci` merge tier locally.
 6. Open a **pull request against `main`**, filling in the
    [PR template](.github/PULL_REQUEST_TEMPLATE.md).
-7. The required Ubuntu and macOS CI checks must pass. Address review feedback; keep the
-   branch up to date with `main`.
+7. The required Ubuntu, macOS, and Windows CI checks must pass. Address review
+   feedback; keep the branch up to date with `main`.
 
 ## Merge requirements
 
