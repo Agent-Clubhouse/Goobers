@@ -2,7 +2,7 @@
 
 > Status: **Draft for review — not implemented** · Area prefix: `TUT` · Milestone: _proposed_ **Tutor v2**
 > Scope: the tutor edits a gaggle's **instance config** (`goobers-instances/<name>/`), never product code (§1.1). Its loop closes through **Workflow CD** (§4.6, M15).
-> Related issues: #36 (tutor epic), #102 (cross-run detection queries), #104 (config-only write-boundary), #453 (Workflow CD / GitOps — the promotion half), #507 (who owns test-suite quality), #150 (`Goober.spec.model`), #417 (first-class agent signal), #776 (usage in envelopes/spans), #769 (journal/telemetry schema migration).
+> Related issues: #36 (tutor epic), #102 (cross-run detection queries), #104 (config-only write-boundary), #453 (Workflow CD / GitOps — the promotion half), #460 (WCD-6 `configrepo:read` — the tutor needs a write-sibling, §4.8), #507 (who owns test-suite quality), #150 (`Goober.spec.model`), #417 (first-class agent signal), #776 (usage in envelopes/spans), #769 (journal/telemetry schema migration).
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 
 ## 1. Why this exists
@@ -25,11 +25,13 @@ requires, and a staged backlog.
 ### 1.1 Scope — the tutor edits the *instance config*, never the product code
 
 The tutor's write target is the **instance's own config namespace** — the deployed gaggle/workflow/goober
-definitions the running daemon reconciles from. For our local self-hosting setup that is
-`~/source/goobers-instances/goobers/*` (a hand-maintained fork of the sample config, see memory:
-instance-config-is-drifted-fork), **not** the Goobers product repo (`selfhost/`, `internal/`, `cmd/`,
-`api/schemas`). For a customer it is *their* instance — the workflows/goobers/skills unique to their code and
-area. Two hard consequences:
+definitions the running daemon reconciles from. **This path is operator-defined, not fixed:** the daemon is
+launched with an instance path, and *that* path is injected as the tutor's target (whatever the operator chose;
+`~/source/goobers-instances/goobers/*` is only *our* local self-hosting example — a hand-maintained fork of the
+sample config, see memory: instance-config-is-drifted-fork). It is **never** the Goobers product repo
+(`selfhost/`, `internal/`, `cmd/`, `api/schemas`). For a customer it is *their* instance — the
+workflows/goobers/skills unique to their code and area. The tutor must therefore resolve its config root from
+the daemon's injected instance path, not any hard-coded directory. Two hard consequences:
 
 - **The tutor is a *process*-improvement agent** (how a gaggle *works*): workflow structure, gates, goober
   instructions, skills, workflow-level validation. It is **not** a product-code agent.
@@ -290,6 +292,23 @@ PO described. It depends on: the provenance key (§4.1, this milestone), CD prom
 a new **shadow-run / non-authoritative-sink capability** plus variant-version routing (future). It is
 explicitly **out of scope for Tutor v2's first cut** and tracked as a follow-on milestone (§8).
 
+### 4.8 Credentials — a separate, isolated grant for the instance-config repo
+
+Opening PRs against the instance config repo requires **write** credentials to *that* repo. These must be a
+**separate, isolated credential from the gaggle's target-repo creds** — exactly as a gaggle's implementation
+workflows already hold creds scoped to the *product/target* code repo (to open PRs there), the tutor holds a
+distinct credential scoped to the *instance config* repo (to open PRs there). The two must not be
+interchangeable: the tutor's grant must not reach the product/target repo, and the code workflows' grant must
+not reach the instance-config repo.
+
+This is a **write-scoped sibling of WCD-6's `configrepo:read`** (#460): WCD reads the config repo to reconcile
+it; the tutor writes to it (via PR) to improve it. Both route through the per-capability Grant / Injector seam
+(`internal/credentials/capability.go`; see memory: multi-token-credentials, WCD-6/#460), fail-closed on an
+undeclared capability. Concretely the tutor needs a `configrepo:write` (or `tutorconfig:write`) capability,
+granted only for the daemon's injected instance path, minted as its own scoped PAT — never `Repos[0]` and never
+the target-repo token. (Provisioning that scoped PAT is an operator action, in the same family as the WCD
+adversarial-isolation pen-test #461 and the throwaway-test-repo creds.)
+
 ## 5. Governance & guardrails
 
 Expanding beyond prose edits introduces failure modes the single path-check does not cover. These are hard
@@ -377,10 +396,12 @@ per-workflow → per-gaggle split of §4.3.
 `telemetry-query` (+ cohort rules). (`TUT-P4` journal migration tracked under #769.)
 
 **Tier 1 — action-space + safety, all within the instance config (after D1–D6):**
-`TUT-A1` per-target sub-boundaries within the instance config (replace single `configRoot`) · `TUT-A2`
-fail-first validation-authorship contract · `TUT-A3` metric-gaming guard · `TUT-A4` per-workflow → per-gaggle
-topology (no cross-gaggle) · `TUT-A5` skill-body authoring root · `TUT-A6` differentiated CODEOWNERS review
-gates · `TUT-A7` post-promotion live-verification holdout.
+`TUT-A1` resolve the config root from the daemon's **injected instance path** (not a hard-coded dir) +
+per-target sub-boundaries · `TUT-A2` fail-first validation-authorship contract · `TUT-A3` metric-gaming guard ·
+`TUT-A4` per-workflow → per-gaggle topology (no cross-gaggle) · `TUT-A5` skill-body authoring root · `TUT-A6`
+differentiated CODEOWNERS review gates · `TUT-A7` post-promotion live-verification holdout · `TUT-A8`
+**isolated `configrepo:write` capability + scoped PAT** for the instance-config repo (§4.8; write-sibling of
+#460), routed through the Grant/Injector seam, never the target-repo token.
 
 **Tier 2 — closes the loop (depends on Workflow CD, M15):** the tutor targets the gaggle's **instance config
 repo** as the CD source (§4.6), so merged tutor PRs reconcile to the live daemon.
