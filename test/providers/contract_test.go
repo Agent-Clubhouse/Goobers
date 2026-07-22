@@ -1,4 +1,4 @@
-// Package providers_contract is the M5 cross-provider contract suite. It asserts
+// Package providerscontract is the M5 cross-provider contract suite. It asserts
 // that the GitHub and ADO implementations of providers.Provider exhibit IDENTICAL
 // observable behavior on the unified work-item model — the parity guarantee from
 // docs/requirements/backlog-providers.md (BL-001/002/011/012). Each provider has a
@@ -7,7 +7,7 @@
 //
 // This complements (does not duplicate) the per-provider unit tests in /providers:
 // those test each impl's wire handling; this pins the shared contract both must meet.
-package providers_contract
+package providerscontract
 
 import (
 	"context"
