@@ -4,6 +4,7 @@ package boundedwait
 
 import "time"
 
+// Input names, stage kinds, and defaults shared by bounded wait implementations.
 const (
 	InputKind        = "kind"
 	KindShell        = "shell"
