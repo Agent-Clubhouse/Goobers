@@ -347,7 +347,7 @@ func (s *GitSource) writeBlob(
 
 	args := append(append([]string{}, repoArgs...), "cat-file", "blob", objectID)
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = gitSourceEnv()
 	cmd.Stdout = file
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -396,7 +396,7 @@ func validateGitSymlink(name, target string) error {
 
 func (s *GitSource) gitOutput(ctx context.Context, operation string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = gitSourceEnv()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
@@ -404,6 +404,10 @@ func (s *GitSource) gitOutput(ctx context.Context, operation string, args ...str
 		return nil, s.commandError(operation, err, stderr.String())
 	}
 	return output, nil
+}
+
+func gitSourceEnv() []string {
+	return append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_NO_REPLACE_OBJECTS=1")
 }
 
 func (s *GitSource) commandError(operation string, cause error, stderr string) error {

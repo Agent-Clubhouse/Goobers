@@ -149,6 +149,28 @@ func TestGitSourcePreservesCommittedBlobsWithArchiveAttributes(t *testing.T) {
 	assertGitSourceTestFile(t, dir, "substituted.txt", "$Format:%H$\n")
 }
 
+func TestGitSourceIgnoresReplacementObjects(t *testing.T) {
+	repo := newGitSourceTestRepo(t, "committed\n")
+	original := strings.TrimSpace(runGitSourceTest(t, repo, "rev-parse", "main:config.txt"))
+	writeGitSourceTestFile(t, repo, "replacement.txt", "replacement\n")
+	replacement := strings.TrimSpace(runGitSourceTest(t, repo, "hash-object", "-w", "replacement.txt"))
+	runGitSourceTest(t, repo, "replace", original, replacement)
+
+	source, err := NewGitSource(GitSourceOptions{
+		InstanceRoot: t.TempDir(),
+		Repository:   repo,
+	})
+	if err != nil {
+		t.Fatalf("NewGitSource: %v", err)
+	}
+	dir, err := source.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	assertGitSourceTestFile(t, dir, "config.txt", "committed\n")
+}
+
 func TestNewGitSourceRejectsNonBranchRef(t *testing.T) {
 	_, err := NewGitSource(GitSourceOptions{
 		InstanceRoot: t.TempDir(),
