@@ -120,6 +120,11 @@ linux-node-validation:
 	GOOS=windows $(GO) build ./internal/platform/safeopen/... ./internal/gooberassets/...
 	GOOS=windows $(GO) vet ./internal/platform/safeopen/... ./internal/gooberassets/...
 
+## test-shipped-workflows: Run every shipped workflow through the local runner contract harness.
+.PHONY: test-shipped-workflows
+test-shipped-workflows:
+	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO) test ./test/shippedworkflows -count=1
+
 ## fmt: Format all Go source.
 .PHONY: fmt
 fmt:
@@ -248,10 +253,10 @@ stress:
 		-go "$(GO)" -packages test/stress/packages.txt \
 		-output "$(STRESS_OUTPUT_DIR)" -seed "$(STRESS_SEED)"
 
-## verify-full: Run all merge, integration, platform, coverage, and stress gates.
+## verify-full: Run all merge, integration, platform, coverage, shipped-workflow, and stress gates.
 .PHONY: verify-full
 .NOTPARALLEL: verify-full
-verify-full: ci test-integration-strict test-e2e test-envtest cover-check sandbox-check linux-node-validation stress
+verify-full: ci test-integration-strict test-e2e test-envtest cover-check sandbox-check linux-node-validation test-shipped-workflows stress
 
 ## clean: Remove build artifacts.
 .PHONY: clean
