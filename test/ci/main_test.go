@@ -35,7 +35,7 @@ func (f *fakeExecutor) run(current check) ([]byte, error) {
 func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	t.Parallel()
 	tools := toolchain{
-		goCommand:       "go",
+		goCommand:       "custom-go",
 		gofmtCommand:    "gofmt",
 		gitCommand:      "git",
 		npmCommand:      "npm",
@@ -76,9 +76,25 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"GIT_CONFIG_KEY_0=core.fsync",
 		"GIT_CONFIG_VALUE_0=none",
 		"GOOBERS_DISABLE_FSYNC=1",
+		"GOENV=off",
+		"GOFLAGS=-mod=readonly",
+		"GONOPROXY=none",
+		"GONOSUMDB=none",
+		"GOPRIVATE=",
+		"GOPROXY=off",
+		"GOSUMDB=off",
+		"GOTOOLCHAIN=local",
+		"GOVCS=*:off",
 	}
 	if !reflect.DeepEqual(testCheck.env, wantEnv) {
 		t.Fatalf("test environment = %q, want %q", testCheck.env, wantEnv)
+	}
+	wantTestArgs := []string{
+		"run", "./test/hermetic", "--go-command", "custom-go", "--",
+		"-race", "-timeout", "20m", "-covermode=atomic", "-coverprofile=coverage.out", "./...",
+	}
+	if !reflect.DeepEqual(testCheck.args, wantTestArgs) {
+		t.Fatalf("test arguments = %q, want %q", testCheck.args, wantTestArgs)
 	}
 
 	buildCheck := gotChecks[6]

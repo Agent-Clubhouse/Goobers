@@ -117,6 +117,7 @@ func TestMakefileGatesDelegateToGo(t *testing.T) {
 		"run ./test/coveragegate", // cover-check: -> the Go coverage gate
 		"run ./test/configvalidate",
 		"run ./test/integration",
+		"run ./test/hermetic", // test: -> the hermetic Go unit-test wrapper
 	} {
 		if !strings.Contains(makefile, want) {
 			t.Errorf("Makefile no longer delegates to `%s`; the gate must stay in Go, not move into a shell script", want)

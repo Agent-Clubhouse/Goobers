@@ -73,6 +73,34 @@ Each workstream below names the gap it closes.
   the harness fails loudly (skip-forbidden in CI) when a declared tool is absent —
   "silently skipped" is treated as red.
 
+#### Hermetic unit-tier contract
+
+`make test` and the portable CI gate's unit step both delegate to
+`go run ./test/hermetic`. The wrapper creates a temporary PATH containing only
+links to this documented allowlist:
+
+- all platforms: `go`, `git`, and the C compiler selected by `go env CC` (needed
+  by the race detector);
+- Linux: the compiler subprocess helpers `as` and `ld`;
+- Unix: `sh`, optional `bash`, `cat`, `dirname`, `echo`, `false`, `head`,
+  `mkdir`, `rm`, `sleep`, `tr`, `true`, `wc`, and `yes`;
+- Windows: `cmd.exe` and `icacls`.
+
+The wrapper sets that directory as the complete PATH for `go test`. It also
+sets `GOPROXY=off`, `GOSUMDB=off`, `GOTOOLCHAIN=local`, `GOVCS=*:off`, and
+`GOFLAGS=-mod=readonly`, preventing the Go toolchain from resolving missing
+dependencies or toolchains over the network. CI and local unit runs therefore
+have the same ambient-tool and Go-network boundary. The entrypoints apply those
+network guards to the outer `go run` that compiles the wrapper as well.
+
+A test that needs any other executable or network access is not a unit test:
+place it in a file guarded by `//go:build integration` and run it in the
+declared-dependency integration tier. The wrapper statically rejects literal
+`os/exec.Command` and `CommandContext` calls to non-allowlisted PATH tools with
+that guidance; its restricted PATH also blocks dynamically selected ambient
+tools at runtime. There is no environment-variable escape hatch that disables
+unit-tier hermeticity.
+
 ### Wired-composition coverage (closes G2, G5)
 
 - **W1. Shipped-workflow contract tests.** Every definition under `selfhost/` (and shipped
