@@ -170,6 +170,30 @@ func TestFeatureRegistryCompatibilityPolicy(t *testing.T) {
 			want: "history must not be empty",
 		},
 		{
+			name: "lifecycle starts deprecated",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportDeprecated,
+				SinceVersion: "v1.0.0",
+				History: []SupportTransition{
+					transition(SupportDeprecated, "v1.0.0"),
+				},
+			},
+			want: "lifecycle must start at preview or ga",
+		},
+		{
+			name: "initial version is not a release",
+			feature: Feature{
+				ID:           "example.feature",
+				Level:        SupportGA,
+				SinceVersion: "1.0.0",
+				History: []SupportTransition{
+					transition(SupportGA, "1.0.0"),
+				},
+			},
+			want: "must use vMAJOR.MINOR.PATCH",
+		},
+		{
 			name: "ga directly to removed",
 			feature: Feature{
 				ID:           "example.feature",
