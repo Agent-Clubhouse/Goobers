@@ -13,9 +13,10 @@ import (
 )
 
 type options struct {
-	goobers        map[string]apiv1.GooberSpec
-	knownChecks    map[string]bool
-	knownHarnesses map[string]bool
+	goobers              map[string]apiv1.GooberSpec
+	knownChecks          map[string]bool
+	knownHarnesses       map[string]bool
+	allowPreviewFeatures *bool
 }
 
 // Option customizes compilation.
@@ -52,6 +53,101 @@ func WithKnownHarnesses(names []string) Option {
 	return func(o *options) { o.knownHarnesses = toSet(names) }
 }
 
+// PreviewFeaturesAnnotation is the instance Manifest annotation that explicitly
+// acknowledges use of unstable preview DSL features.
+const PreviewFeaturesAnnotation = "goobers.dev/allow-preview-features"
+
+// PreviewFeaturesEnabled reports whether annotations contain the exact,
+// explicit acknowledgement required for preview DSL features.
+func PreviewFeaturesEnabled(annotations map[string]string) bool {
+	return annotations[PreviewFeaturesAnnotation] == "true"
+}
+
+// WithPreviewFeatures applies an instance's preview-feature acknowledgement to
+// compilation. Callers without instance context may omit it; config loading
+// enforces the same policy through api/validate before compilation.
+func WithPreviewFeatures(enabled bool) Option {
+	return func(o *options) { o.allowPreviewFeatures = &enabled }
+}
+
+// FeatureDiagnostic describes one support-level finding without coupling the
+// workflow package to the validator's severity and code types.
+type FeatureDiagnostic struct {
+	Feature  Feature
+	Blocking bool
+	Message  string
+}
+
+// CheckFeatureSupport applies support-level policy to resolved DSL features.
+func CheckFeatureSupport(features []Feature, allowPreview bool) []FeatureDiagnostic {
+	var diagnostics []FeatureDiagnostic
+	for _, feature := range features {
+		switch feature.Level {
+		case SupportPreview:
+			diagnostic := FeatureDiagnostic{Feature: feature}
+			if allowPreview {
+				diagnostic.Message = fmt.Sprintf(
+					"DSL feature %q is preview and unstable (available since %s)",
+					feature.ID, feature.SinceVersion,
+				)
+			} else {
+				diagnostic.Blocking = true
+				diagnostic.Message = fmt.Sprintf(
+					"DSL feature %q is preview and requires explicit instance opt-in via Manifest annotation %q: %q",
+					feature.ID, PreviewFeaturesAnnotation, "true",
+				)
+			}
+			diagnostics = append(diagnostics, diagnostic)
+		case SupportDeprecated:
+			diagnostics = append(diagnostics, FeatureDiagnostic{
+				Feature: feature,
+				Message: fmt.Sprintf(
+					"DSL feature %q is deprecated; use %q instead; removal is targeted for %s",
+					feature.ID, feature.Replacement, feature.RemovalTargetVersion,
+				),
+			})
+		case SupportRemoved:
+			diagnostics = append(diagnostics, FeatureDiagnostic{
+				Feature:  feature,
+				Blocking: true,
+				Message: fmt.Sprintf(
+					"DSL feature %q was removed; %s was the last supporting version",
+					feature.ID, feature.LastSupportingVersion,
+				),
+			})
+		}
+	}
+	return diagnostics
+}
+
+// CheckWorkflowFeatureSupport resolves a workflow and applies support policy.
+func CheckWorkflowFeatureSupport(def Definition, allowPreview bool) []FeatureDiagnostic {
+	features, err := FeaturesForWorkflow(def)
+	if err != nil {
+		return []FeatureDiagnostic{{Blocking: true, Message: err.Error()}}
+	}
+	return CheckFeatureSupport(features, allowPreview)
+}
+
+// CheckGooberFeatureSupport resolves a goober and applies support policy.
+func CheckGooberFeatureSupport(spec apiv1.GooberSpec, allowPreview bool) []FeatureDiagnostic {
+	features, err := FeaturesForGoober(spec)
+	if err != nil {
+		return []FeatureDiagnostic{{Blocking: true, Message: err.Error()}}
+	}
+	return CheckFeatureSupport(features, allowPreview)
+}
+
+func blockingFeatureProblems(diagnostics []FeatureDiagnostic) []string {
+	var problems []string
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Blocking {
+			problems = append(problems, diagnostic.Message)
+		}
+	}
+	return problems
+}
+
 // Compile validates a Definition and returns the compiled Machine. It is pure
 // (no I/O, no wall clock, no Temporal) and deterministic: the same definition
 // always yields the same machine and the same content digest.
@@ -59,9 +155,10 @@ func WithKnownHarnesses(names []string) Option {
 // It rejects: duplicate state names, a missing/undefined start, transitions to
 // undefined states, gates with no branches or branches to undefined states,
 // human evaluators while durable pause/resume is unavailable, states
-// unreachable from start, loops with no exit to a terminal, and — when
-// WithGoobers is supplied — a goober granting or a stage declaring a
-// capability outside the canonical registry (internal/capability, issue #74),
+// unreachable from start, loops with no exit to a terminal, removed DSL
+// features, preview DSL features when WithPreviewFeatures(false) is supplied,
+// and — when WithGoobers is supplied — a goober granting or a stage declaring
+// a capability outside the canonical registry (internal/capability, issue #74),
 // stages using capabilities their goober does not grant, and goobers on an
 // unknown harness when WithKnownHarnesses is also supplied. Built-in task
 // capability requirements are always enforced. Errors are aggregated so one
@@ -75,7 +172,11 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	m := newMachine(def)
 
 	var problems []string
-	problems = append(problems, CheckWorkflowFeatures(def)...)
+	allowPreview := true
+	if o.allowPreviewFeatures != nil {
+		allowPreview = *o.allowPreviewFeatures
+	}
+	problems = append(problems, blockingFeatureProblems(CheckWorkflowFeatureSupport(def, allowPreview))...)
 	if o.goobers != nil {
 		names := make([]string, 0, len(o.goobers))
 		for name := range o.goobers {
@@ -83,7 +184,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			for _, problem := range CheckGooberFeatures(o.goobers[name]) {
+			for _, problem := range blockingFeatureProblems(CheckGooberFeatureSupport(o.goobers[name], allowPreview)) {
 				problems = append(problems, fmt.Sprintf("goober %q: %s", name, problem))
 			}
 		}

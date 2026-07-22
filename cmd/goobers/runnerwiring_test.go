@@ -35,6 +35,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -403,6 +404,9 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		}
 	}
 	set := &instance.ConfigSet{
+		Manifest: &apiv1.Manifest{ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{workflow.PreviewFeaturesAnnotation: "true"},
+		}},
 		Gaggles: []apiv1.Gaggle{
 			{ObjectMeta: metav1.ObjectMeta{Name: "alpha"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "alpha"}}},
 			{ObjectMeta: metav1.ObjectMeta{Name: "beta"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "beta"}}},
