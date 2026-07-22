@@ -251,6 +251,14 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !reflect.DeepEqual(recordRefusal.Capabilities, wantRefusalCaps) {
 				t.Errorf("record-merge-refusal capabilities = %v, want %v", recordRefusal.Capabilities, wantRefusalCaps)
 			}
+			wantRefusalInputs := map[string]string{
+				"selectedNumber":  "selectedNumber",
+				"reason":          "reason",
+				"selectedHeadSha": "selectedHeadSha",
+			}
+			if !reflect.DeepEqual(recordRefusal.InputsFrom, wantRefusalInputs) {
+				t.Errorf("record-merge-refusal inputsFrom = %v, want %v", recordRefusal.InputsFrom, wantRefusalInputs)
+			}
 
 			queueWatch, ok := m.Task("queue-watch")
 			if !ok {

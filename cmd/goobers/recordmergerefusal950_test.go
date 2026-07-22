@@ -48,6 +48,40 @@ func TestRecordMergeRefusalDemotesAfterThreshold(t *testing.T) {
 	}
 }
 
+func TestRecordMergeRefusalKeepsTransientRefusalVisibleAndReselectable(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addOpenPR(78, "goobers/implementation/transient", "main", "sha-transient", "base1", false, nil, nil)
+	server.addIssue(78, "transient refusal")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "78")
+	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "sha-transient")
+	const reason = "base moved after review without touching this pull request's files"
+	t.Setenv("GOOBERS_INPUT_REASON", reason)
+	t.Chdir(t.TempDir())
+
+	for attempt := 1; attempt < defaultDemotionThreshold; attempt++ {
+		code, _, stderr := runArgs(t, "record-merge-refusal", root)
+		if code != 0 {
+			t.Fatalf("attempt %d: code = %d, stderr = %q", attempt, code, stderr)
+		}
+	}
+
+	server.mu.Lock()
+	labels := append([]string(nil), server.issues[78].labels...)
+	comments := append([]string(nil), server.issues[78].comments...)
+	server.mu.Unlock()
+	if len(labels) != 0 {
+		t.Fatalf("labels = %v, want none before the unchanged-head threshold so the PR remains re-selectable", labels)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("comments = %d, want one sticky refusal trail rather than one comment per cycle", len(comments))
+	}
+	if !strings.Contains(comments[0], reason) {
+		t.Fatalf("comment = %q, want merge-pr's refusal reason to reach the PR", comments[0])
+	}
+}
+
 // TestRecordMergeRefusalSkipsAdvisory proves an advisory-mode "refusal" (no real
 // merge attempted) never accrues toward demotion — otherwise advisory mode would
 // demote every lander every cycle.

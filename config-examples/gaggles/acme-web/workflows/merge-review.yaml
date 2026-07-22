@@ -175,7 +175,7 @@ spec:
 
     - name: queue-watch
       type: deterministic
-      goal: Watch a merge-queue-enqueued PR until the queue merges or evicts it.
+      goal: Watch a merge-queue-enqueued PR until it merges, is evicted, or needs timeout remediation.
       run:
         command: ["goobers", "merge-queue-poll"]
       inputsFrom:
@@ -306,6 +306,9 @@ spec:
         fail: record-merge-refusal
 
     - name: queue-gate
+      # queue-watch already labels and comments on both evicted and timed-out
+      # pull requests, so those outcomes terminate here after leaving a visible
+      # remediation trail. Timeout reconciliation continues independently.
       evaluator: automated
       automated:
         check: queue-outcome
